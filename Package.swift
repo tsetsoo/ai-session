@@ -8,7 +8,12 @@ let package = Package(
         .library(name: "AISessionCore", targets: ["AISessionCore"])
     ],
     targets: [
-        .target(name: "AISessionCore"),
+        .target(
+            name: "AISessionCore",
+            linkerSettings: [
+                .linkedFramework("Security", .when(platforms: [.iOS, .macOS]))
+            ]
+        ),
         .testTarget(name: "AISessionCoreTests", dependencies: ["AISessionCore"])
     ]
 )
