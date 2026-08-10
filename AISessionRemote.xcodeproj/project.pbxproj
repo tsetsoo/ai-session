@@ -8,20 +8,30 @@
 
 /* Begin PBXBuildFile section */
 		00B684C59E7681CFF43EB203 /* AISessionRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */; };
+		179CFAD30F54E92A25FE71AA /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 05BD2283E26F32148478AD0E /* Crypto */; };
 		73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1B02295F04DE55821A1C7F /* HostsListView.swift */; };
+		748A1A2AC01B92433F2CBAFC /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = D2F4F750AAE4488C18680D69 /* NIOPosix */; };
+		85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */; };
 		9457E33FBF3D6F5F05EAD86F /* HostEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99B0F4154BA389FF80D827AE /* HostEditorView.swift */; };
+		98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */; };
+		A1EDA9CF81D79436D8F724AA /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = C2851F1ABC0544053EA972F7 /* NIOSSH */; };
+		B45B06C6BEC4E0C3B674028A /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3869B11228A2EA6745FCCEF8 /* NIOCore */; };
 		BDB5778417C362323812D238 /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
 		D82D4390F574464A6DDD30B3 /* AISessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 77160CCBC36C696C9AE77B08 /* AISessionCore */; };
 		DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3B756FF0192985AADAFF36 /* HostRepository.swift */; };
+		FACD0EDEEFFED735236090BD /* NIOSSHClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		088A2A76FA2CE3451749F77B /* AISessionRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AISessionRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		59CB0ACC6B929B4F47171F37 /* ai-session-remote-impl */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ai-session-remote-impl"; path = .; sourceTree = SOURCE_ROOT; };
 		603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionRemoteApp.swift; sourceTree = "<group>"; };
+		985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParser.swift; sourceTree = "<group>"; };
 		99B0F4154BA389FF80D827AE /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
 		AC1B02295F04DE55821A1C7F /* HostsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostsListView.swift; sourceTree = "<group>"; };
+		D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NIOSSHClient.swift; sourceTree = "<group>"; };
 		EE3B756FF0192985AADAFF36 /* HostRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostRepository.swift; sourceTree = "<group>"; };
+		EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReachabilityProbe.swift; sourceTree = "<group>"; };
 		FA4DD29F996099D82C6D7514 /* HostEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEntity.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -31,6 +41,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				D82D4390F574464A6DDD30B3 /* AISessionCore in Frameworks */,
+				A1EDA9CF81D79436D8F724AA /* NIOSSH in Frameworks */,
+				B45B06C6BEC4E0C3B674028A /* NIOCore in Frameworks */,
+				748A1A2AC01B92433F2CBAFC /* NIOPosix in Frameworks */,
+				179CFAD30F54E92A25FE71AA /* Crypto in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -69,6 +83,9 @@
 			isa = PBXGroup;
 			children = (
 				EE3B756FF0192985AADAFF36 /* HostRepository.swift */,
+				D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */,
+				985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */,
+				EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -116,6 +133,10 @@
 			name = AISessionRemote;
 			packageProductDependencies = (
 				77160CCBC36C696C9AE77B08 /* AISessionCore */,
+				C2851F1ABC0544053EA972F7 /* NIOSSH */,
+				3869B11228A2EA6745FCCEF8 /* NIOCore */,
+				D2F4F750AAE4488C18680D69 /* NIOPosix */,
+				05BD2283E26F32148478AD0E /* Crypto */,
 			);
 			productName = AISessionRemote;
 			productReference = 088A2A76FA2CE3451749F77B /* AISessionRemote.app */;
@@ -142,6 +163,9 @@
 			mainGroup = A967E64AD8C04EAE99BB47FA;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				41739049DE0D236540401FB5 /* XCRemoteSwiftPackageReference "swift-crypto" */,
+				F86CE8150CC8E4CB73336807 /* XCRemoteSwiftPackageReference "swift-nio" */,
+				FE11F576EC2B106E67BFC20D /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
 				93F463D336791EE1E160702A /* XCLocalSwiftPackageReference "." */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -164,6 +188,9 @@
 				BDB5778417C362323812D238 /* HostEntity.swift in Sources */,
 				DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */,
 				73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */,
+				FACD0EDEEFFED735236090BD /* NIOSSHClient.swift in Sources */,
+				98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */,
+				85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -353,10 +380,57 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		41739049DE0D236540401FB5 /* XCRemoteSwiftPackageReference "swift-crypto" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-crypto.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.0.0;
+			};
+		};
+		F86CE8150CC8E4CB73336807 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.81.0;
+			};
+		};
+		FE11F576EC2B106E67BFC20D /* XCRemoteSwiftPackageReference "swift-nio-ssh" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio-ssh.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.15.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
+		05BD2283E26F32148478AD0E /* Crypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 41739049DE0D236540401FB5 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = Crypto;
+		};
+		3869B11228A2EA6745FCCEF8 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F86CE8150CC8E4CB73336807 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
 		77160CCBC36C696C9AE77B08 /* AISessionCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AISessionCore;
+		};
+		C2851F1ABC0544053EA972F7 /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FE11F576EC2B106E67BFC20D /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+		D2F4F750AAE4488C18680D69 /* NIOPosix */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F86CE8150CC8E4CB73336807 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOPosix;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

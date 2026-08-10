@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import SwiftUI
 
@@ -7,6 +8,7 @@ struct HostsListView: View {
     @State private var showingHostEditor = false
     @State private var editingHost: HostEntity?
     @State private var errorMessage: String?
+    @State private var reachability: [UUID: Bool] = [:]
 
     var body: some View {
         NavigationStack {
@@ -22,11 +24,14 @@ struct HostsListView: View {
                         NavigationLink {
                             SessionsPlaceholderView(host: host)
                         } label: {
-                            VStack(alignment: .leading) {
-                                Text(host.displayName.isEmpty ? host.hostname : host.displayName)
-                                    .font(.headline)
-                                Text("\(host.username)@\(host.hostname):\(host.port)")
-                                    .foregroundStyle(.secondary)
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                reachabilityDot(for: host)
+                                VStack(alignment: .leading) {
+                                    Text(host.displayName.isEmpty ? host.hostname : host.displayName)
+                                        .font(.headline)
+                                    Text("\(host.username)@\(host.hostname):\(host.port)")
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                         .swipeActions(edge: .leading, allowsFullSwipe: false) {
@@ -49,6 +54,9 @@ struct HostsListView: View {
                 }
             }
             .navigationTitle("Hosts")
+            .refreshable {
+                await refreshReachability()
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -84,6 +92,36 @@ struct HostsListView: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    @ViewBuilder
+    private func reachabilityDot(for host: HostEntity) -> some View {
+        let color: Color = {
+            switch reachability[host.id] {
+            case .some(true): .green
+            case .some(false): .red
+            case .none: Color.secondary.opacity(0.3)
+            }
+        }()
+        Circle()
+            .fill(color)
+            .frame(width: 8, height: 8)
+    }
+
+    @MainActor
+    private func refreshReachability() async {
+        let repository = HostRepository(modelContext: modelContext)
+        let probe = ReachabilityProbe()
+        for host in hosts {
+            do {
+                let pem = try repository.privateKey(for: host)
+                let reachable = await probe.probe(host: host, privateKeyPEM: Data(pem.utf8))
+                reachability[host.id] = reachable
+            } catch {
+                reachability[host.id] = false
+            }
+        }
+        try? modelContext.save()
     }
 }
 
