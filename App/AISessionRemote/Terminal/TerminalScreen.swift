@@ -17,12 +17,12 @@ final class TerminalCoordinator: TerminalViewDelegate {
     var onDisconnected: (() -> Void)?
 
     private let hostConfig: HostConnectionConfig
-    private let attachCommand: String
+    private let mode: TerminalMode
     private var session: SSHTerminalSession?
 
-    init(hostConfig: HostConnectionConfig, attachCommand: String) {
+    init(hostConfig: HostConnectionConfig, mode: TerminalMode) {
         self.hostConfig = hostConfig
-        self.attachCommand = attachCommand
+        self.mode = mode
     }
 
     func attach(to terminalView: TerminalView) {
@@ -39,7 +39,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
         let cols = terminal.cols > 0 ? terminal.cols : 80
         let rows = terminal.rows > 0 ? terminal.rows : 24
 
-        let session = SSHTerminalSession(config: hostConfig, attachCommand: attachCommand)
+        let session = SSHTerminalSession(config: hostConfig, mode: mode)
         session.onOutput = { [weak self] outputBuffer in
             var outputBuffer = outputBuffer
             let bytes = outputBuffer.readBytes(length: outputBuffer.readableBytes) ?? []
@@ -154,7 +154,7 @@ private struct TerminalContainerView: UIViewRepresentable {
 /// touch keyboard. Detaching (back/dismiss) only closes the SSH connection — tmux keeps running.
 struct TerminalScreen: View {
     let hostConfig: HostConnectionConfig
-    let attachCommand: String
+    let mode: TerminalMode
     let title: String
     let onKill: () async throws -> Void
 
@@ -166,15 +166,15 @@ struct TerminalScreen: View {
 
     init(
         hostConfig: HostConnectionConfig,
-        attachCommand: String,
+        mode: TerminalMode,
         title: String,
         onKill: @escaping () async throws -> Void
     ) {
         self.hostConfig = hostConfig
-        self.attachCommand = attachCommand
+        self.mode = mode
         self.title = title
         self.onKill = onKill
-        _coordinator = State(initialValue: TerminalCoordinator(hostConfig: hostConfig, attachCommand: attachCommand))
+        _coordinator = State(initialValue: TerminalCoordinator(hostConfig: hostConfig, mode: mode))
     }
 
     var body: some View {
@@ -195,10 +195,12 @@ struct TerminalScreen: View {
                     } label: {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
-                    Button {
-                        showingKillConfirmation = true
-                    } label: {
-                        Label("Kill Session", systemImage: "xmark.circle")
+                    if case .attach = mode {
+                        Button {
+                            showingKillConfirmation = true
+                        } label: {
+                            Label("Kill Session", systemImage: "xmark.circle")
+                        }
                     }
                     Button {
                         dismiss()

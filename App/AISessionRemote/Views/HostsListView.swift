@@ -10,6 +10,7 @@ struct HostsListView: View {
     @State private var editingHost: HostEntity?
     @State private var errorMessage: String?
     @State private var reachability: [UUID: Bool] = [:]
+    @State private var plainShellHost: HostEntity?
 
     var body: some View {
         NavigationStack {
@@ -49,6 +50,11 @@ struct HostsListView: View {
                             } label: {
                                 Label("Edit Host", systemImage: "pencil")
                             }
+                            Button {
+                                plainShellHost = host
+                            } label: {
+                                Label("Plain SSH", systemImage: "terminal")
+                            }
                         }
                     }
                     .onDelete(perform: deleteHosts)
@@ -73,6 +79,11 @@ struct HostsListView: View {
             .sheet(item: $editingHost) { host in
                 HostEditorView(host: host)
             }
+            .sheet(item: $plainShellHost) { host in
+                NavigationStack {
+                    plainShellDestination(for: host)
+                }
+            }
             .alert("Could not delete host", isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
@@ -81,6 +92,24 @@ struct HostsListView: View {
             } message: {
                 Text(errorMessage ?? "")
             }
+        }
+    }
+
+    @ViewBuilder
+    private func plainShellDestination(for host: HostEntity) -> some View {
+        if let connection = try? SessionServiceFactory().make(for: host) {
+            TerminalScreen(
+                hostConfig: connection.config,
+                mode: .plainShell,
+                title: "Plain SSH",
+                onKill: {}
+            )
+        } else {
+            ContentUnavailableView(
+                "Terminal Unavailable",
+                systemImage: "exclamationmark.triangle",
+                description: Text("The private key for this host is unavailable. Edit the host and save its key again.")
+            )
         }
     }
 

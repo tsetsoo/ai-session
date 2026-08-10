@@ -10,6 +10,11 @@ enum SSHTerminalSessionError: Error {
     case channelSetupFailed
 }
 
+enum TerminalMode: Equatable {
+    case attach(String)
+    case plainShell
+}
+
 /// Bridges the SSH "session" channel used for an interactive PTY: requests a pseudo-terminal,
 /// execs the attach command (e.g. `tmux attach -t '…'`), and translates raw bytes to/from the
 /// channel's native `SSHChannelData` framing.
@@ -24,7 +29,7 @@ final class PTYChannelHandler: ChannelDuplexHandler {
     typealias OutboundIn = ByteBuffer
     typealias OutboundOut = SSHChannelData
 
-    private let command: String
+    private let mode: TerminalMode
     private let initialCols: Int
     private let initialRows: Int
     private let onOutput: (ByteBuffer) -> Void
@@ -32,13 +37,13 @@ final class PTYChannelHandler: ChannelDuplexHandler {
     private var exitStatus: Int?
 
     init(
-        command: String,
+        mode: TerminalMode,
         initialCols: Int,
         initialRows: Int,
         onOutput: @escaping (ByteBuffer) -> Void,
         onExit: @escaping (Int?) -> Void
     ) {
-        self.command = command
+        self.mode = mode
         self.initialCols = initialCols
         self.initialRows = initialRows
         self.onOutput = onOutput
@@ -61,10 +66,14 @@ final class PTYChannelHandler: ChannelDuplexHandler {
         )
         context.triggerUserOutboundEvent(pty, promise: nil)
 
-        // `command` is already the full `tmux attach -t '<name>'` invocation, so exec (not
-        // shell-then-write) hands the whole PTY straight to tmux for the life of the channel.
-        let exec = SSHChannelRequestEvent.ExecRequest(command: command, wantReply: false)
-        context.triggerUserOutboundEvent(exec, promise: nil)
+        switch mode {
+        case let .attach(command):
+            let exec = SSHChannelRequestEvent.ExecRequest(command: command, wantReply: false)
+            context.triggerUserOutboundEvent(exec, promise: nil)
+        case .plainShell:
+            let shell = SSHChannelRequestEvent.ShellRequest(wantReply: false)
+            context.triggerUserOutboundEvent(shell, promise: nil)
+        }
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -107,7 +116,7 @@ final class SSHTerminalSession {
     var onDisconnect: (() -> Void)?
 
     private let config: HostConnectionConfig
-    private let attachCommand: String
+    private let mode: TerminalMode
     private let hostKeyStore: TOFUHostKeyStore
     private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 
@@ -117,11 +126,11 @@ final class SSHTerminalSession {
 
     init(
         config: HostConnectionConfig,
-        attachCommand: String,
+        mode: TerminalMode,
         hostKeyStore: TOFUHostKeyStore = TOFUHostKeyStore()
     ) {
         self.config = config
-        self.attachCommand = attachCommand
+        self.mode = mode
         self.hostKeyStore = hostKeyStore
     }
 
@@ -186,14 +195,14 @@ final class SSHTerminalSession {
         }
 
         let channelPromise = channel.eventLoop.makePromise(of: Channel.self)
-        sshHandler.createChannel(channelPromise, channelType: .session) { [attachCommand] childChannel, channelType in
+        sshHandler.createChannel(channelPromise, channelType: .session) { [mode] childChannel, channelType in
             guard channelType == .session else {
                 return childChannel.eventLoop.makeFailedFuture(SSHTerminalSessionError.channelSetupFailed)
             }
             return childChannel.eventLoop.makeCompletedFuture {
                 try childChannel.pipeline.syncOperations.addHandler(
                     PTYChannelHandler(
-                        command: attachCommand,
+                        mode: mode,
                         initialCols: cols,
                         initialRows: rows,
                         onOutput: { [weak self] buffer in self?.onOutput?(buffer) },

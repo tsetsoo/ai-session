@@ -109,7 +109,7 @@ struct SessionsListView: View {
         if let connection = try? SessionServiceFactory().make(for: host) {
             TerminalScreen(
                 hostConfig: connection.config,
-                attachCommand: TmuxCommandBuilder.attach(tmuxName: session.tmuxName),
+                mode: .attach(TmuxCommandBuilder.attach(tmuxName: session.tmuxName)),
                 title: session.slug,
                 onKill: {
                     try await connection.service.killSession(config: connection.config, tmuxName: session.tmuxName)
