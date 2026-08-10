@@ -6,6 +6,11 @@ struct SessionsListView: View {
 
     @State private var sessions: (ai: [RemoteSession], other: [RemoteSession]) = ([], [])
     @State private var isLoading = false
+    /// Bumped on every `loadSessions()` call so a stale, still-in-flight load (e.g. one started by
+    /// `.onAppear` right before a push into `TerminalScreen`) can't clobber a fresher one's result
+    /// — or, via the old `guard !isLoading` check this replaced, get dropped entirely and leave the
+    /// list stale when returning from the terminal while the previous load was still running.
+    @State private var loadGeneration = 0
     @State private var showingNewSession = false
     @State private var showingHostEditor = false
     @State private var bannerMessage: String?
@@ -120,18 +125,25 @@ struct SessionsListView: View {
     }
 
     private func loadSessions() async {
-        guard !isLoading else { return }
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
-        defer { isLoading = false }
+        // Only clear the spinner if no newer load superseded this one — otherwise that newer
+        // load's own `defer` is the one responsible for turning it off.
+        defer { if generation == loadGeneration { isLoading = false } }
 
         do {
             let connection = try SessionServiceFactory().make(for: host)
             try await connection.service.probeTmux(config: connection.config)
-            sessions = try await connection.service.listSessions(config: connection.config)
+            let result = try await connection.service.listSessions(config: connection.config)
+            guard generation == loadGeneration else { return }
+            sessions = result
             bannerMessage = nil
         } catch let error as SSHRemoteError {
+            guard generation == loadGeneration else { return }
             handle(error)
         } catch {
+            guard generation == loadGeneration else { return }
             alertMessage = error.localizedDescription
         }
     }
