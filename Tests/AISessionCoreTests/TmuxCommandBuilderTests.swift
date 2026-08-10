@@ -56,8 +56,9 @@ final class TmuxCommandBuilderTests: XCTestCase {
             tmuxName: "ai/claude/sigma-revenue",
             json: #"{"tool":"claude"}"#
         )
-        XCTAssertTrue(cmd.contains("mkdir -p '~/.ai-remote/sessions'"))
-        XCTAssertTrue(cmd.contains("> '~/.ai-remote/sessions/ai__claude__sigma-revenue.json'"))
+        XCTAssertTrue(cmd.contains("mkdir -p ~/.ai-remote/sessions"))
+        XCTAssertFalse(cmd.contains("'~/.ai-remote"))
+        XCTAssertTrue(cmd.contains("> ~/.ai-remote/sessions/'ai__claude__sigma-revenue.json'"))
         XCTAssertTrue(cmd.contains("printf '%s'"))
     }
 

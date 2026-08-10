@@ -23,9 +23,8 @@ public enum TmuxCommandBuilder {
     }
 
     public static func writeMetadata(tmuxName: String, json: String) -> String {
-        let directory = shellQuote("~/.ai-remote/sessions")
-        let path = shellQuote(SessionMetadataStore.remotePath(for: tmuxName))
-        return "mkdir -p \(directory) && printf '%s' \(shellQuote(json)) > \(path)"
+        let filename = SessionMetadataStore.filename(for: tmuxName)
+        return "mkdir -p ~/.ai-remote/sessions && printf '%s' \(shellQuote(json)) > ~/.ai-remote/sessions/\(shellQuote(filename))"
     }
 
     public static func attach(tmuxName: String) -> String {
