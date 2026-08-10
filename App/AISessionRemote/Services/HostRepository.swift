@@ -81,7 +81,12 @@ final class HostRepository {
     }
 
     func delete(_ host: HostEntity) throws {
-        let pem = try keychain.load(account: host.privateKeyKeychainRef)
+        let pem: Data?
+        do {
+            pem = try keychain.load(account: host.privateKeyKeychainRef)
+        } catch KeychainPrivateKeyStoreError.itemNotFound {
+            pem = nil
+        }
         try keychain.delete(account: host.privateKeyKeychainRef)
         modelContext.delete(host)
         do {
@@ -89,7 +94,9 @@ final class HostRepository {
         } catch {
             let saveError = error
             modelContext.rollback()
-            try keychain.save(account: host.privateKeyKeychainRef, pem: pem)
+            if let pem {
+                try keychain.save(account: host.privateKeyKeychainRef, pem: pem)
+            }
             throw saveError
         }
     }

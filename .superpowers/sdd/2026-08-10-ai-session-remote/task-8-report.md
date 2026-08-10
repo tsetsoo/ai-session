@@ -15,3 +15,7 @@
 ## Fix round 2
 
 - Host deletion now loads the PEM before deleting the Keychain item. If SwiftData save fails, the context rolls back and the original PEM is restored to Keychain before the save error is returned.
+
+## Fix round 3
+
+- A missing Keychain item is now treated as an absent PEM: deletion continues through the idempotent Keychain delete and SwiftData removal. PEM restoration remains conditional on a successful earlier load.
