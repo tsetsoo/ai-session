@@ -9,15 +9,19 @@
 /* Begin PBXBuildFile section */
 		00B684C59E7681CFF43EB203 /* AISessionRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */; };
 		73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1B02295F04DE55821A1C7F /* HostsListView.swift */; };
+		9457E33FBF3D6F5F05EAD86F /* HostEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99B0F4154BA389FF80D827AE /* HostEditorView.swift */; };
 		BDB5778417C362323812D238 /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
 		D82D4390F574464A6DDD30B3 /* AISessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 77160CCBC36C696C9AE77B08 /* AISessionCore */; };
+		DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3B756FF0192985AADAFF36 /* HostRepository.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		088A2A76FA2CE3451749F77B /* AISessionRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AISessionRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		59CB0ACC6B929B4F47171F37 /* ai-session-remote-impl */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ai-session-remote-impl"; path = .; sourceTree = SOURCE_ROOT; };
 		603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionRemoteApp.swift; sourceTree = "<group>"; };
+		99B0F4154BA389FF80D827AE /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
 		AC1B02295F04DE55821A1C7F /* HostsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostsListView.swift; sourceTree = "<group>"; };
+		EE3B756FF0192985AADAFF36 /* HostRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostRepository.swift; sourceTree = "<group>"; };
 		FA4DD29F996099D82C6D7514 /* HostEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEntity.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -46,6 +50,7 @@
 			children = (
 				603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */,
 				6E55E3A121D4C5A5B7EE47AC /* Persistence */,
+				634310157F3D9EF76DAB2BFF /* Services */,
 				8B8071A43CD9BB81A62A9BBE /* Views */,
 			);
 			name = AISessionRemote;
@@ -60,6 +65,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		634310157F3D9EF76DAB2BFF /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				EE3B756FF0192985AADAFF36 /* HostRepository.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
 		6E55E3A121D4C5A5B7EE47AC /* Persistence */ = {
 			isa = PBXGroup;
 			children = (
@@ -71,6 +84,7 @@
 		8B8071A43CD9BB81A62A9BBE /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				99B0F4154BA389FF80D827AE /* HostEditorView.swift */,
 				AC1B02295F04DE55821A1C7F /* HostsListView.swift */,
 			);
 			path = Views;
@@ -146,7 +160,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				00B684C59E7681CFF43EB203 /* AISessionRemoteApp.swift in Sources */,
+				9457E33FBF3D6F5F05EAD86F /* HostEditorView.swift in Sources */,
 				BDB5778417C362323812D238 /* HostEntity.swift in Sources */,
+				DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */,
 				73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
