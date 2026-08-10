@@ -11,12 +11,15 @@
 		022B57F04655E920FB73A18C /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 5D3154CABEED9F0C1642E75F /* Crypto */; };
 		1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */; };
 		179CFAD30F54E92A25FE71AA /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 05BD2283E26F32148478AD0E /* Crypto */; };
+		3F324CB622DB3E280E202EA1 /* SessionServiceFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */; };
 		73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1B02295F04DE55821A1C7F /* HostsListView.swift */; };
 		748A1A2AC01B92433F2CBAFC /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = D2F4F750AAE4488C18680D69 /* NIOPosix */; };
 		85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */; };
+		8ECA01A0F0552BA43253E119 /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B5CF5ADABEA184DD911533 /* SessionsListView.swift */; };
 		9457E33FBF3D6F5F05EAD86F /* HostEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99B0F4154BA389FF80D827AE /* HostEditorView.swift */; };
 		98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */; };
 		98E8F675B83628ACA76E96E2 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 933D60662FF1D5CFC33458A1 /* NIOSSH */; };
+		9AC6F15718E4541263BB3B76 /* NewSessionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FD7158DD9EEFF2C436D5B5D /* NewSessionSheet.swift */; };
 		A1EDA9CF81D79436D8F724AA /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = C2851F1ABC0544053EA972F7 /* NIOSSH */; };
 		B45B06C6BEC4E0C3B674028A /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3869B11228A2EA6745FCCEF8 /* NIOCore */; };
 		BDB5778417C362323812D238 /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
@@ -38,12 +41,15 @@
 
 /* Begin PBXFileReference section */
 		088A2A76FA2CE3451749F77B /* AISessionRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AISessionRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionServiceFactory.swift; sourceTree = "<group>"; };
 		212307B0DF157E07D51ED051 /* AISessionRemoteTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AISessionRemoteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		59CB0ACC6B929B4F47171F37 /* ai-session-remote-impl */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ai-session-remote-impl"; path = .; sourceTree = SOURCE_ROOT; };
 		603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionRemoteApp.swift; sourceTree = "<group>"; };
 		6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParserTests.swift; sourceTree = "<group>"; };
+		77B5CF5ADABEA184DD911533 /* SessionsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsListView.swift; sourceTree = "<group>"; };
 		985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParser.swift; sourceTree = "<group>"; };
 		99B0F4154BA389FF80D827AE /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
+		9FD7158DD9EEFF2C436D5B5D /* NewSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionSheet.swift; sourceTree = "<group>"; };
 		AC1B02295F04DE55821A1C7F /* HostsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostsListView.swift; sourceTree = "<group>"; };
 		D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NIOSSHClient.swift; sourceTree = "<group>"; };
 		E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TOFUHostKeyStoreTests.swift; sourceTree = "<group>"; };
@@ -113,6 +119,7 @@
 				D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */,
 				985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */,
 				EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */,
+				20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -130,6 +137,8 @@
 			children = (
 				99B0F4154BA389FF80D827AE /* HostEditorView.swift */,
 				AC1B02295F04DE55821A1C7F /* HostsListView.swift */,
+				9FD7158DD9EEFF2C436D5B5D /* NewSessionSheet.swift */,
+				77B5CF5ADABEA184DD911533 /* SessionsListView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -249,8 +258,11 @@
 				DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */,
 				73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */,
 				FACD0EDEEFFED735236090BD /* NIOSSHClient.swift in Sources */,
+				9AC6F15718E4541263BB3B76 /* NewSessionSheet.swift in Sources */,
 				98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */,
 				85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */,
+				3F324CB622DB3E280E202EA1 /* SessionServiceFactory.swift in Sources */,
+				8ECA01A0F0552BA43253E119 /* SessionsListView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -23,7 +23,7 @@ struct HostsListView: View {
                 } else {
                     ForEach(hosts) { host in
                         NavigationLink {
-                            SessionsPlaceholderView(host: host)
+                            SessionsListView(host: host)
                         } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 reachabilityDot(for: host)
@@ -149,19 +149,6 @@ struct HostsListView: View {
         }
 
         try? modelContext.save()
-    }
-}
-
-private struct SessionsPlaceholderView: View {
-    let host: HostEntity
-
-    var body: some View {
-        ContentUnavailableView(
-            "Sessions",
-            systemImage: "terminal",
-            description: Text("Sessions for \(host.displayName.isEmpty ? host.hostname : host.displayName) will appear here.")
-        )
-        .navigationTitle("Sessions")
     }
 }
 
