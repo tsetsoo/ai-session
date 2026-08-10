@@ -21,4 +21,20 @@ public enum SSHRemoteError: Error, Equatable, Sendable {
     case tmuxMissing
     case binaryMissing(String)
     case commandFailed(exitCode: Int32, stderr: String)
+
+    public var userMessage: String {
+        switch self {
+        case .unreachable:
+            return "Could not reach the host. Check Tailscale and network, then try again."
+        case .authenticationFailed:
+            return "SSH authentication failed. Verify the username and private key."
+        case .tmuxMissing:
+            return "tmux is required on this host. Install it with `brew install tmux` on macOS or `apt install tmux` on Debian/Ubuntu."
+        case let .binaryMissing(binary):
+            return "The required binary '\(binary)' was not found on this host. Install it and ensure it is on PATH."
+        case let .commandFailed(exitCode, stderr):
+            let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return detail.isEmpty ? "The remote command failed (exit code \(exitCode))." : detail
+        }
+    }
 }

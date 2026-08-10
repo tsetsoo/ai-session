@@ -121,6 +121,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 
     private static func message(for error: Error) -> String {
+        if let error = error as? SSHRemoteError {
+            return error.userMessage
+        }
         switch error {
         case SSHTerminalSessionError.invalidPrivateKey:
             return "The SSH key for this host could not be parsed."
@@ -269,18 +272,7 @@ struct TerminalScreen: View {
 
     private static func killMessage(for error: Error) -> String {
         if let sshError = error as? SSHRemoteError {
-            switch sshError {
-            case .tmuxMissing:
-                return "tmux is required on this host."
-            case let .binaryMissing(binary):
-                return "The required binary '\(binary)' was not found on this host."
-            case .authenticationFailed:
-                return "The SSH key was rejected. Edit the host to update its credentials."
-            case .unreachable:
-                return "Host is unreachable. Check the network and try again."
-            case let .commandFailed(_, stderr):
-                return stderr.isEmpty ? "The remote command failed." : stderr
-            }
+            return sshError.userMessage
         }
         return "Could not kill the session: \(error.localizedDescription)"
     }

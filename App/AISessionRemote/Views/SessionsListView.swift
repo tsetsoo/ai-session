@@ -15,6 +15,7 @@ struct SessionsListView: View {
     @State private var showingHostEditor = false
     @State private var bannerMessage: String?
     @State private var alertMessage: String?
+    @State private var canEditHost = false
 
     var body: some View {
         List {
@@ -72,10 +73,10 @@ struct SessionsListView: View {
             get: { alertMessage != nil },
             set: { if !$0 { alertMessage = nil } }
         )) {
-            if alertMessage == "The SSH key was rejected. Edit the host to update its credentials." {
+            if canEditHost {
                 Button("Edit Host") { showingHostEditor = true }
             }
-            Button("OK", role: .cancel) {}
+            Button("OK", role: .cancel) { canEditHost = false }
         } message: {
             Text(alertMessage ?? "")
         }
@@ -144,22 +145,22 @@ struct SessionsListView: View {
             handle(error)
         } catch {
             guard generation == loadGeneration else { return }
+            canEditHost = false
             alertMessage = error.localizedDescription
         }
     }
 
     private func handle(_ error: SSHRemoteError) {
+        canEditHost = error == .authenticationFailed
         switch error {
         case .tmuxMissing:
-            alertMessage = "tmux is required on this host. Install it with `brew install tmux` on macOS or `apt install tmux` on Debian/Ubuntu."
-        case let .binaryMissing(binary):
-            alertMessage = "The required binary '\(binary)' was not found on this host."
-        case .authenticationFailed:
-            alertMessage = "The SSH key was rejected. Edit the host to update its credentials."
+            alertMessage = error.userMessage
+        case .binaryMissing, .authenticationFailed:
+            alertMessage = error.userMessage
         case .unreachable:
-            bannerMessage = "Host is unreachable. Pull to retry."
-        case let .commandFailed(_, stderr):
-            alertMessage = stderr.isEmpty ? "The remote command failed." : stderr
+            bannerMessage = error.userMessage
+        case .commandFailed:
+            alertMessage = error.userMessage
         }
     }
 

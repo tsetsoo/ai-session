@@ -2,6 +2,33 @@ import XCTest
 @testable import AISessionCore
 
 final class SessionServiceTests: XCTestCase {
+    func testRemoteErrorMessagesAreActionableAndConsistent() {
+        XCTAssertEqual(
+            SSHRemoteError.unreachable.userMessage,
+            "Could not reach the host. Check Tailscale and network, then try again."
+        )
+        XCTAssertEqual(
+            SSHRemoteError.authenticationFailed.userMessage,
+            "SSH authentication failed. Verify the username and private key."
+        )
+        XCTAssertEqual(
+            SSHRemoteError.tmuxMissing.userMessage,
+            "tmux is required on this host. Install it with `brew install tmux` on macOS or `apt install tmux` on Debian/Ubuntu."
+        )
+        XCTAssertEqual(
+            SSHRemoteError.binaryMissing("codex").userMessage,
+            "The required binary 'codex' was not found on this host. Install it and ensure it is on PATH."
+        )
+        XCTAssertEqual(
+            SSHRemoteError.commandFailed(exitCode: 23, stderr: "").userMessage,
+            "The remote command failed (exit code 23)."
+        )
+        XCTAssertEqual(
+            SSHRemoteError.commandFailed(exitCode: 1, stderr: "permission denied\n").userMessage,
+            "permission denied"
+        )
+    }
+
     private let config = HostConnectionConfig(
         host: "example.com",
         port: 22,

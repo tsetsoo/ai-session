@@ -11,6 +11,7 @@ struct NewSessionSheet: View {
     @State private var createdSession: SessionName?
     @State private var errorMessage: String?
     @State private var showingHostEditor = false
+    @State private var canEditHost = false
 
     init(host: HostEntity) {
         self.host = host
@@ -83,10 +84,10 @@ struct NewSessionSheet: View {
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
             )) {
-                if errorMessage == "The SSH key was rejected. Edit the host to update its credentials." {
+                if canEditHost {
                     Button("Edit Host") { showingHostEditor = true }
                 }
-                Button("OK", role: .cancel) {}
+                Button("OK", role: .cancel) { canEditHost = false }
             } message: {
                 Text(errorMessage ?? "")
             }
@@ -117,23 +118,17 @@ struct NewSessionSheet: View {
             } catch let error as SSHRemoteError {
                 handle(error)
             } catch {
+                canEditHost = false
                 errorMessage = error.localizedDescription
             }
         }
     }
 
     private func handle(_ error: SSHRemoteError) {
+        canEditHost = error == .authenticationFailed
         switch error {
-        case .tmuxMissing:
-            errorMessage = "tmux is required on this host. Install it with `brew install tmux` on macOS or `apt install tmux` on Debian/Ubuntu."
-        case let .binaryMissing(binary):
-            errorMessage = "The required binary '\(binary)' was not found on this host."
-        case .authenticationFailed:
-            errorMessage = "The SSH key was rejected. Edit the host to update its credentials."
-        case .unreachable:
-            errorMessage = "The host is unreachable."
-        case let .commandFailed(_, stderr):
-            errorMessage = stderr.isEmpty ? "The remote command failed." : stderr
+        case .tmuxMissing, .binaryMissing, .authenticationFailed, .unreachable, .commandFailed:
+            errorMessage = error.userMessage
         }
     }
 }

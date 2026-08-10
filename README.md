@@ -6,6 +6,7 @@ An iOS app for managing remote hosts and AI coding sessions.
 
 - Xcode 16 or later
 - XcodeGen (`brew install xcodegen`)
+- An iOS 17 or later device or simulator
 
 ## Generate and open
 
@@ -17,6 +18,30 @@ open AISessionRemote.xcodeproj
 
 The project uses the local `AISessionCore` Swift package and targets iOS 17 or later.
 
+## Host prerequisites
+
+Each host must be reachable from the iPhone (the supported setup is a Tailscale-connected
+Mac or Linux machine), with:
+
+- Tailscale installed, signed in, and able to resolve or reach the hostname
+- `sshd` enabled and accepting the configured user
+- `tmux` installed (`brew install tmux` on macOS or `apt install tmux` on Debian/Ubuntu)
+- The selected CLI on the SSH user's `PATH`: `claude`, `codex`, or `agent`
+
+The app starts and attaches sessions through SSH; it does not install or configure these
+host dependencies.
+
+## Import an SSH key
+
+In the host editor, choose an unencrypted OpenSSH private key from Files. The parser supports
+**Ed25519** and **ECDSA P-256/P-384/P-521** keys in the `openssh-key-v1` format. Generate one
+with `ssh-keygen -t ed25519 -N ""` or `ssh-keygen -t ecdsa -b 256 -N ""`, then install the
+matching `.pub` key in the host user's `~/.ssh/authorized_keys`.
+
+RSA and passphrase-protected private keys are unsupported by the current SwiftNIO SSH crypto
+integration and are rejected. Keep the private key on the device protected by its keychain;
+never commit it to this repository.
+
 ## Build from the command line
 
 ```sh
@@ -25,6 +50,26 @@ xcodebuild -scheme AISessionRemote \
   -destination 'platform=iOS Simulator,name=iPhone 16' \
   build
 ```
+
+For a physical device, select your Apple Development team in the Xcode project signing
+settings. A free Personal Team can install a development build on a device for local testing,
+but it cannot create TestFlight builds and provisioning typically expires after seven days.
+TestFlight distribution requires the paid Apple Developer Program, an App Store Connect app,
+and an archive signed with a distribution profile.
+
+## Sessions and metadata
+
+Session names are slugs (`[a-z0-9-]+`) and are namespaced by tool as
+`ai/<tool>/<slug>` (for example, `ai/claude/sigma-revenue`). The app creates and attaches
+these sessions through `tmux`; it does not rename arbitrary pre-existing tmux sessions.
+On the host, session metadata is stored under `~/.ai-remote/` so the app can associate
+sessions with their tool, working directory, and display title. This directory is host data
+and should be included in backups if that metadata matters.
+
+## Non-goals
+
+This project does not provide push notifications, a background daemon or always-on service,
+or App Store distribution. It is a foreground iOS client for manually managed SSH hosts.
 
 ## SSH (`NIOSSHClient`)
 
