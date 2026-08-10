@@ -22,7 +22,7 @@ final class TmuxListParserTests: XCTestCase {
         XCTAssertEqual(result.other.map(\.tmuxName), ["random"])
     }
 
-    func testParseAIFields() {
+    func testParseAIFields() throws {
         let result = TmuxListParser.parse(listSessionsOutput: "ai/claude/sigma-revenue\n")
         let session = try XCTUnwrap(result.ai.first)
         XCTAssertEqual(session.tool, .claude)
@@ -31,7 +31,7 @@ final class TmuxListParserTests: XCTestCase {
         XCTAssertTrue(session.isAIManaged)
     }
 
-    func testParseOtherFields() {
+    func testParseOtherFields() throws {
         let result = TmuxListParser.parse(listSessionsOutput: "random\n")
         let session = try XCTUnwrap(result.other.first)
         XCTAssertNil(session.tool)
