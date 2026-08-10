@@ -48,41 +48,67 @@ public struct SessionService: Sendable {
         cwd: String,
         title: String?
     ) async throws -> SessionName {
-        let existing = try await listSessions(config: config)
-        let existingNames = Set(existing.ai.map(\.tmuxName) + existing.other.map(\.tmuxName))
-        guard let name = SessionName.makeUnique(tool: tool, slug: slug, existing: existingNames) else {
-            throw SessionServiceError.invalidSlug(slug)
-        }
-
         let binary = binaryOverrides[tool] ?? tool.defaultBinary
-        let whichResult = try await ssh.exec(config, command: TmuxCommandBuilder.which(binary: binary))
-        guard whichResult.exitCode == 0 else {
-            throw SSHRemoteError.binaryMissing(binary)
+        var lastDuplicateError: SSHRemoteError?
+
+        for _ in 0..<3 {
+            let existing = try await listSessions(config: config)
+            let existingNames = Set(existing.ai.map(\.tmuxName) + existing.other.map(\.tmuxName))
+            guard let name = SessionName.makeUnique(tool: tool, slug: slug, existing: existingNames) else {
+                throw SessionServiceError.invalidSlug(slug)
+            }
+
+            let whichResult = try await ssh.exec(config, command: TmuxCommandBuilder.which(binary: binary))
+            guard whichResult.exitCode == 0 else {
+                throw SSHRemoteError.binaryMissing(binary)
+            }
+
+            let metadata = SessionMetadata(
+                tool: tool,
+                cwd: cwd,
+                title: title ?? slug,
+                startedAt: Date(),
+                cli: [binary]
+            )
+            guard let json = String(data: try metadata.jsonData(), encoding: .utf8) else {
+                throw SessionServiceError.metadataEncodingFailed
+            }
+
+            let metadataResult = try await ssh.exec(
+                config,
+                command: TmuxCommandBuilder.writeMetadata(tmuxName: name.tmuxName, json: json)
+            )
+            try requireSuccess(metadataResult)
+
+            do {
+                let sessionResult = try await ssh.exec(
+                    config,
+                    command: TmuxCommandBuilder.newDetachedSession(name: name, cwd: cwd, commandArgs: [binary])
+                )
+                guard sessionResult.exitCode == 0 else {
+                    let error = SSHRemoteError.commandFailed(
+                        exitCode: sessionResult.exitCode,
+                        stderr: sessionResult.stderr
+                    )
+                    guard isDuplicateSessionError(sessionResult.stderr) else {
+                        throw error
+                    }
+                    lastDuplicateError = error
+                    continue
+                }
+                return name
+            } catch let error as SSHRemoteError {
+                guard isDuplicateSessionError(error) else {
+                    throw error
+                }
+                lastDuplicateError = error
+            }
         }
 
-        let metadata = SessionMetadata(
-            tool: tool,
-            cwd: cwd,
-            title: title ?? slug,
-            startedAt: Date(),
-            cli: [binary]
-        )
-        guard let json = String(data: try metadata.jsonData(), encoding: .utf8) else {
-            throw SessionServiceError.metadataEncodingFailed
+        guard let lastDuplicateError else {
+            fatalError("Session creation retry loop exited without a result")
         }
-
-        let metadataResult = try await ssh.exec(
-            config,
-            command: TmuxCommandBuilder.writeMetadata(tmuxName: name.tmuxName, json: json)
-        )
-        try requireSuccess(metadataResult)
-
-        let sessionResult = try await ssh.exec(
-            config,
-            command: TmuxCommandBuilder.newDetachedSession(name: name, cwd: cwd, commandArgs: [binary])
-        )
-        try requireSuccess(sessionResult)
-        return name
+        throw lastDuplicateError
     }
 
     public func killSession(config: HostConnectionConfig, tmuxName: String) async throws {
@@ -105,5 +131,14 @@ public struct SessionService: Sendable {
             || message.contains("failed to connect to server")
             || message.contains("can't find socket")
             || message.contains("no sessions")
+    }
+
+    private func isDuplicateSessionError(_ stderr: String) -> Bool {
+        stderr.lowercased().contains("duplicate session")
+    }
+
+    private func isDuplicateSessionError(_ error: SSHRemoteError) -> Bool {
+        guard case let .commandFailed(_, stderr) = error else { return false }
+        return isDuplicateSessionError(stderr)
     }
 }
