@@ -5,7 +5,7 @@ struct HostsListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var hosts: [HostEntity]
     @State private var showingHostEditor = false
-    @State private var selectedHost: HostEntity?
+    @State private var editingHost: HostEntity?
     @State private var errorMessage: String?
 
     var body: some View {
@@ -19,8 +19,8 @@ struct HostsListView: View {
                     )
                 } else {
                     ForEach(hosts) { host in
-                        Button {
-                            selectedHost = host
+                        NavigationLink {
+                            SessionsPlaceholderView(host: host)
                         } label: {
                             VStack(alignment: .leading) {
                                 Text(host.displayName.isEmpty ? host.hostname : host.displayName)
@@ -29,7 +29,21 @@ struct HostsListView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .buttonStyle(.plain)
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            Button {
+                                editingHost = host
+                            } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
+                            .tint(.blue)
+                        }
+                        .contextMenu {
+                            Button {
+                                editingHost = host
+                            } label: {
+                                Label("Edit Host", systemImage: "pencil")
+                            }
+                        }
                     }
                     .onDelete(perform: deleteHosts)
                 }
@@ -47,7 +61,7 @@ struct HostsListView: View {
             .sheet(isPresented: $showingHostEditor) {
                 HostEditorView()
             }
-            .sheet(item: $selectedHost) { host in
+            .sheet(item: $editingHost) { host in
                 HostEditorView(host: host)
             }
             .alert("Could not delete host", isPresented: Binding(
@@ -70,6 +84,19 @@ struct HostsListView: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+private struct SessionsPlaceholderView: View {
+    let host: HostEntity
+
+    var body: some View {
+        ContentUnavailableView(
+            "Sessions",
+            systemImage: "terminal",
+            description: Text("Sessions for \(host.displayName.isEmpty ? host.hostname : host.displayName) will appear here.")
+        )
+        .navigationTitle("Sessions")
     }
 }
 

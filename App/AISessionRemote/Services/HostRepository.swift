@@ -81,9 +81,9 @@ final class HostRepository {
     }
 
     func delete(_ host: HostEntity) throws {
+        try keychain.delete(account: host.privateKeyKeychainRef)
         modelContext.delete(host)
         try modelContext.save()
-        try keychain.delete(account: host.privateKeyKeychainRef)
     }
 
     func privateKey(for host: HostEntity) throws -> String {
