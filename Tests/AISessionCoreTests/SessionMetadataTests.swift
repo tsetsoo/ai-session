@@ -14,7 +14,7 @@ final class SessionMetadataTests: XCTestCase {
             tool: .cursor,
             cwd: "~/programming/portfolio-tracker",
             title: "portfolio",
-            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000.123),
             cli: ["agent"]
         )
         let data = try meta.jsonData()

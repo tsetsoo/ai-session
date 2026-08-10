@@ -22,17 +22,38 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
     }
 }
 
-/// JSON helpers use ISO-8601 dates (with fractional seconds when the encoder emits them).
+private enum SessionMetadataJSON {
+    static let iso8601Fractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+}
+
+/// JSON helpers use ISO-8601 dates with fractional seconds.
 public extension SessionMetadata {
     func jsonData() throws -> Data {
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(SessionMetadataJSON.iso8601Fractional.string(from: date))
+        }
         return try encoder.encode(self)
     }
 
     static func from(jsonData: Data) throws -> SessionMetadata {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let string = try container.decode(String.self)
+            guard let date = SessionMetadataJSON.iso8601Fractional.date(from: string) else {
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "Invalid ISO-8601 date with fractional seconds: \(string)"
+                )
+            }
+            return date
+        }
         return try decoder.decode(SessionMetadata.self, from: jsonData)
     }
 }
