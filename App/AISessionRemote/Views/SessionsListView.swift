@@ -42,7 +42,12 @@ struct SessionsListView: View {
         }
         .navigationTitle(host.displayName.isEmpty ? host.hostname : host.displayName)
         .refreshable { await loadSessions() }
-        .task { await loadSessions() }
+        // `.onAppear` (not `.task`) so returning from `TerminalScreen` — after a kill, a detach,
+        // or the session simply exiting — refreshes the list every time this view becomes
+        // visible again, not just on first push.
+        .onAppear {
+            Task { await loadSessions() }
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -102,7 +107,7 @@ struct SessionsListView: View {
                 attachCommand: TmuxCommandBuilder.attach(tmuxName: session.tmuxName),
                 title: session.slug,
                 onKill: {
-                    try? await connection.service.killSession(config: connection.config, tmuxName: session.tmuxName)
+                    try await connection.service.killSession(config: connection.config, tmuxName: session.tmuxName)
                 }
             )
         } else {

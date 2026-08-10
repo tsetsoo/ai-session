@@ -156,18 +156,19 @@ struct TerminalScreen: View {
     let hostConfig: HostConnectionConfig
     let attachCommand: String
     let title: String
-    let onKill: () async -> Void
+    let onKill: () async throws -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var coordinator: TerminalCoordinator
     @State private var errorMessage: String?
+    @State private var killErrorMessage: String?
     @State private var showingKillConfirmation = false
 
     init(
         hostConfig: HostConnectionConfig,
         attachCommand: String,
         title: String,
-        onKill: @escaping () async -> Void
+        onKill: @escaping () async throws -> Void
     ) {
         self.hostConfig = hostConfig
         self.attachCommand = attachCommand
@@ -216,11 +217,26 @@ struct TerminalScreen: View {
         ) {
             Button("Kill Session", role: .destructive) {
                 Task {
-                    await onKill()
-                    dismiss()
+                    do {
+                        try await onKill()
+                        dismiss()
+                    } catch {
+                        killErrorMessage = Self.killMessage(for: error)
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .alert(
+            "Could Not Kill Session",
+            isPresented: Binding(
+                get: { killErrorMessage != nil },
+                set: { if !$0 { killErrorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(killErrorMessage ?? "")
         }
         .alert(
             "Connection Error",
@@ -247,5 +263,23 @@ struct TerminalScreen: View {
         .onDisappear {
             coordinator.disconnect()
         }
+    }
+
+    private static func killMessage(for error: Error) -> String {
+        if let sshError = error as? SSHRemoteError {
+            switch sshError {
+            case .tmuxMissing:
+                return "tmux is required on this host."
+            case let .binaryMissing(binary):
+                return "The required binary '\(binary)' was not found on this host."
+            case .authenticationFailed:
+                return "The SSH key was rejected. Edit the host to update its credentials."
+            case .unreachable:
+                return "Host is unreachable. Check the network and try again."
+            case let .commandFailed(_, stderr):
+                return stderr.isEmpty ? "The remote command failed." : stderr
+            }
+        }
+        return "Could not kill the session: \(error.localizedDescription)"
     }
 }
