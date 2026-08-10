@@ -16,6 +16,9 @@ packages:
   swift-crypto:
     url: https://github.com/apple/swift-crypto.git
     from: "3.0.0"
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm.git
+    from: "1.18.0"
 
 targets:
   AISessionRemote:
@@ -39,6 +42,8 @@ targets:
         product: NIOPosix
       - package: swift-crypto
         product: Crypto
+      - package: SwiftTerm
+        product: SwiftTerm
     scheme:
       testTargets:
         - AISessionRemoteTests

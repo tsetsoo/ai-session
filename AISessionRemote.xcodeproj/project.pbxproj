@@ -11,10 +11,13 @@
 		022B57F04655E920FB73A18C /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 5D3154CABEED9F0C1642E75F /* Crypto */; };
 		1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */; };
 		179CFAD30F54E92A25FE71AA /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 05BD2283E26F32148478AD0E /* Crypto */; };
+		2DF7D033594787FFDA1BB4F0 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 14F6B7A8CBAF4F1974CDDB24 /* SwiftTerm */; };
+		38388D5CFD2F84A54431E65F /* SSHTerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */; };
 		3F324CB622DB3E280E202EA1 /* SessionServiceFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */; };
 		73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1B02295F04DE55821A1C7F /* HostsListView.swift */; };
 		748A1A2AC01B92433F2CBAFC /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = D2F4F750AAE4488C18680D69 /* NIOPosix */; };
 		85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */; };
+		8A20DDF3FA5A04B21689A987 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */; };
 		8ECA01A0F0552BA43253E119 /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B5CF5ADABEA184DD911533 /* SessionsListView.swift */; };
 		9457E33FBF3D6F5F05EAD86F /* HostEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99B0F4154BA389FF80D827AE /* HostEditorView.swift */; };
 		98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */; };
@@ -25,6 +28,7 @@
 		BDB5778417C362323812D238 /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
 		D82D4390F574464A6DDD30B3 /* AISessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 77160CCBC36C696C9AE77B08 /* AISessionCore */; };
 		DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3B756FF0192985AADAFF36 /* HostRepository.swift */; };
+		ED744D91953734A95A1F879D /* SoftKeyBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7BABCCCBD7DDCE94657EFD /* SoftKeyBar.swift */; };
 		EE04800E43A3B5A9887D4281 /* TOFUHostKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */; };
 		FACD0EDEEFFED735236090BD /* NIOSSHClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */; };
 /* End PBXBuildFile section */
@@ -41,6 +45,7 @@
 
 /* Begin PBXFileReference section */
 		088A2A76FA2CE3451749F77B /* AISessionRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AISessionRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTerminalSession.swift; sourceTree = "<group>"; };
 		20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionServiceFactory.swift; sourceTree = "<group>"; };
 		212307B0DF157E07D51ED051 /* AISessionRemoteTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AISessionRemoteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		59CB0ACC6B929B4F47171F37 /* ai-session-remote-impl */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ai-session-remote-impl"; path = .; sourceTree = SOURCE_ROOT; };
@@ -51,7 +56,9 @@
 		99B0F4154BA389FF80D827AE /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
 		9FD7158DD9EEFF2C436D5B5D /* NewSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionSheet.swift; sourceTree = "<group>"; };
 		AC1B02295F04DE55821A1C7F /* HostsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostsListView.swift; sourceTree = "<group>"; };
+		BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
 		D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NIOSSHClient.swift; sourceTree = "<group>"; };
+		DA7BABCCCBD7DDCE94657EFD /* SoftKeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoftKeyBar.swift; sourceTree = "<group>"; };
 		E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TOFUHostKeyStoreTests.swift; sourceTree = "<group>"; };
 		EE3B756FF0192985AADAFF36 /* HostRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostRepository.swift; sourceTree = "<group>"; };
 		EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReachabilityProbe.swift; sourceTree = "<group>"; };
@@ -68,6 +75,7 @@
 				B45B06C6BEC4E0C3B674028A /* NIOCore in Frameworks */,
 				748A1A2AC01B92433F2CBAFC /* NIOPosix in Frameworks */,
 				179CFAD30F54E92A25FE71AA /* Crypto in Frameworks */,
+				2DF7D033594787FFDA1BB4F0 /* SwiftTerm in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -97,6 +105,7 @@
 				603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */,
 				6E55E3A121D4C5A5B7EE47AC /* Persistence */,
 				634310157F3D9EF76DAB2BFF /* Services */,
+				93652E77BC916774AB6D567C /* Terminal */,
 				8B8071A43CD9BB81A62A9BBE /* Views */,
 			);
 			name = AISessionRemote;
@@ -139,8 +148,18 @@
 				AC1B02295F04DE55821A1C7F /* HostsListView.swift */,
 				9FD7158DD9EEFF2C436D5B5D /* NewSessionSheet.swift */,
 				77B5CF5ADABEA184DD911533 /* SessionsListView.swift */,
+				DA7BABCCCBD7DDCE94657EFD /* SoftKeyBar.swift */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		93652E77BC916774AB6D567C /* Terminal */ = {
+			isa = PBXGroup;
+			children = (
+				1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */,
+				BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */,
+			);
+			path = Terminal;
 			sourceTree = "<group>";
 		};
 		9F108EE5FB21AF7930C881CE /* AISessionRemoteTests */ = {
@@ -184,6 +203,7 @@
 				3869B11228A2EA6745FCCEF8 /* NIOCore */,
 				D2F4F750AAE4488C18680D69 /* NIOPosix */,
 				05BD2283E26F32148478AD0E /* Crypto */,
+				14F6B7A8CBAF4F1974CDDB24 /* SwiftTerm */,
 			);
 			productName = AISessionRemote;
 			productReference = 088A2A76FA2CE3451749F77B /* AISessionRemote.app */;
@@ -231,6 +251,7 @@
 			mainGroup = A967E64AD8C04EAE99BB47FA;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				6C42137307B31E2E903BF3CF /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				41739049DE0D236540401FB5 /* XCRemoteSwiftPackageReference "swift-crypto" */,
 				F86CE8150CC8E4CB73336807 /* XCRemoteSwiftPackageReference "swift-nio" */,
 				FE11F576EC2B106E67BFC20D /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
@@ -261,8 +282,11 @@
 				9AC6F15718E4541263BB3B76 /* NewSessionSheet.swift in Sources */,
 				98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */,
 				85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */,
+				38388D5CFD2F84A54431E65F /* SSHTerminalSession.swift in Sources */,
 				3F324CB622DB3E280E202EA1 /* SessionServiceFactory.swift in Sources */,
 				8ECA01A0F0552BA43253E119 /* SessionsListView.swift in Sources */,
+				ED744D91953734A95A1F879D /* SoftKeyBar.swift in Sources */,
+				8A20DDF3FA5A04B21689A987 /* TerminalScreen.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -521,6 +545,14 @@
 				minimumVersion = 3.0.0;
 			};
 		};
+		6C42137307B31E2E903BF3CF /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.18.0;
+			};
+		};
 		F86CE8150CC8E4CB73336807 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/apple/swift-nio.git";
@@ -544,6 +576,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 41739049DE0D236540401FB5 /* XCRemoteSwiftPackageReference "swift-crypto" */;
 			productName = Crypto;
+		};
+		14F6B7A8CBAF4F1974CDDB24 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6C42137307B31E2E903BF3CF /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
 		};
 		3869B11228A2EA6745FCCEF8 /* NIOCore */ = {
 			isa = XCSwiftPackageProductDependency;

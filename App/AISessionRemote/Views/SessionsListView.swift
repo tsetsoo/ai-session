@@ -74,7 +74,7 @@ struct SessionsListView: View {
     @ViewBuilder
     private func sessionRow(_ session: RemoteSession) -> some View {
         NavigationLink {
-            TerminalPlaceholderView(session: session)
+            terminalDestination(for: session)
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: iconName(for: session.tool))
@@ -91,6 +91,26 @@ struct SessionsListView: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func terminalDestination(for session: RemoteSession) -> some View {
+        if let connection = try? SessionServiceFactory().make(for: host) {
+            TerminalScreen(
+                hostConfig: connection.config,
+                attachCommand: TmuxCommandBuilder.attach(tmuxName: session.tmuxName),
+                title: session.slug,
+                onKill: {
+                    try? await connection.service.killSession(config: connection.config, tmuxName: session.tmuxName)
+                }
+            )
+        } else {
+            ContentUnavailableView(
+                "Terminal Unavailable",
+                systemImage: "exclamationmark.triangle",
+                description: Text("The private key for this host is unavailable. Edit the host and save its key again.")
+            )
         }
     }
 
@@ -140,15 +160,3 @@ struct SessionsListView: View {
     }
 }
 
-private struct TerminalPlaceholderView: View {
-    let session: RemoteSession
-
-    var body: some View {
-        ContentUnavailableView(
-            "Terminal",
-            systemImage: "terminal",
-            description: Text("Terminal access for \(session.slug) will appear here.")
-        )
-        .navigationTitle(session.slug)
-    }
-}
