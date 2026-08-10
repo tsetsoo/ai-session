@@ -29,7 +29,8 @@ struct SessionServiceFactory {
             host: host.hostname,
             port: host.port,
             username: host.username,
-            privateKeyPEM: pem
+            privateKeyPEM: pem,
+            hostID: host.id.uuidString
         )
         return (
             service: SessionService(

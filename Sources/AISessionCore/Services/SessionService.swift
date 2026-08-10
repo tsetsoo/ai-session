@@ -1,8 +1,17 @@
 import Foundation
 
-public enum SessionServiceError: Error, Equatable, Sendable {
+public enum SessionServiceError: Error, Equatable, Sendable, LocalizedError {
     case invalidSlug(String)
     case metadataEncodingFailed
+
+    public var errorDescription: String? {
+        switch self {
+        case let .invalidSlug(slug):
+            return "\"\(slug)\" is not a valid session name. Use lowercase letters, numbers, and hyphens only."
+        case .metadataEncodingFailed:
+            return "Could not prepare session metadata for this session. Please try again."
+        }
+    }
 }
 
 public struct SessionService: Sendable {

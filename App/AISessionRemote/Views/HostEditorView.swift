@@ -16,6 +16,8 @@ struct HostEditorView: View {
     @State private var cliBinaries: [AITool: String]
     @State private var errorMessage: String?
     @State private var isLoadingKey = false
+    @State private var showingForgetHostKeyConfirmation = false
+    @State private var forgetHostKeyMessage: String?
 
     init(host: HostEntity? = nil) {
         self.host = host
@@ -74,6 +76,16 @@ struct HostEditorView: View {
                         .autocorrectionDisabled()
                     }
                 }
+
+                if host != nil {
+                    Section {
+                        Button("Forget Host Key", role: .destructive) {
+                            showingForgetHostKeyConfirmation = true
+                        }
+                    } footer: {
+                        Text("Clears the trusted SSH host key for this host. Use this after reinstalling the host or rotating its key — the next connection will trust whatever key it presents.")
+                    }
+                }
             }
             .navigationTitle(host == nil ? "Add Host" : "Edit Host")
             .navigationBarTitleDisplayMode(.inline)
@@ -104,7 +116,32 @@ struct HostEditorView: View {
             } message: {
                 Text(errorMessage ?? "")
             }
+            .confirmationDialog(
+                "Forget the trusted SSH host key for this host? The next connection will trust whatever key the host presents.",
+                isPresented: $showingForgetHostKeyConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Forget Host Key", role: .destructive) { forgetHostKey() }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert(
+                "Host Key Forgotten",
+                isPresented: Binding(
+                    get: { forgetHostKeyMessage != nil },
+                    set: { if !$0 { forgetHostKeyMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(forgetHostKeyMessage ?? "")
+            }
         }
+    }
+
+    private func forgetHostKey() {
+        guard let host else { return }
+        HostRepository(modelContext: modelContext).forgetHostKey(for: host)
+        forgetHostKeyMessage = "The trusted host key for this host has been cleared."
     }
 
     private func binding(for tool: AITool) -> Binding<String> {

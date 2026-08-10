@@ -22,10 +22,16 @@ enum HostRepositoryError: LocalizedError {
 final class HostRepository {
     private let modelContext: ModelContext
     private let keychain: KeychainPrivateKeyStore
+    private let hostKeyStore: TOFUHostKeyStore
 
-    init(modelContext: ModelContext, keychain: KeychainPrivateKeyStore = .init()) {
+    init(
+        modelContext: ModelContext,
+        keychain: KeychainPrivateKeyStore = .init(),
+        hostKeyStore: TOFUHostKeyStore = .init()
+    ) {
         self.modelContext = modelContext
         self.keychain = keychain
+        self.hostKeyStore = hostKeyStore
     }
 
     @discardableResult
@@ -99,6 +105,17 @@ final class HostRepository {
             }
             throw saveError
         }
+        // Only clear the TOFU fingerprint once the delete has actually committed — a future
+        // host reusing this hostname/port shouldn't inherit a stale trusted key, but a host we
+        // just restored above (after a failed save) still should.
+        hostKeyStore.forget(hostID: host.id.uuidString)
+    }
+
+    /// Clears the trusted host-key fingerprint for `host` without deleting the host itself.
+    /// Surfaced in the UI as "Forget host key" for when a host's key legitimately changed
+    /// (reinstall, key rotation) and the stored TOFU fingerprint needs to be reset.
+    func forgetHostKey(for host: HostEntity) {
+        hostKeyStore.forget(hostID: host.id.uuidString)
     }
 
     func privateKey(for host: HostEntity) throws -> String {

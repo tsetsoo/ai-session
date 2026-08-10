@@ -120,9 +120,32 @@ final class SSHTerminalSession {
     private let hostKeyStore: TOFUHostKeyStore
     private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 
-    private var parentChannel: Channel?
-    private var sessionChannel: Channel?
-    private var isDisconnecting = false
+    /// Guards `_parentChannel`, `_sessionChannel`, and `_isDisconnecting`. `connect()`'s
+    /// continuation (after its `await`s) can resume on the NIO event loop thread rather than
+    /// hopping back to whatever thread called `connect()`, while `disconnect()` is called
+    /// synchronously from the main actor (`TerminalScreen.onDisappear`) and
+    /// `notifyDisconnectedIfNeeded()` runs from NIO callbacks (`closeFuture`/`channelInactive`)
+    /// on the event loop thread — so all three properties can legitimately be touched from two
+    /// different threads at once without this lock.
+    private let stateLock = NSLock()
+    private var _parentChannel: Channel?
+    private var _sessionChannel: Channel?
+    private var _isDisconnecting = false
+
+    private var parentChannel: Channel? {
+        get { stateLock.withLock { _parentChannel } }
+        set { stateLock.withLock { _parentChannel = newValue } }
+    }
+
+    private var sessionChannel: Channel? {
+        get { stateLock.withLock { _sessionChannel } }
+        set { stateLock.withLock { _sessionChannel = newValue } }
+    }
+
+    private var isDisconnecting: Bool {
+        get { stateLock.withLock { _isDisconnecting } }
+        set { stateLock.withLock { _isDisconnecting = newValue } }
+    }
 
     init(
         config: HostConnectionConfig,
@@ -145,9 +168,8 @@ final class SSHTerminalSession {
             throw SSHTerminalSessionError.invalidPrivateKey
         }
 
-        let hostID = "\(config.host):\(config.port)"
         let authDelegate = SSHPrivateKeyAuthDelegate(username: config.username, privateKey: privateKey)
-        let hostKeyDelegate = TOFUServerAuthenticationDelegate(hostID: hostID, store: hostKeyStore)
+        let hostKeyDelegate = TOFUServerAuthenticationDelegate(hostID: config.hostID, store: hostKeyStore)
 
         let channel: Channel
         do {

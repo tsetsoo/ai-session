@@ -45,7 +45,9 @@ public struct SessionName: Hashable, Sendable {
         }
     }
 
-    private static func isValidSlug(_ slug: String) -> Bool {
+    /// Exposed publicly so UI layers (e.g. `NewSessionSheet`) can validate a slug before
+    /// submitting it, instead of only finding out it's invalid after a round-trip to the host.
+    public static func isValidSlug(_ slug: String) -> Bool {
         guard !slug.isEmpty else { return false }
         for scalar in slug.unicodeScalars {
             let value = scalar.value

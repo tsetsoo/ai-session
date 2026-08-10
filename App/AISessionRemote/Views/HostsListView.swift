@@ -159,7 +159,8 @@ struct HostsListView: View {
                 host: host.hostname,
                 port: host.port,
                 username: host.username,
-                privateKeyPEM: Data(pem.utf8)
+                privateKeyPEM: Data(pem.utf8),
+                hostID: host.id.uuidString
             )
         }
 

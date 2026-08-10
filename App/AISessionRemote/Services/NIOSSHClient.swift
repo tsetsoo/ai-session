@@ -40,6 +40,16 @@ public struct TOFUHostKeyStore: @unchecked Sendable {
         return Data(digest).base64EncodedString()
     }
 
+    /// Removes any trusted fingerprint recorded for `hostID`. Called when a host is deleted (so
+    /// a future host reusing the same hostname/port isn't silently compared against a stale
+    /// fingerprint) and available for a manual "Forget host key" action if a host's key
+    /// legitimately changed.
+    public func forget(hostID: String) {
+        var map = storedFingerprints()
+        guard map.removeValue(forKey: hostID) != nil else { return }
+        defaults.set(map, forKey: Self.defaultsKey)
+    }
+
     private func storedFingerprints() -> [String: String] {
         (defaults.dictionary(forKey: Self.defaultsKey) as? [String: String]) ?? [:]
     }
@@ -238,9 +248,8 @@ public struct NIOSSHClient: SSHExecuting {
             throw SSHRemoteError.authenticationFailed
         }
 
-        let hostID = "\(config.host):\(config.port)"
         let authDelegate = SSHPrivateKeyAuthDelegate(username: config.username, privateKey: privateKey)
-        let hostKeyDelegate = TOFUServerAuthenticationDelegate(hostID: hostID, store: hostKeyStore)
+        let hostKeyDelegate = TOFUServerAuthenticationDelegate(hostID: config.hostID, store: hostKeyStore)
 
         let channel: Channel
         do {

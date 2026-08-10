@@ -16,6 +16,10 @@ struct SessionsListView: View {
     @State private var bannerMessage: String?
     @State private var alertMessage: String?
     @State private var canEditHost = false
+    /// Set by `NewSessionSheet`'s `onCreated` right before it dismisses itself, so this view can
+    /// push straight into the new session's terminal via a real `navigationDestination` (rather
+    /// than the sheet trying to push a destination that would outlive it).
+    @State private var pendingSession: SessionName?
 
     var body: some View {
         List {
@@ -63,8 +67,13 @@ struct SessionsListView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingNewSession) {
-            NewSessionSheet(host: host)
+        .navigationDestination(item: $pendingSession) { session in
+            terminalDestination(tmuxName: session.tmuxName, title: session.slug)
+        }
+        .sheet(isPresented: $showingNewSession, onDismiss: { Task { await loadSessions() } }) {
+            NewSessionSheet(host: host) { session in
+                pendingSession = session
+            }
         }
         .sheet(isPresented: $showingHostEditor) {
             HostEditorView(host: host)
@@ -107,13 +116,18 @@ struct SessionsListView: View {
 
     @ViewBuilder
     private func terminalDestination(for session: RemoteSession) -> some View {
+        terminalDestination(tmuxName: session.tmuxName, title: session.slug)
+    }
+
+    @ViewBuilder
+    private func terminalDestination(tmuxName: String, title: String) -> some View {
         if let connection = try? SessionServiceFactory().make(for: host) {
             TerminalScreen(
                 hostConfig: connection.config,
-                mode: .attach(TmuxCommandBuilder.attach(tmuxName: session.tmuxName)),
-                title: session.slug,
+                mode: .attach(TmuxCommandBuilder.attach(tmuxName: tmuxName)),
+                title: title,
                 onKill: {
-                    try await connection.service.killSession(config: connection.config, tmuxName: session.tmuxName)
+                    try await connection.service.killSession(config: connection.config, tmuxName: tmuxName)
                 }
             )
         } else {

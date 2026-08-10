@@ -27,7 +27,7 @@ public enum SSHRemoteError: Error, Equatable, Sendable {
         case .unreachable:
             return "Could not reach the host. Check Tailscale and network, then try again."
         case .authenticationFailed:
-            return "SSH authentication failed. Verify the username and private key."
+            return "SSH authentication failed. Verify the username and private key, or the host's key may have changed — check with \"Forget Host Key\" in the host editor."
         case .tmuxMissing:
             return "tmux is required on this host. Install it with `brew install tmux` on macOS or `apt install tmux` on Debian/Ubuntu."
         case let .binaryMissing(binary):

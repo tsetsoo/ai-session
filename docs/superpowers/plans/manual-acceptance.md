@@ -2,7 +2,7 @@
 
 End-to-end acceptance for spec success criteria. Run on a **physical iPhone** over **Tailscale** against a real host with `sshd`, `tmux`, and the three CLIs (`claude`, `codex`, `agent`) installed.
 
-**Prerequisites:** Tailscale on phone and host; host reachable via Tailscale IP/hostname; SSH key (Ed25519 or RSA PEM, unencrypted); host user with tmux and CLIs on `PATH` (or per-host CLI overrides configured).
+**Prerequisites:** Tailscale on phone and host; host reachable via Tailscale IP/hostname; SSH key (Ed25519 or ECDSA PEM, unencrypted — RSA is not supported); host user with tmux and CLIs on `PATH` (or per-host CLI overrides configured).
 
 ---
 

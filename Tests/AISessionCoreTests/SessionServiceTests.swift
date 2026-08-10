@@ -9,7 +9,7 @@ final class SessionServiceTests: XCTestCase {
         )
         XCTAssertEqual(
             SSHRemoteError.authenticationFailed.userMessage,
-            "SSH authentication failed. Verify the username and private key."
+            "SSH authentication failed. Verify the username and private key, or the host's key may have changed — check with \"Forget Host Key\" in the host editor."
         )
         XCTAssertEqual(
             SSHRemoteError.tmuxMissing.userMessage,
