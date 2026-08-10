@@ -64,6 +64,23 @@ final class TOFUServerAuthenticationDelegate: NIOSSHClientServerAuthenticationDe
     }
 }
 
+/// Ensures any SSH-layer error (host key rejection, auth failure, protocol violation) actually
+/// tears down the TCP connection.
+///
+/// `apple/swift-nio-ssh`'s own client example always pairs `NIOSSHHandler` with a handler like
+/// this. Without it, a failed `NIOSSHClientServerAuthenticationDelegate` (TOFU mismatch) or
+/// `NIOSSHClientUserAuthenticationDelegate` promise can leave the connection sitting open
+/// indefinitely instead of closing — which previously meant a pending `createChannel` promise,
+/// and therefore `exec()`, would hang forever. `NIOSSHClient.exec` also wraps channel setup in
+/// an explicit deadline as a second, independent backstop against exactly that failure mode.
+final class SSHConnectionErrorHandler: ChannelInboundHandler {
+    typealias InboundIn = Any
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        context.close(promise: nil)
+    }
+}
+
 /// Offers a single private key for public-key authentication and gives up if the server
 /// doesn't advertise `publicKey` support (no password fallback is implemented).
 final class SSHPrivateKeyAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
@@ -96,6 +113,12 @@ final class SSHPrivateKeyAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
 }
 
 /// Captures stdout/stderr and the exit status for a single SSH `exec` session channel.
+///
+/// `resultPromise` is only ever completed from inside `complete()`, guarded by nil-ing out
+/// `resultPromise` first — that's deliberate: `EventLoopPromise.succeed`/`fail` trap if called
+/// twice, so a caller wanting to force a timeout must go through `markTimedOut()` + closing the
+/// channel (which drives `channelInactive`/`handlerRemoved` → `complete()`) rather than
+/// completing the promise directly from outside.
 final class ExecOutputHandler: ChannelInboundHandler {
     typealias InboundIn = SSHChannelData
 
@@ -104,10 +127,18 @@ final class ExecOutputHandler: ChannelInboundHandler {
     private var stdout = Data()
     private var stderr = Data()
     private var exitCode: Int32?
+    private var timedOut = false
 
     init(command: String, resultPromise: EventLoopPromise<SSHExecResult>) {
         self.command = command
         self.resultPromise = resultPromise
+    }
+
+    /// Must be called on this handler's event loop (i.e. from a callback scheduled on the
+    /// parent SSH channel's event loop, which child channels share) before force-closing the
+    /// channel, so the resulting completion reports a timeout instead of a bare `exitCode: -1`.
+    func markTimedOut() {
+        timedOut = true
     }
 
     func channelActive(context: ChannelHandlerContext) {
@@ -149,6 +180,10 @@ final class ExecOutputHandler: ChannelInboundHandler {
     private func complete() {
         guard let promise = resultPromise else { return }
         resultPromise = nil
+        if timedOut {
+            promise.fail(SSHRemoteError.commandFailed(exitCode: -1, stderr: "exec timed out"))
+            return
+        }
         promise.succeed(
             SSHExecResult(
                 exitCode: exitCode ?? -1,
@@ -170,13 +205,29 @@ final class ExecOutputHandler: ChannelInboundHandler {
 /// whether that counts as a failure.
 public struct NIOSSHClient: SSHExecuting {
     private static let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    private static let connectTimeoutSeconds: Int64 = 10
-    private static let execTimeoutSeconds: Int64 = 30
 
     private let hostKeyStore: TOFUHostKeyStore
+    /// Bounds the raw TCP connect (handled by NIO itself via `ClientBootstrap.connectTimeout`).
+    private let connectTimeoutSeconds: Int64
+    /// Bounds SSH handshake + user auth + session-channel-open, measured from when the TCP
+    /// connection completes. This is the deadline that guards against the TOFU/auth-failure
+    /// hang described on `NIOSSHClient.exec`: if it fires, the underlying channel is force
+    /// -closed so the connection can't linger even if `SSHConnectionErrorHandler` somehow
+    /// didn't already close it.
+    private let handshakeDeadlineSeconds: Int64
+    /// Bounds how long a remote command may run before it's forcibly killed.
+    private let execTimeoutSeconds: Int64
 
-    public init(hostKeyStore: TOFUHostKeyStore = TOFUHostKeyStore()) {
+    public init(
+        hostKeyStore: TOFUHostKeyStore = TOFUHostKeyStore(),
+        connectTimeoutSeconds: Int64 = 10,
+        handshakeDeadlineSeconds: Int64 = 15,
+        execTimeoutSeconds: Int64 = 30
+    ) {
         self.hostKeyStore = hostKeyStore
+        self.connectTimeoutSeconds = connectTimeoutSeconds
+        self.handshakeDeadlineSeconds = handshakeDeadlineSeconds
+        self.execTimeoutSeconds = execTimeoutSeconds
     }
 
     public func exec(_ config: HostConnectionConfig, command: String) async throws -> SSHExecResult {
@@ -195,16 +246,18 @@ public struct NIOSSHClient: SSHExecuting {
         do {
             channel = try await ClientBootstrap(group: Self.eventLoopGroup)
                 .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
-                .connectTimeout(.seconds(Self.connectTimeoutSeconds))
+                .connectTimeout(.seconds(connectTimeoutSeconds))
                 .channelInitializer { channel in
                     channel.eventLoop.makeCompletedFuture {
-                        try channel.pipeline.syncOperations.addHandler(
+                        let sync = channel.pipeline.syncOperations
+                        try sync.addHandler(
                             NIOSSHHandler(
                                 role: .client(.init(userAuthDelegate: authDelegate, serverAuthDelegate: hostKeyDelegate)),
                                 allocator: channel.allocator,
                                 inboundChildChannelInitializer: nil
                             )
                         )
+                        try sync.addHandler(SSHConnectionErrorHandler())
                     }
                 }
                 .connect(host: config.host, port: config.port)
@@ -214,7 +267,12 @@ public struct NIOSSHClient: SSHExecuting {
         }
 
         do {
-            let result = try await Self.runExec(command: command, over: channel)
+            let result = try await Self.runExec(
+                command: command,
+                over: channel,
+                handshakeDeadlineSeconds: handshakeDeadlineSeconds,
+                execTimeoutSeconds: execTimeoutSeconds
+            )
             try? await channel.close().get()
             return result
         } catch let error as SSHRemoteError {
@@ -228,10 +286,19 @@ public struct NIOSSHClient: SSHExecuting {
 
     private enum InternalError: Error {
         case unexpectedChannelType
-        case execTimedOut
     }
 
-    private static func runExec(command: String, over channel: Channel) async throws -> SSHExecResult {
+    /// Opens the `exec` session channel and runs the command, with two NIO-scheduled deadlines
+    /// guarding against a hang: one bounding channel setup (handshake/auth), one bounding the
+    /// remote command itself. Each deadline only ever *closes a channel*; it never completes an
+    /// `EventLoopPromise` that something else might also complete, so there's no risk of the
+    /// "promise completed twice" trap regardless of how the two race.
+    private static func runExec(
+        command: String,
+        over channel: Channel,
+        handshakeDeadlineSeconds: Int64,
+        execTimeoutSeconds: Int64
+    ) async throws -> SSHExecResult {
         let sshHandler: NIOSSHHandler
         do {
             sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
@@ -240,41 +307,49 @@ public struct NIOSSHClient: SSHExecuting {
         }
 
         let resultPromise = channel.eventLoop.makePromise(of: SSHExecResult.self)
+        let channelPromise = channel.eventLoop.makePromise(of: Channel.self)
+        let execHandler = ExecOutputHandler(command: command, resultPromise: resultPromise)
+
+        sshHandler.createChannel(channelPromise, channelType: .session) { childChannel, channelType in
+            guard channelType == .session else {
+                return childChannel.eventLoop.makeFailedFuture(InternalError.unexpectedChannelType)
+            }
+            return childChannel.eventLoop.makeCompletedFuture {
+                try childChannel.pipeline.syncOperations.addHandler(execHandler)
+            }
+        }
+
+        // `channelPromise` is only ever completed by `sshHandler.createChannel` itself (on
+        // success, or on failure/disconnect). This deadline never touches it directly — it
+        // just force-closes `channel`, which is what makes the *real* SSH stack fail the
+        // pending channel-open on its own (this is the fix for the TOFU-mismatch hang: without
+        // `SSHConnectionErrorHandler` already closing the connection, `channelPromise` would
+        // otherwise never resolve).
+        let handshakeDeadlineTask = channel.eventLoop.scheduleTask(in: .seconds(handshakeDeadlineSeconds)) {
+            channel.close(promise: nil)
+        }
+        channelPromise.futureResult.whenComplete { _ in handshakeDeadlineTask.cancel() }
 
         let childChannel: Channel
         do {
-            childChannel = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Channel, Error>) in
-                let promise = channel.eventLoop.makePromise(of: Channel.self)
-                sshHandler.createChannel(promise, channelType: .session) { childChannel, channelType in
-                    guard channelType == .session else {
-                        return childChannel.eventLoop.makeFailedFuture(InternalError.unexpectedChannelType)
-                    }
-                    return childChannel.eventLoop.makeCompletedFuture {
-                        try childChannel.pipeline.syncOperations.addHandler(
-                            ExecOutputHandler(command: command, resultPromise: resultPromise)
-                        )
-                    }
-                }
-                promise.futureResult.whenComplete { continuation.resume(with: $0) }
-            }
+            childChannel = try await channelPromise.futureResult.get()
         } catch {
             throw SSHRemoteError.authenticationFailed
         }
 
-        let timeoutTask = channel.eventLoop.scheduleTask(in: .seconds(execTimeoutSeconds)) {
-            resultPromise.fail(InternalError.execTimedOut)
+        // Same pattern: never completes `resultPromise` directly, just marks the handler and
+        // closes the child channel, so `ExecOutputHandler.complete()` remains the sole writer.
+        let execTimeoutTask = channel.eventLoop.scheduleTask(in: .seconds(execTimeoutSeconds)) {
+            execHandler.markTimedOut()
             childChannel.close(promise: nil)
         }
+        resultPromise.futureResult.whenComplete { _ in execTimeoutTask.cancel() }
 
         do {
-            let result = try await resultPromise.futureResult.get()
-            timeoutTask.cancel()
-            return result
-        } catch InternalError.execTimedOut {
-            timeoutTask.cancel()
-            throw SSHRemoteError.commandFailed(exitCode: -1, stderr: "exec timed out after \(execTimeoutSeconds)s")
+            return try await resultPromise.futureResult.get()
+        } catch let error as SSHRemoteError {
+            throw error
         } catch {
-            timeoutTask.cancel()
             throw SSHRemoteError.authenticationFailed
         }
     }

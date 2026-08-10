@@ -50,9 +50,24 @@ xcodebuild -scheme AISessionRemote \
   to `.authenticationFailed`. A non-zero remote exit code is not an error — `exec` always
   returns a normal `SSHExecResult`, and callers like `SessionService` decide if that's a
   failure.
+- **Bounded execution / no hangs**: `NIOSSHHandler` is paired with `SSHConnectionErrorHandler`
+  (closes the channel on `errorCaught`), matching `apple/swift-nio-ssh`'s own client example.
+  Without it, a rejected TOFU host key or failed auth can otherwise leave the connection open
+  with nothing to close it, hanging `exec()` forever. Two additional NIO-scheduled deadlines
+  back this up: `handshakeDeadlineSeconds` (default 15s, bounds SSH handshake through
+  session-channel-open) and `execTimeoutSeconds` (default 30s, bounds the remote command). Both
+  only ever force-close a channel, never complete a promise directly, so they can't race a
+  "real" completion into a double-fulfillment crash. `ReachabilityProbe` constructs its own
+  `NIOSSHClient` with much tighter deadlines (5s/8s/5s) since a reachability check should fail
+  fast, and `HostsListView.refreshReachability()` probes all hosts concurrently so one
+  unreachable host can't stall the rest.
 - **Not yet exercised against a live host**: this was built and proved via `xcodebuild` compile
   only; no manual Tailscale-host `exec`/reachability test was run in this environment. The
   `ExecOutputHandler`/`ReachabilityProbe` flow follows the exec pattern from
   `apple/swift-nio-ssh`'s own `NIOSSHClient` example (session channel → `ExecRequest` →
   capture stdout/stderr/exit status), but should be validated against a real host before
   shipping.
+- **Tests**: `App/AISessionRemoteTests` (an `AISessionRemoteTests` unit-test target hosted by
+  the app) covers `TOFUHostKeyStore.evaluate` and `OpenSSHPrivateKeyParser` happy/error paths.
+  `xcodebuild ... build-for-testing` succeeds, but this environment can't run them
+  (`CoreSimulatorService` is unavailable), so they haven't been executed — only compiled.

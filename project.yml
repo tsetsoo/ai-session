@@ -39,3 +39,20 @@ targets:
         product: NIOPosix
       - package: swift-crypto
         product: Crypto
+    scheme:
+      testTargets:
+        - AISessionRemoteTests
+
+  AISessionRemoteTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: App/AISessionRemoteTests
+    settings:
+      SWIFT_VERSION: "5.9"
+    dependencies:
+      - target: AISessionRemote
+      - package: swift-nio-ssh
+        product: NIOSSH
+      - package: swift-crypto
+        product: Crypto

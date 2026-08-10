@@ -1,3 +1,4 @@
+import AISessionCore
 import Foundation
 import SwiftData
 import SwiftUI
@@ -108,19 +109,45 @@ struct HostsListView: View {
             .frame(width: 8, height: 8)
     }
 
+    /// Probes every host concurrently (each bounded by `ReachabilityProbe`'s own short
+    /// deadlines) so a single unreachable/misconfigured host can't stall the dots for the
+    /// rest of the list the way a sequential loop would. Only `Sendable` data
+    /// (`HostConnectionConfig`, `UUID`) crosses into the concurrent tasks — `HostEntity`
+    /// itself is a non-`Sendable` SwiftData model, so it's only touched back here on the
+    /// main actor once each probe's result comes in.
     @MainActor
     private func refreshReachability() async {
         let repository = HostRepository(modelContext: modelContext)
-        let probe = ReachabilityProbe()
+        let hostsByID = Dictionary(uniqueKeysWithValues: hosts.map { ($0.id, $0) })
+
+        var configsByID: [UUID: HostConnectionConfig] = [:]
         for host in hosts {
-            do {
-                let pem = try repository.privateKey(for: host)
-                let reachable = await probe.probe(host: host, privateKeyPEM: Data(pem.utf8))
-                reachability[host.id] = reachable
-            } catch {
+            guard let pem = try? repository.privateKey(for: host) else {
                 reachability[host.id] = false
+                continue
+            }
+            configsByID[host.id] = HostConnectionConfig(
+                host: host.hostname,
+                port: host.port,
+                username: host.username,
+                privateKeyPEM: Data(pem.utf8)
+            )
+        }
+
+        await withTaskGroup(of: (UUID, Bool).self) { group in
+            for (hostID, config) in configsByID {
+                group.addTask {
+                    (hostID, await ReachabilityProbe().isReachable(config))
+                }
+            }
+            for await (hostID, reachable) in group {
+                reachability[hostID] = reachable
+                if reachable {
+                    hostsByID[hostID]?.lastReachableAt = Date()
+                }
             }
         }
+
         try? modelContext.save()
     }
 }
