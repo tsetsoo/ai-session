@@ -2,7 +2,8 @@ public struct SessionName: Hashable, Sendable {
     public let tool: AITool
     public let slug: String
 
-    public init(tool: AITool, slug: String) {
+    public init?(tool: AITool, slug: String) {
+        guard Self.isValidSlug(slug) else { return nil }
         self.tool = tool
         self.slug = slug
     }
@@ -15,8 +16,7 @@ public struct SessionName: Hashable, Sendable {
         let parts = tmuxName.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 3,
               parts[0] == "ai",
-              let tool = AITool(rawValue: String(parts[1])),
-              isValidSlug(String(parts[2]))
+              let tool = AITool(rawValue: String(parts[1]))
         else {
             return nil
         }
@@ -27,15 +27,17 @@ public struct SessionName: Hashable, Sendable {
         tool: AITool,
         slug: String,
         existing: Set<String>
-    ) -> SessionName {
-        let base = SessionName(tool: tool, slug: slug)
+    ) -> SessionName? {
+        guard let base = SessionName(tool: tool, slug: slug) else { return nil }
         if !existing.contains(base.tmuxName) {
             return base
         }
 
         var suffix = 2
         while true {
-            let candidate = SessionName(tool: tool, slug: "\(slug)-\(suffix)")
+            guard let candidate = SessionName(tool: tool, slug: "\(slug)-\(suffix)") else {
+                return nil
+            }
             if !existing.contains(candidate.tmuxName) {
                 return candidate
             }
@@ -45,6 +47,13 @@ public struct SessionName: Hashable, Sendable {
 
     private static func isValidSlug(_ slug: String) -> Bool {
         guard !slug.isEmpty else { return false }
-        return slug.allSatisfy { $0.isLowercase || $0.isNumber || $0 == "-" }
+        for scalar in slug.unicodeScalars {
+            let value = scalar.value
+            let isLowercaseASCII = value >= 0x61 && value <= 0x7A
+            let isDigitASCII = value >= 0x30 && value <= 0x39
+            let isHyphen = value == 0x2D
+            guard isLowercaseASCII || isDigitASCII || isHyphen else { return false }
+        }
+        return true
     }
 }
