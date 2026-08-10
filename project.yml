@@ -49,6 +49,7 @@ targets:
     sources:
       - path: App/AISessionRemoteTests
     settings:
+      GENERATE_INFOPLIST_FILE: YES
       SWIFT_VERSION: "5.9"
     dependencies:
       - target: AISessionRemote
