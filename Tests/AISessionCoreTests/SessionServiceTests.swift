@@ -13,7 +13,7 @@ final class SessionServiceTests: XCTestCase {
         )
         XCTAssertEqual(
             SSHRemoteError.tmuxMissing.userMessage,
-            "tmux is required on this host. Install it with `brew install tmux` on macOS or `apt install tmux` on Debian/Ubuntu."
+            "tmux was not found on this host's SSH PATH. Install it (`brew install tmux` / `apt install tmux`) or ensure it is available at /opt/homebrew/bin or /usr/local/bin."
         )
         XCTAssertEqual(
             SSHRemoteError.binaryMissing("codex").userMessage,
@@ -123,6 +123,49 @@ final class SessionServiceTests: XCTestCase {
         try await SessionService(ssh: executor).killSession(
             config: config,
             tmuxName: "ai/claude/demo"
+        )
+    }
+
+    func testListSessionsTreatsMissingSocketAsEmpty() async throws {
+        let executor = FakeSSHExecutor(responsesByPrefix: [
+            "tmux ls": SSHExecResult(
+                exitCode: 1,
+                stdout: "",
+                stderr: "error connecting to /tmp/tmux-1000/default (No such file or directory)\n"
+            )
+        ])
+
+        let listed = try await SessionService(ssh: executor).listSessions(config: config)
+        XCTAssertTrue(listed.ai.isEmpty)
+        XCTAssertTrue(listed.other.isEmpty)
+    }
+
+    func testProbeBinariesParsesPathsAndMissing() async throws {
+        let executor = FakeSSHExecutor(responsesByPrefix: [
+            "printf 'tmux:%s": SSHExecResult(
+                exitCode: 0,
+                stdout: "tmux:/usr/bin/tmux\nclaude:MISSING\ncodex:/usr/bin/codex\nagent:MISSING\nbash:/bin/bash\n",
+                stderr: ""
+            )
+        ])
+        let health = try await SessionService(ssh: executor).probeBinaries(config: config)
+        XCTAssertEqual(health.tmux, "/usr/bin/tmux")
+        XCTAssertNil(health.claude)
+        XCTAssertEqual(health.codex, "/usr/bin/codex")
+        XCTAssertNil(health.agent)
+        XCTAssertEqual(health.shell, "/bin/bash")
+    }
+
+    func testPromoteRenamesAndWritesMetadata() async throws {
+        let executor = FakeSSHExecutor(responsesByPrefix: [
+            "tmux rename-session -t 'random' 'ai/claude/demo'":
+                SSHExecResult(exitCode: 0, stdout: "", stderr: ""),
+            "mkdir -p ~/.ai-remote/sessions":
+                SSHExecResult(exitCode: 0, stdout: "", stderr: "")
+        ])
+        let target = try XCTUnwrap(SessionName(tool: .claude, slug: "demo"))
+        try await SessionService(ssh: executor).promoteSession(
+            config: config, fromTmuxName: "random", to: target
         )
     }
 }

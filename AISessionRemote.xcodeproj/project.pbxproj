@@ -11,12 +11,15 @@
 		022B57F04655E920FB73A18C /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 5D3154CABEED9F0C1642E75F /* Crypto */; };
 		1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */; };
 		179CFAD30F54E92A25FE71AA /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 05BD2283E26F32148478AD0E /* Crypto */; };
+		2C713B734C872820F76100DD /* AppTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221C9F866472FA9B512E819B /* AppTheme.swift */; };
 		2DF7D033594787FFDA1BB4F0 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 14F6B7A8CBAF4F1974CDDB24 /* SwiftTerm */; };
 		38388D5CFD2F84A54431E65F /* SSHTerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */; };
 		3F324CB622DB3E280E202EA1 /* SessionServiceFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */; };
+		6913D939F32ABA65540B8B7F /* AttentionNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3708ACD4BFADB69A73E0DB09 /* AttentionNotifier.swift */; };
 		73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1B02295F04DE55821A1C7F /* HostsListView.swift */; };
 		748A1A2AC01B92433F2CBAFC /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = D2F4F750AAE4488C18680D69 /* NIOPosix */; };
 		85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */; };
+		8802A9FE72AD0B666E5169E7 /* PromoteSessionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3241ADE6D78A7C9BB02EC3 /* PromoteSessionSheet.swift */; };
 		8A20DDF3FA5A04B21689A987 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */; };
 		8ECA01A0F0552BA43253E119 /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B5CF5ADABEA184DD911533 /* SessionsListView.swift */; };
 		9457E33FBF3D6F5F05EAD86F /* HostEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99B0F4154BA389FF80D827AE /* HostEditorView.swift */; };
@@ -48,7 +51,8 @@
 		1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTerminalSession.swift; sourceTree = "<group>"; };
 		20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionServiceFactory.swift; sourceTree = "<group>"; };
 		212307B0DF157E07D51ED051 /* AISessionRemoteTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AISessionRemoteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		59CB0ACC6B929B4F47171F37 /* ai-session-remote-impl */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ai-session-remote-impl"; path = .; sourceTree = SOURCE_ROOT; };
+		221C9F866472FA9B512E819B /* AppTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTheme.swift; sourceTree = "<group>"; };
+		3708ACD4BFADB69A73E0DB09 /* AttentionNotifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttentionNotifier.swift; sourceTree = "<group>"; };
 		603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionRemoteApp.swift; sourceTree = "<group>"; };
 		6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParserTests.swift; sourceTree = "<group>"; };
 		77B5CF5ADABEA184DD911533 /* SessionsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsListView.swift; sourceTree = "<group>"; };
@@ -57,11 +61,13 @@
 		9FD7158DD9EEFF2C436D5B5D /* NewSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionSheet.swift; sourceTree = "<group>"; };
 		AC1B02295F04DE55821A1C7F /* HostsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostsListView.swift; sourceTree = "<group>"; };
 		BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
+		CD3241ADE6D78A7C9BB02EC3 /* PromoteSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromoteSessionSheet.swift; sourceTree = "<group>"; };
 		D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NIOSSHClient.swift; sourceTree = "<group>"; };
 		DA7BABCCCBD7DDCE94657EFD /* SoftKeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoftKeyBar.swift; sourceTree = "<group>"; };
 		E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TOFUHostKeyStoreTests.swift; sourceTree = "<group>"; };
 		EE3B756FF0192985AADAFF36 /* HostRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostRepository.swift; sourceTree = "<group>"; };
 		EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReachabilityProbe.swift; sourceTree = "<group>"; };
+		F06755DADA1B0CE90BE0D801 /* ai-session-remote */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ai-session-remote"; path = .; sourceTree = SOURCE_ROOT; };
 		FA4DD29F996099D82C6D7514 /* HostEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEntity.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -94,7 +100,7 @@
 		113CDF79D99CF7521E9DC3DF /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				59CB0ACC6B929B4F47171F37 /* ai-session-remote-impl */,
+				F06755DADA1B0CE90BE0D801 /* ai-session-remote */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -106,6 +112,7 @@
 				6E55E3A121D4C5A5B7EE47AC /* Persistence */,
 				634310157F3D9EF76DAB2BFF /* Services */,
 				93652E77BC916774AB6D567C /* Terminal */,
+				DAFFD9B740E5497214BFDBA2 /* Theme */,
 				8B8071A43CD9BB81A62A9BBE /* Views */,
 			);
 			name = AISessionRemote;
@@ -124,6 +131,7 @@
 		634310157F3D9EF76DAB2BFF /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				3708ACD4BFADB69A73E0DB09 /* AttentionNotifier.swift */,
 				EE3B756FF0192985AADAFF36 /* HostRepository.swift */,
 				D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */,
 				985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */,
@@ -147,6 +155,7 @@
 				99B0F4154BA389FF80D827AE /* HostEditorView.swift */,
 				AC1B02295F04DE55821A1C7F /* HostsListView.swift */,
 				9FD7158DD9EEFF2C436D5B5D /* NewSessionSheet.swift */,
+				CD3241ADE6D78A7C9BB02EC3 /* PromoteSessionSheet.swift */,
 				77B5CF5ADABEA184DD911533 /* SessionsListView.swift */,
 				DA7BABCCCBD7DDCE94657EFD /* SoftKeyBar.swift */,
 			);
@@ -180,6 +189,14 @@
 				113CDF79D99CF7521E9DC3DF /* Packages */,
 				173F91072904799131F2B8F2 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		DAFFD9B740E5497214BFDBA2 /* Theme */ = {
+			isa = PBXGroup;
+			children = (
+				221C9F866472FA9B512E819B /* AppTheme.swift */,
+			);
+			path = Theme;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -274,6 +291,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				00B684C59E7681CFF43EB203 /* AISessionRemoteApp.swift in Sources */,
+				2C713B734C872820F76100DD /* AppTheme.swift in Sources */,
+				6913D939F32ABA65540B8B7F /* AttentionNotifier.swift in Sources */,
 				9457E33FBF3D6F5F05EAD86F /* HostEditorView.swift in Sources */,
 				BDB5778417C362323812D238 /* HostEntity.swift in Sources */,
 				DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */,
@@ -281,6 +300,7 @@
 				FACD0EDEEFFED735236090BD /* NIOSSHClient.swift in Sources */,
 				9AC6F15718E4541263BB3B76 /* NewSessionSheet.swift in Sources */,
 				98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */,
+				8802A9FE72AD0B666E5169E7 /* PromoteSessionSheet.swift in Sources */,
 				85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */,
 				38388D5CFD2F84A54431E65F /* SSHTerminalSession.swift in Sources */,
 				3F324CB622DB3E280E202EA1 /* SessionServiceFactory.swift in Sources */,
@@ -388,7 +408,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/AISessionRemote/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -485,7 +506,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/AISessionRemote/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

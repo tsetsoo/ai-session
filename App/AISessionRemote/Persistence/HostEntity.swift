@@ -13,6 +13,13 @@ final class HostEntity {
     var defaultPathsJSON: String
     var cliBinariesJSON: String
     var lastReachableAt: Date?
+    /// Last tool chosen in New Session for this host (`AITool.rawValue`).
+    var preferredToolRaw: String?
+    /// Last working-directory path used when starting a session.
+    var lastUsedPath: String?
+    /// Cached JSON for `HostBinaryHealth` from the last probe.
+    var binaryHealthJSON: String?
+    var binaryHealthCheckedAt: Date?
 
     init(
         displayName: String,
@@ -22,7 +29,11 @@ final class HostEntity {
         defaultPaths: [String] = [],
         cliBinaries: [AITool: String] = [:],
         id: UUID = UUID(),
-        lastReachableAt: Date? = nil
+        lastReachableAt: Date? = nil,
+        preferredToolRaw: String? = nil,
+        lastUsedPath: String? = nil,
+        binaryHealthJSON: String? = nil,
+        binaryHealthCheckedAt: Date? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -33,6 +44,10 @@ final class HostEntity {
         self.defaultPathsJSON = Self.encode(defaultPaths, fallback: "[]")
         self.cliBinariesJSON = Self.encodeCliBinaries(cliBinaries)
         self.lastReachableAt = lastReachableAt
+        self.preferredToolRaw = preferredToolRaw
+        self.lastUsedPath = lastUsedPath
+        self.binaryHealthJSON = binaryHealthJSON
+        self.binaryHealthCheckedAt = binaryHealthCheckedAt
     }
 
     var defaultPaths: [String] {
@@ -43,6 +58,30 @@ final class HostEntity {
     var cliBinaries: [AITool: String] {
         get { Self.decodeCliBinaries(from: cliBinariesJSON) }
         set { cliBinariesJSON = Self.encodeCliBinaries(newValue) }
+    }
+
+    var preferredTool: AITool? {
+        get { preferredToolRaw.flatMap(AITool.init(rawValue:)) }
+        set { preferredToolRaw = newValue?.rawValue }
+    }
+
+    var binaryHealth: HostBinaryHealth? {
+        get {
+            guard let binaryHealthJSON,
+                  let data = binaryHealthJSON.data(using: .utf8)
+            else { return nil }
+            return try? JSONDecoder().decode(HostBinaryHealth.self, from: data)
+        }
+        set {
+            guard let newValue,
+                  let data = try? JSONEncoder().encode(newValue),
+                  let string = String(data: data, encoding: .utf8)
+            else {
+                binaryHealthJSON = nil
+                return
+            }
+            binaryHealthJSON = string
+        }
     }
 
     private static func encode<Value: Encodable>(_ value: Value, fallback: String) -> String {

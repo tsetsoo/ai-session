@@ -5,73 +5,30 @@ import SwiftUI
 
 struct HostsListView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query private var hosts: [HostEntity]
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var showingHostEditor = false
     @State private var editingHost: HostEntity?
     @State private var errorMessage: String?
     @State private var reachability: [UUID: Bool] = [:]
+    @State private var isProbing = false
     @State private var plainShellHost: HostEntity?
 
     var body: some View {
         NavigationStack {
-            List {
-                if hosts.isEmpty {
-                    ContentUnavailableView(
-                        "No Hosts",
-                        systemImage: "server.rack",
-                        description: Text("Add a host to get started.")
-                    )
-                } else {
-                    ForEach(hosts) { host in
-                        NavigationLink {
-                            SessionsListView(host: host)
-                        } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                reachabilityDot(for: host)
-                                VStack(alignment: .leading) {
-                                    Text(host.displayName.isEmpty ? host.hostname : host.displayName)
-                                        .font(.headline)
-                                    Text("\(host.username)@\(host.hostname):\(host.port)")
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                            Button {
-                                editingHost = host
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            .tint(.blue)
-                        }
-                        .contextMenu {
-                            Button {
-                                editingHost = host
-                            } label: {
-                                Label("Edit Host", systemImage: "pencil")
-                            }
-                            Button {
-                                plainShellHost = host
-                            } label: {
-                                Label("Plain SSH", systemImage: "terminal")
-                            }
-                        }
+            VStack(spacing: 0) {
+                header
+                Group {
+                    if hosts.isEmpty {
+                        emptyState
+                    } else {
+                        hostList
                     }
-                    .onDelete(perform: deleteHosts)
                 }
             }
-            .navigationTitle("Hosts")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
             .refreshable {
                 await refreshReachability()
-            }
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showingHostEditor = true
-                    } label: {
-                        Label("Add Host", systemImage: "plus")
-                    }
-                }
             }
             .sheet(isPresented: $showingHostEditor) {
                 HostEditorView()
@@ -92,7 +49,152 @@ struct HostsListView: View {
             } message: {
                 Text(errorMessage ?? "")
             }
+            .task {
+                guard !hosts.isEmpty else { return }
+                await refreshReachability()
+            }
         }
+    }
+
+    private var header: some View {
+        HStack(alignment: .center) {
+            Text("Hosts")
+                .font(.largeTitle.bold())
+            Spacer(minLength: 12)
+            Button {
+                showingHostEditor = true
+            } label: {
+                Image(systemName: "plus")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 32, height: 32)
+                    .background(.fill.tertiary, in: Circle())
+            }
+            .accessibilityLabel("Add Host")
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView(
+            "No Hosts",
+            systemImage: "server.rack",
+            description: Text("Tap + to add a Tailscale-reachable machine with an SSH key.")
+        )
+    }
+
+    private var hostList: some View {
+        List {
+            ForEach(hosts) { host in
+                NavigationLink {
+                    SessionsListView(host: host)
+                } label: {
+                    hostRow(host)
+                }
+                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    Button {
+                        editingHost = host
+                    } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    .tint(.blue)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button {
+                        plainShellHost = host
+                    } label: {
+                        Label("SSH", systemImage: "terminal")
+                    }
+                    .tint(.indigo)
+                }
+                .contextMenu {
+                    Button {
+                        editingHost = host
+                    } label: {
+                        Label("Edit Host", systemImage: "pencil")
+                    }
+                    Button {
+                        plainShellHost = host
+                    } label: {
+                        Label("Plain SSH", systemImage: "terminal")
+                    }
+                }
+            }
+            .onDelete(perform: deleteHosts)
+        }
+        .overlay(alignment: .top) {
+            if isProbing {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(.top, 4)
+                    .accessibilityLabel("Checking host reachability")
+            }
+        }
+    }
+
+    private func hostRow(_ host: HostEntity) -> some View {
+        let status = reachability[host.id]
+        return HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(AppTheme.reachabilityColor(status).opacity(0.18))
+                    .frame(width: 36, height: 36)
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(AppTheme.reachabilityColor(status))
+            }
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(host.displayName.isEmpty ? host.hostname : host.displayName)
+                    .font(.headline)
+                Text("\(host.username)@\(host.hostname):\(host.port)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(AppTheme.reachabilityLabel(status))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.reachabilityColor(status))
+                    if let relative = AppTheme.relativeTime(from: host.lastReachableAt), status == true {
+                        Text("·")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        Text(relative)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                if let health = host.binaryHealth {
+                    HStack(spacing: 7) {
+                        binaryStatus("tmux", ok: health.tmuxOK)
+                        binaryStatus("claude", ok: health.claudeOK)
+                        binaryStatus("codex", ok: health.codexOK)
+                        binaryStatus("agent", ok: health.agentOK)
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel(for: host, status: status))
+    }
+
+    private func binaryStatus(_ name: String, ok: Bool) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundStyle(ok ? .green : .red)
+            Text(name)
+        }
+        .accessibilityLabel("\(name) \(ok ? "available" : "missing")")
+    }
+
+    private func accessibilityLabel(for host: HostEntity, status: Bool?) -> String {
+        let name = host.displayName.isEmpty ? host.hostname : host.displayName
+        return "\(name), \(host.username) at \(host.hostname) port \(host.port), \(AppTheme.reachabilityLabel(status))"
     }
 
     @ViewBuilder
@@ -124,20 +226,6 @@ struct HostsListView: View {
         }
     }
 
-    @ViewBuilder
-    private func reachabilityDot(for host: HostEntity) -> some View {
-        let color: Color = {
-            switch reachability[host.id] {
-            case .some(true): .green
-            case .some(false): .red
-            case .none: Color.secondary.opacity(0.3)
-            }
-        }()
-        Circle()
-            .fill(color)
-            .frame(width: 8, height: 8)
-    }
-
     /// Probes every host concurrently (each bounded by `ReachabilityProbe`'s own short
     /// deadlines) so a single unreachable/misconfigured host can't stall the dots for the
     /// rest of the list the way a sequential loop would. Only `Sendable` data
@@ -146,10 +234,14 @@ struct HostsListView: View {
     /// main actor once each probe's result comes in.
     @MainActor
     private func refreshReachability() async {
+        isProbing = true
+        defer { isProbing = false }
+
         let repository = HostRepository(modelContext: modelContext)
         let hostsByID = Dictionary(uniqueKeysWithValues: hosts.map { ($0.id, $0) })
 
         var configsByID: [UUID: HostConnectionConfig] = [:]
+        var servicesByID: [UUID: SessionService] = [:]
         for host in hosts {
             guard let pem = try? repository.privateKey(for: host) else {
                 reachability[host.id] = false
@@ -162,18 +254,28 @@ struct HostsListView: View {
                 privateKeyPEM: Data(pem.utf8),
                 hostID: host.id.uuidString
             )
+            if let connection = try? SessionServiceFactory().make(for: host) {
+                servicesByID[host.id] = connection.service
+            }
         }
 
-        await withTaskGroup(of: (UUID, Bool).self) { group in
+        await withTaskGroup(of: (UUID, Bool, HostBinaryHealth?).self) { group in
             for (hostID, config) in configsByID {
                 group.addTask {
-                    (hostID, await ReachabilityProbe().isReachable(config))
+                    let reachable = await ReachabilityProbe().isReachable(config)
+                    guard reachable, let service = servicesByID[hostID] else {
+                        return (hostID, false, nil)
+                    }
+                    let health = try? await service.probeBinaries(config: config)
+                    return (hostID, true, health)
                 }
             }
-            for await (hostID, reachable) in group {
+            for await (hostID, reachable, health) in group {
                 reachability[hostID] = reachable
                 if reachable {
                     hostsByID[hostID]?.lastReachableAt = Date()
+                    hostsByID[hostID]?.binaryHealth = health
+                    hostsByID[hostID]?.binaryHealthCheckedAt = Date()
                 }
             }
         }

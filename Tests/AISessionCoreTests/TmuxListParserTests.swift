@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 @testable import AISessionCore
 
 final class TmuxListParserTests: XCTestCase {
@@ -43,5 +44,28 @@ final class TmuxListParserTests: XCTestCase {
         let result = TmuxListParser.parse(listSessionsOutput: "")
         XCTAssertTrue(result.ai.isEmpty)
         XCTAssertTrue(result.other.isEmpty)
+    }
+
+    func testParseActivityAndStatus() throws {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let output = "ai/claude/recent\t970\t1\nai/codex/old\t900\t0\nrandom\t\t0\n"
+        let result = TmuxListParser.parse(listSessionsOutput: output, now: now)
+        XCTAssertEqual(result.ai[0].status, .busy)
+        XCTAssertEqual(result.ai[0].lastActivityAt, Date(timeIntervalSince1970: 970))
+        XCTAssertEqual(result.ai[1].status, .idle)
+        XCTAssertEqual(result.other[0].status, .unknown)
+    }
+
+    func testParseAgentStatuses() {
+        let output = """
+        ---ai__claude__demo.json---
+        {"status":"waiting"}
+        ---ai__codex__other.json---
+        {"status":"busy"}
+        """
+        XCTAssertEqual(
+            TmuxListParser.parseAgentStatuses(output: output),
+            ["ai/claude/demo": .waiting, "ai/codex/other": .busy]
+        )
     }
 }

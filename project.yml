@@ -26,9 +26,26 @@ targets:
     platform: iOS
     sources:
       - path: App/AISessionRemote
+        excludes:
+          - Info.plist
+    info:
+      path: App/AISessionRemote/Info.plist
+      properties:
+        UILaunchScreen: {}
+        CFBundleDisplayName: AI Session Remote
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.aisessionremote.app
-      GENERATE_INFOPLIST_FILE: YES
+      GENERATE_INFOPLIST_FILE: NO
+      INFOPLIST_FILE: App/AISessionRemote/Info.plist
       SWIFT_VERSION: "5.9"
       TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:

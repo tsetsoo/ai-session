@@ -29,7 +29,7 @@ public enum SSHRemoteError: Error, Equatable, Sendable {
         case .authenticationFailed:
             return "SSH authentication failed. Verify the username and private key, or the host's key may have changed — check with \"Forget Host Key\" in the host editor."
         case .tmuxMissing:
-            return "tmux is required on this host. Install it with `brew install tmux` on macOS or `apt install tmux` on Debian/Ubuntu."
+            return "tmux was not found on this host's SSH PATH. Install it (`brew install tmux` / `apt install tmux`) or ensure it is available at /opt/homebrew/bin or /usr/local/bin."
         case let .binaryMissing(binary):
             return "The required binary '\(binary)' was not found on this host. Install it and ensure it is on PATH."
         case let .commandFailed(exitCode, stderr):

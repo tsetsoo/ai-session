@@ -133,6 +133,7 @@ final class ExecOutputHandler: ChannelInboundHandler {
     typealias InboundIn = SSHChannelData
 
     private let command: String
+    private let lock = NSLock()
     private var resultPromise: EventLoopPromise<SSHExecResult>?
     private var stdout = Data()
     private var stderr = Data()
@@ -148,7 +149,21 @@ final class ExecOutputHandler: ChannelInboundHandler {
     /// parent SSH channel's event loop, which child channels share) before force-closing the
     /// channel, so the resulting completion reports a timeout instead of a bare `exitCode: -1`.
     func markTimedOut() {
+        lock.lock()
         timedOut = true
+        lock.unlock()
+    }
+
+    /// Completes `resultPromise` if it is still pending. Safe to call more than once and from
+    /// outside the pipeline — used when `createChannel` fails before this handler is installed,
+    /// which would otherwise deallocate an incomplete `EventLoopPromise` and trap with
+    /// "leaking promise".
+    func failIfPending(_ error: Error) {
+        lock.lock()
+        let promise = resultPromise
+        resultPromise = nil
+        lock.unlock()
+        promise?.fail(error)
     }
 
     func channelActive(context: ChannelHandlerContext) {
@@ -188,8 +203,16 @@ final class ExecOutputHandler: ChannelInboundHandler {
     }
 
     private func complete() {
-        guard let promise = resultPromise else { return }
+        lock.lock()
+        let promise = resultPromise
         resultPromise = nil
+        let timedOut = self.timedOut
+        let exitCode = self.exitCode
+        let stdout = self.stdout
+        let stderr = self.stderr
+        lock.unlock()
+
+        guard let promise else { return }
         if timedOut {
             promise.fail(SSHRemoteError.commandFailed(exitCode: -1, stderr: "exec timed out"))
             return
@@ -319,12 +342,20 @@ public struct NIOSSHClient: SSHExecuting {
         let channelPromise = channel.eventLoop.makePromise(of: Channel.self)
         let execHandler = ExecOutputHandler(command: command, resultPromise: resultPromise)
 
+        // If `createChannel` fails before the handler is installed (auth/TOFU/handshake
+        // timeout), nothing else will complete `resultPromise` — fail it here so deinit
+        // cannot trap with "leaking promise".
+        channelPromise.futureResult.whenFailure { error in
+            execHandler.failIfPending(error)
+        }
+
         sshHandler.createChannel(channelPromise, channelType: .session) { childChannel, channelType in
             guard channelType == .session else {
                 return childChannel.eventLoop.makeFailedFuture(InternalError.unexpectedChannelType)
             }
             return childChannel.eventLoop.makeCompletedFuture {
                 try childChannel.pipeline.syncOperations.addHandler(execHandler)
+                try childChannel.pipeline.syncOperations.addHandler(SSHConnectionErrorHandler())
             }
         }
 
@@ -341,8 +372,13 @@ public struct NIOSSHClient: SSHExecuting {
 
         let childChannel: Channel
         do {
-            childChannel = try await channelPromise.futureResult.get()
+            childChannel = try await withTaskCancellationHandler {
+                try await channelPromise.futureResult.get()
+            } onCancel: {
+                channel.close(promise: nil)
+            }
         } catch {
+            execHandler.failIfPending(SSHRemoteError.authenticationFailed)
             throw SSHRemoteError.authenticationFailed
         }
 
@@ -355,10 +391,18 @@ public struct NIOSSHClient: SSHExecuting {
         resultPromise.futureResult.whenComplete { _ in execTimeoutTask.cancel() }
 
         do {
-            return try await resultPromise.futureResult.get()
+            return try await withTaskCancellationHandler {
+                try await resultPromise.futureResult.get()
+            } onCancel: {
+                channel.eventLoop.execute {
+                    execHandler.markTimedOut()
+                    childChannel.close(promise: nil)
+                }
+            }
         } catch let error as SSHRemoteError {
             throw error
         } catch {
+            execHandler.failIfPending(SSHRemoteError.authenticationFailed)
             throw SSHRemoteError.authenticationFailed
         }
     }

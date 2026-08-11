@@ -9,7 +9,8 @@ struct NewSessionSheet: View {
     /// `NavigationStack` destination that needs to outlive it.
     let onCreated: (SessionName) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var tool: AITool = .claude
+    @Environment(\.modelContext) private var modelContext
+    @State private var tool: AITool
     @State private var path: String
     @State private var slug: String
     @State private var isStarting = false
@@ -20,7 +21,9 @@ struct NewSessionSheet: View {
     init(host: HostEntity, onCreated: @escaping (SessionName) -> Void) {
         self.host = host
         self.onCreated = onCreated
-        let initialPath = host.defaultPaths.first ?? ""
+        let initialTool = host.preferredTool ?? .claude
+        let initialPath = host.lastUsedPath ?? host.defaultPaths.first ?? ""
+        _tool = State(initialValue: initialTool)
         _path = State(initialValue: initialPath)
         _slug = State(initialValue: Self.slugify(initialPath.split(separator: "/").last.map(String.init) ?? ""))
     }
@@ -29,66 +32,145 @@ struct NewSessionSheet: View {
         slug.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var trimmedPath: String {
+        path.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var slugIsInvalid: Bool {
         !trimmedSlug.isEmpty && !SessionName.isValidSlug(trimmedSlug)
+    }
+
+    private var previewName: String? {
+        guard SessionName.isValidSlug(trimmedSlug) else { return nil }
+        return "ai/\(tool.rawValue)/\(trimmedSlug)"
+    }
+
+    private var canStart: Bool {
+        !isStarting
+            && !trimmedPath.isEmpty
+            && !trimmedSlug.isEmpty
+            && !slugIsInvalid
+    }
+
+    private var toolHint: String {
+        let binary = host.cliBinaries[tool] ?? tool.defaultBinary
+        switch tool {
+        case .shell:
+            return "Interactive `\(binary)` in tmux — detach keeps it running (unlike Plain SSH)."
+        case .claude, .codex, .cursor:
+            return "Runs `\(binary)` in tmux"
+        }
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Tool") {
+                Section {
                     Picker("Tool", selection: $tool) {
                         ForEach(AITool.allCases, id: \.self) { tool in
-                            Text(tool.rawValue.capitalized).tag(tool)
+                            Text(AppTheme.displayName(for: tool)).tag(tool)
                         }
                     }
                     .pickerStyle(.segmented)
+
+                    HStack(spacing: 10) {
+                        Image(systemName: AppTheme.iconName(for: tool))
+                            .foregroundStyle(AppTheme.color(for: tool))
+                            .frame(width: 22)
+                        Text(toolHint)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Tool")
                 }
 
-                Section("Working directory") {
+                Section {
                     TextField("/path/to/project", text: $path)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .font(.body.monospaced())
 
                     if !host.defaultPaths.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
-                            HStack {
+                            HStack(spacing: 8) {
                                 ForEach(host.defaultPaths, id: \.self) { bookmark in
-                                    Button(bookmark) {
+                                    Button {
                                         path = bookmark
-                                        slug = Self.slugify(bookmark.split(separator: "/").last.map(String.init) ?? "")
+                                        slug = Self.slugify(
+                                            bookmark.split(separator: "/").last.map(String.init) ?? ""
+                                        )
+                                    } label: {
+                                        Text(shortPathLabel(bookmark))
+                                            .font(.caption.weight(.medium))
                                     }
                                     .buttonStyle(.bordered)
+                                    .tint(path == bookmark ? AppTheme.color(for: tool) : .secondary)
                                 }
                             }
+                            .padding(.vertical, 2)
                         }
                     }
+                } header: {
+                    Text("Working directory")
+                } footer: {
+                    Text("Session starts in this directory on the remote host.")
                 }
 
-                Section("Session name") {
+                Section {
                     TextField("Slug", text: $slug)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .font(.body.monospaced())
                     if slugIsInvalid {
-                        Text("Use lowercase letters, numbers, and hyphens only.")
+                        Label("Use lowercase letters, numbers, and hyphens only.", systemImage: "exclamationmark.circle")
                             .font(.caption)
                             .foregroundStyle(.red)
+                    } else if let previewName {
+                        Text(previewName)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
                     }
+                } header: {
+                    Text("Session name")
+                } footer: {
+                    Text("Shown in the sessions list. Must be unique per tool on this host.")
                 }
             }
             .navigationTitle("New Session")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .disabled(isStarting)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Start") { start() }
-                        .disabled(
-                            isStarting
-                                || path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                || trimmedSlug.isEmpty
-                                || slugIsInvalid
-                        )
+                    if isStarting {
+                        ProgressView()
+                    } else {
+                        Button("Start", action: start)
+                            .disabled(!canStart)
+                            .fontWeight(.semibold)
+                    }
+                }
+            }
+            .interactiveDismissDisabled(isStarting)
+            .disabled(isStarting)
+            .overlay {
+                if isStarting {
+                    ZStack {
+                        Color.black.opacity(0.12).ignoresSafeArea()
+                        VStack(spacing: 12) {
+                            ProgressView()
+                            Text("Starting session…")
+                                .font(.subheadline.weight(.medium))
+                        }
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Starting session")
                 }
             }
             .alert("Could not start session", isPresented: Binding(
@@ -108,13 +190,20 @@ struct NewSessionSheet: View {
         }
     }
 
+    private func shortPathLabel(_ path: String) -> String {
+        if let last = path.split(separator: "/").last, !last.isEmpty {
+            return String(last)
+        }
+        return path
+    }
+
     private func start() {
-        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        let slug = trimmedSlug
-        guard !trimmedPath.isEmpty, !slug.isEmpty else { return }
-        guard SessionName.isValidSlug(slug) else {
+        let pathToUse = trimmedPath
+        let slugToUse = trimmedSlug
+        guard !pathToUse.isEmpty, !slugToUse.isEmpty else { return }
+        guard SessionName.isValidSlug(slugToUse) else {
             canEditHost = false
-            errorMessage = "\"\(slug)\" is not a valid session name. Use lowercase letters, numbers, and hyphens only."
+            errorMessage = "\"\(slugToUse)\" is not a valid session name. Use lowercase letters, numbers, and hyphens only."
             return
         }
         isStarting = true
@@ -127,10 +216,13 @@ struct NewSessionSheet: View {
                 let session = try await connection.service.createSession(
                     config: connection.config,
                     tool: tool,
-                    slug: slug,
-                    cwd: trimmedPath,
+                    slug: slugToUse,
+                    cwd: pathToUse,
                     title: nil
                 )
+                host.preferredTool = tool
+                host.lastUsedPath = pathToUse
+                try? modelContext.save()
                 onCreated(session)
                 dismiss()
             } catch let error as SSHRemoteError {

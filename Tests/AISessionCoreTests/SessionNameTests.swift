@@ -45,5 +45,13 @@ final class SessionNameTests: XCTestCase {
         XCTAssertEqual(AITool.claude.defaultBinary, "claude")
         XCTAssertEqual(AITool.codex.defaultBinary, "codex")
         XCTAssertEqual(AITool.cursor.defaultBinary, "agent")
+        XCTAssertEqual(AITool.shell.defaultBinary, "bash")
+    }
+
+    func testParseShell() {
+        let parsed = SessionName.parse("ai/shell/scratch")
+        XCTAssertEqual(parsed?.tool, .shell)
+        XCTAssertEqual(parsed?.slug, "scratch")
+        XCTAssertEqual(parsed?.tmuxName, "ai/shell/scratch")
     }
 }

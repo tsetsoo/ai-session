@@ -1,6 +1,7 @@
 import AISessionCore
 import SwiftData
 import SwiftUI
+import UIKit
 
 struct HostEditorView: View {
     @Environment(\.dismiss) private var dismiss
@@ -18,6 +19,7 @@ struct HostEditorView: View {
     @State private var isLoadingKey = false
     @State private var showingForgetHostKeyConfirmation = false
     @State private var forgetHostKeyMessage: String?
+    @State private var showAdvanced = false
 
     init(host: HostEntity? = nil) {
         self.host = host
@@ -28,53 +30,102 @@ struct HostEditorView: View {
         _pem = State(initialValue: "")
         _defaultPaths = State(initialValue: host?.defaultPaths.joined(separator: "\n") ?? "")
         _cliBinaries = State(initialValue: host?.cliBinaries ?? [:])
+        let hasAdvanced = !(host?.defaultPaths.isEmpty ?? true) || !(host?.cliBinaries.isEmpty ?? true)
+        _showAdvanced = State(initialValue: hasAdvanced)
+    }
+
+    private var canSave: Bool {
+        !isLoadingKey
+            && !hostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !pem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && Int(port.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Connection") {
+                Section {
                     TextField("Display name", text: $displayName)
-                    TextField("Hostname", text: $hostname)
+                    TextField("Hostname / Tailscale IP", text: $hostname)
                         .textContentType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                     TextField("Port", text: $port)
                         .keyboardType(.numberPad)
                     TextField("Username", text: $username)
                         .textContentType(.username)
-                }
-
-                Section("Private key") {
-                    TextEditor(text: $pem)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(minHeight: 180)
-                        .overlay(alignment: .topLeading) {
-                            if pem.isEmpty {
-                                Text("Paste PEM private key")
-                                    .foregroundStyle(.secondary)
-                                    .padding(.top, 8)
-                                    .padding(.leading, 5)
-                                    .allowsHitTesting(false)
-                            }
-                        }
-                }
-
-                Section("Default paths") {
-                    TextEditor(text: $defaultPaths)
-                        .frame(minHeight: 100)
-                    Text("One path per line")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("CLI binary overrides") {
-                    ForEach(AITool.allCases, id: \.self) { tool in
-                        TextField(
-                            "\(tool.rawValue.capitalized) (optional)",
-                            text: binding(for: tool)
-                        )
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                } header: {
+                    Text("Connection")
+                } footer: {
+                    Text("Use a Tailscale IP or MagicDNS name. Password auth is not supported — paste a private key below.")
+                }
+
+                Section {
+                    if isLoadingKey {
+                        HStack {
+                            ProgressView()
+                            Text("Loading key from Keychain…")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        TextEditor(text: $pem)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 140)
+                            .overlay(alignment: .topLeading) {
+                                if pem.isEmpty {
+                                    Text("Paste PEM private key (BEGIN … PRIVATE KEY)")
+                                        .foregroundStyle(.secondary)
+                                        .padding(.top, 8)
+                                        .padding(.leading, 5)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+
+                        if !pem.isEmpty {
+                            Label("Key ready (\(pemLineCount) lines)", systemImage: "checkmark.seal.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        }
+
+                        Button {
+                            if let clip = UIPasteboard.general.string, !clip.isEmpty {
+                                pem = clip
+                            }
+                        } label: {
+                            Label("Paste from Clipboard", systemImage: "doc.on.clipboard")
+                        }
                     }
+                } header: {
+                    Text("Private key")
+                } footer: {
+                    Text("Stored in the iOS Keychain. Never leave this field empty when saving.")
+                }
+
+                Section {
+                    Toggle("Show advanced options", isOn: $showAdvanced.animation())
+                    if showAdvanced {
+                        TextEditor(text: $defaultPaths)
+                            .font(.body.monospaced())
+                            .frame(minHeight: 80)
+                        Text("One working-directory bookmark per line. Shown as quick picks when starting a session.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        ForEach(AITool.allCases, id: \.self) { tool in
+                            TextField(
+                                "\(AppTheme.displayName(for: tool)) binary (optional)",
+                                text: binding(for: tool)
+                            )
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                        }
+                    }
+                } header: {
+                    Text("Advanced")
                 }
 
                 if host != nil {
@@ -95,7 +146,8 @@ struct HostEditorView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save", action: save)
-                        .disabled(isLoadingKey)
+                        .disabled(!canSave)
+                        .fontWeight(.semibold)
                 }
             }
             .task {
@@ -136,6 +188,10 @@ struct HostEditorView: View {
                 Text(forgetHostKeyMessage ?? "")
             }
         }
+    }
+
+    private var pemLineCount: Int {
+        pem.split(whereSeparator: \.isNewline).count
     }
 
     private func forgetHostKey() {

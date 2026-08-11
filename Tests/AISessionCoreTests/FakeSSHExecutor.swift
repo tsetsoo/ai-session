@@ -17,14 +17,14 @@ struct FakeSSHExecutor: SSHExecuting, Sendable {
     }
 
     func exec(_ config: HostConnectionConfig, command: String) async throws -> SSHExecResult {
-        for (prefix, error) in errorsByPrefix.sorted(by: { $0.key.count > $1.key.count }) {
-            if command.hasPrefix(prefix) {
+        for (needle, error) in errorsByPrefix.sorted(by: { $0.key.count > $1.key.count }) {
+            if command.contains(needle) {
                 throw error
             }
         }
 
-        for (prefix, result) in responsesByPrefix.sorted(by: { $0.key.count > $1.key.count }) {
-            if command.hasPrefix(prefix) {
+        for (needle, result) in responsesByPrefix.sorted(by: { $0.key.count > $1.key.count }) {
+            if command.contains(needle) {
                 return result
             }
         }
