@@ -235,90 +235,44 @@ final class ExecOutputHandler: ChannelInboundHandler {
 /// authenticated connection open per host across many commands instead of dialing fresh for
 /// every `exec`.
 ///
-/// Pools are keyed by their timeout configuration, not just shared globally. Every call site
-/// that constructs `NIOSSHClient()` with the defaults (`SessionServiceFactory`) lands on the same
-/// pool and so shares one connection per host across the whole app — the main goal here. But
-/// `ReachabilityProbe` deliberately constructs `NIOSSHClient` with tighter timeouts so a
-/// reachability check fails fast; if it shared a pool bucket with the default-timeout instances,
-/// whichever timeout configuration happened to dial a given host first would silently apply to
-/// every future caller of that host through the *other* instance too — e.g. a probe's 5-second
-/// exec timeout would apply to real session commands if the probe won the race, spuriously
-/// failing a legitimately slow command with "exec timed out". Keying pools by timeout
-/// configuration keeps each configuration's connections isolated, exactly like each got its own
-/// fully independent connection before pooling existed.
+/// There is exactly **one** pool, shared by every `NIOSSHClient` instance, so a host that's both
+/// reachability-probed (`ReachabilityProbe`) and running an active session (`SessionService` via
+/// `SessionServiceFactory`) still holds a single parent SSH connection, not two. That's only
+/// possible because the two timeouts that matter while *dialing* — `connectTimeoutSeconds` and
+/// `handshakeDeadlineSeconds` — are fixed, app-level constants rather than something each
+/// `NIOSSHClient` instance can override: if they were per-instance (as they used to be), whoever
+/// dialed a given host first would silently decide those budgets for every other caller of that
+/// same host too. The exec timeout doesn't have that problem, because it's a parameter of each
+/// `exec(_:timeoutSeconds:)` call rather than baked into the connection at dial time (see
+/// `PooledConnecting.exec`) — so it stays instance-configurable here without any
+/// cross-contamination risk. `ReachabilityProbe` uses that to keep its own short exec timeout
+/// while still sharing the one pooled connection, and layers its own overall deadline around the
+/// whole call to get back the fast-fail behaviour the old per-instance connect/handshake timeouts
+/// used to give it.
 public struct NIOSSHClient: SSHExecuting {
-    private struct PoolKey: Hashable {
-        let connectTimeoutSeconds: Int64
-        let handshakeDeadlineSeconds: Int64
-        let execTimeoutSeconds: Int64
+    /// Fixed for every dial, regardless of which `NIOSSHClient` instance triggers it — see the
+    /// type-level doc comment for why these two specifically cannot be per-instance.
+    private static let connectTimeoutSeconds: Int64 = 10
+    private static let handshakeDeadlineSeconds: Int64 = 15
+
+    private static let pool = SSHConnectionPool { config in
+        try await PooledSSHConnection.dial(
+            config,
+            hostKeyStore: TOFUHostKeyStore(),
+            connectTimeoutSeconds: connectTimeoutSeconds,
+            handshakeDeadlineSeconds: handshakeDeadlineSeconds
+        )
     }
 
-    /// Owns the lazily-created pool for each distinct timeout configuration. An actor rather
-    /// than a lock-guarded static var so the mutable registry stays concurrency-safe without
-    /// `nonisolated(unsafe)` (Swift 5.9 target, no availability for that attribute).
-    private actor PoolRegistry {
-        static let shared = PoolRegistry()
-
-        private var pools: [PoolKey: SSHConnectionPool] = [:]
-
-        func pool(
-            key: PoolKey,
-            hostKeyStore: TOFUHostKeyStore,
-            connectTimeoutSeconds: Int64,
-            handshakeDeadlineSeconds: Int64,
-            execTimeoutSeconds: Int64
-        ) -> SSHConnectionPool {
-            if let existing = pools[key] {
-                return existing
-            }
-            let created = SSHConnectionPool { config in
-                try await PooledSSHConnection.dial(
-                    config,
-                    hostKeyStore: hostKeyStore,
-                    connectTimeoutSeconds: connectTimeoutSeconds,
-                    handshakeDeadlineSeconds: handshakeDeadlineSeconds,
-                    execTimeoutSeconds: execTimeoutSeconds
-                )
-            }
-            pools[key] = created
-            return created
-        }
-    }
-
-    private let hostKeyStore: TOFUHostKeyStore
-    /// Bounds the raw TCP connect (handled by NIO itself via `ClientBootstrap.connectTimeout`).
-    private let connectTimeoutSeconds: Int64
-    /// Bounds SSH handshake + user auth + session-channel-open. See `PooledSSHConnection.exec`
-    /// for how this is applied once the connection is kept open across commands.
-    private let handshakeDeadlineSeconds: Int64
-    /// Bounds how long a remote command may run before it's forcibly killed.
+    /// Bounds how long a remote command may run before it's forcibly killed. Safe to customize
+    /// per instance/call — see the type-level doc comment.
     private let execTimeoutSeconds: Int64
 
-    public init(
-        hostKeyStore: TOFUHostKeyStore = TOFUHostKeyStore(),
-        connectTimeoutSeconds: Int64 = 10,
-        handshakeDeadlineSeconds: Int64 = 15,
-        execTimeoutSeconds: Int64 = 30
-    ) {
-        self.hostKeyStore = hostKeyStore
-        self.connectTimeoutSeconds = connectTimeoutSeconds
-        self.handshakeDeadlineSeconds = handshakeDeadlineSeconds
+    public init(execTimeoutSeconds: Int64 = 30) {
         self.execTimeoutSeconds = execTimeoutSeconds
     }
 
     public func exec(_ config: HostConnectionConfig, command: String) async throws -> SSHExecResult {
-        let key = PoolKey(
-            connectTimeoutSeconds: connectTimeoutSeconds,
-            handshakeDeadlineSeconds: handshakeDeadlineSeconds,
-            execTimeoutSeconds: execTimeoutSeconds
-        )
-        let pool = await PoolRegistry.shared.pool(
-            key: key,
-            hostKeyStore: hostKeyStore,
-            connectTimeoutSeconds: connectTimeoutSeconds,
-            handshakeDeadlineSeconds: handshakeDeadlineSeconds,
-            execTimeoutSeconds: execTimeoutSeconds
-        )
-        return try await pool.exec(config, command: command)
+        try await Self.pool.exec(config, command: command, timeoutSeconds: execTimeoutSeconds)
     }
 }

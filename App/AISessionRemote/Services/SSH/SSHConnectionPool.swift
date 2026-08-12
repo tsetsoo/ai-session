@@ -55,11 +55,19 @@ actor SSHConnectionPool {
 
     /// Runs `command` on the pooled connection for `config`, dialing one if needed.
     ///
+    /// `timeoutSeconds` bounds this command only — it is not baked into the connection, so two
+    /// callers with different timeout expectations against the same host (e.g. a fast-fail
+    /// reachability probe and a real session command) can safely share the one pooled
+    /// connection without either one's budget leaking onto the other's command.
+    ///
     /// If the cached connection turns out to be dead — Wi-Fi/cellular handoff, Tailscale
     /// re-route, iOS suspension — it is evicted and the command retried **once** on a fresh
-    /// connection. Only a second failure reaches the caller.
-    func exec(_ config: HostConnectionConfig, command: String) async throws -> SSHExecResult {
-        return try await run(config, command: command, allowRetry: true)
+    /// connection. If instead the connection reports itself still alive (a transient,
+    /// per-command failure — e.g. the host briefly refused a new channel), the retry reuses that
+    /// same connection rather than tearing it down for every other caller currently sharing it.
+    /// Only a second failure reaches the caller.
+    func exec(_ config: HostConnectionConfig, command: String, timeoutSeconds: Int64 = 30) async throws -> SSHExecResult {
+        return try await run(config, command: command, timeoutSeconds: timeoutSeconds, allowRetry: true)
     }
 
     /// Dials ahead of time so the next real action is fast. Failures are deliberately silent:
@@ -111,6 +119,7 @@ actor SSHConnectionPool {
     private func run(
         _ config: HostConnectionConfig,
         command: String,
+        timeoutSeconds: Int64,
         allowRetry: Bool
     ) async throws -> SSHExecResult {
         // `connection(for:)` never returns without the caller holding exactly one counted
@@ -124,14 +133,20 @@ actor SSHConnectionPool {
         let key = Self.key(for: config)
 
         do {
-            let result = try await connection.exec(command)
+            let result = try await connection.exec(command, timeoutSeconds: timeoutSeconds)
             releaseLease(key)
             return result
         } catch {
             releaseLease(key)
             guard allowRetry else { throw error }
-            await evict(key)
-            return try await run(config, command: command, allowRetry: false)
+            // Only tear the connection down for every other caller currently sharing it if it
+            // actually reports itself dead. A command that failed for a narrower, per-channel
+            // reason (e.g. the host transiently refused a new session) leaves an otherwise
+            // healthy connection in place, so the retry reuses it instead of evicting it.
+            if !connection.isAlive {
+                await evict(key)
+            }
+            return try await run(config, command: command, timeoutSeconds: timeoutSeconds, allowRetry: false)
         }
     }
 

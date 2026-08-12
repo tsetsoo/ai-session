@@ -7,10 +7,23 @@ import AISessionCore
 protocol PooledConnecting: AnyObject, Sendable {
     /// `false` once the connection has been observed to fail or has been closed. The pool uses
     /// this to avoid handing out a connection it already knows is dead.
+    ///
+    /// A single command failing (e.g. the remote host transiently refused a new channel) must
+    /// not, by itself, flip this to `false` — only evidence that the underlying transport itself
+    /// is gone should. Conflating the two would tear down one shared connection out from under
+    /// every other in-flight command on the same host just because one command's channel setup
+    /// hit a transient, per-channel failure.
     var isAlive: Bool { get }
 
-    /// Opens a session channel, runs `command`, and returns once it exits.
-    func exec(_ command: String) async throws -> SSHExecResult
+    /// Opens a session channel, runs `command`, and returns once it exits or `timeoutSeconds`
+    /// elapses.
+    ///
+    /// The timeout is a property of this one command, not of the connection: it is passed on
+    /// every call rather than fixed at dial time, so one connection can safely serve commands
+    /// with different timeout expectations (e.g. a fast-fail reachability probe and a real
+    /// session command against the same host) without either one silently inheriting the
+    /// other's budget.
+    func exec(_ command: String, timeoutSeconds: Int64) async throws -> SSHExecResult
 
     /// Closes the connection and releases its underlying resources.
     ///

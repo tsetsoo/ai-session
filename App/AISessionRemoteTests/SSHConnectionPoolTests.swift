@@ -5,8 +5,16 @@ import XCTest
 private final class FakeConnection: PooledConnecting, @unchecked Sendable {
     var isAlive = true
     var closeCount = 0
-    /// When set, the next `exec` throws this once and then clears it.
+    /// When set, the next `exec` throws this once and then clears it, and also marks the
+    /// connection dead — simulates a failure that genuinely took the transport down.
     var failNextExecWith: Error?
+    /// When set, the next `exec` throws this once and then clears it, *without* marking the
+    /// connection dead — simulates a narrow, per-channel failure (e.g. the host transiently
+    /// refusing a new session) that leaves an otherwise-healthy connection alive.
+    var failNextExecKeepingAliveWith: Error?
+    /// Every `timeoutSeconds` value `exec` was called with, in call order. Lets a test assert
+    /// that the timeout is threaded through per call rather than fixed at construction time.
+    private(set) var recordedTimeouts: [Int64] = []
 
     private let lock = NSLock()
     private var closeContinuations: [CheckedContinuation<Void, Never>] = []
@@ -24,10 +32,17 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
     private var pendingExecCount = 0
     private var pendingCountWaiters: [(target: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
-    func exec(_ command: String) async throws -> SSHExecResult {
+    func exec(_ command: String, timeoutSeconds: Int64) async throws -> SSHExecResult {
+        lock.lock()
+        recordedTimeouts.append(timeoutSeconds)
+        lock.unlock()
         if let error = failNextExecWith {
             failNextExecWith = nil
             isAlive = false
+            throw error
+        }
+        if let error = failNextExecKeepingAliveWith {
+            failNextExecKeepingAliveWith = nil
             throw error
         }
         if isExecGated {
@@ -227,6 +242,69 @@ final class SSHConnectionPoolTests: XCTestCase {
         XCTAssertEqual(result.stdout, "ok")
         let count = await dialCount.value
         XCTAssertEqual(count, 2, "one original dial plus one re-dial after eviction")
+    }
+
+    /// A command's timeout must reach the connection as a per-call argument, not something fixed
+    /// when the connection was dialed — that's what lets one connection safely serve callers with
+    /// different timeout expectations (e.g. a fast-fail reachability probe alongside a real
+    /// session command) without either one's budget leaking onto the other's command.
+    func testExecTimeoutIsThreadedPerCommandNotFixedAtDialTime() async throws {
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(
+            sleep: { _ in try await Task.sleep(nanoseconds: 1_000_000) },
+            dial: { _ in
+                let connection = FakeConnection()
+                await connections.add(connection)
+                return connection
+            }
+        )
+        let config = config()
+
+        _ = try await pool.exec(config, command: "a", timeoutSeconds: 5)
+        _ = try await pool.exec(config, command: "b", timeoutSeconds: 60)
+
+        guard let connection = await connections.last() else {
+            XCTFail("expected a dialed connection")
+            return
+        }
+        XCTAssertEqual(
+            connection.recordedTimeouts, [5, 60],
+            "each call's timeout must reach the connection independently"
+        )
+    }
+
+    /// Regression test for a channel-open failure that does not implicate the shared transport —
+    /// e.g. sshd transiently refusing a new session (MaxSessions/MaxStartups) while the
+    /// connection itself is healthy. That must not evict/close the connection out from under
+    /// every other caller sharing it; the pool's retry-once logic should reuse the same
+    /// connection instead of redialing.
+    func testChannelOpenFailureThatLeavesConnectionAliveIsNotEvicted() async throws {
+        let dialCount = Counter()
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(
+            sleep: { _ in try await Task.sleep(nanoseconds: 1_000_000) },
+            dial: { _ in
+                await dialCount.increment()
+                let connection = FakeConnection()
+                await connections.add(connection)
+                return connection
+            }
+        )
+        let config = config()
+
+        _ = try await pool.exec(config, command: "first")
+        await connections.failNextExecKeepingAliveOnLast(SSHRemoteError.authenticationFailed)
+
+        let result = try await pool.exec(config, command: "second")
+
+        XCTAssertEqual(result.stdout, "ok", "the retry must succeed by reusing the still-alive connection")
+        let count = await dialCount.value
+        XCTAssertEqual(count, 1, "a failure that leaves the connection alive must not trigger a redial")
+        guard let connection = await connections.last() else {
+            XCTFail("expected a dialed connection")
+            return
+        }
+        XCTAssertEqual(connection.closeCount, 0, "must not be evicted/closed when it reports itself still alive")
     }
 
     func testSecondFailurePropagates() async throws {
@@ -485,6 +563,7 @@ private actor ConnectionBox {
 
     func last() -> FakeConnection? { connections.last }
     func failNextExecOnLast(_ error: Error) { connections.last?.failNextExecWith = error }
+    func failNextExecKeepingAliveOnLast(_ error: Error) { connections.last?.failNextExecKeepingAliveWith = error }
     func lastCloseCount() -> Int { connections.last?.closeCount ?? 0 }
     func totalCloseCount() -> Int { connections.reduce(0) { $0 + $1.closeCount } }
 

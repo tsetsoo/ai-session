@@ -8,11 +8,17 @@ import NIOSSH
 /// `SSHConnectionPool`.
 ///
 /// This carries across the dial/auth/exec machinery that used to live entirely inside
-/// `NIOSSHClient.exec` (one connection per command) with one structural change: the parent
-/// channel is kept open after a command finishes instead of being torn down, and a fresh child
-/// "session" channel is opened per `exec(_:)` call over that same parent. Everything else —
-/// bootstrap/channel options, the two independent timeout backstops, and the error-mapping
-/// heuristic — is unchanged from the original `NIOSSHClient.exec`:
+/// `NIOSSHClient.exec` (one connection per command) with two structural changes:
+///
+/// 1. The parent channel is kept open after a command finishes instead of being torn down, and a
+///    fresh child "session" channel is opened per `exec(_:timeoutSeconds:)` call over that same
+///    parent.
+/// 2. The exec timeout is a parameter of each call rather than fixed at dial time, since it is a
+///    property of the command being run, not of the transport — one connection can serve
+///    commands with different timeout budgets without either one leaking onto the other.
+///
+/// Everything else — bootstrap/channel options and the error-mapping heuristic — is unchanged
+/// from the original `NIOSSHClient.exec`:
 ///
 /// - Failures before TCP is established (DNS failure, connection refused, connect timeout) map
 ///   to `.unreachable`.
@@ -33,10 +39,9 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
     /// this connection, exactly as it did in the original single-shot `NIOSSHClient.exec`. Kept
     /// in force for every later command too (opening a new session channel over an already
     /// -authenticated transport is normally near-instant, so this never fires in the healthy
-    /// case) so a wedged parent connection can't hang a later `exec(_:)` forever either.
+    /// case) so a wedged parent connection can't hang a later `exec(_:timeoutSeconds:)` forever
+    /// either.
     private let handshakeDeadlineSeconds: Int64
-    /// Bounds how long a single remote command may run before it's forcibly killed.
-    private let execTimeoutSeconds: Int64
 
     private let lock = NSLock()
     private var _isAlive = true
@@ -45,10 +50,9 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
         lock.withLock { _isAlive && channel.isActive }
     }
 
-    private init(channel: Channel, handshakeDeadlineSeconds: Int64, execTimeoutSeconds: Int64) {
+    private init(channel: Channel, handshakeDeadlineSeconds: Int64) {
         self.channel = channel
         self.handshakeDeadlineSeconds = handshakeDeadlineSeconds
-        self.execTimeoutSeconds = execTimeoutSeconds
         channel.closeFuture.whenComplete { [weak self] _ in
             guard let self else { return }
             self.lock.withLock { self._isAlive = false }
@@ -56,14 +60,14 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
     }
 
     /// Dials, authenticates, and returns a connection whose parent channel is left open for
-    /// `exec(_:)` to reuse. Same bootstrap and channel options as the original
-    /// `NIOSSHClient.exec`.
+    /// `exec(_:timeoutSeconds:)` to reuse. Same bootstrap and channel options as the original
+    /// `NIOSSHClient.exec`, plus TCP keepalive (see the comment inline) which the original never
+    /// needed because it never kept a connection open long enough for it to matter.
     static func dial(
         _ config: HostConnectionConfig,
         hostKeyStore: TOFUHostKeyStore,
         connectTimeoutSeconds: Int64,
-        handshakeDeadlineSeconds: Int64,
-        execTimeoutSeconds: Int64
+        handshakeDeadlineSeconds: Int64
     ) async throws -> PooledSSHConnection {
         let privateKey: NIOSSHPrivateKey
         do {
@@ -79,6 +83,16 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
         do {
             channel = try await ClientBootstrap(group: Self.eventLoopGroup)
                 .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
+                // swift-nio-ssh exposes no global-request API, so an SSH-level
+                // `keepalive@openssh.com` isn't available here. TCP keepalive is the substitute:
+                // without it, a connection that's kept open indefinitely (unlike the original
+                // per-command connection) can die silently to a NAT/Tailscale idle timeout, and
+                // `isAlive` — which only checks `channel.isActive` — won't catch a half-open
+                // socket. Left unset, that failure would only surface on the next real command,
+                // after burning up to the handshake deadline or the exec timeout before the
+                // pool's single retry kicks in — exactly the latency this work exists to remove.
+                .channelOption(ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_KEEPALIVE), value: 1)
+                .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_KEEPALIVE), value: 20)
                 .connectTimeout(.seconds(connectTimeoutSeconds))
                 .channelInitializer { channel in
                     channel.eventLoop.makeCompletedFuture {
@@ -99,25 +113,25 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
             throw SSHRemoteError.unreachable
         }
 
-        return PooledSSHConnection(
-            channel: channel,
-            handshakeDeadlineSeconds: handshakeDeadlineSeconds,
-            execTimeoutSeconds: execTimeoutSeconds
-        )
+        return PooledSSHConnection(channel: channel, handshakeDeadlineSeconds: handshakeDeadlineSeconds)
     }
 
     /// Opens a fresh session channel over the shared parent channel and runs `command`, with the
     /// same two NIO-scheduled deadlines the original single-shot `exec` used: one bounding
-    /// channel setup (handshake/auth), one bounding the remote command itself. Neither deadline
-    /// ever completes an `EventLoopPromise` directly; each only closes a channel, so there's no
-    /// "promise completed twice" risk regardless of how they race (unchanged from the original).
-    func exec(_ command: String) async throws -> SSHExecResult {
+    /// channel setup (handshake/auth), one bounding the remote command itself (now supplied per
+    /// call via `timeoutSeconds` rather than fixed at dial time). Neither deadline ever completes
+    /// an `EventLoopPromise` directly; each only closes a channel, so there's no "promise
+    /// completed twice" risk regardless of how they race (unchanged from the original).
+    func exec(_ command: String, timeoutSeconds: Int64) async throws -> SSHExecResult {
         let sshHandler: NIOSSHHandler
         do {
             sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
         } catch {
             // The parent's SSH layer is gone even if the socket hasn't fully closed yet — don't
-            // let the pool keep handing out a connection that can no longer open channels.
+            // let the pool keep handing out a connection that can no longer open channels. This
+            // is a parent-implicating failure (the handler is only ever removed when the
+            // *pipeline* tears down), unlike an individual channel-open request being refused
+            // below.
             markDead()
             throw SSHRemoteError.authenticationFailed
         }
@@ -147,7 +161,9 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
         // closes the *parent* channel (not just this command's child channel): if a new session
         // channel can't be opened over an already-authenticated transport within this deadline,
         // the transport itself is wedged, not just this one command, so the whole pooled
-        // connection is torn down rather than left for the pool to hand out again.
+        // connection is torn down rather than left for the pool to hand out again. (This is a
+        // different failure mode from the one guarded against below: this one is "the parent
+        // stopped responding at all", not "the parent is fine but declined this one channel".)
         let handshakeDeadlineTask = channel.eventLoop.scheduleTask(in: .seconds(handshakeDeadlineSeconds)) {
             self.channel.close(promise: nil)
         }
@@ -166,14 +182,25 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
             }
         } catch {
             execHandler.failIfPending(SSHRemoteError.authenticationFailed)
-            markDead()
+            // A single channel-open failing is not necessarily evidence the *parent* transport
+            // is broken — e.g. sshd transiently refusing a new channel (MaxSessions/MaxStartups)
+            // while the connection itself is perfectly healthy. Marking the whole connection
+            // dead here would tear it down for every other command sharing it. Only do that when
+            // there's actual evidence the transport itself is gone — the parent channel is no
+            // longer active, whether because the handshake deadline above just fired, or the
+            // connection genuinely dropped. Otherwise leave `isAlive` alone and let this error
+            // propagate; the pool's retry-once logic checks `isAlive` itself and only evicts a
+            // connection that really is dead, reusing this one for the retry otherwise.
+            if !channel.isActive {
+                markDead()
+            }
             throw SSHRemoteError.authenticationFailed
         }
 
         // Bounds how long the remote command may run. Unlike the handshake deadline above, this
         // only closes the child channel for *this* command — a single slow/hung command does not
         // mean the parent connection is broken, so it stays alive for the pool to keep reusing.
-        let execTimeoutTask = channel.eventLoop.scheduleTask(in: .seconds(execTimeoutSeconds)) {
+        let execTimeoutTask = channel.eventLoop.scheduleTask(in: .seconds(timeoutSeconds)) {
             execHandler.markTimedOut()
             childChannel.close(promise: nil)
         }
