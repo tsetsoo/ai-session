@@ -12,6 +12,7 @@
 		1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */; };
 		179CFAD30F54E92A25FE71AA /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 05BD2283E26F32148478AD0E /* Crypto */; };
 		221D767F06B05BE1A5E982FD /* SSHConnectionPoolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */; };
+		2C15E7B5071B758B1AB3938E /* ReachabilityProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02AE6114F65FF42A87E1B35F /* ReachabilityProbeTests.swift */; };
 		2C713B734C872820F76100DD /* AppTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221C9F866472FA9B512E819B /* AppTheme.swift */; };
 		2DF7D033594787FFDA1BB4F0 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 14F6B7A8CBAF4F1974CDDB24 /* SwiftTerm */; };
 		38388D5CFD2F84A54431E65F /* SSHTerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */; };
@@ -53,6 +54,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		02AE6114F65FF42A87E1B35F /* ReachabilityProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReachabilityProbeTests.swift; sourceTree = "<group>"; };
 		088A2A76FA2CE3451749F77B /* AISessionRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AISessionRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTerminalSession.swift; sourceTree = "<group>"; };
 		20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionServiceFactory.swift; sourceTree = "<group>"; };
@@ -199,6 +201,7 @@
 			isa = PBXGroup;
 			children = (
 				6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */,
+				02AE6114F65FF42A87E1B35F /* ReachabilityProbeTests.swift */,
 				C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */,
 				A96BCB7E12B43FC54FCD91FC /* TerminalOutputCoalescerTests.swift */,
 				E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */,
@@ -345,6 +348,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */,
+				2C15E7B5071B758B1AB3938E /* ReachabilityProbeTests.swift in Sources */,
 				221D767F06B05BE1A5E982FD /* SSHConnectionPoolTests.swift in Sources */,
 				EE04800E43A3B5A9887D4281 /* TOFUHostKeyStoreTests.swift in Sources */,
 				CE4FB9B633322B8B1FC642DB /* TerminalOutputCoalescerTests.swift in Sources */,
