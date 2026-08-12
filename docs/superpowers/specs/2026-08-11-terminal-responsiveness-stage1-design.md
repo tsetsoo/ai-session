@@ -89,7 +89,7 @@ subject of the Stage 2 Mosh spec. Stage 1 must not attempt a partial fix for the
   │ SSHConnectionPool  (actor)   │            │ SessionService              │
   │  host → one live connection  │◄───────────│  uses SSHExecuting          │
   │  coalesce · lease · evict    │            │                             │
-  │  retry-once-on-stale         │            │ RemoteScriptOutput.parse    │
+  │  retry-once-on-stale         │            │ RemoteScriptOutput.split    │
   └──────────────┬───────────────┘            │ TmuxCommandBuilder          │
                  │ vends child channels        │ SessionMetadata (+template) │
       ┌──────────┴──────────┐                 └─────────────────────────────┘
@@ -116,8 +116,9 @@ Modified: `NIOSSHClient.swift` shrinks to an `SSHExecuting` adapter over the poo
 
 ```swift
 actor SSHConnectionPool {
-    init(dial: @escaping (HostConnectionConfig) async throws -> PooledConnecting,
-         clock: any Clock<Duration>)
+    init(idleTimeout: Duration = .seconds(60),
+         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+         dial: @escaping @Sendable (HostConnectionConfig) async throws -> any PooledConnecting)
 
     func connection(for config: HostConnectionConfig) async throws -> any PooledConnecting
     func warm(_ config: HostConnectionConfig)      // fire-and-forget; failures stay silent
@@ -125,8 +126,10 @@ actor SSHConnectionPool {
 }
 ```
 
-The dial closure and clock are injected so that every behaviour below is unit-testable with
-no network and no waiting.
+The dial and sleep closures are injected so every behaviour below is unit-testable with no
+network and no waiting. A `sleep` the test controls is used instead of `any Clock<Duration>`
+because conforming a fake to `Clock` requires an `InstantProtocol` implementation that buys
+nothing here.
 
 **1. In-flight coalescing.** Concurrent callers arriving during a dial await the same `Task`.
 A list refresh racing an attach produces one handshake, not two.
@@ -174,48 +177,57 @@ OpenSSH `ControlMaster` does, control commands are small and infrequent, and Sta
 the terminal off SSH entirely — making the contention temporary by construction. The fix, if
 it ever bites, is a second "interactive" connection per host keyed by purpose.
 
-## Component: framed remote script output
+## Component: remote script output splitting
 
-Merging commands requires per-section exit codes, because existing error mapping depends on
-them (`isNoServerError`, `isDuplicateSessionError`, `.binaryMissing`). One tested type in
-`AISessionCore` carries the convention:
+An earlier draft of this spec specified a general framed format carrying a per-section exit
+code, on the assumption that merged commands would collapse their error signals together.
+Reading `ExecOutputHandler` shows that is unnecessary: **SSH carries stderr as a separate
+stream** (`SSHChannelData.type == .stdErr`), which `SSHExecResult` already keeps distinct from
+stdout. So a merged script can let its dominant command's stderr and exit code flow through
+untouched, and existing error mapping keeps working with no framing at all.
 
-```text
-<<<S:ls>>>
-…stdout+stderr of tmux ls…
-<<<X:ls:1>>>
-<<<S:status>>>
-…status file dump…
-<<<X:status:0>>>
-```
+That leaves exactly one place needing a delimiter — `listSessions`, which merges two commands
+whose *stdout* must be told apart:
 
 ```swift
-enum RemoteScriptOutput {
-    struct Section { let text: String; let exitCode: Int32 }
-    static func parse(_ stdout: String) -> [String: Section]
+public enum RemoteScriptOutput {
+    /// Splits stdout at the first line equal to `marker`.
+    /// `tail` is nil when the marker never appears.
+    public static func split(_ stdout: String, at marker: String) -> (head: String, tail: String?)
 }
 ```
 
-A section whose sentinel is absent is reported as missing rather than silently empty, so a
-truncated payload fails loudly instead of looking like an empty session list.
+The marker is `<<<AI-REMOTE-STATUS>>>`, chosen to be implausible as a tmux session name. A
+missing marker yields `tail == nil` — treated as "no statuses available", which is already a
+non-fatal condition — rather than silently folding the status dump into the session list.
 
 ## Component: merged commands
 
-**`listSessions`: 2 execs → 1.** `tmux ls` and the status dump in one script, each framed
-with its own exit code. The `ls` section's text feeds the existing `isNoServerError` check so
-"no tmux server → empty list" is unchanged, and a failing status dump remains non-fatal.
+**`listSessions`: 2 execs → 1.** `tmux ls` then the marker then the status dump, with the
+script exiting on `tmux ls`'s own code. Because stderr is a separate SSH stream, the result's
+`stderr` and `exitCode` are exactly what `tmux ls` produced today, so the existing
+`isNoServerError` path is untouched. The status dump runs only when `ls` succeeded, and a
+failing dump stays non-fatal.
 
-**`createSession`: 5 execs → 2 per attempt.** One `listSessions`, then a single script:
+```sh
+tmux ls -F '…'; ls_exit=$?
+echo '<<<AI-REMOTE-STATUS>>>'
+[ $ls_exit -eq 0 ] && { mkdir -p ~/.ai-remote/status; for f in …; do …; done; }
+exit $ls_exit
+```
+
+**`createSession`: 5 execs → 2 per attempt.** One `listSessions`, then a single script that
+ends with `exec tmux new-session`, so the result's exit code and stderr are tmux's own:
 
 ```sh
 p=$(command -v claude) || exit 90
-mkdir -p ~/.ai-remote/sessions
-printf '{"tool":"claude",…,"cli":["%s"]}' "$p" > ~/.ai-remote/sessions/<file>
-tmux new-session -d -s '<name>' -c '<cwd>' -- "$p"
+mkdir -p ~/.ai-remote/sessions || exit 91
+printf '{"tool":"claude",…,"cli":["%s"]}' "$p" > ~/.ai-remote/sessions/<file> || exit 92
+exec tmux new-session -d -s '<name>' -c '<cwd>' -- "$p"
 ```
 
-Exit 90 maps to `.binaryMissing`. tmux's own stderr still flows through, so duplicate-name
-detection and the three-attempt retry loop are untouched.
+Exit 90 maps to `.binaryMissing`; 91 and 92 map to `.commandFailed`. Because of the `exec`,
+duplicate-name detection and the three-attempt retry loop are untouched.
 
 **Metadata templating.** `SessionMetadata.cli` holds the resolved binary path, which is only
 known on the host, so the JSON cannot be fully built client-side. `SessionMetadata` gains a
@@ -240,9 +252,12 @@ file. This is the single riskiest line in the spec and is covered by a dedicated
 
 ## Error handling
 
-Behaviour is unchanged by construction, and this is verified rather than assumed: the
-existing `SessionServiceTests` cases for no-server, duplicate-name, and missing-binary must
-pass **unmodified** against the merged commands.
+Behaviour is unchanged, and this is verified rather than assumed. The existing
+`SessionServiceTests` cases for no-server, duplicate-name, and missing-binary keep their
+**assertions** byte-for-byte; only their canned stub inputs change, because `FakeSSHExecutor`
+matches on command substrings and the commands themselves are being merged. Parity is
+therefore asserted at `SessionService`'s public API — the layer users actually experience —
+not at the stub boundary.
 
 New failure paths introduced by pooling:
 
@@ -263,15 +278,16 @@ one dial; a changed key PEM produces a second dial; leases reaching zero then ad
 closes the connection, and taking a lease first cancels it; a first channel-open failure
 produces one eviction, one re-dial and a success; a second failure propagates.
 
-**Round-trip regression guards** via the existing `FakeSSHExecutor`, which already records
-commands — `listSessions` issues exactly 1 exec, `promoteSession` exactly 1, and
+**Round-trip regression guards** via `FakeSSHExecutor`, which matches commands by substring
+but does **not** currently record them — adding a recorded-command log is a prerequisite step.
+Then: `listSessions` issues exactly 1 exec, `promoteSession` exactly 1, and
 `createSession` exactly 2 **per attempt** (asserted as 2 on the happy path, and 2 × N after N
 duplicate-name retries, since its retry loop re-lists each time). These fail loudly if a
 convenience `exec` is ever added back to a hot path, which is the failure mode most likely to
 silently undo this work.
 
-**`RemoteScriptOutput.parse`** — missing sections, empty sections, non-zero section exit
-codes, and payload text that itself contains a sentinel-looking line.
+**`RemoteScriptOutput.split`** — marker present, marker absent (`tail == nil`), empty head,
+empty tail, and a marker appearing as a substring of a longer line (which must not split).
 
 **`SessionMetadata` template** — round-trips through `printf`, and a title containing `%`
 survives intact.
