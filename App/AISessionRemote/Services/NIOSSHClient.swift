@@ -2,7 +2,6 @@ import AISessionCore
 import Crypto
 import Foundation
 import NIOCore
-import NIOPosix
 import NIOSSH
 
 /// Trust-on-first-use host key store backed by `UserDefaults`.
@@ -229,24 +228,68 @@ final class ExecOutputHandler: ChannelInboundHandler {
 
 /// Real `SSHExecuting` implementation backed by `apple/swift-nio-ssh`.
 ///
-/// Error-mapping heuristic: `SSHRemoteError` has no generic "protocol/handshake" case, so
-/// failures that occur *before* the TCP connection is established (DNS failure, connection
-/// refused, connect timeout) map to `.unreachable`, while anything that fails *after* TCP
-/// connects (SSH handshake, host key rejection, user auth, channel setup) maps to
-/// `.authenticationFailed`. A non-zero remote exit code is not an error at this layer — it's
-/// returned as a normal `SSHExecResult` and it's up to callers (e.g. `SessionService`) to decide
-/// whether that counts as a failure.
+/// A thin adapter over `SSHConnectionPool`/`PooledSSHConnection`: the dial/auth/exec machinery
+/// itself (including the error-mapping heuristic — failures before TCP is established map to
+/// `.unreachable`; failures after TCP connects map to `.authenticationFailed`; a non-zero remote
+/// exit code is not an error at this layer) now lives in `PooledSSHConnection`, which keeps one
+/// authenticated connection open per host across many commands instead of dialing fresh for
+/// every `exec`.
+///
+/// Pools are keyed by their timeout configuration, not just shared globally. Every call site
+/// that constructs `NIOSSHClient()` with the defaults (`SessionServiceFactory`) lands on the same
+/// pool and so shares one connection per host across the whole app — the main goal here. But
+/// `ReachabilityProbe` deliberately constructs `NIOSSHClient` with tighter timeouts so a
+/// reachability check fails fast; if it shared a pool bucket with the default-timeout instances,
+/// whichever timeout configuration happened to dial a given host first would silently apply to
+/// every future caller of that host through the *other* instance too — e.g. a probe's 5-second
+/// exec timeout would apply to real session commands if the probe won the race, spuriously
+/// failing a legitimately slow command with "exec timed out". Keying pools by timeout
+/// configuration keeps each configuration's connections isolated, exactly like each got its own
+/// fully independent connection before pooling existed.
 public struct NIOSSHClient: SSHExecuting {
-    private static let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    private struct PoolKey: Hashable {
+        let connectTimeoutSeconds: Int64
+        let handshakeDeadlineSeconds: Int64
+        let execTimeoutSeconds: Int64
+    }
+
+    /// Owns the lazily-created pool for each distinct timeout configuration. An actor rather
+    /// than a lock-guarded static var so the mutable registry stays concurrency-safe without
+    /// `nonisolated(unsafe)` (Swift 5.9 target, no availability for that attribute).
+    private actor PoolRegistry {
+        static let shared = PoolRegistry()
+
+        private var pools: [PoolKey: SSHConnectionPool] = [:]
+
+        func pool(
+            key: PoolKey,
+            hostKeyStore: TOFUHostKeyStore,
+            connectTimeoutSeconds: Int64,
+            handshakeDeadlineSeconds: Int64,
+            execTimeoutSeconds: Int64
+        ) -> SSHConnectionPool {
+            if let existing = pools[key] {
+                return existing
+            }
+            let created = SSHConnectionPool { config in
+                try await PooledSSHConnection.dial(
+                    config,
+                    hostKeyStore: hostKeyStore,
+                    connectTimeoutSeconds: connectTimeoutSeconds,
+                    handshakeDeadlineSeconds: handshakeDeadlineSeconds,
+                    execTimeoutSeconds: execTimeoutSeconds
+                )
+            }
+            pools[key] = created
+            return created
+        }
+    }
 
     private let hostKeyStore: TOFUHostKeyStore
     /// Bounds the raw TCP connect (handled by NIO itself via `ClientBootstrap.connectTimeout`).
     private let connectTimeoutSeconds: Int64
-    /// Bounds SSH handshake + user auth + session-channel-open, measured from when the TCP
-    /// connection completes. This is the deadline that guards against the TOFU/auth-failure
-    /// hang described on `NIOSSHClient.exec`: if it fires, the underlying channel is force
-    /// -closed so the connection can't linger even if `SSHConnectionErrorHandler` somehow
-    /// didn't already close it.
+    /// Bounds SSH handshake + user auth + session-channel-open. See `PooledSSHConnection.exec`
+    /// for how this is applied once the connection is kept open across commands.
     private let handshakeDeadlineSeconds: Int64
     /// Bounds how long a remote command may run before it's forcibly killed.
     private let execTimeoutSeconds: Int64
@@ -264,146 +307,18 @@ public struct NIOSSHClient: SSHExecuting {
     }
 
     public func exec(_ config: HostConnectionConfig, command: String) async throws -> SSHExecResult {
-        let privateKey: NIOSSHPrivateKey
-        do {
-            privateKey = try OpenSSHPrivateKeyParser.parse(pem: config.privateKeyPEM)
-        } catch {
-            throw SSHRemoteError.authenticationFailed
-        }
-
-        let authDelegate = SSHPrivateKeyAuthDelegate(username: config.username, privateKey: privateKey)
-        let hostKeyDelegate = TOFUServerAuthenticationDelegate(hostID: config.hostID, store: hostKeyStore)
-
-        let channel: Channel
-        do {
-            channel = try await ClientBootstrap(group: Self.eventLoopGroup)
-                .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
-                .connectTimeout(.seconds(connectTimeoutSeconds))
-                .channelInitializer { channel in
-                    channel.eventLoop.makeCompletedFuture {
-                        let sync = channel.pipeline.syncOperations
-                        try sync.addHandler(
-                            NIOSSHHandler(
-                                role: .client(.init(userAuthDelegate: authDelegate, serverAuthDelegate: hostKeyDelegate)),
-                                allocator: channel.allocator,
-                                inboundChildChannelInitializer: nil
-                            )
-                        )
-                        try sync.addHandler(SSHConnectionErrorHandler())
-                    }
-                }
-                .connect(host: config.host, port: config.port)
-                .get()
-        } catch {
-            throw SSHRemoteError.unreachable
-        }
-
-        do {
-            let result = try await Self.runExec(
-                command: command,
-                over: channel,
-                handshakeDeadlineSeconds: handshakeDeadlineSeconds,
-                execTimeoutSeconds: execTimeoutSeconds
-            )
-            try? await channel.close().get()
-            return result
-        } catch let error as SSHRemoteError {
-            try? await channel.close().get()
-            throw error
-        } catch {
-            try? await channel.close().get()
-            throw SSHRemoteError.authenticationFailed
-        }
-    }
-
-    private enum InternalError: Error {
-        case unexpectedChannelType
-    }
-
-    /// Opens the `exec` session channel and runs the command, with two NIO-scheduled deadlines
-    /// guarding against a hang: one bounding channel setup (handshake/auth), one bounding the
-    /// remote command itself. Each deadline only ever *closes a channel*; it never completes an
-    /// `EventLoopPromise` that something else might also complete, so there's no risk of the
-    /// "promise completed twice" trap regardless of how the two race.
-    private static func runExec(
-        command: String,
-        over channel: Channel,
-        handshakeDeadlineSeconds: Int64,
-        execTimeoutSeconds: Int64
-    ) async throws -> SSHExecResult {
-        let sshHandler: NIOSSHHandler
-        do {
-            sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
-        } catch {
-            throw SSHRemoteError.authenticationFailed
-        }
-
-        let resultPromise = channel.eventLoop.makePromise(of: SSHExecResult.self)
-        let channelPromise = channel.eventLoop.makePromise(of: Channel.self)
-        let execHandler = ExecOutputHandler(command: command, resultPromise: resultPromise)
-
-        // If `createChannel` fails before the handler is installed (auth/TOFU/handshake
-        // timeout), nothing else will complete `resultPromise` — fail it here so deinit
-        // cannot trap with "leaking promise".
-        channelPromise.futureResult.whenFailure { error in
-            execHandler.failIfPending(error)
-        }
-
-        sshHandler.createChannel(channelPromise, channelType: .session) { childChannel, channelType in
-            guard channelType == .session else {
-                return childChannel.eventLoop.makeFailedFuture(InternalError.unexpectedChannelType)
-            }
-            return childChannel.eventLoop.makeCompletedFuture {
-                try childChannel.pipeline.syncOperations.addHandler(execHandler)
-                try childChannel.pipeline.syncOperations.addHandler(SSHConnectionErrorHandler())
-            }
-        }
-
-        // `channelPromise` is only ever completed by `sshHandler.createChannel` itself (on
-        // success, or on failure/disconnect). This deadline never touches it directly — it
-        // just force-closes `channel`, which is what makes the *real* SSH stack fail the
-        // pending channel-open on its own (this is the fix for the TOFU-mismatch hang: without
-        // `SSHConnectionErrorHandler` already closing the connection, `channelPromise` would
-        // otherwise never resolve).
-        let handshakeDeadlineTask = channel.eventLoop.scheduleTask(in: .seconds(handshakeDeadlineSeconds)) {
-            channel.close(promise: nil)
-        }
-        channelPromise.futureResult.whenComplete { _ in handshakeDeadlineTask.cancel() }
-
-        let childChannel: Channel
-        do {
-            childChannel = try await withTaskCancellationHandler {
-                try await channelPromise.futureResult.get()
-            } onCancel: {
-                channel.close(promise: nil)
-            }
-        } catch {
-            execHandler.failIfPending(SSHRemoteError.authenticationFailed)
-            throw SSHRemoteError.authenticationFailed
-        }
-
-        // Same pattern: never completes `resultPromise` directly, just marks the handler and
-        // closes the child channel, so `ExecOutputHandler.complete()` remains the sole writer.
-        let execTimeoutTask = channel.eventLoop.scheduleTask(in: .seconds(execTimeoutSeconds)) {
-            execHandler.markTimedOut()
-            childChannel.close(promise: nil)
-        }
-        resultPromise.futureResult.whenComplete { _ in execTimeoutTask.cancel() }
-
-        do {
-            return try await withTaskCancellationHandler {
-                try await resultPromise.futureResult.get()
-            } onCancel: {
-                channel.eventLoop.execute {
-                    execHandler.markTimedOut()
-                    childChannel.close(promise: nil)
-                }
-            }
-        } catch let error as SSHRemoteError {
-            throw error
-        } catch {
-            execHandler.failIfPending(SSHRemoteError.authenticationFailed)
-            throw SSHRemoteError.authenticationFailed
-        }
+        let key = PoolKey(
+            connectTimeoutSeconds: connectTimeoutSeconds,
+            handshakeDeadlineSeconds: handshakeDeadlineSeconds,
+            execTimeoutSeconds: execTimeoutSeconds
+        )
+        let pool = await PoolRegistry.shared.pool(
+            key: key,
+            hostKeyStore: hostKeyStore,
+            connectTimeoutSeconds: connectTimeoutSeconds,
+            handshakeDeadlineSeconds: handshakeDeadlineSeconds,
+            execTimeoutSeconds: execTimeoutSeconds
+        )
+        return try await pool.exec(config, command: command)
     }
 }
