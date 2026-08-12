@@ -167,15 +167,23 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
             execHandler.failIfPending(error)
         }
 
-        sshHandler.createChannel(channelPromise, channelType: .session) { childChannel, channelType in
-            guard channelType == .session else {
-                return childChannel.eventLoop.makeFailedFuture(InternalError.unexpectedChannelType)
+        // `NIOSSHHandler.createChannel` is explicitly not thread-safe and may only be called from
+        // the channel's event loop. Hosts-list reachability probes many hosts concurrently via
+        // Swift concurrency, so this `exec` almost always resumes *off* that loop after the
+        // `await` above — calling `createChannel` here directly races its internal multiplexer
+        // state and trips `ChannelPipeline`'s debug `assertInEventLoop` (the
+        // `NIOCore/ChannelPipeline.swift:159` crash seen on launch).
+        try await channel.eventLoop.submit {
+            sshHandler.createChannel(channelPromise, channelType: .session) { childChannel, channelType in
+                guard channelType == .session else {
+                    return childChannel.eventLoop.makeFailedFuture(InternalError.unexpectedChannelType)
+                }
+                return childChannel.eventLoop.makeCompletedFuture {
+                    try childChannel.pipeline.syncOperations.addHandler(execHandler)
+                    try childChannel.pipeline.syncOperations.addHandler(SSHConnectionErrorHandler())
+                }
             }
-            return childChannel.eventLoop.makeCompletedFuture {
-                try childChannel.pipeline.syncOperations.addHandler(execHandler)
-                try childChannel.pipeline.syncOperations.addHandler(SSHConnectionErrorHandler())
-            }
-        }
+        }.get()
 
         // Guards channel setup exactly like the original handshake deadline did. Firing this
         // closes the *parent* channel (not just this command's child channel): if a new session
@@ -271,32 +279,35 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
         }
 
         let channelPromise = channel.eventLoop.makePromise(of: Channel.self)
-        sshHandler.createChannel(channelPromise, channelType: .session) { childChannel, channelType in
-            guard channelType == .session else {
-                return childChannel.eventLoop.makeFailedFuture(SSHTerminalSessionError.channelSetupFailed)
-            }
-            return childChannel.eventLoop.makeCompletedFuture {
-                try childChannel.pipeline.syncOperations.addHandler(
-                    PTYChannelHandler(
-                        mode: mode,
-                        initialCols: cols,
-                        initialRows: rows,
-                        onOutput: { buffer in
-                            // Convert to `[UInt8]` here, at the pool boundary, so nothing above
-                            // `PooledConnecting`/`SSHConnectionPool` needs to know SwiftNIO
-                            // exists.
-                            var buffer = buffer
-                            guard let bytes = buffer.readBytes(length: buffer.readableBytes), !bytes.isEmpty else {
-                                return
-                            }
-                            onOutput(bytes)
-                        },
-                        onExit: { _ in onClose() }
+        // Same event-loop hop as `exec`: `createChannel` is not thread-safe (see comment there).
+        try await channel.eventLoop.submit {
+            sshHandler.createChannel(channelPromise, channelType: .session) { childChannel, channelType in
+                guard channelType == .session else {
+                    return childChannel.eventLoop.makeFailedFuture(SSHTerminalSessionError.channelSetupFailed)
+                }
+                return childChannel.eventLoop.makeCompletedFuture {
+                    try childChannel.pipeline.syncOperations.addHandler(
+                        PTYChannelHandler(
+                            mode: mode,
+                            initialCols: cols,
+                            initialRows: rows,
+                            onOutput: { buffer in
+                                // Convert to `[UInt8]` here, at the pool boundary, so nothing above
+                                // `PooledConnecting`/`SSHConnectionPool` needs to know SwiftNIO
+                                // exists.
+                                var buffer = buffer
+                                guard let bytes = buffer.readBytes(length: buffer.readableBytes), !bytes.isEmpty else {
+                                    return
+                                }
+                                onOutput(bytes)
+                            },
+                            onExit: { _ in onClose() }
+                        )
                     )
-                )
-                try childChannel.pipeline.syncOperations.addHandler(SSHConnectionErrorHandler())
+                    try childChannel.pipeline.syncOperations.addHandler(SSHConnectionErrorHandler())
+                }
             }
-        }
+        }.get()
 
         let sessionChannel: Channel
         do {
