@@ -1,5 +1,22 @@
 import AISessionCore
 
+/// Thrown by a `PooledConnecting.exec` implementation, instead of the plain `SSHRemoteError` it
+/// wraps, when the failure happened while opening the child channel used to run the command —
+/// i.e. provably *before* the command could have been delivered to the host, whether that's an
+/// explicit channel-open rejection or the parent transport already being gone by the time `exec`
+/// was called.
+///
+/// This is the only failure category `SSHConnectionPool`'s retry-once logic may safely re-run:
+/// nothing was sent to the remote host, so re-running the command cannot duplicate a side
+/// effect. Every other failure — in particular anything that happens *after* the child channel
+/// opened, such as a command timeout or the channel dying mid-command — must propagate as the
+/// plain `SSHRemoteError` instead, so the pool never mistakes "the command may already have run"
+/// for "it's safe to try again" (e.g. re-running `tmux new-session` after a lost reply would
+/// create a second, differently-named session instead of just retrying the failed one).
+struct SSHChannelOpenFailure: Error {
+    let underlying: Error
+}
+
 /// One live, authenticated SSH connection that can vend child channels.
 ///
 /// Exists as a protocol so `SSHConnectionPool` — which owns all the interesting logic around

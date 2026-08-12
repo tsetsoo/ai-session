@@ -5,15 +5,27 @@ import XCTest
 private final class FakeConnection: PooledConnecting, @unchecked Sendable {
     var isAlive = true
     var closeCount = 0
-    /// When set, the next `exec` throws this once and then clears it, and also marks the
-    /// connection dead — simulates a failure that genuinely took the transport down.
+    /// When set, the next `exec` throws this once (wrapped as `SSHChannelOpenFailure`, exactly
+    /// as the real `PooledSSHConnection` does for a failure that happens before the command is
+    /// delivered) and then clears it, and also marks the connection dead — simulates a
+    /// channel-open failure that genuinely took the transport down, e.g. a cached connection
+    /// that turns out to be dead the moment a new channel is attempted on it.
     var failNextExecWith: Error?
-    /// When set, the next `exec` throws this once and then clears it, *without* marking the
-    /// connection dead — simulates a narrow, per-channel failure (e.g. the host transiently
-    /// refusing a new session) that leaves an otherwise-healthy connection alive.
+    /// When set, the next `exec` throws this once (also wrapped as `SSHChannelOpenFailure`) and
+    /// then clears it, *without* marking the connection dead — simulates a narrow, per-channel
+    /// open failure (e.g. the host transiently refusing a new session) that leaves an
+    /// otherwise-healthy connection alive.
     var failNextExecKeepingAliveWith: Error?
+    /// When set, the next `exec` throws this once **unwrapped** — exactly as a failure that
+    /// happened *after* the command was already delivered to the host is reported for real
+    /// (a command timeout, the channel dying mid-command) — and then clears it, without marking
+    /// the connection dead (mirrors a half-open socket: `isAlive` can still read `true` even
+    /// though the command that ran over it is never coming back). The pool must never retry
+    /// this automatically: the command may already have run on the host.
+    var failNextExecMidCommandWith: Error?
     /// Every `timeoutSeconds` value `exec` was called with, in call order. Lets a test assert
-    /// that the timeout is threaded through per call rather than fixed at construction time.
+    /// that the timeout is threaded through per call rather than fixed at construction time, and
+    /// its `count` doubles as a call counter for asserting a retry did or didn't happen.
     private(set) var recordedTimeouts: [Int64] = []
 
     private let lock = NSLock()
@@ -39,10 +51,17 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
         if let error = failNextExecWith {
             failNextExecWith = nil
             isAlive = false
-            throw error
+            // Match `PooledSSHConnection`: a failure before the command is delivered is wrapped
+            // so the pool can tell it apart from a mid-command failure and safely retry once.
+            throw SSHChannelOpenFailure(underlying: error)
         }
         if let error = failNextExecKeepingAliveWith {
             failNextExecKeepingAliveWith = nil
+            throw SSHChannelOpenFailure(underlying: error)
+        }
+        if let error = failNextExecMidCommandWith {
+            failNextExecMidCommandWith = nil
+            // Unwrapped on purpose: the command may already have run on the host.
             throw error
         }
         if isExecGated {
@@ -69,17 +88,20 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
         }
     }
 
-    /// Suspends until `close()` has run at least once. Lets a test observe eviction as an event
-    /// rather than guessing how long it takes to happen.
-    func waitForClose() async {
-        lock.lock()
-        if closeCount > 0 {
-            lock.unlock()
-            return
-        }
-        await withCheckedContinuation { continuation in
-            closeContinuations.append(continuation)
-            lock.unlock()
+    /// Suspends until `close()` has run at least once, or `timeout` elapses. Returns `true` if
+    /// close was observed; `false` on timeout so the caller can `XCTFail` with a clear message
+    /// instead of hanging CI forever on a regression.
+    func waitForClose(timeout: Duration = .seconds(5)) async -> Bool {
+        await withTimeout(timeout) {
+            self.lock.lock()
+            if self.closeCount > 0 {
+                self.lock.unlock()
+                return
+            }
+            await withCheckedContinuation { continuation in
+                self.closeContinuations.append(continuation)
+                self.lock.unlock()
+            }
         }
     }
 
@@ -120,16 +142,19 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
         continuation.resume()
     }
 
-    /// Suspends until at least `count` `exec` calls are simultaneously blocked in `holdExec`.
-    func waitForPendingExecCount(_ count: Int) async {
-        lock.lock()
-        if pendingExecCount >= count {
-            lock.unlock()
-            return
-        }
-        await withCheckedContinuation { continuation in
-            pendingCountWaiters.append((target: count, continuation: continuation))
-            lock.unlock()
+    /// Suspends until at least `count` `exec` calls are simultaneously blocked in `holdExec`,
+    /// or `timeout` elapses. Returns `true` if the count was reached.
+    func waitForPendingExecCount(_ count: Int, timeout: Duration = .seconds(5)) async -> Bool {
+        await withTimeout(timeout) {
+            self.lock.lock()
+            if self.pendingExecCount >= count {
+                self.lock.unlock()
+                return
+            }
+            await withCheckedContinuation { continuation in
+                self.pendingCountWaiters.append((target: count, continuation: continuation))
+                self.lock.unlock()
+            }
         }
     }
 
@@ -183,16 +208,19 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
     }
 
     /// Suspends until `openPTY` has been called at least once — and, if `openPTYGate` is set,
-    /// is now genuinely blocked on it rather than merely about to be called.
-    func waitForOpenPTYStarted() async {
-        lock.lock()
-        if openPTYStarted {
-            lock.unlock()
-            return
-        }
-        await withCheckedContinuation { continuation in
-            openPTYStartedWaiters.append(continuation)
-            lock.unlock()
+    /// is now genuinely blocked on it rather than merely about to be called — or until
+    /// `timeout` elapses. Returns `true` if openPTY has started.
+    func waitForOpenPTYStarted(timeout: Duration = .seconds(5)) async -> Bool {
+        await withTimeout(timeout) {
+            self.lock.lock()
+            if self.openPTYStarted {
+                self.lock.unlock()
+                return
+            }
+            await withCheckedContinuation { continuation in
+                self.openPTYStartedWaiters.append(continuation)
+                self.lock.unlock()
+            }
         }
     }
 
@@ -203,6 +231,28 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
         let callback = ptyOnCloseCallbacks.last
         lock.unlock()
         callback?()
+    }
+}
+
+/// Races `operation` against a sleep of `timeout`. Returns `true` if the operation finished
+/// first, `false` if the timeout won — so a hung wait becomes a fast, clear test failure
+/// instead of hanging CI.
+private func withTimeout(
+    _ timeout: Duration,
+    operation: @escaping @Sendable () async -> Void
+) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask {
+            await operation()
+            return true
+        }
+        group.addTask {
+            try? await Task.sleep(for: timeout)
+            return false
+        }
+        let won = await group.next() ?? false
+        group.cancelAll()
+        return won
     }
 }
 
@@ -254,23 +304,53 @@ final class SSHConnectionPoolTests: XCTestCase {
         }
     }
 
+    /// Polls `condition` until it returns `true`, or fails the test after `timeout`. Replaces
+    /// unbounded `while { await Task.yield() }` spin loops so a regression fails fast.
+    private func waitUntil(
+        _ description: String,
+        timeout: TimeInterval = 5,
+        condition: @escaping () async -> Bool
+    ) async {
+        let reached = expectation(description: description)
+        Task {
+            while !(await condition()) {
+                await Task.yield()
+            }
+            reached.fulfill()
+        }
+        await fulfillment(of: [reached], timeout: timeout)
+    }
+
     /// The core promise: a burst of concurrent commands pays one handshake, not N.
+    ///
+    /// Strengthened beyond "dial count == 1": that alone would still pass if coalescing were
+    /// deleted, because serialized callers would hit the cache after the first dial and still
+    /// dial once. The dial is gated open only after `coalescedJoinCount` confirms at least one
+    /// waiter has joined the in-flight dial — the same gate used by the lease-invariant tests —
+    /// so this actually requires the coalescing branch.
     func testConcurrentCallsShareASingleDial() async throws {
         let dialCount = Counter()
+        let dialGate = OneShotGate()
         let pool = SSHConnectionPool(
             sleep: { _ in try await Task.sleep(nanoseconds: 1_000_000) },
             dial: { _ in
                 await dialCount.increment()
-                try await Task.sleep(nanoseconds: 10_000_000)
+                await dialGate.wait()
                 return FakeConnection()
             }
         )
         let config = config()
 
-        await withThrowingTaskGroup(of: Void.self) { group in
+        try await withThrowingTaskGroup(of: Void.self) { group in
             for _ in 0..<5 {
                 group.addTask { _ = try await pool.exec(config, command: "tmux ls") }
             }
+
+            await waitUntil("at least one caller coalesced onto the shared dial") {
+                await pool.coalescedJoinCount() >= 1
+            }
+            await dialGate.open()
+            try await group.waitForAll()
         }
 
         let count = await dialCount.value
@@ -422,13 +502,15 @@ final class SSHConnectionPoolTests: XCTestCase {
             XCTFail("expected a dialed connection")
             return
         }
-        await connection.waitForClose()
-
+        let _ok1 = await connection.waitForClose()
+        XCTAssertTrue(_ok1, "idle eviction must close the connection")
         let closes = await connections.lastCloseCount()
         XCTAssertEqual(closes, 1)
     }
 
-    func testCloseAllClosesEveryConnection() async throws {
+    /// Idle connections are still torn down eagerly on backgrounding, which is the whole point
+    /// of wiring `closeAll` to `didEnterBackgroundNotification`.
+    func testCloseAllClosesEveryIdleConnection() async throws {
         let connections = ConnectionBox()
         let pool = SSHConnectionPool(
             sleep: { _ in try await Task.sleep(nanoseconds: 50_000_000) },
@@ -447,6 +529,87 @@ final class SSHConnectionPoolTests: XCTestCase {
         XCTAssertEqual(total, 2)
     }
 
+    /// Regression for the final-review finding that `closeAll()` used to ignore lease counts and
+    /// tear down an attached terminal PTY on brief app backgrounding. A leased entry must survive;
+    /// an idle one for a different host must still be closed.
+    func testCloseAllSkipsLeasedConnectionsButClosesIdleOnes() async throws {
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(
+            idleTimeout: .milliseconds(1),
+            sleep: { _ in },
+            dial: { _ in
+                let connection = FakeConnection()
+                await connections.add(connection)
+                return connection
+            }
+        )
+        let terminalHost = config(host: "terminal.example")
+        let idleHost = config(host: "idle.example")
+
+        let handle = try await pool.openPTY(
+            terminalHost, mode: .plainShell, cols: 80, rows: 24,
+            onOutput: { _ in }, onClose: {}
+        )
+        _ = try await pool.exec(idleHost, command: "warm")
+
+        await pool.closeAll()
+
+        let terminalConnection = await connections.connection(at: 0)
+        let idleConnection = await connections.connection(at: 1)
+        XCTAssertEqual(terminalConnection.closeCount, 0, "a leased terminal connection must survive closeAll()")
+        XCTAssertEqual(idleConnection.closeCount, 1, "an idle connection must still be eager-closed")
+
+        let leaseWhileAttached = await pool.leaseCount(for: terminalHost)
+        XCTAssertEqual(leaseWhileAttached, 1)
+
+        handle.close()
+        let closedAfterRelease = await terminalConnection.waitForClose()
+        XCTAssertTrue(
+            closedAfterRelease,
+            "after the PTY releases its lease, ordinary idle eviction must still close the connection"
+        )
+    }
+
+    /// A mid-command failure (timeout, channel death after the command was delivered) must not
+    /// be retried — re-running could duplicate a side-effecting command like `tmux new-session`.
+    func testMidCommandFailureIsNotRetried() async throws {
+        let dialCount = Counter()
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(
+            sleep: { _ in },
+            dial: { _ in
+                await dialCount.increment()
+                let connection = FakeConnection()
+                await connections.add(connection)
+                return connection
+            }
+        )
+        let config = config()
+
+        _ = try await pool.exec(config, command: "first")
+        await connections.failNextExecMidCommandOnLast(
+            SSHRemoteError.commandFailed(exitCode: -1, stderr: "exec timed out")
+        )
+
+        do {
+            _ = try await pool.exec(config, command: "tmux new-session")
+            XCTFail("expected the mid-command failure to propagate")
+        } catch let error as SSHRemoteError {
+            XCTAssertEqual(error, .commandFailed(exitCode: -1, stderr: "exec timed out"))
+        }
+
+        let count = await dialCount.value
+        XCTAssertEqual(count, 1, "a mid-command failure must not trigger a redial/retry")
+        guard let connection = await connections.last() else {
+            XCTFail("expected a dialed connection")
+            return
+        }
+        XCTAssertEqual(
+            connection.recordedTimeouts.count, 2,
+            "first success + one failed attempt — never a second attempt after mid-command failure"
+        )
+    }
+
     /// `SSHConnectionPool.warm` is deliberately fire-and-forget (see its doc comment): dialing
     /// ahead of time is speculative, so a failure must never surface to the caller — the real
     /// action that follows is what should report any genuine problem. `warm` isn't even declared
@@ -454,17 +617,23 @@ final class SSHConnectionPoolTests: XCTestCase {
     /// confirms a failed warm leaves no stray bookkeeping behind (no leaked lease, no phantom
     /// entry) that could corrupt a later, real call for the same host.
     func testWarmSwallowsADialFailureAndLeavesNoTraceBehind() async throws {
+        let dialAttempts = Counter()
         let pool = SSHConnectionPool(
             sleep: { _ in },
-            dial: { _ in throw SSHRemoteError.unreachable }
+            dial: { _ in
+                await dialAttempts.increment()
+                throw SSHRemoteError.unreachable
+            }
         )
         let config = config()
 
         await pool.warm(config)
 
-        // `warm` fires its dial on an unstructured Task and exposes no completion signal, so
-        // give it real turns to run rather than asserting after only a single tick.
-        for _ in 0..<20 { await Task.yield() }
+        // `warm` fires its dial on an unstructured Task and exposes no completion signal — wait
+        // until that dial has actually run before asserting it left nothing behind.
+        await waitUntil("warm's fire-and-forget dial has run") {
+            await dialAttempts.value >= 1
+        }
 
         let leases = await pool.leaseCount(for: config)
         XCTAssertNil(leases, "a failed warm must not leave a dangling lease/entry")
@@ -490,7 +659,8 @@ final class SSHConnectionPoolTests: XCTestCase {
         await pool.warm(config)
 
         let connection = await connections.waitForFirst()
-        await connection.waitForClose()
+        let _ok2 = await connection.waitForClose()
+        XCTAssertTrue(_ok2, "warm's lease must be released so idle eviction can close")
         XCTAssertEqual(connection.closeCount, 1, "warm's lease must be released, not held open")
     }
 
@@ -527,14 +697,14 @@ final class SSHConnectionPoolTests: XCTestCase {
         // Don't let the dial resolve until a second caller has genuinely joined it — otherwise
         // this test could pass merely because both callers happened to take the fast (already
         // cached) path, which never exercised the buggy branch in the first place.
-        while await pool.coalescedJoinCount() < 1 {
-            await Task.yield()
+        await waitUntil("second caller coalesced onto the shared dial") {
+            await pool.coalescedJoinCount() >= 1
         }
         await dialGate.open()
 
         let connection = await connections.waitForFirst()
-        await connection.waitForPendingExecCount(2)
-
+        let _ok3 = await connection.waitForPendingExecCount(2)
+        XCTAssertTrue(_ok3, "both execs must be gated in flight")
         let leasesWhileBothInFlight = await pool.leaseCount(for: config)
         XCTAssertEqual(
             leasesWhileBothInFlight, 2,
@@ -555,7 +725,9 @@ final class SSHConnectionPoolTests: XCTestCase {
         connection.releaseExec(matching: "b")
         _ = try await second
 
-        await connection.waitForClose()
+        let _ok4 = await connection.waitForClose()
+
+        XCTAssertTrue(_ok4, "both leases released — idle eviction must close")
         XCTAssertEqual(connection.closeCount, 1)
     }
 
@@ -585,6 +757,9 @@ final class SSHConnectionPoolTests: XCTestCase {
 
         async let result = captured(pool, config, command: "a")
 
+        await waitUntil("in-flight dial registered a connection") {
+            await connections.count() >= 1
+        }
         let connection = await connections.waitForFirst()
         await pool.closeAll()
         await dialGate.open()
@@ -600,7 +775,9 @@ final class SSHConnectionPoolTests: XCTestCase {
             XCTAssertEqual(sshError, .unreachable, "a superseded dial must read the same as a genuinely dead connection")
         }
 
-        await connection.waitForClose()
+        let _ok5 = await connection.waitForClose()
+
+        XCTAssertTrue(_ok5, "a dial that finishes after teardown must still be closed")
         XCTAssertEqual(connection.closeCount, 1, "a dial that finishes after teardown must still be closed")
 
         let leases = await pool.leaseCount(for: config)
@@ -634,10 +811,13 @@ final class SSHConnectionPoolTests: XCTestCase {
         // Wait for at least two of the three to have genuinely coalesced onto the one dial
         // (the third is the dial's owner) before tearing down, so this test exercises multiple
         // waiters racing the same superseded dial, not just one.
-        while await pool.coalescedJoinCount() < 2 {
-            await Task.yield()
+        await waitUntil("two callers coalesced onto the shared dial") {
+            await pool.coalescedJoinCount() >= 2
         }
 
+        await waitUntil("in-flight dial registered a connection") {
+            await connections.count() >= 1
+        }
         let connection = await connections.waitForFirst()
         await pool.closeAll()
         await dialGate.open()
@@ -651,7 +831,9 @@ final class SSHConnectionPoolTests: XCTestCase {
             }
         }
 
-        await connection.waitForClose()
+        let _ok6 = await connection.waitForClose()
+
+        XCTAssertTrue(_ok6, "superseded connection must be closed")
         XCTAssertGreaterThanOrEqual(
             connection.closeCount, 1,
             "each of the three waiters independently closes the connection; that must be harmless, not a crash"
@@ -698,7 +880,8 @@ final class SSHConnectionPoolTests: XCTestCase {
         XCTAssertEqual(connection.closeCount, 0, "must not be idle-evicted while the terminal is attached")
 
         handle.close()
-        await connection.waitForClose()
+        let _ok7 = await connection.waitForClose()
+        XCTAssertTrue(_ok7, "closing the PTY must release the lease and allow eviction")
         XCTAssertEqual(connection.closeCount, 1, "closing the PTY must release the lease and allow eviction")
     }
 
@@ -732,7 +915,8 @@ final class SSHConnectionPoolTests: XCTestCase {
             XCTFail("expected a dialed connection")
             return
         }
-        await connection.waitForPendingExecCount(1)
+        let _ok8 = await connection.waitForPendingExecCount(1)
+        XCTAssertTrue(_ok8, "concurrent exec must be gated in flight")
         let leaseWithBothInFlight = await pool.leaseCount(for: config)
         XCTAssertEqual(leaseWithBothInFlight, 2, "the PTY and the concurrent exec must each hold their own lease")
 
@@ -740,11 +924,10 @@ final class SSHConnectionPoolTests: XCTestCase {
         handle.close()
         handle.close()
 
-        var lease = await pool.leaseCount(for: config)
-        while lease == 2 {
-            await Task.yield()
-            lease = await pool.leaseCount(for: config)
+        await waitUntil("PTY lease released exactly once") {
+            await pool.leaseCount(for: config) == 1
         }
+        let lease = await pool.leaseCount(for: config)
         XCTAssertEqual(
             lease, 1,
             "the PTY's lease must drop by exactly one, not two, leaving the concurrent exec's lease intact"
@@ -784,21 +967,26 @@ final class SSHConnectionPoolTests: XCTestCase {
             XCTFail("expected a dialed connection")
             return
         }
-        await connection.waitForPendingExecCount(1)
-
+        let _ok9 = await connection.waitForPendingExecCount(1)
+        XCTAssertTrue(_ok9, "concurrent exec must be gated in flight")
         connection.killMostRecentPTY()
 
-        var lease = await pool.leaseCount(for: config)
-        while lease == 2 {
-            await Task.yield()
-            lease = await pool.leaseCount(for: config)
+        await waitUntil("channel-death released the PTY lease") {
+            await pool.leaseCount(for: config) == 1
         }
+        let lease = await pool.leaseCount(for: config)
         XCTAssertEqual(lease, 1, "the channel dying on its own must release exactly one lease")
         XCTAssertTrue(observedDisconnect, "the pool must still forward onClose to the caller")
 
         // `disconnect()` can still call `close()` after the channel already died on its own.
         handle.close()
-        for _ in 0..<3 { await Task.yield() }
+        await waitUntil("explicit close after channel death does not steal the exec lease") {
+            await pool.leaseCount(for: config) == 1
+        }
+        // A few yields after the condition already holds — the assertion is the lease staying at 1,
+        // not that something else happens. The waitUntil above already confirmed it settled at 1;
+        // this second check catches a delayed double-release that would otherwise race past a
+        // single sample.
         let leaseAfterExplicitCloseToo = await pool.leaseCount(for: config)
         XCTAssertEqual(
             leaseAfterExplicitCloseToo, 1,
@@ -845,13 +1033,13 @@ final class SSHConnectionPoolTests: XCTestCase {
         async let connectOutcome: Void = session.connect(cols: 80, rows: 24)
 
         let connection = await connections.waitForFirst()
-        await connection.waitForOpenPTYStarted()
-
+        let _ok10 = await connection.waitForOpenPTYStarted()
+        XCTAssertTrue(_ok10, "connect() must reach openPTY")
         // A second, genuinely concurrent use of the same connection, so there is a real lease
         // available to prove the fix neither leaks its own lease nor steals this one.
         async let exec: SSHExecResult = pool.exec(config, command: "concurrent")
-        await connection.waitForPendingExecCount(1)
-
+        let _ok11 = await connection.waitForPendingExecCount(1)
+        XCTAssertTrue(_ok11, "concurrent exec must be gated in flight")
         let leaseWithBothInFlight = await pool.leaseCount(for: config)
         XCTAssertEqual(
             leaseWithBothInFlight, 2,
@@ -867,11 +1055,10 @@ final class SSHConnectionPoolTests: XCTestCase {
         await openPTYGate.open()
         try await connectOutcome
 
-        var lease = await pool.leaseCount(for: config)
-        while lease == 2 {
-            await Task.yield()
-            lease = await pool.leaseCount(for: config)
+        await waitUntil("connect/disconnect race released the leaked lease") {
+            await pool.leaseCount(for: config) == 1
         }
+        let lease = await pool.leaseCount(for: config)
         XCTAssertEqual(
             lease, 1,
             "connect() losing the race to disconnect() must still release the lease it was holding, "
@@ -883,7 +1070,8 @@ final class SSHConnectionPoolTests: XCTestCase {
 
         // With both leases now given back, the connection must become idle-evictable — it would
         // not if connect() had orphaned the handle it got back from the race.
-        await connection.waitForClose()
+        let _ok12 = await connection.waitForClose()
+        XCTAssertTrue(_ok12, "both leases released — idle eviction must close")
         XCTAssertEqual(connection.closeCount, 1)
     }
 }
@@ -909,13 +1097,22 @@ private actor ConnectionBox {
     }
 
     func last() -> FakeConnection? { connections.last }
+    func connection(at index: Int) -> FakeConnection {
+        connections[index]
+    }
     func failNextExecOnLast(_ error: Error) { connections.last?.failNextExecWith = error }
     func failNextExecKeepingAliveOnLast(_ error: Error) { connections.last?.failNextExecKeepingAliveWith = error }
+    func failNextExecMidCommandOnLast(_ error: Error) { connections.last?.failNextExecMidCommandWith = error }
     func lastCloseCount() -> Int { connections.last?.closeCount ?? 0 }
     func totalCloseCount() -> Int { connections.reduce(0) { $0 + $1.closeCount } }
+    func count() -> Int { connections.count }
 
     /// Suspends until at least one connection has been dialed, then returns the first one.
     /// Avoids polling while a gated dial is still in flight.
+    ///
+    /// Callers that need a hard timeout should wrap this with the test-case `waitUntil` against
+    /// `count() > 0` first (or use a dial gate that is guaranteed to open); the continuation
+    /// itself cannot be abandoned mid-wait without risking a double-resume when `add` later fires.
     func waitForFirst() async -> FakeConnection {
         if let existing = connections.first { return existing }
         return await withCheckedContinuation { continuation in

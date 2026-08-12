@@ -162,6 +162,126 @@ final class PooledSSHConnectionCloseTests: XCTestCase {
             )
         }
     }
+
+    /// Final-review Fix 3: a peer RST/FIN (or any channel death that is *not* the client's own
+    /// deliberate `close()`/`failIfPending`) used to make `ExecOutputHandler.complete()` succeed
+    /// with a synthetic `exitCode: -1`. Closing the *accepted server connection* out from under
+    /// an in-flight exec exercises that path specifically — no client-side `failIfPending` runs
+    /// first. (Closing only the listen socket would leave the already-accepted connection alive.)
+    func testPeerDropWithoutExitStatusFailsWithUnreachableInsteadOfSyntheticExitCode() async throws {
+        let execRequestGate = SignalGate()
+        let acceptedBox = ChannelBox()
+        let serverGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+
+        let hostKey = NIOSSHPrivateKey(ed25519Key: .init())
+        let serverChannel = try await ServerBootstrap(group: serverGroup)
+            .childChannelInitializer { channel in
+                Task { await acceptedBox.set(channel) }
+                return channel.eventLoop.makeCompletedFuture {
+                    try channel.pipeline.syncOperations.addHandler(
+                        NIOSSHHandler(
+                            role: .server(
+                                .init(hostKeys: [hostKey], userAuthDelegate: AcceptAnyPublicKeyDelegate())
+                            ),
+                            allocator: channel.allocator,
+                            inboundChildChannelInitializer: { childChannel, channelType in
+                                guard channelType == .session else {
+                                    return childChannel.eventLoop.makeFailedFuture(TestServerError.unexpectedChannelType)
+                                }
+                                return childChannel.eventLoop.makeCompletedFuture {
+                                    try childChannel.pipeline.syncOperations.addHandler(
+                                        HangingExecHandler(onExecRequest: { Task { await execRequestGate.open() } })
+                                    )
+                                }
+                            }
+                        )
+                    )
+                }
+            }
+            .bind(host: "127.0.0.1", port: 0)
+            .get()
+
+        defer {
+            try? serverChannel.close().wait()
+            try? serverGroup.syncShutdownGracefully()
+        }
+
+        guard let port = serverChannel.localAddress?.port else {
+            XCTFail("expected the test server to have a bound port")
+            return
+        }
+
+        let config = HostConnectionConfig(
+            host: "127.0.0.1",
+            port: port,
+            username: "tester",
+            privateKeyPEM: Data(Self.clientPEM.utf8),
+            hostID: "pooled-connection-peer-drop-test-\(UUID())"
+        )
+        guard let defaults = UserDefaults(suiteName: "com.aisessionremote.tests.\(UUID())") else {
+            XCTFail("expected a usable UserDefaults suite")
+            return
+        }
+        let hostKeyStore = TOFUHostKeyStore(defaults: defaults)
+
+        let returned = expectation(description: "peer drop fails the in-flight exec instead of synthesising exit -1")
+        let outcome = OutcomeBox()
+
+        Task {
+            do {
+                let connection = try await PooledSSHConnection.dial(
+                    config,
+                    hostKeyStore: hostKeyStore,
+                    connectTimeoutSeconds: 5,
+                    handshakeDeadlineSeconds: 5
+                )
+
+                async let execResult: Result<SSHExecResult, Error> = {
+                    do {
+                        return .success(try await connection.exec("sleep 100", timeoutSeconds: 30))
+                    } catch {
+                        return .failure(error)
+                    }
+                }()
+
+                await execRequestGate.wait()
+                // Tear down the accepted peer connection — not the client's `close()`, and not
+                // merely the listen socket — so the child channel goes inactive without an
+                // exit-status and without `failIfPending`.
+                guard let peer = await acceptedBox.channel else {
+                    await outcome.set(.failure(TestServerError.unexpectedChannelType))
+                    returned.fulfill()
+                    return
+                }
+                try? peer.close().wait()
+
+                await outcome.set(await execResult)
+            } catch {
+                await outcome.set(.failure(error))
+            }
+            returned.fulfill()
+        }
+
+        await fulfillment(of: [returned], timeout: 15)
+
+        guard let result = await outcome.value else {
+            XCTFail("the dial/exec/peer-drop flow never completed")
+            return
+        }
+        switch result {
+        case .success(let execResult):
+            XCTFail("expected a peer drop to throw, got a synthetic result instead: \(execResult)")
+        case .failure(let error):
+            guard let sshError = error as? SSHRemoteError else {
+                XCTFail("expected SSHRemoteError.unreachable, got an internal error type: \(error)")
+                return
+            }
+            XCTAssertEqual(
+                sshError, .unreachable,
+                "a mid-command peer drop must throw unreachable, not succeed with exitCode -1"
+            )
+        }
+    }
 }
 
 private enum TestServerError: Error {
@@ -236,4 +356,12 @@ private actor SignalGate {
 private actor OutcomeBox {
     private(set) var value: Result<SSHExecResult, Error>?
     func set(_ value: Result<SSHExecResult, Error>) { self.value = value }
+}
+
+/// Captures the accepted SSH parent channel from `ServerBootstrap.childChannelInitializer` so a
+/// test can close the peer side without relying on shutting down the listen socket (which leaves
+/// already-accepted connections alive).
+private actor ChannelBox {
+    private(set) var channel: Channel?
+    func set(_ channel: Channel) { self.channel = channel }
 }

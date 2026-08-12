@@ -216,9 +216,32 @@ final class ExecOutputHandler: ChannelInboundHandler {
             promise.fail(SSHRemoteError.commandFailed(exitCode: -1, stderr: "exec timed out"))
             return
         }
+        guard let exitCode else {
+            // The channel went away without ever reporting an exit status, and this wasn't the
+            // deliberate timeout case above. Every host this app manages runs OpenSSH's `sshd`
+            // (see `SSHRemoteError.tmuxMissing`'s Homebrew/apt install hint elsewhere in this
+            // codebase — this isn't a generic SSH client aimed at arbitrary server
+            // implementations), and a compliant OpenSSH server always sends exit-status before
+            // closing the channel for a command that actually ran to completion. So a missing
+            // exit code here is evidence the *connection* died (peer
+            // RST/FIN, a Wi-Fi/cellular handoff, a network drop mid-command), not evidence the
+            // command quietly succeeded. Synthesizing `exitCode: -1` for that case used to let
+            // `SessionService` misreport it as a "command failed" alert for something that was
+            // never a remote failure, and it silently skipped the pool's retry-once path (which
+            // only ever sees a *thrown* error). Failing with `.unreachable` instead fixes both:
+            // an honest, existing user-facing message, and a real error the pool can act on.
+            //
+            // (A command killed by a signal is reported over a distinct `ExitSignal` request
+            // this handler doesn't track, not by omitting `ExitStatus` — and `exec` here is only
+            // ever used for this app's own short, app-controlled management commands (tmux
+            // new-session/list/kill, mkdir, test -d, ...), never an interactive user shell, so
+            // that case is not a realistic concern for this path either way.)
+            promise.fail(SSHRemoteError.unreachable)
+            return
+        }
         promise.succeed(
             SSHExecResult(
-                exitCode: exitCode ?? -1,
+                exitCode: exitCode,
                 stdout: String(decoding: stdout, as: UTF8.self),
                 stderr: String(decoding: stderr, as: UTF8.self)
             )

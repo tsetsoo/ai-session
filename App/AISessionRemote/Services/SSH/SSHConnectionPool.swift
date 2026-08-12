@@ -60,12 +60,22 @@ actor SSHConnectionPool {
     /// reachability probe and a real session command) can safely share the one pooled
     /// connection without either one's budget leaking onto the other's command.
     ///
-    /// If the cached connection turns out to be dead — Wi-Fi/cellular handoff, Tailscale
-    /// re-route, iOS suspension — it is evicted and the command retried **once** on a fresh
-    /// connection. If instead the connection reports itself still alive (a transient,
-    /// per-command failure — e.g. the host briefly refused a new channel), the retry reuses that
-    /// same connection rather than tearing it down for every other caller currently sharing it.
-    /// Only a second failure reaches the caller.
+    /// The retry is scoped to failures that are provably free of side effects: only a failure
+    /// that happened while *opening the child channel* for this command — reported by a
+    /// `PooledConnecting` implementation as `SSHChannelOpenFailure` rather than a plain
+    /// `SSHRemoteError` — is retried, because in that case the command was never delivered to
+    /// the host. If the cached connection also turns out to be dead — Wi-Fi/cellular handoff,
+    /// Tailscale re-route, iOS suspension — it is evicted first and the retry dials a fresh one;
+    /// if instead the connection reports itself still alive (a transient, per-command failure —
+    /// e.g. the host briefly refused a new channel), the retry reuses that same connection
+    /// rather than tearing it down for every other caller currently sharing it. Only a second
+    /// failure reaches the caller.
+    ///
+    /// A failure that happens *after* the child channel opened — a command timeout, the channel
+    /// dying mid-command — is never retried here, no matter how it leaves `isAlive`: the command
+    /// may already have run on the host (e.g. `tmux new-session`), and re-running it could double
+    /// it up rather than merely retrying it. That failure still surfaces to the caller as the
+    /// plain `SSHRemoteError` it actually is.
     func exec(_ config: HostConnectionConfig, command: String, timeoutSeconds: Int64 = 30) async throws -> SSHExecResult {
         return try await run(config, command: command, timeoutSeconds: timeoutSeconds, allowRetry: true)
     }
@@ -148,18 +158,34 @@ actor SSHConnectionPool {
         }
     }
 
+    /// Called on `didEnterBackgroundNotification`: closes every connection this pool can afford
+    /// to close right now, so a socket iOS is about to suspend anyway doesn't cost a full
+    /// connect timeout the next time it's used.
+    ///
+    /// Deliberately does **not** touch an entry with `leases > 0` — most importantly, an
+    /// attached terminal PTY, which holds its lease for as long as the terminal screen stays
+    /// open (see `openPTY`). The terminal's channel is a child of the very same parent
+    /// connection this closes, so closing a leased entry here would tear the terminal down on
+    /// every brief backgrounding (switching apps for a few seconds, an incoming call), which is
+    /// a regression against the app's behaviour before pooling existed — back then the terminal
+    /// dialled its own connection and had nothing to do with this method. Only idle (unleased)
+    /// connections are eager-closed, which is the actual point of doing this on backgrounding:
+    /// there is no *use* being interrupted for those.
+    ///
+    /// A leased entry skipped here is not exempted forever: it is left fully registered, so the
+    /// ordinary idle-eviction timer in `releaseLease`/`scheduleIdleEviction` takes over the
+    /// moment its lease is later released — including while the app is still backgrounded — and
+    /// closes it after `idleTimeout` exactly as it would have if `closeAll()` had never run.
     func closeAll() async {
         generation += 1
-        let current = entries
-        entries.removeAll()
         let pendingDials = Array(dialsInFlight.values)
         dialsInFlight.removeAll()
         for task in pendingDials {
             task.cancel()
         }
-        for (_, entry) in current {
-            entry.idleTask?.cancel()
-            await entry.connection.close()
+        let idleKeys = entries.filter { $0.value.leases == 0 }.map(\.key)
+        for key in idleKeys {
+            await evict(key)
         }
     }
 
@@ -203,9 +229,15 @@ actor SSHConnectionPool {
             return result
         } catch {
             releaseLease(key)
-            guard allowRetry else { throw error }
+            // Only a channel-open failure is provably free of side effects — see the doc comment
+            // on `exec` and on `SSHChannelOpenFailure` itself. Anything else (a command timeout,
+            // the channel dying mid-command) is unwrapped and rethrown as-is, with no retry: the
+            // command may already have run on the host.
+            guard allowRetry, error is SSHChannelOpenFailure else {
+                throw (error as? SSHChannelOpenFailure)?.underlying ?? error
+            }
             // Only tear the connection down for every other caller currently sharing it if it
-            // actually reports itself dead. A command that failed for a narrower, per-channel
+            // actually reports itself dead. A channel-open failure for a narrower, per-channel
             // reason (e.g. the host transiently refused a new session) leaves an otherwise
             // healthy connection in place, so the retry reuses it instead of evicting it.
             if !connection.isAlive {

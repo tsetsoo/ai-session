@@ -138,9 +138,12 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
             // let the pool keep handing out a connection that can no longer open channels. This
             // is a parent-implicating failure (the handler is only ever removed when the
             // *pipeline* tears down), unlike an individual channel-open request being refused
-            // below.
+            // below. Nothing has been sent to the host yet — no child channel was even
+            // attempted — so this is safe for the pool to retry once against a fresh connection;
+            // wrap it so `SSHConnectionPool` can tell it apart from a failure that happened after
+            // the command was actually delivered.
             markDead()
-            throw SSHRemoteError.authenticationFailed
+            throw SSHChannelOpenFailure(underlying: SSHRemoteError.authenticationFailed)
         }
 
         let resultPromise = channel.eventLoop.makePromise(of: SSHExecResult.self)
@@ -205,13 +208,16 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
             // dead here would tear it down for every other command sharing it. Only do that when
             // there's actual evidence the transport itself is gone — the parent channel is no
             // longer active, whether because the handshake deadline above just fired, or the
-            // connection genuinely dropped. Otherwise leave `isAlive` alone and let this error
-            // propagate; the pool's retry-once logic checks `isAlive` itself and only evicts a
-            // connection that really is dead, reusing this one for the retry otherwise.
+            // connection genuinely dropped. Otherwise leave `isAlive` alone; either way, the
+            // pool's retry-once logic decides whether to evict by checking `isAlive` itself.
             if !channel.isActive {
                 markDead()
             }
-            throw SSHRemoteError.authenticationFailed
+            // The command was never delivered — `childChannel` never opened, so nothing ran on
+            // the host — which is exactly what makes this safe for the pool to retry once,
+            // whether that retry reuses this connection (still alive) or a freshly redialed one
+            // (evicted above).
+            throw SSHChannelOpenFailure(underlying: SSHRemoteError.authenticationFailed)
         }
 
         // Bounds how long the remote command may run. Unlike the handshake deadline above, this
