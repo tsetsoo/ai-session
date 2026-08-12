@@ -45,6 +45,13 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
 
     private let lock = NSLock()
     private var _isAlive = true
+    /// Every `exec(_:timeoutSeconds:)` call currently in flight on this connection, keyed by its
+    /// `ExecOutputHandler`'s identity. Populated the moment the handler is created and drained
+    /// the moment its result settles (success, failure, or timeout) — see `exec`'s
+    /// `resultPromise.futureResult.whenComplete` — so this never grows for the life of the
+    /// connection. Guarded by `lock`, the same lock as `_isAlive`, so `close()` can drain it
+    /// atomically with marking the connection dead.
+    private var inFlightExecHandlers: [ObjectIdentifier: ExecOutputHandler] = [:]
 
     var isAlive: Bool {
         lock.withLock { _isAlive && channel.isActive }
@@ -139,6 +146,16 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
         let resultPromise = channel.eventLoop.makePromise(of: SSHExecResult.self)
         let channelPromise = channel.eventLoop.makePromise(of: Channel.self)
         let execHandler = ExecOutputHandler(command: command, resultPromise: resultPromise)
+
+        // Tracked from creation so `close()` can fail this command with a real, user-facing
+        // error (`SSHRemoteError.unreachable`) instead of letting the channel teardown produce
+        // a synthetic "successful" `exitCode: -1` — see `close()`. Removed the moment the result
+        // settles, whichever way, so this bookkeeping never outlives the command.
+        let execHandlerKey = ObjectIdentifier(execHandler)
+        lock.withLock { inFlightExecHandlers[execHandlerKey] = execHandler }
+        resultPromise.futureResult.whenComplete { [weak self] _ in
+            self?.lock.withLock { self?.inFlightExecHandlers.removeValue(forKey: execHandlerKey) }
+        }
 
         // If `createChannel` fails before the handler is installed (auth/TOFU/handshake
         // timeout), nothing else will complete `resultPromise` — fail it here so deinit cannot
@@ -309,6 +326,29 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
 
     func close() async {
         markDead()
+
+        // A command genuinely still running when the connection is deliberately torn down
+        // (e.g. the app backgrounding mid-`exec`) must not be left to observe
+        // `ExecOutputHandler.complete()`'s synthetic, misleading "successful"
+        // `exitCode: -1` result from the channel simply going inactive — `SessionService` turns
+        // that into `SSHRemoteError.commandFailed`, surfaced as a confusing "command failed"
+        // alert for something that was never a remote failure at all. Failing each pending
+        // handler here, before the channel actually closes, gives the caller the same real,
+        // already user-facing error a genuinely dead connection would produce instead.
+        //
+        // Drained under `lock` before failing any of them (rather than failing while holding the
+        // lock) so `resultPromise.futureResult.whenComplete`'s own lock acquisition, triggered
+        // synchronously by `failIfPending` below, can't deadlock against this method holding the
+        // same lock.
+        let pendingHandlers = lock.withLock {
+            let handlers = Array(inFlightExecHandlers.values)
+            inFlightExecHandlers.removeAll()
+            return handlers
+        }
+        for handler in pendingHandlers {
+            handler.failIfPending(SSHRemoteError.unreachable)
+        }
+
         try? await channel.close().get()
     }
 

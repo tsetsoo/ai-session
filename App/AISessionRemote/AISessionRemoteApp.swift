@@ -14,13 +14,16 @@ struct AISessionRemoteApp: App {
                     // iOS suspends sockets while backgrounded; a half-dead socket costs a full
                     // connect timeout on the next use, so closing eagerly here is faster than
                     // discovering deadness later.
-                    Task { await NIOSSHClient.shared.closeAll() }
-                }
-                .onReceive(NotificationCenter.default.publisher(
-                    for: UIApplication.didBecomeActiveNotification
-                )) { _ in
-                    // Close on resume too, so the next action dials fresh rather than slowly
-                    // discovering a connection that went stale while backgrounded.
+                    //
+                    // Deliberately NOT mirrored on `didBecomeActiveNotification`. That
+                    // notification also fires after a merely transient `willResignActive` that
+                    // never actually backgrounded the app — Control Center, Notification Center,
+                    // an incoming-call banner, a share sheet, a permission prompt — and closing
+                    // there would tear down a perfectly healthy connection out from under any
+                    // command still in flight. After a genuine background/foreground cycle this
+                    // handler has already emptied the pool, so a foreground close would only ever
+                    // be a no-op (or, on a false alarm, actively harmful) — it buys nothing this
+                    // handler doesn't already provide. Do not add it back.
                     Task { await NIOSSHClient.shared.closeAll() }
                 }
         }

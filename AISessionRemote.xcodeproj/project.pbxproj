@@ -7,8 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0058CC6E1A28F8AE88C4172B /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = B65AA1F0997AA790C79443EC /* NIOPosix */; };
 		00B684C59E7681CFF43EB203 /* AISessionRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */; };
-		022B57F04655E920FB73A18C /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 5D3154CABEED9F0C1642E75F /* Crypto */; };
+		022B57F04655E920FB73A18C /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 817B00374F94FAE43898BD11 /* NIOCore */; };
 		1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */; };
 		179CFAD30F54E92A25FE71AA /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 05BD2283E26F32148478AD0E /* Crypto */; };
 		221D767F06B05BE1A5E982FD /* SSHConnectionPoolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */; };
@@ -17,9 +18,11 @@
 		2DF7D033594787FFDA1BB4F0 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 14F6B7A8CBAF4F1974CDDB24 /* SwiftTerm */; };
 		38388D5CFD2F84A54431E65F /* SSHTerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */; };
 		3F324CB622DB3E280E202EA1 /* SessionServiceFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */; };
+		59C45B28CBCDC28F707DDF18 /* PooledSSHConnectionCloseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4325A2838E2861F98B34246 /* PooledSSHConnectionCloseTests.swift */; };
 		6913D939F32ABA65540B8B7F /* AttentionNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3708ACD4BFADB69A73E0DB09 /* AttentionNotifier.swift */; };
 		73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1B02295F04DE55821A1C7F /* HostsListView.swift */; };
 		748A1A2AC01B92433F2CBAFC /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = D2F4F750AAE4488C18680D69 /* NIOPosix */; };
+		7F6D43567AAD0DF479531266 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 5D3154CABEED9F0C1642E75F /* Crypto */; };
 		85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */; };
 		8802A9FE72AD0B666E5169E7 /* PromoteSessionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3241ADE6D78A7C9BB02EC3 /* PromoteSessionSheet.swift */; };
 		8A20DDF3FA5A04B21689A987 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */; };
@@ -83,6 +86,7 @@
 		EE3B756FF0192985AADAFF36 /* HostRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostRepository.swift; sourceTree = "<group>"; };
 		EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReachabilityProbe.swift; sourceTree = "<group>"; };
 		F06755DADA1B0CE90BE0D801 /* ai-session-remote */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ai-session-remote"; path = .; sourceTree = SOURCE_ROOT; };
+		F4325A2838E2861F98B34246 /* PooledSSHConnectionCloseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PooledSSHConnectionCloseTests.swift; sourceTree = "<group>"; };
 		F7B4DE59A842C29732755FED /* TerminalOutputCoalescer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalOutputCoalescer.swift; sourceTree = "<group>"; };
 		FA4DD29F996099D82C6D7514 /* HostEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEntity.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -106,7 +110,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				98E8F675B83628ACA76E96E2 /* NIOSSH in Frameworks */,
-				022B57F04655E920FB73A18C /* Crypto in Frameworks */,
+				022B57F04655E920FB73A18C /* NIOCore in Frameworks */,
+				0058CC6E1A28F8AE88C4172B /* NIOPosix in Frameworks */,
+				7F6D43567AAD0DF479531266 /* Crypto in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -204,6 +210,7 @@
 			isa = PBXGroup;
 			children = (
 				6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */,
+				F4325A2838E2861F98B34246 /* PooledSSHConnectionCloseTests.swift */,
 				02AE6114F65FF42A87E1B35F /* ReachabilityProbeTests.swift */,
 				C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */,
 				A96BCB7E12B43FC54FCD91FC /* TerminalOutputCoalescerTests.swift */,
@@ -273,6 +280,8 @@
 			name = AISessionRemoteTests;
 			packageProductDependencies = (
 				933D60662FF1D5CFC33458A1 /* NIOSSH */,
+				817B00374F94FAE43898BD11 /* NIOCore */,
+				B65AA1F0997AA790C79443EC /* NIOPosix */,
 				5D3154CABEED9F0C1642E75F /* Crypto */,
 			);
 			productName = AISessionRemoteTests;
@@ -352,6 +361,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */,
+				59C45B28CBCDC28F707DDF18 /* PooledSSHConnectionCloseTests.swift in Sources */,
 				2C15E7B5071B758B1AB3938E /* ReachabilityProbeTests.swift in Sources */,
 				221D767F06B05BE1A5E982FD /* SSHConnectionPoolTests.swift in Sources */,
 				EE04800E43A3B5A9887D4281 /* TOFUHostKeyStoreTests.swift in Sources */,
@@ -658,10 +668,20 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = AISessionCore;
 		};
+		817B00374F94FAE43898BD11 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F86CE8150CC8E4CB73336807 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
 		933D60662FF1D5CFC33458A1 /* NIOSSH */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = FE11F576EC2B106E67BFC20D /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
 			productName = NIOSSH;
+		};
+		B65AA1F0997AA790C79443EC /* NIOPosix */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F86CE8150CC8E4CB73336807 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOPosix;
 		};
 		C2851F1ABC0544053EA972F7 /* NIOSSH */ = {
 			isa = XCSwiftPackageProductDependency;
