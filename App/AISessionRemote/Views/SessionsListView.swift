@@ -55,6 +55,12 @@ struct SessionsListView: View {
         // or the session simply exiting — refreshes the list every time this view becomes
         // visible again, not just on first push.
         .onAppear {
+            // Fire-and-forget: `warm` never throws and its own dial failures stay silent inside
+            // the pool, so a speculative dial can never surface an error the user did not
+            // provoke — `loadSessions` below is what reports any real problem with this host.
+            if let connection = try? SessionServiceFactory().make(for: host) {
+                Task { await NIOSSHClient.shared.warm(connection.config) }
+            }
             Task { await loadSessions() }
         }
         .toolbar {

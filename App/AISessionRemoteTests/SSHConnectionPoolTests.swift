@@ -447,6 +447,53 @@ final class SSHConnectionPoolTests: XCTestCase {
         XCTAssertEqual(total, 2)
     }
 
+    /// `SSHConnectionPool.warm` is deliberately fire-and-forget (see its doc comment): dialing
+    /// ahead of time is speculative, so a failure must never surface to the caller — the real
+    /// action that follows is what should report any genuine problem. `warm` isn't even declared
+    /// `throws`, which is a compile-time guarantee of that on its own; this test additionally
+    /// confirms a failed warm leaves no stray bookkeeping behind (no leaked lease, no phantom
+    /// entry) that could corrupt a later, real call for the same host.
+    func testWarmSwallowsADialFailureAndLeavesNoTraceBehind() async throws {
+        let pool = SSHConnectionPool(
+            sleep: { _ in },
+            dial: { _ in throw SSHRemoteError.unreachable }
+        )
+        let config = config()
+
+        await pool.warm(config)
+
+        // `warm` fires its dial on an unstructured Task and exposes no completion signal, so
+        // give it real turns to run rather than asserting after only a single tick.
+        for _ in 0..<20 { await Task.yield() }
+
+        let leases = await pool.leaseCount(for: config)
+        XCTAssertNil(leases, "a failed warm must not leave a dangling lease/entry")
+    }
+
+    /// `warm` dials ahead of time but must give its lease straight back once the connection is
+    /// established (per its doc comment) — pinning the connection open until the idle timer
+    /// would have fired anyway would defeat the point of having an idle timer. Uses the same
+    /// "await close() as an event" pattern as `testIdleConnectionIsClosedAfterTimeout`.
+    func testWarmReleasesItsLeaseSoTheConnectionRemainsIdleEvictable() async throws {
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(
+            idleTimeout: .milliseconds(1),
+            sleep: { _ in /* resolve the idle timer immediately, deterministically */ },
+            dial: { _ in
+                let connection = FakeConnection()
+                await connections.add(connection)
+                return connection
+            }
+        )
+        let config = config()
+
+        await pool.warm(config)
+
+        let connection = await connections.waitForFirst()
+        await connection.waitForClose()
+        XCTAssertEqual(connection.closeCount, 1, "warm's lease must be released, not held open")
+    }
+
     /// Regression test for a reentrancy bug: a caller that *coalesces* onto an already
     /// in-flight dial (rather than owning it) could return from the pool's internals without
     /// ever having its lease counted, because the entry didn't exist yet when its continuation
