@@ -86,4 +86,43 @@ final class TmuxCommandBuilderTests: XCTestCase {
     func testShellQuoteEscapesApostrophe() {
         XCTAssertEqual(TmuxCommandBuilder.shellQuote("it's"), "'it'\"'\"'s'")
     }
+
+    func testListSessionsWithStatusesEmitsMarkerAndPreservesLsExitCode() {
+        let command = TmuxCommandBuilder.listSessionsWithStatuses()
+        XCTAssertTrue(command.contains("tmux ls -F"))
+        XCTAssertTrue(command.contains("echo '\(RemoteScriptOutput.statusMarker)'"))
+        // The script must exit with tmux ls's status so isNoServerError still fires.
+        XCTAssertTrue(command.contains("exit $ls_exit"))
+    }
+
+    func testCreateSessionScriptUsesExitNinetyForMissingBinary() throws {
+        // SessionName.init(tool:slug:) is failable, not throwing.
+        let name = try XCTUnwrap(SessionName(tool: .claude, slug: "demo"))
+        let command = TmuxCommandBuilder.createSession(
+            name: name, cwd: "/tmp/demo", binary: "claude", metadataTemplate: "{\"cli\":[\"%s\"]}"
+        )
+        XCTAssertTrue(command.contains("command -v 'claude'"))
+        XCTAssertTrue(command.contains("|| exit 90"))
+        // exec so tmux's own exit code and stderr reach the client for duplicate detection.
+        XCTAssertTrue(command.contains("exec tmux new-session -d -s 'ai/claude/demo'"))
+        XCTAssertTrue(command.contains("-- \"$p\""))
+    }
+
+    func testCreateSessionScriptQuotesTemplateContainingSingleQuote() throws {
+        let name = try XCTUnwrap(SessionName(tool: .claude, slug: "demo"))
+        let command = TmuxCommandBuilder.createSession(
+            name: name, cwd: "/tmp", binary: "claude", metadataTemplate: "{\"title\":\"it's\"}"
+        )
+        // shellQuote's '"'"' escape must appear so the quote cannot terminate the literal early.
+        XCTAssertTrue(command.contains("'\"'\"'"))
+    }
+
+    func testPromoteSessionScriptMergesRenameAndMetadata() {
+        let command = TmuxCommandBuilder.promoteSession(
+            fromTmuxName: "old", toTmuxName: "ai/claude/demo", json: "{}"
+        )
+        XCTAssertTrue(command.contains("tmux rename-session -t 'old' 'ai/claude/demo'"))
+        XCTAssertTrue(command.contains("printf '%s'"))
+        XCTAssertTrue(command.contains("ai__claude__demo.json"))
+    }
 }
