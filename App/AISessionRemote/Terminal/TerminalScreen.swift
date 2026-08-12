@@ -31,9 +31,29 @@ final class TerminalCoordinator: TerminalViewDelegate {
         didSet { onStateChange?(state) }
     }
 
+    /// Batches remote output into one `feed()` per display frame instead of one per inbound SSH
+    /// chunk. `append` is thread-safe and called from `session.onOutput`, which arrives off the
+    /// main thread; `onFlush` runs after the injected scheduler hops to the main thread.
+    private let coalescer: TerminalOutputCoalescer
+
+    /// Debounces `sizeChanged` reports (see `TerminalResizeDebouncer`). Only ever touched from
+    /// the main thread.
+    private let resizeDebouncer: TerminalResizeDebouncer
+
     init(hostConfig: HostConnectionConfig, mode: TerminalMode) {
         self.hostConfig = hostConfig
         self.mode = mode
+        self.coalescer = TerminalOutputCoalescer { drain in
+            DispatchQueue.main.async(execute: drain)
+        }
+        self.resizeDebouncer = TerminalResizeDebouncer { work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        }
+        // Safe to capture `self` here: by this point every stored property has an initial
+        // value, so `self` is fully initialized.
+        self.coalescer.onFlush = { [weak self] bytes in
+            self?.terminalView?.feed(byteArray: bytes[...])
+        }
     }
 
     func attach(to terminalView: TerminalView) {
@@ -53,9 +73,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
         let session = SSHTerminalSession(config: hostConfig, mode: mode)
         session.onOutput = { [weak self] bytes in
-            DispatchQueue.main.async {
-                self?.terminalView?.feed(byteArray: bytes[...])
-            }
+            // Arrives off the main thread; the coalescer is thread-safe and does the main-thread
+            // hop itself before `feed`ing SwiftTerm.
+            self?.coalescer.append(bytes)
         }
         session.onDisconnect = { [weak self] in
             DispatchQueue.main.async {
@@ -68,8 +88,15 @@ final class TerminalCoordinator: TerminalViewDelegate {
         do {
             try await session.connect(cols: cols, rows: rows)
             let liveTerminal = terminalView.getTerminal()
-            if liveTerminal.cols > 0, liveTerminal.rows > 0 {
+            // The PTY was already requested at cols x rows; only tell the host if the view
+            // actually changed size while connecting. An unnecessary window-change makes tmux
+            // repaint the whole screen at the worst possible moment.
+            if liveTerminal.cols > 0, liveTerminal.rows > 0,
+               liveTerminal.cols != cols || liveTerminal.rows != rows {
                 session.resize(cols: liveTerminal.cols, rows: liveTerminal.rows)
+                resizeDebouncer.noteSentSize(cols: liveTerminal.cols, rows: liveTerminal.rows)
+            } else {
+                resizeDebouncer.noteSentSize(cols: cols, rows: rows)
             }
             state = .connected
         } catch {
@@ -84,6 +111,10 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
     /// Closes the SSH connection only. `tmux` keeps the session running on the remote host.
     func disconnect() {
+        // Must run before tearing down `session`: without it, a resize debounced for this
+        // session could still fire later (after a `reconnect()`) and land — at a now-stale
+        // size — on whatever new session replaces it.
+        resizeDebouncer.cancelPending()
         session?.disconnect()
         session = nil
     }
@@ -134,7 +165,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
     // MARK: TerminalViewDelegate
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-        session?.resize(cols: newCols, rows: newRows)
+        resizeDebouncer.sizeChanged(cols: newCols, rows: newRows) { [weak self] cols, rows in
+            self?.session?.resize(cols: cols, rows: rows)
+        }
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
@@ -208,6 +241,12 @@ struct TerminalScreen: View {
     @State private var showingKillConfirmation = false
     @State private var keyboardVisible = false
     @State private var isDisconnected = false
+    /// Gates `connectingOverlay`. With a warm connection pool, attach (and reconnect) are
+    /// usually fast enough that showing this immediately would just be a flash; it's only
+    /// raised once `.connecting`/`.idle` has held for ~250ms. Applies to every connect/reconnect,
+    /// not just the first, via the `onChange` below.
+    @State private var showConnectingOverlay = false
+    @State private var connectingOverlayTask: Task<Void, Never>?
 
     init(
         hostConfig: HostConnectionConfig,
@@ -228,7 +267,7 @@ struct TerminalScreen: View {
                 .background(Color.black)
                 .ignoresSafeArea(.container, edges: .bottom)
 
-            if connectionState == .connecting || connectionState == .idle {
+            if showConnectingOverlay && (connectionState == .connecting || connectionState == .idle) {
                 connectingOverlay
             }
             if isDisconnected {
@@ -363,6 +402,21 @@ struct TerminalScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardVisible = false
         }
+        .onChange(of: connectionState, initial: true) { _, newState in
+            // Re-armed on every transition into `.connecting`/`.idle`, so this also covers
+            // `reconnect()` — not just the very first connect from `.task` below.
+            connectingOverlayTask?.cancel()
+            if newState == .connecting || newState == .idle {
+                connectingOverlayTask = Task {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    if !Task.isCancelled {
+                        showConnectingOverlay = true
+                    }
+                }
+            } else {
+                showConnectingOverlay = false
+            }
+        }
         .task {
             await coordinator.connect()
             // Focus after the view is in a window so the soft keyboard + SwiftTerm
@@ -371,6 +425,7 @@ struct TerminalScreen: View {
             coordinator.focusTerminal()
         }
         .onDisappear {
+            connectingOverlayTask?.cancel()
             coordinator.disconnect()
         }
     }
