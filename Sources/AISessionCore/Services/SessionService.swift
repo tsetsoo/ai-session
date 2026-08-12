@@ -52,21 +52,19 @@ public struct SessionService: Sendable {
         config: HostConnectionConfig
     ) async throws -> (ai: [RemoteSession], other: [RemoteSession]) {
         do {
-            let result = try await ssh.exec(config, command: TmuxCommandBuilder.listSessions())
+            let result = try await ssh.exec(config, command: TmuxCommandBuilder.listSessionsWithStatuses())
             if result.exitCode == 0 {
-                let sessions = TmuxListParser.parse(listSessionsOutput: result.stdout)
-                do {
-                    let statusResult = try await ssh.exec(config, command: TmuxCommandBuilder.readAgentStatuses())
-                    if statusResult.exitCode == 0 {
-                        return TmuxListParser.applyAgentStatuses(
-                            TmuxListParser.parseAgentStatuses(output: statusResult.stdout),
-                            to: sessions
-                        )
-                    }
-                } catch {
-                    // Agent status files are supplemental and must not make listing fail.
-                }
-                return sessions
+                let (listOutput, statusOutput) = RemoteScriptOutput.split(
+                    result.stdout, at: RemoteScriptOutput.statusMarker
+                )
+                let sessions = TmuxListParser.parse(listSessionsOutput: listOutput)
+                // Agent status files are supplemental and must not make listing fail; a nil
+                // tail means the dump never ran, which is not an error.
+                guard let statusOutput, !statusOutput.isEmpty else { return sessions }
+                return TmuxListParser.applyAgentStatuses(
+                    TmuxListParser.parseAgentStatuses(output: statusOutput),
+                    to: sessions
+                )
             }
             guard isNoServerError(result.stderr) else {
                 throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
@@ -97,61 +95,40 @@ public struct SessionService: Sendable {
                 throw SessionServiceError.invalidSlug(slug)
             }
 
-            let whichResult = try await ssh.exec(config, command: TmuxCommandBuilder.which(binary: binary))
-            guard whichResult.exitCode == 0 else {
-                throw SSHRemoteError.binaryMissing(binary)
-            }
-            let resolvedBinary = whichResult.stdout
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .split(whereSeparator: \.isNewline)
-                .first
-                .map(String.init)
-            guard let resolvedBinary, !resolvedBinary.isEmpty else {
-                throw SSHRemoteError.binaryMissing(binary)
-            }
-
-            let metadata = SessionMetadata(
-                tool: tool,
-                cwd: cwd,
-                title: title ?? slug,
-                startedAt: Date(),
-                cli: [resolvedBinary]
-            )
-            guard let json = String(data: try metadata.jsonData(), encoding: .utf8) else {
+            let template: String
+            do {
+                template = try SessionMetadata.printfTemplate(
+                    tool: tool,
+                    cwd: cwd,
+                    title: title ?? slug,
+                    startedAt: Date()
+                )
+            } catch {
                 throw SessionServiceError.metadataEncodingFailed
             }
 
-            let metadataResult = try await ssh.exec(
-                config,
-                command: TmuxCommandBuilder.writeMetadata(tmuxName: name.tmuxName, json: json)
-            )
-            try requireSuccess(metadataResult)
-
             do {
-                let sessionResult = try await ssh.exec(
+                let result = try await ssh.exec(
                     config,
-                    command: TmuxCommandBuilder.newDetachedSession(
-                        name: name,
-                        cwd: cwd,
-                        commandArgs: [resolvedBinary]
+                    command: TmuxCommandBuilder.createSession(
+                        name: name, cwd: cwd, binary: binary, metadataTemplate: template
                     )
                 )
-                guard sessionResult.exitCode == 0 else {
+                switch result.exitCode {
+                case 0:
+                    return name
+                case 90:
+                    throw SSHRemoteError.binaryMissing(binary)
+                default:
                     let error = SSHRemoteError.commandFailed(
-                        exitCode: sessionResult.exitCode,
-                        stderr: sessionResult.stderr
+                        exitCode: result.exitCode, stderr: result.stderr
                     )
-                    guard isDuplicateSessionError(sessionResult.stderr) else {
-                        throw error
-                    }
+                    guard isDuplicateSessionError(result.stderr) else { throw error }
                     lastDuplicateError = error
                     continue
                 }
-                return name
             } catch let error as SSHRemoteError {
-                guard isDuplicateSessionError(error) else {
-                    throw error
-                }
+                guard isDuplicateSessionError(error) else { throw error }
                 lastDuplicateError = error
             }
         }
@@ -175,12 +152,6 @@ public struct SessionService: Sendable {
         fromTmuxName: String,
         to name: SessionName
     ) async throws {
-        let renameResult = try await ssh.exec(
-            config,
-            command: TmuxCommandBuilder.renameSession(from: fromTmuxName, to: name.tmuxName)
-        )
-        try requireSuccess(renameResult)
-
         let metadata = SessionMetadata(
             tool: name.tool,
             cwd: "/",
@@ -191,11 +162,13 @@ public struct SessionService: Sendable {
         guard let json = String(data: try metadata.jsonData(), encoding: .utf8) else {
             throw SessionServiceError.metadataEncodingFailed
         }
-        let metadataResult = try await ssh.exec(
+        let result = try await ssh.exec(
             config,
-            command: TmuxCommandBuilder.writeMetadata(tmuxName: name.tmuxName, json: json)
+            command: TmuxCommandBuilder.promoteSession(
+                fromTmuxName: fromTmuxName, toTmuxName: name.tmuxName, json: json
+            )
         )
-        try requireSuccess(metadataResult)
+        try requireSuccess(result)
     }
 
     private func requireSuccess(_ result: SSHExecResult) throws {

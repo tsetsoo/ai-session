@@ -58,6 +58,46 @@ public extension SessionMetadata {
     }
 }
 
+public extension SessionMetadata {
+    enum TemplateError: Error, Equatable {
+        /// The encoded JSON did not contain exactly one placeholder — meaning user-supplied
+        /// text collided with it, so substituting would corrupt the document.
+        case placeholderCollision
+    }
+
+    /// Token standing in for the `cli` entry while the JSON is encoded, then swapped for `%s`.
+    static let cliPlaceholder = "__AI_REMOTE_CLI_PATH__"
+
+    /// JSON for this session's metadata as a `printf` **format string** taking exactly one
+    /// argument: the binary path resolved on the host.
+    ///
+    /// The binary path is only known remotely, so metadata cannot be fully encoded on the
+    /// client. Both backslashes and percent signs are escaped so user text such as a "100% done"
+    /// title or paths containing forward slashes survive `printf` intact. Escaping order matters:
+    /// backslashes are escaped first (so the `%` escaping doesn't re-escape them), then percent
+    /// signs, then the placeholder is replaced with `%s`.
+    static func printfTemplate(
+        tool: AITool,
+        cwd: String,
+        title: String,
+        startedAt: Date
+    ) throws -> String {
+        let templated = SessionMetadata(
+            tool: tool, cwd: cwd, title: title, startedAt: startedAt, cli: [cliPlaceholder]
+        )
+        let json = String(decoding: try templated.jsonData(), as: UTF8.self)
+
+        guard json.components(separatedBy: cliPlaceholder).count - 1 == 1 else {
+            throw TemplateError.placeholderCollision
+        }
+
+        return json
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "%%")
+            .replacingOccurrences(of: cliPlaceholder, with: "%s")
+    }
+}
+
 public enum SessionMetadataStore {
     public static func filename(for tmuxName: String) -> String {
         tmuxName.replacingOccurrences(of: "/", with: "__") + ".json"

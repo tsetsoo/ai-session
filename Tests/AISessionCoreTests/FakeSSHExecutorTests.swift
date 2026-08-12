@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import AISessionCore
 
@@ -57,5 +58,20 @@ final class FakeSSHExecutorTests: XCTestCase {
 
         XCTAssertEqual(result.exitCode, 127)
         XCTAssertEqual(result.stderr, "command not found")
+    }
+
+    func testRecordsEveryCommandInOrder() async throws {
+        let executor = FakeSSHExecutor(responsesByPrefix: [
+            "alpha": SSHExecResult(exitCode: 0, stdout: "a", stderr: ""),
+            "beta": SSHExecResult(exitCode: 0, stdout: "b", stderr: "")
+        ])
+        let config = HostConnectionConfig(
+            host: "example.com", port: 22, username: "tester", privateKeyPEM: Data()
+        )
+
+        _ = try await executor.exec(config, command: "alpha one")
+        _ = try await executor.exec(config, command: "beta two")
+
+        XCTAssertEqual(executor.recordedCommands, ["alpha one", "beta two"])
     }
 }
