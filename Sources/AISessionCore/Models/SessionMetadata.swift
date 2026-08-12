@@ -72,8 +72,10 @@ public extension SessionMetadata {
     /// argument: the binary path resolved on the host.
     ///
     /// The binary path is only known remotely, so metadata cannot be fully encoded on the
-    /// client. Every literal `%` is escaped to `%%` so user text such as a "100% done" title
-    /// survives `printf` intact.
+    /// client. Both backslashes and percent signs are escaped so user text such as a "100% done"
+    /// title or paths containing forward slashes survive `printf` intact. Escaping order matters:
+    /// backslashes are escaped first (so the `%` escaping doesn't re-escape them), then percent
+    /// signs, then the placeholder is replaced with `%s`.
     static func printfTemplate(
         tool: AITool,
         cwd: String,
@@ -90,6 +92,7 @@ public extension SessionMetadata {
         }
 
         return json
+            .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "%", with: "%%")
             .replacingOccurrences(of: cliPlaceholder, with: "%s")
     }

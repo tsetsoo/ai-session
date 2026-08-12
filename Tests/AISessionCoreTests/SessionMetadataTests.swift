@@ -69,4 +69,32 @@ final class SessionMetadataTests: XCTestCase {
         XCTAssertEqual(decoded.tool, .claude)
         XCTAssertEqual(decoded.cwd, "/tmp")
     }
+
+    /// Backslash escaping is critical: JSONEncoder emits backslashes (e.g., `\/` for paths
+    /// with forward slashes, `\n` for newlines), and printf interprets those as escape sequences
+    /// if not escaped. Without proper escaping, a title with a newline becomes a real newline
+    /// byte inside the JSON string, corrupting the file. This test ensures both backslashes
+    /// and forward slashes in paths survive the round trip.
+    func testPrintfTemplateRoundTripsBackslashAndNewlineInTitle() throws {
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let titleWithNewlineAndBackslash = "line1\nline2 back\\slash"
+        let template = try SessionMetadata.printfTemplate(
+            tool: .claude, cwd: "/tmp/demo", title: titleWithNewlineAndBackslash, startedAt: startedAt
+        )
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/printf")
+        process.arguments = [template, "/usr/local/bin/claude"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        let decoded = try SessionMetadata.from(jsonData: data)
+        XCTAssertEqual(decoded.title, titleWithNewlineAndBackslash)
+        XCTAssertEqual(decoded.cli, ["/usr/local/bin/claude"])
+        XCTAssertEqual(decoded.tool, .claude)
+        XCTAssertEqual(decoded.cwd, "/tmp/demo")
+    }
 }
