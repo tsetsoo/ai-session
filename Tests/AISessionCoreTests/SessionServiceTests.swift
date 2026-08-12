@@ -231,6 +231,28 @@ final class SessionServiceTests: XCTestCase {
         }
     }
 
+    func testCreateSessionRetriesOnceOnDuplicateThenSucceeds() async throws {
+        let executor = FakeSSHExecutor(responsesByPrefix: [
+            "tmux ls": mergedListResult(sessions: "", statuses: "")
+        ])
+        executor.enqueueResponses(
+            [
+                SSHExecResult(exitCode: 1, stdout: "", stderr: "duplicate session: ai/claude/demo"),
+                SSHExecResult(exitCode: 0, stdout: "", stderr: "")
+            ],
+            forPrefix: "exec tmux new-session"
+        )
+        let service = SessionService(ssh: executor)
+
+        let name = try await service.createSession(
+            config: config, tool: .claude, slug: "demo", cwd: "/tmp/demo", title: "Demo"
+        )
+
+        XCTAssertEqual(name.tmuxName, "ai/claude/demo")
+        // 2 execs per attempt (list + create) across the duplicate-then-succeed pair of attempts.
+        XCTAssertEqual(executor.recordedCommands.count, 4)
+    }
+
     func testPromoteSessionIssuesExactlyOneExec() async throws {
         let executor = FakeSSHExecutor(responsesByPrefix: [
             "tmux rename-session": SSHExecResult(exitCode: 0, stdout: "", stderr: "")
