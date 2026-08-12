@@ -255,7 +255,12 @@ public struct NIOSSHClient: SSHExecuting {
     private static let connectTimeoutSeconds: Int64 = 10
     private static let handshakeDeadlineSeconds: Int64 = 15
 
-    private static let pool = SSHConnectionPool { config in
+    /// The single pool shared by every `NIOSSHClient` instance — see the type-level doc comment
+    /// for why there must be exactly one. Also exposed as the default pool for
+    /// `SSHTerminalSession`, so attaching a terminal to a host reuses the same authenticated
+    /// connection as any `exec` (reachability probe, list/create/kill) against that host,
+    /// instead of dialing its own.
+    static let shared = SSHConnectionPool { config in
         try await PooledSSHConnection.dial(
             config,
             hostKeyStore: TOFUHostKeyStore(),
@@ -273,6 +278,6 @@ public struct NIOSSHClient: SSHExecuting {
     }
 
     public func exec(_ config: HostConnectionConfig, command: String) async throws -> SSHExecResult {
-        try await Self.pool.exec(config, command: command, timeoutSeconds: execTimeoutSeconds)
+        try await Self.shared.exec(config, command: command, timeoutSeconds: execTimeoutSeconds)
     }
 }

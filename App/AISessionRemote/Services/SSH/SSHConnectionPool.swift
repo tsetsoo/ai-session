@@ -83,6 +83,71 @@ actor SSHConnectionPool {
         }
     }
 
+    /// Opens a PTY on the pooled connection for `config`, holding a lease for as long as the
+    /// returned handle stays open — i.e. for the life of the attached terminal, which can run
+    /// for hours — so the idle timer never closes the connection out from under an
+    /// actively-used terminal (see the type-level doc comment on why that idle timer exists).
+    ///
+    /// The lease is released exactly once, whichever happens first: the caller closing the
+    /// returned handle (a deliberate detach) or `onClose` firing on its own (remote exit,
+    /// network drop). Both can fire — sometimes both, racing, for the same session — so the
+    /// release is guarded against running twice; a second release would otherwise silently
+    /// steal a lease legitimately held by some other concurrent use of the same connection.
+    func openPTY(
+        _ config: HostConnectionConfig,
+        mode: TerminalMode,
+        cols: Int,
+        rows: Int,
+        onOutput: @escaping ([UInt8]) -> Void,
+        onClose: @escaping () -> Void
+    ) async throws -> PTYHandle {
+        // Mirrors `run(_:command:...)`'s use of `connection(for:)` below: it never returns
+        // without the caller already holding exactly one counted lease, taken with no
+        // suspension point between the entry being created/found and the lease itself (see its
+        // doc comment). Unlike `exec`, which gives that lease straight back the moment the
+        // command finishes, the PTY holds onto this one lease for as long as the terminal
+        // stays attached — there is deliberately no *second* `acquireLease` call here to back
+        // that persistence; taking one would leave this lease permanently un-balanced by the
+        // single release below, and the connection would never become idle-evictable again
+        // even after the terminal disconnects.
+        let connection = try await connection(for: config)
+        let key = Self.key(for: config)
+
+        let releaseOnce = OnceFlag()
+        let release: @Sendable () -> Void = { [weak self] in
+            Task { [weak self] in
+                guard await releaseOnce.claim() else { return }
+                await self?.releaseLease(key)
+            }
+        }
+
+        do {
+            let handle = try await connection.openPTY(
+                mode: mode,
+                cols: cols,
+                rows: rows,
+                onOutput: onOutput,
+                onClose: {
+                    onClose()
+                    release()
+                }
+            )
+            return PTYHandle(
+                send: { handle.send($0) },
+                resize: { handle.resize(cols: $0, rows: $1) },
+                close: {
+                    handle.close()
+                    release()
+                }
+            )
+        } catch {
+            // The lease taken by `connection(for:)` above must still be given back if opening
+            // the channel itself fails — otherwise a failed `connect()` would leak it forever.
+            release()
+            throw error
+        }
+    }
+
     func closeAll() async {
         generation += 1
         let current = entries
@@ -285,5 +350,19 @@ actor SSHConnectionPool {
         guard let entry = entries.removeValue(forKey: key) else { return }
         entry.idleTask?.cancel()
         await entry.connection.close()
+    }
+}
+
+/// Guards a lease release that can arrive twice for the same PTY — once from the caller
+/// explicitly closing it, once from the channel dying on its own — so `SSHConnectionPool.openPTY`
+/// can release its one lease exactly once no matter which order those two arrive in, or whether
+/// both do.
+private actor OnceFlag {
+    private var claimed = false
+
+    func claim() -> Bool {
+        guard !claimed else { return false }
+        claimed = true
+        return true
     }
 }

@@ -1,16 +1,16 @@
 import AISessionCore
-import NIOCore
 import SwiftTerm
 import SwiftUI
 import UIKit
 
-/// Owns the `SwiftTerm.TerminalView` <-> `SSHTerminalSession` wiring: feeds remote bytes into the
+/// Owns the `SwiftTerm.TerminalView` <-> `TerminalTransport` wiring: feeds remote bytes into the
 /// view, forwards keystrokes/resizes back to the SSH PTY, and does a best-effort clipboard copy.
 ///
 /// Deliberately a plain (non-actor) class: `TerminalViewDelegate` is a nonisolated protocol that
-/// UIKit calls synchronously from the main thread, and `SSHTerminalSession`'s own callbacks always
-/// arrive on its private NIO event loop thread — so every hop back to UI/state here goes through
-/// an explicit `DispatchQueue.main.async` rather than relying on actor isolation.
+/// UIKit calls synchronously from the main thread, and the transport's own callbacks are
+/// documented to arrive off the main thread (see `TerminalTransport`) — so every hop back to
+/// UI/state here goes through an explicit `DispatchQueue.main.async` rather than relying on
+/// actor isolation.
 enum TerminalConnectionState: Equatable {
     case idle
     case connecting
@@ -26,7 +26,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
     private let hostConfig: HostConnectionConfig
     private let mode: TerminalMode
-    private var session: SSHTerminalSession?
+    private var session: (any TerminalTransport)?
     private(set) var state: TerminalConnectionState = .idle {
         didSet { onStateChange?(state) }
     }
@@ -52,10 +52,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
         let rows = terminal.rows > 0 ? terminal.rows : 24
 
         let session = SSHTerminalSession(config: hostConfig, mode: mode)
-        session.onOutput = { [weak self] outputBuffer in
-            var outputBuffer = outputBuffer
-            let bytes = outputBuffer.readBytes(length: outputBuffer.readableBytes) ?? []
-            guard !bytes.isEmpty else { return }
+        session.onOutput = { [weak self] bytes in
             DispatchQueue.main.async {
                 self?.terminalView?.feed(byteArray: bytes[...])
             }

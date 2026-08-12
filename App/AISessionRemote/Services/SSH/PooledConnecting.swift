@@ -25,6 +25,23 @@ protocol PooledConnecting: AnyObject, Sendable {
     /// other's budget.
     func exec(_ command: String, timeoutSeconds: Int64) async throws -> SSHExecResult
 
+    /// Opens a PTY channel on this connection and execs the attach command, keeping the
+    /// channel open for the life of the terminal screen instead of tearing it down after a
+    /// single command the way `exec` does.
+    ///
+    /// `onOutput` delivers raw bytes read from the channel — converted from NIO's `ByteBuffer`
+    /// at the conforming type's boundary, so nothing above `PooledConnecting` needs to know
+    /// SwiftNIO exists. `onClose` fires once, the first time the channel goes away for any
+    /// reason other than the caller closing the returned handle itself (remote exit, network
+    /// drop, protocol error).
+    func openPTY(
+        mode: TerminalMode,
+        cols: Int,
+        rows: Int,
+        onOutput: @escaping ([UInt8]) -> Void,
+        onClose: @escaping () -> Void
+    ) async throws -> PTYHandle
+
     /// Closes the connection and releases its underlying resources.
     ///
     /// Must be idempotent, including under concurrent calls: more than one caller can decide to
@@ -34,4 +51,31 @@ protocol PooledConnecting: AnyObject, Sendable {
     /// connection it was handed. A second (or third, ...) `close()` must be a safe no-op, not
     /// a crash or a thrown error.
     func close() async
+}
+
+/// Handle on an open PTY channel returned by `PooledConnecting.openPTY`. Closing it tears down
+/// only this one channel — the pooled parent connection is unaffected, exactly like a single
+/// `exec` finishing does not close the parent.
+///
+/// `SSHConnectionPool.openPTY` wraps this in a second `PTYHandle` that additionally releases the
+/// pool lease taken for the terminal, so callers above the pool (`SSHTerminalSession`) only ever
+/// see that outer handle.
+final class PTYHandle: @unchecked Sendable {
+    private let sendBytes: (ArraySlice<UInt8>) -> Void
+    private let resizeTo: (Int, Int) -> Void
+    private let closeChannel: () -> Void
+
+    init(
+        send: @escaping (ArraySlice<UInt8>) -> Void,
+        resize: @escaping (Int, Int) -> Void,
+        close: @escaping () -> Void
+    ) {
+        self.sendBytes = send
+        self.resizeTo = resize
+        self.closeChannel = close
+    }
+
+    func send(_ bytes: ArraySlice<UInt8>) { sendBytes(bytes) }
+    func resize(cols: Int, rows: Int) { resizeTo(cols, rows) }
+    func close() { closeChannel() }
 }

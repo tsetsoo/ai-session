@@ -223,6 +223,90 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
         }
     }
 
+    /// Opens a fresh session channel over the shared parent channel, requests a PTY sized
+    /// `cols`x`rows`, and execs the attach command — the terminal counterpart of `exec`'s child
+    /// channel, except the caller (`SSHConnectionPool.openPTY`) keeps this one open for the
+    /// life of the terminal screen instead of tearing it down after a single command.
+    ///
+    /// A channel-setup failure here (handshake layer gone, `createChannel` rejected) throws
+    /// `SSHTerminalSessionError.channelSetupFailed` rather than an `SSHRemoteError`, exactly as
+    /// it did when `SSHTerminalSession` dialled and opened this channel itself — a single
+    /// channel failing to open is not evidence the shared parent transport is broken, so unlike
+    /// `exec` above this never calls `markDead()`.
+    func openPTY(
+        mode: TerminalMode,
+        cols: Int,
+        rows: Int,
+        onOutput: @escaping ([UInt8]) -> Void,
+        onClose: @escaping () -> Void
+    ) async throws -> PTYHandle {
+        let sshHandler: NIOSSHHandler
+        do {
+            sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
+        } catch {
+            throw SSHTerminalSessionError.channelSetupFailed
+        }
+
+        let channelPromise = channel.eventLoop.makePromise(of: Channel.self)
+        sshHandler.createChannel(channelPromise, channelType: .session) { childChannel, channelType in
+            guard channelType == .session else {
+                return childChannel.eventLoop.makeFailedFuture(SSHTerminalSessionError.channelSetupFailed)
+            }
+            return childChannel.eventLoop.makeCompletedFuture {
+                try childChannel.pipeline.syncOperations.addHandler(
+                    PTYChannelHandler(
+                        mode: mode,
+                        initialCols: cols,
+                        initialRows: rows,
+                        onOutput: { buffer in
+                            // Convert to `[UInt8]` here, at the pool boundary, so nothing above
+                            // `PooledConnecting`/`SSHConnectionPool` needs to know SwiftNIO
+                            // exists.
+                            var buffer = buffer
+                            guard let bytes = buffer.readBytes(length: buffer.readableBytes), !bytes.isEmpty else {
+                                return
+                            }
+                            onOutput(bytes)
+                        },
+                        onExit: { _ in onClose() }
+                    )
+                )
+                try childChannel.pipeline.syncOperations.addHandler(SSHConnectionErrorHandler())
+            }
+        }
+
+        let sessionChannel: Channel
+        do {
+            sessionChannel = try await channelPromise.futureResult.get()
+        } catch {
+            throw SSHTerminalSessionError.channelSetupFailed
+        }
+
+        return PTYHandle(
+            send: { bytes in
+                sessionChannel.eventLoop.execute {
+                    var buffer = sessionChannel.allocator.buffer(capacity: bytes.count)
+                    buffer.writeBytes(bytes)
+                    sessionChannel.writeAndFlush(buffer, promise: nil)
+                }
+            },
+            resize: { cols, rows in
+                sessionChannel.eventLoop.execute {
+                    let event = SSHChannelRequestEvent.WindowChangeRequest(
+                        terminalCharacterWidth: cols,
+                        terminalRowHeight: rows,
+                        terminalPixelWidth: 0,
+                        terminalPixelHeight: 0
+                    )
+                    sessionChannel.triggerUserOutboundEvent(event, promise: nil)
+                }
+            },
+            close: {
+                sessionChannel.close(promise: nil)
+            }
+        )
+    }
+
     func close() async {
         markDead()
         try? await channel.close().get()
@@ -230,5 +314,93 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
 
     private func markDead() {
         lock.withLock { _isAlive = false }
+    }
+}
+
+/// Bridges the SSH "session" channel used for an interactive PTY: requests a pseudo-terminal,
+/// execs the attach command (e.g. `tmux attach -t '…'`), and translates raw bytes to/from the
+/// channel's native `SSHChannelData` framing.
+///
+/// This is the same inbound/outbound boundary pattern as `apple/swift-nio-ssh`'s own
+/// `ExampleExecHandler` (`NIOSSHClient` target): a `ChannelDuplexHandler` with
+/// `InboundIn = SSHChannelData` / `OutboundOut = SSHChannelData` sits at the edge of the child
+/// channel, so everything above it (this handler's own `write`) can deal in plain `ByteBuffer`s.
+///
+/// Installed by `PooledSSHConnection.openPTY` on a child channel of the pooled parent
+/// connection; unchanged from when `SSHTerminalSession` dialled its own parent channel.
+final class PTYChannelHandler: ChannelDuplexHandler {
+    typealias InboundIn = SSHChannelData
+    typealias InboundOut = ByteBuffer
+    typealias OutboundIn = ByteBuffer
+    typealias OutboundOut = SSHChannelData
+
+    private let mode: TerminalMode
+    private let initialCols: Int
+    private let initialRows: Int
+    private let onOutput: (ByteBuffer) -> Void
+    private let onExit: (Int?) -> Void
+    private var exitStatus: Int?
+
+    init(
+        mode: TerminalMode,
+        initialCols: Int,
+        initialRows: Int,
+        onOutput: @escaping (ByteBuffer) -> Void,
+        onExit: @escaping (Int?) -> Void
+    ) {
+        self.mode = mode
+        self.initialCols = initialCols
+        self.initialRows = initialRows
+        self.onOutput = onOutput
+        self.onExit = onExit
+    }
+
+    func handlerAdded(context: ChannelHandlerContext) {
+        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in }
+    }
+
+    func channelActive(context: ChannelHandlerContext) {
+        let pty = SSHChannelRequestEvent.PseudoTerminalRequest(
+            wantReply: false,
+            term: "xterm-256color",
+            terminalCharacterWidth: max(initialCols, 1),
+            terminalRowHeight: max(initialRows, 1),
+            terminalPixelWidth: 0,
+            terminalPixelHeight: 0,
+            terminalModes: SSHTerminalModes([:])
+        )
+        context.triggerUserOutboundEvent(pty, promise: nil)
+
+        switch mode {
+        case let .attach(command):
+            let exec = SSHChannelRequestEvent.ExecRequest(command: command, wantReply: false)
+            context.triggerUserOutboundEvent(exec, promise: nil)
+        case .plainShell:
+            let shell = SSHChannelRequestEvent.ShellRequest(wantReply: false)
+            context.triggerUserOutboundEvent(shell, promise: nil)
+        }
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let payload = unwrapInboundIn(data)
+        guard case .byteBuffer(let buffer) = payload.data else { return }
+        onOutput(buffer)
+    }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        if let status = event as? SSHChannelRequestEvent.ExitStatus {
+            exitStatus = status.exitStatus
+        } else {
+            context.fireUserInboundEventTriggered(event)
+        }
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        onExit(exitStatus)
+    }
+
+    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+        let buffer = unwrapOutboundIn(data)
+        context.write(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(buffer))), promise: promise)
     }
 }

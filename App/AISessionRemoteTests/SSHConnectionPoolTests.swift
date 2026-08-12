@@ -132,6 +132,46 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
             lock.unlock()
         }
     }
+
+    // MARK: - PTY
+
+    /// When set, the next `openPTY` throws this once and then clears it.
+    var failNextOpenPTYWith: Error?
+    private(set) var openPTYCount = 0
+    /// The `onClose` callback `SSHConnectionPool.openPTY` wired up for each PTY this connection
+    /// has opened, in call order. A test "kills" a PTY's channel (simulating a remote exit or
+    /// network drop, independent of the caller ever calling `PTYHandle.close()`) by invoking
+    /// one of these directly.
+    private var ptyOnCloseCallbacks: [() -> Void] = []
+
+    func openPTY(
+        mode: TerminalMode,
+        cols: Int,
+        rows: Int,
+        onOutput: @escaping ([UInt8]) -> Void,
+        onClose: @escaping () -> Void
+    ) async throws -> PTYHandle {
+        lock.lock()
+        if let error = failNextOpenPTYWith {
+            failNextOpenPTYWith = nil
+            lock.unlock()
+            throw error
+        }
+        openPTYCount += 1
+        ptyOnCloseCallbacks.append(onClose)
+        lock.unlock()
+
+        return PTYHandle(send: { _ in }, resize: { _, _ in }, close: {})
+    }
+
+    /// Simulates the most recently opened PTY's channel dying on its own (remote exit, network
+    /// drop) by invoking the `onClose` callback the pool wired up when it was opened.
+    func killMostRecentPTY() {
+        lock.lock()
+        let callback = ptyOnCloseCallbacks.last
+        lock.unlock()
+        callback?()
+    }
 }
 
 /// A single-use gate an injected `dial` closure can `wait()` on. Lets a test hold a dial open
@@ -538,6 +578,157 @@ final class SSHConnectionPoolTests: XCTestCase {
             "each of the three waiters independently closes the connection; that must be harmless, not a crash"
         )
         XCTAssertFalse(connection.isAlive)
+    }
+
+    // MARK: - PTY lease lifetime
+
+    /// The core promise of running the terminal over the pool: an attached PTY must hold a
+    /// lease for as long as it stays open, or the pool's idle timer would close the connection
+    /// out from under a terminal that can legitimately stay attached for hours. Deterministic:
+    /// the idle-eviction sleep resolves instantly, so if the lease were missing or given back
+    /// too early, the connection would already be closed by the time this test checks it.
+    func testOpenPTYHoldsALeaseThatPreventsIdleEvictionWhileAttached() async throws {
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(
+            idleTimeout: .milliseconds(1),
+            sleep: { _ in /* resolve the idle timer immediately, deterministically */ },
+            dial: { _ in
+                let connection = FakeConnection()
+                await connections.add(connection)
+                return connection
+            }
+        )
+        let config = config()
+
+        let handle = try await pool.openPTY(
+            config, mode: .plainShell, cols: 80, rows: 24,
+            onOutput: { _ in }, onClose: {}
+        )
+
+        let leaseWhileAttached = await pool.leaseCount(for: config)
+        XCTAssertEqual(leaseWhileAttached, 1, "an attached PTY must hold exactly one lease")
+
+        guard let connection = await connections.last() else {
+            XCTFail("expected a dialed connection")
+            return
+        }
+        // Give the idle-eviction machinery every chance to run erroneously; it must not fire,
+        // because the lease above is still held.
+        await Task.yield()
+        await Task.yield()
+        XCTAssertEqual(connection.closeCount, 0, "must not be idle-evicted while the terminal is attached")
+
+        handle.close()
+        await connection.waitForClose()
+        XCTAssertEqual(connection.closeCount, 1, "closing the PTY must release the lease and allow eviction")
+    }
+
+    /// Regression test for double release: `disconnect()` (an explicit `close()`) and the
+    /// channel dying on its own can both fire for the same PTY. If the lease they guard were
+    /// released twice, the second release would silently steal a lease legitimately held by
+    /// some other, genuinely concurrent use of the same connection — evicting it out from under
+    /// that other caller. Here that other caller is a concurrent `exec`, held open so there is
+    /// a real second lease available to (incorrectly) clobber.
+    func testClosingPTYTwiceReleasesTheLeaseOnlyOnce() async throws {
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(
+            idleTimeout: .milliseconds(1),
+            sleep: { _ in },
+            dial: { _ in
+                let connection = FakeConnection()
+                connection.isExecGated = true
+                await connections.add(connection)
+                return connection
+            }
+        )
+        let config = config()
+
+        let handle = try await pool.openPTY(
+            config, mode: .plainShell, cols: 80, rows: 24,
+            onOutput: { _ in }, onClose: {}
+        )
+        async let exec: SSHExecResult = pool.exec(config, command: "concurrent")
+
+        guard let connection = await connections.last() else {
+            XCTFail("expected a dialed connection")
+            return
+        }
+        await connection.waitForPendingExecCount(1)
+        let leaseWithBothInFlight = await pool.leaseCount(for: config)
+        XCTAssertEqual(leaseWithBothInFlight, 2, "the PTY and the concurrent exec must each hold their own lease")
+
+        // Simulates `disconnect()` racing the channel's own exit callback: close the PTY twice.
+        handle.close()
+        handle.close()
+
+        var lease = await pool.leaseCount(for: config)
+        while lease == 2 {
+            await Task.yield()
+            lease = await pool.leaseCount(for: config)
+        }
+        XCTAssertEqual(
+            lease, 1,
+            "the PTY's lease must drop by exactly one, not two, leaving the concurrent exec's lease intact"
+        )
+        XCTAssertEqual(connection.closeCount, 0, "must not be evicted while the concurrent exec is still in flight")
+
+        connection.releaseExec(matching: "concurrent")
+        _ = try await exec
+    }
+
+    /// The other ordering of the same regression: the channel can die on its own (remote exit,
+    /// network drop) before `disconnect()` ever gets a chance to call `close()`. Both together
+    /// must still add up to exactly one release, and the pool must still forward `onClose` to
+    /// the caller (so `SSHTerminalSession`/`TerminalCoordinator` learns the terminal dropped).
+    func testPTYChannelDyingOnItsOwnReleasesTheLeaseExactlyOnceEvenIfCloseIsCalledAfterward() async throws {
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(
+            idleTimeout: .milliseconds(1),
+            sleep: { _ in },
+            dial: { _ in
+                let connection = FakeConnection()
+                connection.isExecGated = true
+                await connections.add(connection)
+                return connection
+            }
+        )
+        let config = config()
+
+        var observedDisconnect = false
+        let handle = try await pool.openPTY(
+            config, mode: .plainShell, cols: 80, rows: 24,
+            onOutput: { _ in }, onClose: { observedDisconnect = true }
+        )
+        async let exec: SSHExecResult = pool.exec(config, command: "concurrent")
+
+        guard let connection = await connections.last() else {
+            XCTFail("expected a dialed connection")
+            return
+        }
+        await connection.waitForPendingExecCount(1)
+
+        connection.killMostRecentPTY()
+
+        var lease = await pool.leaseCount(for: config)
+        while lease == 2 {
+            await Task.yield()
+            lease = await pool.leaseCount(for: config)
+        }
+        XCTAssertEqual(lease, 1, "the channel dying on its own must release exactly one lease")
+        XCTAssertTrue(observedDisconnect, "the pool must still forward onClose to the caller")
+
+        // `disconnect()` can still call `close()` after the channel already died on its own.
+        handle.close()
+        for _ in 0..<3 { await Task.yield() }
+        let leaseAfterExplicitCloseToo = await pool.leaseCount(for: config)
+        XCTAssertEqual(
+            leaseAfterExplicitCloseToo, 1,
+            "an explicit close() after the channel already died must not double-release"
+        )
+        XCTAssertEqual(connection.closeCount, 0, "must not be evicted while the concurrent exec is still in flight")
+
+        connection.releaseExec(matching: "concurrent")
+        _ = try await exec
     }
 }
 
