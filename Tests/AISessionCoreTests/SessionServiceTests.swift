@@ -39,10 +39,8 @@ final class SessionServiceTests: XCTestCase {
     func testCreateAndListSession() async throws {
         let executor = FakeSSHExecutor(responsesByPrefix: [
             "command -v tmux": SSHExecResult(exitCode: 0, stdout: "/usr/bin/tmux\n", stderr: ""),
-            "tmux ls": SSHExecResult(exitCode: 0, stdout: "", stderr: ""),
-            "command -v 'claude'": SSHExecResult(exitCode: 0, stdout: "/usr/bin/claude\n", stderr: ""),
-            "mkdir -p": SSHExecResult(exitCode: 0, stdout: "", stderr: ""),
-            "tmux new-session": SSHExecResult(exitCode: 0, stdout: "", stderr: "")
+            "tmux ls": mergedListResult(sessions: "", statuses: ""),
+            "exec tmux new-session": SSHExecResult(exitCode: 0, stdout: "", stderr: "")
         ])
         let service = SessionService(ssh: executor)
 
@@ -77,8 +75,8 @@ final class SessionServiceTests: XCTestCase {
 
     func testCreateThrowsWhenBinaryMissing() async {
         let executor = FakeSSHExecutor(responsesByPrefix: [
-            "tmux ls": SSHExecResult(exitCode: 0, stdout: "", stderr: ""),
-            "command -v 'codex'": SSHExecResult(exitCode: 127, stdout: "", stderr: "not found")
+            "tmux ls": mergedListResult(sessions: "", statuses: ""),
+            "exec tmux new-session": SSHExecResult(exitCode: 90, stdout: "", stderr: "")
         ])
 
         do {
@@ -99,10 +97,8 @@ final class SessionServiceTests: XCTestCase {
 
     func testCreateUsesUniqueSuffix() async throws {
         let executor = FakeSSHExecutor(responsesByPrefix: [
-            "tmux ls": SSHExecResult(exitCode: 0, stdout: "ai/claude/demo\n", stderr: ""),
-            "command -v 'claude'": SSHExecResult(exitCode: 0, stdout: "/usr/bin/claude\n", stderr: ""),
-            "mkdir -p": SSHExecResult(exitCode: 0, stdout: "", stderr: ""),
-            "tmux new-session": SSHExecResult(exitCode: 0, stdout: "", stderr: "")
+            "tmux ls": mergedListResult(sessions: "ai/claude/demo", statuses: ""),
+            "exec tmux new-session": SSHExecResult(exitCode: 0, stdout: "", stderr: "")
         ])
 
         let name = try await SessionService(ssh: executor).createSession(
@@ -167,5 +163,86 @@ final class SessionServiceTests: XCTestCase {
         try await SessionService(ssh: executor).promoteSession(
             config: config, fromTmuxName: "random", to: target
         )
+    }
+
+    private func mergedListResult(sessions: String, statuses: String) -> SSHExecResult {
+        SSHExecResult(
+            exitCode: 0,
+            stdout: "\(sessions)\n\(RemoteScriptOutput.statusMarker)\n\(statuses)",
+            stderr: ""
+        )
+    }
+
+    func testListSessionsIssuesExactlyOneExec() async throws {
+        let executor = FakeSSHExecutor(responsesByPrefix: [
+            "tmux ls": mergedListResult(sessions: "ai/claude/demo\t1700000000\t0", statuses: "")
+        ])
+        let service = SessionService(ssh: executor)
+
+        let listed = try await service.listSessions(config: config)
+
+        XCTAssertEqual(executor.recordedCommands.count, 1)
+        XCTAssertEqual(listed.ai.map(\.tmuxName), ["ai/claude/demo"])
+    }
+
+    func testListSessionsAppliesAgentStatusesFromMergedOutput() async throws {
+        let executor = FakeSSHExecutor(responsesByPrefix: [
+            "tmux ls": mergedListResult(
+                sessions: "ai/claude/demo\t1700000000\t0",
+                statuses: "---ai__claude__demo.json---\n{\"status\":\"busy\"}"
+            )
+        ])
+        let service = SessionService(ssh: executor)
+
+        let listed = try await service.listSessions(config: config)
+
+        XCTAssertEqual(listed.ai.first?.status, .busy)
+    }
+
+    func testCreateSessionIssuesTwoExecsOnHappyPath() async throws {
+        let executor = FakeSSHExecutor(responsesByPrefix: [
+            "tmux ls": mergedListResult(sessions: "", statuses: ""),
+            "exec tmux new-session": SSHExecResult(exitCode: 0, stdout: "", stderr: "")
+        ])
+        let service = SessionService(ssh: executor)
+
+        let name = try await service.createSession(
+            config: config, tool: .claude, slug: "demo", cwd: "/tmp/demo", title: "Demo"
+        )
+
+        XCTAssertEqual(name.tmuxName, "ai/claude/demo")
+        XCTAssertEqual(executor.recordedCommands.count, 2)
+    }
+
+    func testCreateSessionMapsExitNinetyToBinaryMissing() async throws {
+        let executor = FakeSSHExecutor(responsesByPrefix: [
+            "tmux ls": mergedListResult(sessions: "", statuses: ""),
+            "exec tmux new-session": SSHExecResult(exitCode: 90, stdout: "", stderr: "")
+        ])
+        let service = SessionService(ssh: executor)
+
+        do {
+            _ = try await service.createSession(
+                config: config, tool: .claude, slug: "demo", cwd: "/tmp", title: nil
+            )
+            XCTFail("expected binaryMissing")
+        } catch let error as SSHRemoteError {
+            XCTAssertEqual(error, .binaryMissing("claude"))
+        }
+    }
+
+    func testPromoteSessionIssuesExactlyOneExec() async throws {
+        let executor = FakeSSHExecutor(responsesByPrefix: [
+            "tmux rename-session": SSHExecResult(exitCode: 0, stdout: "", stderr: "")
+        ])
+        let service = SessionService(ssh: executor)
+
+        try await service.promoteSession(
+            config: config,
+            fromTmuxName: "old",
+            to: try XCTUnwrap(SessionName(tool: .claude, slug: "demo"))
+        )
+
+        XCTAssertEqual(executor.recordedCommands.count, 1)
     }
 }
