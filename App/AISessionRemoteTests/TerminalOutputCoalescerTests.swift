@@ -50,4 +50,47 @@ final class TerminalOutputCoalescerTests: XCTestCase {
 
         XCTAssertEqual(flushCount, 1)
     }
+
+    func testConcurrentAppendAndDrainProducesNoByteLoss() {
+        // Thread-safe scheduler that queues drains to be executed
+        let schedulerLock = NSLock()
+        var pendingDrains: [() -> Void] = []
+        let coalescer = TerminalOutputCoalescer { drain in
+            schedulerLock.lock()
+            pendingDrains.append(drain)
+            schedulerLock.unlock()
+        }
+
+        // Thread-safe collection of flushed bytes
+        let flushLock = NSLock()
+        var totalBytesFlushed = 0
+        coalescer.onFlush = { bytes in
+            flushLock.lock()
+            totalBytesFlushed += bytes.count
+            flushLock.unlock()
+        }
+
+        let totalProducers = 5
+        let bytesPerProducer = 20
+        let expectedTotalBytes = totalProducers * bytesPerProducer
+
+        // Multiple producers append concurrently
+        DispatchQueue.concurrentPerform(iterations: totalProducers) { index in
+            let startByte = UInt8(index * bytesPerProducer % 256)
+            let bytes = Array(repeating: startByte, count: bytesPerProducer)
+            coalescer.append(bytes)
+        }
+
+        // Drain all pending drains
+        while true {
+            schedulerLock.lock()
+            let drain = pendingDrains.isEmpty ? nil : pendingDrains.removeFirst()
+            schedulerLock.unlock()
+
+            guard let drain = drain else { break }
+            drain()
+        }
+
+        XCTAssertEqual(totalBytesFlushed, expectedTotalBytes, "no bytes should be lost")
+    }
 }
