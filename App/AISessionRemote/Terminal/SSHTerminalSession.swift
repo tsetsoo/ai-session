@@ -61,6 +61,20 @@ final class SSHTerminalSession: TerminalTransport {
     /// Holds a pool lease for as long as the terminal stays attached — see
     /// `SSHConnectionPool.openPTY` — released exactly once by whichever of `disconnect()` or
     /// the channel dying on its own happens first.
+    ///
+    /// `disconnect()` (or the `deinit` backstop) can run while this call is still suspended
+    /// inside `pool.openPTY` — e.g. `TerminalScreen.onDisappear` firing while its
+    /// `.task { await coordinator.connect() }` is still mid-handshake. At that point there is
+    /// nothing yet in `_handle` for `disconnect()` to close, so it just latches
+    /// `_isDisconnecting` and returns. This method must not then blindly store the handle it
+    /// gets back once it resumes — that would silently orphan it, along with the one lease
+    /// `SSHConnectionPool.openPTY` already took on the shared pooled connection, since every
+    /// other path that could ever close it is gated on that same already-true flag. So: check
+    /// `_isDisconnecting` under the same lock used everywhere else in this class before
+    /// deciding whether to store the handle or hand it straight back to `close()` — whichever
+    /// of this check or `disconnect()`/`deinit` wins the lock first is the one that ends up
+    /// closing it, and exactly one of them does, because they all share the same lock and the
+    /// same one-way flag.
     func connect(cols: Int, rows: Int) async throws {
         let handle = try await pool.openPTY(
             config,
@@ -70,7 +84,16 @@ final class SSHTerminalSession: TerminalTransport {
             onOutput: { [weak self] bytes in self?.onOutput?(bytes) },
             onClose: { [weak self] in self?.notifyDisconnectedIfNeeded() }
         )
-        stateLock.withLock { _handle = handle }
+        let shouldCloseImmediately: Bool = stateLock.withLock {
+            if _isDisconnecting {
+                return true
+            }
+            _handle = handle
+            return false
+        }
+        if shouldCloseImmediately {
+            handle.close()
+        }
     }
 
     /// Sends raw input bytes (keystrokes, soft-key bytes) to the remote PTY.

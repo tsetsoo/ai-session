@@ -144,6 +144,13 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
     /// one of these directly.
     private var ptyOnCloseCallbacks: [() -> Void] = []
 
+    /// When set, `openPTY` suspends on this gate before returning — lets a test hold a
+    /// `connect()` call genuinely suspended mid-`openPTY` (rather than guessing at timing) so it
+    /// can race something else — e.g. `disconnect()` — against it.
+    var openPTYGate: OneShotGate?
+    private var openPTYStarted = false
+    private var openPTYStartedWaiters: [CheckedContinuation<Void, Never>] = []
+
     func openPTY(
         mode: TerminalMode,
         cols: Int,
@@ -151,6 +158,17 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
         onOutput: @escaping ([UInt8]) -> Void,
         onClose: @escaping () -> Void
     ) async throws -> PTYHandle {
+        lock.lock()
+        openPTYStarted = true
+        let waiters = openPTYStartedWaiters
+        openPTYStartedWaiters.removeAll()
+        lock.unlock()
+        for waiter in waiters { waiter.resume() }
+
+        if let gate = openPTYGate {
+            await gate.wait()
+        }
+
         lock.lock()
         if let error = failNextOpenPTYWith {
             failNextOpenPTYWith = nil
@@ -162,6 +180,20 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
         lock.unlock()
 
         return PTYHandle(send: { _ in }, resize: { _, _ in }, close: {})
+    }
+
+    /// Suspends until `openPTY` has been called at least once — and, if `openPTYGate` is set,
+    /// is now genuinely blocked on it rather than merely about to be called.
+    func waitForOpenPTYStarted() async {
+        lock.lock()
+        if openPTYStarted {
+            lock.unlock()
+            return
+        }
+        await withCheckedContinuation { continuation in
+            openPTYStartedWaiters.append(continuation)
+            lock.unlock()
+        }
     }
 
     /// Simulates the most recently opened PTY's channel dying on its own (remote exit, network
@@ -729,6 +761,83 @@ final class SSHConnectionPoolTests: XCTestCase {
 
         connection.releaseExec(matching: "concurrent")
         _ = try await exec
+    }
+
+    /// Regression test for a `connect()`/`disconnect()` race in `SSHTerminalSession` (not the
+    /// pool directly): `disconnect()` firing while `connect()` is still suspended inside
+    /// `pool.openPTY` used to latch `_isDisconnecting` while there was nothing yet in `_handle`
+    /// to close, then get silently ignored once `connect()` resumed and unconditionally stored
+    /// the now-orphaned handle — leaking the one lease `SSHConnectionPool.openPTY` had already
+    /// taken on the shared pooled connection forever. Concretely:
+    /// `TerminalScreen.onDisappear { coordinator.disconnect() }` firing while its
+    /// `.task { await coordinator.connect() }` is still mid-handshake (e.g. backing out of a
+    /// session on a slow network).
+    ///
+    /// Deterministic: `FakeConnection.openPTY` is gated so `connect()` is provably still
+    /// suspended inside it (confirmed via `waitForOpenPTYStarted()`) before `disconnect()` runs,
+    /// and a genuinely concurrent `exec` provides a second, real lease so the assertion can tell
+    /// "released correctly" (settles at 1) apart from "leaked" (stuck at 2) or "double-released,
+    /// stole the other caller's lease" (would go to 0).
+    func testDisconnectDuringConnectDoesNotLeakTheLease() async throws {
+        let connections = ConnectionBox()
+        let openPTYGate = OneShotGate()
+        let pool = SSHConnectionPool(
+            idleTimeout: .milliseconds(1),
+            sleep: { _ in },
+            dial: { _ in
+                let connection = FakeConnection()
+                connection.isExecGated = true
+                connection.openPTYGate = openPTYGate
+                await connections.add(connection)
+                return connection
+            }
+        )
+        let config = config()
+        let session = SSHTerminalSession(config: config, mode: .plainShell, pool: pool)
+
+        async let connectOutcome: Void = session.connect(cols: 80, rows: 24)
+
+        let connection = await connections.waitForFirst()
+        await connection.waitForOpenPTYStarted()
+
+        // A second, genuinely concurrent use of the same connection, so there is a real lease
+        // available to prove the fix neither leaks its own lease nor steals this one.
+        async let exec: SSHExecResult = pool.exec(config, command: "concurrent")
+        await connection.waitForPendingExecCount(1)
+
+        let leaseWithBothInFlight = await pool.leaseCount(for: config)
+        XCTAssertEqual(
+            leaseWithBothInFlight, 2,
+            "the in-flight connect() and the concurrent exec must each hold their own lease"
+        )
+
+        // `connect()` is suspended inside `pool.openPTY` -> `connection.openPTY`, holding the
+        // lease `connection(for:)` already took for it, with nothing yet stored in `_handle`.
+        // Disconnect while it's still stuck there.
+        session.disconnect()
+
+        // Let the gated `openPTY` resolve now that `disconnect()` has already run.
+        await openPTYGate.open()
+        try await connectOutcome
+
+        var lease = await pool.leaseCount(for: config)
+        while lease == 2 {
+            await Task.yield()
+            lease = await pool.leaseCount(for: config)
+        }
+        XCTAssertEqual(
+            lease, 1,
+            "connect() losing the race to disconnect() must still release the lease it was holding, "
+                + "leaving only the concurrent exec's"
+        )
+
+        connection.releaseExec(matching: "concurrent")
+        _ = try await exec
+
+        // With both leases now given back, the connection must become idle-evictable — it would
+        // not if connect() had orphaned the handle it got back from the race.
+        await connection.waitForClose()
+        XCTAssertEqual(connection.closeCount, 1)
     }
 }
 
