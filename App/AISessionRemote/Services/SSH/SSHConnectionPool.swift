@@ -21,6 +21,17 @@ actor SSHConnectionPool {
     private var entries: [String: Entry] = [:]
     private var dialsInFlight: [String: Task<any PooledConnecting, Error>] = [:]
 
+    /// Bumped by `closeAll()`. A dial that was still in flight when a teardown happened checks
+    /// this the moment it resolves: if the generation has moved on, the pool has been torn
+    /// down and the dial must not resurrect it, no matter how late it completes.
+    private var generation = 0
+
+    /// Count of times a caller resumed from an *already in-flight* dial (the coalescing
+    /// branch of `connection(for:)`), rather than owning the dial itself. Exists only so a
+    /// test can deterministically wait for "a second caller has genuinely joined the first
+    /// caller's dial" instead of guessing at scheduling order.
+    private var coalescedJoinCountForTesting = 0
+
     init(
         idleTimeout: Duration = .seconds(60),
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
@@ -53,18 +64,44 @@ actor SSHConnectionPool {
     /// the user did not ask for this, and the action that follows will report any real problem.
     func warm(_ config: HostConnectionConfig) {
         Task { [weak self] in
-            _ = try? await self?.connection(for: config)
+            guard let self else { return }
+            // `connection(for:)` always hands back a held lease (see its doc comment); warming
+            // isn't a real command, so give that lease straight back rather than pinning the
+            // connection open until the idle timer would have fired anyway.
+            guard (try? await self.connection(for: config)) != nil else { return }
+            await self.releaseLease(Self.key(for: config))
         }
     }
 
     func closeAll() async {
+        generation += 1
         let current = entries
         entries.removeAll()
+        let pendingDials = Array(dialsInFlight.values)
         dialsInFlight.removeAll()
+        for task in pendingDials {
+            task.cancel()
+        }
         for (_, entry) in current {
             entry.idleTask?.cancel()
             await entry.connection.close()
         }
+    }
+
+    // MARK: - Testing hooks
+    //
+    // Small, internal-only accessors so tests can assert on the pool's bookkeeping directly
+    // instead of inferring it indirectly from eviction timing.
+
+    /// The number of leases currently held on the entry for `config`, or `nil` if there is no
+    /// entry. Exists for testing the lease-count invariant across a coalesced dial.
+    func leaseCount(for config: HostConnectionConfig) -> Int? {
+        entries[Self.key(for: config)]?.leases
+    }
+
+    /// See `coalescedJoinCountForTesting`.
+    func coalescedJoinCount() -> Int {
+        coalescedJoinCountForTesting
     }
 
     // MARK: - Internals
@@ -74,12 +111,15 @@ actor SSHConnectionPool {
         command: String,
         allowRetry: Bool
     ) async throws -> SSHExecResult {
-        // No suspension point between obtaining the connection and acquiring its lease: both
-        // lines below run synchronously on the actor once `connection(for:)` returns, so the
-        // idle-eviction task cannot close this connection out from under us.
+        // `connection(for:)` never returns without the caller holding exactly one counted
+        // lease on a registered entry — including for a coalesced dial, where the entry and
+        // the first lease on it are created in the same synchronous tail that observes the
+        // shared dial's result (see `connection(for:)`). There is deliberately no separate
+        // lease-acquisition step here: adding one would reintroduce the gap between
+        // "connection produced" and "lease taken" that a coalesced waiter used to fall through,
+        // silently running with zero recorded lease.
         let connection = try await connection(for: config)
         let key = Self.key(for: config)
-        acquireLease(key)
 
         do {
             let result = try await connection.exec(command)
@@ -93,20 +133,43 @@ actor SSHConnectionPool {
         }
     }
 
+    /// Returns a connection for `config`, dialing one if needed. The caller always ends up
+    /// holding exactly one counted lease on a registered entry when this returns successfully;
+    /// it throws instead of returning if the dial fails, or if a `closeAll()` happened while
+    /// the dial was in flight (in which case the freshly-dialled connection is closed rather
+    /// than resurrecting the pool).
     private func connection(for config: HostConnectionConfig) async throws -> any PooledConnecting {
         let key = Self.key(for: config)
 
         if let entry = entries[key], entry.connection.isAlive {
+            acquireLease(key)
             return entry.connection
         }
         if entries[key] != nil {
             await evict(key)
         }
 
+        let dialGeneration = generation
+
         // Coalesce: everyone arriving during a dial awaits the same task, so a list refresh
-        // racing an attach produces one handshake rather than two.
+        // racing an attach produces one handshake rather than two. Both the dial's own
+        // continuation and every coalesced waiter resume from the *same* underlying `Task`,
+        // and nothing guarantees which one is scheduled onto the actor first. Whichever one
+        // runs first executes `registerDialedConnection` — a synchronous, non-suspending call
+        // — which creates the entry (with its first lease already taken) if it doesn't exist
+        // yet; every later resumer for this key then just takes its own lease on the entry the
+        // first one created. That keeps "connection produced" and "lease taken" atomic from
+        // the idle-eviction task's perspective, for every caller, not just the dial's owner.
         if let inFlight = dialsInFlight[key] {
-            return try await inFlight.value
+            coalescedJoinCountForTesting += 1
+            let connection = try await inFlight.value
+            switch registerDialedConnection(key: key, connection: connection, dialGeneration: dialGeneration) {
+            case .registered(let registered):
+                return registered
+            case .stale:
+                await connection.close()
+                throw DialSupersededError()
+            }
         }
 
         let task = Task { [dial] in try await dial(config) }
@@ -114,15 +177,59 @@ actor SSHConnectionPool {
 
         do {
             let connection = try await task.value
-            dialsInFlight[key] = nil
-            entries[key] = Entry(connection: connection, leases: 0, idleTask: nil)
-            scheduleIdleEviction(key)
-            return connection
+            switch registerDialedConnection(key: key, connection: connection, dialGeneration: dialGeneration) {
+            case .registered(let registered):
+                return registered
+            case .stale:
+                await connection.close()
+                throw DialSupersededError()
+            }
         } catch {
-            dialsInFlight[key] = nil
+            // Only clear the slot if it's still ours: a stale dial superseded by `closeAll()`
+            // must not clobber a newer dial that may have since started for the same key.
+            if generation == dialGeneration {
+                dialsInFlight[key] = nil
+            }
             throw error
         }
     }
+
+    private enum DialOutcome {
+        case registered(any PooledConnecting)
+        case stale
+    }
+
+    /// Runs synchronously (no `await`, so no suspension point) the moment a dial for `key`
+    /// resolves, whether for the dial's own continuation or a coalesced waiter's. See the call
+    /// site in `connection(for:)` for why this must stay synchronous.
+    private func registerDialedConnection(
+        key: String,
+        connection: any PooledConnecting,
+        dialGeneration: Int
+    ) -> DialOutcome {
+        guard generation == dialGeneration else {
+            // `closeAll()` ran while this dial was in flight. The pool has moved on; don't
+            // resurrect it, and don't touch `dialsInFlight` — it may already hold a newer dial
+            // for this same key.
+            return .stale
+        }
+
+        dialsInFlight[key] = nil
+
+        if let entry = entries[key] {
+            // A faster resumer for this same key already created the entry.
+            acquireLease(key)
+            return .registered(entry.connection)
+        }
+
+        entries[key] = Entry(connection: connection, leases: 1, idleTask: nil)
+        return .registered(connection)
+    }
+
+    /// Thrown when a dial that was in flight when `closeAll()` ran finally resolves. The pool
+    /// has already moved on by then, so this surfaces as an ordinary failure rather than
+    /// silently registering (and leaking) a connection nobody will ever close again.
+    private struct DialSupersededError: Error {}
 
     private func acquireLease(_ key: String) {
         guard var entry = entries[key] else { return }

@@ -11,11 +11,27 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
     private let lock = NSLock()
     private var closeContinuations: [CheckedContinuation<Void, Never>] = []
 
+    // Lets a test hold `exec` calls open until it explicitly releases them, so it can observe
+    // pool behaviour while N commands are genuinely, simultaneously still in flight instead of
+    // guessing at timing. Off by default — `isExecGated` must be opted into — so the existing
+    // tests that never call `releaseExec(matching:)` are unaffected and don't hang.
+    //
+    // Keyed by command rather than by arrival order: which of two racing callers becomes the
+    // dial's "owner" (and so reaches `exec` first) is scheduling-dependent, not declaration-
+    // order-dependent, so a test must release a specific command, not "whichever is next".
+    var isExecGated = false
+    private var pendingExecs: [(command: String, continuation: CheckedContinuation<Void, Never>)] = []
+    private var pendingExecCount = 0
+    private var pendingCountWaiters: [(target: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
     func exec(_ command: String) async throws -> SSHExecResult {
         if let error = failNextExecWith {
             failNextExecWith = nil
             isAlive = false
             throw error
+        }
+        if isExecGated {
+            await holdExec(command: command)
         }
         return SSHExecResult(exitCode: 0, stdout: "ok", stderr: "")
     }
@@ -45,6 +61,80 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
         await withCheckedContinuation { continuation in
             closeContinuations.append(continuation)
             lock.unlock()
+        }
+    }
+
+    /// Blocks the calling `exec` until `releaseExec(matching: command)` is called for it.
+    private func holdExec(command: String) async {
+        lock.lock()
+        pendingExecCount += 1
+        var toResume: [CheckedContinuation<Void, Never>] = []
+        pendingCountWaiters.removeAll { waiter in
+            if pendingExecCount >= waiter.target {
+                toResume.append(waiter.continuation)
+                return true
+            }
+            return false
+        }
+        lock.unlock()
+
+        for continuation in toResume {
+            continuation.resume()
+        }
+
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            pendingExecs.append((command: command, continuation: continuation))
+            lock.unlock()
+        }
+    }
+
+    /// Releases the currently-blocked `exec` call for `command`, letting it return its result.
+    func releaseExec(matching command: String) {
+        lock.lock()
+        guard let index = pendingExecs.firstIndex(where: { $0.command == command }) else {
+            lock.unlock()
+            return
+        }
+        let continuation = pendingExecs.remove(at: index).continuation
+        lock.unlock()
+        continuation.resume()
+    }
+
+    /// Suspends until at least `count` `exec` calls are simultaneously blocked in `holdExec`.
+    func waitForPendingExecCount(_ count: Int) async {
+        lock.lock()
+        if pendingExecCount >= count {
+            lock.unlock()
+            return
+        }
+        await withCheckedContinuation { continuation in
+            pendingCountWaiters.append((target: count, continuation: continuation))
+            lock.unlock()
+        }
+    }
+}
+
+/// A single-use gate an injected `dial` closure can `wait()` on. Lets a test hold a dial open
+/// deterministically (rather than via a sleep) until it has confirmed other callers have had a
+/// chance to coalesce onto it.
+private actor OneShotGate {
+    private var isOpen = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = continuations
+        continuations.removeAll()
+        for continuation in pending {
+            continuation.resume()
         }
     }
 }
@@ -187,6 +277,105 @@ final class SSHConnectionPoolTests: XCTestCase {
         let total = await connections.totalCloseCount()
         XCTAssertEqual(total, 2)
     }
+
+    /// Regression test for a reentrancy bug: a caller that *coalesces* onto an already
+    /// in-flight dial (rather than owning it) could return from the pool's internals without
+    /// ever having its lease counted, because the entry didn't exist yet when its continuation
+    /// happened to resume. Its later release would then decrement a lease it never took, which
+    /// could drive the count to zero — and trigger idle eviction — while another caller was
+    /// still genuinely mid-command.
+    ///
+    /// Made deterministic (no sleeps, no scheduling assumptions) by gating the dial open only
+    /// after confirming, via the pool's `coalescedJoinCount()` test hook, that a second caller
+    /// has actually joined the first caller's in-flight dial — and by gating each `exec` so both
+    /// commands are provably in flight at once before either is allowed to finish.
+    func testCoalescedCallersEachHoldALeaseUntilTheyFinish() async throws {
+        let connections = ConnectionBox()
+        let dialGate = OneShotGate()
+        let pool = SSHConnectionPool(
+            idleTimeout: .milliseconds(1),
+            sleep: { _ in /* resolve the idle timer immediately, deterministically */ },
+            dial: { _ in
+                let connection = FakeConnection()
+                connection.isExecGated = true
+                await connections.add(connection)
+                await dialGate.wait()
+                return connection
+            }
+        )
+        let config = config()
+
+        async let first: SSHExecResult = pool.exec(config, command: "a")
+        async let second: SSHExecResult = pool.exec(config, command: "b")
+
+        // Don't let the dial resolve until a second caller has genuinely joined it — otherwise
+        // this test could pass merely because both callers happened to take the fast (already
+        // cached) path, which never exercised the buggy branch in the first place.
+        while await pool.coalescedJoinCount() < 1 {
+            await Task.yield()
+        }
+        await dialGate.open()
+
+        let connection = await connections.waitForFirst()
+        await connection.waitForPendingExecCount(2)
+
+        let leasesWhileBothInFlight = await pool.leaseCount(for: config)
+        XCTAssertEqual(
+            leasesWhileBothInFlight, 2,
+            "both in-flight commands must be counted, including the one that coalesced onto the shared dial"
+        )
+
+        // Release by command name, not position: which of the two racing callers ends up
+        // owning the dial (and so reaches `exec` first) is scheduling-dependent, not
+        // declaration-order-dependent.
+        connection.releaseExec(matching: "a")
+        _ = try await first
+
+        let leasesWithOneInFlight = await pool.leaseCount(for: config)
+        XCTAssertEqual(leasesWithOneInFlight, 1)
+        XCTAssertEqual(connection.closeCount, 0, "must not be evicted while the other caller is still mid-command")
+        XCTAssertTrue(connection.isAlive)
+
+        connection.releaseExec(matching: "b")
+        _ = try await second
+
+        await connection.waitForClose()
+        XCTAssertEqual(connection.closeCount, 1)
+    }
+
+    /// Regression test for the "Important" half of the same reentrancy area: a dial that is
+    /// still in flight when `closeAll()` runs must not resurrect the pool by registering itself
+    /// after the fact. Deterministic: the dial is gated open only after `closeAll()` has
+    /// already run, rather than raced against it.
+    func testCloseAllDoesNotResurrectAConnectionFromAnInFlightDial() async throws {
+        let connections = ConnectionBox()
+        let dialGate = OneShotGate()
+        let pool = SSHConnectionPool(
+            sleep: { _ in },
+            dial: { _ in
+                let connection = FakeConnection()
+                await connections.add(connection)
+                await dialGate.wait()
+                return connection
+            }
+        )
+        let config = config()
+
+        async let result: SSHExecResult? = try? await pool.exec(config, command: "a")
+
+        let connection = await connections.waitForFirst()
+        await pool.closeAll()
+        await dialGate.open()
+
+        let outcome = await result
+        XCTAssertNil(outcome, "a dial superseded by closeAll() must surface as a failure, not a stale success")
+
+        await connection.waitForClose()
+        XCTAssertEqual(connection.closeCount, 1, "a dial that finishes after teardown must still be closed")
+
+        let leases = await pool.leaseCount(for: config)
+        XCTAssertNil(leases, "a late-completing dial must not resurrect an entry in the pool")
+    }
 }
 
 private actor Counter {
@@ -196,9 +385,30 @@ private actor Counter {
 
 private actor ConnectionBox {
     private var connections: [FakeConnection] = []
-    func add(_ connection: FakeConnection) { connections.append(connection) }
+    private var firstWaiters: [CheckedContinuation<FakeConnection, Never>] = []
+
+    func add(_ connection: FakeConnection) {
+        connections.append(connection)
+        if connections.count == 1 {
+            let pending = firstWaiters
+            firstWaiters.removeAll()
+            for waiter in pending {
+                waiter.resume(returning: connection)
+            }
+        }
+    }
+
     func last() -> FakeConnection? { connections.last }
     func failNextExecOnLast(_ error: Error) { connections.last?.failNextExecWith = error }
     func lastCloseCount() -> Int { connections.last?.closeCount ?? 0 }
     func totalCloseCount() -> Int { connections.reduce(0) { $0 + $1.closeCount } }
+
+    /// Suspends until at least one connection has been dialed, then returns the first one.
+    /// Avoids polling while a gated dial is still in flight.
+    func waitForFirst() async -> FakeConnection {
+        if let existing = connections.first { return existing }
+        return await withCheckedContinuation { continuation in
+            firstWaiters.append(continuation)
+        }
+    }
 }
