@@ -36,11 +36,15 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
         return SSHExecResult(exitCode: 0, stdout: "ok", stderr: "")
     }
 
+    /// Honors the `PooledConnecting.close()` contract: safe to call more than once, including
+    /// concurrently from multiple callers that never coordinate with each other (exactly what
+    /// happens when several coalesced waiters on one superseded dial each independently decide
+    /// to close the connection they were handed). All the mutation is under `lock`, so
+    /// concurrent calls serialize instead of racing on `closeCount`/`isAlive`.
     func close() async {
+        lock.lock()
         closeCount += 1
         isAlive = false
-
-        lock.lock()
         let pending = closeContinuations
         closeContinuations.removeAll()
         lock.unlock()
@@ -146,6 +150,21 @@ final class SSHConnectionPoolTests: XCTestCase {
         key: Data = Data([1, 2, 3])
     ) -> HostConnectionConfig {
         HostConnectionConfig(host: host, port: 22, username: user, privateKeyPEM: key)
+    }
+
+    /// Runs `pool.exec` and captures success/failure as a value instead of a thrown error, so
+    /// several racing calls can be started with `async let` and their outcomes inspected
+    /// afterwards without the first failure aborting the others via `try`.
+    private func captured(
+        _ pool: SSHConnectionPool,
+        _ config: HostConnectionConfig,
+        command: String
+    ) async -> Result<SSHExecResult, Error> {
+        do {
+            return .success(try await pool.exec(config, command: command))
+        } catch {
+            return .failure(error)
+        }
     }
 
     /// The core promise: a burst of concurrent commands pays one handshake, not N.
@@ -347,6 +366,12 @@ final class SSHConnectionPoolTests: XCTestCase {
     /// still in flight when `closeAll()` runs must not resurrect the pool by registering itself
     /// after the fact. Deterministic: the dial is gated open only after `closeAll()` has
     /// already run, rather than raced against it.
+    ///
+    /// Also pins down that the failure a caller sees is the pool's ordinary, user-facing
+    /// `SSHRemoteError.unreachable` — not an internal bookkeeping error type. An upcoming task
+    /// wires `closeAll()` to app backgrounding, at which point a command in flight when the app
+    /// backgrounds must fail the same way a genuinely dropped connection would, not with
+    /// something that leaks pool internals into the UI.
     func testCloseAllDoesNotResurrectAConnectionFromAnInFlightDial() async throws {
         let connections = ConnectionBox()
         let dialGate = OneShotGate()
@@ -361,20 +386,80 @@ final class SSHConnectionPoolTests: XCTestCase {
         )
         let config = config()
 
-        async let result: SSHExecResult? = try? await pool.exec(config, command: "a")
+        async let result = captured(pool, config, command: "a")
 
         let connection = await connections.waitForFirst()
         await pool.closeAll()
         await dialGate.open()
 
-        let outcome = await result
-        XCTAssertNil(outcome, "a dial superseded by closeAll() must surface as a failure, not a stale success")
+        switch await result {
+        case .success:
+            XCTFail("a dial superseded by closeAll() must surface as a failure, not a stale success")
+        case .failure(let error):
+            guard let sshError = error as? SSHRemoteError else {
+                XCTFail("expected SSHRemoteError.unreachable, got an internal error type: \(error)")
+                return
+            }
+            XCTAssertEqual(sshError, .unreachable, "a superseded dial must read the same as a genuinely dead connection")
+        }
 
         await connection.waitForClose()
         XCTAssertEqual(connection.closeCount, 1, "a dial that finishes after teardown must still be closed")
 
         let leases = await pool.leaseCount(for: config)
         XCTAssertNil(leases, "a late-completing dial must not resurrect an entry in the pool")
+    }
+
+    /// Regression test for a second defect in the same fix: when a superseded dial has *more
+    /// than one* coalesced waiter, each of them independently observes `.stale` and calls
+    /// `close()` on the same connection — nobody coordinates who "owns" closing it. This pins
+    /// down both that every waiter sees the pool-facing `.unreachable` error and that closing
+    /// the same connection multiple times (here: concurrently, from three racing callers) is
+    /// harmless, per the idempotency contract on `PooledConnecting.close()`.
+    func testCloseAllSupersedesEveryCoalescedWaiterAndRepeatedCloseIsHarmless() async throws {
+        let connections = ConnectionBox()
+        let dialGate = OneShotGate()
+        let pool = SSHConnectionPool(
+            sleep: { _ in },
+            dial: { _ in
+                let connection = FakeConnection()
+                await connections.add(connection)
+                await dialGate.wait()
+                return connection
+            }
+        )
+        let config = config()
+
+        async let first = captured(pool, config, command: "a")
+        async let second = captured(pool, config, command: "b")
+        async let third = captured(pool, config, command: "c")
+
+        // Wait for at least two of the three to have genuinely coalesced onto the one dial
+        // (the third is the dial's owner) before tearing down, so this test exercises multiple
+        // waiters racing the same superseded dial, not just one.
+        while await pool.coalescedJoinCount() < 2 {
+            await Task.yield()
+        }
+
+        let connection = await connections.waitForFirst()
+        await pool.closeAll()
+        await dialGate.open()
+
+        for result in await [first, second, third] {
+            switch result {
+            case .success:
+                XCTFail("every caller racing a superseded dial must fail, none should get a stale success")
+            case .failure(let error):
+                XCTAssertEqual(error as? SSHRemoteError, .unreachable)
+            }
+        }
+
+        await connection.waitForClose()
+        XCTAssertGreaterThanOrEqual(
+            connection.closeCount, 1,
+            "each of the three waiters independently closes the connection; that must be harmless, not a crash"
+        )
+        XCTAssertFalse(connection.isAlive)
     }
 }
 

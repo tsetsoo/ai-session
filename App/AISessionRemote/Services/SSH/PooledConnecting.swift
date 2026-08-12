@@ -12,5 +12,13 @@ protocol PooledConnecting: AnyObject, Sendable {
     /// Opens a session channel, runs `command`, and returns once it exits.
     func exec(_ command: String) async throws -> SSHExecResult
 
+    /// Closes the connection and releases its underlying resources.
+    ///
+    /// Must be idempotent, including under concurrent calls: more than one caller can decide to
+    /// close the same connection independently, with no coordination between them — for
+    /// example, several callers coalesced onto one dial that gets superseded by a pool
+    /// teardown while they were all still waiting on it, each of which reacts by closing the
+    /// connection it was handed. A second (or third, ...) `close()` must be a safe no-op, not
+    /// a crash or a thrown error.
     func close() async
 }

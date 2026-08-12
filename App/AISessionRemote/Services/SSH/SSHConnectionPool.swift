@@ -26,11 +26,13 @@ actor SSHConnectionPool {
     /// down and the dial must not resurrect it, no matter how late it completes.
     private var generation = 0
 
-    /// Count of times a caller resumed from an *already in-flight* dial (the coalescing
-    /// branch of `connection(for:)`), rather than owning the dial itself. Exists only so a
-    /// test can deterministically wait for "a second caller has genuinely joined the first
-    /// caller's dial" instead of guessing at scheduling order.
-    private var coalescedJoinCountForTesting = 0
+    /// Count of times a caller resumed from an *already in-flight* dial (the coalescing branch
+    /// of `connection(for:)`), rather than owning the dial itself. A genuine production counter
+    /// — it is incremented on every real coalesced call, not just under test — kept small and
+    /// cheap enough that there is no reason to gate it behind a test flag. It is exposed via
+    /// `coalescedJoinCount()` so a test can deterministically wait for "a second caller has
+    /// genuinely joined the first caller's dial" instead of guessing at scheduling order.
+    private var coalescedDialJoinCount = 0
 
     init(
         idleTimeout: Duration = .seconds(60),
@@ -99,9 +101,9 @@ actor SSHConnectionPool {
         entries[Self.key(for: config)]?.leases
     }
 
-    /// See `coalescedJoinCountForTesting`.
+    /// See `coalescedDialJoinCount`.
     func coalescedJoinCount() -> Int {
-        coalescedJoinCountForTesting
+        coalescedDialJoinCount
     }
 
     // MARK: - Internals
@@ -137,7 +139,9 @@ actor SSHConnectionPool {
     /// holding exactly one counted lease on a registered entry when this returns successfully;
     /// it throws instead of returning if the dial fails, or if a `closeAll()` happened while
     /// the dial was in flight (in which case the freshly-dialled connection is closed rather
-    /// than resurrecting the pool).
+    /// than resurrecting the pool, and this surfaces to the caller as
+    /// `SSHRemoteError.unreachable` — the same thing the caller would see if the host genuinely
+    /// dropped off the network, not some internal bookkeeping type it has no business seeing).
     private func connection(for config: HostConnectionConfig) async throws -> any PooledConnecting {
         let key = Self.key(for: config)
 
@@ -161,14 +165,17 @@ actor SSHConnectionPool {
         // first one created. That keeps "connection produced" and "lease taken" atomic from
         // the idle-eviction task's perspective, for every caller, not just the dial's owner.
         if let inFlight = dialsInFlight[key] {
-            coalescedJoinCountForTesting += 1
+            coalescedDialJoinCount += 1
             let connection = try await inFlight.value
             switch registerDialedConnection(key: key, connection: connection, dialGeneration: dialGeneration) {
             case .registered(let registered):
                 return registered
             case .stale:
+                // Closing a superseded connection more than once (every coalesced waiter that
+                // observes `.stale` calls this independently) must be harmless — see the
+                // idempotency contract on `PooledConnecting.close()`.
                 await connection.close()
-                throw DialSupersededError()
+                throw SSHRemoteError.unreachable
             }
         }
 
@@ -182,7 +189,7 @@ actor SSHConnectionPool {
                 return registered
             case .stale:
                 await connection.close()
-                throw DialSupersededError()
+                throw SSHRemoteError.unreachable
             }
         } catch {
             // Only clear the slot if it's still ours: a stale dial superseded by `closeAll()`
@@ -225,11 +232,6 @@ actor SSHConnectionPool {
         entries[key] = Entry(connection: connection, leases: 1, idleTask: nil)
         return .registered(connection)
     }
-
-    /// Thrown when a dial that was in flight when `closeAll()` ran finally resolves. The pool
-    /// has already moved on by then, so this surfaces as an ordinary failure rather than
-    /// silently registering (and leaking) a connection nobody will ever close again.
-    private struct DialSupersededError: Error {}
 
     private func acquireLease(_ key: String) {
         guard var entry = entries[key] else { return }
