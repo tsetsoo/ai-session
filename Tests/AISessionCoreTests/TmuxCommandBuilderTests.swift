@@ -46,6 +46,20 @@ final class TmuxCommandBuilderTests: XCTestCase {
         XCTAssertTrue(command.contains("exit $ls_exit"))
     }
 
+    /// zsh (unlike bash) errors on unmatched globs by default — `for f in …/*.json` with an
+    /// empty status directory becomes `zsh: no matches found` and aborts the whole list script
+    /// before `exit $ls_exit`, which SessionService surfaces as "Could not load sessions".
+    /// The dump must opt into null-glob behaviour (and keep the `[ -f` guard for shells that
+    /// leave the literal pattern when nullglob is unavailable).
+    func testListSessionsWithStatusesSurvivesEmptyStatusDirectoryOnZsh() {
+        let command = TmuxCommandBuilder.listSessionsWithStatuses()
+        XCTAssertTrue(
+            command.contains("setopt NULL_GLOB") || command.contains("nullglob"),
+            "status dump must disable zsh nomatch / enable nullglob before expanding *.json"
+        )
+        XCTAssertTrue(command.contains("[ -f \"$f\" ]"), "keep the exists-guard for bash/sh literal globs")
+    }
+
     func testCreateSessionScriptUsesExitNinetyForMissingBinary() throws {
         // SessionName.init(tool:slug:) is failable, not throwing.
         let name = try XCTUnwrap(SessionName(tool: .claude, slug: "demo"))
