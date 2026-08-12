@@ -40,7 +40,7 @@ public enum TmuxCommandBuilder {
             """
             tmux ls -F '#{session_name}\\t#{session_activity}\\t#{session_attached}'; ls_exit=$?
             echo '\(RemoteScriptOutput.statusMarker)'
-            if [ $ls_exit -eq 0 ]; then mkdir -p ~/.ai-remote/status; for f in ~/.ai-remote/status/*.json; do [ -f "$f" ] && echo "---$(basename "$f")---" && cat "$f"; done; fi
+            if [ $ls_exit -eq 0 ]; then mkdir -p ~/.ai-remote/status; setopt NULL_GLOB 2>/dev/null || true; shopt -s nullglob 2>/dev/null || true; for f in ~/.ai-remote/status/*.json; do [ -f "$f" ] && echo "---$(basename "$f")---" && cat "$f"; done; fi
             exit $ls_exit
             """
         )
