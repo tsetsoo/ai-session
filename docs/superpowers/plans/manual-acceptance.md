@@ -34,6 +34,38 @@ These cover naming, metadata, tmux command builders, session discovery parsing, 
 
 ---
 
+## Stage 1 latency acceptance
+
+Run on a physical device against a real host, with Network Link Conditioner enabled
+(Settings → Developer → Network Link Conditioner → custom profile, 150 ms delay in both
+directions, 0% loss).
+
+Measure with a stopwatch, three runs each, recording the median. "Warm" means a prior action
+on the same host completed within the last 60 seconds.
+
+| action | before | target | measured |
+| --- | --- | --- | --- |
+| session list refresh (warm) | ~2.1 s | ~0.3 s | |
+| new session (warm) | ~5.2 s | ~0.6 s | |
+| attach to session (warm) | ~1.0 s | ~0.3 s | |
+| kill session (warm) | ~1.0 s | ~0.3 s | |
+| first action on a host (cold) | ~2.1 s | ~1.1 s | |
+
+Also confirm by observation:
+
+- [ ] Rotating the device and showing/hiding the keyboard causes at most one tmux repaint each.
+- [ ] Attaching to a session does not produce a second full-screen repaint.
+- [ ] Backgrounding the app for two minutes, then returning and refreshing, succeeds without
+      an error alert (this exercises retry-once-on-stale).
+- [ ] Backgrounding the app while a session-list refresh is in flight does not produce an
+      error alert.
+- [ ] Switching Wi-Fi off mid-session, then back on, and refreshing the list succeeds without
+      a spurious "Could not reach the host".
+- [ ] Creating a session titled `100% done` writes valid metadata (verify on the host with
+      `cat ~/.ai-remote/sessions/*.json`).
+
+---
+
 ## Sign-off
 
 | Role | Name | Date | Result |
