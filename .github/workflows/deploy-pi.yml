@@ -3,6 +3,18 @@ name: Deploy Pi
 on:
   push:
     branches: [main]
+    # Don't spend a deploy on commits that cannot change the artifact. A commit
+    # touching both docs and code still deploys — paths-ignore only skips when
+    # every changed path matches. Host-side scripts and units are copied to the
+    # Pi by hand and never reach the tarball.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".gitignore"
+      - "deploy/**/*.sh"
+      - "deploy/**/*.service"
+      - "deploy/**/*.timer"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,8 +27,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Only clippy gates the deploy. The deploy job below already builds the
+  # release frontend and cross-compiles the server, so a compile break fails it
+  # before anything is published — re-running ci.yml's Build job here would
+  # duplicate that work and add minutes to every deploy for no extra signal.
+  # Lint is the one check the deploy does not otherwise perform.
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (server + shared)
+        run: cargo clippy -p todo-shared -p todo-server -- -D warnings
+
+      - name: Clippy (frontend, wasm)
+        run: cargo clippy -p todo-frontend --target wasm32-unknown-unknown -- -D warnings
+
   deploy-pi:
     name: Build armv7 + publish pi-latest
+    needs: clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
