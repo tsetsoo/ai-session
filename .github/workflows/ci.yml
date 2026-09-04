@@ -1,8 +1,10 @@
 name: CI
 
+# Pull requests only. Pushes to main are covered by deploy-pi.yml, which gates
+# the deploy on Clippy and then builds the release frontend and cross-compiles
+# the server itself — running these jobs there too would just do the same work
+# twice per push.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
