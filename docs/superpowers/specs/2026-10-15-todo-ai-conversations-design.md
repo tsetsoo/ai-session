@@ -32,7 +32,8 @@ Every section (Sp / I / Si / P) is assigned a computer, and every todo can have 
 | Moving a todo to another section | Existing conversation stays where it is (computer + cwd snapshotted at creation) |
 | Completing / deleting a todo | Conversation record kept on complete; deleted on todo delete. Killing tmux is a client action |
 | Backend role | Data store only (no SSH, no terminal relay) |
-| Clients | Native SwiftUI (iPhone + Mac). Existing Leptos web UI keeps working for plain todos; no browser terminal |
+| Clients | Native SwiftUI only (iPhone + Mac). The Leptos web UI is retired once native reaches parity (see Web UI retirement) |
+| Sync | todo-server is the single source of truth; clients refresh on `/api/ws` pings and keep a read-only offline cache. Conversations sync naturally: both devices attach to the same tmux session |
 | Terminal engine | SwiftTerm now, behind a renderer seam; libghostty is a later option |
 
 ## Data model
@@ -87,7 +88,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 
 ## API
 
-All new endpoints require `Authorization: Bearer <TODO_API_TOKEN>` (env var on the server). See open questions for existing endpoints.
+Every endpoint (existing and new, including `/api/ws`) requires `Authorization: Bearer <TODO_API_TOKEN>` (env var on the server); there is no browser client to keep compatible. `/api/ws` also accepts `?token=` because some WebSocket clients can't set headers. CORS is removed.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -131,7 +132,15 @@ One command covers create, attach, and resume after tmux died or the machine reb
 - Add a Todos screen grouped by `Sp`/`I`/`Si`/`P`, with status badges and live refresh via `/api/ws`.
 - Opening a todo calls `POST …/conversation`, then opens the existing terminal screen running `ai-todo-open`.
 - Add a macOS target. Only 3 files use UIKit; branch them with `#if os(...)` and use a three-column layout (sections | todos | terminal).
-- Terminal polish: a shipped `tmux.conf` snippet (`escape-time 0`, true color, `extended-keys on`, `set-clipboard on`, `focus-events on`, mouse), native notifications on `waiting`, ⌘1–9 shortcuts, a `TerminalRenderer` seam.
+- Bring the todo UI to parity with the web app:
+  - section lists,
+  - Daily/General boards with carry-forward,
+  - the archive,
+  - quick add with native dictation.
+
+  All logic stays server-side.
+- Keep an offline read-only cache of todos and conversations (SwiftData). Writes need the server.
+- Terminal polish: a shipped `tmux.conf` snippet (`escape-time 0`, `window-size latest` for multi-device attach, true color, `extended-keys on`, `set-clipboard on`, `focus-events on`, mouse), native notifications on `waiting`, ⌘1–9 shortcuts, a `TerminalRenderer` seam.
 
 ## Implementation order
 
@@ -155,14 +164,22 @@ One command covers create, attach, and resume after tmux died or the machine reb
    - Mosh-style local echo for iPhone.
    - libghostty experiment.
 
+## Web UI retirement
+
+The Leptos web UI keeps running until the native apps reach parity. The token requirement lands in the same release as the first native build, at which point the web UI stops working. Then:
+
+1. Delete `crates/todo-frontend`, `frontend-dist/`, and the `actix-files`/SPA fallback and `FRONTEND_DIR` in todo-server.
+2. Drop the Trunk install and build from `.github/workflows/deploy-pi.yml`, and `frontend-dist` from the release tarball and `deploy/pi/todo-update.sh`.
+3. Remove `actix-cors`.
+
 ## Open questions
 
-- **Auth for existing todo endpoints.** Proposal: v1 leaves the existing endpoints open (Tailscale only) so the web UI is unchanged; only the new endpoints need the token. Alternative: token everywhere, with the web UI asking for it once.
 - **Kill on complete.** Should completing a todo also offer to kill its tmux session? Proposal: the client shows a "close conversation" action, with no automatic kill.
 
 ## Non-goals (v1)
 
-- Server-side SSH, terminal relay, or a browser terminal.
+- Server-side SSH, terminal relay, or any browser client.
+- Syncing SSH keys between devices (each device has its own key).
 - Multiple conversations per todo.
 - Tools other than Claude Code.
 - Storing SSH keys on the server.
