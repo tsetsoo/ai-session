@@ -91,6 +91,10 @@ CREATE TABLE IF NOT EXISTS conversations (
 
 Every endpoint (existing and new, including `/api/ws`) requires `Authorization: Bearer <TODO_API_TOKEN>` (env var on the server); there is no browser client to keep compatible. `/api/ws` also accepts `?token=` because some WebSocket clients can't set headers. CORS is removed.
 
+Implementation notes:
+- Auth is enforced only when `TODO_API_TOKEN` is set, so the server can deploy before the native apps exist.
+- `GET /api/health` never needs a token. When enabling the token on the Pi, point `TODO_HEALTH_URL` in `deploy/pi/todo-update.sh` at `/api/health`. The current default is `/api/sections`, which would then return 401 and trigger a rollback.
+
 | Method | Path | Purpose |
 |---|---|---|
 | `GET/POST` | `/api/computers` | List / create |

@@ -7,7 +7,8 @@ use crate::broadcast::Broadcaster;
 use crate::db::DbPool;
 use crate::models::row_to_todo;
 
-pub(crate) const SELECT_COLS: &str = "id, section, title, completed, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at";
+pub(crate) const SELECT_COLS: &str = "id, section, title, completed, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, \
+    (SELECT status FROM conversations WHERE conversations.todo_id = todos.id) AS conversation_status";
 
 pub async fn get_sections(pool: web::Data<DbPool>) -> HttpResponse {
     let conn = match pool.get() {

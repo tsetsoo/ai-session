@@ -1,5 +1,5 @@
 use rusqlite::Row;
-use todo_shared::{Importance, Section, Todo};
+use todo_shared::{ConversationStatus, Importance, Section, Todo};
 
 pub fn row_to_todo(row: &Row) -> rusqlite::Result<Todo> {
     let id: String = row.get("id")?;
@@ -13,9 +13,11 @@ pub fn row_to_todo(row: &Row) -> rusqlite::Result<Todo> {
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
     let completed_at: Option<String> = row.get("completed_at")?;
+    let conversation_status: Option<String> = row.get("conversation_status")?;
 
     let section = Section::parse(&section_str).unwrap_or(Section::P);
     let importance = Importance::parse(&importance_str).unwrap_or_default();
+    let conversation_status = conversation_status.as_deref().and_then(ConversationStatus::parse);
 
     Ok(Todo {
         id,
@@ -29,5 +31,6 @@ pub fn row_to_todo(row: &Row) -> rusqlite::Result<Todo> {
         created_at,
         updated_at,
         completed_at,
+        conversation_status,
     })
 }

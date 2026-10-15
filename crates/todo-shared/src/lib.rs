@@ -114,6 +114,9 @@ pub struct Todo {
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    /// Status of this todo's AI conversation, if it has one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_status: Option<ConversationStatus>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -175,4 +178,116 @@ pub struct CreateDailyRequest {
 pub struct SetTodoDailyRequest {
     /// Target daily date, or null to remove from Daily
     pub date: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// AI conversations: computers, section → computer mapping, per-todo conversation
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConversationStatus {
+    Busy,
+    Waiting,
+    Idle,
+    Unknown,
+    Closed,
+}
+
+impl ConversationStatus {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ConversationStatus::Busy => "busy",
+            ConversationStatus::Waiting => "waiting",
+            ConversationStatus::Idle => "idle",
+            ConversationStatus::Unknown => "unknown",
+            ConversationStatus::Closed => "closed",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<ConversationStatus> {
+        match s {
+            "busy" => Some(ConversationStatus::Busy),
+            "waiting" => Some(ConversationStatus::Waiting),
+            "idle" => Some(ConversationStatus::Idle),
+            "unknown" => Some(ConversationStatus::Unknown),
+            "closed" => Some(ConversationStatus::Closed),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Computer {
+    pub id: String,
+    pub name: String,
+    /// Tailscale name or IP
+    pub hostname: String,
+    pub port: u16,
+    pub username: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateComputerRequest {
+    pub name: String,
+    pub hostname: String,
+    #[serde(default)]
+    pub port: Option<u16>,
+    pub username: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct UpdateComputerRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SectionComputer {
+    pub section: Section,
+    pub computer: Computer,
+    /// Default working directory for new conversations (may start with ~)
+    pub cwd: String,
+    pub tool: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetSectionComputerRequest {
+    pub computer_id: String,
+    pub cwd: String,
+    #[serde(default)]
+    pub tool: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Conversation {
+    pub todo_id: String,
+    pub computer: Computer,
+    pub cwd: String,
+    pub tool: String,
+    pub tmux_name: String,
+    pub claude_session_id: String,
+    pub status: ConversationStatus,
+    pub status_message: Option<String>,
+    pub status_updated_at: Option<String>,
+    pub created_at: String,
+}
+
+/// Sent by Claude Code hooks on the computer.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConversationStatusRequest {
+    pub claude_session_id: String,
+    pub status: ConversationStatus,
+    #[serde(default)]
+    pub message: Option<String>,
 }
