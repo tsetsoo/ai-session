@@ -644,6 +644,114 @@ assert r.redact("x hub-token-123 y", ["hub-token-123"]) == "x [REDACTED:local_se
 PY
 pass "key_value_keeps_key: password=hunter2 -> password=[REDACTED:secret]; env secrets are collected by name"
 
+# --- ai-todo-sessions stats ---------------------------------------------------------
+
+export GIT_CONFIG_NOSYSTEM=1
+git_q() { git -c user.name=t -c user.email=t@example.com -c init.defaultBranch=main -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
+SHOME="${SANDBOX}/shome"
+S_CLAUDE=c0ffee00-0000-4000-8000-000000000001
+S_CODEX=019f0000-0000-7000-8000-0000000000c1
+S_CWD="${SHOME}/work/app"
+S_PROJ="${SHOME}/.claude/projects/-work-app"
+S_CODEX_DAY="${SHOME}/.codex/sessions/2026/10/15"
+mkdir -p "$S_PROJ" "$S_CODEX_DAY" "$S_CWD"
+fixture() { # <fixture file> <destination> <session id> <cwd> [home]
+  sed -e "s#@CWD@#$4#g" -e "s#@HOME@#${5:-$SHOME}#g" -e "s#@SID@#$3#g" "${FIXTURES}/$1" >"$2"
+}
+mini_claude() { # <path> <session id> <cwd> <prompt>: one complete turn
+  printf '{"type":"user","uuid":"%s-u","cwd":"%s","timestamp":"2026-10-15T08:00:00.000Z","message":{"role":"user","content":"%s"}}\n' "$2" "$3" "$4" >"$1"
+  printf '{"type":"assistant","uuid":"%s-a","cwd":"%s","timestamp":"2026-10-15T08:00:05.000Z","message":{"id":"m-%s","role":"assistant","model":"claude-opus-5-5","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}]}}\n' "$2" "$3" "$2" >>"$1"
+}
+fixture claude-stats.jsonl "${S_PROJ}/${S_CLAUDE}.jsonl" "$S_CLAUDE" "$S_CWD"
+fixture codex-stats.jsonl "${S_CODEX_DAY}/rollout-2026-10-15T09-59-59-${S_CODEX}.jsonl" "$S_CODEX" "$S_CWD"
+stats() { HOME="$SHOME" AI_TODO_TZ=Europe/Sofia AI_TODO_HUB_CONF="${SANDBOX}/none.conf" "$SESSIONS" stats --json "$@"; }
+
+stats --session "claude:${S_CLAUDE}" >"${SANDBOX}/stats-claude.json" || fail "stats --json failed"
+python3 - "${SANDBOX}/stats-claude.json" "$S_CLAUDE" <<'PY' || fail "claude stats wrong: $(cat "${SANDBOX}/stats-claude.json")"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 1, rows
+s = rows[0]
+assert list(s) == ["tool", "session_id", "cwd", "title", "repo_root", "repo_url", "stats", "days"], list(s)
+assert (s["tool"], s["session_id"], s["cwd"], s["title"]) == ("claude", sys.argv[2], "~/work/app", "Add the parser please"), s
+assert s["repo_root"] is None and s["repo_url"] is None, s
+assert s["stats"] == {
+    "prompts": 3, "assistant_turns": 3, "input_tokens": 127, "output_tokens": 210,
+    "cache_read_tokens": 17200, "cache_creation_tokens": 350, "active_seconds": 300,
+    "first_activity": "2026-10-15T09:00:00Z", "last_activity": "2026-10-15T22:32:00Z",
+    "files_touched": ["src/parser.py", "src/config.py", "~/other/notes.md"],
+    "models": ["claude-opus-5-5", "claude-sonnet-5"]}, s["stats"]
+assert s["days"] == [
+    {"day": "2026-10-15", "prompts": 2, "assistant_turns": 2, "input_tokens": 122, "output_tokens": 140,
+     "cache_read_tokens": 9100, "cache_creation_tokens": 300, "active_seconds": 180, "files_touched": 3},
+    {"day": "2026-10-16", "prompts": 1, "assistant_turns": 1, "input_tokens": 5, "output_tokens": 70,
+     "cache_read_tokens": 8100, "cache_creation_tokens": 50, "active_seconds": 120, "files_touched": 1}], s["days"]
+PY
+pass "stats_claude_numbers: prompts, end_turn turns, usage once per message.id, 10-min active gaps, local-day split, files, models; sidechains skipped"
+
+stats --session "codex:${S_CODEX}" >"${SANDBOX}/stats-codex.json" || fail "codex stats failed"
+python3 - "${SANDBOX}/stats-codex.json" "$S_CODEX" <<'PY' || fail "codex stats wrong: $(cat "${SANDBOX}/stats-codex.json")"
+import json, sys
+s = json.load(open(sys.argv[1]))[0]
+assert (s["tool"], s["session_id"], s["cwd"], s["title"]) == ("codex", sys.argv[2], "~/work/app", "Refactor the module"), s
+assert s["stats"] == {
+    "prompts": 2, "assistant_turns": 2, "input_tokens": 1500, "output_tokens": 450,
+    "cache_read_tokens": 2500, "cache_creation_tokens": None, "active_seconds": 50,
+    "first_activity": "2026-10-15T10:00:00Z", "last_activity": "2026-10-15T23:00:20Z",
+    "files_touched": ["src/new.py", "src/old.py", "src/gone.py"], "models": ["gpt-5.5-codex"]}, s["stats"]
+assert s["days"] == [
+    {"day": "2026-10-15", "prompts": 1, "assistant_turns": 1, "input_tokens": 1000, "output_tokens": 300,
+     "cache_read_tokens": 1500, "cache_creation_tokens": None, "active_seconds": 30, "files_touched": 3},
+    {"day": "2026-10-16", "prompts": 1, "assistant_turns": 1, "input_tokens": 500, "output_tokens": 150,
+     "cache_read_tokens": 1000, "cache_creation_tokens": None, "active_seconds": 20, "files_touched": 0}], s["days"]
+PY
+pass "stats_codex_numbers: cumulative token_count turned into per-day deltas, task_complete turns, apply_patch files, no cache-creation figure"
+
+[[ "$(stats | python3 -c 'import json,sys; print(sorted(r["tool"] for r in json.load(sys.stdin)))')" == "['claude', 'codex']" ]] \
+  || fail "stats --since default did not pick up both recent transcripts"
+touch -t "$OLD" "${S_PROJ}/${S_CLAUDE}.jsonl"
+[[ "$(stats --since 2 | python3 -c 'import json,sys; print([r["tool"] for r in json.load(sys.stdin)])')" == "['codex']" ]] \
+  || fail "stats --since included a transcript not changed in that window"
+[[ "$(stats --since 100000 --tool claude | python3 -c 'import json,sys; print([r["tool"] for r in json.load(sys.stdin)])')" == "['claude']" ]] \
+  || fail "stats --tool claude wrong"
+if stats --session "claude:../x" >/dev/null 2>&1; then fail "stats accepted a bad --session"; else [[ $? -eq 64 ]] || fail "bad --session should exit 64"; fi
+pass "stats scope: --since DAYS by transcript mtime (default 1), --tool, --session tool:id validated"
+
+REPO="${SHOME}/work/repo"
+mkdir -p "$REPO"
+git_q -C "$REPO" init
+git_q -C "$REPO" commit --allow-empty -m init
+git_q -C "$REPO" remote add origin "https://deploy:Sup3rPass@example.com/team/repo.git"
+git_q -C "$REPO" worktree add "${REPO}/.claude/worktrees/w"
+R_WT=c0ffee00-0000-4000-8000-000000000002
+R_GONE=c0ffee00-0000-4000-8000-000000000003
+mini_claude "${S_PROJ}/${R_WT}.jsonl" "$R_WT" "${REPO}/.claude/worktrees/w" "work in the worktree"
+mini_claude "${S_PROJ}/${R_GONE}.jsonl" "$R_GONE" "${SHOME}/work/gone" "work in a deleted folder"
+stats --session "claude:${R_WT}" --session "claude:${R_GONE}" >"${SANDBOX}/stats-repo.json"
+python3 - "${SANDBOX}/stats-repo.json" "$R_WT" "$R_GONE" <<'PY' || fail "repo fields wrong: $(cat "${SANDBOX}/stats-repo.json")"
+import json, sys
+rows = {r["session_id"]: r for r in json.load(open(sys.argv[1]))}
+wt, gone = rows[sys.argv[2]], rows[sys.argv[3]]
+assert wt["cwd"] == "~/work/repo/.claude/worktrees/w", wt
+assert wt["repo_root"] == "~/work/repo", wt
+assert wt["repo_url"] == "https://example.com/team/repo.git", wt
+assert gone["repo_root"] is None and gone["repo_url"] is None, gone
+PY
+pass "stats_repo_fields: a worktree resolves to the main repo (with ~), origin credentials stripped, a missing cwd gives nulls"
+
+R_SECRET=c0ffee00-0000-4000-8000-000000000004
+printf "TODO_HUB_URL='http://127.0.0.1:9'\nTODO_API_TOKEN='conf-secret-token-1'\n" >"${SANDBOX}/stats-hub.conf"
+mini_claude "${S_PROJ}/${R_SECRET}.jsonl" "$R_SECRET" "$S_CWD" "deploy with password=hunter2xyz via conf-secret-token-1 and ghp_""A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 then write a very long explanation of everything that happened so far in this project"
+HOME="$SHOME" AI_TODO_HUB_CONF="${SANDBOX}/stats-hub.conf" "$SESSIONS" stats --json --session "claude:${R_SECRET}" >"${SANDBOX}/stats-title.json"
+python3 - "${SANDBOX}/stats-title.json" <<'PY' || fail "title not redacted: $(cat "${SANDBOX}/stats-title.json")"
+import json, sys
+t = json.load(open(sys.argv[1]))[0]["title"]
+assert t.startswith("deploy with password=[REDACTED:secret] via [REDACTED:local_secret] and [REDACTED:github_token] then"), t
+assert "hunter2xyz" not in t and "conf-secret-token-1" not in t and "ghp_" not in t, t
+assert len(t) == 120, len(t)
+PY
+pass "stats_title_redacted: the title is the first prompt, redacted (incl. the hub token from todo-hub.conf), then cut to 120 chars"
+
 # --- tmux.conf ----------------------------------------------------------------
 
 tmux -L "${SOCK}-conf" -f /dev/null new-session -d -s conftest
