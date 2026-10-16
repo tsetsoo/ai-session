@@ -184,12 +184,13 @@ pub struct SetTodoDailyRequest {
 // AI conversations: computers, section → computer mapping, per-todo conversation
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConversationStatus {
     Busy,
     Waiting,
     Idle,
+    #[default]
     Unknown,
     Closed,
 }
@@ -276,18 +277,80 @@ pub struct Conversation {
     pub cwd: String,
     pub tool: String,
     pub tmux_name: String,
-    pub claude_session_id: String,
+    /// The tool's own conversation id: `claude --resume <id>`, `codex resume <id>`, …
+    #[serde(default)]
+    pub session_id: String,
+    /// Same value as `session_id` for Claude conversations, `null` for other tools. Kept for
+    /// apps and hooks installed before tools other than Claude were supported, which would
+    /// otherwise run `claude --resume` on a Codex/Cursor id.
+    pub claude_session_id: Option<String>,
     pub status: ConversationStatus,
     pub status_message: Option<String>,
     pub status_updated_at: Option<String>,
     pub created_at: String,
 }
 
-/// Sent by Claude Code hooks on the computer.
-#[derive(Debug, Serialize, Deserialize)]
+/// Sent by the status hooks on the computer. Either key identifies the conversation;
+/// `claude_session_id` is what hooks installed before multi-tool support send.
+/// `tool` defaults to `claude` (older hooks are all Claude hooks), so one post matches
+/// at most one conversation even when two tools share an id.
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ConversationStatusRequest {
-    pub claude_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
     pub status: ConversationStatus,
     #[serde(default)]
     pub message: Option<String>,
+}
+
+impl ConversationStatusRequest {
+    /// The conversation id from whichever key was sent (`session_id` wins), if non-empty.
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id
+            .as_deref()
+            .or(self.claude_session_id.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// The tool the hook reports for, `claude` when not sent.
+    #[must_use]
+    pub fn tool(&self) -> &str {
+        self.tool.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("claude")
+    }
+}
+
+/// Link an existing conversation (made outside the todo app) to a todo.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LinkConversationRequest {
+    pub computer_id: String,
+    pub tool: String,
+    pub session_id: String,
+    pub cwd: String,
+}
+
+/// Create a todo from an existing conversation, linked to it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TodoFromConversationRequest {
+    pub section: Section,
+    pub title: String,
+    pub computer_id: String,
+    pub tool: String,
+    pub session_id: String,
+    pub cwd: String,
+    #[serde(default)]
+    pub importance: Option<Importance>,
+    #[serde(default)]
+    pub due_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoWithConversation {
+    pub todo: Todo,
+    pub conversation: Conversation,
 }
