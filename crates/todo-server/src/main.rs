@@ -9,6 +9,8 @@ mod db;
 mod describe;
 mod handlers;
 mod models;
+#[allow(dead_code)] // Used by the project and session modules (next commits).
+mod paths;
 
 use actix_web::{web, App, HttpServer, middleware};
 use clap::Parser;

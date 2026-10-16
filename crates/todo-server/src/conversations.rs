@@ -92,6 +92,7 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<Conversation> {
         status_updated_at: row.get(7)?,
         created_at: row.get(8)?,
         computer: computer_at(row, 9)?,
+        project_id: None,
     })
 }
 

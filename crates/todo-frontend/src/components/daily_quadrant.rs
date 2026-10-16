@@ -55,6 +55,7 @@ pub fn DailyQuadrant(
                 title: t,
                 importance: Some(imp),
                 due_date: dd_opt,
+                project_id: None,
             };
             if let Ok(todo) = api::create_todo(&req).await {
                 let _ = api::set_todo_daily(&todo.id, Some(&target)).await;

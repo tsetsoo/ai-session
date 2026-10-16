@@ -56,6 +56,7 @@ pub fn SectionView(
                 title: t,
                 importance: Some(imp),
                 due_date: dd_opt,
+                project_id: None,
             };
             let _ = api::create_todo(&req).await;
             set_title.set(String::new());
