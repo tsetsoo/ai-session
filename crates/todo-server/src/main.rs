@@ -9,8 +9,10 @@ mod db;
 mod describe;
 mod handlers;
 mod models;
-#[allow(dead_code)] // Used by the project and session modules (next commits).
 mod paths;
+mod projects;
+#[cfg(test)]
+mod test_support;
 
 use actix_web::{web, App, HttpServer, middleware};
 use clap::Parser;
@@ -25,6 +27,51 @@ struct Args {
     /// Listen address
     #[arg(long, default_value = "0.0.0.0:8080")]
     addr: String,
+}
+
+/// Every `/api` route. Order matters where a literal segment shares a position with a
+/// `{id}`: the literal route is registered first.
+pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
+    cfg
+        .route("/api/health", web::get().to(auth::health))
+        .route("/api/ws", web::get().to(handlers::ws_handler))
+        .route("/api/describe", web::get().to(describe::describe))
+        .route("/api/sections", web::get().to(handlers::get_sections))
+        .route("/api/todos", web::get().to(handlers::list_todos))
+        .route("/api/todos", web::post().to(handlers::create_todo))
+        // Before /api/todos/{id}, which would otherwise match this path (and answer 405).
+        .route("/api/todos/from-conversation", web::post().to(conversations::todo_from_conversation))
+        .route("/api/todos/{id}", web::get().to(handlers::get_todo))
+        .route("/api/todos/{id}", web::patch().to(handlers::update_todo))
+        .route("/api/todos/{id}", web::delete().to(handlers::delete_todo))
+        .route("/api/todos/{id}/toggle", web::post().to(handlers::toggle_todo))
+        .route("/api/todos/{id}/daily", web::post().to(daily::set_todo_daily))
+        .route("/api/daily/status", web::get().to(daily::daily_status))
+        .route("/api/daily", web::get().to(daily::list_daily))
+        .route("/api/daily/create", web::post().to(daily::create_daily))
+        // AI conversations
+        .route("/api/computers", web::get().to(conversations::list_computers))
+        .route("/api/computers", web::post().to(conversations::create_computer))
+        .route("/api/computers/{id}", web::patch().to(conversations::update_computer))
+        .route("/api/computers/{id}", web::delete().to(conversations::delete_computer))
+        .route("/api/sections/computers", web::get().to(conversations::list_section_computers))
+        .route("/api/sections/{code}/computer", web::put().to(conversations::set_section_computer))
+        .route("/api/sections/{code}/computer", web::delete().to(conversations::clear_section_computer))
+        .route("/api/conversations", web::get().to(conversations::list_conversations))
+        .route("/api/conversations/status", web::post().to(conversations::post_conversation_status))
+        .route("/api/todos/{id}/conversation", web::get().to(conversations::get_conversation))
+        .route("/api/todos/{id}/conversation", web::post().to(conversations::open_conversation))
+        .route("/api/todos/{id}/conversation", web::delete().to(conversations::delete_conversation))
+        .route("/api/todos/{id}/conversation/close", web::post().to(conversations::close_conversation))
+        .route("/api/todos/{id}/conversation/link", web::post().to(conversations::link_conversation))
+        // Projects
+        .route("/api/projects", web::get().to(projects::list_projects))
+        .route("/api/projects", web::post().to(projects::create_project))
+        // Before /api/projects/{id}, which would otherwise match this path.
+        .route("/api/projects/suggestions", web::get().to(projects::project_suggestions))
+        .route("/api/projects/{id}", web::get().to(projects::get_project))
+        .route("/api/projects/{id}", web::patch().to(projects::update_project))
+        .route("/api/projects/{id}", web::delete().to(projects::delete_project));
 }
 
 #[actix_web::main]
@@ -64,38 +111,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(broadcaster_clone.clone()))
             .app_data(web::Data::new(api_token.clone()))
-            // API routes
-            .route("/api/health", web::get().to(auth::health))
-            .route("/api/ws", web::get().to(handlers::ws_handler))
-            .route("/api/describe", web::get().to(describe::describe))
-            .route("/api/sections", web::get().to(handlers::get_sections))
-            .route("/api/todos", web::get().to(handlers::list_todos))
-            .route("/api/todos", web::post().to(handlers::create_todo))
-            // Before /api/todos/{id}, which would otherwise match this path (and answer 405).
-            .route("/api/todos/from-conversation", web::post().to(conversations::todo_from_conversation))
-            .route("/api/todos/{id}", web::get().to(handlers::get_todo))
-            .route("/api/todos/{id}", web::patch().to(handlers::update_todo))
-            .route("/api/todos/{id}", web::delete().to(handlers::delete_todo))
-            .route("/api/todos/{id}/toggle", web::post().to(handlers::toggle_todo))
-            .route("/api/todos/{id}/daily", web::post().to(daily::set_todo_daily))
-            .route("/api/daily/status", web::get().to(daily::daily_status))
-            .route("/api/daily", web::get().to(daily::list_daily))
-            .route("/api/daily/create", web::post().to(daily::create_daily))
-            // AI conversations
-            .route("/api/computers", web::get().to(conversations::list_computers))
-            .route("/api/computers", web::post().to(conversations::create_computer))
-            .route("/api/computers/{id}", web::patch().to(conversations::update_computer))
-            .route("/api/computers/{id}", web::delete().to(conversations::delete_computer))
-            .route("/api/sections/computers", web::get().to(conversations::list_section_computers))
-            .route("/api/sections/{code}/computer", web::put().to(conversations::set_section_computer))
-            .route("/api/sections/{code}/computer", web::delete().to(conversations::clear_section_computer))
-            .route("/api/conversations", web::get().to(conversations::list_conversations))
-            .route("/api/conversations/status", web::post().to(conversations::post_conversation_status))
-            .route("/api/todos/{id}/conversation", web::get().to(conversations::get_conversation))
-            .route("/api/todos/{id}/conversation", web::post().to(conversations::open_conversation))
-            .route("/api/todos/{id}/conversation", web::delete().to(conversations::delete_conversation))
-            .route("/api/todos/{id}/conversation/close", web::post().to(conversations::close_conversation))
-            .route("/api/todos/{id}/conversation/link", web::post().to(conversations::link_conversation));
+            .configure(api_routes);
 
         // Serve frontend static files if the directory exists
         let fe_path = std::path::Path::new(&frontend_dir_clone);

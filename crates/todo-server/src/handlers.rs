@@ -6,6 +6,7 @@ use uuid::Uuid;
 use crate::broadcast::Broadcaster;
 use crate::db::DbPool;
 use crate::models::row_to_todo;
+use crate::projects::project_exists;
 
 pub(crate) const SELECT_COLS: &str = "id, section, title, completed, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, project_id, \
     (SELECT status FROM conversations WHERE conversations.todo_id = todos.id) AS conversation_status";
@@ -37,6 +38,7 @@ pub struct TodosQuery {
     pub section: Option<String>,
     pub sort: Option<String>,
     pub show: Option<String>,
+    pub project_id: Option<String>,
 }
 
 pub async fn list_todos(pool: web::Data<DbPool>, query: web::Query<TodosQuery>) -> HttpResponse {
@@ -62,24 +64,18 @@ pub async fn list_todos(pool: web::Data<DbPool>, query: web::Query<TodosQuery>) 
         _ => "AND NOT (completed = 1 AND completed_at IS NOT NULL AND completed_at < datetime('now', '-1 day'))",
     };
 
-    let todos = if let Some(ref section_str) = query.section {
-        if Section::parse(section_str).is_none() {
-            return HttpResponse::BadRequest().json(serde_json::json!({"error": "Invalid section"}));
-        }
-        let sql = format!("SELECT {SELECT_COLS} FROM todos WHERE section = ?1 {show_filter} ORDER BY {order}");
-        let mut stmt = conn.prepare(&sql).unwrap();
-        stmt.query_map(params![section_str], row_to_todo)
-            .unwrap()
-            .filter_map(std::result::Result::ok)
-            .collect::<Vec<_>>()
-    } else {
-        let sql = format!("SELECT {SELECT_COLS} FROM todos WHERE 1=1 {show_filter} ORDER BY {order}");
-        let mut stmt = conn.prepare(&sql).unwrap();
-        stmt.query_map([], row_to_todo)
-            .unwrap()
-            .filter_map(std::result::Result::ok)
-            .collect::<Vec<_>>()
-    };
+    if query.section.as_deref().is_some_and(|s| Section::parse(s).is_none()) {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "Invalid section"}));
+    }
+    let sql = format!(
+        "SELECT {SELECT_COLS} FROM todos WHERE (?1 IS NULL OR section = ?1) AND (?2 IS NULL OR project_id = ?2) {show_filter} ORDER BY {order}"
+    );
+    let mut stmt = conn.prepare(&sql).unwrap();
+    let todos = stmt
+        .query_map(params![query.section, query.project_id], row_to_todo)
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .collect::<Vec<_>>();
 
     HttpResponse::Ok().json(todos)
 }
@@ -111,13 +107,18 @@ pub(crate) fn insert_todo(
     title: &str,
     importance: Option<Importance>,
     due_date: Option<&str>,
+    project_id: Option<&str>,
 ) -> rusqlite::Result<String> {
     let id = Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO todos (id, section, title, importance, due_date) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, section.as_str(), title, importance.unwrap_or_default().as_str(), due_date],
+        "INSERT INTO todos (id, section, title, importance, due_date, project_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, section.as_str(), title, importance.unwrap_or_default().as_str(), due_date, project_id],
     )?;
     Ok(id)
+}
+
+fn project_not_found() -> HttpResponse {
+    HttpResponse::NotFound().json(serde_json::json!({"error": "Project not found"}))
 }
 
 pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequest>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
@@ -131,7 +132,15 @@ pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequ
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "Title cannot be empty"}));
     }
 
-    match insert_todo(&conn, body.section, title, body.importance, body.due_date.as_deref()) {
+    if let Some(project_id) = body.project_id.as_deref() {
+        match project_exists(&conn, project_id) {
+            Ok(true) => {}
+            Ok(false) => return project_not_found(),
+            Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+        }
+    }
+
+    match insert_todo(&conn, body.section, title, body.importance, body.due_date.as_deref(), body.project_id.as_deref()) {
         Ok(id) => {
             broadcaster.send();
             let sql = format!("SELECT {SELECT_COLS} FROM todos WHERE id = ?1");
@@ -160,6 +169,14 @@ pub async fn update_todo(
 
     if !exists {
         return HttpResponse::NotFound().json(serde_json::json!({"error": "Todo not found"}));
+    }
+
+    if let Some(Some(project_id)) = body.project_id.as_ref() {
+        match project_exists(&conn, project_id) {
+            Ok(true) => {}
+            Ok(false) => return project_not_found(),
+            Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+        }
     }
 
     if let Some(ref title) = body.title {
@@ -192,6 +209,10 @@ pub async fn update_todo(
 
     if let Some(ref due_date_opt) = body.due_date {
         conn.execute("UPDATE todos SET due_date = ?1, updated_at = datetime('now') WHERE id = ?2", params![due_date_opt.as_deref(), id]).unwrap();
+    }
+
+    if let Some(ref project_opt) = body.project_id {
+        conn.execute("UPDATE todos SET project_id = ?1, updated_at = datetime('now') WHERE id = ?2", params![project_opt.as_deref(), id]).unwrap();
     }
 
     broadcaster.send();

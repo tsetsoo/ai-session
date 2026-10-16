@@ -23,13 +23,13 @@ use crate::handlers::{insert_todo, SELECT_COLS};
 use crate::models::row_to_todo;
 
 /// Tools a section or a linked conversation may use (matches `db::TOOLS_SQL`).
-const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
+pub(crate) const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
 
 /// Tools a todo can start a new conversation with. Only Claude accepts a session id
 /// chosen up front (`claude --session-id`); the others can only be linked.
 const STARTABLE_TOOLS: &[&str] = &["claude"];
 
-const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at";
+pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at";
 
 /// Conversation columns (0..=8) followed by its computer (9..=15).
 const CONVERSATION_SELECT: &str = "SELECT c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
@@ -42,27 +42,27 @@ const SECTION_COMPUTER_SELECT: &str = "SELECT s.section, s.cwd, s.tool,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at
      FROM section_computers s JOIN computers m ON m.id = s.computer_id";
 
-fn error(status: actix_web::http::StatusCode, msg: impl ToString) -> HttpResponse {
+pub(crate) fn error(status: actix_web::http::StatusCode, msg: impl ToString) -> HttpResponse {
     HttpResponse::build(status).json(serde_json::json!({"error": msg.to_string()}))
 }
 
-fn server_error(e: impl ToString) -> HttpResponse {
+pub(crate) fn server_error(e: impl ToString) -> HttpResponse {
     error(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR, e)
 }
 
-fn bad_request(msg: &str) -> HttpResponse {
+pub(crate) fn bad_request(msg: &str) -> HttpResponse {
     error(actix_web::http::StatusCode::BAD_REQUEST, msg)
 }
 
-fn not_found(msg: &str) -> HttpResponse {
+pub(crate) fn not_found(msg: &str) -> HttpResponse {
     error(actix_web::http::StatusCode::NOT_FOUND, msg)
 }
 
-fn conflict(msg: impl ToString) -> HttpResponse {
+pub(crate) fn conflict(msg: impl ToString) -> HttpResponse {
     error(actix_web::http::StatusCode::CONFLICT, msg)
 }
 
-fn computer_at(row: &Row, start: usize) -> rusqlite::Result<Computer> {
+pub(crate) fn computer_at(row: &Row, start: usize) -> rusqlite::Result<Computer> {
     Ok(Computer {
         id: row.get(start)?,
         name: row.get(start + 1)?,
@@ -141,7 +141,7 @@ fn slug(id: &str) -> String {
         .collect()
 }
 
-fn is_constraint_violation(e: &rusqlite::Error) -> bool {
+pub(crate) fn is_constraint_violation(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == ErrorCode::ConstraintViolation)
 }
 
@@ -397,7 +397,7 @@ pub(crate) fn todo_from_conversation_db(
     if let Some(other) = todo_linked_to(&tx, target.tool, target.session_id, "")? {
         return Err(LinkError::SessionTaken(other));
     }
-    let todo_id = insert_todo(&tx, new.section, new.title, new.importance, new.due_date)?;
+    let todo_id = insert_todo(&tx, new.section, new.title, new.importance, new.due_date, None)?;
     match insert_conversation(&tx, &todo_id, target.computer_id, target.cwd, target.tool, target.session_id, false) {
         Ok(true) => {}
         Ok(false) => return Err(LinkError::NoTmuxName),
@@ -439,7 +439,7 @@ pub(crate) fn set_status_db(
     )
 }
 
-fn valid_text(s: &str) -> bool {
+pub(crate) fn valid_text(s: &str) -> bool {
     !s.trim().is_empty()
 }
 
@@ -570,7 +570,7 @@ pub async fn delete_computer(
             HttpResponse::Ok().json(DeleteResponse { deleted: id })
         }
         Err(e) if is_constraint_violation(&e) => {
-            conflict("Computer is still assigned to a section or used by a conversation")
+            conflict("Computer is still assigned to a section or used by a conversation or project")
         }
         Err(e) => server_error(e),
     }
