@@ -112,6 +112,7 @@
 /* Begin PBXFileReference section */
 		02AE6114F65FF42A87E1B35F /* ReachabilityProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReachabilityProbeTests.swift; sourceTree = "<group>"; };
 		088A2A76FA2CE3451749F77B /* AISessionRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AISessionRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		11890D1DD1024BF25A4BDDAE /* linking-integration */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "linking-integration"; path = .; sourceTree = SOURCE_ROOT; };
 		12419581E8EABDDBD2C33D6A /* TodoHubSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubSettings.swift; sourceTree = "<group>"; };
 		1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTerminalSession.swift; sourceTree = "<group>"; };
 		19B17876012779CEAC4C80A8 /* TodoHubSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubSettingsView.swift; sourceTree = "<group>"; };
@@ -123,7 +124,6 @@
 		3708ACD4BFADB69A73E0DB09 /* AttentionNotifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttentionNotifier.swift; sourceTree = "<group>"; };
 		3DAA2B5F3D51BEC4051A381D /* ComputersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputersView.swift; sourceTree = "<group>"; };
 		45650CE5B948BA331E385B8B /* TerminalResizeDebouncerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalResizeDebouncerTests.swift; sourceTree = "<group>"; };
-		49C4474A5F742809340DD563 /* linking-app */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "linking-app"; path = .; sourceTree = SOURCE_ROOT; };
 		5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationLinkViews.swift; sourceTree = "<group>"; };
 		603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionRemoteApp.swift; sourceTree = "<group>"; };
 		6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParserTests.swift; sourceTree = "<group>"; };
@@ -210,7 +210,7 @@
 		113CDF79D99CF7521E9DC3DF /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				49C4474A5F742809340DD563 /* linking-app */,
+				11890D1DD1024BF25A4BDDAE /* linking-integration */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
