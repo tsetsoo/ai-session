@@ -50,6 +50,7 @@ AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_
 export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/sbin:/sbin:$PATH"
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
 exec python3 - "$@" <<'PY'
+import calendar
 import fcntl
 import getpass
 import glob
@@ -1084,9 +1085,443 @@ def process_session(ctx, tool, sid, mode, hint=None):
     return "%d chunk(s), %d memories posted, %d duplicate(s)" % (ran, posted, duplicates)
 
 
+# --- Digest -------------------------------------------------------------------------
+
+DIGEST_MARKER = ("<!-- Managed by ai-todo-memory (todo-hub). Rewritten automatically — edit, pin or archive "
+                 "memories in the todo app. -->")
+BLOCK_BEGIN = "<!-- BEGIN ai-todo-memory: managed by todo-hub, rewritten automatically; edit memories in the app -->"
+BLOCK_END = "<!-- END ai-todo-memory -->"
+DIGEST_GROUPS = (("open_thread", "Open threads"), ("decision", "Decisions"), ("gotcha", "Gotchas"),
+                 ("done", "Recently done"), ("files_changed", "Files changed"))
+DIGEST_MAX_ITEMS = 40
+CLAUDE_DIGEST_BYTES = 8192
+CODEX_BLOCK_BYTES = 6144
+RULES_FILE = os.path.join(".claude", "rules", "todo-hub-memories.md")
+TS_RE = re.compile(r"^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)")
+
+
+def created_epoch(memory):
+    m = TS_RE.match(str(memory.get("created_at") or ""))
+    if not m:
+        return 0
+    return calendar.timegm(tuple(int(x) for x in m.groups()))
+
+
+def select_digest(memories):
+    """{kind: [memory]}: all pinned, plus non-archived ones from the last 60 days (done and
+    files_changed: 14 days, at most 5 each). Pinned first, then newest."""
+    groups = {kind: [] for kind, _ in DIGEST_GROUPS}
+    current = now()
+    for m in memories:
+        if not isinstance(m, dict) or m.get("archived") or m.get("kind") not in groups or not str(m.get("text") or "").strip():
+            continue
+        age = current - created_epoch(m)
+        window = 14 if m["kind"] in ("done", "files_changed") else 60
+        if m.get("pinned") or age <= window * 86400:
+            groups[m["kind"]].append(m)
+    for kind, items in groups.items():
+        items.sort(key=lambda m: (not m.get("pinned"), -created_epoch(m)))
+        if kind in ("done", "files_changed"):
+            pinned = [m for m in items if m.get("pinned")]
+            groups[kind] = pinned + [m for m in items if not m.get("pinned")][:max(0, 5 - len(pinned))]
+    return groups
+
+
+def digest_line(m):
+    line = "- " + ("(pinned) " if m.get("pinned") else "") + one_line(m["text"])
+    date = str(m.get("created_at") or "")[:10]
+    if re.match(r"^\d{4}-\d\d-\d\d$", date):
+        line += " — " + date
+    files = [f for f in (m.get("files") or []) if isinstance(f, str) and f.strip()]
+    if files:
+        line += " · " + ", ".join(one_line(f) for f in files)
+    return line
+
+
+def render_digest(project, groups, max_bytes):
+    """The digest text, cut from the end of the group order to <= 40 items and max_bytes.
+    None when there is nothing to show."""
+    items = [(kind, m) for kind, _ in DIGEST_GROUPS for m in groups[kind]][:DIGEST_MAX_ITEMS]
+    while items:
+        lines = [DIGEST_MARKER, "# Project memory: %s" % one_line(project.get("name") or "project"), "",
+                 "Notes extracted from earlier AI conversations in this project (newest first). "
+                 "They can be out of date — verify before relying on them."]
+        for kind, title in DIGEST_GROUPS:
+            group = [m for k, m in items if k == kind]
+            if group:
+                lines += ["", "## " + title] + [digest_line(m) for m in group]
+        text = "\n".join(lines) + "\n"
+        if len(text.encode("utf-8")) <= max_bytes:
+            return text
+        items.pop()
+    return None
+
+
+def git_run(cwd, *args):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k == "GIT_CONFIG_NOSYSTEM"}
+    try:
+        r = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True, env=env,
+                           timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return r.returncode, r.stdout.strip()
+
+
+def git_dirs(path):
+    """(toplevel, git dir, common dir), absolute, for the work tree holding directory `path`;
+    None outside a git work tree."""
+    code, out = git_run(path, "rev-parse", "--is-inside-work-tree")
+    if code != 0 or out != "true":
+        return None
+    code, top = git_run(path, "rev-parse", "--show-toplevel")
+    code2, dirs = git_run(path, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir")
+    parts = dirs.splitlines()
+    if code or code2 or len(parts) != 2:
+        return None
+    return top, os.path.realpath(parts[0]), os.path.realpath(parts[1])
+
+
+def ensure_git_excluded(path):
+    """Append the file's path once to info/exclude of its repository, unless git ignores it already."""
+    directory = os.path.dirname(path)
+    dirs = git_dirs(directory)
+    if not dirs:
+        return
+    if git_run(directory, "check-ignore", "-q", os.path.basename(path))[0] == 0:
+        return
+    top, _, common = dirs
+    pattern = "/" + os.path.relpath(os.path.join(os.path.realpath(directory), os.path.basename(path)),
+                                    os.path.realpath(top))
+    exclude = os.path.join(common, "info", "exclude")
+    try:
+        with open(exclude) as f:
+            existing = f.read()
+    except OSError:
+        existing = ""
+    if pattern in existing.splitlines():
+        return
+    os.makedirs(os.path.dirname(exclude), exist_ok=True)
+    with open(exclude, "a") as f:
+        f.write(("" if not existing or existing.endswith("\n") else "\n") + pattern + "\n")
+    Log.write("git_exclude", path=tilde(path))
+
+
+def is_tracked(path):
+    directory = os.path.dirname(path)
+    return git_dirs(directory) is not None and \
+        git_run(directory, "ls-files", "--error-unmatch", os.path.basename(path))[0] == 0
+
+
+def read_text(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def ours(path):
+    text = read_text(path)
+    return text is not None and text.split("\n", 1)[0] == DIGEST_MARKER
+
+
+class DigestWriter:
+    """Writes / removes our files; with dry_run it only prints what it would do."""
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+        self.dry = ctx.dry
+
+    def put(self, path, text):
+        current = read_text(path)
+        if current == text:
+            return "unchanged"
+        if self.dry:
+            print("would write %s:\n%s" % (path, text))
+            return "write"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        mode = 0o644
+        if os.path.exists(path):
+            mode = os.stat(path).st_mode & 0o777
+        write_atomic(path, text, mode)
+        Log.write("digest_write", path=tilde(path))
+        return "write"
+
+    def delete(self, path):
+        if self.dry:
+            print("would remove %s" % path)
+            return
+        try:
+            os.remove(path)
+            Log.write("digest_remove", path=tilde(path))
+        except OSError:
+            pass
+
+    # Claude: our CLAUDE.local.md, or .claude/rules/todo-hub-memories.md when the user has one.
+    def claude(self, folder, text):
+        local, rules = os.path.join(folder, "CLAUDE.local.md"), os.path.join(folder, RULES_FILE)
+        target, other = (local, rules) if not os.path.lexists(local) or ours(local) else (rules, local)
+        if text is None:
+            self.remove_claude(folder)
+            return None
+        if os.path.lexists(target) and not ours(target):
+            Log.write("error", step="digest", detail="not ours, left alone", path=tilde(target))
+            self.ctx.errors += 1
+            return None
+        if not self.dry:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            ensure_git_excluded(target)
+        self.put(target, text)
+        if os.path.exists(other) and ours(other):
+            self.delete(other)
+        return {"path": target, "kind": "claude", "created_by_us": True}
+
+    def remove_claude(self, folder):
+        for path in (os.path.join(folder, "CLAUDE.local.md"), os.path.join(folder, RULES_FILE)):
+            if os.path.exists(path) and ours(path):
+                self.delete(path)
+
+    # Codex: a marker block in AGENTS.md.
+    @staticmethod
+    def markers(text):
+        """(begin start, end stop) of the one well-formed block, (None, None) if there is none,
+        or False when markers are duplicated or unbalanced."""
+        begins = [m for m in re.finditer(r"(?m)^<!-- BEGIN ai-todo-memory\b.*$", text)]
+        ends = [m for m in re.finditer(r"(?m)^<!-- END ai-todo-memory\b.*$", text)]
+        if not begins and not ends:
+            return None, None
+        if len(begins) != 1 or len(ends) != 1 or ends[0].start() < begins[0].end():
+            return False
+        stop = ends[0].end()
+        if text[stop:stop + 1] == "\n":
+            stop += 1
+        return begins[0].start(), stop
+
+    def codex(self, directory, body, created_before):
+        path = os.path.join(directory, "AGENTS.md")
+        if is_tracked(path):
+            Log.write("digest_skipped", reason="tracked", path=tilde(path))
+            return {"path": path, "reason": "tracked"}, None
+        block = BLOCK_BEGIN + "\n" + body + BLOCK_END + "\n"
+        text = read_text(path) if os.path.exists(path) else None
+        if os.path.exists(path) and text is None:
+            Log.write("error", step="digest", detail="unreadable", path=tilde(path))
+            self.ctx.errors += 1
+            return {"path": path, "reason": "unreadable"}, None
+        created = created_before
+        if text is None:
+            new, created = block, True
+            if not self.dry:
+                ensure_git_excluded(path)
+        else:
+            found = self.markers(text)
+            if found is False:
+                Log.write("error", step="digest", detail="unbalanced or duplicated markers", path=tilde(path))
+                self.ctx.errors += 1
+                return {"path": path, "reason": "markers"}, None
+            start, stop = found
+            if start is None:
+                new = text + ("" if not text else "\n" if text.endswith("\n") else "\n\n") + block
+            else:
+                new = text[:start] + block + text[stop:]
+        self.put(path, new)
+        return None, {"path": path, "kind": "codex", "created_by_us": bool(created)}
+
+    def remove_codex(self, path, created_by_us):
+        text = read_text(path) if os.path.exists(path) else None
+        if text is None:
+            return
+        found = self.markers(text)
+        if found is False:
+            Log.write("error", step="digest", detail="unbalanced or duplicated markers", path=tilde(path))
+            self.ctx.errors += 1
+            return
+        start, stop = found
+        if start is None:
+            return
+        new = text[:start] + text[stop:]
+        if stop == len(text) and new.endswith("\n\n"):
+            new = new[:-1]  # the blank line we put before an appended block
+        if created_by_us and not new.strip():
+            self.delete(path)
+        else:
+            self.put(path, new)
+
+
+def codex_cwds(folder):
+    """cwds of this computer's Codex conversations inside the project folder."""
+    found = set()
+    for path in glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*.jsonl"), recursive=True):
+        cwd = transcript_cwd("codex", path)
+        if not cwd:
+            continue
+        cwd = os.path.normpath(cwd)
+        if any(within(c, f) for c in spellings(cwd) for f in spellings(folder)):
+            found.add(cwd)
+    return sorted(found)
+
+
+def codex_target(cwd, folder):
+    """Where Codex conversations in cwd read our block: the working copy's top level (the project
+    folder when that top level is above it). None for linked worktrees and gone folders."""
+    if not os.path.isdir(cwd):
+        return None
+    dirs = git_dirs(cwd)
+    if dirs is None:
+        return folder if any(c == f for c in spellings(cwd) for f in spellings(folder)) else None
+    top, git_dir, common = dirs
+    if git_dir != common:
+        return None  # a linked worktree: short-lived, its AGENTS.md is usually tracked
+    if any(within(t, f) for t in spellings(top) for f in spellings(folder)):
+        return top
+    return folder
+
+
+def digests_path():
+    return os.path.join(STATE_DIR, "digests.json")
+
+
+def remove_recorded(writer, record):
+    for target in (record or {}).get("targets", []):
+        if target.get("kind") == "claude":
+            if os.path.exists(target["path"]) and ours(target["path"]):
+                writer.delete(target["path"])
+        elif target.get("kind") == "codex":
+            writer.remove_codex(target["path"], target.get("created_by_us"))
+
+
+def digest_project(ctx, writer, project, record):
+    """Rewrite (or remove) one project's digests. Returns its new digests.json record, or None."""
+    folder = expand_folder(project.get("folder"))
+    if not folder or not os.path.isdir(folder):
+        Log.write("digest_skipped", reason="folder missing", project=project.get("id"))
+        return record
+    if project.get("digest_enabled") is False:
+        writer.remove_claude(folder)
+        remove_recorded(writer, record)
+        return None
+    try:
+        memories = ctx.hub.request("GET", "/api/memories", query={"project_id": project["id"], "limit": 1000})
+        if not isinstance(memories, list):
+            raise HubError("GET /api/memories: not a list")
+    except HubError as e:
+        Log.write("error", step="digest", project=project.get("id"), error=e)
+        ctx.errors += 1
+        return record
+    groups = select_digest(memories)
+    new = {"targets": [], "skipped": []}
+    claude = writer.claude(folder, render_digest(project, groups, CLAUDE_DIGEST_BYTES))
+    if claude:
+        new["targets"].append(claude)
+    old_codex = {t["path"]: t for t in (record or {}).get("targets", []) if t.get("kind") == "codex"}
+    body_limit = CODEX_BLOCK_BYTES - len((BLOCK_BEGIN + "\n" + BLOCK_END + "\n").encode("utf-8"))
+    body = render_digest(project, groups, body_limit)
+    directories = []
+    for cwd in codex_cwds(folder):
+        target = codex_target(cwd, folder)
+        if target and target not in directories:
+            directories.append(target)
+    for directory in directories:
+        path = os.path.join(directory, "AGENTS.md")
+        created = (old_codex.get(path) or {}).get("created_by_us", False)
+        if body is None:
+            writer.remove_codex(path, created)
+            continue
+        skipped, written = writer.codex(directory, body, created)
+        if skipped:
+            new["skipped"].append(skipped)
+        if written:
+            new["targets"].append(written)
+    kept = {t["path"] for t in new["targets"]}
+    for target in (record or {}).get("targets", []):  # moved folder, gone Codex cwd, ...
+        if target["path"] not in kept:
+            remove_recorded(writer, {"targets": [target]})
+    return new if new["targets"] or new["skipped"] else None
+
+
 def refresh_digests(ctx, project_ids=None):
     """Rewrite the digests of these projects (all of this computer's when None)."""
-    return
+    if ctx.no_digest:
+        return
+    projects = ctx.load_projects()
+    if not projects.known:
+        Log.write("error", step="digest", detail="no project list")
+        ctx.errors += 1
+        return
+    records = load_json(digests_path(), {}) or {}
+    records.setdefault("projects", {})
+    writer = DigestWriter(ctx)
+    mine = projects.mine()
+    for project in mine:
+        if project_ids is not None and project.get("id") not in project_ids:
+            continue
+        record = digest_project(ctx, writer, project, records["projects"].get(project["id"]))
+        if record:
+            records["projects"][project["id"]] = record
+        else:
+            records["projects"].pop(project["id"], None)
+    if project_ids is None and projects.fresh:
+        mine_ids = {p.get("id") for p in mine}
+        for pid in [p for p in records["projects"] if p not in mine_ids]:  # deleted or moved away
+            remove_recorded(writer, records["projects"].pop(pid))
+    if not ctx.dry:
+        save_json(digests_path(), records)
+
+
+def remove_all_digests(ctx_like):
+    """digest --remove-all: offline, from digests.json and the cached project list."""
+    records = load_json(digests_path(), {}) or {}
+    writer = DigestWriter(ctx_like)
+    for record in (records.get("projects") or {}).values():
+        remove_recorded(writer, record)
+    cache = load_json(os.path.join(STATE_DIR, "projects.json"), {}) or {}
+    for project in cache.get("projects") or []:
+        folder = expand_folder(project.get("folder")) if isinstance(project, dict) else None
+        if folder and os.path.isdir(folder):
+            writer.remove_claude(folder)
+    if not ctx_like.dry:
+        save_json(digests_path(), {"projects": {}})
+
+
+class OfflineContext:
+    def __init__(self, dry):
+        self.dry = dry
+        self.errors = 0
+
+
+def cmd_digest(args):
+    usage = "usage: ai-todo-memory digest [--project ID] [--dry-run] [--remove-all]"
+    flags, project = set(), None
+    while args:
+        a = args.pop(0)
+        if a == "--project" and args:
+            project = args.pop(0)
+        elif a in ("--dry-run", "--remove-all"):
+            flags.add(a)
+        else:
+            die(usage, 64)
+    conf = Config()
+    dry = "--dry-run" in flags
+    Log.enabled = not dry
+    lock = None if dry else take_lock(blocking=True)
+    try:
+        if "--remove-all" in flags:
+            ctx = OfflineContext(dry)
+            remove_all_digests(ctx)
+            print("removed every digest written by ai-todo-memory" if not dry else "(dry run)")
+        elif not conf.on("AI_TODO_MEMORY_DIGEST"):
+            print("digests are off on this computer (AI_TODO_MEMORY_DIGEST); "
+                  "`ai-todo-memory digest --remove-all` removes the ones already written")
+            return
+        else:
+            ctx = Context(conf, flags, 0)
+            ctx.no_digest = False
+            ctx.load_projects(force_refresh=True)
+            refresh_digests(ctx, {project} if project else None)
+    finally:
+        if lock is not None:
+            os.close(lock)
+    sys.exit(1 if ctx.errors else 0)
 
 
 # --- Commands -------------------------------------------------------------------------
@@ -1200,7 +1635,7 @@ def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         die("usage: ai-todo-memory run|trigger|nightly|digest|status ... (see the header of this script)", 64)
     command, rest = argv[0], list(argv[1:])
-    commands = {"run": cmd_run, "trigger": cmd_trigger, "status": cmd_status}
+    commands = {"run": cmd_run, "trigger": cmd_trigger, "digest": cmd_digest, "status": cmd_status}
     if command not in commands:
         die("unknown command: %s" % command, 64)
     try:

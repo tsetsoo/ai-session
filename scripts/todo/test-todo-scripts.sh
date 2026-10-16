@@ -1129,6 +1129,163 @@ hub_edit "s['computers'].pop()"
 write_conf
 pass "computer_id_autodetect: one computer matching \$USER + host name is used (with a hint); two -> exit 65"
 
+# --- ai-todo-memory: digest -----------------------------------------------------------------
+
+unset XDG_CONFIG_HOME GIT_CONFIG_GLOBAL
+D_NOW=1792152000 # 2026-10-16T12:00:00Z
+D_BEGIN="<!-- BEGIN ai-todo-memory: managed by todo-hub, rewritten automatically; edit memories in the app -->"
+D_END="<!-- END ai-todo-memory -->"
+D_MULTI="${HOME}/work/multi"
+D_TRACKED="${HOME}/work/tracked"
+D_OWN="${HOME}/work/own"
+dmem() { AI_TODO_NOW=$D_NOW mem "$@"; }
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
+excluded() { grep -cx "$2" "$1/.git/info/exclude" 2>/dev/null || true; }
+git_q -C "$M_APP" init
+git_q -C "$M_APP" commit --allow-empty -m init
+git_q -C "$M_APP" worktree add "${M_APP}/.claude/worktrees/w"
+for r in repo-a repo-b; do
+  mkdir -p "${D_MULTI}/$r"
+  git_q -C "${D_MULTI}/$r" init
+  git_q -C "${D_MULTI}/$r" commit --allow-empty -m init
+done
+mkdir -p "$D_TRACKED" "$D_OWN"
+git_q -C "$D_TRACKED" init
+printf '# Tracked agents\nKeep this file in git.\n' >"${D_TRACKED}/AGENTS.md"
+git_q -C "$D_TRACKED" add AGENTS.md
+git_q -C "$D_TRACKED" commit -m agents
+git_q -C "$D_OWN" init
+git_q -C "$D_OWN" commit --allow-empty -m init
+printf 'my own notes\n' >"${D_OWN}/CLAUDE.local.md"
+D_USER_AGENTS="$(printf '# Agents\nUser text above.\n\n%s\nstale digest\n%s\n\nUser text below.\n' "$D_BEGIN" "$D_END")"
+printf '%s\n' "$D_USER_AGENTS" >"${M_APP}/AGENTS.md"
+for spec in "x2:${M_APP}/.claude/worktrees/w" "x3:${D_MULTI}/repo-a" "x4:${D_TRACKED}"; do
+  xid="019f0000-0000-7000-8000-0000000000${spec%%:*}"
+  python3 "$TRANSCRIPT" codex "${HOME}/.codex/sessions/2026/10/16/rollout-2026-10-16T09-00-00-${xid}.jsonl" "${spec#*:}" "$xid" --turn "p" "a"
+done
+
+hub_edit "
+import datetime
+comp = {'id': 'comp-1', 'name': 'test-mac'}
+proj = lambda i, folder, **kw: dict(dict(id=i, name=i[5:], computer=comp, folder=folder, repo_url=None, digest_enabled=True), **kw)
+s['projects'] = [proj('proj-app', '~/work/app'), proj('proj-multi', '~/work/multi'), proj('proj-tracked', '~/work/tracked'),
+                 proj('proj-own', '~/work/own'), proj('proj-away', '~/work/app2', computer={'id': 'comp-2', 'name': 'other'})]
+day = lambda n: (datetime.date(2026, 10, 15) - datetime.timedelta(days=n)).isoformat()
+def m(i, kind, text, d, project='proj-app', **kw):
+    return dict(dict(id=i, project_id=project, todo_id=None, computer_id='comp-1', tool='claude', session_id='s-' + i,
+                     kind=kind, text=text, files=[], confidence=0.9, source='extracted', pinned=False, archived=False,
+                     created_at=d + 'T09:00:00Z', updated_at=d + 'T09:00:00Z'), **kw)
+ms = [m('ot-pin', 'open_thread', 'Decide whether Codex digests should go into tracked AGENTS.md files.', '2026-08-01', pinned=True),
+      m('ot-01', 'open_thread', 'Weekly rollup ignores sessions without day rows.', day(0), files=['crates/todo-server/src/stats.rs']),
+      m('ot-old', 'open_thread', 'An open thread from July that nobody pinned.', '2026-07-01'),
+      m('dec-pin', 'decision', 'Use SQLite in WAL mode for todo-server.', '2026-09-01', pinned=True),
+      m('dec-01', 'decision', 'Todos in Sp stay without a project until a conversation links them.', day(0)),
+      m('got-01', 'gotcha', 'Миграцията прави резервно копие преди v3 — не я прескачай.', day(0)),
+      m('done-pin', 'done', 'Shipped the v2 conversation linking.', '2026-09-16', pinned=True),
+      m('done-old', 'done', 'Finished something three weeks ago.', day(20)),
+      m('arch-1', 'decision', 'An archived decision that must not show.', day(0), archived=True),
+      m('other-1', 'decision', 'A memory of another project.', day(0), project='proj-other')]
+ms += [m('ot-%02d' % i, 'open_thread', 'Open thread %02d is still waiting for a decision.' % i, day(i)) for i in range(2, 10)]
+ms += [m('dec-%02d' % i, 'decision', 'Decision %02d keeps the scripts stdlib-only.' % i, day(i)) for i in range(2, 10)]
+ms += [m('got-%02d' % i, 'gotcha', 'Gotcha %02d: launchd jobs need an absolute path.' % i, day(i)) for i in range(2, 13)]
+ms += [m('done-%02d' % i, 'done', 'Done item %02d landed on main.' % i, day(i - 1)) for i in range(1, 7)]
+ms += [m('fc-%02d' % i, 'files_changed', 'Change %02d touched the installer.' % i, day(i - 1), files=['scripts/todo/install.sh', 'scripts/todo/f%d.sh' % i]) for i in range(1, 7)]
+ms += [m('long-%02d' % i, 'gotcha', ('Long gotcha %02d ' % i) + 'lorem ipsum dolor sit amet ' * 13, day(i % 10), project='proj-multi') for i in range(30)]
+ms += [m('trk-1', 'decision', 'The tracked project keeps its AGENTS.md in git.', day(0), project='proj-tracked'),
+       m('own-1', 'decision', 'The own project has its own CLAUDE.local.md.', day(0), project='proj-own')]
+s['memories'] = ms"
+write_conf "AI_TODO_MEMORY_DIGEST='on'"
+
+dmem digest >/dev/null || fail "digest failed"
+diff "${FIXTURES}/digest-expected.md" "${M_APP}/CLAUDE.local.md" >"${SANDBOX}/digest.diff" || fail "digest differs from fixtures/digest-expected.md: $(cat "${SANDBOX}/digest.diff")"
+[[ "$(excluded "$M_APP" /CLAUDE.local.md)" == 1 ]] || fail "CLAUDE.local.md not in .git/info/exclude exactly once"
+pass "digest_writes_claude_local_md: group order, pinned first, dates, the 60/14-day windows, 5 done/files_changed, the 40-item cap; git-excluded once"
+
+python3 - "${M_APP}/AGENTS.md" "${FIXTURES}/digest-expected.md" "$D_BEGIN" "$D_END" <<'PY' || fail "AGENTS.md block not replaced in place: $(cat "${M_APP}/AGENTS.md")"
+import sys
+text, digest, begin, end = open(sys.argv[1]).read(), open(sys.argv[2]).read(), sys.argv[3], sys.argv[4]
+assert text == "# Agents\nUser text above.\n\n" + begin + "\n" + digest + end + "\n\nUser text below.\n", text
+PY
+[[ ! -e "${M_APP}/.claude/worktrees/w/AGENTS.md" ]] || fail "a block was written into a linked worktree"
+[[ ! -e "${D_MULTI}/repo-b/AGENTS.md" && ! -e "${D_OWN}/AGENTS.md" ]] || fail "AGENTS.md written without a Codex conversation there"
+[[ -f "${D_MULTI}/repo-a/AGENTS.md" && "$(excluded "${D_MULTI}/repo-a" /AGENTS.md)" == 1 ]] || fail "created AGENTS.md missing or not git-excluded"
+[[ "$(head -n 1 "${D_MULTI}/repo-a/AGENTS.md")" == "$D_BEGIN" && "$(tail -n 1 "${D_MULTI}/repo-a/AGENTS.md")" == "$D_END" ]] || fail "created AGENTS.md is not just our block"
+[[ $(wc -c <"${D_MULTI}/repo-a/AGENTS.md") -le 6144 && $(wc -c <"${D_MULTI}/repo-a/AGENTS.md") -gt 5000 ]] || fail "codex block not capped near 6 KB: $(wc -c <"${D_MULTI}/repo-a/AGENTS.md")"
+[[ $(wc -c <"${D_MULTI}/CLAUDE.local.md") -le 8192 && $(wc -c <"${D_MULTI}/CLAUDE.local.md") -gt 7000 ]] || fail "claude digest not capped near 8 KB: $(wc -c <"${D_MULTI}/CLAUDE.local.md")"
+[[ "$(git -C "$D_TRACKED" status --porcelain)" == "" && "$(cat "${D_TRACKED}/AGENTS.md")" == $'# Tracked agents\nKeep this file in git.' ]] || fail "tracked AGENTS.md was touched"
+dmem status --json | python3 -c '
+import json, sys
+st = json.load(sys.stdin)
+assert {"path": sys.argv[1], "reason": "tracked", "project_id": "proj-tracked"} in st["skipped"], st["skipped"]
+' "${D_TRACKED}/AGENTS.md" || fail "status does not report the tracked AGENTS.md"
+dmem status | grep -q "skipped: .*tracked/AGENTS.md (tracked)" || fail "status text does not report the tracked AGENTS.md"
+pass "codex_block_in_place: the block is replaced with outside bytes intact; created where Codex runs (git-excluded, <= 6 KB); none without Codex sessions or in worktrees; a tracked AGENTS.md is skipped and reported"
+
+[[ "$(cat "${D_OWN}/CLAUDE.local.md")" == "my own notes" ]] || fail "the user's own CLAUDE.local.md was changed"
+[[ "$(head -n 1 "${D_OWN}/.claude/rules/todo-hub-memories.md")" == "<!-- Managed by ai-todo-memory"* ]] || fail "rules fallback not written"
+[[ "$(excluded "$D_OWN" /.claude/rules/todo-hub-memories.md)" == 1 ]] || fail "rules fallback not git-excluded"
+pass "digest_respects_users_own_claude_local_md: falls back to .claude/rules/todo-hub-memories.md"
+
+D_FILES=("${M_APP}/CLAUDE.local.md" "${M_APP}/AGENTS.md" "${D_MULTI}/CLAUDE.local.md" "${D_MULTI}/repo-a/AGENTS.md" "${D_OWN}/.claude/rules/todo-hub-memories.md")
+before=""; for f in "${D_FILES[@]}"; do before="$before $(mtime "$f")"; done
+sleep 1
+dmem digest >/dev/null || fail "second digest failed"
+after=""; for f in "${D_FILES[@]}"; do after="$after $(mtime "$f")"; done
+[[ "$before" == "$after" ]] || fail "an unchanged digest touched files: $before vs $after"
+[[ "$(excluded "$M_APP" /CLAUDE.local.md)" == 1 && "$(excluded "${D_MULTI}/repo-a" /AGENTS.md)" == 1 ]] || fail "exclude lines duplicated"
+pass "digest_is_idempotent: a second run leaves every mtime and exclude line alone"
+
+cp "${M_APP}/AGENTS.md" "${SANDBOX}/agents.good"
+printf '%s\nextra\n' "$D_BEGIN" >>"${M_APP}/AGENTS.md"
+cp "${M_APP}/AGENTS.md" "${SANDBOX}/agents.bad"
+if dmem digest >/dev/null 2>&1; then fail "digest succeeded with duplicated markers"; fi
+cmp -s "${M_APP}/AGENTS.md" "${SANDBOX}/agents.bad" || fail "AGENTS.md with duplicated markers was changed"
+grep -q "unbalanced or duplicated markers" "${M_STATE}/memory.log" || fail "marker problem not logged"
+cp "${SANDBOX}/agents.good" "${M_APP}/AGENTS.md"
+pass "unbalanced markers: AGENTS.md left untouched, error logged"
+
+rm "${M_APP}/CLAUDE.local.md"
+dmem digest --dry-run >"${SANDBOX}/digest-dry.out" || fail "digest --dry-run failed"
+[[ ! -e "${M_APP}/CLAUDE.local.md" ]] && grep -q "would write ${M_APP}/CLAUDE.local.md" "${SANDBOX}/digest-dry.out" || fail "digest --dry-run wrote or did not report"
+pass "digest --dry-run prints what it would write and writes nothing"
+
+hub_edit "s['projects'][0]['folder'] = '~/work/app/'"
+dmem digest >/dev/null || fail "digest with a trailing slash failed"
+cmp -s "${FIXTURES}/digest-expected.md" "${M_APP}/CLAUDE.local.md" || fail "folder ~/work/app/ not written correctly"
+hub_edit "s['projects'][0]['folder'] = '~//work/app'"
+dmem digest >/dev/null || fail "digest with // failed"
+[[ ! -e "${HOME}/work/app/CLAUDE.local.md.tmp" && $(ls -a "$M_APP" | grep -c 'CLAUDE') -eq 1 ]] || fail "// spelling wrote a second file"
+hub_edit "s['projects'][0]['folder'] = '~/work/app'"
+pass "digest_target_accepts_trailing_slash: ~/work/app/ and ~//work/app land in the same file"
+
+cp "${M_APP}/CLAUDE.local.md" "${SANDBOX}/claude-local.before"
+before="$(mtime "${M_APP}/CLAUDE.local.md") $(mtime "${M_APP}/AGENTS.md")"
+printf "TODO_HUB_URL='http://127.0.0.1:9'\nTODO_COMPUTER_ID='comp-1'\nAI_TODO_MEMORY_DIGEST='on'\n" >"$M_CONF"
+if dmem digest >/dev/null 2>&1; then fail "digest succeeded with the hub down"; fi
+write_conf "AI_TODO_MEMORY_DIGEST='on'"
+cmp -s "${SANDBOX}/claude-local.before" "${M_APP}/CLAUDE.local.md" && cmp -s "${SANDBOX}/agents.good" "${M_APP}/AGENTS.md" \
+  && [[ "$before" == "$(mtime "${M_APP}/CLAUDE.local.md") $(mtime "${M_APP}/AGENTS.md")" ]] || fail "hub down changed the digest"
+[[ -f "${M_STATE}/projects.json" ]] || fail "projects.json lost when the hub was down"
+pass "hub_down_keeps_digest: unreachable hub -> files untouched, projects.json kept, non-zero exit"
+
+hub_edit "s['projects'][0]['digest_enabled'] = False; s['projects'][1]['digest_enabled'] = False"
+dmem digest >/dev/null || fail "digest with projects switched off failed"
+[[ ! -e "${M_APP}/CLAUDE.local.md" && ! -e "${D_MULTI}/CLAUDE.local.md" && ! -e "${D_MULTI}/repo-a/AGENTS.md" ]] || fail "switched-off digests not removed"
+[[ "$(cat "${M_APP}/AGENTS.md")" == $'# Agents\nUser text above.\n\n\nUser text below.' ]] || fail "user AGENTS.md wrong after removing the block: $(cat "${M_APP}/AGENTS.md")"
+[[ "$(cat "${D_OWN}/CLAUDE.local.md")" == "my own notes" && -f "${D_OWN}/.claude/rules/todo-hub-memories.md" ]] || fail "other projects' files changed"
+[[ "$(cat "${D_TRACKED}/AGENTS.md")" == $'# Tracked agents\nKeep this file in git.' ]] || fail "tracked AGENTS.md touched"
+pass "digest_disabled_removes_only_ours: our CLAUDE.local.md and created AGENTS.md go, the user's AGENTS.md keeps its text"
+
+hub_edit "s['projects'][0]['digest_enabled'] = True; s['projects'][1]['digest_enabled'] = True"
+dmem digest >/dev/null || fail "digest after re-enabling failed"
+[[ -f "${M_APP}/CLAUDE.local.md" && -f "${D_MULTI}/repo-a/AGENTS.md" ]] || fail "re-enabled digests not written"
+mem digest --remove-all >/dev/null || fail "digest --remove-all failed"
+[[ ! -e "${M_APP}/CLAUDE.local.md" && ! -e "${D_MULTI}/CLAUDE.local.md" && ! -e "${D_MULTI}/repo-a/AGENTS.md" && ! -e "${D_OWN}/.claude/rules/todo-hub-memories.md" ]] \
+  || fail "--remove-all left digests"
+[[ "$(cat "${D_OWN}/CLAUDE.local.md")" == "my own notes" && "$(cat "${M_APP}/AGENTS.md")" == $'# Agents\nUser text above.\n\n\nUser text below.' ]] \
+  || fail "--remove-all touched user files"
+pass "digest --remove-all removes every digest we wrote and nothing else"
+
 # --- end of the ai-todo-memory sections -------------------------------------------------
 export HOME="$SAVED_HOME"
 
