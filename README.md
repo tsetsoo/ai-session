@@ -66,6 +66,20 @@ On the host, session metadata is stored under `~/.ai-remote/` so the app can ass
 sessions with their tool, working directory, and display title. This directory is host data
 and should be included in backups if that metadata matters.
 
+## Adding hosts from the command line (Mac)
+
+The Mac app can add SSH hosts without the host editor, then exit:
+
+```sh
+"/path/to/AI Session Remote.app/Contents/MacOS/AI Session Remote" \
+  --add-host "codbexs-macbook-pro" tsetso@100.107.204.56 ~/.ssh/id_ed25519_aisession \
+  --add-host "this Mac" me@100.103.53.126:22 ~/.ssh/id_ed25519_aisession
+```
+
+- Each key must be an unencrypted Ed25519 or ECDSA key. It is stored in the app's Keychain, the same as when you pick it in the editor.
+- If a host with the same user, hostname and port already exists, its key is replaced instead of adding a duplicate.
+- Open the app normally afterwards.
+
 ## Todo conversations
 
 Each todo in todo-server can have one Claude conversation on the computer assigned to its
