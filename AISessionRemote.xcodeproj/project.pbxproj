@@ -34,6 +34,7 @@
 		3F324CB622DB3E280E202EA1 /* SessionServiceFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */; };
 		3F7506AD3A89B8ED43E6DEBB /* TerminalResizeDebouncer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229A4FF6F8B0899EA6FEF4D9 /* TerminalResizeDebouncer.swift */; };
 		3F7D62C234999725F0C9833F /* ConversationLinkViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */; };
+		4057411C78160E1D7CD4628D /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90D767C2AC93115AC1E9B3F4 /* HostStore.swift */; };
 		459745DF108E3518C8BB10E3 /* NIOSSHClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */; };
 		47C0DBE7DC069BCC5F022E48 /* HostsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1B02295F04DE55821A1C7F /* HostsListView.swift */; };
 		47F0510DF9398E9C5F02009C /* SSHConnectionPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */; };
@@ -82,6 +83,7 @@
 		DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3B756FF0192985AADAFF36 /* HostRepository.swift */; };
 		DC59755DB0F6EA0F7566C0A9 /* AISessionRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */; };
 		DD3DEB7C48880583B9A7AF19 /* TerminalOutputCoalescer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7B4DE59A842C29732755FED /* TerminalOutputCoalescer.swift */; };
+		DE709355ECEEA8775AB8E62E /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90D767C2AC93115AC1E9B3F4 /* HostStore.swift */; };
 		DE9A16A1D79FF049E688395B /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = 650353A821892A0627808D84 /* NIOPosix */; };
 		DEC7BB251D56E61ACCB79C2D /* SSHConnectionPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */; };
 		E4427251E3B62EF3BC42901D /* TerminalResizeDebouncer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229A4FF6F8B0899EA6FEF4D9 /* TerminalResizeDebouncer.swift */; };
@@ -112,7 +114,6 @@
 /* Begin PBXFileReference section */
 		02AE6114F65FF42A87E1B35F /* ReachabilityProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReachabilityProbeTests.swift; sourceTree = "<group>"; };
 		088A2A76FA2CE3451749F77B /* AISessionRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AISessionRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		11890D1DD1024BF25A4BDDAE /* linking-integration */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "linking-integration"; path = .; sourceTree = SOURCE_ROOT; };
 		12419581E8EABDDBD2C33D6A /* TodoHubSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubSettings.swift; sourceTree = "<group>"; };
 		1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTerminalSession.swift; sourceTree = "<group>"; };
 		19B17876012779CEAC4C80A8 /* TodoHubSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubSettingsView.swift; sourceTree = "<group>"; };
@@ -127,8 +128,10 @@
 		5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationLinkViews.swift; sourceTree = "<group>"; };
 		603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionRemoteApp.swift; sourceTree = "<group>"; };
 		6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParserTests.swift; sourceTree = "<group>"; };
+		11890D1DD1024BF25A4BDDAE /* linking-integration */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "linking-integration"; path = .; sourceTree = SOURCE_ROOT; };
 		77B5CF5ADABEA184DD911533 /* SessionsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsListView.swift; sourceTree = "<group>"; };
 		7ABB2CBA22446496FCC5434A /* TodoHubStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubStore.swift; sourceTree = "<group>"; };
+		90D767C2AC93115AC1E9B3F4 /* HostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStore.swift; sourceTree = "<group>"; };
 		97D417529F6E6B990D79BF81 /* TerminalTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTransport.swift; sourceTree = "<group>"; };
 		985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParser.swift; sourceTree = "<group>"; };
 		99B0F4154BA389FF80D827AE /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
@@ -262,6 +265,7 @@
 			isa = PBXGroup;
 			children = (
 				FA4DD29F996099D82C6D7514 /* HostEntity.swift */,
+				90D767C2AC93115AC1E9B3F4 /* HostStore.swift */,
 			);
 			path = Persistence;
 			sourceTree = "<group>";
@@ -477,6 +481,7 @@
 				A9EDC3100C97630A41581C4E /* HostEntity.swift in Sources */,
 				B71616AC9401D6282B4AC1EA /* HostProvisioning.swift in Sources */,
 				3538D4106650FB5DD44CE028 /* HostRepository.swift in Sources */,
+				4057411C78160E1D7CD4628D /* HostStore.swift in Sources */,
 				47C0DBE7DC069BCC5F022E48 /* HostsListView.swift in Sources */,
 				F20B4E30CA2C51E9A3F6C76A /* MacCompatibility.swift in Sources */,
 				459745DF108E3518C8BB10E3 /* NIOSSHClient.swift in Sources */,
@@ -517,6 +522,7 @@
 				BDB5778417C362323812D238 /* HostEntity.swift in Sources */,
 				605E6B6F9F8F41A6885F4AF3 /* HostProvisioning.swift in Sources */,
 				DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */,
+				DE709355ECEEA8775AB8E62E /* HostStore.swift in Sources */,
 				73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */,
 				A4969E70C98FC8113339AE7A /* MacCompatibility.swift in Sources */,
 				FACD0EDEEFFED735236090BD /* NIOSSHClient.swift in Sources */,

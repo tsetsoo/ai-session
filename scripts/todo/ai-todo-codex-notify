@@ -1,0 +1,96 @@
+#!/bin/sh
+# Codex `notify` program: report a todo conversation's status to todo-server.
+#
+# Codex runs the configured notify command with its own arguments followed by one JSON
+# argument, for example (confirmed with codex-cli 0.163.0, TUI and exec):
+#   {"type":"agent-turn-complete","thread-id":"<id>","turn-id":"<id>","cwd":"/path",
+#    "client":"codex-tui","input-messages":["..."],"last-assistant-message":"..."}
+# thread-id is the conversation id: the <id> in sessions/**/rollout-*-<id>.jsonl, the same
+# id ai-todo-sessions lists and `codex resume <id>` takes.
+#
+# Installed into ~/.codex/config.toml by install.sh:
+#   notify = ["~/.ai-remote/bin/ai-todo-codex-notify"]
+# or, when another notify program was already configured (install.sh --chain-codex-notify):
+#   notify = ["~/.ai-remote/bin/ai-todo-codex-notify", "--chain", "<program>", "<args>"...]
+# With --chain the original program still runs (in the background) with its own arguments
+# plus the JSON, exactly as Codex would have called it.
+#
+# agent-turn-complete -> idle; approval-requested -> waiting (if Codex sends it).
+# Never blocks or fails Codex: always exits 0, and the HTTP call runs in the background with
+# a 3s limit. Only conversations running in a tmux session named ai/codex/todo-* are reported.
+#
+# Config: ~/.ai-remote/todo-hub.conf (shell syntax), as for ai-todo-hook.
+# Test hooks (not for normal use):
+#   AI_TODO_HUB_CONF      config file path
+#   AI_TODO_TMUX_SESSION  tmux session name instead of asking tmux
+#   AI_TODO_HOOK_SYNC     =1: wait for the HTTP call (and the chained program)
+
+json=""
+for arg in "$@"; do json=$arg; done
+
+if [ "${1:-}" = "--chain" ]; then
+  shift
+  # What's left is "<program> <args>... <json>": the original notify invocation.
+  if [ $# -ge 2 ]; then
+    if [ "${AI_TODO_HOOK_SYNC:-}" = 1 ]; then
+      "$@" </dev/null >/dev/null 2>&1
+    else
+      ("$@" </dev/null >/dev/null 2>&1 &)
+    fi
+  fi
+fi
+
+[ -n "$json" ] || exit 0
+
+export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+
+session=${AI_TODO_TMUX_SESSION:-}
+if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
+  session=$(tmux display-message -p '#S' 2>/dev/null) || exit 0
+fi
+case "$session" in
+  ai/codex/todo-*) ;;
+  *) exit 0 ;;
+esac
+
+conf=${AI_TODO_HUB_CONF:-$HOME/.ai-remote/todo-hub.conf}
+[ -r "$conf" ] || exit 0
+TODO_HUB_URL=
+TODO_API_TOKEN=
+# shellcheck source=/dev/null
+. "$conf" 2>/dev/null || exit 0
+[ -n "$TODO_HUB_URL" ] || exit 0
+
+command -v python3 >/dev/null 2>&1 || exit 0
+body=$(python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+if not isinstance(data, dict):
+    sys.exit(1)
+status = {"agent-turn-complete": "idle", "approval-requested": "waiting"}.get(data.get("type"))
+sid = data.get("thread-id")
+if status is None or not isinstance(sid, str) or not sid or not all(c.isalnum() or c == "-" for c in sid):
+    sys.exit(1)
+print(json.dumps({"session_id": sid, "tool": "codex", "status": status}))
+' "$json" 2>/dev/null) || exit 0
+
+post() {
+  # The token goes through curl's config on stdin so it never shows up in `ps`.
+  {
+    if [ -n "$TODO_API_TOKEN" ]; then
+      printf 'header = "Authorization: Bearer %s"\n' "$TODO_API_TOKEN"
+    fi
+  } | curl -s -o /dev/null --connect-timeout 2 --max-time 3 -K - \
+    -H 'Content-Type: application/json' --data-binary "$body" \
+    "${TODO_HUB_URL%/}/api/conversations/status"
+}
+
+if [ "${AI_TODO_HOOK_SYNC:-}" = 1 ]; then
+  post >/dev/null 2>&1
+else
+  post </dev/null >/dev/null 2>&1 &
+fi
+exit 0

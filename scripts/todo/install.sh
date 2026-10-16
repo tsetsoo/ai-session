@@ -4,15 +4,21 @@
 #   ~/.ai-remote/bin/ai-todo-open    started by the iPhone / Mac app over SSH
 #   ~/.ai-remote/bin/ai-todo-hook    Claude Code hook reporting busy/waiting/idle
 #   ~/.ai-remote/bin/ai-todo-sessions  list / delete / prune Claude + Codex conversations
+#   ~/.ai-remote/bin/ai-todo-codex-notify  Codex `notify` program reporting idle
 #   ~/.ai-remote/todo-hub.conf       todo-server URL + API token (mode 600)
 #   ~/.ai-remote/tmux.conf           tmux settings, sourced from ~/.tmux.conf
 #   ~/.claude/settings.json          hooks merged in; other settings untouched
+#   ~/.codex/config.toml             `notify` added only if none is set (see below)
 #
 # Usage:
-#   install.sh [--hub-url URL] [--token TOKEN] [--dry-run]
+#   install.sh [--hub-url URL] [--token TOKEN] [--chain-codex-notify] [--dry-run]
 #   install.sh --uninstall [--dry-run]
 #
-# Safe to re-run. settings.json is backed up before every change.
+# Codex allows a single `notify` program. If one is already configured, install.sh leaves it
+# alone and says so; --chain-codex-notify instead wraps it so both run (the original line is
+# saved and put back by --uninstall).
+#
+# Safe to re-run. settings.json and config.toml are backed up before every change.
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,14 +30,18 @@ TMUX_CONF="${HOME}/.tmux.conf"
 SETTINGS="${HOME}/.claude/settings.json"
 SOURCE_LINE='source-file -q ~/.ai-remote/tmux.conf'
 HOOK_MARKER='/.ai-remote/bin/ai-todo-hook'
+CODEX_DIR="${CODEX_HOME:-${HOME}/.codex}"
+CODEX_CONFIG="${CODEX_DIR}/config.toml"
+CODEX_NOTIFY_SAVED="${AI_DIR}/codex-notify-original"
 
 hub_url=""
 token=""
 dry_run=0
 uninstall=0
+chain_codex=0
 
 usage() {
-  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -39,6 +49,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --hub-url) hub_url="${2:?--hub-url needs a value}"; shift 2 ;;
     --token) token="${2:?--token needs a value}"; shift 2 ;;
+    --chain-codex-notify) chain_codex=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     --uninstall) uninstall=1; shift ;;
     -h | --help) usage 0 ;;
@@ -149,6 +160,115 @@ print(f"settings.json: {mode}ed todo hooks")
 PY
 }
 
+# Add (or remove) our `notify` in ~/.codex/config.toml. Never overwrites someone else's
+# notify unless --chain-codex-notify asks to wrap it.
+merge_codex_notify() {
+  local mode="$1"
+  if [[ ! -d "$CODEX_DIR" ]] && ! command -v codex >/dev/null 2>&1; then
+    [[ "$mode" == install ]] && say "codex: not installed, skipping notify"
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found: add to ${CODEX_CONFIG} by hand:" >&2
+    echo "  notify = [\"${BIN_DIR}/ai-todo-codex-notify\"]" >&2
+    return 0
+  fi
+  python3 - "$mode" "$CODEX_CONFIG" "${BIN_DIR}/ai-todo-codex-notify" "$CODEX_NOTIFY_SAVED" "$chain_codex" "$dry_run" <<'PY'
+import json, os, re, shutil, sys, time
+
+mode, path, prog, saved, chain, dry_run = sys.argv[1:7]
+chain, dry_run = chain == "1", dry_run == "1"
+marker = "ai-todo-codex-notify"
+comment = "# notify: added by ai-session-remote scripts/todo/install.sh\n"
+
+lines = []
+if os.path.exists(path):
+    with open(path) as f:
+        lines = f.read().splitlines(keepends=True)
+
+# `notify` is a top-level key, so it can only appear before the first [table].
+idx = None
+for i, line in enumerate(lines):
+    s = line.strip()
+    if s.startswith("["):
+        break
+    if re.match(r"notify\s*=", s):
+        idx = i
+        break
+
+def write(new_lines, what):
+    if dry_run:
+        print(f"would update {path} ({what})")
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path):
+        backup = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+        shutil.copy2(path, backup)
+        print(f"config.toml: backed up to {backup}")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("".join(new_lines))
+    os.replace(tmp, path)
+    print(f"config.toml: {what}")
+
+def instructions(existing):
+    print(f"config.toml: notify already set ({existing.strip()}); left unchanged.")
+    print("  Codex allows one notify program. To report Codex status as well, re-run with")
+    print("  --chain-codex-notify (wraps the existing program so both run), or set by hand:")
+    print(f"  notify = {json.dumps([prog, '--chain'])[:-1]}, <existing program and args>]")
+
+if mode == "install":
+    if idx is not None and marker in lines[idx]:
+        print("config.toml: notify already set up")
+        sys.exit(0)
+    if idx is None:
+        new = [comment, f"notify = {json.dumps([prog])}\n"]
+        if lines:
+            new.append("\n")
+        write(new + lines, "notify added")
+        sys.exit(0)
+    existing = lines[idx]
+    if not chain:
+        instructions(existing)
+        sys.exit(0)
+    m = re.match(r"\s*notify\s*=\s*(\[.*\])\s*(#.*)?$", existing.rstrip("\n"))
+    try:
+        original = json.loads(m.group(1)) if m else None
+    except ValueError:
+        original = None
+    if not (isinstance(original, list) and original and all(isinstance(a, str) for a in original)):
+        print("config.toml: can't parse the existing notify line safely; left unchanged.")
+        instructions(existing)
+        sys.exit(0)
+    if not dry_run:
+        os.makedirs(os.path.dirname(saved), exist_ok=True)
+        with open(saved, "w") as f:
+            f.write(existing if existing.endswith("\n") else existing + "\n")
+    lines[idx] = f"notify = {json.dumps([prog, '--chain'] + original)}\n"
+    write(lines, "notify chained (original runs too)")
+    sys.exit(0)
+
+# uninstall
+if idx is None or marker not in lines[idx]:
+    print("config.toml: no notify of ours")
+    sys.exit(0)
+if os.path.exists(saved):
+    with open(saved) as f:
+        lines[idx] = f.read()
+    what = "original notify restored"
+else:
+    del lines[idx]
+    if idx > 0 and lines[idx - 1] == comment:
+        del lines[idx - 1]
+        if idx - 1 < len(lines) and lines[idx - 1] == "\n":
+            del lines[idx - 1]
+    what = "notify removed"
+write(lines, what)
+if not dry_run and os.path.exists(saved):
+    os.remove(saved)
+PY
+}
+
 write_hub_conf() {
   local url="" tok=""
   if [[ -f "$HUB_CONF" ]]; then
@@ -184,6 +304,7 @@ do_install() {
   run install -m 755 "${SRC_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-open"
   run install -m 755 "${SRC_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-hook"
   run install -m 755 "${SRC_DIR}/ai-todo-sessions" "${BIN_DIR}/ai-todo-sessions"
+  run install -m 755 "${SRC_DIR}/ai-todo-codex-notify" "${BIN_DIR}/ai-todo-codex-notify"
   run install -m 644 "${SRC_DIR}/tmux.conf" "$TMUX_SNIPPET"
   say "scripts: installed to ${BIN_DIR}"
 
@@ -199,6 +320,7 @@ do_install() {
   fi
 
   merge_settings install
+  merge_codex_notify install
 
   if [[ $dry_run -eq 0 ]]; then
     if tmux info >/dev/null 2>&1; then
@@ -211,8 +333,15 @@ do_install() {
 }
 
 do_uninstall() {
-  run rm -f "${BIN_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-sessions" "$TMUX_SNIPPET"
+  # Put Codex's own notify back before its program disappears.
+  merge_codex_notify uninstall
+
+  run rm -f "${BIN_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-sessions" \
+    "${BIN_DIR}/ai-todo-codex-notify" "$TMUX_SNIPPET"
   say "scripts: removed"
+  # Per-session state kept by the hooks.
+  run rm -rf "${AI_DIR}/hook-state"
+  say "state: removed ${AI_DIR}/hook-state"
 
   if [[ -f "$TMUX_CONF" ]] && grep -Fqx "$SOURCE_LINE" "$TMUX_CONF"; then
     if [[ $dry_run -eq 1 ]]; then

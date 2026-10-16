@@ -119,6 +119,12 @@ The installer is safe to re-run. It sets up:
   - Existing settings and hooks are kept, and the file is backed up before each change.
   - The hook runs in the background with a 3 s limit and always exits 0, so a slow or
     unreachable hub never blocks Claude.
+- `~/.ai-remote/bin/ai-todo-codex-notify`: Codex's `notify` program, set in `~/.codex/config.toml`.
+  - When a turn completes, it posts `idle` (with `"tool":"codex"`) for conversations in tmux sessions named `ai/codex/todo-*`.
+  - Codex allows only one `notify`. If one is already configured, `install.sh` leaves it alone and explains how to proceed.
+  - `install.sh --chain-codex-notify` wraps an existing `notify` so both run. `--uninstall` puts the original back.
+
+To build a Release Mac app, run `scripts/build-mac-release.sh`, which prints the `.app` path.
 - `~/.ai-remote/todo-hub.conf` (mode 600): `TODO_HUB_URL` and `TODO_API_TOKEN` for the hook.
 - `~/.ai-remote/tmux.conf`, sourced from `~/.tmux.conf`. Run `tmux source-file ~/.tmux.conf`
   to apply it to a running server. It sets:

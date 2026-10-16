@@ -32,7 +32,7 @@ struct AISessionRemoteApp: App {
                     Task { await NIOSSHClient.shared.closeAll() }
                 }
         }
-        .modelContainer(for: HostEntity.self)
+        .modelContainer(HostStore.shared)
         #if os(macOS)
         .defaultSize(width: 1100, height: 720)
         .commands {

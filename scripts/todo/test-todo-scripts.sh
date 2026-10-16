@@ -8,6 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX="$(mktemp -d)"
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 export HOME="${SANDBOX}/home"
+# install.sh honours CODEX_HOME; never let it point at a real Codex config.
+unset CODEX_HOME
 mkdir -p "$HOME"
 SOCK="aitodo-test-$$"
 export AI_TODO_TMUX_SOCKET="$SOCK"
@@ -519,6 +521,48 @@ tool
 [[ $(wc -l <"$HUB_LOG") -eq 6 && "$(last_status)" == busy ]] || fail "tool call after a permission prompt did not post busy"
 pass "tool calls post busy once after waiting/idle and stay quiet while busy"
 
+# --- ai-todo-codex-notify ---------------------------------------------------------
+
+NOTIFY="${SCRIPT_DIR}/ai-todo-codex-notify"
+XTMUX="ai/codex/todo-0f3a9c21"
+TURN=$(printf '{"type":"agent-turn-complete","thread-id":"%s","turn-id":"t1","cwd":"/x","client":"codex-tui","input-messages":["hi"],"last-assistant-message":"OK"}' "$X_LINKED")
+before=$(wc -l <"$HUB_LOG")
+AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" "$TURN" || fail "codex notify exited non-zero"
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 1)) ]] || fail "codex notify did not post"
+python3 - "$HUB_LOG" "$X_LINKED" <<'PY' || fail "codex notify request was wrong: $(tail -1 "$HUB_LOG")"
+import json, sys
+req = json.loads(open(sys.argv[1]).read().splitlines()[-1])
+assert req["path"] == "/api/conversations/status", req
+assert req["auth"] == "Bearer s3cret", req
+assert req["body"] == {"session_id": sys.argv[2], "tool": "codex", "status": "idle"}, req
+PY
+APPROVAL=$(printf '{"type":"approval-requested","thread-id":"%s"}' "$X_LINKED")
+AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" "$APPROVAL"
+[[ "$(last_status)" == waiting ]] || fail "approval-requested was not reported as waiting"
+pass "codex notify posts idle on agent-turn-complete (waiting on approval-requested) with tool=codex and the token"
+
+before=$(wc -l <"$HUB_LOG")
+AI_TODO_TMUX_SESSION="ai/claude/todo-0f3a9c21" "$NOTIFY" "$TURN"
+env -u TMUX "$NOTIFY" "$TURN"
+AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" '{"type":"something-else","thread-id":"x"}'
+AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" 'not json'
+AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" '{"type":"agent-turn-complete","thread-id":"../../etc"}'
+AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY"
+[[ $(wc -l <"$HUB_LOG") -eq $before ]] || fail "codex notify posted for a non-todo session or bad payload"
+pass "codex notify ignores non-codex/non-tmux sessions, other events, bad JSON and bad ids"
+
+CHAIN_LOG="${SANDBOX}/chain.log"
+printf '#!/bin/sh\nprintf "%%s|" "$@" >>"%s"\n' "$CHAIN_LOG" >"${SANDBOX}/orig-notify"
+chmod +x "${SANDBOX}/orig-notify"
+before=$(wc -l <"$HUB_LOG")
+AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" --chain "${SANDBOX}/orig-notify" turn-ended "$TURN"
+[[ "$(cat "$CHAIN_LOG")" == "turn-ended|${TURN}|" ]] || fail "chained notify got wrong args: $(cat "$CHAIN_LOG")"
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 1)) ]] || fail "chained codex notify did not post"
+rm -f "$CHAIN_LOG"
+AI_TODO_TMUX_SESSION="other" "$NOTIFY" --chain "${SANDBOX}/orig-notify" turn-ended "$TURN"
+[[ "$(cat "$CHAIN_LOG")" == "turn-ended|${TURN}|" ]] || fail "chained notify must run even for non-todo sessions"
+pass "codex notify --chain runs the original program with its args + the JSON, and still reports"
+
 printf "TODO_HUB_URL='http://127.0.0.1:9'\nTODO_API_TOKEN='s3cret'\n" >"$CONF"
 start=$(date +%s)
 printf '{"session_id":"%s"}' "$SID" | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" busy || fail "hook failed with the hub down"
@@ -601,6 +645,43 @@ grep -qx "TODO_HUB_URL='http://hub:8080'" "${HOME}/.ai-remote/todo-hub.conf" || 
 grep -qx "TODO_API_TOKEN='newtok'" "${HOME}/.ai-remote/todo-hub.conf" || fail "token not updated"
 pass "re-running with --token updates only the token"
 
+OUR_NOTIFY="notify = [\"${HOME}/.ai-remote/bin/ai-todo-codex-notify\"]"
+[[ -x "${HOME}/.ai-remote/bin/ai-todo-codex-notify" ]] || fail "ai-todo-codex-notify not installed"
+[[ "$(grep -c '^notify' "${HOME}/.codex/config.toml")" -eq 1 ]] && grep -qxF "$OUR_NOTIFY" "${HOME}/.codex/config.toml" \
+  || fail "codex notify not added exactly once: $(cat "${HOME}/.codex/config.toml")"
+pass "install adds our notify to a codex config without one, once"
+
+CX="${SANDBOX}/codex2"
+mkdir -p "$CX"
+cat >"${CX}/config.toml" <<'EOF'
+model = "gpt-5"
+notify = ["/Applications/Other.app/notify", "turn-ended"]
+
+[projects."/x"]
+trust_level = "trusted"
+EOF
+cp "${CX}/config.toml" "${SANDBOX}/codex2.orig"
+out="$(CODEX_HOME="$CX" "$INSTALL")"
+cmp -s "${CX}/config.toml" "${SANDBOX}/codex2.orig" || fail "install changed an existing foreign notify without --chain-codex-notify"
+grep -q "left unchanged" <<<"$out" || fail "install did not explain the existing notify: $out"
+CODEX_HOME="$CX" "$INSTALL" --chain-codex-notify >/dev/null
+grep -qxF "notify = [\"${HOME}/.ai-remote/bin/ai-todo-codex-notify\", \"--chain\", \"/Applications/Other.app/notify\", \"turn-ended\"]" "${CX}/config.toml" \
+  || fail "notify not chained: $(cat "${CX}/config.toml")"
+python3 - "${CX}/config.toml" <<'PY' || fail "chained config lost other keys/order"
+import sys
+text = open(sys.argv[1]).read()
+assert text.index("notify") < text.index("[projects"), text
+assert 'model = "gpt-5"' in text and 'trust_level = "trusted"' in text, text
+PY
+[[ -f "${HOME}/.ai-remote/codex-notify-original" ]] || fail "original notify line not saved"
+ls "${CX}/config.toml.bak-"* >/dev/null 2>&1 || fail "config.toml was not backed up"
+grep -q "already set up" <<<"$(CODEX_HOME="$CX" "$INSTALL" --chain-codex-notify)" || fail "re-running chain is not idempotent"
+CODEX_HOME="$CX" "$INSTALL" --uninstall >/dev/null
+cmp -s "${CX}/config.toml" "${SANDBOX}/codex2.orig" || fail "uninstall did not restore the original notify: $(cat "${CX}/config.toml")"
+[[ ! -e "${HOME}/.ai-remote/codex-notify-original" ]] || fail "saved original notify left behind"
+pass "an existing codex notify is left alone, chained only with --chain-codex-notify, and restored by uninstall"
+"$INSTALL" >/dev/null
+
 cp "$SETTINGS" "${SANDBOX}/settings.good"
 printf '{ broken' >"$SETTINGS"
 if "$INSTALL" >/dev/null 2>&1; then fail "install accepted an invalid settings.json"; fi
@@ -608,7 +689,11 @@ if "$INSTALL" >/dev/null 2>&1; then fail "install accepted an invalid settings.j
 cp "${SANDBOX}/settings.good" "$SETTINGS"
 pass "install refuses an invalid settings.json and leaves it alone"
 
+mkdir -p "${HOME}/.ai-remote/hook-state" && printf 'busy\n' >"${HOME}/.ai-remote/hook-state/someid"
 "$INSTALL" --uninstall >/dev/null
+[[ ! -e "${HOME}/.ai-remote/hook-state" ]] || fail "uninstall left ~/.ai-remote/hook-state"
+[[ ! -e "${HOME}/.ai-remote/bin/ai-todo-codex-notify" ]] || fail "uninstall left ai-todo-codex-notify"
+! grep -q 'ai-todo-codex-notify' "${HOME}/.codex/config.toml" || fail "uninstall left our codex notify: $(cat "${HOME}/.codex/config.toml")"
 python3 - "$SETTINGS" <<'PY' || fail "settings.json after uninstall is wrong: $(cat "$SETTINGS")"
 import json, sys
 s = json.load(open(sys.argv[1]))
@@ -621,6 +706,6 @@ PY
 [[ ! -e "${HOME}/.ai-remote/bin/ai-todo-open" && ! -e "${HOME}/.ai-remote/bin/ai-todo-sessions" && ! -e "${HOME}/.ai-remote/tmux.conf" ]] || fail "uninstall left scripts behind"
 ! grep -q 'ai-remote/tmux.conf' "${HOME}/.tmux.conf" || fail "uninstall left the tmux source line"
 grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "uninstall removed other ~/.tmux.conf lines"
-pass "uninstall removes only our hooks, scripts and tmux line"
+pass "uninstall removes only our hooks, scripts, tmux line, codex notify and hook state"
 
 echo "All ${passes} todo script tests passed."

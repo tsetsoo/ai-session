@@ -33,8 +33,7 @@ enum HostProvisioning {
         guard arguments.contains(where: flags.contains) else { return }
         applyHubSettings(arguments)
         do {
-            let container = try ModelContainer(for: HostEntity.self)
-            run(arguments: arguments, modelContext: container.mainContext)
+            run(arguments: arguments, modelContext: HostStore.shared.mainContext)
         } catch {
             log("provisioning: could not open the host store: \(error.localizedDescription)")
             #if os(macOS)
