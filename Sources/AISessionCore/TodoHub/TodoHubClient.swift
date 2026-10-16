@@ -66,10 +66,15 @@ public struct TodoHubClient: Sendable {
 
     // MARK: Todos
 
-    public func listTodos(section: TodoSection? = nil, filter: TodoListFilter? = nil) async throws -> [Todo] {
+    public func listTodos(
+        section: TodoSection? = nil,
+        filter: TodoListFilter? = nil,
+        projectId: String? = nil
+    ) async throws -> [Todo] {
         var query: [URLQueryItem] = []
         if let section { query.append(URLQueryItem(name: "section", value: section.rawValue)) }
         if let filter { query.append(URLQueryItem(name: "show", value: filter.rawValue)) }
+        if let projectId { query.append(URLQueryItem(name: "project_id", value: projectId)) }
         return try await decode([Todo].self, send("GET", "/api/todos", query: query))
     }
 
@@ -163,6 +168,98 @@ public struct TodoHubClient: Sendable {
     /// Creates a todo that is already linked to an existing conversation.
     public func createTodoFromConversation(_ request: TodoFromConversationRequest) async throws -> TodoWithConversation {
         try await decode(TodoWithConversation.self, send("POST", "/api/todos/from-conversation", body: request))
+    }
+
+    // MARK: Projects
+
+    /// Ordered by name, with counts (open todos, sessions, memories, last activity).
+    public func listProjects() async throws -> [Project] {
+        try await decode([Project].self, send("GET", "/api/projects"))
+    }
+
+    public func project(id: String) async throws -> Project {
+        try await decode(Project.self, send("GET", "/api/projects/\(escape(id))"))
+    }
+
+    /// Throws `.conflict` with the server's message for a duplicate or nested folder.
+    public func createProject(_ request: CreateProjectRequest) async throws -> Project {
+        try await decode(Project.self, send("POST", "/api/projects", body: request))
+    }
+
+    public func updateProject(id: String, _ request: UpdateProjectRequest) async throws -> Project {
+        try await decode(Project.self, send("PATCH", "/api/projects/\(escape(id))", body: request))
+    }
+
+    /// Todos lose the project, sessions are re-matched; nothing else is deleted.
+    public func deleteProject(id: String) async throws {
+        _ = try await send("DELETE", "/api/projects/\(escape(id))")
+    }
+
+    public func projectSuggestions() async throws -> [ProjectSuggestion] {
+        try await decode([ProjectSuggestion].self, send("GET", "/api/projects/suggestions"))
+    }
+
+    // MARK: Sessions and stats
+
+    /// Newest first. `since` filters on last activity.
+    public func listSessions(
+        projectId: String? = nil,
+        computerId: String? = nil,
+        since: String? = nil,
+        limit: Int? = nil
+    ) async throws -> [HubSession] {
+        var query: [URLQueryItem] = []
+        if let projectId { query.append(URLQueryItem(name: "project_id", value: projectId)) }
+        if let computerId { query.append(URLQueryItem(name: "computer_id", value: computerId)) }
+        if let since { query.append(URLQueryItem(name: "since", value: since)) }
+        if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
+        return try await decode([HubSession].self, send("GET", "/api/sessions", query: query))
+    }
+
+    /// Overrides the session's project (`nil` = no project). Its memories move with it.
+    /// Throws `.conflict` when the project is on another computer.
+    public func setSessionProject(tool: String, sessionId: String, projectId: String?) async throws {
+        _ = try await send("PUT", sessionProjectPath(tool: tool, sessionId: sessionId),
+                           body: SetSessionProjectRequest.project(projectId))
+    }
+
+    /// Clears the override and matches the session to a project by folder again.
+    public func setSessionProjectAuto(tool: String, sessionId: String) async throws {
+        _ = try await send("PUT", sessionProjectPath(tool: tool, sessionId: sessionId),
+                           body: SetSessionProjectRequest.auto)
+    }
+
+    private func sessionProjectPath(tool: String, sessionId: String) -> String {
+        "/api/sessions/\(escape(tool))/\(escape(sessionId))/project"
+    }
+
+    /// `weekStart` must be a Monday (`YYYY-MM-DD`); `nil` = this week on the server.
+    public func weeklyStats(weekStart: String? = nil, projectId: String? = nil) async throws -> WeeklyStats {
+        var query: [URLQueryItem] = []
+        if let weekStart { query.append(URLQueryItem(name: "week_start", value: weekStart)) }
+        if let projectId { query.append(URLQueryItem(name: "project_id", value: projectId)) }
+        return try await decode(WeeklyStats.self, send("GET", "/api/stats/weekly", query: query))
+    }
+
+    // MARK: Memories
+
+    /// Pinned first, then newest.
+    public func listMemories(_ query: MemoryQuery = MemoryQuery()) async throws -> [Memory] {
+        try await decode([Memory].self, send("GET", "/api/memories", query: query.queryItems))
+    }
+
+    public func createMemory(_ request: CreateMemoryRequest) async throws -> Memory {
+        try await decode(Memory.self, send("POST", "/api/memories", body: request))
+    }
+
+    /// Throws `.conflict` when edited text clashes with another memory of the same session.
+    public func updateMemory(id: String, _ request: UpdateMemoryRequest) async throws -> Memory {
+        try await decode(Memory.self, send("PATCH", "/api/memories/\(escape(id))", body: request))
+    }
+
+    /// Permanent. Archive instead to keep a memory from being extracted again.
+    public func deleteMemory(id: String) async throws {
+        _ = try await send("DELETE", "/api/memories/\(escape(id))")
     }
 
     // MARK: Transport
