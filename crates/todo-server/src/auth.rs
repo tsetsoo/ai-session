@@ -6,7 +6,6 @@
 
 use actix_web::body::{EitherBody, MessageBody};
 use actix_web::dev::{ServiceRequest, ServiceResponse};
-use actix_web::http::Method;
 use actix_web::middleware::Next;
 use actix_web::{web, Error, HttpResponse};
 
@@ -24,32 +23,43 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn presented_token(req: &ServiceRequest) -> Option<String> {
-    if let Some(bearer) = req
+/// Every token the request presents: the Bearer header, plus `?token=` on `/api/ws`.
+fn presented_tokens(req: &ServiceRequest, path: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    if let Some((scheme, value)) = req
         .headers()
         .get("Authorization")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|v| v.split_once(' '))
     {
-        return Some(bearer.trim().to_string());
+        if scheme.eq_ignore_ascii_case("bearer") {
+            tokens.push(value.trim().to_string());
+        }
     }
-    if req.path() == "/api/ws" {
-        return web::Query::<std::collections::HashMap<String, String>>::from_query(req.query_string())
+    if path == "/api/ws" {
+        if let Some(t) = web::Query::<std::collections::HashMap<String, String>>::from_query(req.query_string())
             .ok()
-            .and_then(|q| q.get("token").cloned());
+            .and_then(|q| q.get("token").cloned())
+        {
+            tokens.push(t);
+        }
     }
-    None
+    tokens
 }
 
 fn is_allowed(req: &ServiceRequest) -> bool {
     let Some(expected) = req.app_data::<web::Data<ApiToken>>().and_then(|t| t.0.clone()) else {
         return true;
     };
-    let path = req.path();
-    if !path.starts_with("/api/") || path == "/api/health" || req.method() == Method::OPTIONS {
+    // The router matches on the percent-decoded path, so check that one: the raw
+    // `req.path()` would let `/%61pi/todos` through to `/api/todos`.
+    let path = req.match_info().as_str();
+    if !path.starts_with("/api/") || path == "/api/health" {
         return true;
     }
-    presented_token(req).is_some_and(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()))
+    presented_tokens(req, path)
+        .iter()
+        .any(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()))
 }
 
 pub async fn require_token<B: MessageBody + 'static>(
@@ -120,5 +130,30 @@ mod tests {
         assert_eq!(status(t, test::TestRequest::get().uri("/api/todos?token=s3cret")).await, 401);
         assert_eq!(status(t, test::TestRequest::get().uri("/api/health")).await, 200);
         assert_eq!(status(t, test::TestRequest::get().uri("/")).await, 200);
+    }
+
+    #[actix_web::test]
+    async fn percent_encoded_api_path_still_needs_token() {
+        let t = Some("s3cret");
+        assert_eq!(status(t, test::TestRequest::get().uri("/%61pi/todos")).await, 401);
+        assert_eq!(status(t, test::TestRequest::get().uri("/api/%74odos")).await, 401);
+        assert_eq!(status(None, test::TestRequest::get().uri("/%61pi/todos")).await, 200);
+    }
+
+    #[actix_web::test]
+    async fn any_valid_token_is_accepted() {
+        let t = Some("s3cret");
+        assert_eq!(
+            status(t, test::TestRequest::get().uri("/api/todos").insert_header(("Authorization", "bearer s3cret"))).await,
+            200
+        );
+        assert_eq!(
+            status(
+                t,
+                test::TestRequest::get().uri("/api/ws?token=s3cret").insert_header(("Authorization", "Bearer stale"))
+            )
+            .await,
+            200
+        );
     }
 }

@@ -10,7 +10,6 @@ mod describe;
 mod handlers;
 mod models;
 
-use actix_cors::Cors;
 use actix_web::{web, App, HttpServer, middleware};
 use clap::Parser;
 
@@ -50,16 +49,16 @@ async fn main() -> std::io::Result<()> {
     let broadcaster_clone = broadcaster.clone();
 
     HttpServer::new(move || {
-        let cors = Cors::default()
-            .allow_any_origin()
-            .allow_any_method()
-            .allow_any_header()
-            .max_age(3600);
+        // Like the default format, but with the path (%U) instead of the request
+        // line (%r), so `/api/ws?token=…` never reaches the logs.
+        let logger = middleware::Logger::new(r#"%a "%{method}xi %U" %s %b "%{User-Agent}i" %T"#)
+            .custom_request_replace("method", |req| req.method().to_string());
 
+        // No CORS: the web UI is served from this origin and native clients don't need it,
+        // so other sites can't call the API from the browser.
         let mut app = App::new()
             .wrap(middleware::from_fn(auth::require_token))
-            .wrap(cors)
-            .wrap(middleware::Logger::default())
+            .wrap(logger)
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(broadcaster_clone.clone()))
             .app_data(web::Data::new(api_token.clone()))

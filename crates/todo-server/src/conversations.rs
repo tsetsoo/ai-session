@@ -5,7 +5,7 @@
 //! `tmux_name`, `cwd` and `claude_session_id`.
 
 use actix_web::{web, HttpResponse};
-use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
     Computer, Conversation, ConversationStatus, ConversationStatusRequest, CreateComputerRequest, DeleteResponse,
     Section, SectionComputer, SetSectionComputerRequest, UpdateComputerRequest,
@@ -102,6 +102,8 @@ pub(crate) fn load_conversation(conn: &Connection, todo_id: &str) -> rusqlite::R
 pub(crate) enum OpenError {
     TodoNotFound,
     NoComputer(String),
+    /// Both the short and the full tmux name are taken by other todos.
+    NoTmuxName,
     Db(rusqlite::Error),
 }
 
@@ -125,7 +127,17 @@ fn is_constraint_violation(e: &rusqlite::Error) -> bool {
 
 /// Get the todo's conversation, creating it from its section's computer if missing.
 /// Reopening a closed conversation resets its status to `unknown`.
+///
+/// Runs in one IMMEDIATE transaction so it can't interleave with a concurrent
+/// close, status update or todo delete.
 pub(crate) fn open_conversation_db(conn: &Connection, todo_id: &str) -> Result<Conversation, OpenError> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let conversation = open_conversation_in(&tx, todo_id)?;
+    tx.commit()?;
+    Ok(conversation)
+}
+
+fn open_conversation_in(conn: &Connection, todo_id: &str) -> Result<Conversation, OpenError> {
     let section: String = conn
         .query_row("SELECT section FROM todos WHERE id = ?1", params![todo_id], |r| r.get(0))
         .optional()?
@@ -161,24 +173,22 @@ pub(crate) fn open_conversation_db(conn: &Connection, todo_id: &str) -> Result<C
             params![todo_id, computer_id, cwd, tool, name, session_id],
         );
         match inserted {
-            Ok(_) => break,
-            // A concurrent open created it, or the short tmux name is taken: retry.
-            Err(e) if is_constraint_violation(&e) => {
-                if let Some(existing) = load_conversation(conn, todo_id)? {
-                    return Ok(existing);
-                }
-            }
+            Ok(_) => return load_conversation(conn, todo_id)?.ok_or(OpenError::TodoNotFound),
+            // The short tmux name is taken by another todo: try the full id.
+            Err(e) if is_constraint_violation(&e) => {}
             Err(e) => return Err(e.into()),
         }
     }
-    load_conversation(conn, todo_id)?.ok_or(OpenError::Db(rusqlite::Error::QueryReturnedNoRows))
+    Err(OpenError::NoTmuxName)
 }
 
 /// Apply a hook status update. Returns the number of conversations updated (0 or 1).
+/// Closed conversations are left alone: a hook that lands after the user
+/// closed the conversation must not make it look live again.
 pub(crate) fn set_status_db(conn: &Connection, req: &ConversationStatusRequest) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE conversations SET status = ?1, status_message = ?2, status_updated_at = datetime('now')
-         WHERE claude_session_id = ?3",
+         WHERE claude_session_id = ?3 AND status != 'closed'",
         params![req.status.as_str(), req.message, req.claude_session_id],
     )
 }
@@ -189,6 +199,10 @@ fn valid_text(s: &str) -> bool {
 
 fn valid_hostname(s: &str) -> bool {
     valid_text(s) && !s.chars().any(char::is_whitespace)
+}
+
+fn valid_port(p: Option<u16>) -> bool {
+    p != Some(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +219,10 @@ pub async fn list_computers(pool: web::Data<DbPool>) -> HttpResponse {
         Err(e) => return server_error(e),
     };
     let computers: Vec<Computer> = match stmt.query_map([], |r| computer_at(r, 0)) {
-        Ok(rows) => rows.filter_map(Result::ok).collect(),
+        Ok(rows) => match rows.collect::<rusqlite::Result<_>>() {
+            Ok(v) => v,
+            Err(e) => return server_error(e),
+        },
         Err(e) => return server_error(e),
     };
     HttpResponse::Ok().json(computers)
@@ -218,6 +235,9 @@ pub async fn create_computer(
 ) -> HttpResponse {
     if !valid_text(&body.name) || !valid_hostname(&body.hostname) || !valid_text(&body.username) {
         return bad_request("name, hostname and username are required (hostname without spaces)");
+    }
+    if !valid_port(body.port) {
+        return bad_request("port must be 1-65535");
     }
     let conn = match pool.get() {
         Ok(c) => c,
@@ -250,6 +270,9 @@ pub async fn update_computer(
         || body.username.as_deref().is_some_and(|s| !valid_text(s))
     {
         return bad_request("name, hostname and username cannot be empty (hostname without spaces)");
+    }
+    if !valid_port(body.port) {
+        return bad_request("port must be 1-65535");
     }
     let conn = match pool.get() {
         Ok(c) => c,
@@ -321,7 +344,10 @@ pub async fn list_section_computers(pool: web::Data<DbPool>) -> HttpResponse {
         Err(e) => return server_error(e),
     };
     let mut mappings: Vec<SectionComputer> = match stmt.query_map([], row_to_section_computer) {
-        Ok(rows) => rows.filter_map(Result::ok).collect(),
+        Ok(rows) => match rows.collect::<rusqlite::Result<_>>() {
+            Ok(v) => v,
+            Err(e) => return server_error(e),
+        },
         Err(e) => return server_error(e),
     };
     mappings.sort_by_key(|m| Section::all().iter().position(|s| *s == m.section));
@@ -405,7 +431,10 @@ pub async fn list_conversations(pool: web::Data<DbPool>) -> HttpResponse {
         Err(e) => return server_error(e),
     };
     let conversations: Vec<Conversation> = match stmt.query_map([], row_to_conversation) {
-        Ok(rows) => rows.filter_map(Result::ok).collect(),
+        Ok(rows) => match rows.collect::<rusqlite::Result<_>>() {
+            Ok(v) => v,
+            Err(e) => return server_error(e),
+        },
         Err(e) => return server_error(e),
     };
     HttpResponse::Ok().json(conversations)
@@ -439,6 +468,7 @@ pub async fn open_conversation(
         }
         Err(OpenError::TodoNotFound) => not_found("Todo not found"),
         Err(OpenError::NoComputer(section)) => conflict(format!("Section {section} has no computer assigned")),
+        Err(OpenError::NoTmuxName) => conflict("No free tmux session name for this todo"),
         Err(OpenError::Db(e)) => server_error(e),
     }
 }
@@ -497,12 +527,15 @@ pub async fn post_conversation_status(
     body: web::Json<ConversationStatusRequest>,
     broadcaster: web::Data<Broadcaster>,
 ) -> HttpResponse {
+    if body.status == ConversationStatus::Closed {
+        return bad_request("Hooks cannot close a conversation; use POST /api/todos/{id}/conversation/close");
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
     match set_status_db(&conn, &body) {
-        Ok(0) => not_found("Unknown claude_session_id"),
+        Ok(0) => not_found("Unknown or closed claude_session_id"),
         Ok(_) => {
             broadcaster.send();
             HttpResponse::NoContent().finish()
@@ -604,6 +637,11 @@ mod tests {
         assert_eq!(load_conversation(&conn, TODO).unwrap().unwrap().status, ConversationStatus::Waiting);
 
         conn.execute("UPDATE conversations SET status = 'closed' WHERE todo_id = ?1", params![TODO]).unwrap();
+        // A late hook must not make a closed conversation look live again.
+        let late = ConversationStatusRequest { claude_session_id: conv.claude_session_id.clone(), status: ConversationStatus::Idle, message: None };
+        assert_eq!(set_status_db(&conn, &late).unwrap(), 0);
+        assert_eq!(load_conversation(&conn, TODO).unwrap().unwrap().status, ConversationStatus::Closed);
+
         let reopened = open_conversation_db(&conn, TODO).unwrap();
         assert_eq!(reopened.status, ConversationStatus::Unknown);
         assert_eq!(reopened.claude_session_id, conv.claude_session_id);
