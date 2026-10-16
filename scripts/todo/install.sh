@@ -3,6 +3,7 @@
 #
 #   ~/.ai-remote/bin/ai-todo-open    started by the iPhone / Mac app over SSH
 #   ~/.ai-remote/bin/ai-todo-hook    Claude Code hook reporting busy/waiting/idle
+#   ~/.ai-remote/bin/ai-todo-sessions  list / delete / prune Claude + Codex conversations
 #   ~/.ai-remote/todo-hub.conf       todo-server URL + API token (mode 600)
 #   ~/.ai-remote/tmux.conf           tmux settings, sourced from ~/.tmux.conf
 #   ~/.claude/settings.json          hooks merged in; other settings untouched
@@ -182,6 +183,7 @@ do_install() {
   run mkdir -p "$BIN_DIR"
   run install -m 755 "${SRC_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-open"
   run install -m 755 "${SRC_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-hook"
+  run install -m 755 "${SRC_DIR}/ai-todo-sessions" "${BIN_DIR}/ai-todo-sessions"
   run install -m 644 "${SRC_DIR}/tmux.conf" "$TMUX_SNIPPET"
   say "scripts: installed to ${BIN_DIR}"
 
@@ -209,7 +211,7 @@ do_install() {
 }
 
 do_uninstall() {
-  run rm -f "${BIN_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-hook" "$TMUX_SNIPPET"
+  run rm -f "${BIN_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-sessions" "$TMUX_SNIPPET"
   say "scripts: removed"
 
   if [[ -f "$TMUX_CONF" ]] && grep -Fqx "$SOURCE_LINE" "$TMUX_CONF"; then
