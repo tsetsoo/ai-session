@@ -43,13 +43,12 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        # The todo server is plain http on the tailnet (IP or MagicDNS *.ts.net name).
+        # The todo server is plain http on the tailnet, usually by its 100.x IP. ATS has no
+        # per-IP exception and NSAllowsLocalNetworking doesn't cover Tailscale's 100.64/10
+        # range, so allow plain http outright; Tailscale encrypts the traffic (WireGuard).
+        # Don't add NSAllowsLocalNetworking back: its presence makes ATS ignore this key.
         NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
-          NSExceptionDomains:
-            ts.net:
-              NSIncludesSubdomains: true
-              NSExceptionAllowsInsecureHTTPLoads: true
+          NSAllowsArbitraryLoads: true
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.aisessionremote.app
       GENERATE_INFOPLIST_FILE: NO
@@ -110,13 +109,9 @@ targets:
         CFBundleDisplayName: AI Session Remote
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: ""
-        # ATS applies to URLSession on macOS too, sandboxed or not.
+        # ATS applies to URLSession on macOS too, sandboxed or not. Same reasoning as iOS above.
         NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
-          NSExceptionDomains:
-            ts.net:
-              NSIncludesSubdomains: true
-              NSExceptionAllowsInsecureHTTPLoads: true
+          NSAllowsArbitraryLoads: true
     settings:
       PRODUCT_NAME: AI Session Remote
       PRODUCT_BUNDLE_IDENTIFIER: com.aisessionremote.mac

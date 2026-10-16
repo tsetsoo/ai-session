@@ -24,7 +24,10 @@ public struct TodoHubCache: Sendable {
     public static func applicationSupport(fileName: String = "todo-hub-cache.json") -> TodoHubCache {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return TodoHubCache(fileURL: base.appendingPathComponent(fileName))
+        // The unsandboxed Mac app shares ~/Library/Application Support with every other app,
+        // so keep the file in a folder of its own.
+        let folder = Bundle.main.bundleIdentifier ?? "AISessionRemote"
+        return TodoHubCache(fileURL: base.appendingPathComponent(folder).appendingPathComponent(fileName))
     }
 
     public func load() -> TodoHubSnapshot? {
