@@ -58,15 +58,54 @@ enum TodoConversationLauncher {
     }
 }
 
-/// The terminal for a todo's conversation. `TerminalScreen` itself is unchanged; this only
+/// The terminal for a todo's conversation, with a toolbar button for the memories panel (an
+/// inspector on the Mac, a sheet on iOS). `TerminalScreen` itself is unchanged; this only
 /// wraps it.
 struct TodoConversationScreen: View {
     let open: OpenTodoConversation
     let store: TodoHubStore
+    @State private var showingMemories = false
 
     var body: some View {
+        terminal
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showingMemories.toggle()
+                    } label: {
+                        Image(systemName: "lightbulb")
+                    }
+                    .accessibilityLabel("Memories")
+                    .help("Memories")
+                }
+            }
+            #if os(macOS)
+            .inspector(isPresented: $showingMemories) {
+                memoriesPanel
+                    .inspectorColumnWidth(min: 260, ideal: 340, max: 520)
+            }
+            #else
+            .sheet(isPresented: $showingMemories) {
+                NavigationStack {
+                    memoriesPanel
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { showingMemories = false }
+                            }
+                        }
+                }
+                .presentationDetents([.medium, .large])
+            }
+            #endif
+    }
+
+    private var memoriesPanel: some View {
+        MemoriesPanel(todoId: open.conversation.todoId, store: store, initialConversation: open.conversation)
+    }
+
+    private var terminal: some View {
         let conversation = open.conversation
-        TerminalScreen(
+        return TerminalScreen(
             hostConfig: open.config,
             mode: .attach(TmuxCommandBuilder.openTodoConversation(
                 tmuxName: conversation.tmuxName,

@@ -37,6 +37,7 @@
 		3F324CB622DB3E280E202EA1 /* SessionServiceFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */; };
 		3F7506AD3A89B8ED43E6DEBB /* TerminalResizeDebouncer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229A4FF6F8B0899EA6FEF4D9 /* TerminalResizeDebouncer.swift */; };
 		3F7D62C234999725F0C9833F /* ConversationLinkViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */; };
+		44F3E96E02F25239D27F1CE9 /* ProjectMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */; };
 		459745DF108E3518C8BB10E3 /* NIOSSHClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */; };
 		47C0DBE7DC069BCC5F022E48 /* HostsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1B02295F04DE55821A1C7F /* HostsListView.swift */; };
 		47F0510DF9398E9C5F02009C /* SSHConnectionPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */; };
@@ -82,6 +83,7 @@
 		B71616AC9401D6282B4AC1EA /* HostProvisioning.swift in Sources */ = {isa = PBXBuildFile; fileRef = B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */; };
 		B7C6511C2B07ACD842316E2A /* AttentionNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3708ACD4BFADB69A73E0DB09 /* AttentionNotifier.swift */; };
 		B7CDAFEC634F6464A89F0CBA /* MemoryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94877436C6D2727F5D498710 /* MemoryViews.swift */; };
+		BC64832FF85ABCAF0A96EABD /* ProjectMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */; };
 		BDB5778417C362323812D238 /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
 		C0151AA649300EAE1F217F82 /* TerminalTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D417529F6E6B990D79BF81 /* TerminalTransport.swift */; };
 		C449746AA3C87B38E0DCAF93 /* PooledConnecting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC825CDD2BB9FFA73CAFDE4 /* PooledConnecting.swift */; };
@@ -128,6 +130,7 @@
 		088A2A76FA2CE3451749F77B /* AISessionRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AISessionRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		12419581E8EABDDBD2C33D6A /* TodoHubSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubSettings.swift; sourceTree = "<group>"; };
 		1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTerminalSession.swift; sourceTree = "<group>"; };
+		1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectMenus.swift; sourceTree = "<group>"; };
 		18F3BE4EBA6E99E52AEE6296 /* TodoHubDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubDemo.swift; sourceTree = "<group>"; };
 		19B17876012779CEAC4C80A8 /* TodoHubSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubSettingsView.swift; sourceTree = "<group>"; };
 		20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionServiceFactory.swift; sourceTree = "<group>"; };
@@ -267,6 +270,7 @@
 				94877436C6D2727F5D498710 /* MemoryViews.swift */,
 				6FD185A20B04E7AD8AE4F055 /* ProjectDetailView.swift */,
 				97B7A594C8A26491ACD55735 /* ProjectEditorSheet.swift */,
+				1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */,
 				F85D0650002C6172FF438409 /* ProjectsView.swift */,
 				A5C23D18F2D719EE248BDB9A /* WeeklyStatsCard.swift */,
 			);
@@ -524,6 +528,7 @@
 				E66F716710375D2CAED0DD14 /* PooledSSHConnection.swift in Sources */,
 				02A843B56A4F87D4678B9E41 /* ProjectDetailView.swift in Sources */,
 				96BC86AE987F12B6E6A0FCAD /* ProjectEditorSheet.swift in Sources */,
+				44F3E96E02F25239D27F1CE9 /* ProjectMenus.swift in Sources */,
 				0E084439FFE2FCB9C1C81AF4 /* ProjectsView.swift in Sources */,
 				9D1FCB805CE27464A8D970EA /* PromoteSessionSheet.swift in Sources */,
 				29CF30F43C8411A4456EF7AF /* ReachabilityProbe.swift in Sources */,
@@ -571,6 +576,7 @@
 				AE67B4C34F8CAF0F30BE3BFD /* PooledSSHConnection.swift in Sources */,
 				EACD9032F907D8FAFA651A6C /* ProjectDetailView.swift in Sources */,
 				EF6087053C1B3C66DF8EDFEC /* ProjectEditorSheet.swift in Sources */,
+				BC64832FF85ABCAF0A96EABD /* ProjectMenus.swift in Sources */,
 				6E12123A6B2B469E369C9DAB /* ProjectsView.swift in Sources */,
 				8802A9FE72AD0B666E5169E7 /* PromoteSessionSheet.swift in Sources */,
 				85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */,

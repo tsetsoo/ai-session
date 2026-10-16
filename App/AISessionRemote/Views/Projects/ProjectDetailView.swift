@@ -160,6 +160,9 @@ struct ProjectDetailView: View {
                 )
                 .contentShape(Rectangle())
                 .onTapGesture { open(todo) }
+                .contextMenu {
+                    TodoProjectMenu(todo: todo, store: store)
+                }
             }
         }
     }
@@ -194,6 +197,7 @@ struct ProjectDetailView: View {
             }
             .disabled(store.isOffline)
         }
+        SessionProjectMenu(session: session, store: store, onError: { errorMessage = $0 })
     }
 
     private func isOpening(_ session: HubSession) -> Bool {

@@ -332,3 +332,89 @@ struct MemoryEditorSheet: View {
         }
     }
 }
+
+/// The memories panel next to a conversation's terminal (an inspector on the Mac, a sheet on
+/// iOS): the project's memories with this conversation's first. Without a project it shows
+/// the todo's memories.
+struct MemoriesPanel: View {
+    let todoId: String
+    let store: TodoHubStore
+    /// Fallback until the store has the conversation.
+    let initialConversation: Conversation
+
+    @State private var memories: [Memory]?
+    @State private var loadError: String?
+    @State private var showArchived = false
+    @State private var actions = MemoryActions()
+
+    private var conversation: Conversation { store.conversations[todoId] ?? initialConversation }
+
+    private var projectId: String? {
+        conversation.projectId ?? store.todos.first { $0.id == todoId }?.projectId
+    }
+
+    var body: some View {
+        List {
+            Section {
+                if let project = store.project(id: projectId) {
+                    LabeledContent("Project", value: project.name)
+                } else {
+                    Text("This conversation isn't in a project. Showing its todo's memories.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Toggle("Show archived", isOn: $showArchived)
+                Button {
+                    actions.editing = .new(projectId: projectId, todoId: todoId)
+                } label: {
+                    Label("Add Memory", systemImage: "plus")
+                }
+                .disabled(store.isOffline)
+                if let loadError {
+                    Label(loadError, systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                }
+            }
+            content
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("Memories")
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: "\(projectId ?? "")|\(store.revision)|\(showArchived)") { await load() }
+        .memoryActions(actions, store: store)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let memories {
+            let ordered = MemoryGrouping.forConversation(memories, sessionId: conversation.sessionId)
+            let mine = ordered.filter { $0.sessionId == conversation.sessionId }
+            let others = ordered.filter { $0.sessionId != conversation.sessionId }
+            if memories.isEmpty {
+                Text("No memories yet. They're extracted after the conversation goes idle.")
+                    .foregroundStyle(.secondary)
+            }
+            if !mine.isEmpty {
+                Section("This conversation") {
+                    ForEach(mine) { memory in
+                        MemoryActionRow(memory: memory, actions: actions, store: store, showsKind: true)
+                    }
+                }
+            }
+            MemoryGroupSections(memories: others, actions: actions, store: store)
+        } else if loadError == nil {
+            ProgressView().frame(maxWidth: .infinity)
+        }
+    }
+
+    private func load() async {
+        do {
+            memories = try await store.memories(projectId: projectId, todoId: todoId, includeArchived: showArchived)
+            loadError = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            loadError = TodoHubStore.message(for: error)
+        }
+    }
+}
