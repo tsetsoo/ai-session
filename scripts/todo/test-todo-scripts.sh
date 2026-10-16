@@ -575,6 +575,75 @@ unset AI_TODO_HUB_CONF AI_TODO_HOOK_SYNC
 # The hook keeps per-session state under ~/.ai-remote; start the install tests clean.
 rm -rf "${HOME}/.ai-remote"
 
+# --- ai_todo_redact.py ------------------------------------------------------------
+
+FIXTURES="${SCRIPT_DIR}/fixtures"
+[[ -f "${SCRIPT_DIR}/ai_todo_redact.py" ]] || fail "ai_todo_redact.py is missing"
+
+# Runs python with the redaction module importable; the fixture's local secret is in the env.
+redact_py() { MY_SERVICE_TOKEN=LocalTok3n_Value9 python3 - "$SCRIPT_DIR" "${FIXTURES}/secrets.txt" "$@"; }
+
+redact_py <<'PY' || fail "redaction rules"
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import ai_todo_redact as r
+secrets = r.secret_values_from_env(os.environ)
+seen = set()
+for line in open(sys.argv[2], encoding="utf-8"):
+    if line.startswith("#") or not line.strip():
+        continue
+    kind, text, raw = [p.strip() for p in line.rstrip("\n").split(" ::: ")]
+    text = text.replace("@@", "").replace("\\n", "\n")
+    if kind == "keep":
+        continue
+    out = r.redact(text, secrets)
+    assert f"[REDACTED:{kind}]" in out, (kind, out)
+    assert raw not in out, (kind, out)
+    seen.add(kind)
+want = {"private_key", "anthropic_key", "openai_key", "github_token", "gitlab_token", "slack_token",
+        "aws_key", "google_key", "stripe_key", "jwt", "bearer", "url_credentials", "secret",
+        "local_secret", "random"}
+assert seen == want, want ^ seen
+PY
+pass "redaction replaces each rule's sample with [REDACTED:<type>] (PEM, prefixed tokens, JWT, bearer, URL credentials, key/value, local secrets, random strings)"
+
+redact_py <<'PY' || fail "redaction exceptions"
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import ai_todo_redact as r
+secrets = r.secret_values_from_env(os.environ)
+for line in open(sys.argv[2], encoding="utf-8"):
+    if line.startswith("keep ::: "):
+        text = line.rstrip("\n").split(" ::: ")[1]
+        assert r.redact(text, secrets) == text, (text, r.redact(text, secrets))
+PY
+pass "redaction_exceptions: 40-hex git SHAs, UUIDs, branch names, paths and prose mentioning tokens stay unchanged"
+
+redact_py <<'PY' || fail "redaction mangled unicode"
+import sys
+sys.path.insert(0, sys.argv[1])
+import ai_todo_redact as r
+text = "Ключът е ghp_" + "Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp9Oo8 🔑 — не го споделяй; password=парола123 ✅"
+out = r.redact(text, [])
+assert out == "Ключът е [REDACTED:github_token] 🔑 — не го споделяй; password=[REDACTED:secret] ✅", out
+plain = "Деплойът чака билда 🚀 — 日本語 ok"
+assert r.redact(plain, []) == plain
+PY
+pass "redaction_keeps_unicode: Cyrillic, CJK and emoji survive around redacted values"
+
+redact_py <<'PY' || fail "key/value redaction"
+import sys
+sys.path.insert(0, sys.argv[1])
+import ai_todo_redact as r
+assert r.redact("password=hunter2", []) == "password=[REDACTED:secret]", r.redact("password=hunter2", [])
+assert r.redact("TODO_API_TOKEN='abc'", []) == "TODO_API_TOKEN=[REDACTED:secret]", r.redact("TODO_API_TOKEN='abc'", [])
+assert r.redact("api_key=sk-ant-" + "Xy7Kp2Lm9Qr4St6Uv8Wx", []) == "api_key=[REDACTED:anthropic_key]"
+env = {"TODO_API_TOKEN": "hub-token-123", "MY_KEY": "short", "PATH": "/usr/bin:/bin", "X_SECRET": "abcdefgh12"}
+assert sorted(r.secret_values_from_env(env)) == ["abcdefgh12", "hub-token-123"], r.secret_values_from_env(env)
+assert r.redact("x hub-token-123 y", ["hub-token-123"]) == "x [REDACTED:local_secret] y"
+PY
+pass "key_value_keeps_key: password=hunter2 -> password=[REDACTED:secret]; env secrets are collected by name"
+
 # --- tmux.conf ----------------------------------------------------------------
 
 tmux -L "${SOCK}-conf" -f /dev/null new-session -d -s conftest
