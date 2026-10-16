@@ -69,6 +69,8 @@ async fn main() -> std::io::Result<()> {
             .route("/api/sections", web::get().to(handlers::get_sections))
             .route("/api/todos", web::get().to(handlers::list_todos))
             .route("/api/todos", web::post().to(handlers::create_todo))
+            // Before /api/todos/{id}, which would otherwise match this path (and answer 405).
+            .route("/api/todos/from-conversation", web::post().to(conversations::todo_from_conversation))
             .route("/api/todos/{id}", web::get().to(handlers::get_todo))
             .route("/api/todos/{id}", web::patch().to(handlers::update_todo))
             .route("/api/todos/{id}", web::delete().to(handlers::delete_todo))
@@ -90,7 +92,8 @@ async fn main() -> std::io::Result<()> {
             .route("/api/todos/{id}/conversation", web::get().to(conversations::get_conversation))
             .route("/api/todos/{id}/conversation", web::post().to(conversations::open_conversation))
             .route("/api/todos/{id}/conversation", web::delete().to(conversations::delete_conversation))
-            .route("/api/todos/{id}/conversation/close", web::post().to(conversations::close_conversation));
+            .route("/api/todos/{id}/conversation/close", web::post().to(conversations::close_conversation))
+            .route("/api/todos/{id}/conversation/link", web::post().to(conversations::link_conversation));
 
         // Serve frontend static files if the directory exists
         let fe_path = std::path::Path::new(&frontend_dir_clone);

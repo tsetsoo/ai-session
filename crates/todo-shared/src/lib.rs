@@ -184,12 +184,13 @@ pub struct SetTodoDailyRequest {
 // AI conversations: computers, section → computer mapping, per-todo conversation
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConversationStatus {
     Busy,
     Waiting,
     Idle,
+    #[default]
     Unknown,
     Closed,
 }
@@ -276,6 +277,11 @@ pub struct Conversation {
     pub cwd: String,
     pub tool: String,
     pub tmux_name: String,
+    /// The tool's own conversation id: `claude --resume <id>`, `codex resume <id>`, …
+    #[serde(default)]
+    pub session_id: String,
+    /// Same value as `session_id`, kept for apps and hooks installed before tools other
+    /// than Claude were supported.
     pub claude_session_id: String,
     pub status: ConversationStatus,
     pub status_message: Option<String>,
@@ -283,11 +289,53 @@ pub struct Conversation {
     pub created_at: String,
 }
 
-/// Sent by Claude Code hooks on the computer.
-#[derive(Debug, Serialize, Deserialize)]
+/// Sent by the status hooks on the computer. Either key identifies the conversation;
+/// `claude_session_id` is what hooks installed before multi-tool support send.
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ConversationStatusRequest {
-    pub claude_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_session_id: Option<String>,
     pub status: ConversationStatus,
     #[serde(default)]
     pub message: Option<String>,
+}
+
+impl ConversationStatusRequest {
+    /// The conversation id from whichever key was sent (`session_id` wins), if non-empty.
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id
+            .as_deref()
+            .or(self.claude_session_id.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+}
+
+/// Link an existing conversation (made outside the todo app) to a todo.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LinkConversationRequest {
+    pub computer_id: String,
+    pub tool: String,
+    pub session_id: String,
+    pub cwd: String,
+}
+
+/// Create a todo from an existing conversation, linked to it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TodoFromConversationRequest {
+    pub section: Section,
+    pub title: String,
+    pub computer_id: String,
+    pub tool: String,
+    pub session_id: String,
+    pub cwd: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoWithConversation {
+    pub todo: Todo,
+    pub conversation: Conversation,
 }

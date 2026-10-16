@@ -157,7 +157,7 @@ pub async fn describe() -> HttpResponse {
             {
                 "method": "PUT",
                 "path": "/api/sections/{code}/computer",
-                "description": "Assign a computer and default working directory to a section",
+                "description": "Assign a computer and default working directory to a section. tool: claude | codex | cursor (default claude). Only claude sections can start new conversations; the others can only link existing ones",
                 "example_request": {"computer_id": "<uuid>", "cwd": "~/programming", "tool": "claude"}
             },
             {"method": "DELETE", "path": "/api/sections/{code}/computer", "description": "Remove a section's computer"},
@@ -166,15 +166,31 @@ pub async fn describe() -> HttpResponse {
             {
                 "method": "POST",
                 "path": "/api/todos/{id}/conversation",
-                "description": "Get or create the todo's conversation from its section's computer (snapshotting computer and cwd). Reopening a closed one resets status to unknown. 409 if the section has no computer. The client then SSHes to the computer and runs: ai-todo-open <tmux_name> <cwd> <claude_session_id>"
+                "description": "Get or create the todo's conversation from its section's computer (snapshotting computer and cwd). Reopening a closed one resets status to unknown. 409 if the section has no computer, or if the section's tool can't start conversations (codex, cursor: link one instead). The client then SSHes to the computer and runs: ai-todo-open <tmux_name> <cwd> <session_id> <tool>"
             },
-            {"method": "POST", "path": "/api/todos/{id}/conversation/close", "description": "Mark closed after the client killed the tmux session; the Claude conversation stays resumable"},
-            {"method": "DELETE", "path": "/api/todos/{id}/conversation", "description": "Forget the conversation; the next open starts a new Claude conversation"},
+            {
+                "method": "POST",
+                "path": "/api/todos/{id}/conversation/link",
+                "description": "Link an existing conversation (made outside the todo app) to the todo. 200 with the Conversation. Linking the conversation the todo already has is a no-op; a different one gets 409 unless ?replace=true. 409 if that (tool, session_id) is linked to another todo. 404 if the todo or computer is missing. 400 for an unknown tool or empty session_id/cwd",
+                "parameters": [
+                    {"name": "replace", "in": "query", "required": false, "type": "boolean", "description": "Replace the todo's current conversation"}
+                ],
+                "example_request": {"computer_id": "<uuid>", "tool": "codex", "session_id": "019f8b4e-ff53-7201-8585-162b40a93fb3", "cwd": "~/programming/sigma-revenue"}
+            },
+            {
+                "method": "POST",
+                "path": "/api/todos/from-conversation",
+                "description": "Create a todo linked to an existing conversation, atomically. 201 {todo, conversation}. Same 400/404/409 rules as link",
+                "example_request": {"section": "Sp", "title": "Review data-management PR 630", "computer_id": "<uuid>", "tool": "claude", "session_id": "<uuid>", "cwd": "~/Spread/Repository"},
+                "response_status": 201
+            },
+            {"method": "POST", "path": "/api/todos/{id}/conversation/close", "description": "Mark closed after the client killed the tmux session; the conversation stays resumable"},
+            {"method": "DELETE", "path": "/api/todos/{id}/conversation", "description": "Forget the conversation link (the conversation itself stays on the computer); the next open starts a new Claude conversation"},
             {
                 "method": "POST",
                 "path": "/api/conversations/status",
-                "description": "Claude Code hook endpoint. 204 on success, 404 for sessions that are not todo conversations",
-                "example_request": {"claude_session_id": "<uuid>", "status": "waiting", "message": "Claude needs your permission"}
+                "description": "Status hook endpoint. Identify the conversation with session_id (or claude_session_id, sent by older hooks). 204 on success, 404 for sessions that are not todo conversations, 400 without an id or for status closed",
+                "example_request": {"session_id": "<uuid>", "status": "waiting", "message": "Claude needs your permission"}
             }
         ],
         "data_model": {
@@ -193,9 +209,10 @@ pub async fn describe() -> HttpResponse {
                 "todo_id": "string (UUID)",
                 "computer": "Computer {id, name, hostname, port, username, created_at, updated_at}",
                 "cwd": "string - working directory snapshot (may start with ~)",
-                "tool": "string - claude",
-                "tmux_name": "string - ai/claude/todo-<first 8 chars of todo id>",
-                "claude_session_id": "string (UUID) - pass to claude --session-id / --resume",
+                "tool": "string enum: claude | codex | cursor",
+                "tmux_name": "string - ai/<tool>/todo-<first 8 chars of todo id>",
+                "session_id": "string - the tool's conversation id: claude --session-id / --resume <id>, codex resume <id>",
+                "claude_session_id": "string - same value as session_id, kept for older clients",
                 "status": "string enum: busy | waiting | idle | unknown | closed",
                 "status_message": "string or null",
                 "status_updated_at": "string (datetime) or null",
