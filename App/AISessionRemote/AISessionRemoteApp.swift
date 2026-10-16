@@ -6,7 +6,7 @@ import UIKit
 struct AISessionRemoteApp: App {
     var body: some Scene {
         WindowGroup {
-            HostsListView()
+            RootView()
                 .onAppear { AttentionNotifier.requestAuthorizationIfNeeded() }
                 .onReceive(NotificationCenter.default.publisher(
                     for: UIApplication.didEnterBackgroundNotification
