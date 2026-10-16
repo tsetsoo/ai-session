@@ -1,9 +1,8 @@
 name: CI
 
 # Pull requests only. Pushes to main are covered by deploy-pi.yml, which gates
-# the deploy on Clippy and then builds the release frontend and cross-compiles
-# the server itself — running these jobs there too would just do the same work
-# twice per push.
+# the deploy on Clippy and then cross-compiles the server itself — running these
+# jobs there too would just do the same work twice per push.
 on:
   pull_request:
     branches: [main]
@@ -19,13 +18,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy (server + shared)
         run: cargo clippy -p todo-shared -p todo-server -- -D warnings
-      - name: Clippy (frontend, wasm)
-        run: cargo clippy -p todo-frontend --target wasm32-unknown-unknown -- -D warnings
 
   build:
     name: Build
@@ -33,12 +29,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-        with:
-          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Build server
         run: cargo build -p todo-server
-      - name: Install trunk
-        run: cargo install trunk --version 0.21.14 --locked
-      - name: Build frontend
-        run: cd crates/todo-frontend && trunk build
+      - name: Test server
+        run: cargo test -p todo-server

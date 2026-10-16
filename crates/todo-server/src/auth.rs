@@ -1,7 +1,7 @@
 //! Optional bearer-token auth for `/api/*`.
 //!
-//! Enabled only when `TODO_API_TOKEN` is set, so the web UI keeps working until
-//! the native apps ship. `/api/health` stays open for the Pi updater, and
+//! Enabled only when `TODO_API_TOKEN` is set (unset means open, for local
+//! development). `/api/health` stays open for the Pi updater, and
 //! `/api/ws` also accepts `?token=` for WebSocket clients that can't set headers.
 
 use actix_web::body::{EitherBody, MessageBody};

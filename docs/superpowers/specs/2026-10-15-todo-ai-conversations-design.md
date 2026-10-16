@@ -178,6 +178,8 @@ The Leptos web UI keeps running until the native apps reach parity. The token re
 2. Drop the Trunk install and build from `.github/workflows/deploy-pi.yml`, and `frontend-dist` from the release tarball and `deploy/pi/todo-update.sh`.
 3. Remove `actix-cors`.
 
+**Done (2026-10-16).** All three steps are complete; `actix-cors` was removed in the conversation-linking work. Releases still carry a placeholder `frontend-dist/index.html`, because the updater already installed on the Pi (copied once by `bootstrap.sh`, never by deploys) rejects a payload without it. Once the Pi's `/opt/todo/todo-update.sh` is replaced with the current one, the placeholder can be dropped from `deploy-pi.yml`.
+
 ## Non-goals (v1)
 
 - Server-side SSH, terminal relay, or any browser client.

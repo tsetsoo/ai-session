@@ -55,7 +55,9 @@ rm -rf "$dest"
 mkdir -p "$dest"
 tar --no-same-owner -C "$dest" -xzf "$workdir/todo-pi.tar.gz"
 
-if [[ ! -x "$dest/todo-server" || ! -f "$dest/frontend-dist/index.html" || ! -f "$dest/SHA" ]]; then
+# The web UI is retired: a payload is just the server binary and its SHA. (Releases
+# still carry a placeholder frontend-dist/ for updaters installed before this change.)
+if [[ ! -x "$dest/todo-server" || ! -f "$dest/SHA" ]]; then
   echo "release payload incomplete" >&2
   rm -rf "$dest"
   exit 1

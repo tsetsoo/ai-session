@@ -133,7 +133,6 @@ current_target="$(readlink -f "$TODO_ROOT/current" 2>/dev/null || true)"
 expected_target="$(readlink -f "$TODO_ROOT/releases/$GOOD_SHA")"
 [[ "$current_target" == "$expected_target" ]] || fail "current does not point at releases/$GOOD_SHA"
 [[ -x "$TODO_ROOT/releases/$GOOD_SHA/todo-server" ]] || fail "todo-server missing in release"
-[[ -f "$TODO_ROOT/releases/$GOOD_SHA/frontend-dist/index.html" ]] || fail "index.html missing"
 grep -q 'restart todo' "$SYSTEMCTL_LOG" || fail "systemctl restart not recorded"
 
 pass "first run installed release and updated current"
@@ -149,15 +148,10 @@ current_after="$(readlink -f "$TODO_ROOT/current")"
 
 pass "second run is no-op"
 
-# Bad release: incomplete payload must not move current
-mkdir -p "$tmpdir/bad-payload/frontend-dist"
-cat > "$tmpdir/bad-payload/todo-server" <<'EOF'
-#!/bin/sh
-echo fake-server
-EOF
-chmod +x "$tmpdir/bad-payload/todo-server"
+# Bad release: incomplete payload (no server binary) must not move current
+mkdir -p "$tmpdir/bad-payload"
 printf '%s\n' "$BAD_SHA" > "$tmpdir/bad-payload/SHA"
-tar -C "$tmpdir/bad-payload" -czf "$RELEASE_FIXTURE/todo-pi.tar.gz" todo-server frontend-dist SHA
+tar -C "$tmpdir/bad-payload" -czf "$RELEASE_FIXTURE/todo-pi.tar.gz" SHA
 printf '%s\n' "$BAD_SHA" > "$RELEASE_FIXTURE/SHA"
 
 set +e
@@ -174,15 +168,14 @@ pass "bad release left current unchanged"
 # Payload SHA mismatch: extracted SHA disagrees with the remote manifest SHA
 # (e.g. mid-publish clobber). Must abort without flipping current and must
 # not overwrite/trust the mismatched extracted SHA.
-mkdir -p "$tmpdir/mismatch-payload/frontend-dist"
+mkdir -p "$tmpdir/mismatch-payload"
 cat > "$tmpdir/mismatch-payload/todo-server" <<'EOF'
 #!/bin/sh
 echo fake-server
 EOF
 chmod +x "$tmpdir/mismatch-payload/todo-server"
-echo '<!doctype html><title>ok</title>' > "$tmpdir/mismatch-payload/frontend-dist/index.html"
 printf '%s\n' "$GOOD_SHA" > "$tmpdir/mismatch-payload/SHA"
-tar -C "$tmpdir/mismatch-payload" -czf "$RELEASE_FIXTURE/todo-pi.tar.gz" todo-server frontend-dist SHA
+tar -C "$tmpdir/mismatch-payload" -czf "$RELEASE_FIXTURE/todo-pi.tar.gz" todo-server SHA
 printf '%s\n' "$MISMATCH_SHA" > "$RELEASE_FIXTURE/SHA"
 
 set +e

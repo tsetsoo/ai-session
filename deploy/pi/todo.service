@@ -1,5 +1,5 @@
 [Unit]
-Description=Todo app (Actix + Leptos)
+Description=Todo app server (Actix API)
 After=network-online.target
 Wants=network-online.target
 
@@ -8,7 +8,6 @@ Type=simple
 User=pi
 Group=pi
 WorkingDirectory=/opt/todo/current
-Environment=FRONTEND_DIR=/opt/todo/current/frontend-dist
 ExecStart=/opt/todo/current/todo-server --db /opt/todo/data/todos.db --addr 0.0.0.0:8080
 Restart=on-failure
 RestartSec=2
