@@ -497,7 +497,26 @@ def entry_id(tool, line):
     return "sha1:" + hashlib.sha1(line.raw).hexdigest()
 
 
+def codex_meta(path):
+    """session_meta payload of a Codex rollout; None for other files and sub-agent threads."""
+    try:
+        with open(path, "rb") as f:
+            entry = json.loads(f.readline())
+    except (OSError, ValueError):
+        return None
+    payload = entry.get("payload") if isinstance(entry, dict) and isinstance(entry.get("payload"), dict) else None
+    if not payload or entry.get("type") != "session_meta":
+        return None
+    source = payload.get("source")
+    if isinstance(source, dict) and "subagent" in source:
+        return None
+    return payload
+
+
 def transcript_cwd(tool, path):
+    if tool == "codex":
+        cwd = (codex_meta(path) or {}).get("cwd")
+        return cwd if isinstance(cwd, str) else None
     try:
         with open(path, "rb") as f:
             for n, raw in enumerate(f):
@@ -509,16 +528,8 @@ def transcript_cwd(tool, path):
                     continue
                 if not isinstance(entry, dict):
                     continue
-                if tool == "claude" and isinstance(entry.get("cwd"), str):
+                if isinstance(entry.get("cwd"), str):
                     return entry["cwd"]
-                if tool == "codex":
-                    payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
-                    if entry.get("type") != "session_meta":
-                        return None
-                    source = payload.get("source")
-                    if isinstance(source, dict) and "subagent" in source:
-                        return None
-                    return payload.get("cwd") if isinstance(payload.get("cwd"), str) else None
     except OSError:
         return None
     return None
@@ -798,6 +809,7 @@ class Context:
         self.errors = 0
         self.touched_projects = set()
         self.printed = []
+        self.per_session_stats = True
         Log.enabled = not self.dry
         if not conf.get("TODO_HUB_URL"):
             raise Refused("no TODO_HUB_URL in %s" % conf.path)
@@ -982,7 +994,8 @@ def process_session(ctx, tool, sid, mode, hint=None):
         state["last_run"] = now()
         save_json(state_path, state)
 
-    push_stats(ctx, sessions=[(tool, sid)])
+    if ctx.per_session_stats:
+        push_stats(ctx, sessions=[(tool, sid)])
     conf = ctx.conf
     if not conf.on("AI_TODO_MEMORY"):
         return "memory off"
@@ -1075,7 +1088,7 @@ def process_session(ctx, tool, sid, mode, hint=None):
             save_offset(tool, sid, path, state, chunk)
         Log.write("chunk", tool=tool, session=sid, chunk="%d/%d" % (n, len(chunks)), memories=len(memories),
                   dropped=dropped)
-    if ran and not ctx.dry:
+    if ran and not ctx.dry and ctx.per_session_stats:
         push_stats(ctx, sessions=[(tool, sid)])
     if not ctx.dry and ctx.errors == errors_before:
         state = load_json(state_path, state) or state
@@ -1592,6 +1605,74 @@ def cmd_trigger(args):
     sys.exit(1 if ctx.errors else 0)
 
 
+def nightly_candidates(ctx):
+    """Project conversations with unread data, oldest activity first: [(mtime, tool, id, path)]."""
+    newest = {}
+    for path in glob.glob(os.path.join(CLAUDE_PROJECTS, "*", "*.jsonl")):
+        key = ("claude", os.path.basename(path)[: -len(".jsonl")])
+        if key not in newest or os.path.getmtime(path) > os.path.getmtime(newest[key]):
+            newest[key] = path
+    for path in glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*.jsonl"), recursive=True):
+        meta = codex_meta(path)
+        if meta and meta.get("id"):
+            newest[("codex", meta["id"])] = path
+    found = []
+    for (tool, sid), path in newest.items():
+        if not ID_RE.match(sid):
+            continue
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        state = load_json(session_state_path(tool, sid), {}) or {}
+        if "offset" in state and state.get("inode") == st.st_ino and st.st_size <= int(state["offset"] or 0):
+            continue
+        cwd = transcript_cwd(tool, path)
+        if not cwd or ctx.projects.match(os.path.normpath(cwd)) is None:
+            continue
+        found.append((st.st_mtime, tool, sid, path))
+    found.sort()
+    return found
+
+
+def cmd_nightly(args):
+    if args:
+        die("usage: ai-todo-memory nightly", 64)
+    conf = Config()
+    ctx = Context(conf, set(), conf.number("AI_TODO_MEMORY_MAX_CHUNKS_NIGHT"))
+    ctx.per_session_stats = False  # pushed for every changed conversation in step 1
+    lock = take_lock(blocking=True)
+    try:
+        path = os.path.join(STATE_DIR, "nightly.json")
+        nightly = load_json(path, {}) or {}
+        started = now()
+        if conf.on("AI_TODO_STATS"):
+            last = nightly.get("last_stats_push")
+            if last:
+                since = max(1.0, (started - float(last)) / 86400 + 0.1)
+            else:
+                since = max(1.0, conf.number("AI_TODO_MEMORY_BACKFILL_DAYS", float))
+            if push_stats(ctx, since=since):
+                nightly["last_stats_push"] = started
+        if conf.on("AI_TODO_MEMORY"):
+            ctx.load_projects(force_refresh=True)
+            for _, tool, sid, transcript in nightly_candidates(ctx):
+                if ctx.chunks_left <= 0:
+                    Log.write("nightly_chunk_cap", cap=conf.number("AI_TODO_MEMORY_MAX_CHUNKS_NIGHT"))
+                    break
+                process_session(ctx, tool, sid, "nightly", hint=transcript)
+        if not ctx.no_digest:
+            ctx.load_projects(force_refresh=not conf.on("AI_TODO_MEMORY"))
+            refresh_digests(ctx, None)
+        nightly["last_run"] = started
+        nightly["last_errors"] = ctx.errors
+        save_json(path, nightly)
+        Log.write("nightly", errors=ctx.errors, chunks_left=ctx.chunks_left)
+    finally:
+        os.close(lock)
+    sys.exit(1 if ctx.errors else 0)
+
+
 def cmd_status(args):
     as_json = "--json" in args
     conf = Config()
@@ -1635,7 +1716,8 @@ def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         die("usage: ai-todo-memory run|trigger|nightly|digest|status ... (see the header of this script)", 64)
     command, rest = argv[0], list(argv[1:])
-    commands = {"run": cmd_run, "trigger": cmd_trigger, "digest": cmd_digest, "status": cmd_status}
+    commands = {"run": cmd_run, "trigger": cmd_trigger, "nightly": cmd_nightly, "digest": cmd_digest,
+                "status": cmd_status}
     if command not in commands:
         die("unknown command: %s" % command, 64)
     try:

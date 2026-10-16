@@ -1286,6 +1286,94 @@ mem digest --remove-all >/dev/null || fail "digest --remove-all failed"
   || fail "--remove-all touched user files"
 pass "digest --remove-all removes every digest we wrote and nothing else"
 
+# --- ai-todo-memory: trigger and nightly ---------------------------------------------------
+
+T1=d0d0d0d0-0000-4000-8000-0000000000e1
+python3 "$TRANSCRIPT" claude "$(cfile $T1)" "$M_APP" "$T1" --turn "debounce prompt one" "answer"
+T_NOW=$(date +%s)
+base=$(calls)
+AI_TODO_NOW=$T_NOW mem trigger claude "$T1" --transcript "$(cfile $T1)" || fail "first trigger failed"
+python3 "$TRANSCRIPT" claude "$(cfile $T1)" "$M_APP" "$T1" --turn "debounce prompt two" "answer"
+AI_TODO_NOW=$((T_NOW + 600)) mem trigger claude "$T1" || fail "second trigger failed"
+[[ $(calls) -eq $((base + 1)) ]] || fail "a trigger inside the debounce window called claude"
+AI_TODO_NOW=$((T_NOW + 31 * 60)) mem trigger claude "$T1" || fail "third trigger failed"
+[[ $(calls) -eq $((base + 2)) ]] || fail "a trigger after the debounce window did not call claude"
+stdin_of $((base + 2)) | grep -q "debounce prompt two" || fail "the later trigger did not send the new turn"
+pass "trigger_debounce: one claude call per conversation per 30 min; the next trigger after the window picks up the rest"
+
+T2=d0d0d0d0-0000-4000-8000-0000000000e2
+python3 "$TRANSCRIPT" claude "$(cfile $T2)" "$M_APP" "$T2" --turn "locked prompt" "answer"
+python3 -c 'import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT); fcntl.flock(fd, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(30)' \
+  "${M_STATE}/lock" "${SANDBOX}/locked" &
+LOCKER=$!
+EXTRA_PIDS="$EXTRA_PIDS $LOCKER"
+for _ in $(seq 1 50); do [[ -e "${SANDBOX}/locked" ]] && break; sleep 0.1; done
+base=$(calls)
+start=$(date +%s)
+mem trigger claude "$T2" || fail "trigger with the lock held should exit 0"
+[[ $(( $(date +%s) - start )) -le 2 && $(calls) -eq $base ]] || fail "trigger waited for the lock or ran claude"
+[[ ! -e "${M_STATE}/sessions/claude-${T2}.json" ]] || fail "a locked-out trigger recorded a run"
+kill "$LOCKER" 2>/dev/null; wait "$LOCKER" 2>/dev/null || true
+pass "trigger_skips_when_locked: exits 0 at once while another run holds the lock"
+
+B1=d0d0d0d0-0000-4000-8000-0000000000b1
+python3 "$TRANSCRIPT" claude "$(cfile $B1)" "$M_APP" "$B1" --turn "ancient prompt" "answer"
+touch -t "$(date -v-10d +%Y%m%d%H%M 2>/dev/null || date -d '10 days ago' +%Y%m%d%H%M)" "$(cfile $B1)"
+base=$(calls)
+mem trigger claude "$B1" || fail "trigger on an old conversation failed"
+[[ $(calls) -eq $base && "$(offset_of claude "$B1")" == "$(size_of "$(cfile $B1)")" ]] || fail "an old conversation was extracted or not marked read"
+pass "first_run_backfill_window: a transcript last changed 10 days ago is marked read (offset = EOF) without a claude call"
+
+AI_TODO_MEMORY_MAX_CHUNKS_NIGHT=1000 mem nightly >/dev/null 2>&1 || fail "catch-up nightly failed"
+ago() { date -v-"$1"H +%Y%m%d%H%M 2>/dev/null || date -d "$1 hours ago" +%Y%m%d%H%M; }
+N1=d0d0d0d0-0000-4000-8000-0000000000f1
+N2=d0d0d0d0-0000-4000-8000-0000000000f2
+N3=d0d0d0d0-0000-4000-8000-0000000000f3
+for n in 1 2 3; do
+  id_var="N$n"
+  python3 "$TRANSCRIPT" claude "$(cfile "${!id_var}")" "$M_APP" "${!id_var}" --turn "nightly prompt $n" "answer"
+done
+touch -t "$(ago 20)" "$(cfile $N1)"
+touch -t "$(ago 10)" "$(cfile $N2)"
+log_lines=$(wc -l <"$M_HUB_LOG")
+base=$(calls)
+rm -f "${M_APP}/CLAUDE.local.md"
+AI_TODO_MEMORY_MAX_CHUNKS_NIGHT=2 mem nightly >/dev/null || fail "nightly failed"
+[[ $(calls) -eq $((base + 2)) ]] || fail "nightly made $(( $(calls) - base )) claude calls, cap is 2"
+stdin_of $((base + 1)) | grep -q "nightly prompt 1" && stdin_of $((base + 2)) | grep -q "nightly prompt 2" || fail "nightly did not go oldest first"
+[[ "$(offset_of claude "$N3")" == none ]] || fail "the conversation over the cap was marked read"
+python3 - "$M_HUB_LOG" "$log_lines" "$N1" "$N2" "$N3" <<'PY' || fail "nightly stats push wrong"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]).readlines()[int(sys.argv[2]):]]
+posts = [(r["path"], r["body"]) for r in rows if r["method"] == "POST"]
+assert posts[0][0] == "/api/sessions/stats", posts[0][0]
+pushed = {s["session_id"] for s in posts[0][1]["sessions"]}
+assert set(sys.argv[3:6]) <= pushed, pushed
+assert [p for p, _ in posts].count("/api/sessions/stats") == 1, [p for p, _ in posts]
+assert "/api/memories/bulk" in [p for p, _ in posts[1:]]
+PY
+[[ -f "${M_STATE}/nightly.json" ]] || fail "nightly.json not written"
+pass "nightly_pushes_stats_then_extracts_oldest_first_within_cap"
+head -n 1 "${M_APP}/CLAUDE.local.md" 2>/dev/null | grep -q "^<!-- Managed by ai-todo-memory" || fail "nightly did not rewrite the digest"
+grep -q "^- .*Transcripts are parsed with the stdlib only" "${M_APP}/CLAUDE.local.md" || fail "digest lacks the extracted memories"
+pass "nightly_rewrites_digests"
+
+H1=d0d0d0d0-0000-4000-8000-0000000000a1
+python3 "$TRANSCRIPT" claude "$(cfile $H1)" "$M_APP" "$H1" --turn "hub down prompt" "answer"
+python3 "$TRANSCRIPT" claude "$(cfile $N3)" "$M_APP" "$N3" --turn "nightly prompt 3b" "answer"
+printf "TODO_HUB_URL='http://127.0.0.1:9'\nTODO_COMPUTER_ID='comp-1'\nAI_TODO_MEMORY_DIGEST='on'\n" >"$M_CONF"
+cp "${M_APP}/CLAUDE.local.md" "${SANDBOX}/claude-local.nightly"
+offsets_before="$(offset_of claude "$H1") $(offset_of claude "$N3") $(offset_of claude "$M1")"
+base=$(calls)
+if mem nightly >/dev/null 2>&1; then fail "nightly succeeded with the hub down"; fi
+if mem run claude "$H1" >/dev/null 2>&1; then fail "run succeeded with the hub down"; fi
+mem trigger claude "$H1" >/dev/null 2>&1 || true
+[[ "$offsets_before" == "$(offset_of claude "$H1") $(offset_of claude "$N3") $(offset_of claude "$M1")" ]] || fail "offsets changed with the hub down"
+[[ $(calls) -eq $base ]] || fail "claude was called although the already-known list could not be fetched"
+cmp -s "${SANDBOX}/claude-local.nightly" "${M_APP}/CLAUDE.local.md" || fail "the digest changed with the hub down"
+write_conf "AI_TODO_MEMORY_DIGEST='on'"
+pass "hub_down_keeps_offsets: nightly, run and trigger with the hub unreachable advance nothing and keep the digest"
+
 # --- end of the ai-todo-memory sections -------------------------------------------------
 export HOME="$SAVED_HOME"
 
