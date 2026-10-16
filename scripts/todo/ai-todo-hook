@@ -1,10 +1,17 @@
 #!/bin/sh
 # Claude Code hook: report a todo conversation's status to todo-server.
 # Installed into ~/.claude/settings.json by install.sh:
-#   UserPromptSubmit -> busy, Notification -> waiting, Stop -> idle
+#   UserPromptSubmit -> busy, Notification -> waiting, Stop -> idle,
+#   PostToolUse -> tool (busy again after an answered permission prompt)
 #
 # Usage (Claude passes the hook JSON on stdin):
-#   ai-todo-hook <busy|waiting|idle>
+#   ai-todo-hook <busy|waiting|idle|tool>
+#
+# - The idle notification ("Claude is waiting for your input", notification_type
+#   idle_prompt) is reported as idle, not waiting.
+# - `tool` posts busy only when the last status this hook sent for the session
+#   was not busy, so a long turn doesn't post once per tool call. The last sent
+#   status is kept in ~/.ai-remote/hook-state/<session_id>.
 #
 # Never blocks or fails Claude: always exits 0, and the HTTP call runs in the
 # background with a 3s limit. Only sessions running in a tmux session named
@@ -20,7 +27,7 @@
 #   AI_TODO_HOOK_SYNC     =1: wait for the HTTP call
 status=${1:-}
 case "$status" in
-  busy | waiting | idle) ;;
+  busy | waiting | idle | tool) ;;
   *) exit 0 ;;
 esac
 
@@ -45,28 +52,58 @@ TODO_API_TOKEN=
 . "$conf" 2>/dev/null || exit 0
 [ -n "$TODO_HUB_URL" ] || exit 0
 
+only_if_changed=
+if [ "$status" = tool ]; then
+  status=busy
+  only_if_changed=1
+fi
+
 if command -v python3 >/dev/null 2>&1; then
-  body=$(printf '%s' "$input" | python3 -c '
+  # Prints the session id, the effective status, then the JSON body.
+  parsed=$(printf '%s' "$input" | python3 -c '
 import json, sys
 try:
     data = json.load(sys.stdin)
 except Exception:
     sys.exit(1)
 sid = data.get("session_id") if isinstance(data, dict) else None
-if not isinstance(sid, str) or not sid:
+if not isinstance(sid, str) or not sid or not all(c.isalnum() or c == "-" for c in sid):
     sys.exit(1)
-out = {"claude_session_id": sid, "status": sys.argv[1]}
+status = sys.argv[1]
 msg = data.get("message")
-if sys.argv[1] == "waiting" and isinstance(msg, str) and msg:
+msg = msg if isinstance(msg, str) else ""
+if status == "waiting" and (
+    data.get("notification_type") == "idle_prompt" or "waiting for your input" in msg.lower()
+):
+    status = "idle"
+out = {"claude_session_id": sid, "status": status}
+if status == "waiting" and msg:
     out["message"] = msg[:500]
+print(sid)
+print(status)
 print(json.dumps(out))
 ' "$status" 2>/dev/null) || exit 0
+  sid=$(printf '%s\n' "$parsed" | sed -n 1p)
+  status=$(printf '%s\n' "$parsed" | sed -n 2p)
+  body=$(printf '%s\n' "$parsed" | sed -n 3p)
 else
   # No python3: pull session_id out with sed and skip the message.
   sid=$(printf '%s' "$input" | tr -d '\n' | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9-]*\)".*/\1/p')
   [ -n "$sid" ] || exit 0
+  if [ "$status" = waiting ] && printf '%s' "$input" | grep -qi 'idle_prompt\|waiting for your input'; then
+    status=idle
+  fi
   body=$(printf '{"claude_session_id":"%s","status":"%s"}' "$sid" "$status")
 fi
+
+state_dir="$HOME/.ai-remote/hook-state"
+state_file="$state_dir/$sid"
+if [ -n "$only_if_changed" ] && [ "$(cat "$state_file" 2>/dev/null)" = "$status" ]; then
+  exit 0
+fi
+mkdir -p "$state_dir" 2>/dev/null && printf '%s\n' "$status" >"$state_file" 2>/dev/null
+# Drop state files for sessions not touched in a week.
+find "$state_dir" -type f -mtime +7 -exec rm -f {} + 2>/dev/null
 
 post() {
   # The token goes through curl's config on stdin so it never shows up in `ps`.

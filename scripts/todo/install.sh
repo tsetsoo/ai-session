@@ -70,13 +70,14 @@ merge_settings() {
     echo "  UserPromptSubmit -> ${BIN_DIR}/ai-todo-hook busy" >&2
     echo "  Notification     -> ${BIN_DIR}/ai-todo-hook waiting" >&2
     echo "  Stop             -> ${BIN_DIR}/ai-todo-hook idle" >&2
+    echo "  PostToolUse      -> ${BIN_DIR}/ai-todo-hook tool" >&2
     return 1
   fi
   python3 - "$mode" "$SETTINGS" "$BIN_DIR" "$HOOK_MARKER" "$dry_run" <<'PY'
 import json, os, shutil, sys, time
 
 mode, path, bin_dir, marker, dry_run = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5] == "1"
-ours = {"UserPromptSubmit": "busy", "Notification": "waiting", "Stop": "idle"}
+ours = {"UserPromptSubmit": "busy", "Notification": "waiting", "Stop": "idle", "PostToolUse": "tool"}
 
 data = {}
 if os.path.exists(path):

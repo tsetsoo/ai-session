@@ -43,6 +43,13 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        # The todo server is plain http on the tailnet (IP or MagicDNS *.ts.net name).
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.aisessionremote.app
       GENERATE_INFOPLIST_FILE: NO
@@ -103,6 +110,13 @@ targets:
         CFBundleDisplayName: AI Session Remote
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: ""
+        # ATS applies to URLSession on macOS too, sandboxed or not.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
     settings:
       PRODUCT_NAME: AI Session Remote
       PRODUCT_BUNDLE_IDENTIFIER: com.aisessionremote.mac

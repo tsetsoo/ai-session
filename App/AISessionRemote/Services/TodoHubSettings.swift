@@ -14,14 +14,17 @@ enum TodoHubSettings {
     }
 
     static var token: String {
-        get { (try? keychain.load(account: tokenAccount)) ?? "" }
-        set {
-            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty {
-                try? keychain.delete(account: tokenAccount)
-            } else {
-                try? keychain.save(account: tokenAccount, value: trimmed)
-            }
+        (try? keychain.load(account: tokenAccount)) ?? ""
+    }
+
+    /// Stores the token (or removes it when empty). Throws if the Keychain refuses, so the
+    /// settings screen can say so instead of every later request failing with "unauthorized".
+    static func setToken(_ value: String) throws {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            try keychain.delete(account: tokenAccount)
+        } else {
+            try keychain.save(account: tokenAccount, value: trimmed)
         }
     }
 

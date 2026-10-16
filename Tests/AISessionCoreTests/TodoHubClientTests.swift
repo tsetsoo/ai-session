@@ -132,6 +132,15 @@ final class TodoHubClientTests: XCTestCase {
         await XCTAssertThrowsHubError(
             try await client().openConversation(todoId: "t"), .conflict("Section P has no computer assigned")
         )
+        // Other 409s keep their own text; the UI must not assume "no computer".
+        StubURLProtocol.handler = { _ in .init(status: 409, body: #"{"error":"No free tmux session name for this todo"}"#) }
+        await XCTAssertThrowsHubError(
+            try await client().openConversation(todoId: "t"), .conflict("No free tmux session name for this todo")
+        )
+        XCTAssertEqual(
+            TodoHubError.conflict("No free tmux session name for this todo").userMessage,
+            "No free tmux session name for this todo"
+        )
 
         StubURLProtocol.handler = { _ in .init(status: 404, body: #"{"error":"Todo not found"}"#) }
         await XCTAssertThrowsHubError(try await client().deleteTodo(id: "t"), .notFound("Todo not found"))

@@ -52,12 +52,7 @@ struct TodoHubSettingsView: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        TodoHubSettings.baseURLString = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        TodoHubSettings.token = token
-                        onSave()
-                        dismiss()
-                    }
+                    Button("Save") { save() }
                     .disabled(parsedURL == nil)
                 }
             }
@@ -65,6 +60,21 @@ struct TodoHubSettingsView: View {
     }
 
     private var parsedURL: URL? { TodoHubClient.baseURL(from: urlText) }
+
+    /// Stays open when the Keychain refuses the token, so the failure is visible here
+    /// rather than as "token rejected" on every later request.
+    private func save() {
+        do {
+            try TodoHubSettings.setToken(token)
+        } catch {
+            testSucceeded = false
+            testResult = "Couldn't save the token to the Keychain: \(error.localizedDescription)"
+            return
+        }
+        TodoHubSettings.baseURLString = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
+        onSave()
+        dismiss()
+    }
 
     /// Health first (proves the server is reachable), then an authenticated call (proves the token).
     private func test() async {

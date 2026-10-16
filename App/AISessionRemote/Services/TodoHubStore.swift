@@ -18,10 +18,27 @@ final class TodoHubStore {
     private(set) var cachedAt: Date?
     private(set) var isLoading = false
     private(set) var hasLoadedOnce = false
+    /// Modal error for something the user just did. Background refreshes never set it.
     var errorMessage: String?
+    /// Non-modal problem from a background (live-update) refresh, shown as a banner, e.g. a
+    /// rejected token. Cleared by the next successful refresh.
+    private(set) var backgroundIssue: String?
+
+    enum RefreshTrigger {
+        /// Pull-to-refresh, first load, settings change: failures raise `errorMessage`.
+        case user
+        /// Live updates and post-mutation refreshes: failures only set `backgroundIssue`.
+        case background
+    }
 
     private let cache: TodoHubCache
     private var eventsTask: Task<Void, Never>?
+    /// Whether live updates should be running; they pause on a rejected token and resume
+    /// after the next successful refresh.
+    private var wantsLiveUpdates = false
+    /// Incremented per refresh; only the most recently started refresh may apply its result,
+    /// so an older, slower response can't overwrite newer state or the offline cache.
+    private var refreshGeneration = 0
 
     init(cache: TodoHubCache = .applicationSupport()) {
         self.cache = cache
@@ -44,11 +61,13 @@ final class TodoHubStore {
 
     // MARK: Loading
 
-    func refresh() async {
+    func refresh(trigger: RefreshTrigger = .user) async {
         guard let client = TodoHubSettings.makeClient() else { return }
+        refreshGeneration += 1
+        let generation = refreshGeneration
         isLoading = true
         defer {
-            isLoading = false
+            if generation == refreshGeneration { isLoading = false }
             hasLoadedOnce = true
         }
         do {
@@ -57,31 +76,55 @@ final class TodoHubStore {
             async let mappings = client.listSectionComputers()
             async let computers = client.listComputers()
             let (t, c, m, comps) = try await (todos, conversations, mappings, computers)
+            // A refresh that started later has newer data; don't overwrite it.
+            guard generation == refreshGeneration else { return }
             apply(todos: t, conversations: c)
             sectionComputers = Dictionary(m.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new })
             self.computers = comps
             isOffline = false
+            backgroundIssue = nil
             let snapshot = TodoHubSnapshot(todos: t, conversations: c)
             try? cache.save(snapshot)
             cachedAt = snapshot.savedAt
+            if wantsLiveUpdates && eventsTask == nil { startEventsTask() }
         } catch TodoHubError.unreachable {
+            guard generation == refreshGeneration else { return }
             isOffline = true
         } catch {
-            errorMessage = Self.message(for: error)
+            guard generation == refreshGeneration else { return }
+            switch trigger {
+            case .user:
+                errorMessage = Self.message(for: error)
+            case .background:
+                backgroundIssue = Self.message(for: error)
+                // Every reconnect would fail the same way: pause until a refresh succeeds
+                // (pull-to-refresh or saving new settings).
+                if case TodoHubError.unauthorized = error { pauseEventsTask() }
+            }
         }
     }
 
     /// Re-fetches on every server-side change until `stopLiveUpdates()`.
     func startLiveUpdates() {
+        wantsLiveUpdates = true
+        startEventsTask()
+    }
+
+    func stopLiveUpdates() {
+        wantsLiveUpdates = false
+        pauseEventsTask()
+    }
+
+    private func startEventsTask() {
         guard eventsTask == nil, let client = TodoHubSettings.makeClient() else { return }
         eventsTask = Task { [weak self] in
             for await _ in TodoHubEvents.refreshes(baseURL: client.baseURL, token: client.token) {
-                await self?.refresh()
+                await self?.refresh(trigger: .background)
             }
         }
     }
 
-    func stopLiveUpdates() {
+    private func pauseEventsTask() {
         eventsTask?.cancel()
         eventsTask = nil
     }
@@ -110,21 +153,24 @@ final class TodoHubStore {
     }
 
     // MARK: Computers
+    //
+    // These throw instead of setting `errorMessage`: they're used from the Computers sheet,
+    // which shows its own alert (TodosView's alert can't present over the sheet).
 
-    func addComputer(name: String, hostname: String, port: Int, username: String) async {
-        await mutate { client in
+    func addComputer(name: String, hostname: String, port: Int, username: String) async throws {
+        try await perform { client in
             _ = try await client.createComputer(
                 CreateComputerRequest(name: name, hostname: hostname, port: port, username: username)
             )
         }
     }
 
-    func deleteComputer(_ computer: Computer) async {
-        await mutate { client in try await client.deleteComputer(id: computer.id) }
+    func deleteComputer(_ computer: Computer) async throws {
+        try await perform { client in try await client.deleteComputer(id: computer.id) }
     }
 
-    func assign(_ section: TodoSection, computerID: String?, cwd: String) async {
-        await mutate { client in
+    func assign(_ section: TodoSection, computerID: String?, cwd: String) async throws {
+        try await perform { client in
             if let computerID {
                 _ = try await client.setSectionComputer(section, SetSectionComputerRequest(computerId: computerID, cwd: cwd))
             } else {
@@ -158,20 +204,27 @@ final class TodoHubStore {
         }
         guard let client = TodoHubSettings.makeClient() else { throw TodoHubError.invalidBaseURL }
         conversations[conversation.todoId] = try await client.closeConversation(todoId: conversation.todoId)
-        await refresh()
+        await refresh(trigger: .background)
     }
 
     // MARK: Helpers
 
+    private struct OfflineChangeError: LocalizedError {
+        var errorDescription: String? { "The todo server is unreachable. Changes are disabled while offline." }
+    }
+
+    /// Runs a hub mutation, then refreshes. Throws the mutation's error.
+    private func perform(_ body: (TodoHubClient) async throws -> Void) async throws {
+        guard let client = TodoHubSettings.makeClient() else { throw TodoHubError.invalidBaseURL }
+        guard !isOffline else { throw OfflineChangeError() }
+        try await body(client)
+        await refresh(trigger: .background)
+    }
+
+    /// `perform` for actions on the Todos screen: failures go to its alert.
     private func mutate(_ body: (TodoHubClient) async throws -> Void) async {
-        guard let client = TodoHubSettings.makeClient() else { return }
-        guard !isOffline else {
-            errorMessage = "The todo server is unreachable. Changes are disabled while offline."
-            return
-        }
         do {
-            try await body(client)
-            await refresh()
+            try await perform(body)
         } catch {
             errorMessage = Self.message(for: error)
         }

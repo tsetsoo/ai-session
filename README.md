@@ -87,6 +87,8 @@ The installer is safe to re-run. It sets up:
 - `~/.ai-remote/bin/ai-todo-hook`: Claude Code hooks merged into `~/.claude/settings.json`.
   `UserPromptSubmit` posts `busy`, `Notification` posts `waiting`, and `Stop` posts `idle` to
   `POST /api/conversations/status`. Only sessions named `ai/claude/todo-*` report.
+  - Claude's "waiting for your input" notification after it has finished counts as `idle`, not `waiting`.
+  - `PostToolUse` puts the status back to `busy` after you answer a permission prompt. It posts only when the last status sent wasn't already `busy`, which it checks in `~/.ai-remote/hook-state/`.
   - Existing settings and hooks are kept, and the file is backed up before each change.
   - The hook runs in the background with a 3 s limit and always exits 0, so a slow or
     unreachable hub never blocks Claude.

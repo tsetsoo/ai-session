@@ -160,6 +160,26 @@ printf '{"session_id":"%s"}' "$SID" | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" bogus
 [[ $(wc -l <"$HUB_LOG") -eq 2 ]] || fail "hook posted for a non-todo session, bad input or bad status"
 pass "hook ignores non-todo sessions, sessions outside tmux, invalid JSON and unknown statuses"
 
+last_status() {
+  python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]["status"])' "$HUB_LOG"
+}
+printf '{"session_id":"%s","hook_event_name":"Notification","notification_type":"idle_prompt","message":"Claude is waiting for your input"}' "$SID" \
+  | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" waiting
+[[ $(wc -l <"$HUB_LOG") -eq 3 && "$(last_status)" == idle ]] || fail "idle notification was not reported as idle: $(tail -1 "$HUB_LOG")"
+pass "the idle notification is reported as idle, not waiting"
+
+tool() { printf '{"session_id":"%s","hook_event_name":"PostToolUse"}' "$SID" | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" tool; }
+tool
+[[ $(wc -l <"$HUB_LOG") -eq 4 && "$(last_status)" == busy ]] || fail "first tool call after idle did not post busy"
+tool
+tool
+[[ $(wc -l <"$HUB_LOG") -eq 4 ]] || fail "repeated tool calls posted busy again"
+printf '{"session_id":"%s","hook_event_name":"Notification","message":"Claude needs your permission"}' "$SID" \
+  | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" waiting
+tool
+[[ $(wc -l <"$HUB_LOG") -eq 6 && "$(last_status)" == busy ]] || fail "tool call after a permission prompt did not post busy"
+pass "tool calls post busy once after waiting/idle and stay quiet while busy"
+
 printf "TODO_HUB_URL='http://127.0.0.1:9'\nTODO_API_TOKEN='s3cret'\n" >"$CONF"
 start=$(date +%s)
 printf '{"session_id":"%s"}' "$SID" | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" busy || fail "hook failed with the hub down"
@@ -169,6 +189,8 @@ printf '{"session_id":"%s"}' "$SID" | AI_TODO_HOOK_SYNC= AI_TODO_TMUX_SESSION="$
 [[ $(( $(date +%s) - start )) -le 1 ]] || fail "background hook blocked"
 pass "hook exits 0 quickly when the hub is down, and returns immediately in background mode"
 unset AI_TODO_HUB_CONF AI_TODO_HOOK_SYNC
+# The hook keeps per-session state under ~/.ai-remote; start the install tests clean.
+rm -rf "${HOME}/.ai-remote"
 
 # --- tmux.conf ----------------------------------------------------------------
 
@@ -219,6 +241,7 @@ def commands(event):
 assert commands("UserPromptSubmit") == [f"{bin_dir}/ai-todo-hook busy"], commands("UserPromptSubmit")
 assert commands("Notification") == [f"{bin_dir}/ai-todo-hook waiting"], commands("Notification")
 assert commands("Stop") == ["afplay /System/Library/Sounds/Glass.aiff", f"{bin_dir}/ai-todo-hook idle"], commands("Stop")
+assert commands("PostToolUse") == [f"{bin_dir}/ai-todo-hook tool"], commands("PostToolUse")
 assert commands("PreToolUse") == ["echo pre"], commands("PreToolUse")
 assert hooks["PreToolUse"][0]["matcher"] == "Bash"
 PY

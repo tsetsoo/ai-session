@@ -3,9 +3,12 @@ import SwiftData
 import SwiftUI
 
 /// A todo's conversation opened on a known SSH host; drives navigation to the terminal.
+/// The connection config (with the private key) is resolved once when opening, not on every
+/// re-render of the destination.
 struct OpenTodoConversation: Identifiable, Hashable {
     let conversation: Conversation
     let hostID: UUID
+    let config: HostConnectionConfig
     let title: String
 
     var id: String { conversation.todoId }
@@ -17,7 +20,6 @@ struct OpenTodoConversation: Identifiable, Hashable {
 /// Todos grouped by section (Sp / I / Si / P). Tapping a todo opens its AI conversation on the
 /// section's computer over a direct SSH connection; the hub only stores the mapping.
 struct TodosView: View {
-    @Environment(\.modelContext) private var modelContext
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var store = TodoHubStore()
     @State private var showingSettings = false
@@ -26,7 +28,7 @@ struct TodosView: View {
     @State private var openConversation: OpenTodoConversation?
     @State private var openingTodoID: String?
     @State private var missingHost: Computer?
-    @State private var hostToEdit: HostEntity?
+    @State private var newHostPrefill: HostEditorPrefill?
 
     var body: some View {
         NavigationStack {
@@ -49,8 +51,9 @@ struct TodosView: View {
                 Task { await store.createTodo(section: section, title: title) }
             }
         }
-        .sheet(item: $hostToEdit) { host in
-            HostEditorView(host: host)
+        .sheet(item: $newHostPrefill) { prefill in
+            // Create mode: the host and its key are saved together, and Cancel leaves nothing.
+            HostEditorView(prefill: prefill)
         }
         .alert(
             "No SSH host for this computer",
@@ -94,6 +97,10 @@ struct TodosView: View {
             List {
                 if store.isOffline {
                     offlineBanner
+                } else if let issue = store.backgroundIssue {
+                    Label(issue, systemImage: "exclamationmark.triangle")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
                 }
                 ForEach(TodoSection.allCases) { section in
                     sectionView(section)
@@ -198,8 +205,8 @@ struct TodosView: View {
             } else {
                 do {
                     conversation = try await store.openConversation(for: todo)
-                } catch TodoHubError.conflict {
-                    store.errorMessage = "Section \(todo.section.rawValue) has no computer assigned. Assign one under Settings → Computers."
+                } catch let TodoHubError.conflict(message) {
+                    store.errorMessage = Self.conflictMessage(message)
                     return
                 } catch {
                     store.errorMessage = TodoHubStore.message(for: error)
@@ -210,8 +217,24 @@ struct TodosView: View {
                 missingHost = conversation.computer
                 return
             }
-            openConversation = OpenTodoConversation(conversation: conversation, hostID: host.id, title: todo.title)
+            do {
+                let connection = try SessionServiceFactory().make(for: host)
+                openConversation = OpenTodoConversation(
+                    conversation: conversation,
+                    hostID: host.id,
+                    config: connection.config,
+                    title: todo.title
+                )
+            } catch {
+                store.errorMessage = "The private key for \(host.displayName) is unavailable. Edit the host under Hosts and save its key again."
+            }
         }
+    }
+
+    /// The server's 409 text, plus where to fix the common "no computer" case.
+    static func conflictMessage(_ serverMessage: String) -> String {
+        guard serverMessage.localizedCaseInsensitiveContains("no computer") else { return serverMessage }
+        return serverMessage + ". Assign one under Settings → Computers."
     }
 
     private func matchingHost(for computer: Computer) -> HostEntity? {
@@ -223,43 +246,30 @@ struct TodosView: View {
     }
 
     private func addHost(for computer: Computer) {
-        let host = HostEntity(
+        newHostPrefill = HostEditorPrefill(
             displayName: computer.name,
             hostname: computer.hostname,
             port: computer.port,
             username: computer.username
         )
-        modelContext.insert(host)
-        try? modelContext.save()
-        hostToEdit = host
     }
 
-    @ViewBuilder
     private func conversationDestination(_ open: OpenTodoConversation) -> some View {
-        if let host = hosts.first(where: { $0.id == open.hostID }),
-           let connection = try? SessionServiceFactory().make(for: host) {
-            let conversation = open.conversation
-            TerminalScreen(
-                hostConfig: connection.config,
-                mode: .attach(TmuxCommandBuilder.openTodoConversation(
-                    tmuxName: conversation.tmuxName,
-                    cwd: conversation.cwd,
-                    claudeSessionId: conversation.claudeSessionId
-                )),
-                title: open.title,
-                // "Kill Session" in the terminal menu = Close conversation: ends tmux, keeps
-                // the Claude conversation resumable.
-                onKill: {
-                    try await store.closeConversation(conversation, config: connection.config)
-                }
-            )
-        } else {
-            ContentUnavailableView(
-                "Terminal Unavailable",
-                systemImage: "exclamationmark.triangle",
-                description: Text("The private key for this host is unavailable. Edit the host and save its key again.")
-            )
-        }
+        let conversation = open.conversation
+        return TerminalScreen(
+            hostConfig: open.config,
+            mode: .attach(TmuxCommandBuilder.openTodoConversation(
+                tmuxName: conversation.tmuxName,
+                cwd: conversation.cwd,
+                claudeSessionId: conversation.claudeSessionId
+            )),
+            title: open.title,
+            // "Kill Session" in the terminal menu = Close conversation: ends tmux, keeps
+            // the Claude conversation resumable.
+            onKill: {
+                try await store.closeConversation(conversation, config: open.config)
+            }
+        )
     }
 }
 

@@ -7,6 +7,8 @@ struct ComputersView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showingAddComputer = false
     @State private var editingSection: TodoSection?
+    /// Shown inside this sheet: the Todos screen's alert can't present over it.
+    @State private var errorMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -51,7 +53,7 @@ struct ComputersView: View {
                         }
                         .swipeActions {
                             Button(role: .destructive) {
-                                Task { await store.deleteComputer(computer) }
+                                run { try await store.deleteComputer(computer) }
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
@@ -74,7 +76,7 @@ struct ComputersView: View {
             .refreshable { await store.refresh() }
             .sheet(isPresented: $showingAddComputer) {
                 AddComputerSheet { name, hostname, port, username in
-                    Task { await store.addComputer(name: name, hostname: hostname, port: port, username: username) }
+                    run { try await store.addComputer(name: name, hostname: hostname, port: port, username: username) }
                 }
             }
             .sheet(item: $editingSection) { section in
@@ -83,8 +85,26 @@ struct ComputersView: View {
                     computers: store.computers,
                     current: store.sectionComputers[section]
                 ) { computerID, cwd in
-                    Task { await store.assign(section, computerID: computerID, cwd: cwd) }
+                    run { try await store.assign(section, computerID: computerID, cwd: cwd) }
                 }
+            }
+            .alert(
+                "Computers",
+                isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(errorMessage ?? "")
+            }
+        }
+    }
+
+    private func run(_ action: @escaping () async throws -> Void) {
+        Task {
+            do {
+                try await action()
+            } catch {
+                errorMessage = TodoHubStore.message(for: error)
             }
         }
     }

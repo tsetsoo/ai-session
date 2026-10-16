@@ -3,6 +3,17 @@ import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Connection fields to start a new host from (e.g. a todo-server computer). Nothing is
+/// saved until the user adds a key and taps Save.
+struct HostEditorPrefill: Identifiable {
+    var displayName: String
+    var hostname: String
+    var port: Int
+    var username: String
+
+    var id: String { "\(username)@\(hostname):\(port)" }
+}
+
 struct HostEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -22,12 +33,13 @@ struct HostEditorView: View {
     @State private var showAdvanced = false
     @State private var showingKeyImporter = false
 
-    init(host: HostEntity? = nil) {
+    /// Edits `host`, or creates a new one (optionally starting from `prefill`) when `host` is nil.
+    init(host: HostEntity? = nil, prefill: HostEditorPrefill? = nil) {
         self.host = host
-        _displayName = State(initialValue: host?.displayName ?? "")
-        _hostname = State(initialValue: host?.hostname ?? "")
-        _port = State(initialValue: String(host?.port ?? 22))
-        _username = State(initialValue: host?.username ?? "")
+        _displayName = State(initialValue: host?.displayName ?? prefill?.displayName ?? "")
+        _hostname = State(initialValue: host?.hostname ?? prefill?.hostname ?? "")
+        _port = State(initialValue: String(host?.port ?? prefill?.port ?? 22))
+        _username = State(initialValue: host?.username ?? prefill?.username ?? "")
         _pem = State(initialValue: "")
         _defaultPaths = State(initialValue: host?.defaultPaths.joined(separator: "\n") ?? "")
         _cliBinaries = State(initialValue: host?.cliBinaries ?? [:])
