@@ -29,4 +29,15 @@ final class TerminalKeysTests: XCTestCase {
         XCTAssertTrue(gate.isEnabled(tool: "claude"))
         XCTAssertTrue(ApproveGate().isEnabled(tool: "codex"))
     }
+
+    func testLeavingWaitingDisables() {
+        for next in [ConversationStatus.busy, .idle] {
+            var gate = ApproveGate()
+            gate.statusChanged(to: .waiting)
+            XCTAssertTrue(gate.isEnabled(tool: "claude"))
+            gate.statusChanged(to: next)
+            XCTAssertFalse(gate.isEnabled(tool: "claude"))
+            XCTAssertTrue(gate.isEnabled(tool: "codex"))
+        }
+    }
 }

@@ -26,7 +26,8 @@ public struct ApproveGate: Sendable {
     public init() {}
 
     public mutating func statusChanged(to status: ConversationStatus) {
-        if status == .waiting && last != .waiting { armed = true }
+        if status != .waiting { armed = false }
+        else if last != .waiting { armed = true }
         last = status
     }
 
