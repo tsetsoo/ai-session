@@ -66,6 +66,41 @@ On the host, session metadata is stored under `~/.ai-remote/` so the app can ass
 sessions with their tool, working directory, and display title. This directory is host data
 and should be included in backups if that metadata matters.
 
+## Todo conversations
+
+Each todo in todo-server can have one Claude conversation on the computer assigned to its
+section (Sp / I / Si / P). todo-server only stores the mapping; the app SSHes to the computer
+and runs a helper there. Install the helpers on every computer that hosts conversations:
+
+```sh
+scripts/todo/install.sh --hub-url http://100.118.255.23:8080 --token "$TODO_API_TOKEN"
+scripts/todo/install.sh --dry-run      # show what would change
+scripts/todo/install.sh --uninstall    # remove scripts, hooks and the tmux line
+```
+
+The installer is safe to re-run. It sets up:
+
+- `~/.ai-remote/bin/ai-todo-open <tmux_name> <cwd> <claude_session_id>`: the command the app
+  runs. It attaches to the todo's tmux session if it is running. Otherwise it starts
+  `claude --session-id <id>`, or `claude --resume <id>` once the conversation exists in
+  `~/.claude/projects`, so a reboot or a closed conversation picks up where it left off.
+- `~/.ai-remote/bin/ai-todo-hook`: Claude Code hooks merged into `~/.claude/settings.json`.
+  `UserPromptSubmit` posts `busy`, `Notification` posts `waiting`, and `Stop` posts `idle` to
+  `POST /api/conversations/status`. Only sessions named `ai/claude/todo-*` report.
+  - Existing settings and hooks are kept, and the file is backed up before each change.
+  - The hook runs in the background with a 3 s limit and always exits 0, so a slow or
+    unreachable hub never blocks Claude.
+- `~/.ai-remote/todo-hub.conf` (mode 600): `TODO_HUB_URL` and `TODO_API_TOKEN` for the hook.
+- `~/.ai-remote/tmux.conf`, sourced from `~/.tmux.conf`. Run `tmux source-file ~/.tmux.conf`
+  to apply it to a running server. It sets:
+  - no Esc delay;
+  - `window-size latest`, so the iPhone and Mac can share a session;
+  - extended keys, so Shift+Enter reaches Claude;
+  - OSC 52 clipboard, mouse, focus events, true color and 50k lines of scrollback.
+
+`scripts/todo/test-todo-scripts.sh` runs everything offline in a sandbox with a temp `HOME`,
+a fake `claude`, a fake hub and a private tmux socket.
+
 ## Non-goals
 
 This project does not provide push notifications, a background daemon or always-on service,

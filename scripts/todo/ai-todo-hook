@@ -1,0 +1,87 @@
+#!/bin/sh
+# Claude Code hook: report a todo conversation's status to todo-server.
+# Installed into ~/.claude/settings.json by install.sh:
+#   UserPromptSubmit -> busy, Notification -> waiting, Stop -> idle
+#
+# Usage (Claude passes the hook JSON on stdin):
+#   ai-todo-hook <busy|waiting|idle>
+#
+# Never blocks or fails Claude: always exits 0, and the HTTP call runs in the
+# background with a 3s limit. Only sessions running in a tmux session named
+# ai/claude/todo-* are reported; todo-server answers 404 for unknown ids anyway.
+#
+# Config: ~/.ai-remote/todo-hub.conf (shell syntax)
+#   TODO_HUB_URL='http://100.118.255.23:8080'
+#   TODO_API_TOKEN='...'
+#
+# Test hooks (not for normal use):
+#   AI_TODO_HUB_CONF      config file path
+#   AI_TODO_TMUX_SESSION  tmux session name instead of asking tmux
+#   AI_TODO_HOOK_SYNC     =1: wait for the HTTP call
+status=${1:-}
+case "$status" in
+  busy | waiting | idle) ;;
+  *) exit 0 ;;
+esac
+
+input=$(cat 2>/dev/null) || exit 0
+
+export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+
+session=${AI_TODO_TMUX_SESSION:-}
+if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
+  session=$(tmux display-message -p '#S' 2>/dev/null) || exit 0
+fi
+case "$session" in
+  ai/claude/todo-*) ;;
+  *) exit 0 ;;
+esac
+
+conf=${AI_TODO_HUB_CONF:-$HOME/.ai-remote/todo-hub.conf}
+[ -r "$conf" ] || exit 0
+TODO_HUB_URL=
+TODO_API_TOKEN=
+# shellcheck source=/dev/null
+. "$conf" 2>/dev/null || exit 0
+[ -n "$TODO_HUB_URL" ] || exit 0
+
+if command -v python3 >/dev/null 2>&1; then
+  body=$(printf '%s' "$input" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sid = data.get("session_id") if isinstance(data, dict) else None
+if not isinstance(sid, str) or not sid:
+    sys.exit(1)
+out = {"claude_session_id": sid, "status": sys.argv[1]}
+msg = data.get("message")
+if sys.argv[1] == "waiting" and isinstance(msg, str) and msg:
+    out["message"] = msg[:500]
+print(json.dumps(out))
+' "$status" 2>/dev/null) || exit 0
+else
+  # No python3: pull session_id out with sed and skip the message.
+  sid=$(printf '%s' "$input" | tr -d '\n' | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9-]*\)".*/\1/p')
+  [ -n "$sid" ] || exit 0
+  body=$(printf '{"claude_session_id":"%s","status":"%s"}' "$sid" "$status")
+fi
+
+post() {
+  # The token goes through curl's config on stdin so it never shows up in `ps`.
+  {
+    if [ -n "$TODO_API_TOKEN" ]; then
+      printf 'header = "Authorization: Bearer %s"\n' "$TODO_API_TOKEN"
+    fi
+  } | curl -s -o /dev/null --connect-timeout 2 --max-time 3 -K - \
+    -H 'Content-Type: application/json' --data-binary "$body" \
+    "${TODO_HUB_URL%/}/api/conversations/status"
+}
+
+if [ "${AI_TODO_HOOK_SYNC:-}" = 1 ]; then
+  post >/dev/null 2>&1
+else
+  post </dev/null >/dev/null 2>&1 &
+fi
+exit 0
