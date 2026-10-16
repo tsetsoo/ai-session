@@ -1,0 +1,438 @@
+import AISessionCore
+import SwiftData
+import SwiftUI
+
+// Linking existing Claude / Codex conversations to todos, and creating todos from them.
+// The conversation list comes from the computer over SSH (`ai-todo-sessions list --json`).
+
+/// Searchable list of a computer's conversations, grouped by tool. Picking one that is running
+/// asks for confirmation first, since opening it from the todo starts a second copy.
+struct RemoteConversationPicker: View {
+    let computerName: String
+    /// Conversations already linked to a todo (`RemoteConversation.id`); shown but not pickable.
+    let linkedIDs: Set<String>
+    /// Error from the caller's last action (e.g. the hub refused the link), shown in place.
+    let actionError: String?
+    let isWorking: Bool
+    let load: () async throws -> [RemoteConversation]
+    let onPick: (RemoteConversation) -> Void
+
+    @State private var conversations: [RemoteConversation]?
+    @State private var loadError: String?
+    @State private var search = ""
+    @State private var runningCandidate: RemoteConversation?
+
+    var body: some View {
+        List {
+            if let actionError {
+                Label(actionError, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .font(.subheadline)
+            }
+            if let loadError {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(loadError, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(.subheadline)
+                    Button("Try Again") { Task { await reload() } }
+                }
+            } else if let conversations {
+                if filtered(conversations).isEmpty {
+                    Text(search.isEmpty ? "No conversations on \(computerName)." : "No matches.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(groups(filtered(conversations)), id: \.tool) { group in
+                    Section(Self.toolName(group.tool)) {
+                        ForEach(group.items) { conversation in
+                            row(conversation)
+                        }
+                    }
+                }
+            } else {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Reading conversations on \(computerName)…").foregroundStyle(.secondary)
+                }
+            }
+        }
+        .searchable(text: $search, prompt: "Search title or folder")
+        .refreshable { await reload() }
+        .task { if conversations == nil { await reload() } }
+        .disabled(isWorking)
+        .overlay { if isWorking { ProgressView() } }
+        .confirmationDialog(
+            "This conversation is open right now",
+            isPresented: Binding(get: { runningCandidate != nil }, set: { if !$0 { runningCandidate = nil } }),
+            titleVisibility: .visible,
+            presenting: runningCandidate
+        ) { conversation in
+            Button("Link Anyway") { onPick(conversation) }
+            Button("Cancel", role: .cancel) {}
+        } message: { conversation in
+            if let tmux = conversation.tmuxSession {
+                Text("It's running in tmux session \"\(tmux)\" on \(computerName). Opening it from the todo starts a second copy — close it there first.")
+            } else {
+                Text("It's running in a terminal on \(computerName). Opening it from the todo starts a second copy — close it there first.")
+            }
+        }
+    }
+
+    private func row(_ conversation: RemoteConversation) -> some View {
+        let linked = linkedIDs.contains(conversation.id)
+        return Button {
+            if conversation.running {
+                runningCandidate = conversation
+            } else {
+                onPick(conversation)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(conversation.title.isEmpty ? "Untitled" : conversation.title)
+                        .lineLimit(2)
+                        .foregroundStyle(linked ? .secondary : .primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if conversation.running {
+                        Tag(text: "Running", color: .blue)
+                    }
+                    if linked {
+                        Tag(text: "Linked", color: .gray)
+                    }
+                }
+                HStack(spacing: 6) {
+                    Label(conversation.cwd, systemImage: "folder")
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                    Spacer(minLength: 8)
+                    Text("\(conversation.prompts) prompt\(conversation.prompts == 1 ? "" : "s")")
+                    if let ago = AppTheme.relativeTime(from: conversation.updatedDate) {
+                        Text("· \(ago)")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(linked)
+    }
+
+    private func reload() async {
+        loadError = nil
+        do {
+            conversations = try await load()
+        } catch {
+            loadError = TodoHubStore.message(for: error)
+        }
+    }
+
+    private func filtered(_ items: [RemoteConversation]) -> [RemoteConversation] {
+        let query = search.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return items }
+        return items.filter {
+            $0.title.localizedCaseInsensitiveContains(query) || $0.cwd.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private func groups(_ items: [RemoteConversation]) -> [(tool: String, items: [RemoteConversation])] {
+        var order: [String] = []
+        var byTool: [String: [RemoteConversation]] = [:]
+        for item in items {
+            if byTool[item.tool] == nil { order.append(item.tool) }
+            byTool[item.tool, default: []].append(item)
+        }
+        // Claude first, then Codex, then anything else in the order seen.
+        let rank = ["claude": 0, "codex": 1]
+        let seen = order
+        let sorted = seen.sorted {
+            (rank[$0] ?? 9, seen.firstIndex(of: $0) ?? 0) < (rank[$1] ?? 9, seen.firstIndex(of: $1) ?? 0)
+        }
+        return sorted.map { ($0, byTool[$0] ?? []) }
+    }
+
+    static func toolName(_ tool: String) -> String {
+        switch tool {
+        case "claude": "Claude"
+        case "codex": "Codex"
+        case "cursor": "Cursor"
+        default: tool
+        }
+    }
+}
+
+private struct Tag: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.18), in: Capsule())
+            .foregroundStyle(color)
+    }
+}
+
+/// "Link Existing Conversation…" for a todo without one: lists the conversations on the
+/// computer assigned to the todo's section.
+struct LinkConversationSheet: View {
+    let todo: Todo
+    let store: TodoHubStore
+    @Query private var hosts: [HostEntity]
+    @Environment(\.dismiss) private var dismiss
+    @State private var actionError: String?
+    @State private var isWorking = false
+
+    var body: some View {
+        NavigationStack {
+            content
+                .navigationTitle("Link Conversation")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                }
+        }
+        #if os(macOS)
+        .frame(minWidth: 560, minHeight: 480)
+        #endif
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let computer = store.sectionComputers[todo.section]?.computer {
+            switch Result(catching: { try HostLookup.config(for: computer, in: hosts) }) {
+            case let .success(config):
+                RemoteConversationPicker(
+                    computerName: computer.name,
+                    linkedIDs: store.linkedConversationIDs,
+                    actionError: actionError,
+                    isWorking: isWorking,
+                    load: { try await RemoteConversations.list(config: config, computerName: computer.name) },
+                    onPick: { link($0, on: computer) }
+                )
+            case let .failure(error):
+                ContentUnavailableView(
+                    "Can't reach \(computer.name)",
+                    systemImage: "desktopcomputer.trianglebadge.exclamationmark",
+                    description: Text(error.localizedDescription)
+                )
+            }
+        } else {
+            ContentUnavailableView(
+                "Section \(todo.section.rawValue) has no computer",
+                systemImage: "desktopcomputer",
+                description: Text("Assign one under Settings → Computers.")
+            )
+        }
+    }
+
+    private func link(_ remote: RemoteConversation, on computer: Computer) {
+        isWorking = true
+        actionError = nil
+        Task {
+            defer { isWorking = false }
+            do {
+                try await store.linkConversation(remote, on: computer, to: todo)
+                dismiss()
+            } catch {
+                actionError = TodoHubStore.message(for: error)
+            }
+        }
+    }
+}
+
+/// "New Todo from Conversation…": pick a computer, then one of its conversations, then the
+/// section and title for the new todo.
+struct NewTodoFromConversationSheet: View {
+    let store: TodoHubStore
+    @Query private var hosts: [HostEntity]
+    @Environment(\.dismiss) private var dismiss
+    @State private var path: [Step] = []
+
+    enum Step: Hashable {
+        case conversations(Computer)
+        case details(Computer, RemoteConversation)
+    }
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            computerList
+                .navigationTitle("From Conversation")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                }
+                .navigationDestination(for: Step.self) { step in
+                    switch step {
+                    case let .conversations(computer):
+                        conversations(on: computer)
+                    case let .details(computer, remote):
+                        NewTodoDetailsForm(
+                            computer: computer,
+                            remote: remote,
+                            defaultSection: defaultSection(for: computer),
+                            onCreate: { section, title in
+                                try await store.createTodo(from: remote, on: computer, section: section, title: title)
+                                dismiss()
+                            }
+                        )
+                    }
+                }
+        }
+        #if os(macOS)
+        .frame(minWidth: 560, minHeight: 480)
+        #endif
+    }
+
+    private var computerList: some View {
+        List {
+            if store.computers.isEmpty {
+                Text("No computers yet. Add one under Settings → Computers.").foregroundStyle(.secondary)
+            }
+            ForEach(store.computers) { computer in
+                NavigationLink(value: Step.conversations(computer)) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(computer.name)
+                        Text("\(computer.username)@\(computer.hostname)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func conversations(on computer: Computer) -> some View {
+        switch Result(catching: { try HostLookup.config(for: computer, in: hosts) }) {
+        case let .success(config):
+            RemoteConversationPicker(
+                computerName: computer.name,
+                linkedIDs: store.linkedConversationIDs,
+                actionError: nil,
+                isWorking: false,
+                load: { try await RemoteConversations.list(config: config, computerName: computer.name) },
+                onPick: { path.append(.details(computer, $0)) }
+            )
+            .navigationTitle(computer.name)
+        case let .failure(error):
+            ContentUnavailableView(
+                "Can't reach \(computer.name)",
+                systemImage: "desktopcomputer.trianglebadge.exclamationmark",
+                description: Text(error.localizedDescription)
+            )
+        }
+    }
+
+    /// The section this computer serves, when exactly one does.
+    private func defaultSection(for computer: Computer) -> TodoSection {
+        let sections = store.sectionComputers.values.filter { $0.computer.id == computer.id }.map(\.section)
+        return sections.count == 1 ? sections[0] : .i
+    }
+}
+
+private struct NewTodoDetailsForm: View {
+    let computer: Computer
+    let remote: RemoteConversation
+    let defaultSection: TodoSection
+    let onCreate: (TodoSection, String) async throws -> Void
+
+    @State private var section: TodoSection = .i
+    @State private var title = ""
+    @State private var error: String?
+    @State private var isWorking = false
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Section", selection: $section) {
+                    ForEach(TodoSection.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                TextField("Title", text: $title, axis: .vertical)
+            }
+            Section("Conversation") {
+                LabeledContent("Tool", value: RemoteConversationPicker.toolName(remote.tool))
+                LabeledContent("Computer", value: computer.name)
+                LabeledContent("Folder", value: remote.cwd)
+            }
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .font(.subheadline)
+            }
+        }
+        .navigationTitle("New Todo")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Create") { create() }
+                    .disabled(trimmedTitle.isEmpty || isWorking)
+            }
+        }
+        .onAppear {
+            if title.isEmpty {
+                section = defaultSection
+                title = remote.title
+            }
+        }
+    }
+
+    private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private func create() {
+        isWorking = true
+        error = nil
+        Task {
+            defer { isWorking = false }
+            do {
+                try await onCreate(section, trimmedTitle)
+            } catch {
+                self.error = TodoHubStore.message(for: error)
+            }
+        }
+    }
+}
+
+#if DEBUG
+/// Launch with `-demoConversationPicker` to see the picker with fake data (screenshots).
+struct ConversationPickerDemo: View {
+    var body: some View {
+        NavigationStack {
+            RemoteConversationPicker(
+                computerName: "spreads-macbook-pro",
+                linkedIDs: ["claude/c5c6d60c-0000-4000-8000-000000000002"],
+                actionError: nil,
+                isWorking: false,
+                load: { Self.sample },
+                onPick: { _ in }
+            )
+            .navigationTitle("Link Conversation")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    static let sample: [RemoteConversation] = {
+        func ago(_ minutes: Double) -> String {
+            ISO8601DateFormatter().string(from: Date().addingTimeInterval(-minutes * 60))
+        }
+        return [
+            RemoteConversation(tool: "claude", sessionId: "49e9880f-0000-4000-8000-000000000001", cwd: "~/Spread/Repository",
+                               title: "review https://github.com/spread-ai/data-management/pull/630", updatedAt: ago(3),
+                               prompts: 7, running: true, tmuxSession: "work"),
+            RemoteConversation(tool: "claude", sessionId: "c5c6d60c-0000-4000-8000-000000000002", cwd: "~/Spread/Repository",
+                               title: "pickup and implement EIN-10570 generator types handover", updatedAt: ago(9), prompts: 8),
+            RemoteConversation(tool: "claude", sessionId: "e822d8b6-0000-4000-8000-000000000003", cwd: "~/Spread/Repository",
+                               title: "help me log my hours in tempo", updatedAt: ago(190), prompts: 17),
+            RemoteConversation(tool: "codex", sessionId: "019f8b4e-ff53-7201-8585-162b40a93fb3",
+                               cwd: "~/programming/sigma-revenue/sigma-revenue-webapp",
+                               title: "fix the competitor rates screen sorting", updatedAt: ago(60 * 24 * 3), prompts: 3),
+        ]
+    }()
+}
+#endif

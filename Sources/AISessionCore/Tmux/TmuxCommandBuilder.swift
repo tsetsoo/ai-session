@@ -28,12 +28,29 @@ public enum TmuxCommandBuilder {
     }
 
     /// PTY command for a todo's conversation: the host-side `ai-todo-open` script attaches to
-    /// the tmux session, or creates/resumes the Claude conversation if tmux is gone. `cwd` may
-    /// start with `~`; the script expands it.
-    public static func openTodoConversation(tmuxName: String, cwd: String, claudeSessionId: String) -> String {
-        wrap(
-            "exec \"$HOME/.ai-remote/bin/ai-todo-open\" \(shellQuote(tmuxName)) \(shellQuote(cwd)) \(shellQuote(claudeSessionId))"
-        )
+    /// the tmux session, or creates/resumes the conversation (`claude` or `codex`) if tmux is
+    /// gone. `cwd` may start with `~`; the script expands it.
+    ///
+    /// The tool is passed as a 4th argument only when it isn't `claude`: scripts installed
+    /// before Codex support reject a 4th argument, and `claude` is their default anyway.
+    public static func openTodoConversation(tmuxName: String, cwd: String, sessionId: String, tool: String = "claude") -> String {
+        var command = "exec \"$HOME/.ai-remote/bin/ai-todo-open\" \(shellQuote(tmuxName)) \(shellQuote(cwd)) \(shellQuote(sessionId))"
+        if tool != "claude" { command += " \(shellQuote(tool))" }
+        return wrap(command)
+    }
+
+    /// Exit status when the host-side scripts aren't installed (`command not found`).
+    public static let scriptMissingExitCode: Int32 = 127
+
+    /// Lists the computer's Claude / Codex conversations as JSON (`[RemoteConversation]`).
+    public static func listRemoteConversations(limit: Int = 200) -> String {
+        wrap("\"$HOME/.ai-remote/bin/ai-todo-sessions\" list --json --limit \(max(1, limit))")
+    }
+
+    /// Deletes a conversation on the computer (Claude: its files; Codex: `codex archive`).
+    /// The script refuses while the conversation is running.
+    public static func deleteRemoteConversation(tool: String, sessionId: String) -> String {
+        wrap("\"$HOME/.ai-remote/bin/ai-todo-sessions\" delete \(shellQuote(tool)) \(shellQuote(sessionId))")
     }
 
     public static func probeBinaries() -> String {

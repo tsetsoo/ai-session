@@ -3,6 +3,18 @@ import SwiftUI
 /// Top level: Todos (hub-backed, each todo opens its AI conversation) and Hosts (direct SSH).
 struct RootView: View {
     var body: some View {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-demoConversationPicker") {
+            ConversationPickerDemo()
+        } else {
+            tabs
+        }
+        #else
+        tabs
+        #endif
+    }
+
+    private var tabs: some View {
         TabView {
             TodosView()
                 .tabItem { Label("Todos", systemImage: "checklist") }

@@ -29,6 +29,9 @@ struct TodosView: View {
     @State private var openingTodoID: String?
     @State private var missingHost: Computer?
     @State private var newHostPrefill: HostEditorPrefill?
+    @State private var linkTarget: Todo?
+    @State private var deleteTarget: Todo?
+    @State private var showingNewFromConversation = false
 
     var body: some View {
         NavigationStack {
@@ -54,6 +57,27 @@ struct TodosView: View {
         .sheet(item: $newHostPrefill) { prefill in
             // Create mode: the host and its key are saved together, and Cancel leaves nothing.
             HostEditorView(prefill: prefill)
+        }
+        .sheet(item: $linkTarget) { todo in
+            LinkConversationSheet(todo: todo, store: store)
+        }
+        .sheet(isPresented: $showingNewFromConversation) {
+            NewTodoFromConversationSheet(store: store)
+        }
+        .confirmationDialog(
+            "Delete this conversation?",
+            isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
+            titleVisibility: .visible,
+            presenting: deleteTarget
+        ) { todo in
+            Button("Delete Conversation", role: .destructive) { deleteConversation(of: todo) }
+            Button("Cancel", role: .cancel) {}
+        } message: { todo in
+            if let conversation = store.conversations[todo.id] {
+                Text(conversation.tool == "codex"
+                    ? "Ends its tmux session, archives the Codex conversation on \(conversation.computer.name) and unlinks it. The todo stays."
+                    : "Ends its tmux session, deletes the conversation from \(conversation.computer.name) and unlinks it. The todo stays.")
+            }
         }
         .alert(
             "No SSH host for this computer",
@@ -138,6 +162,23 @@ struct TodosView: View {
                 )
                 .contentShape(Rectangle())
                 .onTapGesture { open(todo) }
+                .contextMenu {
+                    if store.conversations[todo.id] != nil {
+                        Button(role: .destructive) {
+                            deleteTarget = todo
+                        } label: {
+                            Label("Delete Conversation…", systemImage: "trash.slash")
+                        }
+                        .disabled(store.isOffline)
+                    } else {
+                        Button {
+                            linkTarget = todo
+                        } label: {
+                            Label("Link Existing Conversation…", systemImage: "link")
+                        }
+                        .disabled(store.isOffline)
+                    }
+                }
                 .swipeActions(edge: .trailing) {
                     Button(role: .destructive) {
                         Task { await store.delete(todo) }
@@ -181,10 +222,22 @@ struct TodosView: View {
             .accessibilityLabel("Settings")
         }
         ToolbarItem(placement: .primaryAction) {
-            Button {
-                showingAdd = true
+            // Tap: new todo. Hold (iOS) / arrow (Mac): new todo from an existing conversation.
+            Menu {
+                Button {
+                    showingAdd = true
+                } label: {
+                    Label("New Todo", systemImage: "plus")
+                }
+                Button {
+                    showingNewFromConversation = true
+                } label: {
+                    Label("New Todo from Conversation…", systemImage: "text.bubble")
+                }
             } label: {
                 Image(systemName: "plus")
+            } primaryAction: {
+                showingAdd = true
             }
             .accessibilityLabel("Add Todo")
             .disabled(!store.isConfigured || store.isOffline)
@@ -231,6 +284,24 @@ struct TodosView: View {
         }
     }
 
+    private func deleteConversation(of todo: Todo) {
+        guard let conversation = store.conversations[todo.id] else { return }
+        guard matchingHost(for: conversation.computer) != nil else {
+            missingHost = conversation.computer
+            return
+        }
+        openingTodoID = todo.id
+        Task {
+            defer { openingTodoID = nil }
+            do {
+                let config = try HostLookup.config(for: conversation.computer, in: hosts)
+                try await store.deleteConversation(conversation, config: config)
+            } catch {
+                store.errorMessage = TodoHubStore.message(for: error)
+            }
+        }
+    }
+
     /// The server's 409 text, plus where to fix the common "no computer" case.
     static func conflictMessage(_ serverMessage: String) -> String {
         guard serverMessage.localizedCaseInsensitiveContains("no computer") else { return serverMessage }
@@ -261,7 +332,8 @@ struct TodosView: View {
             mode: .attach(TmuxCommandBuilder.openTodoConversation(
                 tmuxName: conversation.tmuxName,
                 cwd: conversation.cwd,
-                claudeSessionId: conversation.claudeSessionId
+                sessionId: conversation.sessionId,
+                tool: conversation.tool
             )),
             title: open.title,
             // "Kill Session" in the terminal menu = Close conversation: ends tmux, keeps

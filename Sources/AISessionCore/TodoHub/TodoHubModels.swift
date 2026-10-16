@@ -65,7 +65,7 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-public struct Computer: Codable, Equatable, Identifiable, Sendable {
+public struct Computer: Codable, Hashable, Identifiable, Sendable {
     public var id: String
     public var name: String
     /// Tailscale name or IP.
@@ -99,13 +99,164 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var todoId: String
     public var computer: Computer
     public var cwd: String
+    /// `claude`, `codex` (or `cursor` later).
     public var tool: String
     public var tmuxName: String
-    public var claudeSessionId: String
+    /// The tool's own conversation id (`claude --resume <id>`, `codex resume <id>`).
+    public var sessionId: String
     public var status: ConversationStatus
     public var statusMessage: String?
     public var statusUpdatedAt: String?
     public var createdAt: String
+
+    /// Older servers only send `claude_session_id`.
+    @available(*, deprecated, renamed: "sessionId")
+    public var claudeSessionId: String { sessionId }
+
+    public init(
+        todoId: String,
+        computer: Computer,
+        cwd: String,
+        tool: String,
+        tmuxName: String,
+        sessionId: String,
+        status: ConversationStatus,
+        statusMessage: String? = nil,
+        statusUpdatedAt: String? = nil,
+        createdAt: String = ""
+    ) {
+        self.todoId = todoId
+        self.computer = computer
+        self.cwd = cwd
+        self.tool = tool
+        self.tmuxName = tmuxName
+        self.sessionId = sessionId
+        self.status = status
+        self.statusMessage = statusMessage
+        self.statusUpdatedAt = statusUpdatedAt
+        self.createdAt = createdAt
+    }
+
+    // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
+    private enum CodingKeys: String, CodingKey {
+        case todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
+        case status, statusMessage, statusUpdatedAt, createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        todoId = try c.decode(String.self, forKey: .todoId)
+        computer = try c.decode(Computer.self, forKey: .computer)
+        cwd = try c.decode(String.self, forKey: .cwd)
+        tool = try c.decodeIfPresent(String.self, forKey: .tool) ?? "claude"
+        tmuxName = try c.decode(String.self, forKey: .tmuxName)
+        if let id = try c.decodeIfPresent(String.self, forKey: .sessionId) {
+            sessionId = id
+        } else {
+            sessionId = try c.decode(String.self, forKey: .claudeSessionId)
+        }
+        status = try c.decode(ConversationStatus.self, forKey: .status)
+        statusMessage = try c.decodeIfPresent(String.self, forKey: .statusMessage)
+        statusUpdatedAt = try c.decodeIfPresent(String.self, forKey: .statusUpdatedAt)
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(todoId, forKey: .todoId)
+        try c.encode(computer, forKey: .computer)
+        try c.encode(cwd, forKey: .cwd)
+        try c.encode(tool, forKey: .tool)
+        try c.encode(tmuxName, forKey: .tmuxName)
+        try c.encode(sessionId, forKey: .sessionId)
+        try c.encode(status, forKey: .status)
+        try c.encodeIfPresent(statusMessage, forKey: .statusMessage)
+        try c.encodeIfPresent(statusUpdatedAt, forKey: .statusUpdatedAt)
+        try c.encode(createdAt, forKey: .createdAt)
+    }
+}
+
+/// `POST /api/todos/{id}/conversation/link`: attach an existing conversation to a todo.
+public struct LinkConversationRequest: Encodable, Sendable {
+    public var computerId: String
+    public var tool: String
+    public var sessionId: String
+    public var cwd: String
+
+    public init(computerId: String, tool: String, sessionId: String, cwd: String) {
+        self.computerId = computerId
+        self.tool = tool
+        self.sessionId = sessionId
+        self.cwd = cwd
+    }
+}
+
+/// `POST /api/todos/from-conversation`: create a todo already linked to a conversation.
+public struct TodoFromConversationRequest: Encodable, Sendable {
+    public var section: TodoSection
+    public var title: String
+    public var computerId: String
+    public var tool: String
+    public var sessionId: String
+    public var cwd: String
+
+    public init(section: TodoSection, title: String, computerId: String, tool: String, sessionId: String, cwd: String) {
+        self.section = section
+        self.title = title
+        self.computerId = computerId
+        self.tool = tool
+        self.sessionId = sessionId
+        self.cwd = cwd
+    }
+}
+
+public struct TodoWithConversation: Decodable, Equatable, Sendable {
+    public var todo: Todo
+    public var conversation: Conversation
+}
+
+/// One conversation found on a computer by `ai-todo-sessions list --json`.
+public struct RemoteConversation: Codable, Hashable, Identifiable, Sendable {
+    public var tool: String
+    public var sessionId: String
+    /// `$HOME` already replaced by `~`.
+    public var cwd: String
+    /// First real user prompt, ≤120 chars.
+    public var title: String
+    /// ISO 8601 UTC, e.g. `2026-10-16T14:53:02Z`.
+    public var updatedAt: String
+    public var prompts: Int
+    /// A live process is using this conversation right now.
+    public var running: Bool
+    /// The tmux session whose pane runs it, if any.
+    public var tmuxSession: String?
+
+    public var id: String { "\(tool)/\(sessionId)" }
+
+    public init(tool: String, sessionId: String, cwd: String, title: String, updatedAt: String,
+                prompts: Int, running: Bool = false, tmuxSession: String? = nil) {
+        self.tool = tool
+        self.sessionId = sessionId
+        self.cwd = cwd
+        self.title = title
+        self.updatedAt = updatedAt
+        self.prompts = prompts
+        self.running = running
+        self.tmuxSession = tmuxSession
+    }
+
+    public var updatedDate: Date? {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return ISO8601DateFormatter().date(from: updatedAt) ?? withFraction.date(from: updatedAt)
+    }
+
+    /// Decodes the script's JSON array (snake_case keys).
+    public static func decodeList(_ data: Data) throws -> [RemoteConversation] {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode([RemoteConversation].self, from: data)
+    }
 }
 
 public struct CreateTodoRequest: Encodable, Sendable {

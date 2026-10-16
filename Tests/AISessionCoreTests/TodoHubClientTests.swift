@@ -89,7 +89,7 @@ final class TodoHubClientTests: XCTestCase {
         }
         let conversation = try await client().openConversation(todoId: "4f3ff5fa-c99d-4fb0-b15f-734eb42d0f3f")
         XCTAssertEqual(conversation.tmuxName, "ai/claude/todo-4f3ff5fa")
-        XCTAssertEqual(conversation.claudeSessionId, "20218a19-fdb7-4835-9c7f-ed31b2fd4423")
+        XCTAssertEqual(conversation.sessionId, "20218a19-fdb7-4835-9c7f-ed31b2fd4423")
         XCTAssertEqual(conversation.computer.hostname, "mac.tailnet")
         XCTAssertEqual(conversation.status, .unknown)
         XCTAssertEqual(StubURLProtocol.requests.last?.httpMethod, "POST")
@@ -210,7 +210,7 @@ final class TodoHubClientTests: XCTestCase {
         let closed = try await client.closeConversation(todoId: todo.id)
         XCTAssertEqual(closed.status, .closed)
         let fetched = try await client.conversation(todoId: todo.id)
-        XCTAssertEqual(fetched?.claudeSessionId, opened.claudeSessionId)
+        XCTAssertEqual(fetched?.sessionId, opened.sessionId)
         try await client.deleteTodo(id: todo.id)
         let afterDelete = try await client.conversation(todoId: todo.id)
         XCTAssertNil(afterDelete)
@@ -245,7 +245,7 @@ final class TodoHubClientTests: XCTestCase {
 
     func testTodoConversationCommands() {
         let open = TmuxCommandBuilder.openTodoConversation(
-            tmuxName: "ai/claude/todo-4f3ff5fa", cwd: "~/it's here", claudeSessionId: "20218a19"
+            tmuxName: "ai/claude/todo-4f3ff5fa", cwd: "~/it's here", sessionId: "20218a19"
         )
         XCTAssertTrue(open.hasPrefix("export PATH="))
         XCTAssertTrue(open.hasSuffix(
