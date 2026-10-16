@@ -1,0 +1,1214 @@
+#!/bin/sh
+# Extract short project memories from the new part of this computer's Claude Code / Codex
+# conversations with `claude -p`, post them to todo-server, push usage stats, and write a
+# digest of each project's memories where new conversations in its folder load it.
+# todo-server only stores data: transcripts never leave this computer except as redacted
+# excerpts sent through the user's own `claude -p` (which writes no transcript itself).
+#
+# Usage:
+#   ai-todo-memory run <claude|codex> <session_id> [--dry-run] [--no-post] [--no-digest] [--force]
+#   ai-todo-memory trigger <claude|codex> <session_id> [--transcript PATH]  # from ai-todo-hook; detached
+#   ai-todo-memory nightly                                                  # from launchd
+#   ai-todo-memory digest [--project ID] [--dry-run] [--remove-all]
+#   ai-todo-memory status [--json]
+#
+# run      On demand, for one conversation. --dry-run prints the extracted memories (JSON) and
+#          changes nothing (no POST, no offset update, no digest). --no-post / --no-digest skip
+#          that step (--no-post prints the memories and keeps the offset). --force ignores the
+#          "not in a project" check.
+# trigger  run for the Stop hook: at most one per conversation every AI_TODO_MEMORY_DEBOUNCE_MIN
+#          minutes, at most 3 chunks, and it exits at once if another run holds the lock.
+#
+# Pipeline for one conversation: push its stats (ai-todo-sessions stats, unless
+# AI_TODO_STATS=off); if it is inside a project of this computer and AI_TODO_MEMORY is on, read
+# the transcript from the stored offset up to the last complete turn, render it compactly,
+# redact it (ai_todo_redact.py), cut it into 48 000-char chunks, and per chunk run
+#   claude -p --no-session-persistence --output-format json --json-schema SCHEMA --tools ""
+#          --strict-mcp-config --setting-sources "" --model MODEL --system-prompt PROMPT
+# in ~/.ai-remote/memory-state/run with AI_TODO_MEMORY_RUN=1, validate + redact its output,
+# POST /api/memories/bulk, and only then advance the offset. Then stats again and digests.
+#
+# Config: ~/.ai-remote/todo-hub.conf (shell syntax). Environment variables of the same name
+# override the AI_TODO_* keys and TODO_COMPUTER_ID.
+#   TODO_HUB_URL, TODO_API_TOKEN, TODO_COMPUTER_ID (auto-detected when unset)
+#   AI_TODO_MEMORY='on'  AI_TODO_STATS='on'  AI_TODO_MEMORY_DIGEST='on'
+#   AI_TODO_MEMORY_MODEL='sonnet'  AI_TODO_MEMORY_DEBOUNCE_MIN='30'  AI_TODO_MEMORY_BACKFILL_DAYS='7'
+#   AI_TODO_MEMORY_MAX_CHUNKS_NIGHT='40'  AI_TODO_MEMORY_MIN_CONFIDENCE='0.5'
+#
+# State: ~/.ai-remote/memory-state/ (mode 700): sessions/<tool>-<id>.json (offsets),
+# projects.json, digests.json, nightly.json, lock, run/ (claude's cwd), memory.log (ids,
+# counts and errors only; never transcript text; rotated at 1 MB).
+#
+# Exit codes: 1 a step failed (logged), 64 bad arguments, 65 refused (no hub / computer id),
+#             66 conversation not found, 90 python3, claude or ai_todo_redact.py missing.
+#
+# Test hooks (not for normal use):
+#   AI_TODO_CLAUDE_BIN, AI_TODO_SESSIONS_BIN, AI_TODO_HUB_CONF, AI_TODO_MEMORY_STATE_DIR,
+#   AI_TODO_NOW (epoch seconds), AI_TODO_MEMORY_CHUNK_CHARS, AI_TODO_HOSTNAME (comma-separated
+#   host names instead of asking tailscale / hostname)
+AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_LIB_DIR
+export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/sbin:/sbin:$PATH"
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+exec python3 - "$@" <<'PY'
+import fcntl
+import getpass
+import glob
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+HOME = os.path.expanduser("~")
+LIB_DIR = os.environ.get("AI_TODO_LIB_DIR") or os.path.join(HOME, ".ai-remote", "bin")
+AI_DIR = os.path.join(HOME, ".ai-remote")
+STATE_DIR = os.environ.get("AI_TODO_MEMORY_STATE_DIR") or os.path.join(AI_DIR, "memory-state")
+CLAUDE_PROJECTS = os.path.join(HOME, ".claude", "projects")
+CODEX_SESSIONS = os.path.join(HOME, ".codex", "sessions")
+ID_RE = re.compile(r"^[0-9a-fA-F][0-9a-fA-F-]{7,63}$")
+KINDS = ("decision", "gotcha", "open_thread", "done", "files_changed")
+
+CHUNK_CHARS = 48000
+TRIGGER_CHUNKS = 3
+KNOWN_MAX_ITEMS = 80
+KNOWN_MAX_CHARS = 12000
+PROMPT_MAX = 4000
+ASSISTANT_MAX = 2000
+COMMAND_MAX = 200
+ERROR_MAX = 300
+PROJECTS_TTL = 600
+LOG_MAX = 1024 * 1024
+
+DEFAULTS = {
+    "AI_TODO_MEMORY": "on",
+    "AI_TODO_STATS": "on",
+    "AI_TODO_MEMORY_DIGEST": "on",
+    "AI_TODO_MEMORY_MODEL": "sonnet",
+    "AI_TODO_MEMORY_DEBOUNCE_MIN": "30",
+    "AI_TODO_MEMORY_BACKFILL_DAYS": "7",
+    "AI_TODO_MEMORY_MAX_CHUNKS_NIGHT": "40",
+    "AI_TODO_MEMORY_MIN_CONFIDENCE": "0.5",
+}
+
+SYSTEM_PROMPT = """You extract durable project memory from an excerpt of an AI coding conversation.
+
+Return only facts that would help a future conversation in the same project:
+- decision: a choice that was made and why (architecture, library, approach, convention).
+- gotcha: a non-obvious pitfall, constraint, environment quirk or failure cause, and how it was handled.
+- open_thread: work that was started or agreed but is not finished, or a question left open.
+- done: a meaningful piece of work that was completed (not every small step).
+- files_changed: a one-sentence summary of a coherent change with the files involved.
+
+Rules:
+- One or two plain sentences per memory, self-contained, no "the user said". At most 12 memories.
+- Never include secrets, tokens, passwords, keys, personal data or customer data, even if present.
+- Do not repeat anything in ALREADY KNOWN. If a new memory resolves or replaces an already-known one
+  (e.g. an open thread is now done, or a decision was reversed), put that memory's id in "supersedes".
+- Section codes like Sp, I, Si and P are opaque labels: copy them as-is, never expand or interpret them.
+- File paths relative to the project folder.
+- confidence: 0.9+ explicitly stated and confirmed; 0.6–0.8 clearly implied; below 0.5 speculative.
+- If nothing durable happened, return an empty list."""
+
+SCHEMA = """{"type":"object","additionalProperties":false,"required":["memories"],
+ "properties":{"memories":{"type":"array","maxItems":12,"items":{
+   "type":"object","additionalProperties":false,"required":["kind","text","confidence"],
+   "properties":{
+     "kind":{"type":"string","enum":["decision","gotcha","open_thread","done","files_changed"]},
+     "text":{"type":"string","minLength":10,"maxLength":400},
+     "files":{"type":"array","maxItems":20,"items":{"type":"string","maxLength":300}},
+     "confidence":{"type":"number","minimum":0,"maximum":1},
+     "supersedes":{"type":"array","maxItems":10,"items":{"type":"string"}}}}}}}"""
+
+
+class Refused(Exception):
+    """Can't run at all (no hub URL, unknown computer): exit 65."""
+
+
+class HubError(Exception):
+    pass
+
+
+class ExtractError(Exception):
+    pass
+
+
+def die(message, code):
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+def now():
+    try:
+        return float(os.environ.get("AI_TODO_NOW") or time.time())
+    except ValueError:
+        return time.time()
+
+
+def iso(ts):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def tilde(path):
+    if path and (path == HOME or path.startswith(HOME + "/")):
+        return "~" + path[len(HOME):]
+    return path or ""
+
+
+def real_prompt(text):
+    """Text the user typed, not tool results, command wrappers or injected context."""
+    text = (text or "").strip() if isinstance(text, str) else ""
+    if not text or text.startswith("<") or text.startswith("# AGENTS.md"):
+        return ""
+    return text
+
+
+def cut(text, limit):
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def one_line(text):
+    return " ".join(str(text).split())
+
+
+def is_on(value):
+    return str(value).strip().lower() not in ("off", "0", "false", "no")
+
+
+# --- Files and state ------------------------------------------------------------
+
+def ensure_state_dir():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    os.chmod(STATE_DIR, 0o700)
+
+
+def load_json(path, default=None):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def write_atomic(path, data, mode=0o600):
+    """Write bytes or text via a temp file + rename in the same directory."""
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".ai-todo-memory.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def save_json(path, value):
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    write_atomic(path, json.dumps(value, indent=1, sort_keys=True) + "\n")
+
+
+def session_state_path(tool, sid):
+    return os.path.join(STATE_DIR, "sessions", "%s-%s.json" % (tool, sid))
+
+
+class Log:
+    """memory.log: ids, counts and errors only, never transcript text."""
+
+    enabled = True
+
+    @classmethod
+    def write(cls, event, **fields):
+        if not cls.enabled:
+            return
+        try:
+            ensure_state_dir()
+            path = os.path.join(STATE_DIR, "memory.log")
+            if os.path.exists(path) and os.path.getsize(path) > LOG_MAX:
+                os.replace(path, path + ".1")
+            parts = [iso(time.time()), event] + ["%s=%s" % (k, one_line(v)) for k, v in fields.items()]
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "a") as f:
+                f.write(" ".join(parts) + "\n")
+        except OSError:
+            pass
+
+
+def take_lock(blocking):
+    ensure_state_dir()
+    fd = os.open(os.path.join(STATE_DIR, "lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+# --- Configuration and hub --------------------------------------------------------
+
+class Config:
+    def __init__(self):
+        self.path = os.environ.get("AI_TODO_HUB_CONF") or os.path.join(AI_DIR, "todo-hub.conf")
+        self.values = dict(DEFAULTS)
+        try:
+            with open(self.path) as f:
+                for line in f:
+                    m = re.match(r"\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$", line.rstrip("\n"))
+                    if m:
+                        self.values[m.group(1)] = self.unquote(m.group(2))
+        except OSError:
+            pass
+        for key in list(DEFAULTS) + ["TODO_COMPUTER_ID"]:
+            if os.environ.get(key):
+                self.values[key] = os.environ[key]
+
+    @staticmethod
+    def unquote(raw):
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+            return raw[1:-1]
+        return raw.split("#", 1)[0].strip()
+
+    def get(self, key):
+        return self.values.get(key, "") or ""
+
+    def on(self, key):
+        return is_on(self.values.get(key, DEFAULTS.get(key, "on")))
+
+    def number(self, key, kind=int):
+        try:
+            return kind(self.get(key))
+        except ValueError:
+            return kind(DEFAULTS[key])
+
+
+class Hub:
+    def __init__(self, conf):
+        self.url = conf.get("TODO_HUB_URL").rstrip("/")
+        self.token = conf.get("TODO_API_TOKEN")
+
+    def request(self, method, path, query=None, body=None, timeout=20):
+        if not self.url:
+            raise HubError("no TODO_HUB_URL")
+        url = self.url + path
+        if query:
+            url += "?" + urllib.parse.urlencode(query, doseq=True)
+        data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method=method)
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        if self.token:
+            req.add_header("Authorization", "Bearer " + self.token)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as e:
+            raise HubError("%s %s: HTTP %s" % (method, path, e.code))
+        except (urllib.error.URLError, OSError) as e:
+            raise HubError("%s %s: %s" % (method, path, type(e).__name__))
+        try:
+            return json.loads(raw) if raw else None
+        except ValueError:
+            raise HubError("%s %s: not JSON" % (method, path))
+
+
+def candidate_hostnames():
+    explicit = os.environ.get("AI_TODO_HOSTNAME")
+    if explicit:
+        return {h.strip().lower().rstrip(".") for h in explicit.split(",") if h.strip()}
+    names = set()
+
+    def output(argv):
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
+            return r.stdout if r.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    tailscale = shutil.which("tailscale") or "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    if os.path.exists(tailscale):
+        names.update(line.strip() for line in output([tailscale, "ip", "-4"]).splitlines() if line.strip())
+        try:
+            dns = (json.loads(output([tailscale, "status", "--json"]) or "{}").get("Self") or {}).get("DNSName") or ""
+        except ValueError:
+            dns = ""
+        if dns:
+            names.add(dns.rstrip("."))
+            names.add(dns.split(".")[0])
+    short = output(["hostname", "-s"]).strip()
+    if short:
+        names.add(short)
+    return {n.lower().rstrip(".") for n in names if n}
+
+
+def resolve_computer_id(conf, hub):
+    cid = conf.get("TODO_COMPUTER_ID")
+    if cid:
+        return cid
+    try:
+        computers = hub.request("GET", "/api/computers")
+    except HubError as e:
+        raise Refused("TODO_COMPUTER_ID is not set and todo-server can't be asked (%s)" % e)
+    user = os.environ.get("USER") or getpass.getuser()
+    hosts = candidate_hostnames()
+    matches = [c for c in computers if isinstance(c, dict) and c.get("username") == user
+               and str(c.get("hostname") or "").lower().rstrip(".") in hosts] if isinstance(computers, list) else []
+    if len(matches) == 1 and matches[0].get("id"):
+        print("ai-todo-memory: using computer %s (%s); set TODO_COMPUTER_ID='%s' in %s or run install.sh --computer-id"
+              % (matches[0]["id"], matches[0].get("name") or matches[0].get("hostname"), matches[0]["id"], conf.path),
+              file=sys.stderr)
+        return matches[0]["id"]
+    raise Refused("can't tell which todo-server computer this is (%d matches for user %s); set TODO_COMPUTER_ID in %s"
+                  % (len(matches), user, conf.path))
+
+
+# --- Projects ---------------------------------------------------------------------
+
+def expand_folder(folder):
+    """Absolute folder for a project folder (~, trailing / and // allowed). None if unusable."""
+    if not isinstance(folder, str) or not folder.strip():
+        return None
+    path = folder.strip()
+    if path == "~" or path.startswith("~/"):
+        path = HOME + path[1:]
+    path = re.sub(r"/+", "/", path)
+    if len(path) > 1:
+        path = path.rstrip("/")
+    return path if path.startswith("/") else None
+
+
+def within(path, folder):
+    return path == folder or path.startswith(folder.rstrip("/") + "/")
+
+
+def spellings(path):
+    out = {path}
+    try:
+        out.add(os.path.realpath(path))
+    except OSError:
+        pass
+    return out
+
+
+def project_computer(project):
+    computer = project.get("computer") if isinstance(project.get("computer"), dict) else {}
+    return computer.get("id") or project.get("computer_id")
+
+
+class Projects:
+    """This computer's projects from GET /api/projects, cached in projects.json for 10 min.
+    A failed fetch keeps the last good copy."""
+
+    def __init__(self, hub, computer_id, write, force_refresh=False):
+        self.path = os.path.join(STATE_DIR, "projects.json")
+        self.computer_id = computer_id
+        self.fresh = False
+        cache = load_json(self.path)
+        if not isinstance(cache, dict) or not isinstance(cache.get("projects"), list):
+            cache = None
+        if force_refresh or cache is None or now() - float(cache.get("fetched_at") or 0) > PROJECTS_TTL:
+            try:
+                projects = hub.request("GET", "/api/projects")
+                if not isinstance(projects, list):
+                    raise HubError("GET /api/projects: not a list")
+                cache = {"fetched_at": now(), "projects": projects}
+                self.fresh = True
+                if write:
+                    ensure_state_dir()
+                    save_json(self.path, cache)
+            except HubError as e:
+                Log.write("projects_fetch_failed", error=e)
+        self.known = cache is not None
+        self.all = [p for p in (cache or {}).get("projects", []) if isinstance(p, dict)]
+
+    def mine(self):
+        return [p for p in self.all if project_computer(p) == self.computer_id and expand_folder(p.get("folder"))]
+
+    def by_id(self, pid):
+        for p in self.all:
+            if p.get("id") == pid:
+                return p
+        return None
+
+    def match(self, cwd):
+        best, best_len = None, -1
+        for p in self.mine():
+            folder = expand_folder(p.get("folder"))
+            for c in spellings(cwd):
+                for f in spellings(folder):
+                    if within(c, f) and len(f) > best_len:
+                        best, best_len = p, len(f)
+        return best
+
+
+# --- Transcripts --------------------------------------------------------------------
+
+def find_transcript(tool, sid, hint=None):
+    if tool == "claude":
+        if hint and os.path.basename(hint) == sid + ".jsonl" and os.path.isfile(hint):
+            return hint
+        paths = glob.glob(os.path.join(CLAUDE_PROJECTS, "*", glob.escape(sid) + ".jsonl"))
+    else:
+        paths = glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*-" + glob.escape(sid) + ".jsonl"), recursive=True)
+    return max(paths, key=os.path.getmtime) if paths else None
+
+
+class Line:
+    __slots__ = ("start", "end", "raw", "entry")
+
+    def __init__(self, start, end, raw, entry):
+        self.start, self.end, self.raw, self.entry = start, end, raw, entry
+
+
+def read_lines(path, start=0):
+    """Complete (newline-terminated) lines from byte `start`. A half-written last line is ignored."""
+    with open(path, "rb") as f:
+        f.seek(start)
+        data = f.read()
+    lines, pos = [], start
+    for raw in data.split(b"\n")[:-1]:
+        end = pos + len(raw) + 1
+        try:
+            entry = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            entry = None
+        lines.append(Line(pos, end, raw, entry if isinstance(entry, dict) else None))
+        pos = end
+    return lines
+
+
+def entry_id(tool, line):
+    if tool == "claude" and line.entry and isinstance(line.entry.get("uuid"), str):
+        return line.entry["uuid"]
+    return "sha1:" + hashlib.sha1(line.raw).hexdigest()
+
+
+def transcript_cwd(tool, path):
+    try:
+        with open(path, "rb") as f:
+            for n, raw in enumerate(f):
+                if n > 200:
+                    break
+                try:
+                    entry = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                if tool == "claude" and isinstance(entry.get("cwd"), str):
+                    return entry["cwd"]
+                if tool == "codex":
+                    payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+                    if entry.get("type") != "session_meta":
+                        return None
+                    source = payload.get("source")
+                    if isinstance(source, dict) and "subagent" in source:
+                        return None
+                    return payload.get("cwd") if isinstance(payload.get("cwd"), str) else None
+    except OSError:
+        return None
+    return None
+
+
+def resume_offset(tool, path, state):
+    """Where the unread part starts: the stored offset, or (file replaced / shrunk) just after
+    the line with last_entry_id, or 0 when that line isn't there any more."""
+    offset = int(state.get("offset") or 0)
+    if offset <= 0:
+        return 0
+    st = os.stat(path)
+    same = state.get("inode") == st.st_ino and st.st_size >= offset
+    if same:
+        with open(path, "rb") as f:
+            f.seek(offset - 1)
+            same = f.read(1) == b"\n"
+    if same:
+        return offset
+    wanted = state.get("last_entry_id")
+    if wanted:
+        for line in read_lines(path, 0):
+            if entry_id(tool, line) == wanted:
+                Log.write("resync", tool=tool, session=state.get("session_id", ""), found="yes")
+                return line.end
+    Log.write("resync", tool=tool, session=state.get("session_id", ""), found="no")
+    return 0
+
+
+def turn_end_indexes(tool, lines):
+    """Indexes of the last line of each complete turn."""
+    ends = []
+    for i, line in enumerate(lines):
+        e = line.entry
+        if not e:
+            continue
+        if tool == "codex":
+            payload = e.get("payload") if isinstance(e.get("payload"), dict) else {}
+            if e.get("type") == "event_msg" and payload.get("type") == "task_complete":
+                ends.append(i)
+            continue
+        message = e.get("message") if isinstance(e.get("message"), dict) else {}
+        if e.get("isSidechain") or e.get("type") != "assistant" or message.get("stop_reason") != "end_turn":
+            continue
+        last = i
+        for j in range(i + 1, len(lines)):
+            f = lines[j].entry or {}
+            if f.get("type") == "system" and f.get("subtype") == "turn_duration":
+                last = j
+                break
+            fm = f.get("message") if isinstance(f.get("message"), dict) else {}
+            if f.get("type") == "assistant" and message.get("id") and fm.get("id") == message.get("id"):
+                last = j
+                continue
+            break
+        ends.append(last)
+    return sorted(set(ends))
+
+
+# --- Rendering ----------------------------------------------------------------------
+
+class Renderer:
+    def __init__(self, folder):
+        self.folder = folder  # absolute; paths are shown relative to it
+
+    def path(self, value):
+        if not isinstance(value, str) or not value:
+            return "?"
+        if os.path.isabs(value):
+            value = os.path.normpath(value)
+            if self.folder and within(value, self.folder):
+                return os.path.relpath(value, self.folder)
+            return tilde(value)
+        return value
+
+    def tool_call(self, name, args):
+        name = str(name or "tool")
+        args = args if isinstance(args, dict) else {}
+        if name == "Bash" and args.get("command"):
+            return "[Bash: %s]" % cut(one_line(args["command"]), COMMAND_MAX)
+        target = args.get("file_path") or args.get("notebook_path")
+        if isinstance(target, str):
+            return "[%s %s]" % (name, self.path(target))
+        for key in ("pattern", "path", "url", "query", "description", "skill", "subagent_type"):
+            if isinstance(args.get(key), str) and args[key].strip():
+                return "[%s: %s]" % (name, cut(one_line(args[key]), COMMAND_MAX))
+        return "[%s]" % name
+
+    @staticmethod
+    def user(text):
+        text = real_prompt(text)
+        return ["USER: " + cut(text, PROMPT_MAX)] if text else []
+
+    @staticmethod
+    def error(text):
+        return ["[tool error: %s]" % cut(one_line(text), ERROR_MAX)]
+
+    def claude(self, entry):
+        if entry.get("isSidechain"):
+            return []
+        message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        content = message.get("content")
+        out = []
+        if entry.get("type") == "user":
+            if entry.get("isMeta"):
+                return []
+            if isinstance(content, str):
+                return self.user(content)
+            for part in content if isinstance(content, list) else []:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    out += self.user(part.get("text"))
+                elif part.get("type") == "tool_result" and part.get("is_error"):
+                    result = part.get("content")
+                    if isinstance(result, list):
+                        result = " ".join(p.get("text", "") for p in result if isinstance(p, dict))
+                    out += self.error(result or "")
+            return out
+        if entry.get("type") == "assistant":
+            if isinstance(content, str) and content.strip():
+                return ["ASSISTANT: " + cut(content.strip(), ASSISTANT_MAX)]
+            for part in content if isinstance(content, list) else []:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text" and str(part.get("text") or "").strip():
+                    out.append("ASSISTANT: " + cut(part["text"].strip(), ASSISTANT_MAX))
+                elif part.get("type") == "tool_use":
+                    out.append(self.tool_call(part.get("name"), part.get("input")))
+            return out
+        return []
+
+    def patch_lines(self, text):
+        out = []
+        for verb, target in re.findall(r"^\*\*\* (Add|Update|Delete) File: (.+?)\s*$", text, re.M):
+            out.append("[%s %s]" % ({"Update": "Edit"}.get(verb, verb), self.path(target)))
+        return out
+
+    def codex(self, entry):
+        if entry.get("type") != "response_item":
+            return []
+        p = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        kind = p.get("type")
+        if kind == "message":
+            parts = [x for x in p.get("content") or [] if isinstance(x, dict)]
+            if p.get("role") == "user":
+                return [line for x in parts if x.get("type") == "input_text" for line in self.user(x.get("text"))]
+            if p.get("role") == "assistant":
+                return ["ASSISTANT: " + cut(x["text"].strip(), ASSISTANT_MAX)
+                        for x in parts if x.get("type") == "output_text" and str(x.get("text") or "").strip()]
+            return []
+        if kind in ("function_call", "custom_tool_call", "local_shell_call"):
+            if kind == "custom_tool_call":
+                raw = p.get("input")
+            elif kind == "local_shell_call":
+                raw = (p.get("action") or {}) if isinstance(p.get("action"), dict) else {}
+            else:
+                raw = p.get("arguments")
+                try:
+                    raw = json.loads(raw) if isinstance(raw, str) else raw
+                except ValueError:
+                    pass
+            texts = [raw] if isinstance(raw, str) else []
+            command = raw.get("command") if isinstance(raw, dict) else None
+            if isinstance(command, list):
+                texts += [c for c in command if isinstance(c, str)]
+            for text in texts:
+                if "*** Begin Patch" in text:
+                    return self.patch_lines(text)
+            if command:
+                if isinstance(command, list):
+                    command = command[-1] if len(command) >= 3 and command[1] in ("-lc", "-c") else " ".join(map(str, command))
+                return ["[Bash: %s]" % cut(one_line(command), COMMAND_MAX)]
+            return ["[%s]" % (p.get("name") or kind)]
+        if kind in ("function_call_output", "custom_tool_call_output"):
+            output = p.get("output")
+            try:
+                parsed = json.loads(output) if isinstance(output, str) else output
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict) and isinstance(parsed.get("metadata"), dict):
+                code = parsed["metadata"].get("exit_code")
+                if isinstance(code, int) and code != 0:
+                    return self.error(parsed.get("output") or "")
+            return []
+        return []
+
+
+def entry_ts(entry):
+    value = entry.get("timestamp") if entry else None
+    return value if isinstance(value, str) else None
+
+
+# --- Extraction ---------------------------------------------------------------------
+
+def find_claude():
+    explicit = os.environ.get("AI_TODO_CLAUDE_BIN")
+    if explicit:
+        return explicit
+    found = shutil.which("claude")
+    if found:
+        return found
+    candidates = sorted(glob.glob(os.path.join(HOME, ".nvm", "versions", "node", "*", "bin", "claude")))
+    return candidates[-1] if candidates else None
+
+
+def run_claude(model, message):
+    claude = find_claude()
+    if not claude:
+        raise ExtractError("claude not found")
+    run_dir = os.path.join(STATE_DIR, "run")
+    os.makedirs(run_dir, exist_ok=True)
+    os.chmod(run_dir, 0o700)
+    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
+    env["AI_TODO_MEMORY_RUN"] = "1"
+    schema = json.dumps(json.loads(SCHEMA), separators=(",", ":"))
+    argv = [claude, "-p", "--no-session-persistence", "--output-format", "json", "--json-schema", schema,
+            "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--model", model,
+            "--system-prompt", SYSTEM_PROMPT]
+    try:
+        result = subprocess.run(argv, input=message, capture_output=True, text=True, cwd=run_dir,
+                                env=env, timeout=900, check=False)
+    except subprocess.TimeoutExpired:
+        raise ExtractError("claude timed out")
+    except OSError as e:
+        raise ExtractError("claude failed to start (%s)" % type(e).__name__)
+    if result.returncode != 0:
+        raise ExtractError("claude exit %d" % result.returncode)
+    try:
+        envelope = json.loads(result.stdout)
+    except ValueError:
+        raise ExtractError("claude output is not JSON")
+    if isinstance(envelope, list):  # some versions print every message; the result is last
+        envelope = next((m for m in reversed(envelope) if isinstance(m, dict) and m.get("type") == "result"), None)
+    if not isinstance(envelope, dict) or envelope.get("is_error"):
+        raise ExtractError("claude reported an error")
+    output = envelope.get("structured_output")
+    if not isinstance(output, dict) or not isinstance(output.get("memories"), list):
+        raise ExtractError("no structured_output")
+    return output["memories"]
+
+
+def clean_memories(items, min_confidence, redact, folder_renderer):
+    """Validate against the schema again, drop low confidence, redact a second time."""
+    kept, dropped = [], 0
+    for m in items[:12]:
+        if not isinstance(m, dict):
+            dropped += 1
+            continue
+        kind, text, confidence = m.get("kind"), m.get("text"), m.get("confidence")
+        if kind not in KINDS or not isinstance(text, str) or isinstance(confidence, bool) \
+                or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+            dropped += 1
+            continue
+        text = one_line(text)
+        if not 10 <= len(text) <= 400 or confidence < min_confidence:
+            dropped += 1
+            continue
+        files = m.get("files") if isinstance(m.get("files"), list) else []
+        files = [redact(folder_renderer.path(f.strip()))[:300] for f in files[:20] if isinstance(f, str) and f.strip()]
+        supersedes = [s for s in (m.get("supersedes") or [])[:10] if isinstance(s, str) and s.strip()] \
+            if isinstance(m.get("supersedes"), list) else []
+        kept.append({"kind": kind, "text": redact(text)[:400].strip(), "files": files,
+                     "confidence": float(confidence), "supersedes": supersedes})
+    return kept, dropped
+
+
+class Context:
+    def __init__(self, conf, flags, chunk_cap):
+        self.conf = conf
+        self.hub = Hub(conf)
+        self.dry = "--dry-run" in flags
+        self.no_post = "--no-post" in flags
+        self.no_digest = "--no-digest" in flags or not conf.on("AI_TODO_MEMORY_DIGEST")
+        self.force = "--force" in flags
+        self.chunks_left = chunk_cap
+        self.errors = 0
+        self.touched_projects = set()
+        self.printed = []
+        Log.enabled = not self.dry
+        if not conf.get("TODO_HUB_URL"):
+            raise Refused("no TODO_HUB_URL in %s" % conf.path)
+        self.computer_id = resolve_computer_id(conf, self.hub)
+        self.projects = None
+        self._redactor = None
+        self.secrets = None
+
+    def load_projects(self, force_refresh=False):
+        if self.projects is None:
+            self.projects = Projects(self.hub, self.computer_id, write=not self.dry, force_refresh=force_refresh)
+        return self.projects
+
+    def redactor(self):
+        if self._redactor is None:
+            if LIB_DIR not in sys.path:
+                sys.path.insert(0, LIB_DIR)
+            try:
+                import ai_todo_redact
+            except ImportError:
+                die("ai_todo_redact.py not found in %s; refusing to send anything" % LIB_DIR, 90)
+            self._redactor = ai_todo_redact
+            self.secrets = ai_todo_redact.secret_values_from_env(os.environ)
+            if self.conf.get("TODO_API_TOKEN"):
+                self.secrets.append(self.conf.get("TODO_API_TOKEN"))
+        return lambda text: self._redactor.redact(text, self.secrets)
+
+
+def push_stats(ctx, sessions=None, since=None):
+    """ai-todo-sessions stats --json -> POST /api/sessions/stats. Returns True when done."""
+    if ctx.dry or not ctx.conf.on("AI_TODO_STATS"):
+        return True
+    sessions_bin = os.environ.get("AI_TODO_SESSIONS_BIN") or os.path.join(LIB_DIR, "ai-todo-sessions")
+    argv = [sessions_bin, "stats", "--json"]
+    for tool, sid in sessions or []:
+        argv += ["--session", "%s:%s" % (tool, sid)]
+    if since is not None:
+        argv += ["--since", "%g" % since]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=900, check=False)
+        rows = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        rows = None
+    if not isinstance(rows, list):
+        Log.write("error", step="stats", detail="ai-todo-sessions stats failed")
+        ctx.errors += 1
+        return False
+    try:
+        for i in range(0, len(rows), 200):
+            ctx.hub.request("POST", "/api/sessions/stats",
+                            body={"computer_id": ctx.computer_id, "sessions": rows[i:i + 200]})
+    except HubError as e:
+        Log.write("error", step="stats", error=e)
+        ctx.errors += 1
+        return False
+    Log.write("stats", sessions=len(rows))
+    return True
+
+
+def fetch_known(ctx, tool, sid, project):
+    """Memories the model must not repeat: this session's, then the project's pinned, open
+    threads and newest of the last 30 days. Raises HubError."""
+    found = []
+    queries = [{"tool": tool, "session_id": sid, "include_archived": "true", "limit": 100}]
+    if project:
+        pid = project["id"]
+        since = time.strftime("%Y-%m-%d", time.gmtime(now() - 30 * 86400))
+        queries += [{"project_id": pid, "pinned": "true", "limit": 100},
+                    {"project_id": pid, "kind": "open_thread", "limit": 100},
+                    {"project_id": pid, "since": since, "limit": 100}]
+    for query in queries:
+        result = ctx.hub.request("GET", "/api/memories", query=query)
+        if not isinstance(result, list):
+            raise HubError("GET /api/memories: not a list")
+        found += [m for m in result if isinstance(m, dict) and m.get("id")]
+    return found
+
+
+def known_block(known, cap_chars):
+    lines, seen, size = [], set(), 0
+    for m in known:
+        if m["id"] in seen or len(lines) >= KNOWN_MAX_ITEMS:
+            continue
+        line = "- [%s] %s: %s" % (m["id"], m.get("kind"), one_line(m.get("text") or ""))
+        if size + len(line) + 1 > cap_chars:
+            break
+        seen.add(m["id"])
+        lines.append(line)
+        size += len(line) + 1
+    return "\n".join(lines) if lines else "- (none)"
+
+
+def build_turns(tool, lines, ends, renderer, redact):
+    """Group lines into complete turns: [{end, pieces, prompt, first, last}]."""
+    turns, start = [], 0
+    for end_index in ends:
+        pieces, prompt, stamps = [], False, []
+        for line in lines[start:end_index + 1]:
+            if not line.entry:
+                continue
+            rendered = renderer.claude(line.entry) if tool == "claude" else renderer.codex(line.entry)
+            if rendered:
+                stamp = entry_ts(line.entry)
+                if stamp:
+                    stamps.append(stamp)
+            for piece in rendered:
+                prompt = prompt or piece.startswith("USER: ")
+                pieces.append(redact(piece))
+        turns.append({"end": lines[end_index].end, "end_line": lines[end_index], "pieces": pieces,
+                      "prompt": prompt, "first": stamps[0] if stamps else None, "last": stamps[-1] if stamps else None})
+        start = end_index + 1
+    return turns
+
+
+def chunk_turns(turns, budget):
+    """Pack whole turns into chunks of at most `budget` chars; a turn too big for one chunk is
+    split on entry boundaries. Each chunk's `end` is the end of the last turn that completes in
+    it (None: none does, so its offset can't be saved on its own)."""
+    chunks = []
+    current = {"pieces": [], "size": 0, "end": None, "end_line": None, "first": None, "last": None}
+
+    def close():
+        nonlocal current
+        if current["pieces"] or current["end"] is not None:
+            chunks.append(current)
+        current = {"pieces": [], "size": 0, "end": None, "end_line": None, "first": None, "last": None}
+
+    for turn in turns:
+        size = sum(len(p) + 1 for p in turn["pieces"])
+        if current["pieces"] and current["size"] + size > budget:
+            close()
+        for piece in turn["pieces"]:
+            piece = piece[:budget - 1]
+            if current["pieces"] and current["size"] + len(piece) + 1 > budget:
+                close()
+            current["pieces"].append(piece)
+            current["size"] += len(piece) + 1
+        current["end"], current["end_line"] = turn["end"], turn["end_line"]
+        current["first"] = current["first"] or turn["first"]
+        current["last"] = turn["last"] or current["last"]
+    close()
+    # A chunk with nothing to send only moves the offset: fold it into the chunk before it.
+    merged = []
+    for chunk in chunks:
+        if not chunk["pieces"] and merged:
+            merged[-1]["end"], merged[-1]["end_line"] = chunk["end"], chunk["end_line"]
+        else:
+            merged.append(chunk)
+    return merged
+
+
+def header(project, tool, sid, cwd, n, m, first, last):
+    if project:
+        computer = project.get("computer") if isinstance(project.get("computer"), dict) else {}
+        head = "PROJECT: %s (%s) on %s" % (project.get("name"), project.get("folder"),
+                                           computer.get("name") or "this computer")
+    else:
+        head = "PROJECT: (none)"
+    return "%s\nCONVERSATION: %s %s, cwd %s, excerpt %d/%d, %s – %s\n\nALREADY KNOWN:\n" % (
+        head, tool, sid, tilde(cwd), n, m, first or "?", last or "?")
+
+
+def save_offset(tool, sid, path, state, chunk):
+    state.update({"path": path, "inode": os.stat(path).st_ino, "offset": chunk["end"],
+                  "last_entry_id": entry_id(tool, chunk["end_line"])})
+    save_json(session_state_path(tool, sid), state)
+
+
+def process_session(ctx, tool, sid, mode, hint=None):
+    """The pipeline for one conversation. mode: run | trigger | nightly."""
+    path = find_transcript(tool, sid, hint)
+    if not path:
+        Log.write("not_found", tool=tool, session=sid)
+        return "missing"
+    state_path = session_state_path(tool, sid)
+    state = load_json(state_path, {}) or {}
+    first_run = "offset" not in state
+    errors_before = ctx.errors
+    state.setdefault("session_id", sid)
+    if not ctx.dry:
+        ensure_state_dir()
+        state["last_run"] = now()
+        save_json(state_path, state)
+
+    push_stats(ctx, sessions=[(tool, sid)])
+    conf = ctx.conf
+    if not conf.on("AI_TODO_MEMORY"):
+        return "memory off"
+    cwd = transcript_cwd(tool, path)
+    if not cwd:
+        return "no cwd"
+    cwd = os.path.normpath(cwd)
+    if within(cwd, AI_DIR) or (not within(cwd, HOME) and any(
+            within(cwd, t) for t in spellings(tempfile.gettempdir()) | {"/tmp", "/private/tmp", "/var/tmp"})):
+        return "skipped cwd"
+    project = ctx.load_projects().match(cwd)
+    if project is None and not ctx.force:
+        Log.write("not_in_project", tool=tool, session=sid)
+        return "not in a project"
+    if first_run and mode in ("trigger", "nightly") and \
+            os.path.getmtime(path) < now() - conf.number("AI_TODO_MEMORY_BACKFILL_DAYS", float) * 86400:
+        lines = read_lines(path, 0)
+        ends = turn_end_indexes(tool, lines)
+        if ends and not ctx.dry:
+            save_offset(tool, sid, path, state, {"end": lines[ends[-1]].end, "end_line": lines[ends[-1]]})
+        Log.write("backfill_skipped", tool=tool, session=sid)
+        return "older than the backfill window"
+
+    start = resume_offset(tool, path, state)
+    lines = read_lines(path, start)
+    ends = turn_end_indexes(tool, lines)
+    if not ends:
+        return "no complete turn"
+    folder = expand_folder(project.get("folder")) if project else cwd
+    redact = ctx.redactor()
+    renderer = Renderer(folder)
+    turns = build_turns(tool, lines, ends, renderer, redact)
+    if not any(t["prompt"] for t in turns):
+        if not ctx.dry and not ctx.no_post:
+            save_offset(tool, sid, path, state, {"end": turns[-1]["end"], "end_line": turns[-1]["end_line"]})
+        return "no prompt"
+
+    chunk_chars = int(os.environ.get("AI_TODO_MEMORY_CHUNK_CHARS") or CHUNK_CHARS)
+    known_cap = min(KNOWN_MAX_CHARS, chunk_chars // 4)
+    head_size = len(header(project, tool, sid, cwd, 999, 999, "2026-01-01T00:00:00.000Z",
+                           "2026-01-01T00:00:00.000Z")) + len("\n\nEXCERPT:\n") + 2
+    chunks = chunk_turns(turns, max(200, chunk_chars - known_cap - head_size))
+    try:
+        known = fetch_known(ctx, tool, sid, project)
+    except HubError as e:
+        Log.write("error", step="known", tool=tool, session=sid, error=e)
+        ctx.errors += 1
+        return "hub error"
+
+    model = conf.get("AI_TODO_MEMORY_MODEL") or "sonnet"
+    min_conf = conf.number("AI_TODO_MEMORY_MIN_CONFIDENCE", float)
+    found, ran, posted, duplicates = [], 0, 0, 0
+    for n, chunk in enumerate(chunks, 1):
+        if not chunk["pieces"]:
+            continue
+        if ctx.chunks_left <= 0:
+            Log.write("chunk_cap", tool=tool, session=sid, left=len(chunks) - n + 1)
+            break
+        ctx.chunks_left -= 1
+        message = header(project, tool, sid, cwd, n, len(chunks), chunk["first"], chunk["last"]) \
+            + known_block(found + known, known_cap) + "\n\nEXCERPT:\n" + "\n".join(chunk["pieces"]) + "\n"
+        message = redact(message)
+        try:
+            ran += 1
+            memories, dropped = clean_memories(run_claude(model, message), min_conf, redact, renderer)
+        except ExtractError as e:
+            Log.write("error", step="extract", tool=tool, session=sid, chunk=n, error=e)
+            ctx.errors += 1
+            break
+        if ctx.dry or ctx.no_post:
+            ctx.printed += memories
+            found += [dict(m, id="new-%d" % (len(found) + i + 1)) for i, m in enumerate(memories)]
+            continue
+        if memories:
+            body = {"computer_id": ctx.computer_id, "tool": tool, "session_id": sid, "cwd": tilde(cwd),
+                    "memories": memories}
+            try:
+                response = ctx.hub.request("POST", "/api/memories/bulk", body=body) or {}
+            except HubError as e:
+                Log.write("error", step="post", tool=tool, session=sid, chunk=n, error=e)
+                ctx.errors += 1
+                break
+            inserted = [m for m in response.get("inserted") or [] if isinstance(m, dict) and m.get("id")]
+            found += inserted
+            posted += len(inserted)
+            duplicates += int(response.get("duplicates") or 0)
+            if inserted and (response.get("project_id") or project):
+                ctx.touched_projects.add(response.get("project_id") or project["id"])
+        if chunk["end"] is not None:
+            save_offset(tool, sid, path, state, chunk)
+        Log.write("chunk", tool=tool, session=sid, chunk="%d/%d" % (n, len(chunks)), memories=len(memories),
+                  dropped=dropped)
+    if ran and not ctx.dry:
+        push_stats(ctx, sessions=[(tool, sid)])
+    if not ctx.dry and ctx.errors == errors_before:
+        state = load_json(state_path, state) or state
+        state["last_ok"] = now()
+        save_json(state_path, state)
+    Log.write("run", tool=tool, session=sid, chunks=ran, posted=posted, duplicates=duplicates)
+    return "%d chunk(s), %d memories posted, %d duplicate(s)" % (ran, posted, duplicates)
+
+
+def refresh_digests(ctx, project_ids=None):
+    """Rewrite the digests of these projects (all of this computer's when None)."""
+    return
+
+
+# --- Commands -------------------------------------------------------------------------
+
+def parse_session_args(args, usage, allowed, with_values=()):
+    flags, values, rest = set(), {}, []
+    while args:
+        a = args.pop(0)
+        if a in with_values and args:
+            values[a] = args.pop(0)
+        elif a in allowed:
+            flags.add(a)
+        elif a.startswith("--"):
+            die(usage, 64)
+        else:
+            rest.append(a)
+    if len(rest) != 2 or rest[0] not in ("claude", "codex") or not ID_RE.match(rest[1]):
+        die(usage, 64)
+    return rest[0], rest[1], flags, values
+
+
+def cmd_run(args):
+    usage = "usage: ai-todo-memory run <claude|codex> <session_id> [--dry-run] [--no-post] [--no-digest] [--force]"
+    tool, sid, flags, _ = parse_session_args(args, usage, ("--dry-run", "--no-post", "--no-digest", "--force"))
+    conf = Config()
+    ctx = Context(conf, flags, conf.number("AI_TODO_MEMORY_MAX_CHUNKS_NIGHT"))
+    lock = None if ctx.dry else take_lock(blocking=True)
+    try:
+        outcome = process_session(ctx, tool, sid, "run")
+        if outcome == "missing":
+            die("no %s conversation %s on this computer" % (tool, sid), 66)
+        if ctx.dry or ctx.no_post:
+            print(json.dumps({"tool": tool, "session_id": sid, "memories": ctx.printed}, indent=1, ensure_ascii=False))
+        else:
+            print("%s %s: %s" % (tool, sid, outcome))
+        if ctx.touched_projects and not ctx.no_digest and not ctx.dry:
+            refresh_digests(ctx, ctx.touched_projects)
+    finally:
+        if lock is not None:
+            os.close(lock)
+    sys.exit(1 if ctx.errors else 0)
+
+
+def cmd_trigger(args):
+    usage = "usage: ai-todo-memory trigger <claude|codex> <session_id> [--transcript PATH]"
+    tool, sid, _, values = parse_session_args(args, usage, (), with_values=("--transcript",))
+    conf = Config()
+    if not conf.on("AI_TODO_MEMORY") and not conf.on("AI_TODO_STATS"):
+        return
+    state = load_json(session_state_path(tool, sid), {}) or {}
+    debounce = conf.number("AI_TODO_MEMORY_DEBOUNCE_MIN", float) * 60
+    if now() - float(state.get("last_run") or 0) < debounce:
+        return
+    lock = take_lock(blocking=False)
+    if lock is None:
+        Log.write("trigger_skipped_locked", tool=tool, session=sid)
+        return
+    try:
+        state = load_json(session_state_path(tool, sid), {}) or {}
+        if now() - float(state.get("last_run") or 0) < debounce:
+            return
+        ctx = Context(conf, set(), TRIGGER_CHUNKS)
+        process_session(ctx, tool, sid, "trigger", hint=values.get("--transcript"))
+        if ctx.touched_projects and not ctx.no_digest:
+            refresh_digests(ctx, ctx.touched_projects)
+    finally:
+        os.close(lock)
+    sys.exit(1 if ctx.errors else 0)
+
+
+def cmd_status(args):
+    as_json = "--json" in args
+    conf = Config()
+    digests = load_json(os.path.join(STATE_DIR, "digests.json"), {}) or {}
+    nightly = load_json(os.path.join(STATE_DIR, "nightly.json"), {}) or {}
+    tracked = glob.glob(os.path.join(STATE_DIR, "sessions", "*.json"))
+    written, skipped = [], []
+    for pid, entry in sorted((digests.get("projects") or {}).items()):
+        for target in entry.get("targets", []):
+            written.append(dict(target, project_id=pid))
+        for target in entry.get("skipped", []):
+            skipped.append(dict(target, project_id=pid))
+    status = {
+        "config": conf.path,
+        "state_dir": STATE_DIR,
+        "computer_id": conf.get("TODO_COMPUTER_ID") or None,
+        "memory": conf.on("AI_TODO_MEMORY"),
+        "stats": conf.on("AI_TODO_STATS"),
+        "digest": conf.on("AI_TODO_MEMORY_DIGEST"),
+        "model": conf.get("AI_TODO_MEMORY_MODEL"),
+        "sessions_tracked": len(tracked),
+        "last_nightly": nightly.get("last_run"),
+        "last_stats_push": nightly.get("last_stats_push"),
+        "digests": written,
+        "skipped": skipped,
+    }
+    if as_json:
+        print(json.dumps(status, indent=1))
+        return
+    for key in ("config", "state_dir", "computer_id", "memory", "stats", "digest", "model", "sessions_tracked"):
+        print("%-17s %s" % (key + ":", status[key]))
+    for key in ("last_nightly", "last_stats_push"):
+        print("%-17s %s" % (key + ":", iso(status[key]) if status[key] else "never"))
+    for d in written:
+        print("digest:           %s (%s%s)" % (d["path"], d.get("kind"), ", created by us" if d.get("created_by_us") else ""))
+    for d in skipped:
+        print("skipped:          %s (%s)" % (d["path"], d.get("reason")))
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        die("usage: ai-todo-memory run|trigger|nightly|digest|status ... (see the header of this script)", 64)
+    command, rest = argv[0], list(argv[1:])
+    commands = {"run": cmd_run, "trigger": cmd_trigger, "status": cmd_status}
+    if command not in commands:
+        die("unknown command: %s" % command, 64)
+    try:
+        commands[command](rest)
+    except Refused as e:
+        Log.write("refused", command=command, reason=e)
+        die("ai-todo-memory: %s" % e, 65)
+
+
+main(sys.argv[1:])
+PY

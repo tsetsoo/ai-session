@@ -7,6 +7,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX="$(mktemp -d)"
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
+# Never reach the real claude, codex or launchctl: drop PATH entries under the real home and
+# put guards first. Tests pass their fakes explicitly (AI_TODO_*_BIN, fake launchctl).
+GUARD_BIN="${SANDBOX}/guard-bin"
+mkdir -p "$GUARD_BIN"
+for guarded in claude codex launchctl; do
+  printf '#!/bin/sh\necho "%s $*" >>"%s/guard.log"\nexit 99\n' "$guarded" "$SANDBOX" >"${GUARD_BIN}/${guarded}"
+  chmod +x "${GUARD_BIN}/${guarded}"
+done
+PATH="${GUARD_BIN}:$(printf '%s' "$PATH" | tr ':' '\n' | grep -v "^${HOME}" | paste -sd: -)"
+export PATH
 export HOME="${SANDBOX}/home"
 # install.sh honours CODEX_HOME; never let it point at a real Codex config.
 unset CODEX_HOME
@@ -752,6 +762,376 @@ assert len(t) == 120, len(t)
 PY
 pass "stats_title_redacted: the title is the first prompt, redacted (incl. the hub token from todo-hub.conf), then cut to 120 chars"
 
+# --- ai-todo-memory: extraction ---------------------------------------------------------
+# Own HOME (restored after the memory sections), a stateful fake hub, the fake claude.
+
+MEMORY="${SCRIPT_DIR}/ai-todo-memory"
+TRANSCRIPT="${FIXTURES}/transcript.py"
+SAVED_HOME=$HOME
+export HOME="${SANDBOX}/mhome"
+M_STATE="${HOME}/.ai-remote/memory-state"
+M_APP="${HOME}/work/app"
+M_PROJ_DIR="${HOME}/.claude/projects/-work-app"
+M_HUB_STATE="${SANDBOX}/mhub-state.json"
+M_HUB_LOG="${SANDBOX}/mhub.log"
+M_CLAUDE_LOG="${SANDBOX}/mclaude"
+M_CONF="${SANDBOX}/mhub.conf"
+M_REPLY="${FIXTURES}/claude-reply.json"
+M_USER="${USER:-$(id -un)}"
+mkdir -p "$M_APP" "${HOME}/work/elsewhere" "$M_PROJ_DIR"
+
+hub_reset() {
+  cat >"$M_HUB_STATE" <<EOF
+{"computers": [{"id": "comp-1", "name": "test-mac", "hostname": "test-mac", "username": "${M_USER}"}],
+ "projects": [{"id": "proj-app", "name": "app", "computer": {"id": "comp-1", "name": "test-mac"},
+               "folder": "~/work/app", "repo_url": null, "digest_enabled": true}],
+ "memories": []}
+EOF
+}
+hub_edit() { # <python code changing the state dict s>
+  python3 -c 'import json, sys; p = sys.argv[1]; s = json.load(open(p)); exec(sys.argv[2]); json.dump(s, open(p, "w"))' "$M_HUB_STATE" "$1"
+}
+hub_reset
+: >"$M_HUB_LOG"
+python3 "${FIXTURES}/fake-hub.py" "$M_HUB_STATE" "$M_HUB_LOG" "${SANDBOX}/mhub.port" &
+EXTRA_PIDS="$EXTRA_PIDS $!"
+for _ in $(seq 1 50); do [[ -s "${SANDBOX}/mhub.port" ]] && break; sleep 0.1; done
+[[ -s "${SANDBOX}/mhub.port" ]] || fail "memory fake hub did not start"
+M_HUB_URL="http://127.0.0.1:$(cat "${SANDBOX}/mhub.port")"
+write_conf() { # [extra conf lines...]
+  {
+    printf "TODO_HUB_URL='%s'\nTODO_API_TOKEN='hub-token-secret-1'\nTODO_COMPUTER_ID='comp-1'\nAI_TODO_MEMORY_DIGEST='off'\n" "$M_HUB_URL"
+    for line in "$@"; do printf '%s\n' "$line"; done
+  } >"$M_CONF"
+}
+write_conf
+
+mem() {
+  AI_TODO_HUB_CONF="$M_CONF" AI_TODO_CLAUDE_BIN="${FIXTURES}/fake-claude" FAKE_CLAUDE_LOG="$M_CLAUDE_LOG" \
+    FAKE_CLAUDE_REPLY="${FAKE_CLAUDE_REPLY:-$M_REPLY}" "$MEMORY" "$@"
+}
+calls() { cat "${M_CLAUDE_LOG}/count" 2>/dev/null || echo 0; }
+stdin_of() { cat "${M_CLAUDE_LOG}/$1.stdin"; }
+requests() { # <METHOD> <path>: how many requests the fake hub got
+  python3 -c '
+import json, sys
+print(sum(1 for l in open(sys.argv[1]) if json.loads(l)["method"] == sys.argv[2] and json.loads(l)["path"] == sys.argv[3]))' \
+    "$M_HUB_LOG" "$1" "$2"
+}
+last_body() { # <METHOD> <path>: body of the newest such request
+  python3 -c '
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+print(json.dumps([r for r in rows if r["method"] == sys.argv[2] and r["path"] == sys.argv[3]][-1]["body"]))' \
+    "$M_HUB_LOG" "$1" "$2"
+}
+offset_of() { # <tool> <session id>
+  python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("offset", "none"))' \
+    "${M_STATE}/sessions/$1-$2.json" 2>/dev/null || echo none
+}
+size_of() { wc -c <"$1" | tr -d ' '; }
+cfile() { echo "${M_PROJ_DIR}/$1.jsonl"; }
+
+M1=d0d0d0d0-0000-4000-8000-000000000001
+python3 "$TRANSCRIPT" claude "$(cfile $M1)" "$M_APP" "$M1" \
+  --turn "first prompt about the parser" "first answer" --turn "second prompt about the config" "second answer"
+M1_TWO=$(size_of "$(cfile $M1)")
+python3 "$TRANSCRIPT" claude "$(cfile $M1)" "$M_APP" "$M1" --open "third prompt still running"
+mem run claude "$M1" >"${SANDBOX}/run1.out" || fail "run failed: $(cat "${SANDBOX}/run1.out")"
+[[ $(calls) -eq 1 && $(requests POST /api/memories/bulk) -eq 1 ]] \
+  || fail "expected 1 claude call and 1 bulk post, got $(calls) / $(requests POST /api/memories/bulk)"
+last_body POST /api/memories/bulk | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert (b["computer_id"], b["tool"], b["session_id"], b["cwd"]) == ("comp-1", "claude", sys.argv[1], "~/work/app"), b
+assert b["memories"] == [
+    {"kind": "decision", "text": "Transcripts are parsed with the stdlib only, no third-party JSON library.",
+     "files": ["src/parser.py"], "confidence": 0.9, "supersedes": []},
+    {"kind": "gotcha", "text": "The fake hub answers 201 for bulk posts even when every memory is a duplicate.",
+     "files": [], "confidence": 0.7, "supersedes": []}], b["memories"]
+' "$M1" || fail "bulk body wrong: $(last_body POST /api/memories/bulk)"
+stdin_of 1 | python3 -c '
+import sys
+s, sid = sys.stdin.read(), sys.argv[1]
+assert s.startswith("PROJECT: app (~/work/app) on test-mac\nCONVERSATION: claude %s, cwd ~/work/app, excerpt 1/1, 2026-10-16T08:00:00.000Z – " % sid), s[:300]
+assert "\n\nALREADY KNOWN:\n- (none)\n\nEXCERPT:\nUSER: first prompt about the parser\n" in s, s
+for part in ("[Edit src/f", "ASSISTANT: first answer", "USER: second prompt about the config", "ASSISTANT: second answer"):
+    assert part in s, part
+for part in ("third prompt", "SECRET-THOUGHT", "TOOL-OUTPUT-OK"):
+    assert part not in s, part
+' "$M1" || fail "rendered excerpt wrong: $(stdin_of 1)"
+[[ "$(offset_of claude "$M1")" == "$M1_TWO" ]] || fail "offset $(offset_of claude "$M1") should end after turn 2 ($M1_TWO)"
+[[ $(requests POST /api/sessions/stats) -eq 2 ]] || fail "stats should be pushed before and after extraction"
+pass "run_posts_memories_from_complete_turns: one bulk post (computer, tool, session, ~cwd), only complete turns rendered, offset after turn 2, stats pushed"
+pass "low_confidence_dropped: a 0.3-confidence memory is not posted"
+
+M2=d0d0d0d0-0000-4000-8000-000000000002
+python3 "$TRANSCRIPT" claude "$(cfile $M2)" "$M_APP" "$M2" --turn "only complete prompt" "complete answer"
+M2_ONE=$(size_of "$(cfile $M2)")
+python3 "$TRANSCRIPT" claude "$(cfile $M2)" "$M_APP" "$M2" --partial "half written prompt"
+mem run claude "$M2" >/dev/null || fail "run on a half-written transcript failed"
+n=$(calls)
+stdin_of "$n" | grep -q "only complete prompt" || fail "complete turn not sent"
+! stdin_of "$n" | grep -q "half written" || fail "the turn with a half-written line was sent"
+[[ "$(offset_of claude "$M2")" == "$M2_ONE" ]] || fail "offset went past the last complete turn"
+python3 "$TRANSCRIPT" claude "$(cfile $M2)" "$M_APP" "$M2" --rest
+mem run claude "$M2" >/dev/null || fail "run after the line was finished failed"
+[[ $(calls) -eq $((n + 1)) ]] || fail "the finished turn was not sent"
+stdin_of $((n + 1)) | grep -q "USER: half written prompt" && stdin_of $((n + 1)) | grep -q "ASSISTANT: half written answer" \
+  || fail "the finished turn is incomplete: $(stdin_of $((n + 1)))"
+! stdin_of $((n + 1)) | grep -q "only complete prompt" || fail "the old turn was sent again"
+[[ "$(offset_of claude "$M2")" == "$(size_of "$(cfile $M2)")" ]] || fail "offset not at EOF after the finished turn"
+pass "partial_trailing_line_is_not_consumed: a half-written last line stops the offset before its turn; finished later, only that turn is sent"
+
+before_calls=$(calls)
+before_posts=$(requests POST /api/memories/bulk)
+mem run claude "$M1" >/dev/null || fail "second run failed"
+[[ $(calls) -eq $before_calls && $(requests POST /api/memories/bulk) -eq $before_posts ]] || fail "second run sent something"
+pass "second_run_sends_nothing_new: no claude call, no post"
+
+python3 "$TRANSCRIPT" claude "$(cfile $M1)" "$M_APP" "$M1" --finish "third answer done"
+mem run claude "$M1" >/dev/null || fail "run after appending failed"
+[[ $(calls) -eq $((before_calls + 1)) ]] || fail "appended turn not sent"
+s="$(stdin_of $((before_calls + 1)))"
+[[ "$s" == *"USER: third prompt still running"* && "$s" == *"ASSISTANT: third answer done"* ]] || fail "appended turn missing: $s"
+[[ "$s" != *"first prompt"* && "$s" != *"second prompt"* ]] || fail "old turns sent again: $s"
+[[ "$(offset_of claude "$M1")" == "$(size_of "$(cfile $M1)")" ]] || fail "offset not at EOF"
+pass "appending_a_turn_sends_only_it"
+
+python3 - "${M_CLAUDE_LOG}" "$HOME" <<'PY' || fail "claude flags/env/cwd wrong: $(cat "${M_CLAUDE_LOG}/1.argv")"
+import json, sys
+log, home = sys.argv[1], sys.argv[2]
+argv = json.load(open(log + "/1.argv"))
+schema = {"type": "object", "additionalProperties": False, "required": ["memories"],
+          "properties": {"memories": {"type": "array", "maxItems": 12, "items": {
+              "type": "object", "additionalProperties": False, "required": ["kind", "text", "confidence"],
+              "properties": {
+                  "kind": {"type": "string", "enum": ["decision", "gotcha", "open_thread", "done", "files_changed"]},
+                  "text": {"type": "string", "minLength": 10, "maxLength": 400},
+                  "files": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 300}},
+                  "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                  "supersedes": {"type": "array", "maxItems": 10, "items": {"type": "string"}}}}}}}
+assert argv[:5] == ["-p", "--no-session-persistence", "--output-format", "json", "--json-schema"], argv[:5]
+assert json.loads(argv[5]) == schema, argv[5]
+assert argv[6:15] == ["--tools", "", "--strict-mcp-config", "--setting-sources", "", "--model", "sonnet", "--system-prompt", argv[14]], argv[6:]
+prompt = argv[14]
+assert prompt.startswith("You extract durable project memory from an excerpt of an AI coding conversation.\n"), prompt
+assert "- Section codes like Sp, I, Si and P are opaque labels: copy them as-is, never expand or interpret them.\n" in prompt
+assert prompt.endswith("- If nothing durable happened, return an empty list."), prompt[-80:]
+assert len(argv) == 15, argv
+assert open(log + "/1.env").read() == "1\n"
+assert open(log + "/1.cwd").read().strip() == home + "/.ai-remote/memory-state/run"
+PY
+[[ "$(stat -f '%Lp' "$M_STATE" 2>/dev/null || stat -c '%a' "$M_STATE")" == 700 ]] || fail "memory-state is not mode 700"
+pass "claude_flags_and_env: -p --no-session-persistence --output-format json --json-schema <spec schema> --tools \"\" --strict-mcp-config --setting-sources \"\" --model sonnet --system-prompt; AI_TODO_MEMORY_RUN=1; cwd memory-state/run"
+
+M3=d0d0d0d0-0000-4000-8000-000000000003
+python3 - "$FIXTURES" "$(cfile $M3)" "$M_APP" "$M3" "${SANDBOX}/reply-secret.json" "${SANDBOX}/raw-secrets.txt" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import transcript
+texts, raws = [], []
+for line in open(sys.argv[1] + "/secrets.txt", encoding="utf-8"):
+    if line.startswith("#") or not line.strip() or line.startswith("keep"):
+        continue
+    kind, text, raw = [p.strip() for p in line.rstrip("\n").split(" ::: ")]
+    texts.append(text.replace("@@", "").replace("\\n", "\n"))
+    raws.append(raw)
+raws.append("hub-token-secret-1")
+prompt = "keep these safe: " + " | ".join(texts[:12]) + " and the hub token hub-token-secret-1"
+transcript.append("claude", sys.argv[2], sys.argv[3], sys.argv[4],
+                  [("turn", prompt, "noted: " + " | ".join(texts[12:]))])
+token = "ghp_" + "Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8"
+raws.append(token[4:])
+json.dump({"type": "result", "is_error": False, "structured_output": {"memories": [
+    {"kind": "gotcha", "text": "Deploys authenticate with " + token + " from the vault.", "files": [], "confidence": 0.9}]}},
+    open(sys.argv[5], "w"))
+open(sys.argv[6], "w").write("\n".join(raws) + "\n")
+PY
+MY_SERVICE_TOKEN=LocalTok3n_Value9 FAKE_CLAUDE_REPLY="${SANDBOX}/reply-secret.json" mem run claude "$M3" >/dev/null || fail "secrets run failed"
+python3 - "${M_CLAUDE_LOG}/$(calls).stdin" "$M_HUB_LOG" "${SANDBOX}/raw-secrets.txt" <<'PY' || fail "a secret leaked"
+import json, sys
+stdin = open(sys.argv[1]).read()
+hub = "\n".join(json.dumps(json.loads(l)["body"]) for l in open(sys.argv[2]))
+for raw in open(sys.argv[3]).read().split("\n"):
+    if raw:
+        assert raw not in stdin, ("claude stdin", raw)
+        assert raw not in hub, ("hub request", raw)
+assert "[REDACTED:" in stdin and "[REDACTED:github_token] from the vault" in hub
+PY
+pass "stdin_has_no_secrets: no sample secret (nor the hub token) reaches claude's stdin, the posted memories or the stats title"
+
+M4=d0d0d0d0-0000-4000-8000-000000000004
+TODAY="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+hub_edit "
+m = lambda i, **kw: dict(dict(id=i, project_id='proj-app', todo_id=None, computer_id='comp-1', tool='claude', session_id='x',
+        kind='decision', text='memory ' + i, files=[], confidence=0.9, source='extracted', pinned=False, archived=False,
+        created_at='2020-01-01T00:00:00Z'), **kw)
+s['memories'] += [m('known-sess', session_id='$M4', archived=True), m('known-open', kind='open_thread', tool='codex'),
+                  m('known-pin', pinned=True, tool=None, session_id=None), m('known-recent', created_at='$TODAY'),
+                  m('known-old'), m('other-proj', project_id='proj-other', created_at='$TODAY')]"
+python3 "$TRANSCRIPT" claude "$(cfile $M4)" "$M_APP" "$M4" --turn "close the open thread" "closed"
+mem run claude "$M4" >/dev/null || fail "already-known run failed"
+s="$(stdin_of "$(calls)")"
+for id in known-sess known-open known-pin known-recent; do [[ "$s" == *"- [${id}] "* ]] || fail "ALREADY KNOWN lacks $id: $s"; done
+[[ "$s" == *"- [known-open] open_thread: memory known-open"* ]] || fail "known line format wrong: $s"
+for id in known-old other-proj; do [[ "$s" != *"[${id}]"* ]] || fail "ALREADY KNOWN lists $id"; done
+pass "already_known_is_sent: this session's (archived too), the project's pinned, open threads and last 30 days; not old or other-project memories"
+
+M5=d0d0d0d0-0000-4000-8000-000000000005
+python3 "$TRANSCRIPT" claude "$(cfile $M5)" "$M_APP" "$M5" --turn "confidence prompt" "answer"
+AI_TODO_MEMORY_MIN_CONFIDENCE=0.8 mem run claude "$M5" >/dev/null || fail "min-confidence run failed"
+[[ "$(last_body POST /api/memories/bulk | python3 -c 'import json,sys; print([m["kind"] for m in json.load(sys.stdin)["memories"]])')" == "['decision']" ]] \
+  || fail "AI_TODO_MEMORY_MIN_CONFIDENCE not applied"
+pass "AI_TODO_MEMORY_MIN_CONFIDENCE raises the confidence cut"
+
+M6=d0d0d0d0-0000-4000-8000-000000000006
+python3 "$TRANSCRIPT" claude "$(cfile $M6)" "$M_APP" "$M6" --turn "failure prompt" "answer"
+printf '{"type":"result","is_error":true,"result":"boom"}' >"${SANDBOX}/reply-error.json"
+printf '{"type":"result","is_error":false,"result":"plain text only"}' >"${SANDBOX}/reply-plain.json"
+posts=$(requests POST /api/memories/bulk)
+for variant in exit is_error no_structured; do
+  rc=0
+  case $variant in
+    exit) FAKE_CLAUDE_EXIT=1 mem run claude "$M6" >/dev/null 2>&1 || rc=$? ;;
+    is_error) FAKE_CLAUDE_REPLY="${SANDBOX}/reply-error.json" mem run claude "$M6" >/dev/null 2>&1 || rc=$? ;;
+    no_structured) FAKE_CLAUDE_REPLY="${SANDBOX}/reply-plain.json" mem run claude "$M6" >/dev/null 2>&1 || rc=$? ;;
+  esac
+  [[ $rc -ne 0 ]] || fail "run succeeded although claude failed ($variant)"
+  [[ $(requests POST /api/memories/bulk) -eq $posts && "$(offset_of claude "$M6")" == none ]] || fail "claude failure ($variant) posted or moved the offset"
+done
+mem run claude "$M6" >/dev/null || fail "run after the failures failed"
+[[ "$(offset_of claude "$M6")" == "$(size_of "$(cfile $M6)")" ]] || fail "offset not saved after recovery"
+grep -q "step=extract" "${M_STATE}/memory.log" || fail "claude failures not logged"
+! grep -q "failure prompt" "${M_STATE}/memory.log" || fail "memory.log holds transcript text"
+pass "claude_failure_keeps_offset: exit 1, is_error or no structured_output -> no post, offset unchanged, non-zero exit, logged without transcript text"
+
+long_turns() { # <session id> <count>
+  python3 - "$FIXTURES" "$(cfile "$1")" "$M_APP" "$1" "$2" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import transcript
+steps = [("turn", "long prompt %02d " % i + "lorem ipsum dolor sit amet " * 14, "answer %02d" % i) for i in range(1, int(sys.argv[5]) + 1)]
+transcript.append("claude", sys.argv[2], sys.argv[3], sys.argv[4], steps)
+PY
+}
+M7=d0d0d0d0-0000-4000-8000-000000000007
+long_turns "$M7" 12
+base=$(calls)
+AI_TODO_MEMORY_CHUNK_CHARS=2000 mem trigger claude "$M7" >/dev/null 2>&1 || fail "trigger failed"
+[[ $(calls) -eq $((base + 3)) ]] || fail "trigger made $(( $(calls) - base )) claude calls, expected the cap of 3"
+for n in $(seq $((base + 1)) $((base + 3))); do
+  [[ $(stdin_of "$n" | python3 -c 'import sys; print(len(sys.stdin.read()))') -le 2000 ]] || fail "chunk $n is longer than 2000 chars"
+done
+o=$(offset_of claude "$M7")
+[[ "$o" != none && "$o" -gt 0 && "$o" -lt $(size_of "$(cfile $M7)") ]] || fail "offset after 3 chunks wrong: $o"
+M8=d0d0d0d0-0000-4000-8000-000000000008
+long_turns "$M8" 12
+base=$(calls)
+if AI_TODO_MEMORY_CHUNK_CHARS=2000 FAKE_CLAUDE_EXIT=1 FAKE_CLAUDE_EXIT_AT=$((base + 2)) mem run claude "$M8" >/dev/null 2>&1; then
+  fail "run with a failing second chunk succeeded"
+fi
+o=$(offset_of claude "$M8")
+[[ $(calls) -eq $((base + 2)) && "$o" != none && "$o" -gt 0 ]] || fail "first chunk's offset not saved before the failure ($o)"
+first_chunk="$(stdin_of $((base + 1)))"
+AI_TODO_MEMORY_CHUNK_CHARS=2000 mem run claude "$M8" >/dev/null || fail "resumed run failed"
+[[ "$(offset_of claude "$M8")" == "$(size_of "$(cfile $M8)")" ]] || fail "resumed run did not reach the end"
+[[ "$first_chunk" == *"long prompt 01"* && "$(stdin_of $((base + 3)))" != *"long prompt 01"* ]] || fail "resumed run re-sent the first chunk"
+[[ "$(stdin_of $((base + 3)))" == *"excerpt 1/"* ]] || fail "resumed run chunk numbering wrong"
+pass "chunking_caps: chunks <= AI_TODO_MEMORY_CHUNK_CHARS, a trigger stops after 3, the offset advances per successful chunk, a later run continues"
+
+M9=d0d0d0d0-0000-4000-8000-000000000009
+mkdir -p "${HOME}/.claude/projects/-work-elsewhere"
+python3 "$TRANSCRIPT" claude "${HOME}/.claude/projects/-work-elsewhere/${M9}.jsonl" "${HOME}/work/elsewhere" "$M9" --turn "unrelated prompt" "answer"
+base=$(calls)
+stats_before=$(requests POST /api/sessions/stats)
+mem run claude "$M9" >/dev/null || fail "run outside a project failed"
+[[ $(calls) -eq $base ]] || fail "claude ran for a conversation outside any project"
+[[ $(requests POST /api/sessions/stats) -eq $((stats_before + 1)) ]] || fail "stats not pushed for a conversation outside any project"
+last_body POST /api/sessions/stats | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert b["computer_id"] == "comp-1" and [s["session_id"] for s in b["sessions"]] == [sys.argv[1]], b
+assert b["sessions"][0]["cwd"] == "~/work/elsewhere" and b["sessions"][0]["title"] == "unrelated prompt", b
+' "$M9" || fail "stats body wrong: $(last_body POST /api/sessions/stats)"
+AI_TODO_STATS=off mem run claude "$M9" >/dev/null || fail "run with stats off failed"
+[[ $(requests POST /api/sessions/stats) -eq $((stats_before + 1)) ]] || fail "AI_TODO_STATS=off still pushed stats"
+mem run claude "$M9" --force >/dev/null || fail "run --force failed"
+[[ $(calls) -eq $((base + 1)) ]] || fail "--force did not extract outside a project"
+pass "not_in_project_skips_extraction_but_pushes_stats; AI_TODO_STATS=off pushes nothing; --force extracts anyway"
+
+M10=d0d0d0d0-0000-4000-8000-00000000000a
+python3 "$TRANSCRIPT" claude "$(cfile $M10)" "$M_APP" "$M10" --turn "memory off prompt" "answer"
+base=$(calls)
+stats_before=$(requests POST /api/sessions/stats)
+AI_TODO_MEMORY=off mem run claude "$M10" >/dev/null || fail "run with memory off (env) failed"
+write_conf "AI_TODO_MEMORY='off'"
+mem run claude "$M10" >/dev/null || fail "run with memory off (conf) failed"
+write_conf
+[[ $(calls) -eq $base ]] || fail "AI_TODO_MEMORY=off still called claude"
+[[ $(requests POST /api/sessions/stats) -eq $((stats_before + 2)) ]] || fail "AI_TODO_MEMORY=off stopped the stats push"
+pass "memory_off_switch: AI_TODO_MEMORY='off' (conf or env) -> no claude call; stats still pushed"
+
+M11=d0d0d0d0-0000-4000-8000-00000000000b
+python3 "$TRANSCRIPT" claude "$(cfile $M11)" "$M_APP" "$M11" --turn "dry run prompt" "answer"
+base=$(calls)
+posts=$(wc -l <"$M_HUB_LOG")
+mem run claude "$M11" --dry-run >"${SANDBOX}/dry.json" || fail "dry run failed"
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["session_id"] == sys.argv[2] and [m["kind"] for m in d["memories"]] == ["decision", "gotcha"], d
+' "${SANDBOX}/dry.json" "$M11" || fail "dry run output wrong: $(cat "${SANDBOX}/dry.json")"
+[[ $(calls) -eq $((base + 1)) ]] || fail "dry run did not call claude"
+python3 -c '
+import json, sys
+new = [json.loads(l) for l in open(sys.argv[1]).readlines()[int(sys.argv[2]):]]
+assert all(r["method"] == "GET" for r in new), new
+' "$M_HUB_LOG" "$posts" || fail "dry run sent a POST"
+[[ ! -e "${M_STATE}/sessions/claude-${M11}.json" ]] || fail "dry run wrote session state"
+pass "dry_run_changes_nothing: prints the memories JSON; no POST, no state"
+
+X1=019f0000-0000-7000-8000-0000000000d1
+X1_FILE="${HOME}/.codex/sessions/2026/10/16/rollout-2026-10-16T08-00-00-${X1}.jsonl"
+python3 "$TRANSCRIPT" codex "$X1_FILE" "$M_APP" "$X1" --turn "codex first prompt" "codex first answer" --turn "codex second prompt" "codex second answer"
+X1_TWO=$(size_of "$X1_FILE")
+python3 "$TRANSCRIPT" codex "$X1_FILE" "$M_APP" "$X1" --open "codex third prompt"
+mem run codex "$X1" >/dev/null || fail "codex run failed"
+s="$(stdin_of "$(calls)")"
+[[ "$s" == *"CONVERSATION: codex ${X1}, cwd ~/work/app"* && "$s" == *"USER: codex first prompt"* && "$s" == *"ASSISTANT: codex second answer"* ]] || fail "codex excerpt wrong: $s"
+[[ "$s" == *"[Bash: cargo test -p todo-server]"* && "$s" != *"codex third prompt"* && "$s" != *"environment_context"* ]] || fail "codex rendering wrong: $s"
+[[ "$(offset_of codex "$X1")" == "$X1_TWO" ]] || fail "codex offset not at the last task_complete"
+last_body POST /api/memories/bulk | python3 -c 'import json,sys; b=json.load(sys.stdin); assert b["tool"]=="codex" and b["session_id"]==sys.argv[1], b' "$X1" \
+  || fail "codex bulk body wrong"
+pass "codex_session_extracts_by_task_complete"
+
+cp "$(cfile $M1)" "${SANDBOX}/m1.copy"
+python3 "$TRANSCRIPT" claude "${SANDBOX}/m1.copy" "$M_APP" "$M1" --turn "fourth prompt after a rewrite" "fourth answer"
+inode_before=$(ls -i "$(cfile $M1)" | awk '{print $1}')
+mv "${SANDBOX}/m1.copy" "$(cfile $M1)"
+[[ "$(ls -i "$(cfile $M1)" | awk '{print $1}')" != "$inode_before" ]] || fail "test setup: inode did not change"
+base=$(calls)
+mem run claude "$M1" >/dev/null || fail "run after the file was replaced failed"
+s="$(stdin_of $((base + 1)))"
+[[ "$s" == *"fourth prompt after a rewrite"* && "$s" != *"third prompt"* && "$s" != *"first prompt"* ]] || fail "resume after inode change wrong: $s"
+pass "inode_change_resumes_after_last_entry_id"
+
+M12=d0d0d0d0-0000-4000-8000-00000000000c
+python3 "$TRANSCRIPT" claude "$(cfile $M12)" "$M_APP" "$M12" --turn "autodetect prompt" "answer"
+printf "TODO_HUB_URL='%s'\nTODO_API_TOKEN='hub-token-secret-1'\nAI_TODO_MEMORY_DIGEST='off'\n" "$M_HUB_URL" >"$M_CONF"
+hub_edit "s['computers'].append({'id': 'comp-2', 'name': 'other', 'hostname': 'other-mac', 'username': '$M_USER'})"
+AI_TODO_HOSTNAME=test-mac mem run claude "$M12" >/dev/null 2>"${SANDBOX}/autodetect.err" || fail "autodetect run failed: $(cat "${SANDBOX}/autodetect.err")"
+[[ "$(last_body POST /api/memories/bulk | python3 -c 'import json,sys; print(json.load(sys.stdin)["computer_id"])')" == comp-1 ]] || fail "autodetect picked the wrong computer"
+grep -q "TODO_COMPUTER_ID" "${SANDBOX}/autodetect.err" || fail "autodetect did not hint at TODO_COMPUTER_ID"
+hub_edit "s['computers'][1]['hostname'] = 'test-mac'"
+if AI_TODO_HOSTNAME=test-mac mem run claude "$M12" >/dev/null 2>&1; then fail "two matching computers were accepted"; else [[ $? -eq 65 ]] || fail "ambiguous computer should exit 65"; fi
+hub_edit "s['computers'].pop()"
+write_conf
+pass "computer_id_autodetect: one computer matching \$USER + host name is used (with a hint); two -> exit 65"
+
+# --- end of the ai-todo-memory sections -------------------------------------------------
+export HOME="$SAVED_HOME"
+
 # --- tmux.conf ----------------------------------------------------------------
 
 tmux -L "${SOCK}-conf" -f /dev/null new-session -d -s conftest
@@ -885,4 +1265,5 @@ PY
 grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "uninstall removed other ~/.tmux.conf lines"
 pass "uninstall removes only our hooks, scripts, tmux line, codex notify and hook state"
 
+[[ ! -e "${SANDBOX}/guard.log" ]] || fail "a test reached a real binary: $(cat "${SANDBOX}/guard.log")"
 echo "All ${passes} todo script tests passed."
