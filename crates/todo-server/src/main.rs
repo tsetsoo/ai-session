@@ -8,9 +8,11 @@ mod daily;
 mod db;
 mod describe;
 mod handlers;
+mod memories;
 mod models;
 mod paths;
 mod projects;
+mod sessions;
 #[cfg(test)]
 mod test_support;
 
@@ -71,7 +73,14 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/projects/suggestions", web::get().to(projects::project_suggestions))
         .route("/api/projects/{id}", web::get().to(projects::get_project))
         .route("/api/projects/{id}", web::patch().to(projects::update_project))
-        .route("/api/projects/{id}", web::delete().to(projects::delete_project));
+        .route("/api/projects/{id}", web::delete().to(projects::delete_project))
+        // Memories
+        .route("/api/memories", web::get().to(memories::list_memories))
+        .route("/api/memories", web::post().to(memories::create_memory))
+        // Before /api/memories/{id}.
+        .route("/api/memories/bulk", web::post().to(memories::bulk_memories))
+        .route("/api/memories/{id}", web::patch().to(memories::update_memory))
+        .route("/api/memories/{id}", web::delete().to(memories::delete_memory));
 }
 
 #[actix_web::main]

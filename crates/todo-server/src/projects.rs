@@ -74,7 +74,6 @@ fn computer_username(conn: &Connection, computer_id: &str) -> rusqlite::Result<O
 }
 
 /// The project on `computer_id` whose folder is the longest segment prefix of `cwd`.
-#[allow(dead_code)] // Used by sessions and conversations (next commits).
 pub(crate) fn project_for(conn: &Connection, computer_id: &str, cwd: &str) -> rusqlite::Result<Option<String>> {
     let username = computer_username(conn, computer_id)?.unwrap_or_default();
     let projects = computer_projects(conn, computer_id, None)?;
