@@ -1,7 +1,7 @@
 # Todo Projects, Conversation Memories and Usage Stats Design
 
 **Date:** 2026-10-16  
-**Status:** Draft — awaiting approval  
+**Status:** Approved 2026-10-16  
 **Repos:** todo-app (this spec: data + API, schema v3), ai-session-remote (host scripts in `scripts/todo` + SwiftUI app)  
 **Builds on:** `2026-10-15-todo-ai-conversations-design.md`
 
@@ -67,7 +67,7 @@ Group work into **projects** (a folder on a computer), and keep what was learned
 
 | Topic | Decision |
 |---|---|
-| Project | A folder on one computer. Fields: name, computer, folder (may start with `~`), optional repo URL. Unique per (computer, folder). Projects don't have a section. |
+| Project | A folder on one computer. Fields: name, computer, folder (may start with `~`), optional repo URL. Unique per (computer, folder). **No nesting:** on one computer, a project's folder may not be inside, or contain, another project's folder (decided 2026-10-16). Otherwise a parent's `CLAUDE.local.md` digest would load in the child project's conversations. Projects don't have a section. |
 | Todos ↔ projects | A todo keeps its section and may also have one project (`todos.project_id`, nullable). Projects group todos *within* the section system, not instead of it. |
 | Conversation → project | Automatic: the project on the same computer whose folder is the **longest path-segment prefix** of the conversation's cwd. `~/programming/sigma-revenue` matches `~/programming/sigma-revenue/sigma-revenue-backend/.claude/worktrees/x` but not `~/programming/sigma-revenue-old`. The app can override it per conversation; an override is never replaced by auto-matching. Creating, editing or deleting a project re-matches every conversation that has no override. |
 | Which conversations | Every Claude/Codex transcript on a computer can become a known **session** (stats, project). This is the new `sessions` table; todo links stay in `conversations`. Memory extraction only runs on sessions inside a project folder. |
@@ -201,9 +201,9 @@ Shared types go in `todo-shared`. New fields on existing types use `#[serde(defa
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/projects` | List, with counts: `open_todos`, `sessions`, `memories` (not archived), `last_activity`. Ordered by name. |
-| `POST` | `/projects` | `{name, computer_id, folder, repo_url?, digest_enabled?}` → `201`. `409` on a duplicate (computer, folder). Re-matches sessions. |
+| `POST` | `/projects` | `{name, computer_id, folder, repo_url?, digest_enabled?}` → `201`. `409` on a duplicate (computer, folder) or when the folder is inside, or contains, another project's folder on the same computer (the message names the conflicting project). Re-matches sessions. |
 | `GET` | `/projects/{id}` | One project (same shape as list items). |
-| `PATCH` | `/projects/{id}` | Any of `name, folder, repo_url (nullable), digest_enabled`. A folder change re-matches sessions. |
+| `PATCH` | `/projects/{id}` | Any of `name, folder, repo_url (nullable), digest_enabled`. A folder change re-matches sessions; the same nesting `409` applies. |
 | `DELETE` | `/projects/{id}` | See "Deleting a project". → `{deleted: id}` |
 | `GET` | `/projects/suggestions` | Suggested projects, from session and conversation cwds (see below). |
 
@@ -219,7 +219,7 @@ Shared types go in `todo-shared`. New fields on existing types use `#[serde(defa
 
 - **Folders:** for every known cwd (`sessions.cwd`, `conversations.cwd`) of a computer, strip a `/.claude/worktrees/<x>` suffix and everything after it. Then cut to the first two segments below `~`, or the first three for absolute paths outside home. Examples: `~/programming/sigma-revenue`, `~/Spread/Repository`. A folder with fewer segments is used as is, e.g. `~/programming`.
 - **Grouping:** by (computer, folder), counting sessions and the latest activity.
-- **Dropped:** folders that already are a project or lie inside one.
+- **Dropped:** folders that already are a project, lie inside one, or contain one, since those could not be created.
 - **Name:** the folder's last segment.
 - **Repo URL:** the `repo_url` of a session whose `repo_root` equals the folder, if there is one.
 - **Order:** by session count, descending.
@@ -643,7 +643,7 @@ UI:
 - **Rust** (`cargo test`, `cargo clippy --all-targets -- -D warnings` as CI does):
   - **Migration:** a v2 fixture DB (today's Pi schema plus rows) → v3 keeps every row, takes exactly one backup, re-running is a no-op, and a fresh DB has no backup. A v3 DB opened by `schema_version` reports 3. Todos keep working with `project_id` NULL.
   - **Path matching:** longest-prefix, segment boundaries, `~` vs `/Users/<u>`, trailing slash, worktree paths, other computers ignored, override kept, re-match on project create/update/delete.
-  - **Projects:** CRUD, duplicate folder → 409, computer delete → 409 while used, suggestions grouping/truncation/exclusion.
+  - **Projects:** CRUD, duplicate folder → 409, nested/containing folder → 409 on create and on PATCH (other computers are unaffected), computer delete → 409 while used, suggestions grouping/truncation/exclusion.
   - **Memories:** bulk insert, exact and fuzzy dedup across sessions of a project (and not across projects), supersedes (incl. pinned/other-project ignored), filters, PATCH re-key + 409, manual create needing project/todo, todo delete → `todo_id` null.
   - **Stats:** upsert idempotence, day replacement, weekly rollup grouping (project, section rules incl. the ambiguous Mac → null, computer), null tokens, the project filter, a non-Monday → 400.
   - **Compatibility:** old-shape requests (no `project_id`) still deserialize; `Todo` JSON omits `project_id` when null.
