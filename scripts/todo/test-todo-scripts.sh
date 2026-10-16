@@ -286,6 +286,153 @@ if AI_TODO_OPEN_DETACH=1 "$OPEN" "$NAME" '~/programming' "$X_LINKED" codex >/dev
 if AI_TODO_OPEN_DETACH=1 "$OPEN" "$XNAME" '~/programming' "$X_LINKED" cursor >/dev/null 2>&1; then fail "open accepted an unknown tool"; fi
 pass "ai-todo-open codex: resumes in tmux, attaches when running, exits 94 for unknown ids, checks tool vs name"
 
+# --- review fixes: open rollouts, fail closed, hub answers, duplicates, kill+wait, ids, PATH ---
+
+# A Codex conversation whose rollout file a process holds open (no id in any argv).
+: >"$CODEX_LOG"
+X_OPEN=019f0000-0000-7000-8000-000000000005
+codex_conv "$X_OPEN" '"cli"' "codex open in the desktop app"
+X_OPEN_FILE="$(ls "$CODEX_DAY"/rollout-*-"$X_OPEN".jsonl)"
+touch -t "$OLD" "$X_OPEN_FILE"
+python3 -c 'import sys, time; f = open(sys.argv[1]); time.sleep(300)' "$X_OPEN_FILE" &
+HOLDER=$!
+EXTRA_PIDS="$EXTRA_PIDS $HOLDER"
+sleep 0.5
+"$SESSIONS" list --json --tool codex | python3 -c "import json,sys; r={x['session_id']:x for x in json.load(sys.stdin)}; assert r['$X_OPEN']['running'], r['$X_OPEN']" \
+  || fail "a codex conversation with its rollout held open was not marked running"
+if "$SESSIONS" delete codex "$X_OPEN" >/dev/null 2>&1; then fail "delete archived a codex conversation whose rollout is open"; else [[ $? -eq 65 ]] || fail "open rollout delete should exit 65"; fi
+AI_TODO_HUB_CONF="$PRUNE_CONF" "$SESSIONS" prune --older-than 30 >"${SANDBOX}/prune2.txt"
+! grep -q "$X_OPEN" "${SANDBOX}/prune2.txt" || fail "prune listed a codex conversation whose rollout is open"
+[[ ! -s "$CODEX_LOG" ]] || fail "codex was called for an open rollout: $(cat "$CODEX_LOG")"
+pass "codex conversations with their rollout file held open count as running (delete and prune refuse)"
+
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null || true
+if AI_TODO_PS=/nonexistent/ps "$SESSIONS" delete codex "$X_OPEN" >/dev/null 2>&1; then fail "delete ran without ps"; else [[ $? -eq 65 ]] || fail "delete without ps should exit 65"; fi
+if AI_TODO_LSOF=/nonexistent/lsof "$SESSIONS" delete codex "$X_OPEN" >/dev/null 2>&1; then fail "delete ran without lsof"; else [[ $? -eq 65 ]] || fail "delete without lsof should exit 65"; fi
+if AI_TODO_HUB_CONF="$PRUNE_CONF" AI_TODO_PS=/nonexistent/ps "$SESSIONS" prune --older-than 30 --yes >/dev/null 2>&1; then fail "prune ran without ps"; else [[ $? -eq 65 ]] || fail "prune without ps should exit 65"; fi
+if AI_TODO_HUB_CONF="$PRUNE_CONF" AI_TODO_LSOF=/nonexistent/lsof "$SESSIONS" prune --older-than 30 --yes >/dev/null 2>&1; then fail "prune ran without lsof"; else [[ $? -eq 65 ]] || fail "prune without lsof should exit 65"; fi
+[[ -f "$X_OPEN_FILE" && ! -s "$CODEX_LOG" ]] || fail "something was deleted while running conversations were unknown"
+AI_TODO_PS=/nonexistent/ps "$SESSIONS" list --json >/dev/null 2>&1 || fail "list should still work (unmarked) without ps"
+pass "delete and prune fail closed (exit 65) when ps or lsof can't be run; list still works"
+
+# A hub that answers 200 with something other than a list of conversations.
+HUB2_BODY="${SANDBOX}/hub2.body"
+HUB2_PORT_FILE="${SANDBOX}/hub2.port"
+python3 - "$HUB2_PORT_FILE" "$HUB2_BODY" <<'PY' &
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+port_path, body_path = sys.argv[1:3]
+class Hub(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = open(body_path, "rb").read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+server = HTTPServer(("127.0.0.1", 0), Hub)
+open(port_path, "w").write(str(server.server_port))
+server.serve_forever()
+PY
+EXTRA_PIDS="$EXTRA_PIDS $!"
+for _ in $(seq 1 50); do [[ -s "$HUB2_PORT_FILE" ]] && break; sleep 0.1; done
+HUB2_CONF="${SANDBOX}/hub2.conf"
+printf "TODO_HUB_URL='http://127.0.0.1:%s'\n" "$(cat "$HUB2_PORT_FILE")" >"$HUB2_CONF"
+for body in '{"conversations": []}' '{"error": "login required"}' '[["not", "an", "object"]]'; do
+  printf '%s' "$body" >"$HUB2_BODY"
+  if AI_TODO_HUB_CONF="$HUB2_CONF" "$SESSIONS" prune --older-than 30 --yes >/dev/null 2>&1; then
+    fail "prune ran when the hub answered $body"
+  else
+    [[ $? -eq 65 ]] || fail "prune with hub answer $body should exit 65"
+  fi
+done
+[[ -f "$X_OPEN_FILE" && ! -s "$CODEX_LOG" && -f "${PROJ}/${C_OLD}.jsonl" ]] || fail "prune deleted after a bad hub answer"
+printf '[{"tool":"codex","session_id":"%s","claude_session_id":null},{"tool":"claude","session_id":null,"claude_session_id":"%s"}]' "$X_OPEN" "$C_OLD" >"$HUB2_BODY"
+AI_TODO_HUB_CONF="$HUB2_CONF" "$SESSIONS" prune --older-than 30 >"${SANDBOX}/prune3.txt" || fail "prune with a valid hub list failed"
+! grep -q "$X_OPEN" "${SANDBOX}/prune3.txt" || fail "prune listed a codex conversation linked by session_id (claude_session_id null)"
+! grep -q "$C_OLD" "${SANDBOX}/prune3.txt" || fail "prune listed a conversation linked by claude_session_id"
+pass "prune refuses (exit 65) unless the hub answers a list; accepts session_id or claude_session_id, null-safe"
+
+# The same Claude id in two project folders: one conversation, last used = newest copy.
+C_DUP=99999999-9999-4999-8999-999999999999
+PROJ_B="${HOME}/.claude/projects/-home-programming-worktree"
+mkdir -p "$PROJ_B" "${HOME}/.claude/todos" "${HOME}/.claude/file-history/${C_DUP}"
+claude_conv "$C_DUP" "dup old copy"
+touch -t "$OLD" "${PROJ}/${C_DUP}.jsonl"
+cp "${PROJ}/${C_DUP}.jsonl" "${PROJ_B}/${C_DUP}.jsonl"   # recent copy
+printf '{"version":1,"entries":[{"sessionId":"%s","fullPath":"x"},{"sessionId":"%s","fullPath":"y"}],"originalPath":"%s"}' \
+  "$C_DUP" "$C_NEW" "${HOME}/programming" >"${PROJ}/sessions-index.json"
+touch "${HOME}/.claude/todos/${C_DUP}-agent-${C_DUP}.json" "${HOME}/.claude/todos/${C_NEW}-agent-${C_NEW}.json"
+"$SESSIONS" list --json --tool claude | python3 -c "
+import json, sys
+rows = [r for r in json.load(sys.stdin) if r['session_id'] == '$C_DUP']
+assert len(rows) == 1, rows
+assert not rows[0]['updated_at'].startswith('2020'), rows[0]
+" || fail "a Claude id in two project folders should list once, with the newest copy's time"
+AI_TODO_HUB_CONF="$PRUNE_CONF" "$SESSIONS" prune --older-than 30 >"${SANDBOX}/prune4.txt"
+! grep -q "$C_DUP" "${SANDBOX}/prune4.txt" || fail "prune listed a conversation whose newest copy is recent"
+"$SESSIONS" delete claude "$C_DUP" >/dev/null || fail "deleting the duplicated conversation failed"
+[[ ! -e "${PROJ}/${C_DUP}.jsonl" && ! -e "${PROJ_B}/${C_DUP}.jsonl" && ! -e "${HOME}/.claude/file-history/${C_DUP}" ]] \
+  || fail "delete left a copy of the duplicated conversation"
+[[ ! -e "${HOME}/.claude/todos/${C_DUP}-agent-${C_DUP}.json" && -e "${HOME}/.claude/todos/${C_NEW}-agent-${C_NEW}.json" ]] \
+  || fail "delete removed the wrong todos files"
+python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+ids = [e['sessionId'] for e in d['entries']]
+assert ids == ['$C_NEW'], ids
+assert d['version'] == 1 and d['originalPath'], d
+" "${PROJ}/sessions-index.json" || fail "sessions-index.json not updated correctly: $(cat "${PROJ}/sessions-index.json")"
+pass "a Claude id in several project folders is one conversation; delete removes every copy, its index entries and todos files"
+
+# delete --kill-tmux: ends the todo's tmux session, waits for the process to exit, deletes.
+C_KILL=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+KNAME="ai/claude/todo-aaaaaaaa"
+claude_conv "$C_KILL" "kill me"
+tmux -L "$SOCK" new-session -d -s "$KNAME" -- "${SANDBOX}/run/claude" --resume "$C_KILL"
+sleep 0.5
+out="$("$SESSIONS" delete claude "$C_KILL" --kill-tmux "$KNAME" --wait 5)" || fail "delete --kill-tmux failed: $out"
+! tmux -L "$SOCK" has-session -t "=$KNAME" 2>/dev/null || fail "delete --kill-tmux left the tmux session"
+[[ ! -e "${PROJ}/${C_KILL}.jsonl" ]] || fail "delete --kill-tmux left the transcript"
+out="$("$SESSIONS" delete claude "$C_KILL" --kill-tmux "$KNAME")" || fail "repeat delete --kill-tmux should succeed"
+[[ "$out" == *"already gone"* ]] || fail "repeat delete should say already gone: $out"
+"$SESSIONS" delete codex 019f0000-0000-7000-8000-0000000000aa --missing-ok >/dev/null || fail "--missing-ok should exit 0 for a missing conversation"
+if "$SESSIONS" delete claude "$C_KILL" --kill-tmux "ai/codex/todo-aaaaaaaa" >/dev/null 2>&1; then fail "--kill-tmux accepted another tool's tmux name"; else [[ $? -eq 64 ]] || fail "bad --kill-tmux should exit 64"; fi
+start=$(date +%s)
+if "$SESSIONS" delete claude "$C_RUN" --kill-tmux "ai/claude/todo-notmux" --wait 1 >/dev/null 2>&1; then
+  fail "delete --kill-tmux removed a conversation still running outside tmux"
+else
+  [[ $? -eq 65 ]] || fail "still-running conversation should exit 65 after --wait"
+fi
+[[ $(( $(date +%s) - start )) -le 4 && -f "${PROJ}/${C_RUN}.jsonl" ]] || fail "--wait didn't time out promptly or deleted"
+pass "delete --kill-tmux ends the tmux session, waits, deletes; missing = already gone; refuses if still running"
+
+# prune only passes valid ids to delete.
+printf '{"type":"user","cwd":"%s","message":{"content":"stray agent file"}}\n' "${HOME}/programming" >"${PROJ}/agent-foo.jsonl"
+touch -t "$OLD" "${PROJ}/agent-foo.jsonl"
+AI_TODO_HUB_CONF="$PRUNE_CONF" "$SESSIONS" prune --older-than 30 >"${SANDBOX}/prune5.txt" 2>"${SANDBOX}/prune5.err"
+! grep -q "would delete .*agent-foo" "${SANDBOX}/prune5.txt" || fail "prune listed a file with an invalid id"
+grep -q "unexpected id: 'agent-foo'" "${SANDBOX}/prune5.err" || fail "prune didn't report the skipped id: $(cat "${SANDBOX}/prune5.err")"
+pass "prune skips (and reports) conversations whose id doesn't look like a session id"
+
+# ai-todo-open passes its PATH into new tmux sessions: an already-running tmux server
+# started with a bare environment can still run npm-installed codex (needs `node`).
+NVM_BIN="${HOME}/.nvm/versions/node/v99.0.0/bin"
+mkdir -p "$NVM_BIN"
+NODE_LOG="${SANDBOX}/node.log"
+printf '#!/bin/sh\necho "node $*" >>"%s"\nexec sleep 300\n' "$NODE_LOG" >"${NVM_BIN}/fakenode"
+printf '#!/usr/bin/env fakenode\n' >"${NVM_BIN}/codex"
+chmod +x "${NVM_BIN}/fakenode" "${NVM_BIN}/codex"
+PSOCK="${SOCK}-path"
+env -i HOME="$HOME" PATH=/usr/bin:/bin "$(command -v tmux)" -L "$PSOCK" new-session -d -s keep -- sleep 300
+out="$(env -u AI_TODO_CODEX_BIN PATH=/usr/bin:/bin AI_TODO_TMUX_SOCKET="$PSOCK" AI_TODO_OPEN_DETACH=1 \
+  "$OPEN" "ai/codex/todo-pathtest" '~/programming' "$X_LINKED" codex)" || fail "ai-todo-open via nvm codex failed: $out"
+for _ in $(seq 1 50); do [[ -s "$NODE_LOG" ]] && break; sleep 0.1; done
+tmux -L "$PSOCK" kill-server >/dev/null 2>&1 || true
+grep -q "resume ${X_LINKED}" "$NODE_LOG" 2>/dev/null || fail "npm-installed codex couldn't find node inside an existing tmux server"
+pass "ai-todo-open passes the resolved PATH into new tmux sessions (nvm codex works with a running tmux server)"
+
 # --- ai-todo-hook -------------------------------------------------------------
 
 HUB_LOG="${SANDBOX}/hub.log"

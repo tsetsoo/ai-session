@@ -47,10 +47,21 @@ public enum TmuxCommandBuilder {
         wrap("\"$HOME/.ai-remote/bin/ai-todo-sessions\" list --json --limit \(max(1, limit))")
     }
 
-    /// Deletes a conversation on the computer (Claude: its files; Codex: `codex archive`).
-    /// The script refuses while the conversation is running.
-    public static func deleteRemoteConversation(tool: String, sessionId: String) -> String {
-        wrap("\"$HOME/.ai-remote/bin/ai-todo-sessions\" delete \(shellQuote(tool)) \(shellQuote(sessionId))")
+    /// Deletes a conversation on the computer (Claude: its files; Codex: `codex archive`) in
+    /// one exec: the script ends the todo's tmux session, waits up to `waitSeconds` for the
+    /// conversation to stop, then deletes it. A conversation that doesn't exist counts as
+    /// already gone (exit 0). It refuses (65) while something else still runs it. If the
+    /// script is missing (127) nothing is killed.
+    public static func deleteRemoteConversation(
+        tool: String,
+        sessionId: String,
+        tmuxName: String,
+        waitSeconds: Int = 10
+    ) -> String {
+        wrap(
+            "\"$HOME/.ai-remote/bin/ai-todo-sessions\" delete \(shellQuote(tool)) \(shellQuote(sessionId))"
+                + " --kill-tmux \(shellQuote(tmuxName)) --wait \(max(0, waitSeconds)) --missing-ok"
+        )
     }
 
     public static func probeBinaries() -> String {

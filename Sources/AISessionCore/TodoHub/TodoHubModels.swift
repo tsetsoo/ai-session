@@ -216,6 +216,17 @@ public struct TodoWithConversation: Decodable, Equatable, Sendable {
 }
 
 /// One conversation found on a computer by `ai-todo-sessions list --json`.
+/// Shared formatters for `RemoteConversation.updatedDate`, which list rows call while rendering.
+/// ISO8601DateFormatter is thread-safe.
+private enum RemoteConversationDates {
+    static let plain = ISO8601DateFormatter()
+    static let fractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+}
+
 public struct RemoteConversation: Codable, Hashable, Identifiable, Sendable {
     public var tool: String
     public var sessionId: String
@@ -246,9 +257,7 @@ public struct RemoteConversation: Codable, Hashable, Identifiable, Sendable {
     }
 
     public var updatedDate: Date? {
-        let withFraction = ISO8601DateFormatter()
-        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return ISO8601DateFormatter().date(from: updatedAt) ?? withFraction.date(from: updatedAt)
+        RemoteConversationDates.plain.date(from: updatedAt) ?? RemoteConversationDates.fractional.date(from: updatedAt)
     }
 
     /// Decodes the script's JSON array (snake_case keys).

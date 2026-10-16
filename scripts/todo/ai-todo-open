@@ -115,5 +115,8 @@ else
 fi
 
 # Create detached, then attach, so the same path works inside and outside tmux.
-tmux_cmd new-session -d -s "$name" -c "$cwd" -- "$@"
+# A tmux server that is already running gives new sessions its own environment, not
+# ours, so pass the PATH resolved above explicitly: npm-installed codex (under nvm)
+# needs `node` on it. `env` instead of `new-session -e` works on every tmux version.
+tmux_cmd new-session -d -s "$name" -c "$cwd" -- env "PATH=$PATH" "$@"
 attach "$mode"

@@ -175,12 +175,51 @@ private struct Tag: View {
     }
 }
 
+/// A computer's conversations. Looks up its SSH host and key (a Keychain read) once when it
+/// appears, not on every render.
+private struct ComputerConversations: View {
+    let computer: Computer
+    let linkedIDs: Set<String>
+    let actionError: String?
+    let isWorking: Bool
+    let onPick: (RemoteConversation) -> Void
+    @Query private var hosts: [HostEntity]
+    @State private var lookup: Result<HostConnectionConfig, Error>?
+
+    var body: some View {
+        Group {
+            switch lookup {
+            case nil:
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case let .success(config)?:
+                RemoteConversationPicker(
+                    computerName: computer.name,
+                    linkedIDs: linkedIDs,
+                    actionError: actionError,
+                    isWorking: isWorking,
+                    load: { try await RemoteConversations.list(config: config, computerName: computer.name) },
+                    onPick: onPick
+                )
+            case let .failure(error)?:
+                ContentUnavailableView(
+                    "Can't reach \(computer.name)",
+                    systemImage: "desktopcomputer.trianglebadge.exclamationmark",
+                    description: Text(error.localizedDescription)
+                )
+            }
+        }
+        .task(id: computer.id) {
+            lookup = Result { try HostLookup.config(for: computer, in: hosts) }
+        }
+    }
+}
+
 /// "Link Existing Conversation…" for a todo without one: lists the conversations on the
 /// computer assigned to the todo's section.
 struct LinkConversationSheet: View {
     let todo: Todo
     let store: TodoHubStore
-    @Query private var hosts: [HostEntity]
     @Environment(\.dismiss) private var dismiss
     @State private var actionError: String?
     @State private var isWorking = false
@@ -204,23 +243,13 @@ struct LinkConversationSheet: View {
     @ViewBuilder
     private var content: some View {
         if let computer = store.sectionComputers[todo.section]?.computer {
-            switch Result(catching: { try HostLookup.config(for: computer, in: hosts) }) {
-            case let .success(config):
-                RemoteConversationPicker(
-                    computerName: computer.name,
-                    linkedIDs: store.linkedConversationIDs,
-                    actionError: actionError,
-                    isWorking: isWorking,
-                    load: { try await RemoteConversations.list(config: config, computerName: computer.name) },
-                    onPick: { link($0, on: computer) }
-                )
-            case let .failure(error):
-                ContentUnavailableView(
-                    "Can't reach \(computer.name)",
-                    systemImage: "desktopcomputer.trianglebadge.exclamationmark",
-                    description: Text(error.localizedDescription)
-                )
-            }
+            ComputerConversations(
+                computer: computer,
+                linkedIDs: store.linkedConversationIDs,
+                actionError: actionError,
+                isWorking: isWorking,
+                onPick: { link($0, on: computer) }
+            )
         } else {
             ContentUnavailableView(
                 "Section \(todo.section.rawValue) has no computer",
@@ -249,7 +278,6 @@ struct LinkConversationSheet: View {
 /// section and title for the new todo.
 struct NewTodoFromConversationSheet: View {
     let store: TodoHubStore
-    @Query private var hosts: [HostEntity]
     @Environment(\.dismiss) private var dismiss
     @State private var path: [Step] = []
 
@@ -308,26 +336,15 @@ struct NewTodoFromConversationSheet: View {
         }
     }
 
-    @ViewBuilder
     private func conversations(on computer: Computer) -> some View {
-        switch Result(catching: { try HostLookup.config(for: computer, in: hosts) }) {
-        case let .success(config):
-            RemoteConversationPicker(
-                computerName: computer.name,
-                linkedIDs: store.linkedConversationIDs,
-                actionError: nil,
-                isWorking: false,
-                load: { try await RemoteConversations.list(config: config, computerName: computer.name) },
-                onPick: { path.append(.details(computer, $0)) }
-            )
-            .navigationTitle(computer.name)
-        case let .failure(error):
-            ContentUnavailableView(
-                "Can't reach \(computer.name)",
-                systemImage: "desktopcomputer.trianglebadge.exclamationmark",
-                description: Text(error.localizedDescription)
-            )
-        }
+        ComputerConversations(
+            computer: computer,
+            linkedIDs: store.linkedConversationIDs,
+            actionError: nil,
+            isWorking: false,
+            onPick: { path.append(.details(computer, $0)) }
+        )
+        .navigationTitle(computer.name)
     }
 
     /// The section this computer serves, when exactly one does.

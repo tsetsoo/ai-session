@@ -27,19 +27,18 @@ enum RemoteConversations {
         }
     }
 
-    /// Ends the conversation's tmux session (if any) and deletes the conversation on the
-    /// computer (Claude: its files; Codex: archived). The script refuses while another process
-    /// still runs it, e.g. in a terminal outside tmux.
+    /// Ends the conversation's tmux session (if any), waits for it to stop, and deletes the
+    /// conversation on the computer (Claude: its files; Codex: archived), all in one script
+    /// run. A conversation that's already gone counts as deleted. The script refuses while
+    /// another process still runs it, e.g. in a terminal outside tmux.
     static func delete(_ conversation: Conversation, config: HostConnectionConfig) async throws {
-        let ssh = NIOSSHClient()
-        let kill = try await ssh.exec(config, command: TmuxCommandBuilder.killSessionExact(tmuxName: conversation.tmuxName))
-        // 1 = no such session, which is fine here.
-        guard kill.exitCode == 0 || kill.exitCode == 1 else {
-            throw SSHRemoteError.commandFailed(exitCode: kill.exitCode, stderr: kill.stderr)
-        }
-        let result = try await ssh.exec(
+        let result = try await NIOSSHClient().exec(
             config,
-            command: TmuxCommandBuilder.deleteRemoteConversation(tool: conversation.tool, sessionId: conversation.sessionId)
+            command: TmuxCommandBuilder.deleteRemoteConversation(
+                tool: conversation.tool,
+                sessionId: conversation.sessionId,
+                tmuxName: conversation.tmuxName
+            )
         )
         try check(result, computerName: conversation.computer.name)
     }

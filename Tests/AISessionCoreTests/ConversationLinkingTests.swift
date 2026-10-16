@@ -44,6 +44,18 @@ final class ConversationLinkingTests: XCTestCase {
         XCTAssertEqual(legacy.tool, "claude")
     }
 
+    /// Current servers send `claude_session_id: null` for non-Claude conversations.
+    func testDecodesCodexConversationWithNullClaudeSessionId() throws {
+        let json = Self.codexConversationJSON.replacingOccurrences(
+            of: #""claude_session_id":"019f8b4e-ff53-7201-8585-162b40a93fb3""#,
+            with: #""claude_session_id":null"#
+        )
+        XCTAssertTrue(json.contains(#""claude_session_id":null"#))
+        let codex = try TodoHubClient.makeDecoder().decode(Conversation.self, from: Data(json.utf8))
+        XCTAssertEqual(codex.tool, "codex")
+        XCTAssertEqual(codex.sessionId, "019f8b4e-ff53-7201-8585-162b40a93fb3")
+    }
+
     func testConversationSurvivesTheOfflineCache() throws {
         let conversation = try TodoHubClient.makeDecoder()
             .decode(Conversation.self, from: Data(Self.codexConversationJSON.utf8))
@@ -134,9 +146,14 @@ final class ConversationLinkingTests: XCTestCase {
         XCTAssertTrue(TmuxCommandBuilder.listRemoteConversations().hasSuffix(
             #""$HOME/.ai-remote/bin/ai-todo-sessions" list --json --limit 200"#
         ))
-        XCTAssertTrue(TmuxCommandBuilder.deleteRemoteConversation(tool: "codex", sessionId: "it's").hasSuffix(
-            #""$HOME/.ai-remote/bin/ai-todo-sessions" delete 'codex' 'it'"'"'s'"#
+        XCTAssertTrue(TmuxCommandBuilder.deleteRemoteConversation(
+            tool: "codex", sessionId: "it's", tmuxName: "ai/codex/todo-1"
+        ).hasSuffix(
+            #""$HOME/.ai-remote/bin/ai-todo-sessions" delete 'codex' 'it'"'"'s' --kill-tmux 'ai/codex/todo-1' --wait 10 --missing-ok"#
         ))
+        XCTAssertTrue(TmuxCommandBuilder.deleteRemoteConversation(
+            tool: "claude", sessionId: "s", tmuxName: "ai/claude/todo-1", waitSeconds: -3
+        ).hasSuffix("--wait 0 --missing-ok"))
         // Claude keeps the 3-argument form older scripts accept; other tools pass a 4th.
         XCTAssertTrue(TmuxCommandBuilder.openTodoConversation(
             tmuxName: "ai/claude/todo-1", cwd: "~", sessionId: "s"
