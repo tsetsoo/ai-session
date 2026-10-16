@@ -132,11 +132,11 @@
 		B9DBC3BD9869463A3CB29231 /* TodosView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodosView.swift; sourceTree = "<group>"; };
 		BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
 		BB775BB4D3645609923CB4D6 /* PlatformSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformSupport.swift; sourceTree = "<group>"; };
-		C1B1F550EF303DB9655E6EE3 /* integration */ = {isa = PBXFileReference; lastKnownFileType = folder; name = integration; path = .; sourceTree = SOURCE_ROOT; };
 		C42DA3B83B3817679DCCC8E4 /* AISessionRemoteMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AISessionRemoteMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectionPoolTests.swift; sourceTree = "<group>"; };
 		CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectionPool.swift; sourceTree = "<group>"; };
 		CD3241ADE6D78A7C9BB02EC3 /* PromoteSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromoteSessionSheet.swift; sourceTree = "<group>"; };
+		CF3B29368B4B0C7D9FC751E9 /* app-run */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "app-run"; path = .; sourceTree = SOURCE_ROOT; };
 		D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NIOSSHClient.swift; sourceTree = "<group>"; };
 		DA7BABCCCBD7DDCE94657EFD /* SoftKeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoftKeyBar.swift; sourceTree = "<group>"; };
 		DFFA46BBF4C8FFC2CCE6EE1B /* PooledSSHConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PooledSSHConnection.swift; sourceTree = "<group>"; };
@@ -201,7 +201,7 @@
 		113CDF79D99CF7521E9DC3DF /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				C1B1F550EF303DB9655E6EE3 /* integration */,
+				CF3B29368B4B0C7D9FC751E9 /* app-run */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
