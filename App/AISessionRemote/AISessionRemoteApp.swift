@@ -3,6 +3,13 @@ import SwiftUI
 
 @main
 struct AISessionRemoteApp: App {
+    #if os(macOS)
+    init() {
+        // `--add-host …` adds SSH hosts and exits (see HostProvisioning).
+        HostProvisioning.runFromCommandLineIfRequested()
+    }
+    #endif
+
     var body: some Scene {
         WindowGroup {
             RootView()

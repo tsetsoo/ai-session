@@ -39,6 +39,7 @@
 		59BACE3CA9D655C4E792B679 /* HostEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99B0F4154BA389FF80D827AE /* HostEditorView.swift */; };
 		59C45B28CBCDC28F707DDF18 /* PooledSSHConnectionCloseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4325A2838E2861F98B34246 /* PooledSSHConnectionCloseTests.swift */; };
 		6053A3AC11C84A1C10F6BEE5 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */; };
+		605E6B6F9F8F41A6885F4AF3 /* HostProvisioning.swift in Sources */ = {isa = PBXBuildFile; fileRef = B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */; };
 		65FA33B8E87008A416400E66 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 9A15C4D410D8FBA24EA1F462 /* Crypto */; };
 		6913D939F32ABA65540B8B7F /* AttentionNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3708ACD4BFADB69A73E0DB09 /* AttentionNotifier.swift */; };
 		7240ED6D831B6CDC06C67F09 /* TodoHubSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12419581E8EABDDBD2C33D6A /* TodoHubSettings.swift */; };
@@ -66,6 +67,7 @@
 		AE67B4C34F8CAF0F30BE3BFD /* PooledSSHConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFFA46BBF4C8FFC2CCE6EE1B /* PooledSSHConnection.swift */; };
 		AF184E67F36F25D57DAD8E18 /* PooledConnecting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC825CDD2BB9FFA73CAFDE4 /* PooledConnecting.swift */; };
 		B45B06C6BEC4E0C3B674028A /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3869B11228A2EA6745FCCEF8 /* NIOCore */; };
+		B71616AC9401D6282B4AC1EA /* HostProvisioning.swift in Sources */ = {isa = PBXBuildFile; fileRef = B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */; };
 		B7C6511C2B07ACD842316E2A /* AttentionNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3708ACD4BFADB69A73E0DB09 /* AttentionNotifier.swift */; };
 		BDB5778417C362323812D238 /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
 		C0151AA649300EAE1F217F82 /* TerminalTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D417529F6E6B990D79BF81 /* TerminalTransport.swift */; };
@@ -119,6 +121,7 @@
 		45650CE5B948BA331E385B8B /* TerminalResizeDebouncerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalResizeDebouncerTests.swift; sourceTree = "<group>"; };
 		603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionRemoteApp.swift; sourceTree = "<group>"; };
 		6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParserTests.swift; sourceTree = "<group>"; };
+		7118B1A4C282EE1D9EA1CC82 /* host-provisioning */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "host-provisioning"; path = .; sourceTree = SOURCE_ROOT; };
 		77B5CF5ADABEA184DD911533 /* SessionsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsListView.swift; sourceTree = "<group>"; };
 		7ABB2CBA22446496FCC5434A /* TodoHubStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubStore.swift; sourceTree = "<group>"; };
 		97D417529F6E6B990D79BF81 /* TerminalTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTransport.swift; sourceTree = "<group>"; };
@@ -129,6 +132,7 @@
 		A467E31C965B1E36C7CB08F0 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		A96BCB7E12B43FC54FCD91FC /* TerminalOutputCoalescerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalOutputCoalescerTests.swift; sourceTree = "<group>"; };
 		AC1B02295F04DE55821A1C7F /* HostsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostsListView.swift; sourceTree = "<group>"; };
+		B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostProvisioning.swift; sourceTree = "<group>"; };
 		B9DBC3BD9869463A3CB29231 /* TodosView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodosView.swift; sourceTree = "<group>"; };
 		BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
 		BB775BB4D3645609923CB4D6 /* PlatformSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformSupport.swift; sourceTree = "<group>"; };
@@ -136,7 +140,6 @@
 		C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectionPoolTests.swift; sourceTree = "<group>"; };
 		CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectionPool.swift; sourceTree = "<group>"; };
 		CD3241ADE6D78A7C9BB02EC3 /* PromoteSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromoteSessionSheet.swift; sourceTree = "<group>"; };
-		CF3B29368B4B0C7D9FC751E9 /* app-run */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "app-run"; path = .; sourceTree = SOURCE_ROOT; };
 		D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NIOSSHClient.swift; sourceTree = "<group>"; };
 		DA7BABCCCBD7DDCE94657EFD /* SoftKeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoftKeyBar.swift; sourceTree = "<group>"; };
 		DFFA46BBF4C8FFC2CCE6EE1B /* PooledSSHConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PooledSSHConnection.swift; sourceTree = "<group>"; };
@@ -201,7 +204,7 @@
 		113CDF79D99CF7521E9DC3DF /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				CF3B29368B4B0C7D9FC751E9 /* app-run */,
+				7118B1A4C282EE1D9EA1CC82 /* host-provisioning */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -235,6 +238,7 @@
 			isa = PBXGroup;
 			children = (
 				3708ACD4BFADB69A73E0DB09 /* AttentionNotifier.swift */,
+				B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */,
 				EE3B756FF0192985AADAFF36 /* HostRepository.swift */,
 				D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */,
 				985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */,
@@ -462,6 +466,7 @@
 				34635CC272011A10046EA8BB /* ComputersView.swift in Sources */,
 				59BACE3CA9D655C4E792B679 /* HostEditorView.swift in Sources */,
 				A9EDC3100C97630A41581C4E /* HostEntity.swift in Sources */,
+				B71616AC9401D6282B4AC1EA /* HostProvisioning.swift in Sources */,
 				3538D4106650FB5DD44CE028 /* HostRepository.swift in Sources */,
 				47C0DBE7DC069BCC5F022E48 /* HostsListView.swift in Sources */,
 				F20B4E30CA2C51E9A3F6C76A /* MacCompatibility.swift in Sources */,
@@ -499,6 +504,7 @@
 				FA69A7532D8C6467FEC37394 /* ComputersView.swift in Sources */,
 				9457E33FBF3D6F5F05EAD86F /* HostEditorView.swift in Sources */,
 				BDB5778417C362323812D238 /* HostEntity.swift in Sources */,
+				605E6B6F9F8F41A6885F4AF3 /* HostProvisioning.swift in Sources */,
 				DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */,
 				73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */,
 				A4969E70C98FC8113339AE7A /* MacCompatibility.swift in Sources */,
