@@ -1,11 +1,15 @@
+// The self-describing API in describe.rs is one large json! literal.
+#![recursion_limit = "256"]
+
+mod auth;
 mod broadcast;
+mod conversations;
 mod daily;
 mod db;
 mod describe;
 mod handlers;
 mod models;
 
-use actix_cors::Cors;
 use actix_web::{web, App, HttpServer, middleware};
 use clap::Parser;
 
@@ -28,6 +32,11 @@ async fn main() -> std::io::Result<()> {
     println!("Initializing database at: {}", args.db);
     let pool = db::init_pool(&args.db);
     let broadcaster = broadcast::Broadcaster::new();
+    let api_token = auth::ApiToken::from_env();
+    println!(
+        "API token auth: {}",
+        if api_token.0.is_some() { "enabled" } else { "disabled (set TODO_API_TOKEN to enable)" }
+    );
 
     // Determine frontend dist path
     let frontend_dir = std::env::var("FRONTEND_DIR")
@@ -40,18 +49,21 @@ async fn main() -> std::io::Result<()> {
     let broadcaster_clone = broadcaster.clone();
 
     HttpServer::new(move || {
-        let cors = Cors::default()
-            .allow_any_origin()
-            .allow_any_method()
-            .allow_any_header()
-            .max_age(3600);
+        // Like the default format, but with the path (%U) instead of the request
+        // line (%r), so `/api/ws?token=…` never reaches the logs.
+        let logger = middleware::Logger::new(r#"%a "%{method}xi %U" %s %b "%{User-Agent}i" %T"#)
+            .custom_request_replace("method", |req| req.method().to_string());
 
+        // No CORS: the web UI is served from this origin and native clients don't need it,
+        // so other sites can't call the API from the browser.
         let mut app = App::new()
-            .wrap(cors)
-            .wrap(middleware::Logger::default())
+            .wrap(middleware::from_fn(auth::require_token))
+            .wrap(logger)
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(broadcaster_clone.clone()))
+            .app_data(web::Data::new(api_token.clone()))
             // API routes
+            .route("/api/health", web::get().to(auth::health))
             .route("/api/ws", web::get().to(handlers::ws_handler))
             .route("/api/describe", web::get().to(describe::describe))
             .route("/api/sections", web::get().to(handlers::get_sections))
@@ -64,7 +76,21 @@ async fn main() -> std::io::Result<()> {
             .route("/api/todos/{id}/daily", web::post().to(daily::set_todo_daily))
             .route("/api/daily/status", web::get().to(daily::daily_status))
             .route("/api/daily", web::get().to(daily::list_daily))
-            .route("/api/daily/create", web::post().to(daily::create_daily));
+            .route("/api/daily/create", web::post().to(daily::create_daily))
+            // AI conversations
+            .route("/api/computers", web::get().to(conversations::list_computers))
+            .route("/api/computers", web::post().to(conversations::create_computer))
+            .route("/api/computers/{id}", web::patch().to(conversations::update_computer))
+            .route("/api/computers/{id}", web::delete().to(conversations::delete_computer))
+            .route("/api/sections/computers", web::get().to(conversations::list_section_computers))
+            .route("/api/sections/{code}/computer", web::put().to(conversations::set_section_computer))
+            .route("/api/sections/{code}/computer", web::delete().to(conversations::clear_section_computer))
+            .route("/api/conversations", web::get().to(conversations::list_conversations))
+            .route("/api/conversations/status", web::post().to(conversations::post_conversation_status))
+            .route("/api/todos/{id}/conversation", web::get().to(conversations::get_conversation))
+            .route("/api/todos/{id}/conversation", web::post().to(conversations::open_conversation))
+            .route("/api/todos/{id}/conversation", web::delete().to(conversations::delete_conversation))
+            .route("/api/todos/{id}/conversation/close", web::post().to(conversations::close_conversation));
 
         // Serve frontend static files if the directory exists
         let fe_path = std::path::Path::new(&frontend_dir_clone);

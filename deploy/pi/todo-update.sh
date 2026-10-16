@@ -3,7 +3,7 @@ set -euo pipefail
 
 TODO_ROOT="${TODO_ROOT:-/opt/todo}"
 TODO_RELEASE_BASE="${TODO_RELEASE_BASE:-https://github.com/tsetsoo/todo-app/releases/download/pi-latest}"
-TODO_HEALTH_URL="${TODO_HEALTH_URL:-http://127.0.0.1:8080/api/sections}"
+TODO_HEALTH_URL="${TODO_HEALTH_URL:-http://127.0.0.1:8080/api/health}"
 TODO_SYSTEMCTL="${TODO_SYSTEMCTL:-systemctl}"
 KEEP_RELEASES="${KEEP_RELEASES:-3}"
 

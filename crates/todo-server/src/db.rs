@@ -13,7 +13,9 @@ pub fn init_pool(db_path: &str) -> DbPool {
         }
     }
 
-    let manager = SqliteConnectionManager::file(db_path);
+    // foreign_keys is per connection, so every pooled connection must turn it on.
+    let manager = SqliteConnectionManager::file(db_path)
+        .with_init(|c| c.execute_batch("PRAGMA foreign_keys=ON;"));
     let pool = Pool::builder()
         .max_size(8)
         .build(manager)
@@ -24,9 +26,6 @@ pub fn init_pool(db_path: &str) -> DbPool {
 
     conn.execute_batch("PRAGMA journal_mode=WAL;")
         .expect("Failed to enable WAL mode");
-
-    conn.execute_batch("PRAGMA foreign_keys=ON;")
-        .expect("Failed to enable foreign keys");
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS todos (
@@ -83,6 +82,38 @@ pub fn init_pool(db_path: &str) -> DbPool {
         params![],
     )
     .expect("Failed to create daily_days table");
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS computers (
+            id         TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            hostname   TEXT NOT NULL,
+            port       INTEGER NOT NULL DEFAULT 22,
+            username   TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS section_computers (
+            section     TEXT PRIMARY KEY CHECK(section IN ('Sp','I','Si','P')),
+            computer_id TEXT NOT NULL REFERENCES computers(id) ON DELETE RESTRICT,
+            cwd         TEXT NOT NULL,
+            tool        TEXT NOT NULL DEFAULT 'claude' CHECK(tool IN ('claude'))
+        );
+        CREATE TABLE IF NOT EXISTS conversations (
+            todo_id           TEXT PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE,
+            computer_id       TEXT NOT NULL REFERENCES computers(id) ON DELETE RESTRICT,
+            cwd               TEXT NOT NULL,
+            tool              TEXT NOT NULL,
+            tmux_name         TEXT NOT NULL UNIQUE,
+            claude_session_id TEXT NOT NULL UNIQUE,
+            status            TEXT NOT NULL DEFAULT 'unknown'
+                              CHECK(status IN ('busy','waiting','idle','unknown','closed')),
+            status_message    TEXT,
+            status_updated_at TEXT,
+            created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )
+    .expect("Failed to create conversation tables");
 
     pool
 }

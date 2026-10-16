@@ -6,7 +6,8 @@ pub async fn describe() -> HttpResponse {
     let description = json!({
         "app": "TODO List",
         "version": "2.0.0",
-        "description": "Personal TODO list with 4 sections: Sp (Spiritual), I (Intellectual), Si (Social), P (Physical). Each todo has a priority level and optional due date.",
+        "description": "Personal TODO list with 4 sections: Sp, I, Si, P. Each todo has a priority level and optional due date. Each section can be assigned a computer, and each todo can have one AI conversation (Claude Code in tmux) on that computer.",
+        "auth": "When the server runs with TODO_API_TOKEN set, every /api endpoint except /api/health requires 'Authorization: Bearer <token>' (/api/ws also accepts ?token=).",
         "base_url": "/api",
         "quick_start": {
             "create_a_todo": "curl -X POST /api/todos -H 'Content-Type: application/json' -d '{\"section\":\"P\",\"title\":\"Go for a run\",\"importance\":\"high\",\"due_date\":\"2026-02-21\"}'",
@@ -16,12 +17,7 @@ pub async fn describe() -> HttpResponse {
             "toggle_complete": "curl -X POST /api/todos/{id}/toggle",
             "delete_todo": "curl -X DELETE /api/todos/{id}"
         },
-        "sections": {
-            "Sp": "Spiritual - tasks related to spiritual growth and mindfulness",
-            "I": "Intellectual - tasks related to learning, reading, and mental development",
-            "Si": "Social - tasks related to relationships, community, and social activities",
-            "P": "Physical - tasks related to health, fitness, and physical well-being"
-        },
+        "sections": ["Sp", "I", "Si", "P"],
         "importance_levels": ["low", "medium", "high", "critical"],
         "endpoints": [
             {
@@ -145,6 +141,40 @@ pub async fn describe() -> HttpResponse {
                 "parameters": [
                     {"name": "id", "in": "path", "required": true, "type": "string (UUID)"}
                 ]
+            },
+            {"method": "GET", "path": "/api/health", "description": "Liveness check; never requires a token"},
+            {"method": "GET", "path": "/api/computers", "description": "List computers"},
+            {
+                "method": "POST",
+                "path": "/api/computers",
+                "description": "Create a computer (no SSH keys are stored)",
+                "example_request": {"name": "Mac", "hostname": "mac.tailnet.ts.net", "port": 22, "username": "me"},
+                "response_status": 201
+            },
+            {"method": "PATCH", "path": "/api/computers/{id}", "description": "Update name, hostname, port or username"},
+            {"method": "DELETE", "path": "/api/computers/{id}", "description": "Delete a computer; 409 while a section or conversation uses it"},
+            {"method": "GET", "path": "/api/sections/computers", "description": "Section → computer mappings (sections without one are omitted)"},
+            {
+                "method": "PUT",
+                "path": "/api/sections/{code}/computer",
+                "description": "Assign a computer and default working directory to a section",
+                "example_request": {"computer_id": "<uuid>", "cwd": "~/programming", "tool": "claude"}
+            },
+            {"method": "DELETE", "path": "/api/sections/{code}/computer", "description": "Remove a section's computer"},
+            {"method": "GET", "path": "/api/conversations", "description": "All conversations with their computer and status"},
+            {"method": "GET", "path": "/api/todos/{id}/conversation", "description": "The todo's conversation; 404 if none"},
+            {
+                "method": "POST",
+                "path": "/api/todos/{id}/conversation",
+                "description": "Get or create the todo's conversation from its section's computer (snapshotting computer and cwd). Reopening a closed one resets status to unknown. 409 if the section has no computer. The client then SSHes to the computer and runs: ai-todo-open <tmux_name> <cwd> <claude_session_id>"
+            },
+            {"method": "POST", "path": "/api/todos/{id}/conversation/close", "description": "Mark closed after the client killed the tmux session; the Claude conversation stays resumable"},
+            {"method": "DELETE", "path": "/api/todos/{id}/conversation", "description": "Forget the conversation; the next open starts a new Claude conversation"},
+            {
+                "method": "POST",
+                "path": "/api/conversations/status",
+                "description": "Claude Code hook endpoint. 204 on success, 404 for sessions that are not todo conversations",
+                "example_request": {"claude_session_id": "<uuid>", "status": "waiting", "message": "Claude needs your permission"}
             }
         ],
         "data_model": {
@@ -156,7 +186,20 @@ pub async fn describe() -> HttpResponse {
                 "importance": "string enum: low | medium | high | critical",
                 "due_date": "string (YYYY-MM-DD) or null - optional due date",
                 "created_at": "string (datetime) - when the todo was created",
-                "updated_at": "string (datetime) - when the todo was last modified"
+                "updated_at": "string (datetime) - when the todo was last modified",
+                "conversation_status": "string enum or absent: busy | waiting | idle | unknown | closed"
+            },
+            "Conversation": {
+                "todo_id": "string (UUID)",
+                "computer": "Computer {id, name, hostname, port, username, created_at, updated_at}",
+                "cwd": "string - working directory snapshot (may start with ~)",
+                "tool": "string - claude",
+                "tmux_name": "string - ai/claude/todo-<first 8 chars of todo id>",
+                "claude_session_id": "string (UUID) - pass to claude --session-id / --resume",
+                "status": "string enum: busy | waiting | idle | unknown | closed",
+                "status_message": "string or null",
+                "status_updated_at": "string (datetime) or null",
+                "created_at": "string (datetime)"
             }
         },
         "usage_notes": [
