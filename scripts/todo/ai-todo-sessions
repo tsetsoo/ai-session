@@ -1,0 +1,423 @@
+#!/bin/sh
+# List, delete and prune the Claude Code and Codex conversations on this computer.
+# The iPhone / Mac app runs `list --json` over SSH to link existing conversations to
+# todos, and `delete` when a todo's conversation is deleted.
+#
+# Usage:
+#   ai-todo-sessions list [--json] [--tool claude|codex] [--limit N]
+#   ai-todo-sessions delete <claude|codex> <session_id> [--permanent]
+#   ai-todo-sessions prune --older-than DAYS [--tool claude|codex] [--yes]
+#
+# list    Newest first (default limit 200). Claude transcripts with no real prompt and
+#         Codex sub-agent threads are skipped. JSON objects have: tool, session_id, cwd,
+#         title, updated_at, prompts, running, tmux_session.
+# delete  Claude: removes the transcript (+ its sub-agent dir), file-history and
+#         session-env entries. Codex: `codex archive` (reversible), or `codex delete`
+#         with --permanent. Refuses while the conversation is running.
+# prune   Conversations not used for DAYS, not running and not linked to any todo.
+#         Linked ids come from todo-server (~/.ai-remote/todo-hub.conf); if it can't be
+#         reached, nothing is pruned. Without --yes it only prints what it would delete.
+#
+# Exit codes: 64 bad arguments, 65 refused (running / hub unreachable), 66 not found.
+#
+# Test hooks (not for normal use):
+#   AI_TODO_CODEX_BIN    codex binary instead of looking it up
+#   AI_TODO_TMUX_SOCKET  private tmux server (tmux -L <name>) for running-session lookup
+#   AI_TODO_HUB_CONF     todo-hub.conf path
+export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+exec python3 - "$@" <<'PY'
+import datetime
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import urllib.request
+
+HOME = os.path.expanduser("~")
+CLAUDE_PROJECTS = os.path.join(HOME, ".claude", "projects")
+CODEX_SESSIONS = os.path.join(HOME, ".codex", "sessions")
+ID_RE = re.compile(r"^[0-9a-fA-F][0-9a-fA-F-]{7,63}$")
+TITLE_MAX = 120
+
+
+def die(message, code):
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+def iso(ts):
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def tilde(path):
+    if path and (path == HOME or path.startswith(HOME + "/")):
+        return "~" + path[len(HOME):]
+    return path or ""
+
+
+def real_prompt(text):
+    """Text the user typed, not tool results, command wrappers or injected context."""
+    text = (text or "").strip()
+    if not text or text.startswith("<") or text.startswith("# AGENTS.md"):
+        return ""
+    return " ".join(text.split())
+
+
+def read_jsonl(path):
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                try:
+                    yield json.loads(line)
+                except ValueError:
+                    continue
+    except OSError:
+        return
+
+
+# --- Claude -------------------------------------------------------------------
+
+def claude_text(message):
+    content = (message or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                return part.get("text", "")
+    return ""
+
+
+def claude_sessions():
+    for path in glob.glob(os.path.join(CLAUDE_PROJECTS, "*", "*.jsonl")):
+        cwd, title, prompts = None, "", 0
+        for entry in read_jsonl(path):
+            if not isinstance(entry, dict):
+                continue
+            cwd = cwd or entry.get("cwd")
+            if entry.get("type") == "user" and not entry.get("isMeta"):
+                text = real_prompt(claude_text(entry.get("message")))
+                if text:
+                    prompts += 1
+                    title = title or text
+        yield {
+            "tool": "claude",
+            "session_id": os.path.basename(path)[: -len(".jsonl")],
+            "cwd": tilde(cwd),
+            "title": title[:TITLE_MAX],
+            "mtime": os.path.getmtime(path),
+            "prompts": prompts,
+            "path": path,
+        }
+
+
+# --- Codex --------------------------------------------------------------------
+
+def codex_sessions():
+    for path in glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*.jsonl"), recursive=True):
+        meta, title, prompts = None, "", 0
+        for i, entry in enumerate(read_jsonl(path)):
+            if not isinstance(entry, dict):
+                continue
+            payload = entry.get("payload") or {}
+            if i == 0:
+                if entry.get("type") != "session_meta":
+                    break
+                meta = payload
+                continue
+            if entry.get("type") == "response_item" and payload.get("role") == "user":
+                for part in payload.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") == "input_text":
+                        text = real_prompt(part.get("text"))
+                        if text:
+                            prompts += 1
+                            title = title or text
+                            break
+        if not meta or not meta.get("id"):
+            continue
+        source = meta.get("source")
+        if isinstance(source, dict) and "subagent" in source:
+            continue  # sub-agent threads belong to their parent conversation
+        yield {
+            "tool": "codex",
+            "session_id": meta["id"],
+            "cwd": tilde(meta.get("cwd")),
+            "title": title[:TITLE_MAX],
+            "mtime": os.path.getmtime(path),
+            "prompts": prompts,
+            "path": path,
+        }
+
+
+def find_codex():
+    explicit = os.environ.get("AI_TODO_CODEX_BIN")
+    if explicit:
+        return explicit
+    found = shutil.which("codex")
+    if found:
+        return found
+    # Installed with npm under nvm: not on PATH in a plain SSH session.
+    candidates = sorted(glob.glob(os.path.join(HOME, ".nvm", "versions", "node", "*", "bin", "codex")))
+    if candidates:
+        node_bin = os.path.dirname(candidates[-1])
+        os.environ["PATH"] = node_bin + os.pathsep + os.environ.get("PATH", "")
+        return candidates[-1]
+    return None
+
+
+# --- Running conversations ------------------------------------------------------
+
+def processes():
+    """[(pid, ppid, command)] for all processes."""
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True, check=False).stdout
+    except OSError:
+        return []
+    procs = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            procs.append((int(parts[0]), int(parts[1]), parts[2]))
+    return procs
+
+
+def tmux_panes():
+    """{pane_pid: session_name} for the tmux server (empty if none)."""
+    cmd = ["tmux"]
+    if os.environ.get("AI_TODO_TMUX_SOCKET"):
+        cmd += ["-L", os.environ["AI_TODO_TMUX_SOCKET"]]
+    cmd += ["list-panes", "-a", "-F", "#{pane_pid} #{session_name}"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
+    except OSError:
+        return {}
+    panes = {}
+    for line in out.splitlines():
+        pid, _, name = line.partition(" ")
+        if pid.isdigit():
+            panes[int(pid)] = name
+    return panes
+
+
+def claude_live_sessions():
+    """{session_id: pid} from ~/.claude/sessions/<pid>.json, which Claude Code keeps per process."""
+    live = {}
+    for path in glob.glob(os.path.join(HOME, ".claude", "sessions", "*.json")):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            pid = int(data.get("pid") or os.path.basename(path)[: -len(".json")])
+            os.kill(pid, 0)  # stale files of exited processes are left behind
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+        if isinstance(data.get("sessionId"), str):
+            live[data["sessionId"]] = pid
+    return live
+
+
+def running_index(ids):
+    """{session_id: tmux_session or ""} for conversations a live claude/codex process is using."""
+    procs = processes()
+    parent = {pid: ppid for pid, ppid, _ in procs}
+    panes = tmux_panes()
+
+    def tmux_session_of(pid):
+        seen, p = set(), pid
+        while p and p not in seen:
+            seen.add(p)
+            if p in panes:
+                return panes[p]
+            p = parent.get(p)
+        return ""
+
+    running = {}
+    # Claude started with plain `claude` has no id in its argv; its sessions file does.
+    for sid, pid in claude_live_sessions().items():
+        if sid in ids:
+            running[sid] = tmux_session_of(pid)
+    for pid, _, command in procs:
+        words = command.split()
+        if not words or os.path.basename(words[0]) in ("tmux", "ps", "grep"):
+            continue  # a tmux server keeps the argv it was started with, even after that session ends
+        if not re.search(r"(^|/|\s)(claude|codex)(\s|$)", command):
+            continue
+        for i, word in enumerate(words[:-1]):
+            if word in ("--resume", "-r", "--session-id", "resume") and words[i + 1] in ids:
+                if not running.get(words[i + 1]):
+                    running[words[i + 1]] = tmux_session_of(pid)
+    return running
+
+
+def all_sessions(tool=None):
+    sessions = []
+    if tool in (None, "claude"):
+        sessions += claude_sessions()
+    if tool in (None, "codex"):
+        sessions += codex_sessions()
+    sessions.sort(key=lambda s: s["mtime"], reverse=True)
+    return sessions
+
+
+# --- Commands -----------------------------------------------------------------
+
+def cmd_list(args):
+    as_json, tool, limit = False, None, 200
+    while args:
+        a = args.pop(0)
+        if a == "--json":
+            as_json = True
+        elif a == "--tool" and args:
+            tool = args.pop(0)
+        elif a == "--limit" and args:
+            limit = int(args.pop(0))
+        else:
+            die(f"unknown list option: {a}", 64)
+    if tool not in (None, "claude", "codex"):
+        die(f"unknown tool: {tool}", 64)
+    sessions = [s for s in all_sessions(tool) if s["prompts"] > 0][:limit]
+    running = running_index({s["session_id"] for s in sessions})
+    rows = [{
+        "tool": s["tool"],
+        "session_id": s["session_id"],
+        "cwd": s["cwd"],
+        "title": s["title"],
+        "updated_at": iso(s["mtime"]),
+        "prompts": s["prompts"],
+        "running": s["session_id"] in running,
+        "tmux_session": running.get(s["session_id"]) or None,
+    } for s in sessions]
+    if as_json:
+        print(json.dumps(rows))
+        return
+    for r in rows:
+        flag = "running" if r["running"] else ""
+        print(f'{r["updated_at"]}  {r["tool"]:<6} {r["session_id"]}  {r["cwd"]:<32} {r["prompts"]:>4}p {flag:<7} {r["title"][:60]}')
+
+
+def delete_session(session, permanent=False):
+    if session["tool"] == "claude":
+        sid = session["session_id"]
+        removed = []
+        targets = [session["path"], os.path.join(os.path.dirname(session["path"]), sid),
+                   os.path.join(HOME, ".claude", "file-history", sid),
+                   os.path.join(HOME, ".claude", "session-env", sid)]
+        for target in targets:
+            if os.path.isdir(target) and not os.path.islink(target):
+                shutil.rmtree(target)
+                removed.append(target)
+            elif os.path.lexists(target):
+                os.remove(target)
+                removed.append(target)
+        return f"deleted claude {sid} ({len(removed)} paths)"
+    codex = find_codex()
+    if not codex:
+        die("codex not found", 90)
+    verb = "delete" if permanent else "archive"
+    result = subprocess.run([codex, verb, session["session_id"]], capture_output=True, text=True)
+    if result.returncode != 0:
+        die(f"codex {verb} {session['session_id']} failed: {(result.stderr or result.stdout).strip()}", result.returncode or 1)
+    return f"{'deleted' if permanent else 'archived'} codex {session['session_id']}"
+
+
+def cmd_delete(args):
+    permanent = "--permanent" in args
+    args = [a for a in args if a != "--permanent"]
+    if len(args) != 2 or args[0] not in ("claude", "codex") or not ID_RE.match(args[1]):
+        die("usage: ai-todo-sessions delete <claude|codex> <session_id> [--permanent]", 64)
+    tool, sid = args
+    matches = [s for s in all_sessions(tool) if s["session_id"] == sid]
+    if not matches:
+        die(f"no {tool} conversation {sid}", 66)
+    if sid in running_index({sid}):
+        die(f"{tool} conversation {sid} is running; close it first", 65)
+    print(delete_session(matches[0], permanent))
+
+
+def linked_session_ids():
+    conf = os.environ.get("AI_TODO_HUB_CONF") or os.path.join(HOME, ".ai-remote", "todo-hub.conf")
+    values = {}
+    try:
+        with open(conf) as f:
+            for line in f:
+                m = re.match(r"\s*(TODO_HUB_URL|TODO_API_TOKEN)=['\"]?([^'\"\n]*)['\"]?\s*$", line)
+                if m:
+                    values[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    url = values.get("TODO_HUB_URL", "").rstrip("/")
+    if not url:
+        die(f"no TODO_HUB_URL in {conf}; refusing to prune without knowing which conversations are linked", 65)
+    request = urllib.request.Request(url + "/api/conversations")
+    if values.get("TODO_API_TOKEN"):
+        request.add_header("Authorization", "Bearer " + values["TODO_API_TOKEN"])
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            conversations = json.load(response)
+    except Exception as e:  # noqa: BLE001 - any failure means we can't prune safely
+        die(f"todo-server at {url} unreachable ({e}); refusing to prune", 65)
+    ids = set()
+    for c in conversations if isinstance(conversations, list) else []:
+        for key in ("session_id", "claude_session_id"):
+            if isinstance(c, dict) and c.get(key):
+                ids.add(c[key])
+    return ids
+
+
+def cmd_prune(args):
+    days, tool, yes = None, None, False
+    while args:
+        a = args.pop(0)
+        if a == "--older-than" and args:
+            value = args.pop(0).rstrip("d")
+            if not value.isdigit():
+                die("--older-than needs a number of days", 64)
+            days = int(value)
+        elif a == "--tool" and args:
+            tool = args.pop(0)
+        elif a == "--yes":
+            yes = True
+        else:
+            die(f"unknown prune option: {a}", 64)
+    if days is None:
+        die("usage: ai-todo-sessions prune --older-than DAYS [--tool claude|codex] [--yes]", 64)
+    if tool not in (None, "claude", "codex"):
+        die(f"unknown tool: {tool}", 64)
+    linked = linked_session_ids()
+    cutoff = datetime.datetime.now().timestamp() - days * 86400
+    old = [s for s in all_sessions(tool) if s["mtime"] < cutoff and s["session_id"] not in linked]
+    running = running_index({s["session_id"] for s in old})
+    candidates = [s for s in old if s["session_id"] not in running]
+    if not candidates:
+        print(f"nothing to prune (older than {days} days, unlinked, not running)")
+        return
+    for s in candidates:
+        prefix = "" if yes else "would delete "
+        print(f'{prefix}{s["tool"]} {s["session_id"]}  {s["cwd"]}  last used {iso(s["mtime"])}')
+    if not yes:
+        print(f"{len(candidates)} conversation(s) would be pruned; re-run with --yes to delete them")
+        return
+    for s in candidates:
+        print(delete_session(s))
+    print(f"pruned {len(candidates)} conversation(s)")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        die("usage: ai-todo-sessions list|delete|prune ... (see the header of this script)", 64)
+    command, rest = argv[0], list(argv[1:])
+    if command == "list":
+        cmd_list(rest)
+    elif command == "delete":
+        cmd_delete(rest)
+    elif command == "prune":
+        cmd_prune(rest)
+    else:
+        die(f"unknown command: {command}", 64)
+
+
+main(sys.argv[1:])
+PY

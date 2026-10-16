@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Offline tests for scripts/todo: ai-todo-open, ai-todo-hook, tmux.conf, install.sh.
-# Fully sandboxed: temp HOME, fake claude, fake todo-server, private tmux socket.
+# Offline tests for scripts/todo: ai-todo-open, ai-todo-sessions, ai-todo-hook, tmux.conf, install.sh.
+# Fully sandboxed: temp HOME, fake claude + codex, fake todo-server, private tmux socket.
 # Never touches the real ~/.claude, ~/.tmux.conf, ~/.ai-remote or tmux server.
 set -euo pipefail
 
@@ -12,13 +12,14 @@ mkdir -p "$HOME"
 SOCK="aitodo-test-$$"
 export AI_TODO_TMUX_SOCKET="$SOCK"
 HUB_PID=""
+EXTRA_PIDS=""
 
 cleanup() {
   tmux -L "$SOCK" kill-server >/dev/null 2>&1 || true
-  if [[ -n "$HUB_PID" ]]; then
-    kill "$HUB_PID" >/dev/null 2>&1 || true
-    wait "$HUB_PID" 2>/dev/null || true
-  fi
+  for pid in $HUB_PID $EXTRA_PIDS; do
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" 2>/dev/null || true
+  done
   rm -rf "$SANDBOX"
 }
 trap cleanup EXIT
@@ -93,6 +94,197 @@ else
   [[ $? -eq 93 ]] || fail "missing cwd should exit 93"
 fi
 pass "open exits 93 when the cwd does not exist"
+
+# --- ai-todo-sessions + Codex in ai-todo-open ----------------------------------
+
+SESSIONS="${SCRIPT_DIR}/ai-todo-sessions"
+OLD=202001010000   # touch -t timestamp for conversations not used in years
+PROJ="${HOME}/.claude/projects/-home-programming"
+CODEX_DAY="${HOME}/.codex/sessions/2026/01/02"
+mkdir -p "$PROJ" "$CODEX_DAY" "${HOME}/.claude/sessions" "${HOME}/.claude/file-history" "${HOME}/.claude/session-env"
+
+C_NEW=11111111-1111-4111-8111-111111111111     # recent, listed first
+C_OLD=22222222-2222-4222-8222-222222222222     # old, unlinked: pruned
+C_LINKED=33333333-3333-4333-8333-333333333333  # old, linked to a todo: kept
+C_RUN=44444444-4444-4444-8444-444444444444     # old, live per ~/.claude/sessions: kept
+C_ARGV=55555555-5555-4555-8555-555555555555    # old, live per `claude --resume <id>` argv: kept
+C_STALE=66666666-6666-4666-8666-666666666666   # old, sessions file of a dead pid: pruned
+C_EMPTY=77777777-7777-4777-8777-777777777777   # old, no real prompt: unlisted, pruned
+C_DEL=88888888-8888-4888-8888-888888888888     # deleted explicitly
+X_OLD=019f0000-0000-7000-8000-000000000001     # codex, old: archived by prune
+X_LINKED=019f0000-0000-7000-8000-000000000002  # codex, old, linked: kept
+X_RUN=019f0000-0000-7000-8000-000000000003     # codex, old, running in tmux: kept
+X_SUB=019f0000-0000-7000-8000-000000000004     # codex sub-agent thread: skipped
+
+claude_conv() { # <id> <first prompt> [more prompts...]
+  local id=$1 f="${PROJ}/$1.jsonl"; shift
+  printf '{"type":"user","cwd":"%s","message":{"role":"user","content":[{"type":"tool_result","content":"x"}]}}\n' "${HOME}/programming" >"$f"
+  for p in "$@"; do
+    printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"%s"}}\n' "${HOME}/programming" "$p" >>"$f"
+    printf '{"type":"assistant","cwd":"%s","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}\n' "${HOME}/programming" >>"$f"
+  done
+}
+codex_conv() { # <id> <source json> <prompt>
+  local f="${CODEX_DAY}/rollout-2026-01-02T10-00-00-$1.jsonl"
+  printf '{"timestamp":"t","type":"session_meta","payload":{"id":"%s","cwd":"%s","source":%s}}\n' "$1" "${HOME}/programming" "$2" >"$f"
+  printf '{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>x</environment_context>"}]}}\n' >>"$f"
+  printf '{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"%s"}]}}\n' "$3" >>"$f"
+}
+
+claude_conv "$C_NEW" 'fix   the\nparser' "and add tests"   # \n is a JSON escape: titles collapse whitespace
+for id in "$C_OLD" "$C_LINKED" "$C_RUN" "$C_ARGV" "$C_STALE" "$C_DEL"; do claude_conv "$id" "old work $id"; done
+printf '{"type":"user","message":{"content":"<command-name>/clear</command-name>"}}\n' >"${PROJ}/${C_EMPTY}.jsonl"
+mkdir -p "${PROJ}/${C_DEL}/subagents" "${HOME}/.claude/file-history/${C_DEL}" "${HOME}/.claude/session-env/${C_DEL}" "${HOME}/.claude/file-history/${C_OLD}"
+touch "${PROJ}/${C_DEL}/subagents/a.jsonl"
+codex_conv "$X_OLD" '"cli"' "codex old work"
+codex_conv "$X_LINKED" '"cli"' "codex linked work"
+codex_conv "$X_RUN" '"cli"' "codex running work"
+codex_conv "$X_SUB" '{"subagent":{"parent":"x"}}' "sub-agent prompt"
+for f in "$PROJ"/*.jsonl "$CODEX_DAY"/*.jsonl; do
+  [[ "$f" == *"$C_NEW"* || "$f" == *"/${SID}.jsonl" ]] || touch -t "$OLD" "$f"
+done
+
+# Live processes: a sessions file for C_RUN (alive pid), a dead pid for C_STALE,
+# `claude --resume C_ARGV` and `codex resume X_RUN` running inside tmux panes.
+sleep 300 &
+EXTRA_PIDS="$EXTRA_PIDS $!"
+printf '{"pid":%s,"sessionId":"%s"}' "$!" "$C_RUN" >"${HOME}/.claude/sessions/$!.json"
+printf '{"pid":999999,"sessionId":"%s"}' "$C_STALE" >"${HOME}/.claude/sessions/999999.json"
+mkdir -p "${SANDBOX}/run"
+printf '#!/bin/sh\nsleep 300\n' >"${SANDBOX}/run/claude"
+printf '#!/bin/sh\nsleep 300\n' >"${SANDBOX}/run/codex"
+chmod +x "${SANDBOX}/run/claude" "${SANDBOX}/run/codex"
+tmux -L "$SOCK" new-session -d -s argv-claude -- "${SANDBOX}/run/claude" --resume "$C_ARGV"
+tmux -L "$SOCK" new-session -d -s argv-codex -- "${SANDBOX}/run/codex" resume "$X_RUN"
+sleep 0.5
+
+# Fake codex: records archive/delete/resume calls; resume stays alive like a real session.
+FAKE_CODEX="${SANDBOX}/bin/codex"
+CODEX_LOG="${SANDBOX}/codex.log"
+cat >"$FAKE_CODEX" <<EOF
+#!/bin/sh
+echo "\$(pwd -P) \$*" >>"$CODEX_LOG"
+[ "\$1" = resume ] && exec sleep 300
+exit 0
+EOF
+chmod +x "$FAKE_CODEX"
+export AI_TODO_CODEX_BIN="$FAKE_CODEX"
+
+"$SESSIONS" list --json >"${SANDBOX}/list.json"
+python3 - "${SANDBOX}/list.json" <<PY || fail "list --json output wrong: $(cat "${SANDBOX}/list.json")"
+import json, re, sys
+rows = json.load(open(sys.argv[1]))
+ids = [r["session_id"] for r in rows]
+assert all(set(r) == {"tool","session_id","cwd","title","updated_at","prompts","running","tmux_session"} for r in rows), rows[0]
+assert ids[0] == "$C_NEW", ids
+assert "$C_EMPTY" not in ids and "$SID" not in ids, "conversations without a real prompt must be skipped"
+assert "$X_SUB" not in ids, "codex sub-agent threads must be skipped"
+assert {"$X_OLD", "$X_LINKED", "$X_RUN", "$C_OLD"} <= set(ids), ids
+new = rows[0]
+assert new["tool"] == "claude" and new["cwd"] == "~/programming", new
+assert new["title"] == "fix the parser" and new["prompts"] == 2, new
+assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", new["updated_at"]), new
+times = [r["updated_at"] for r in rows]
+assert times == sorted(times, reverse=True), times
+by = {r["session_id"]: r for r in rows}
+assert by["$X_OLD"]["tool"] == "codex" and by["$X_OLD"]["title"] == "codex old work", by["$X_OLD"]
+assert by["$C_RUN"]["running"] and by["$C_RUN"]["tmux_session"] is None, by["$C_RUN"]
+assert by["$C_ARGV"]["running"] and by["$C_ARGV"]["tmux_session"] == "argv-claude", by["$C_ARGV"]
+assert by["$X_RUN"]["running"] and by["$X_RUN"]["tmux_session"] == "argv-codex", by["$X_RUN"]
+assert not by["$C_STALE"]["running"] and not by["$C_OLD"]["running"], "dead or absent processes are not running"
+PY
+[[ "$("$SESSIONS" list --json --tool codex --limit 2 | python3 -c 'import json,sys; r=json.load(sys.stdin); print(len(r), {x["tool"] for x in r})')" == "2 {'codex'}" ]] \
+  || fail "list --tool/--limit not applied"
+pass "list --json: fields, newest first, skips empty and sub-agent conversations, --tool/--limit"
+pass "list detects running conversations (sessions file, claude/codex argv) and their tmux session"
+
+if "$SESSIONS" delete claude "$C_RUN" >/dev/null 2>&1; then fail "delete removed a running conversation"; else [[ $? -eq 65 ]] || fail "delete of a running conversation should exit 65"; fi
+[[ -f "${PROJ}/${C_RUN}.jsonl" ]] || fail "running conversation's transcript was removed"
+if "$SESSIONS" delete codex "$X_RUN" >/dev/null 2>&1; then fail "delete archived a running codex conversation"; fi
+pass "delete refuses running conversations"
+
+"$SESSIONS" delete claude "$C_DEL" >/dev/null
+[[ ! -e "${PROJ}/${C_DEL}.jsonl" && ! -e "${PROJ}/${C_DEL}" && ! -e "${HOME}/.claude/file-history/${C_DEL}" && ! -e "${HOME}/.claude/session-env/${C_DEL}" ]] \
+  || fail "delete left Claude files behind"
+[[ -f "${PROJ}/${C_OLD}.jsonl" && -d "${HOME}/.claude/file-history/${C_OLD}" && -f "${PROJ}/${C_NEW}.jsonl" ]] || fail "delete removed another conversation's files"
+if "$SESSIONS" delete claude "$C_DEL" >/dev/null 2>&1; then fail "deleting a missing conversation succeeded"; else [[ $? -eq 66 ]] || fail "missing conversation should exit 66"; fi
+if "$SESSIONS" delete claude "../../etc" >/dev/null 2>&1; then fail "delete accepted a path as an id"; fi
+pass "delete removes only that Claude conversation's transcript, sub-agent dir, file-history and session-env"
+
+"$SESSIONS" delete codex "$X_OLD" >/dev/null
+"$SESSIONS" delete codex "$X_OLD" --permanent >/dev/null
+[[ "$(cut -d' ' -f2- "$CODEX_LOG")" == "archive ${X_OLD}"$'\n'"delete ${X_OLD}" ]] || fail "codex delete calls wrong: $(cat "$CODEX_LOG")"
+: >"$CODEX_LOG"
+pass "codex delete archives by default and deletes with --permanent"
+
+# Fake todo-server listing the linked conversations (one per key name).
+LHUB_PORT_FILE="${SANDBOX}/lhub.port"
+python3 - "$LHUB_PORT_FILE" "$C_LINKED" "$X_LINKED" <<'PY' &
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+port_path, c_linked, x_linked = sys.argv[1:4]
+class Hub(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps([{"tool": "claude", "session_id": c_linked},
+                           {"tool": "codex", "claude_session_id": x_linked}]).encode()
+        self.send_response(200 if self.path == "/api/conversations" else 404)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+server = HTTPServer(("127.0.0.1", 0), Hub)
+open(port_path, "w").write(str(server.server_port))
+server.serve_forever()
+PY
+EXTRA_PIDS="$EXTRA_PIDS $!"
+for _ in $(seq 1 50); do [[ -s "$LHUB_PORT_FILE" ]] && break; sleep 0.1; done
+PRUNE_CONF="${SANDBOX}/prune-hub.conf"
+printf "TODO_HUB_URL='http://127.0.0.1:%s'\nTODO_API_TOKEN=''\n" "$(cat "$LHUB_PORT_FILE")" >"$PRUNE_CONF"
+
+AI_TODO_HUB_CONF="$PRUNE_CONF" "$SESSIONS" prune --older-than 30 >"${SANDBOX}/prune.txt"
+for id in "$C_OLD" "$C_STALE" "$C_EMPTY" "$X_OLD"; do
+  grep -q "would delete .* $id " "${SANDBOX}/prune.txt" || fail "dry run did not list $id: $(cat "${SANDBOX}/prune.txt")"
+done
+for id in "$C_NEW" "$C_LINKED" "$C_RUN" "$C_ARGV" "$X_LINKED" "$X_RUN" "$X_SUB" "$SID"; do
+  ! grep -q "$id" "${SANDBOX}/prune.txt" || fail "dry run listed $id, which must be kept"
+done
+[[ -f "${PROJ}/${C_OLD}.jsonl" && ! -s "$CODEX_LOG" ]] || fail "dry run deleted something"
+pass "prune without --yes only lists old, unlinked, non-running conversations"
+
+AI_TODO_HUB_CONF="$PRUNE_CONF" "$SESSIONS" prune --older-than 30d --yes >/dev/null
+[[ ! -e "${PROJ}/${C_OLD}.jsonl" && ! -e "${HOME}/.claude/file-history/${C_OLD}" && ! -e "${PROJ}/${C_STALE}.jsonl" && ! -e "${PROJ}/${C_EMPTY}.jsonl" ]] \
+  || fail "prune --yes left old conversations"
+for id in "$C_NEW" "$C_LINKED" "$C_RUN" "$C_ARGV"; do [[ -f "${PROJ}/${id}.jsonl" ]] || fail "prune --yes removed $id"; done
+[[ "$(cut -d' ' -f2- "$CODEX_LOG")" == "archive ${X_OLD}" ]] || fail "prune --yes codex calls wrong: $(cat "$CODEX_LOG")"
+: >"$CODEX_LOG"
+pass "prune --yes deletes them (Claude files, Codex archive) and keeps linked, running and recent ones"
+
+printf "TODO_HUB_URL='http://127.0.0.1:9'\n" >"${SANDBOX}/down.conf"
+claude_conv "$C_OLD" "back again"
+touch -t "$OLD" "${PROJ}/${C_OLD}.jsonl"
+if AI_TODO_HUB_CONF="${SANDBOX}/down.conf" "$SESSIONS" prune --older-than 30 --yes >/dev/null 2>&1; then
+  fail "prune ran with the hub unreachable"
+else
+  [[ $? -eq 65 ]] || fail "prune with the hub down should exit 65"
+fi
+[[ -f "${PROJ}/${C_OLD}.jsonl" ]] || fail "prune deleted with the hub unreachable"
+pass "prune refuses (exit 65) when todo-server can't be reached"
+
+XNAME="ai/codex/todo-0f3a9c21"
+out="$(AI_TODO_OPEN_DETACH=1 "$OPEN" "$XNAME" '~/programming' "$X_LINKED" codex)"
+[[ "$out" == resumed ]] || fail "codex open printed '$out', expected resumed"
+for _ in $(seq 1 50); do [[ -s "$CODEX_LOG" ]] && break; sleep 0.1; done
+[[ "$(cat "$CODEX_LOG")" == "${HOME}/programming resume ${X_LINKED}" ]] || fail "unexpected codex start: $(cat "$CODEX_LOG")"
+[[ "$(AI_TODO_OPEN_DETACH=1 "$OPEN" "$XNAME" '~/programming' "$X_LINKED" codex)" == attach ]] || fail "second codex open did not attach"
+if AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-nothere" '~/programming' 019f0000-0000-7000-8000-0000000000ff codex >/dev/null 2>&1; then
+  fail "codex open accepted an unknown conversation"
+else
+  [[ $? -eq 94 ]] || fail "unknown codex conversation should exit 94"
+fi
+if AI_TODO_OPEN_DETACH=1 "$OPEN" "$NAME" '~/programming' "$X_LINKED" codex >/dev/null 2>&1; then fail "codex open accepted a claude tmux name"; fi
+if AI_TODO_OPEN_DETACH=1 "$OPEN" "$XNAME" '~/programming' "$X_LINKED" cursor >/dev/null 2>&1; then fail "open accepted an unknown tool"; fi
+pass "ai-todo-open codex: resumes in tmux, attaches when running, exits 94 for unknown ids, checks tool vs name"
 
 # --- ai-todo-hook -------------------------------------------------------------
 
@@ -247,7 +439,7 @@ assert hooks["PreToolUse"][0]["matcher"] == "Bash"
 PY
 }
 check_installed || fail "settings.json after install is wrong: $(cat "$SETTINGS")"
-[[ -x "${HOME}/.ai-remote/bin/ai-todo-open" && -x "${HOME}/.ai-remote/bin/ai-todo-hook" ]] || fail "scripts not installed"
+[[ -x "${HOME}/.ai-remote/bin/ai-todo-open" && -x "${HOME}/.ai-remote/bin/ai-todo-hook" && -x "${HOME}/.ai-remote/bin/ai-todo-sessions" ]] || fail "scripts not installed"
 [[ "$(grep -c 'source-file -q ~/.ai-remote/tmux.conf' "${HOME}/.tmux.conf")" -eq 1 ]] || fail "tmux source line not added exactly once"
 grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "existing ~/.tmux.conf content lost"
 [[ "$(stat -f '%Lp' "${HOME}/.ai-remote/todo-hub.conf" 2>/dev/null || stat -c '%a' "${HOME}/.ai-remote/todo-hub.conf")" == 600 ]] \
@@ -279,7 +471,7 @@ assert [h["command"] for g in hooks["Stop"] for h in g["hooks"]] == ["afplay /Sy
 assert hooks["PreToolUse"][0]["matcher"] == "Bash"
 assert s["model"] == "opus"
 PY
-[[ ! -e "${HOME}/.ai-remote/bin/ai-todo-open" && ! -e "${HOME}/.ai-remote/tmux.conf" ]] || fail "uninstall left scripts behind"
+[[ ! -e "${HOME}/.ai-remote/bin/ai-todo-open" && ! -e "${HOME}/.ai-remote/bin/ai-todo-sessions" && ! -e "${HOME}/.ai-remote/tmux.conf" ]] || fail "uninstall left scripts behind"
 ! grep -q 'ai-remote/tmux.conf' "${HOME}/.tmux.conf" || fail "uninstall left the tmux source line"
 grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "uninstall removed other ~/.tmux.conf lines"
 pass "uninstall removes only our hooks, scripts and tmux line"

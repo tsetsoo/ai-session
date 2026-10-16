@@ -94,10 +94,23 @@ scripts/todo/install.sh --uninstall    # remove scripts, hooks and the tmux line
 
 The installer is safe to re-run. It sets up:
 
-- `~/.ai-remote/bin/ai-todo-open <tmux_name> <cwd> <claude_session_id>`: the command the app
-  runs. It attaches to the todo's tmux session if it is running. Otherwise it starts
-  `claude --session-id <id>`, or `claude --resume <id>` once the conversation exists in
-  `~/.claude/projects`, so a reboot or a closed conversation picks up where it left off.
+- `~/.ai-remote/bin/ai-todo-open <tmux_name> <cwd> <session_id> [claude|codex]`: the command
+  the app runs. It attaches to the todo's tmux session if it is running. Otherwise:
+  - Claude (the default) starts `claude --session-id <id>`, or `claude --resume <id>` once the
+    conversation exists in `~/.claude/projects`, so a reboot or a closed conversation picks up
+    where it left off.
+  - Codex runs `codex resume <id>` for a linked, existing Codex conversation. It exits 94 if
+    there is none, because Codex can't start a new conversation with a chosen id.
+- `~/.ai-remote/bin/ai-todo-sessions`: lists, deletes and prunes this computer's Claude Code and
+  Codex conversations, so the app can link existing ones to todos.
+  - `list --json [--tool claude|codex] [--limit N]` prints the newest first, with title, folder,
+    prompt count, and whether it is running (and in which tmux session). Empty Claude
+    transcripts and Codex sub-agent threads are skipped.
+  - `delete <claude|codex> <id> [--permanent]` removes a Claude conversation's files, or archives
+    a Codex one (`codex delete` with `--permanent`). It refuses while the conversation is running.
+  - `prune --older-than DAYS [--tool T] [--yes]` targets conversations unused for DAYS that aren't
+    running or linked to a todo. It asks todo-server which ones are linked, and refuses if it
+    can't reach it. Without `--yes` it only lists what it would delete.
 - `~/.ai-remote/bin/ai-todo-hook`: Claude Code hooks merged into `~/.claude/settings.json`.
   `UserPromptSubmit` posts `busy`, `Notification` posts `waiting`, and `Stop` posts `idle` to
   `POST /api/conversations/status`. Only sessions named `ai/claude/todo-*` report.
@@ -115,7 +128,7 @@ The installer is safe to re-run. It sets up:
   - OSC 52 clipboard, mouse, focus events, true color and 50k lines of scrollback.
 
 `scripts/todo/test-todo-scripts.sh` runs everything offline in a sandbox with a temp `HOME`,
-a fake `claude`, a fake hub and a private tmux socket.
+fake `claude` and `codex` binaries, a fake hub and a private tmux socket.
 
 ## Non-goals
 
