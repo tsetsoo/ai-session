@@ -1,7 +1,11 @@
 import AISessionCore
 import SwiftTerm
 import SwiftUI
+#if os(iOS)
 import UIKit
+#else
+import AppKit
+#endif
 
 /// Owns the `SwiftTerm.TerminalView` <-> `TerminalTransport` wiring: feeds remote bytes into the
 /// view, forwards keystrokes/resizes back to the SSH PTY, and does a best-effort clipboard copy.
@@ -124,7 +128,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
     }
 
     func pasteFromClipboard() {
-        guard let text = UIPasteboard.general.string,
+        guard let text = PlatformSupport.pasteboardString,
               let bytes = text.data(using: .utf8)?.map({ $0 }),
               !bytes.isEmpty
         else { return }
@@ -140,9 +144,15 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// SwiftTerm's built-in `TerminalAccessory` (Ctrl/Esc/Tab/arrows) appear.
     func focusTerminal() {
         guard let terminalView else { return }
+        #if os(iOS)
         if !terminalView.isFirstResponder {
             _ = terminalView.becomeFirstResponder()
         }
+        #else
+        if terminalView.window?.firstResponder !== terminalView {
+            terminalView.window?.makeFirstResponder(terminalView)
+        }
+        #endif
     }
 
     /// Best-effort clipboard copy: copies the active selection if there is one, otherwise
@@ -158,7 +168,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
             terminalView.selectNone()
         }
         if let text, !text.isEmpty {
-            UIPasteboard.general.string = text
+            PlatformSupport.pasteboardString = text
         }
     }
 
@@ -182,7 +192,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
         guard let url = URL(string: link) else { return }
-        UIApplication.shared.open(url)
+        PlatformSupport.open(url)
     }
 
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
@@ -204,6 +214,26 @@ final class TerminalCoordinator: TerminalViewDelegate {
     }
 }
 
+#if os(macOS)
+/// AppKit host for SwiftTerm's macOS `TerminalView`. Copy/Paste/Select All come from the
+/// standard Edit menu: they target the first responder, which is this view once focused.
+private struct TerminalContainerView: NSViewRepresentable {
+    let coordinator: TerminalCoordinator
+
+    func makeNSView(context: Context) -> TerminalView {
+        let view = TerminalView(frame: .zero)
+        view.nativeBackgroundColor = .black
+        view.nativeForegroundColor = .white
+        view.optionAsMetaKey = true
+        coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: TerminalView, context: Context) {
+        coordinator.attach(to: nsView)
+    }
+}
+#else
 private struct TerminalContainerView: UIViewRepresentable {
     let coordinator: TerminalCoordinator
 
@@ -223,6 +253,7 @@ private struct TerminalContainerView: UIViewRepresentable {
         coordinator.attach(to: uiView)
     }
 }
+#endif
 
 /// Interactive terminal for a single tmux session. SwiftTerm owns the soft-key
 /// accessory above the system keyboard (`TerminalAccessory`: Ctrl, Esc, Tab, arrows).
@@ -273,6 +304,7 @@ struct TerminalScreen: View {
             if isDisconnected {
                 disconnectedOverlay
             }
+            #if os(iOS)
             if connectionState == .connected && !keyboardVisible {
                 VStack {
                     Spacer()
@@ -287,6 +319,7 @@ struct TerminalScreen: View {
                 }
                 .transition(.move(edge: .bottom))
             }
+            #endif
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
@@ -294,6 +327,7 @@ struct TerminalScreen: View {
         .toolbarBackground(Color.black.opacity(0.85), for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     coordinator.focusTerminal()
@@ -303,6 +337,7 @@ struct TerminalScreen: View {
                 .accessibilityLabel("Show Keyboard")
                 .disabled(connectionState != .connected)
             }
+            #endif
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button {
@@ -386,22 +421,24 @@ struct TerminalScreen: View {
                 connectionState = state
                 if state == .connected {
                     isDisconnected = false
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    PlatformSupport.connectedFeedback()
                 }
             }
             connectionState = coordinator.state
             coordinator.onError = { message in errorMessage = message }
             coordinator.onDisconnected = {
                 isDisconnected = true
-                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                PlatformSupport.disconnectedFeedback()
             }
         }
+        #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardVisible = true
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardVisible = false
         }
+        #endif
         .onChange(of: connectionState, initial: true) { _, newState in
             // Re-armed on every transition into `.connecting`/`.idle`, so this also covers
             // `reconnect()` — not just the very first connect from `.task` below.

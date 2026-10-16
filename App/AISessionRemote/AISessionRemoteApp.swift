@@ -1,15 +1,14 @@
 import SwiftData
 import SwiftUI
-import UIKit
 
 @main
 struct AISessionRemoteApp: App {
     var body: some Scene {
         WindowGroup {
-            HostsListView()
+            RootView()
                 .onAppear { AttentionNotifier.requestAuthorizationIfNeeded() }
                 .onReceive(NotificationCenter.default.publisher(
-                    for: UIApplication.didEnterBackgroundNotification
+                    for: PlatformSupport.didEnterBackgroundNotification
                 )) { _ in
                     // iOS suspends sockets while backgrounded; a half-dead socket costs a full
                     // connect timeout on the next use, so closing eagerly here is faster than
@@ -28,5 +27,12 @@ struct AISessionRemoteApp: App {
                 }
         }
         .modelContainer(for: HostEntity.self)
+        #if os(macOS)
+        .defaultSize(width: 1100, height: 720)
+        .commands {
+            // Frees ⌘N for "New Session" (bound on the sessions list's add button).
+            CommandGroup(replacing: .newItem) {}
+        }
+        #endif
     }
 }

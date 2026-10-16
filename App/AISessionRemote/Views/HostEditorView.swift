@@ -1,7 +1,18 @@
 import AISessionCore
 import SwiftData
 import SwiftUI
-import UIKit
+import UniformTypeIdentifiers
+
+/// Connection fields to start a new host from (e.g. a todo-server computer). Nothing is
+/// saved until the user adds a key and taps Save.
+struct HostEditorPrefill: Identifiable {
+    var displayName: String
+    var hostname: String
+    var port: Int
+    var username: String
+
+    var id: String { "\(username)@\(hostname):\(port)" }
+}
 
 struct HostEditorView: View {
     @Environment(\.dismiss) private var dismiss
@@ -20,13 +31,15 @@ struct HostEditorView: View {
     @State private var showingForgetHostKeyConfirmation = false
     @State private var forgetHostKeyMessage: String?
     @State private var showAdvanced = false
+    @State private var showingKeyImporter = false
 
-    init(host: HostEntity? = nil) {
+    /// Edits `host`, or creates a new one (optionally starting from `prefill`) when `host` is nil.
+    init(host: HostEntity? = nil, prefill: HostEditorPrefill? = nil) {
         self.host = host
-        _displayName = State(initialValue: host?.displayName ?? "")
-        _hostname = State(initialValue: host?.hostname ?? "")
-        _port = State(initialValue: String(host?.port ?? 22))
-        _username = State(initialValue: host?.username ?? "")
+        _displayName = State(initialValue: host?.displayName ?? prefill?.displayName ?? "")
+        _hostname = State(initialValue: host?.hostname ?? prefill?.hostname ?? "")
+        _port = State(initialValue: String(host?.port ?? prefill?.port ?? 22))
+        _username = State(initialValue: host?.username ?? prefill?.username ?? "")
         _pem = State(initialValue: "")
         _defaultPaths = State(initialValue: host?.defaultPaths.joined(separator: "\n") ?? "")
         _cliBinaries = State(initialValue: host?.cliBinaries ?? [:])
@@ -91,17 +104,36 @@ struct HostEditorView: View {
                         }
 
                         Button {
-                            if let clip = UIPasteboard.general.string, !clip.isEmpty {
+                            if let clip = PlatformSupport.pasteboardString, !clip.isEmpty {
                                 pem = clip
                             }
                         } label: {
                             Label("Paste from Clipboard", systemImage: "doc.on.clipboard")
                         }
+
+                        Button {
+                            showingKeyImporter = true
+                        } label: {
+                            Label("Choose Key File…", systemImage: "key")
+                        }
+
+                        #if os(macOS)
+                        let sshKeys = PlatformSupport.sshKeyCandidates()
+                        if !sshKeys.isEmpty {
+                            Menu {
+                                ForEach(sshKeys, id: \.self) { url in
+                                    Button(url.lastPathComponent) { loadKey(from: url) }
+                                }
+                            } label: {
+                                Label("Use Key from ~/.ssh", systemImage: "folder")
+                            }
+                        }
+                        #endif
                     }
                 } header: {
                     Text("Private key")
                 } footer: {
-                    Text("Stored in the iOS Keychain. Never leave this field empty when saving.")
+                    Text("Stored in the Keychain on this device. Never leave this field empty when saving.")
                 }
 
                 Section {
@@ -160,6 +192,15 @@ struct HostEditorView: View {
                     errorMessage = "Could not load the private key: \(error.localizedDescription)"
                 }
             }
+            .fileImporter(
+                isPresented: $showingKeyImporter,
+                allowedContentTypes: [.data, .text, .item]
+            ) { result in
+                switch result {
+                case .success(let url): loadKey(from: url)
+                case .failure(let error): errorMessage = "Could not open the key file: \(error.localizedDescription)"
+                }
+            }
             .alert("Could not save host", isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
@@ -187,6 +228,23 @@ struct HostEditorView: View {
             } message: {
                 Text(forgetHostKeyMessage ?? "")
             }
+        }
+    }
+
+    /// Reads a private key file into the editor. Files picked through the importer are
+    /// security-scoped on iOS, so access is requested for the duration of the read.
+    private func loadKey(from url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard text.contains("PRIVATE KEY") else {
+                errorMessage = "\(url.lastPathComponent) does not look like a private key."
+                return
+            }
+            pem = text
+        } catch {
+            errorMessage = "Could not read \(url.lastPathComponent): \(error.localizedDescription)"
         }
     }
 

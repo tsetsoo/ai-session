@@ -21,6 +21,21 @@ public enum TmuxCommandBuilder {
         wrap("tmux kill-session -t \(shellQuote(tmuxName))")
     }
 
+    /// Kills exactly `tmuxName` (the `=` target prefix disables tmux's prefix matching, so
+    /// `todo-0f3a9c21` can't hit `todo-0f3a9c21-…`). Exit status 1 when it is already gone.
+    public static func killSessionExact(tmuxName: String) -> String {
+        wrap("tmux kill-session -t \(shellQuote("=" + tmuxName))")
+    }
+
+    /// PTY command for a todo's conversation: the host-side `ai-todo-open` script attaches to
+    /// the tmux session, or creates/resumes the Claude conversation if tmux is gone. `cwd` may
+    /// start with `~`; the script expands it.
+    public static func openTodoConversation(tmuxName: String, cwd: String, claudeSessionId: String) -> String {
+        wrap(
+            "exec \"$HOME/.ai-remote/bin/ai-todo-open\" \(shellQuote(tmuxName)) \(shellQuote(cwd)) \(shellQuote(claudeSessionId))"
+        )
+    }
+
     public static func probeBinaries() -> String {
         wrap(
             """

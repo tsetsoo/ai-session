@@ -17,7 +17,12 @@ public enum KeychainPrivateKeyStoreError: Error, Equatable, Sendable {
 public struct KeychainPrivateKeyStore: Sendable {
     public static let service = "com.aisessionremote.keys"
 
-    public init() {}
+    /// Keychain service the items are stored under (`KeychainStringStore` uses its own).
+    public let service: String
+
+    public init(service: String = KeychainPrivateKeyStore.service) {
+        self.service = service
+    }
 
     public func save(account: String, pem: Data) throws {
         #if canImport(Security)
@@ -25,7 +30,7 @@ public struct KeychainPrivateKeyStore: Sendable {
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecValueData as String: pem,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
@@ -44,7 +49,7 @@ public struct KeychainPrivateKeyStore: Sendable {
         #if canImport(Security)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
@@ -73,7 +78,7 @@ public struct KeychainPrivateKeyStore: Sendable {
         #if canImport(Security)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
 

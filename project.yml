@@ -3,6 +3,7 @@ name: AISessionRemote
 options:
   deploymentTarget:
     iOS: "17.0"
+    macOS: "14.0"
 
 packages:
   AISessionRemote:
@@ -42,6 +43,13 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        # The todo server is plain http on the tailnet (IP or MagicDNS *.ts.net name).
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.aisessionremote.app
       GENERATE_INFOPLIST_FILE: NO
@@ -83,3 +91,53 @@ targets:
         product: NIOPosix
       - package: swift-crypto
         product: Crypto
+
+  # Native Mac app built from the same sources as the iOS app. A separate target
+  # (rather than making AISessionRemote multiplatform) leaves the iOS target's
+  # settings untouched. Not sandboxed: it reads keys from ~/.ssh, opens arbitrary
+  # outbound SSH connections and uses the login keychain without a signing team.
+  AISessionRemoteMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: App/AISessionRemote
+        excludes:
+          - Info.plist
+          - Views/SoftKeyBar.swift
+    info:
+      path: App/AISessionRemoteMac/Info.plist
+      properties:
+        CFBundleDisplayName: AI Session Remote
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: ""
+        # ATS applies to URLSession on macOS too, sandboxed or not.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
+    settings:
+      PRODUCT_NAME: AI Session Remote
+      PRODUCT_BUNDLE_IDENTIFIER: com.aisessionremote.mac
+      INFOPLIST_FILE: App/AISessionRemoteMac/Info.plist
+      GENERATE_INFOPLIST_FILE: NO
+      SWIFT_VERSION: "5.9"
+      ENABLE_APP_SANDBOX: NO
+      ENABLE_HARDENED_RUNTIME: NO
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGN_STYLE: Manual
+    scheme: {}
+    dependencies:
+      - package: AISessionRemote
+        product: AISessionCore
+      - package: swift-nio-ssh
+        product: NIOSSH
+      - package: swift-nio
+        product: NIOCore
+      - package: swift-nio
+        product: NIOPosix
+      - package: swift-crypto
+        product: Crypto
+      - package: SwiftTerm
+        product: SwiftTerm
