@@ -271,15 +271,31 @@ final class TodoHubStore {
         }
     }
 
-    /// Creates a todo already linked to a conversation found on `computer`.
-    func createTodo(from remote: RemoteConversation, on computer: Computer, section: TodoSection, title: String) async throws {
+    /// Creates a todo already linked to a conversation found on `computer`, optionally
+    /// putting it in a project (the create endpoint has no project field, so that's a PATCH).
+    func createTodo(
+        from remote: RemoteConversation,
+        on computer: Computer,
+        section: TodoSection,
+        title: String,
+        projectId: String? = nil
+    ) async throws {
         try await perform { client in
             let created = try await client.createTodoFromConversation(TodoFromConversationRequest(
                 section: section, title: title, computerId: computer.id,
                 tool: remote.tool, sessionId: remote.sessionId, cwd: remote.cwd
             ))
             conversations[created.todo.id] = created.conversation
+            if let projectId, created.todo.projectId != projectId {
+                _ = try await client.updateTodo(id: created.todo.id, UpdateTodoRequest(projectId: .set(projectId)))
+            }
         }
+    }
+
+    /// The section this computer serves, when exactly one does.
+    func defaultSection(for computer: Computer) -> TodoSection {
+        let sections = sectionComputers.values.filter { $0.computer.id == computer.id }.map(\.section)
+        return sections.count == 1 ? sections[0] : .i
     }
 
     /// Deletes the conversation on the computer (ending its tmux session first), then unlinks

@@ -427,6 +427,15 @@ final class ProjectsClientTests: XCTestCase {
         XCTAssertEqual(lastRequest.url?.path, "/api/memories/m1")
     }
 
+    func testRepoWebURL() {
+        XCTAssertEqual(RepoURL.web(from: "git@github.com:tsetsoo/todo-app.git")?.absoluteString, "https://github.com/tsetsoo/todo-app")
+        XCTAssertEqual(RepoURL.web(from: "ssh://git@gitlab.com:22/sigma-revenue/marketing.git")?.absoluteString,
+                       "https://gitlab.com/sigma-revenue/marketing")
+        XCTAssertEqual(RepoURL.web(from: "https://github.com/a/b.git")?.absoluteString, "https://github.com/a/b")
+        XCTAssertNil(RepoURL.web(from: nil))
+        XCTAssertNil(RepoURL.web(from: "/srv/git/repo"))
+    }
+
     func testMemoryKindLabelsAndOrder() {
         XCTAssertEqual(MemoryKind.allCases.map(\.rawValue), ["open_thread", "decision", "gotcha", "done", "files_changed"])
         XCTAssertEqual(MemoryKind.openThread.title, "Open threads")

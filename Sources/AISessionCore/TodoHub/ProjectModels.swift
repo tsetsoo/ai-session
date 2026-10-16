@@ -728,3 +728,32 @@ public struct UpdateMemoryRequest: Encodable, Sendable {
         try c.encodeChange(todoId, forKey: .todoId)
     }
 }
+
+// MARK: Repo links
+
+/// Turns a git remote into a page a browser can open.
+public enum RepoURL {
+    /// `https://…` as is; `git@host:owner/repo.git` and `ssh://git@host/owner/repo.git` become
+    /// `https://host/owner/repo`. Anything else is `nil`.
+    public static func web(from remote: String?) -> URL? {
+        guard var text = remote?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        if text.hasPrefix("http://") || text.hasPrefix("https://") {
+            if text.hasSuffix(".git") { text.removeLast(4) }
+            return URL(string: text)
+        }
+        if text.hasPrefix("ssh://") {
+            text.removeFirst("ssh://".count)
+            if let at = text.firstIndex(of: "@") { text = String(text[text.index(after: at)...]) }
+            // Drop a port: host:22/owner/repo → host/owner/repo.
+            if let slash = text.firstIndex(of: "/"), let colon = text[..<slash].firstIndex(of: ":") {
+                text = String(text[..<colon]) + String(text[slash...])
+            }
+        } else if let at = text.firstIndex(of: "@"), let colon = text[at...].firstIndex(of: ":") {
+            text = String(text[text.index(after: at)..<colon]) + "/" + String(text[text.index(after: colon)...])
+        } else {
+            return nil
+        }
+        if text.hasSuffix(".git") { text.removeLast(4) }
+        return URL(string: "https://" + text)
+    }
+}
