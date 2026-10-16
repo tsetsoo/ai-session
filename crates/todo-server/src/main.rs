@@ -80,7 +80,12 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         // Before /api/memories/{id}.
         .route("/api/memories/bulk", web::post().to(memories::bulk_memories))
         .route("/api/memories/{id}", web::patch().to(memories::update_memory))
-        .route("/api/memories/{id}", web::delete().to(memories::delete_memory));
+        .route("/api/memories/{id}", web::delete().to(memories::delete_memory))
+        // Sessions and stats
+        .route("/api/sessions", web::get().to(sessions::list_sessions))
+        .route("/api/sessions/stats", web::post().to(sessions::upload_stats))
+        .route("/api/sessions/{tool}/{session_id}/project", web::put().to(sessions::set_session_project))
+        .route("/api/stats/weekly", web::get().to(sessions::weekly_stats));
 }
 
 #[actix_web::main]

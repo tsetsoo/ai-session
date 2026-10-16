@@ -86,7 +86,6 @@ pub(crate) async fn patch(pool: &DbPool, uri: &str, body: Value) -> (StatusCode,
     call(pool, Method::PATCH, uri, Some(body)).await
 }
 
-#[allow(dead_code)] // Used by the session tests (next commits).
 pub(crate) async fn put(pool: &DbPool, uri: &str, body: Value) -> (StatusCode, Value) {
     call(pool, Method::PUT, uri, Some(body)).await
 }
