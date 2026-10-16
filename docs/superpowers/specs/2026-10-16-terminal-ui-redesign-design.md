@@ -191,9 +191,9 @@ material background.
     SwiftTerm's normal resize, so the existing debouncer handles it.
   - Theme: a dark palette and a light palette (background, foreground, cursor, selection, 16
     ANSI colours), with a setting under Settings → Terminal (System / Light / Dark).
-    **Open question:** the default. Claude Code picks its own colours with `/theme`. A light
-    terminal under Claude's dark theme is hard to read, and the app can't switch Claude's
-    theme for you.
+    **Default: System** (decided 2026-10-16), so the terminal follows the app's light/dark
+    appearance. Claude Code picks its own colours with `/theme`; Settings → Terminal notes that
+    Claude's theme should be set to match (or auto).
 - **Opening feels instant.** The frame (title, subtitle, pill, actions) renders from local
   data the moment a row is selected. The terminal area moves through these states *inside
   itself*, drawn on the terminal background:
