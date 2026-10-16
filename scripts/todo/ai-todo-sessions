@@ -1,0 +1,619 @@
+#!/bin/sh
+# List, delete and prune the Claude Code and Codex conversations on this computer.
+# The iPhone / Mac app runs `list --json` over SSH to link existing conversations to
+# todos, and `delete` when a todo's conversation is deleted.
+#
+# Usage:
+#   ai-todo-sessions list [--json] [--tool claude|codex] [--limit N]
+#   ai-todo-sessions delete <claude|codex> <session_id> [--permanent]
+#                    [--kill-tmux <tmux_name>] [--wait SECONDS] [--missing-ok]
+#   ai-todo-sessions prune --older-than DAYS [--tool claude|codex] [--yes]
+#
+# list    Newest first (default limit 200). Claude transcripts with no real prompt and
+#         Codex sub-agent threads are skipped. A Claude id stored in several project
+#         folders is one conversation (last used = newest copy). JSON objects have: tool,
+#         session_id, cwd, title, updated_at, prompts, running, tmux_session.
+# delete  Claude: removes every copy of the transcript (+ sub-agent dirs), its
+#         sessions-index.json entries, file-history, session-env and todos entries.
+#         Codex: `codex archive` (reversible), or `codex delete` with --permanent.
+#         --kill-tmux ends that tmux session first, then waits up to --wait seconds
+#         (default 10) for the conversation to stop. Refuses while it still runs.
+#         --missing-ok (implied by --kill-tmux): a conversation that doesn't exist is
+#         reported as already gone and exits 0.
+# prune   Conversations not used for DAYS, not running and not linked to any todo.
+#         Linked ids come from todo-server (~/.ai-remote/todo-hub.conf); if it can't be
+#         reached or answers with anything but a list, nothing is pruned. Without --yes it
+#         only prints what it would delete.
+#
+# Running = a live claude/codex process uses it: ~/.claude/sessions/<pid>.json, the id in
+# a process's arguments, or (Codex) a process holding its rollout file open. If ps or
+# lsof can't be run, delete and prune refuse rather than assume nothing is running.
+#
+# Exit codes: 64 bad arguments, 65 refused (running / unknown / hub unreachable),
+#             66 not found.
+#
+# Test hooks (not for normal use):
+#   AI_TODO_CODEX_BIN    codex binary instead of looking it up
+#   AI_TODO_TMUX_SOCKET  private tmux server (tmux -L <name>) for tmux lookups and kills
+#   AI_TODO_HUB_CONF     todo-hub.conf path
+#   AI_TODO_PS / AI_TODO_LSOF  ps / lsof binary to run
+export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/sbin:/sbin:$PATH"
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+exec python3 - "$@" <<'PY'
+import datetime
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+HOME = os.path.expanduser("~")
+CLAUDE_DIR = os.path.join(HOME, ".claude")
+CLAUDE_PROJECTS = os.path.join(CLAUDE_DIR, "projects")
+CODEX_SESSIONS = os.path.join(HOME, ".codex", "sessions")
+ID_RE = re.compile(r"^[0-9a-fA-F][0-9a-fA-F-]{7,63}$")
+TMUX_RE = re.compile(r"^ai/(claude|codex)/todo-[a-z0-9-]+$")
+TITLE_MAX = 120
+
+
+class Unknown(Exception):
+    """Running conversations can't be determined (ps / lsof unavailable)."""
+
+
+def die(message, code):
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+def iso(ts):
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def tilde(path):
+    if path and (path == HOME or path.startswith(HOME + "/")):
+        return "~" + path[len(HOME):]
+    return path or ""
+
+
+def real_prompt(text):
+    """Text the user typed, not tool results, command wrappers or injected context."""
+    text = (text or "").strip()
+    if not text or text.startswith("<") or text.startswith("# AGENTS.md"):
+        return ""
+    return " ".join(text.split())
+
+
+def read_jsonl(path):
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                try:
+                    yield json.loads(line)
+                except ValueError:
+                    continue
+    except OSError:
+        return
+
+
+def merge_copies(sessions):
+    """One entry per (tool, id): last used = newest copy, fields from the newest copy."""
+    by_id = {}
+    for s in sessions:
+        key = (s["tool"], s["session_id"])
+        if key not in by_id:
+            by_id[key] = s
+            continue
+        kept = by_id[key]
+        newest, other = (s, kept) if s["mtime"] > kept["mtime"] else (kept, s)
+        merged = dict(newest)
+        merged["paths"] = kept["paths"] + s["paths"]
+        merged["prompts"] = max(s["prompts"], kept["prompts"])
+        merged["title"] = newest["title"] or other["title"]
+        by_id[key] = merged
+    return list(by_id.values())
+
+
+# --- Claude -------------------------------------------------------------------
+
+def claude_text(message):
+    content = (message or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                return part.get("text", "")
+    return ""
+
+
+def claude_sessions():
+    for path in glob.glob(os.path.join(CLAUDE_PROJECTS, "*", "*.jsonl")):
+        cwd, title, prompts = None, "", 0
+        for entry in read_jsonl(path):
+            if not isinstance(entry, dict):
+                continue
+            cwd = cwd or entry.get("cwd")
+            if entry.get("type") == "user" and not entry.get("isMeta"):
+                text = real_prompt(claude_text(entry.get("message")))
+                if text:
+                    prompts += 1
+                    title = title or text
+        yield {
+            "tool": "claude",
+            "session_id": os.path.basename(path)[: -len(".jsonl")],
+            "cwd": tilde(cwd),
+            "title": title[:TITLE_MAX],
+            "mtime": os.path.getmtime(path),
+            "prompts": prompts,
+            "paths": [path],
+        }
+
+
+# --- Codex --------------------------------------------------------------------
+
+def codex_sessions():
+    for path in glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*.jsonl"), recursive=True):
+        meta, title, prompts = None, "", 0
+        for i, entry in enumerate(read_jsonl(path)):
+            if not isinstance(entry, dict):
+                continue
+            payload = entry.get("payload") or {}
+            if i == 0:
+                if entry.get("type") != "session_meta":
+                    break
+                meta = payload
+                continue
+            if entry.get("type") == "response_item" and payload.get("role") == "user":
+                for part in payload.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") == "input_text":
+                        text = real_prompt(part.get("text"))
+                        if text:
+                            prompts += 1
+                            title = title or text
+                            break
+        if not meta or not meta.get("id"):
+            continue
+        source = meta.get("source")
+        if isinstance(source, dict) and "subagent" in source:
+            continue  # sub-agent threads belong to their parent conversation
+        yield {
+            "tool": "codex",
+            "session_id": meta["id"],
+            "cwd": tilde(meta.get("cwd")),
+            "title": title[:TITLE_MAX],
+            "mtime": os.path.getmtime(path),
+            "prompts": prompts,
+            "paths": [path],
+        }
+
+
+def find_codex():
+    explicit = os.environ.get("AI_TODO_CODEX_BIN")
+    if explicit:
+        return explicit
+    found = shutil.which("codex")
+    if found:
+        return found
+    # Installed with npm under nvm: not on PATH in a plain SSH session.
+    candidates = sorted(glob.glob(os.path.join(HOME, ".nvm", "versions", "node", "*", "bin", "codex")))
+    if candidates:
+        node_bin = os.path.dirname(candidates[-1])
+        os.environ["PATH"] = node_bin + os.pathsep + os.environ.get("PATH", "")
+        return candidates[-1]
+    return None
+
+
+def find_one(tool, sid):
+    """The conversation's files by name, without reading every transcript. None if absent."""
+    if tool == "claude":
+        paths = glob.glob(os.path.join(CLAUDE_PROJECTS, "*", glob.escape(sid) + ".jsonl"))
+    else:
+        paths = glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*-" + glob.escape(sid) + ".jsonl"), recursive=True)
+    if not paths:
+        return None
+    return {"tool": tool, "session_id": sid, "paths": paths,
+            "mtime": max(os.path.getmtime(p) for p in paths)}
+
+
+# --- Running conversations ------------------------------------------------------
+
+def processes():
+    """[(pid, ppid, command)] for all processes. Raises Unknown if ps can't be run."""
+    ps = os.environ.get("AI_TODO_PS", "ps")
+    try:
+        result = subprocess.run([ps, "-axo", "pid=,ppid=,command="], capture_output=True, text=True, check=False)
+    except OSError as e:
+        raise Unknown(f"ps failed: {e}")
+    procs = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            procs.append((int(parts[0]), int(parts[1]), parts[2]))
+    if result.returncode != 0 or not procs:  # ps always lists at least itself
+        raise Unknown(f"ps failed (exit {result.returncode})")
+    return procs
+
+
+def open_by(paths):
+    """{path: pid} for files some process holds open. Raises Unknown if lsof can't be run."""
+    if not paths:
+        return {}
+    lsof = os.environ.get("AI_TODO_LSOF", "lsof")
+    try:
+        # Exit 1 with no output just means nothing has them open.
+        result = subprocess.run([lsof, "-Fpn", "--"] + paths, capture_output=True, text=True, check=False)
+    except OSError as e:
+        raise Unknown(f"lsof failed: {e}")
+    if result.returncode not in (0, 1):
+        raise Unknown(f"lsof failed (exit {result.returncode})")
+    held, pid = {}, None
+    for line in result.stdout.splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            pid = int(line[1:])
+        elif line.startswith("n") and pid:
+            held[os.path.realpath(line[1:])] = pid
+    return held
+
+
+def tmux_base():
+    cmd = ["tmux"]
+    if os.environ.get("AI_TODO_TMUX_SOCKET"):
+        cmd += ["-L", os.environ["AI_TODO_TMUX_SOCKET"]]
+    return cmd
+
+
+def tmux_panes():
+    """{pane_pid: session_name} for the tmux server (empty if none)."""
+    try:
+        out = subprocess.run(tmux_base() + ["list-panes", "-a", "-F", "#{pane_pid} #{session_name}"],
+                             capture_output=True, text=True, check=False).stdout
+    except OSError:
+        return {}
+    panes = {}
+    for line in out.splitlines():
+        pid, _, name = line.partition(" ")
+        if pid.isdigit():
+            panes[int(pid)] = name
+    return panes
+
+
+def claude_live_sessions():
+    """{session_id: pid} from ~/.claude/sessions/<pid>.json, which Claude Code keeps per process."""
+    live = {}
+    for path in glob.glob(os.path.join(CLAUDE_DIR, "sessions", "*.json")):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            pid = int(data.get("pid") or os.path.basename(path)[: -len(".json")])
+            os.kill(pid, 0)  # stale files of exited processes are left behind
+        except PermissionError:
+            pass  # alive, owned by someone else
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+        if isinstance(data.get("sessionId"), str):
+            live[data["sessionId"]] = pid
+    return live
+
+
+def running_index(sessions):
+    """{session_id: tmux_session or ""} for conversations a live process is using.
+
+    Raises Unknown when ps or lsof can't be run; callers that delete must refuse then.
+    """
+    ids = {s["session_id"] for s in sessions}
+    procs = processes()
+    parent = {pid: ppid for pid, ppid, _ in procs}
+    panes = tmux_panes()
+
+    def tmux_session_of(pid):
+        seen, p = set(), pid
+        while p and p not in seen:
+            seen.add(p)
+            if p in panes:
+                return panes[p]
+            p = parent.get(p)
+        return ""
+
+    running = {}
+
+    def mark(sid, pid):
+        if not running.get(sid):
+            running[sid] = tmux_session_of(pid)
+
+    # Claude started with plain `claude` has no id in its argv; its sessions file does.
+    for sid, pid in claude_live_sessions().items():
+        if sid in ids:
+            mark(sid, pid)
+    for pid, _, command in procs:
+        words = command.split()
+        if not words or os.path.basename(words[0]) in ("tmux", "ps", "grep"):
+            continue  # a tmux server keeps the argv it was started with, even after that session ends
+        if not re.search(r"(^|/|\s)(claude|codex)(\s|$)", command):
+            continue
+        for i, word in enumerate(words[:-1]):
+            if word in ("--resume", "-r", "--session-id", "resume") and words[i + 1] in ids:
+                mark(words[i + 1], pid)
+    # Codex started plainly, resumed from its own picker, or run by the desktop app has no
+    # id in its argv, but keeps the rollout file open while the conversation is live.
+    codex_paths = {os.path.realpath(p): s["session_id"]
+                   for s in sessions if s["tool"] == "codex" for p in s.get("paths", [])}
+    for path, pid in open_by(sorted(codex_paths)).items():
+        if path in codex_paths:
+            mark(codex_paths[path], pid)
+    return running
+
+
+def all_sessions(tool=None):
+    sessions = []
+    if tool in (None, "claude"):
+        sessions += claude_sessions()
+    if tool in (None, "codex"):
+        sessions += codex_sessions()
+    sessions = merge_copies(sessions)
+    sessions.sort(key=lambda s: s["mtime"], reverse=True)
+    return sessions
+
+
+# --- Deleting -----------------------------------------------------------------
+
+def remove(target, removed):
+    if os.path.isdir(target) and not os.path.islink(target):
+        shutil.rmtree(target)
+        removed.append(target)
+    elif os.path.lexists(target):
+        os.remove(target)
+        removed.append(target)
+
+
+def drop_from_sessions_index(project_dir, sid):
+    """Remove the session's entries from Claude's per-project sessions-index.json."""
+    path = os.path.join(project_dir, "sessions-index.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    entries = data.get("entries") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return False
+    kept = [e for e in entries if not (isinstance(e, dict) and e.get("sessionId") == sid)]
+    if len(kept) == len(entries):
+        return False
+    data["entries"] = kept
+    fd, tmp = tempfile.mkstemp(dir=project_dir, prefix=".sessions-index.", suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+    return True
+
+
+def delete_session(session, permanent=False):
+    sid = session["session_id"]
+    if session["tool"] == "claude":
+        removed = []
+        for path in session["paths"]:
+            remove(path, removed)
+            remove(os.path.join(os.path.dirname(path), sid), removed)  # sub-agent transcripts
+            if drop_from_sessions_index(os.path.dirname(path), sid):
+                removed.append(os.path.join(os.path.dirname(path), "sessions-index.json") + f" (entry {sid})")
+        # Per-id data shared by every copy: only removed with the id as a whole.
+        remove(os.path.join(CLAUDE_DIR, "file-history", sid), removed)
+        remove(os.path.join(CLAUDE_DIR, "session-env", sid), removed)
+        for todo_file in glob.glob(os.path.join(CLAUDE_DIR, "todos", glob.escape(sid) + "-*.json")):
+            remove(todo_file, removed)
+        return f"deleted claude {sid} ({len(removed)} paths)"
+    codex = find_codex()
+    if not codex:
+        die("codex not found", 90)
+    verb = "delete" if permanent else "archive"
+    result = subprocess.run([codex, verb, sid], capture_output=True, text=True)
+    if result.returncode != 0:
+        die(f"codex {verb} {sid} failed: {(result.stderr or result.stdout).strip()}", result.returncode or 1)
+    return f"{'deleted' if permanent else 'archived'} codex {sid}"
+
+
+# --- Commands -----------------------------------------------------------------
+
+def cmd_list(args):
+    as_json, tool, limit = False, None, 200
+    while args:
+        a = args.pop(0)
+        if a == "--json":
+            as_json = True
+        elif a == "--tool" and args:
+            tool = args.pop(0)
+        elif a == "--limit" and args:
+            limit = int(args.pop(0))
+        else:
+            die(f"unknown list option: {a}", 64)
+    if tool not in (None, "claude", "codex"):
+        die(f"unknown tool: {tool}", 64)
+    sessions = [s for s in all_sessions(tool) if s["prompts"] > 0][:limit]
+    try:
+        running = running_index(sessions)
+    except Unknown as e:
+        print(f"warning: {e}; running conversations not marked", file=sys.stderr)
+        running = {}
+    rows = [{
+        "tool": s["tool"],
+        "session_id": s["session_id"],
+        "cwd": s["cwd"],
+        "title": s["title"],
+        "updated_at": iso(s["mtime"]),
+        "prompts": s["prompts"],
+        "running": s["session_id"] in running,
+        "tmux_session": running.get(s["session_id"]) or None,
+    } for s in sessions]
+    if as_json:
+        print(json.dumps(rows))
+        return
+    for r in rows:
+        flag = "running" if r["running"] else ""
+        print(f'{r["updated_at"]}  {r["tool"]:<6} {r["session_id"]}  {r["cwd"]:<32} {r["prompts"]:>4}p {flag:<7} {r["title"][:60]}')
+
+
+def kill_tmux(name):
+    """End tmux session `name` if it exists. Returns True if one was killed."""
+    try:
+        has = subprocess.run(tmux_base() + ["has-session", "-t", "=" + name], capture_output=True, check=False)
+        if has.returncode != 0:
+            return False
+        subprocess.run(tmux_base() + ["kill-session", "-t", "=" + name], capture_output=True, check=False)
+        return True
+    except OSError:
+        return False  # no tmux: nothing to kill
+
+
+def cmd_delete(args):
+    usage = ("usage: ai-todo-sessions delete <claude|codex> <session_id> [--permanent] "
+             "[--kill-tmux <tmux_name>] [--wait SECONDS] [--missing-ok]")
+    permanent, missing_ok, kill, wait, rest = False, False, None, 10.0, []
+    while args:
+        a = args.pop(0)
+        if a == "--permanent":
+            permanent = True
+        elif a == "--missing-ok":
+            missing_ok = True
+        elif a == "--kill-tmux" and args:
+            kill = args.pop(0)
+        elif a == "--wait" and args:
+            try:
+                wait = max(0.0, float(args.pop(0)))
+            except ValueError:
+                die(usage, 64)
+        elif a.startswith("--"):
+            die(usage, 64)
+        else:
+            rest.append(a)
+    if len(rest) != 2 or rest[0] not in ("claude", "codex") or not ID_RE.match(rest[1]):
+        die(usage, 64)
+    tool, sid = rest
+    if kill is not None:
+        if not TMUX_RE.match(kill) or not kill.startswith(f"ai/{tool}/"):
+            die(f"invalid tmux name for {tool}: {kill}", 64)
+        missing_ok = True
+        if kill_tmux(kill):
+            print(f"ended tmux session {kill}")
+    session = find_one(tool, sid)
+    if not session:
+        if missing_ok:
+            print(f"{tool} conversation {sid} is already gone")
+            return
+        die(f"no {tool} conversation {sid}", 66)
+    deadline = time.monotonic() + (wait if kill is not None else 0)
+    while True:
+        try:
+            still = sid in running_index([session])
+        except Unknown as e:
+            die(f"{e}; refusing to delete without knowing whether {sid} is running", 65)
+        if not still:
+            break
+        if time.monotonic() >= deadline:
+            die(f"{tool} conversation {sid} is running; close it first", 65)
+        time.sleep(0.5)
+    print(delete_session(session, permanent))
+
+
+def linked_session_ids():
+    conf = os.environ.get("AI_TODO_HUB_CONF") or os.path.join(HOME, ".ai-remote", "todo-hub.conf")
+    values = {}
+    try:
+        with open(conf) as f:
+            for line in f:
+                m = re.match(r"\s*(TODO_HUB_URL|TODO_API_TOKEN)=['\"]?([^'\"\n]*)['\"]?\s*$", line)
+                if m:
+                    values[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    url = values.get("TODO_HUB_URL", "").rstrip("/")
+    if not url:
+        die(f"no TODO_HUB_URL in {conf}; refusing to prune without knowing which conversations are linked", 65)
+    request = urllib.request.Request(url + "/api/conversations")
+    if values.get("TODO_API_TOKEN"):
+        request.add_header("Authorization", "Bearer " + values["TODO_API_TOKEN"])
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            conversations = json.load(response)
+    except Exception as e:  # noqa: BLE001 - any failure means we can't prune safely
+        die(f"todo-server at {url} unreachable ({e}); refusing to prune", 65)
+    if not isinstance(conversations, list):
+        die(f"todo-server at {url} didn't answer with a list of conversations; refusing to prune", 65)
+    ids = set()
+    for c in conversations:
+        if not isinstance(c, dict):
+            die(f"todo-server at {url} sent an unexpected conversation entry; refusing to prune", 65)
+        for key in ("session_id", "claude_session_id"):
+            if isinstance(c.get(key), str) and c[key]:
+                ids.add(c[key])
+    return ids
+
+
+def cmd_prune(args):
+    days, tool, yes = None, None, False
+    while args:
+        a = args.pop(0)
+        if a == "--older-than" and args:
+            value = args.pop(0).rstrip("d")
+            if not value.isdigit():
+                die("--older-than needs a number of days", 64)
+            days = int(value)
+        elif a == "--tool" and args:
+            tool = args.pop(0)
+        elif a == "--yes":
+            yes = True
+        else:
+            die(f"unknown prune option: {a}", 64)
+    if days is None:
+        die("usage: ai-todo-sessions prune --older-than DAYS [--tool claude|codex] [--yes]", 64)
+    if tool not in (None, "claude", "codex"):
+        die(f"unknown tool: {tool}", 64)
+    linked = linked_session_ids()
+    cutoff = datetime.datetime.now().timestamp() - days * 86400
+    old = []
+    for s in all_sessions(tool):
+        if s["mtime"] >= cutoff or s["session_id"] in linked:
+            continue
+        if not ID_RE.match(s["session_id"]):
+            print(f'skipping {s["tool"]} conversation with an unexpected id: {s["session_id"]!r}', file=sys.stderr)
+            continue
+        old.append(s)
+    try:
+        running = running_index(old)
+    except Unknown as e:
+        die(f"{e}; refusing to prune without knowing which conversations are running", 65)
+    candidates = [s for s in old if s["session_id"] not in running]
+    if not candidates:
+        print(f"nothing to prune (older than {days} days, unlinked, not running)")
+        return
+    for s in candidates:
+        prefix = "" if yes else "would delete "
+        print(f'{prefix}{s["tool"]} {s["session_id"]}  {s["cwd"]}  last used {iso(s["mtime"])}')
+    if not yes:
+        print(f"{len(candidates)} conversation(s) would be pruned; re-run with --yes to delete them")
+        return
+    for s in candidates:
+        print(delete_session(s))
+    print(f"pruned {len(candidates)} conversation(s)")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        die("usage: ai-todo-sessions list|delete|prune ... (see the header of this script)", 64)
+    command, rest = argv[0], list(argv[1:])
+    if command == "list":
+        cmd_list(rest)
+    elif command == "delete":
+        cmd_delete(rest)
+    elif command == "prune":
+        cmd_prune(rest)
+    else:
+        die(f"unknown command: {command}", 64)
+
+
+main(sys.argv[1:])
+PY

@@ -140,6 +140,31 @@ public struct TodoHubClient: Sendable {
         try await decode(Conversation.self, send("POST", "/api/todos/\(escape(todoId))/conversation/close"))
     }
 
+    /// Forgets the todo's conversation on the hub (the next open starts a new one). Delete the
+    /// conversation on the computer first if it should go away there too.
+    public func deleteConversation(todoId: String) async throws {
+        _ = try await send("DELETE", "/api/todos/\(escape(todoId))/conversation")
+    }
+
+    /// Links an existing conversation to a todo. Throws `.conflict` when the todo already has
+    /// one (pass `replace: true` to swap it) or the conversation belongs to another todo.
+    public func linkConversation(
+        todoId: String,
+        _ request: LinkConversationRequest,
+        replace: Bool = false
+    ) async throws -> Conversation {
+        let query = replace ? [URLQueryItem(name: "replace", value: "true")] : []
+        return try await decode(
+            Conversation.self,
+            send("POST", "/api/todos/\(escape(todoId))/conversation/link", query: query, body: request)
+        )
+    }
+
+    /// Creates a todo that is already linked to an existing conversation.
+    public func createTodoFromConversation(_ request: TodoFromConversationRequest) async throws -> TodoWithConversation {
+        try await decode(TodoWithConversation.self, send("POST", "/api/todos/from-conversation", body: request))
+    }
+
     // MARK: Transport
 
     static func makeDecoder() -> JSONDecoder {

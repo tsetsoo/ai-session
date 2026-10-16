@@ -192,7 +192,7 @@ final class TodoHubStore {
     }
 
     /// Kills the tmux session on the computer, then marks the conversation closed on the hub.
-    /// The Claude conversation stays resumable: opening the todo again runs `claude --resume`.
+    /// The conversation stays resumable: opening the todo again resumes it.
     func closeConversation(_ conversation: Conversation, config: HostConnectionConfig) async throws {
         let result = try await NIOSSHClient().exec(
             config,
@@ -205,6 +205,48 @@ final class TodoHubStore {
         guard let client = TodoHubSettings.makeClient() else { throw TodoHubError.invalidBaseURL }
         conversations[conversation.todoId] = try await client.closeConversation(todoId: conversation.todoId)
         await refresh(trigger: .background)
+    }
+
+    // MARK: Linking existing conversations
+    //
+    // These throw: they run from sheets that show their own errors.
+
+    /// Links a conversation found on `computer` to an existing todo.
+    func linkConversation(_ remote: RemoteConversation, on computer: Computer, to todo: Todo) async throws {
+        try await perform { client in
+            let conversation = try await client.linkConversation(
+                todoId: todo.id,
+                LinkConversationRequest(computerId: computer.id, tool: remote.tool, sessionId: remote.sessionId, cwd: remote.cwd)
+            )
+            conversations[todo.id] = conversation
+        }
+    }
+
+    /// Creates a todo already linked to a conversation found on `computer`.
+    func createTodo(from remote: RemoteConversation, on computer: Computer, section: TodoSection, title: String) async throws {
+        try await perform { client in
+            let created = try await client.createTodoFromConversation(TodoFromConversationRequest(
+                section: section, title: title, computerId: computer.id,
+                tool: remote.tool, sessionId: remote.sessionId, cwd: remote.cwd
+            ))
+            conversations[created.todo.id] = created.conversation
+        }
+    }
+
+    /// Deletes the conversation on the computer (ending its tmux session first), then unlinks
+    /// it from the todo on the hub. The todo itself stays.
+    func deleteConversation(_ conversation: Conversation, config: HostConnectionConfig) async throws {
+        guard let client = TodoHubSettings.makeClient() else { throw TodoHubError.invalidBaseURL }
+        guard !isOffline else { throw OfflineChangeError() }
+        try await RemoteConversations.delete(conversation, config: config)
+        try await client.deleteConversation(todoId: conversation.todoId)
+        conversations[conversation.todoId] = nil
+        await refresh(trigger: .background)
+    }
+
+    /// Session ids already linked to a todo, as `tool/id` (matches `RemoteConversation.id`).
+    var linkedConversationIDs: Set<String> {
+        Set(conversations.values.map { "\($0.tool)/\($0.sessionId)" })
     }
 
     // MARK: Helpers
