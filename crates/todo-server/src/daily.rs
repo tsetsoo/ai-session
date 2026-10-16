@@ -295,12 +295,13 @@ pub async fn set_todo_daily(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::init_pool;
-    use uuid::Uuid;
+    use crate::db::TestDb;
 
-    fn pool() -> DbPool {
-        let path = format!("/tmp/todo-daily-test-{}.db", Uuid::new_v4());
-        init_pool(&path)
+    /// The test database (removed on drop) and its pool; the pool is dropped first.
+    fn pool() -> (TestDb, DbPool) {
+        let db = TestDb::new("daily");
+        let pool = db.pool();
+        (db, pool)
     }
 
     #[test]
@@ -314,7 +315,7 @@ mod tests {
 
     #[test]
     fn create_today_empty_still_inserts_day() {
-        let pool = pool();
+        let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         insert_day(&conn, "2026-07-26").unwrap();
         assert!(day_exists(&conn, "2026-07-26"));
@@ -323,7 +324,7 @@ mod tests {
 
     #[test]
     fn carry_moves_incomplete_only() {
-        let pool = pool();
+        let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         insert_day(&conn, "2026-07-25").unwrap();
         insert_day(&conn, "2026-07-26").unwrap();

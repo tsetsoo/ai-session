@@ -280,9 +280,10 @@ pub struct Conversation {
     /// The tool's own conversation id: `claude --resume <id>`, `codex resume <id>`, …
     #[serde(default)]
     pub session_id: String,
-    /// Same value as `session_id`, kept for apps and hooks installed before tools other
-    /// than Claude were supported.
-    pub claude_session_id: String,
+    /// Same value as `session_id` for Claude conversations, `null` for other tools. Kept for
+    /// apps and hooks installed before tools other than Claude were supported, which would
+    /// otherwise run `claude --resume` on a Codex/Cursor id.
+    pub claude_session_id: Option<String>,
     pub status: ConversationStatus,
     pub status_message: Option<String>,
     pub status_updated_at: Option<String>,
@@ -291,12 +292,16 @@ pub struct Conversation {
 
 /// Sent by the status hooks on the computer. Either key identifies the conversation;
 /// `claude_session_id` is what hooks installed before multi-tool support send.
+/// `tool` defaults to `claude` (older hooks are all Claude hooks), so one post matches
+/// at most one conversation even when two tools share an id.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ConversationStatusRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
     pub status: ConversationStatus,
     #[serde(default)]
     pub message: Option<String>,
@@ -311,6 +316,12 @@ impl ConversationStatusRequest {
             .or(self.claude_session_id.as_deref())
             .map(str::trim)
             .filter(|s| !s.is_empty())
+    }
+
+    /// The tool the hook reports for, `claude` when not sent.
+    #[must_use]
+    pub fn tool(&self) -> &str {
+        self.tool.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("claude")
     }
 }
 
@@ -332,6 +343,10 @@ pub struct TodoFromConversationRequest {
     pub tool: String,
     pub session_id: String,
     pub cwd: String,
+    #[serde(default)]
+    pub importance: Option<Importance>,
+    #[serde(default)]
+    pub due_date: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

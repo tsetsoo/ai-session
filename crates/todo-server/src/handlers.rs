@@ -1,6 +1,6 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use rusqlite::params;
-use todo_shared::{CreateTodoRequest, DeleteResponse, Section, SectionCount, UpdateTodoRequest};
+use todo_shared::{CreateTodoRequest, DeleteResponse, Importance, Section, SectionCount, UpdateTodoRequest};
 use uuid::Uuid;
 
 use crate::broadcast::Broadcaster;
@@ -103,6 +103,23 @@ pub async fn get_todo(pool: web::Data<DbPool>, path: web::Path<String>) -> HttpR
     }
 }
 
+/// Insert a todo and return its new id. Shared by `POST /api/todos` and
+/// `POST /api/todos/from-conversation`, so both create todos the same way.
+pub(crate) fn insert_todo(
+    conn: &rusqlite::Connection,
+    section: Section,
+    title: &str,
+    importance: Option<Importance>,
+    due_date: Option<&str>,
+) -> rusqlite::Result<String> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO todos (id, section, title, importance, due_date) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, section.as_str(), title, importance.unwrap_or_default().as_str(), due_date],
+    )?;
+    Ok(id)
+}
+
 pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequest>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
@@ -114,18 +131,8 @@ pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequ
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "Title cannot be empty"}));
     }
 
-    let id = Uuid::new_v4().to_string();
-    let section_str = body.section.as_str();
-    let importance = body.importance.unwrap_or_default();
-    let due_date = body.due_date.as_deref();
-
-    let result = conn.execute(
-        "INSERT INTO todos (id, section, title, importance, due_date) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, section_str, title, importance.as_str(), due_date],
-    );
-
-    match result {
-        Ok(_) => {
+    match insert_todo(&conn, body.section, title, body.importance, body.due_date.as_deref()) {
+        Ok(id) => {
             broadcaster.send();
             let sql = format!("SELECT {SELECT_COLS} FROM todos WHERE id = ?1");
             let todo = conn.query_row(&sql, params![id], row_to_todo).unwrap();

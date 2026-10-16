@@ -173,24 +173,24 @@ pub async fn describe() -> HttpResponse {
                 "path": "/api/todos/{id}/conversation/link",
                 "description": "Link an existing conversation (made outside the todo app) to the todo. 200 with the Conversation. Linking the conversation the todo already has is a no-op; a different one gets 409 unless ?replace=true. 409 if that (tool, session_id) is linked to another todo. 404 if the todo or computer is missing. 400 for an unknown tool or empty session_id/cwd",
                 "parameters": [
-                    {"name": "replace", "in": "query", "required": false, "type": "boolean", "description": "Replace the todo's current conversation"}
+                    {"name": "replace", "in": "query", "required": false, "type": "boolean", "description": "Replace the todo's current conversation. The replacement gets its own tmux name (ai/<tool>/todo-<8>-<first 8 of session_id>), so it never attaches to the old conversation's still-running tmux session"}
                 ],
                 "example_request": {"computer_id": "<uuid>", "tool": "codex", "session_id": "019f8b4e-ff53-7201-8585-162b40a93fb3", "cwd": "~/programming/sigma-revenue"}
             },
             {
                 "method": "POST",
                 "path": "/api/todos/from-conversation",
-                "description": "Create a todo linked to an existing conversation, atomically. 201 {todo, conversation}. Same 400/404/409 rules as link",
-                "example_request": {"section": "Sp", "title": "Review data-management PR 630", "computer_id": "<uuid>", "tool": "claude", "session_id": "<uuid>", "cwd": "~/Spread/Repository"},
+                "description": "Create a todo linked to an existing conversation, atomically. 201 {todo, conversation}. Same 400/404/409 rules as link. Optional importance and due_date, as for POST /api/todos",
+                "example_request": {"section": "Sp", "title": "Review data-management PR 630", "computer_id": "<uuid>", "tool": "claude", "session_id": "<uuid>", "cwd": "~/Spread/Repository", "importance": "high"},
                 "response_status": 201
             },
             {"method": "POST", "path": "/api/todos/{id}/conversation/close", "description": "Mark closed after the client killed the tmux session; the conversation stays resumable"},
-            {"method": "DELETE", "path": "/api/todos/{id}/conversation", "description": "Forget the conversation link (the conversation itself stays on the computer); the next open starts a new Claude conversation"},
+            {"method": "DELETE", "path": "/api/todos/{id}/conversation", "description": "Forget the conversation link (the conversation itself stays on the computer); afterwards only sections whose tool is claude can start a new conversation on open (POST /conversation); for codex and cursor sections, link a conversation again"},
             {
                 "method": "POST",
                 "path": "/api/conversations/status",
-                "description": "Status hook endpoint. Identify the conversation with session_id (or claude_session_id, sent by older hooks). 204 on success, 404 for sessions that are not todo conversations, 400 without an id or for status closed",
-                "example_request": {"session_id": "<uuid>", "status": "waiting", "message": "Claude needs your permission"}
+                "description": "Status hook endpoint. Identify the conversation with session_id (or claude_session_id, sent by older hooks) and tool (optional, default claude: older hooks are Claude hooks); one post updates at most one conversation. 204 on success, 404 for sessions that are not todo conversations, 400 without an id or for status closed",
+                "example_request": {"session_id": "<uuid>", "tool": "claude", "status": "waiting", "message": "Claude needs your permission"}
             }
         ],
         "data_model": {
@@ -212,7 +212,7 @@ pub async fn describe() -> HttpResponse {
                 "tool": "string enum: claude | codex | cursor",
                 "tmux_name": "string - ai/<tool>/todo-<first 8 chars of todo id>",
                 "session_id": "string - the tool's conversation id: claude --session-id / --resume <id>, codex resume <id>",
-                "claude_session_id": "string - same value as session_id, kept for older clients",
+                "claude_session_id": "string or null - same value as session_id for claude conversations, null for other tools; kept for older clients",
                 "status": "string enum: busy | waiting | idle | unknown | closed",
                 "status_message": "string or null",
                 "status_updated_at": "string (datetime) or null",
