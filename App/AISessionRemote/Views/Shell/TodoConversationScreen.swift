@@ -15,6 +15,9 @@ struct TodoConversationScreen: View {
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var hostList: HostList
     @State private var loader: ConversationLoader
+    /// The open (start, or attach for a notification tap) happens once per screen: coming back
+    /// to it (another tab and back) after Close must not resume the conversation by itself.
+    @State private var didOpen = false
 
     init(todo: Todo, store: TodoHubStore, attachOnly: Bool = false, onDeleted: @escaping () -> Void) {
         self.todo = todo
@@ -35,7 +38,8 @@ struct TodoConversationScreen: View {
             .onChange(of: hosts) { _, hosts in hostList.hosts = hosts }
             .task {
                 hostList.hosts = hosts
-                guard loader.phase == .idle else { return }
+                guard !didOpen, loader.phase == .idle else { return }
+                didOpen = true
                 if attachOnly {
                     // Running as far as the board knows (hub status and listed tmux sessions);
                     // a stale alert must not recreate a dead session.
