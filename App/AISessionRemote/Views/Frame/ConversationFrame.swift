@@ -191,7 +191,20 @@ struct ConversationFrame: View {
             menu(onCopyResume: copyResumeCommand)
         }
         #else
+        // In the Mac split view the window title belongs to the list column, so the frame
+        // names its todo at the leading edge of its own toolbar.
         ToolbarItemGroup(placement: .primaryAction) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(todo.title)
+                    .font(.headline)
+                Text(meta(includeFolder: true))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
             if let displayStatus {
                 StatusBadge(displayStatus, style: .pill)
                     .padding(.horizontal, DS.spacing.xs)

@@ -2,7 +2,7 @@ import AISessionCore
 import SwiftUI
 
 /// A conversation: status dot, the todo's title and age, "Sp · mac-studio · Claude", and the
-/// status message (or how long it has been working).
+/// status message (or how long it has been working), plus its ⌘n hint in the Mac's Running now.
 struct ConversationRow: View {
     let title: String
     let section: TodoSection?
@@ -11,6 +11,8 @@ struct ConversationRow: View {
     let now: Date
     /// Closing or deleting it.
     let isBusy: Bool
+    /// Its ⌘n in Running now on the Mac.
+    var shortcut: Int?
 
     /// Width of the dot column; the lines under the title start after it.
     private static let dotColumn: CGFloat = 21
@@ -33,8 +35,16 @@ struct ConversationRow: View {
                 }
             }
             Group {
-                Text(RowText.conversationMeta(conversation, section: section))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: DS.spacing.s) {
+                    Text(RowText.conversationMeta(conversation, section: section))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let shortcut {
+                        Text("⌘\(shortcut)")
+                            .monospacedDigit()
+                            .accessibilityLabel("Command \(shortcut)")
+                    }
+                }
+                .foregroundStyle(.secondary)
                 Text(RowText.conversationMessage(conversation, status: status, now: now))
                     .foregroundStyle(status == .needsYou ? DS.accent : Color.secondary)
             }

@@ -58,6 +58,24 @@ final class AppModel {
     }
     #endif
 
+    /// Whether the todo server is set up. Demo launches always are.
+    var isConfigured: Bool {
+        #if DEBUG
+        if DemoFixtures.isEnabled { return true }
+        #endif
+        return store.isConfigured
+    }
+
+    /// The shells' first load, then live updates. Demo launches never touch the network.
+    func startSync() async {
+        #if DEBUG
+        if DemoFixtures.isEnabled { return }
+        #endif
+        guard store.isConfigured else { return }
+        await store.refresh()
+        store.startLiveUpdates()
+    }
+
     /// Lists tmux sessions once per hub computer, in parallel. A computer with no matching
     /// host, or whose listing fails, is left out of `liveTmux`.
     func refreshLiveness(hosts: [HostEntity]) async {

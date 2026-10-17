@@ -2,20 +2,31 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// The conversation frame for a tapped todo. A tap is an explicit open, so the loader starts
-/// (or resumes) the conversation as soon as the frame appears.
+/// The conversation frame for a todo.
+///
+/// - `.start`: a tap on iPhone is an explicit open, so the loader starts (or resumes) the
+///   conversation as soon as the frame appears.
+/// - `.attachIfRunning`: a selection on the Mac never starts anything. It attaches only to a
+///   conversation the board shows running, and otherwise shows Start / Resume.
 struct TodoConversationScreen: View {
+    enum OnAppear {
+        case start, attachIfRunning
+    }
+
     let todo: Todo
     let store: TodoHubStore
+    let onAppear: OnAppear
     let onDeleted: () -> Void
 
+    @Environment(AppModel.self) private var model
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var hostList: HostList
     @State private var loader: ConversationLoader
 
-    init(todo: Todo, store: TodoHubStore, onDeleted: @escaping () -> Void) {
+    init(todo: Todo, store: TodoHubStore, onAppear: OnAppear = .start, onDeleted: @escaping () -> Void) {
         self.todo = todo
         self.store = store
+        self.onAppear = onAppear
         self.onDeleted = onDeleted
         let hostList = HostList()
         _hostList = State(initialValue: hostList)
@@ -32,7 +43,15 @@ struct TodoConversationScreen: View {
             .task {
                 hostList.hosts = hosts
                 guard loader.phase == .idle else { return }
-                await loader.start()
+                switch onAppear {
+                case .start:
+                    await loader.start()
+                case .attachIfRunning:
+                    // A conversation whose tmux session is gone shows as closed: attaching would
+                    // start it again, so leave it to Resume.
+                    guard let status = model.board.status(forTodo: todo.id), status != .closed else { return }
+                    await loader.attachIfRunning(store.conversations[todo.id])
+                }
             }
     }
 

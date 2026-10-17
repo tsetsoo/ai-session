@@ -41,7 +41,8 @@ struct AISessionRemoteApp: App {
         }
         .modelContainer(HostStore.shared)
         #if os(macOS)
-        .defaultSize(width: 1100, height: 720)
+        // Three columns: sidebar, list and the conversation (the Main board is 1280×800).
+        .defaultSize(width: 1280, height: 800)
         .commands {
             // Frees ⌘N for "New Session" (bound on the sessions list's add button).
             CommandGroup(replacing: .newItem) {}
@@ -56,6 +57,15 @@ struct AISessionRemoteApp: App {
                 }
                 .keyboardShortcut("0", modifiers: .command)
             }
+        }
+        #endif
+
+        #if os(macOS)
+        // ⌘, and the sidebar's Settings row.
+        Settings {
+            SettingsView()
+                .environment(model)
+                .modelContainer(HostStore.shared)
         }
         #endif
     }

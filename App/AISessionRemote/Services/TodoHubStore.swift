@@ -151,6 +151,8 @@ final class TodoHubStore {
         self.sectionComputers = Dictionary(sectionComputers.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new })
         self.computers = computers
         hasLoadedOnce = true
+        // As if just fetched: the sync line reads "Synced · just now", not the real cache's age.
+        cachedAt = .now
     }
     #endif
 

@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Top level. iPhone and compact-width iPad: `PhoneShell`. Everything else keeps the Todos and
-/// Hosts tabs until the Mac shell (PR 5).
+/// Top level. iPhone and compact-width iPad: `PhoneShell`. The Mac and regular-width iPad:
+/// `MacShell`.
 struct RootView: View {
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -39,28 +39,20 @@ struct RootView: View {
         if horizontalSizeClass == .compact || UIDevice.current.userInterfaceIdiom == .phone || Self.forcesPhoneShell {
             PhoneShell()
         } else {
-            tabs
+            MacShell()
         }
         #else
-        tabs
+        MacShell()
         #endif
     }
 
-    /// `-uiDemo` screenshots always show the iPhone shell on iOS.
+    /// `-uiDemo` screenshots show the iPhone shell on iOS, unless `-uiDemoShell split` asks for
+    /// the split view (iPad).
     private static var forcesPhoneShell: Bool {
         #if DEBUG
-        DemoFixtures.isEnabled
+        DemoFixtures.isEnabled && DemoFixtures.value(after: "-uiDemoShell") != "split"
         #else
         false
         #endif
-    }
-
-    private var tabs: some View {
-        TabView {
-            TodosView()
-                .tabItem { Label("Todos", systemImage: "checklist") }
-            HostsListView()
-                .tabItem { Label("Hosts", systemImage: "server.rack") }
-        }
     }
 }

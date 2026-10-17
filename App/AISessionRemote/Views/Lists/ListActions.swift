@@ -106,12 +106,18 @@ extension View {
                                      store: store, hosts: hosts, open: open))
     }
 
-    /// Makes the whole row open something while buttons inside it stay tappable.
+    /// Makes the whole row open something while buttons inside it stay tappable. Without an
+    /// action the row is left alone, so a selectable list's own click selection still works.
+    @ViewBuilder
     func rowTap(_ action: (() -> Void)?) -> some View {
-        contentShape(Rectangle())
-            .onTapGesture { action?() }
-            .accessibilityAddTraits(action == nil ? [] : .isButton)
-            .accessibilityAction { action?() }
+        if let action {
+            contentShape(Rectangle())
+                .onTapGesture(perform: action)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { action() }
+        } else {
+            self
+        }
     }
 }
 
@@ -278,8 +284,8 @@ struct ListStatusBanner: View {
     }
 
     private var offlineText: String {
-        guard let ago = AppTheme.relativeTime(from: store.cachedAt) else { return "Offline · showing saved todos" }
-        return "Offline · showing todos from \(ago)"
+        guard let cachedAt = store.cachedAt else { return "Offline · showing saved todos" }
+        return "Offline · showing todos from \(SyncLine.ago(cachedAt, now: .now))"
     }
 }
 

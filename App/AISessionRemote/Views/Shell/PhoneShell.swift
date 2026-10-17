@@ -110,7 +110,7 @@ struct PhoneShell: View {
         }
         .onAppear { applyDefaultFilter() }
         .onChange(of: tab) { _, _ in applyDefaultFilter() }
-        .task { await startSync() }
+        .task { await model.startSync() }
     }
 
     // MARK: Tabs
@@ -219,24 +219,7 @@ struct PhoneShell: View {
         filter = .initial(needsYouCount: model.board.needsYou.count)
     }
 
-    // MARK: Sync
-
-    private var isConfigured: Bool {
-        #if DEBUG
-        if DemoFixtures.isEnabled { return true }
-        #endif
-        return store.isConfigured
-    }
-
-    private func startSync() async {
-        #if DEBUG
-        // Demo data never touches the network.
-        if DemoFixtures.isEnabled { return }
-        #endif
-        guard store.isConfigured else { return }
-        await store.refresh()
-        store.startLiveUpdates()
-    }
+    private var isConfigured: Bool { model.isConfigured }
 }
 
 private extension View {

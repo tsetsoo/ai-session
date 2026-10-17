@@ -3,19 +3,25 @@ import SwiftData
 import SwiftUI
 
 /// One computer: its running conversations, then Other sessions, On this computer and Open
-/// Shell. Without access on this device it offers Set Up Access instead.
+/// Shell. Without access on this device it offers Set Up Access instead. Given a `selection`
+/// (the Mac list column) running conversations select by todo id instead of being tapped.
 struct ComputerDetailView: View {
     let computer: Computer
     /// Tapping a running conversation; rows aren't tappable without it.
     let onOpen: ((Todo) -> Void)?
+    private let query: String
+    private let selection: Binding<String?>?
 
     @Environment(AppModel.self) private var model
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var actions = ConversationRowActions()
     @State private var setUpPrefill: HostEditorPrefill?
 
-    init(computer: Computer, onOpen: ((Todo) -> Void)? = nil) {
+    init(computer: Computer, query: String = "", selection: Binding<String?>? = nil,
+         onOpen: ((Todo) -> Void)? = nil) {
         self.computer = computer
+        self.query = query
+        self.selection = selection
         self.onOpen = onOpen
     }
 
@@ -24,10 +30,13 @@ struct ComputerDetailView: View {
     var body: some View {
         let board = model.board
         let host = HostLookup.host(for: computer, in: hosts)
-        let running = board.runningNow.filter { $0.computer.id == computer.id }
         let todos = Dictionary(store.todos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let running = board.runningNow.filter { conversation in
+            conversation.computer.id == computer.id
+                && ListSearch.matches(query, todos[conversation.todoId]?.title, conversation.statusMessage)
+        }
         TimelineView(.everyMinute) { context in
-            List {
+            SelectableList(selection: selection) {
                 ListStatusBanner(store: store)
                 if host == nil {
                     Section {
@@ -35,7 +44,10 @@ struct ComputerDetailView: View {
                     }
                 }
                 Section {
-                    if running.isEmpty {
+                    if running.isEmpty && !query.isEmpty {
+                        Text("No results for “\(query)”")
+                            .foregroundStyle(.secondary)
+                    } else if running.isEmpty {
                         Text("No conversations running. Open a todo to start one.")
                             .foregroundStyle(.secondary)
                     }
@@ -82,7 +94,29 @@ struct ComputerDetailView: View {
         }
     }
 
+    @ViewBuilder
     private var noAccess: some View {
+        if selection != nil {
+            // The Mac's narrow list column: a row, not a full-screen title.
+            VStack(alignment: .leading, spacing: DS.spacing.s) {
+                Label {
+                    Text("This device can't open conversations on \(computer.name) yet")
+                } icon: {
+                    Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
+                        .symbolRenderingMode(.monochrome)
+                        .foregroundStyle(Color.secondary)
+                }
+                .font(.headline)
+                Button("Set Up Access") { setUpPrefill = HostEditorPrefill(computer: computer) }
+                    .buttonStyle(AccentButtonStyle())
+            }
+            .padding(.vertical, DS.spacing.s)
+        } else {
+            fullNoAccess
+        }
+    }
+
+    private var fullNoAccess: some View {
         ContentUnavailableView {
             Label("This device can't open conversations on \(computer.name) yet",
                   systemImage: "desktopcomputer.trianglebadge.exclamationmark")
@@ -103,7 +137,8 @@ struct ComputerDetailView: View {
             now: now,
             isBusy: actions.inFlight.contains(conversation.todoId)
         )
-        .rowTap(open)
+        .tag(conversation.todoId)
+        .rowTap(selection == nil ? open : nil)
         .conversationRowMenu(conversation, isRunning: status != .closed, actions: actions,
                              store: store, hosts: hosts, open: open)
     }
