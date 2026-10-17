@@ -45,6 +45,8 @@ final class AppModel {
     private let listTmuxOverride: TmuxListing?
     /// Incremented per refresh; only the latest, uncancelled one may publish its result.
     private var livenessGeneration = 0
+    /// `startSync` ran its first load; live updates keep the store current after that.
+    private var syncStarted = false
 
     var board: ConversationBoard {
         ConversationBoard(todos: store.todos, conversations: store.conversations, liveTmux: liveTmux)
@@ -88,12 +90,14 @@ final class AppModel {
         return store.isConfigured
     }
 
-    /// The shells' first load, then live updates. Demo launches never touch the network.
+    /// The first load, then live updates. Idempotent: each shell calls it, and so does a pop-out
+    /// window restored without the main window. Demo launches never touch the network.
     func startSync() async {
         #if DEBUG
         if DemoFixtures.isEnabled { return }
         #endif
-        guard store.isConfigured else { return }
+        guard store.isConfigured, !syncStarted else { return }
+        syncStarted = true
         await store.refresh()
         store.startLiveUpdates()
     }

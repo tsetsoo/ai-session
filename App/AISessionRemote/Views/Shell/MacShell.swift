@@ -24,6 +24,7 @@ struct MacShell: View {
     @State private var query = ""
     @State private var settings: SettingsRequest?
     @State private var showingAdd = false
+    @State private var showingNewFromConversation = false
     /// ⏎, a double-click or Open for the selected todo's frame.
     @State private var frameRequest: FrameRequest?
     /// A computer's Other Sessions, On This Computer or Open Shell, shown in the detail column.
@@ -54,6 +55,11 @@ struct MacShell: View {
             }
             .tint(DS.accent)
         }
+        .sheet(isPresented: $showingNewFromConversation) {
+            NewTodoFromConversationSheet(store: store)
+                .tint(DS.accent)
+        }
+        .todoStoreErrorAlert(store)
         .onChange(of: model.sidebarSelection) { _, _ in
             query = ""
             computerPage = nil
@@ -85,10 +91,23 @@ struct MacShell: View {
         .searchable(text: $query, prompt: "Search")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showingAdd = true
+                // Click: new todo. The menu (its arrow on the Mac, a hold on iPad): new todo from
+                // an existing conversation.
+                Menu {
+                    Button {
+                        showingAdd = true
+                    } label: {
+                        Label("New Todo", systemImage: "plus")
+                    }
+                    Button {
+                        showingNewFromConversation = true
+                    } label: {
+                        Label("New Todo from Conversation…", systemImage: "text.bubble")
+                    }
                 } label: {
                     Label("New Todo", systemImage: "plus")
+                } primaryAction: {
+                    showingAdd = true
                 }
                 .help("New Todo")
                 .disabled(!model.isConfigured || store.isOffline)
@@ -210,9 +229,14 @@ struct MacShell: View {
         #if DEBUG
         if DemoFixtures.isEnabled {
             // `-uiDemoSidebar needsyou|running|Sp|I|Si|P|computer:<id>` and `-uiDemoOpen <todo id>`.
-            model.sidebarSelection = DemoFixtures.value(after: "-uiDemoSidebar")
-                .flatMap(AppModel.SidebarItem.init(demoArgument:)) ?? .runningNow
-            model.selectedTodoID = DemoFixtures.value(after: "-uiDemoOpen") ?? model.board.runningNow.first?.todoId
+            // Only on first appearance: an iPad shell swap keeps what was selected.
+            if model.sidebarSelection == nil {
+                model.sidebarSelection = DemoFixtures.value(after: "-uiDemoSidebar")
+                    .flatMap(AppModel.SidebarItem.init(demoArgument:)) ?? .runningNow
+            }
+            if model.selectedTodoID == nil {
+                model.selectedTodoID = DemoFixtures.value(after: "-uiDemoOpen") ?? model.board.runningNow.first?.todoId
+            }
             #if os(macOS)
             // `-uiDemoPopOut <todo id>`: that conversation in its own window.
             if let id = DemoFixtures.value(after: "-uiDemoPopOut") {
@@ -317,6 +341,17 @@ final class SelectionAttacher {
         if selection != nil { schedule() }
     }
 
+    /// Runs the liveness refresh the selection asked for (the detail's task). A refresh can
+    /// return without publishing: superseded by another view's refresh that was then cancelled.
+    /// The selection would then wait on "Connecting to …" for good, so while it still waits,
+    /// ask again.
+    func runLivenessRefresh(_ refresh: @MainActor () async -> Void) async {
+        await refresh()
+        guard !Task.isCancelled, let todoID = selection, readiness(todoID) == .awaitingLiveness else { return }
+        askedForLiveness = false
+        if !isSettling { evaluate() }
+    }
+
     /// The board or liveness changed for the selection.
     func inputsChanged() {
         guard selection != nil, !isSettling else { return }
@@ -356,7 +391,8 @@ final class SelectionAttacher {
 }
 
 /// A todo's frame attached by its own `SelectionAttacher`: the shell's detail column (the
-/// selection changes underneath it) and each pop-out window (one todo).
+/// selection changes underneath it), each pop-out window (one todo), and the phone shell's
+/// frame re-opened after an iPad shell swap.
 struct ConversationDetail: View {
     let todo: Todo
     @Binding var request: FrameRequest?
@@ -395,7 +431,7 @@ struct ConversationDetail: View {
         }
         .task(id: attacher.livenessRequests) {
             guard attacher.livenessRequests > 0 else { return }
-            await model.refreshLiveness(hosts: hosts)
+            await attacher.runLivenessRefresh { await model.refreshLiveness(hosts: hosts) }
         }
     }
 
@@ -443,10 +479,17 @@ struct ConversationWindow: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var request: FrameRequest?
 
+    /// Before the first refresh the todo may just not be loaded yet.
+    private var isFirstSync: Bool {
+        model.isConfigured && !model.store.hasLoadedOnce
+    }
+
     var body: some View {
         Group {
             if let todoID, let todo = model.store.todos.first(where: { $0.id == todoID }) {
                 ConversationDetail(todo: todo, request: $request, isWindow: true) { dismissWindow() }
+            } else if todoID != nil, isFirstSync {
+                FrameLoadingView(title: "Loading conversation…")
             } else {
                 ContentUnavailableView("Conversation Not Found", systemImage: "bubble.left.and.bubble.right")
             }
@@ -456,6 +499,8 @@ struct ConversationWindow: View {
         // Also when the window comes back through state restoration.
         .onAppear { if let todoID { model.poppedOut.insert(todoID) } }
         .onDisappear { if let todoID { model.poppedOut.remove(todoID) } }
+        // Restored without the main window, nothing else would sync the todos.
+        .task { await model.startSync() }
     }
 }
 

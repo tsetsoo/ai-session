@@ -61,7 +61,7 @@ struct ComputerListView: View {
         .listStyle(.insetGrouped)
         .task { await model.refreshLiveness(hosts: hosts) }
         .refreshable {
-            // Background: a failure shows in the banner, not in the Todos list's alert.
+            // Background: a failure shows in the banner, not in the shell's Todos alert.
             await store.refresh(trigger: .background)
             await model.refreshLiveness(hosts: hosts)
         }

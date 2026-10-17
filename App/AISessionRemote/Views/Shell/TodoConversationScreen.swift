@@ -89,7 +89,7 @@ struct TodoConversationScreen: View {
         case .attach:
             // Only into an idle frame: an explicit start or a problem card stays as it is.
             guard !isSuspended, loader.phase == .idle else { return }
-            Task { await loader.attachIfRunning(store.conversations[todo.id]) }
+            loader.attachIfRunning(store.conversations[todo.id])
         case .detach:
             guard loader.phase != .idle, loader.phase != .preparing else { return }
             loader.reset()

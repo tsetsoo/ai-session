@@ -12,7 +12,6 @@
 		011E0983CD76CF63F6989F28 /* TextSizeShortcutsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB3E3B07720B67742A9A99D8 /* TextSizeShortcutsTests.swift */; };
 		022B57F04655E920FB73A18C /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 817B00374F94FAE43898BD11 /* NIOCore */; };
 		0299C3EF9137E36AF7C6A392 /* PhoneShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7904F574B3A5E7AE10B093F /* PhoneShell.swift */; };
-		0465CEFADB8822952932C24E /* TodosView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9DBC3BD9869463A3CB29231 /* TodosView.swift */; };
 		04D272A8E2DC4B976A1524E5 /* TodoHubSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B17876012779CEAC4C80A8 /* TodoHubSettingsView.swift */; };
 		07BD53647E58789FDD83FF03 /* MacShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3CBA23D5DB2F1E90F810074 /* MacShell.swift */; };
 		0B7DAB6F82204E98F063D5D7 /* QuickAddBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ECAA7E51EC00759D342A7CF /* QuickAddBar.swift */; };
@@ -32,7 +31,6 @@
 		24750E39423E40466A045301 /* FrameStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6DF7A48AF9E2D3EED9528A2 /* FrameStateView.swift */; };
 		25E3AF38E68AA5F4B7DEEE84 /* PhoneShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E3343248834146F026E769E /* PhoneShellTests.swift */; };
 		28884179662F767E05F6CAF6 /* ConversationFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87495E95B7CCFE26E721047A /* ConversationFrame.swift */; };
-		289EDFE00E67CAEFA150FDB7 /* TodosView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9DBC3BD9869463A3CB29231 /* TodosView.swift */; };
 		29CF30F43C8411A4456EF7AF /* ReachabilityProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */; };
 		2BC2449004ADB723C8C5690B /* ConversationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 555A99A04217936E4F1645AD /* ConversationListView.swift */; };
 		2C15E7B5071B758B1AB3938E /* ReachabilityProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02AE6114F65FF42A87E1B35F /* ReachabilityProbeTests.swift */; };
@@ -256,7 +254,6 @@
 		B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostProvisioning.swift; sourceTree = "<group>"; };
 		B24103E63B65EE5783B9E334 /* RemoteConversations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteConversations.swift; sourceTree = "<group>"; };
 		B7904F574B3A5E7AE10B093F /* PhoneShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneShell.swift; sourceTree = "<group>"; };
-		B9DBC3BD9869463A3CB29231 /* TodosView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodosView.swift; sourceTree = "<group>"; };
 		BA54D98ADC3ACCD267883621 /* DemoFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoFixtures.swift; sourceTree = "<group>"; };
 		BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
 		BB775BB4D3645609923CB4D6 /* PlatformSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformSupport.swift; sourceTree = "<group>"; };
@@ -528,7 +525,6 @@
 				3DAA2B5F3D51BEC4051A381D /* ComputersView.swift */,
 				5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */,
 				19B17876012779CEAC4C80A8 /* TodoHubSettingsView.swift */,
-				B9DBC3BD9869463A3CB29231 /* TodosView.swift */,
 			);
 			path = Todos;
 			sourceTree = "<group>";
@@ -770,7 +766,6 @@
 				EF09596E78D56E59634CB61F /* TodoHubStore.swift in Sources */,
 				68A3E02B06E4A0FB06B56C19 /* TodoListView.swift in Sources */,
 				43742E0FFAA3656D1B6E80B8 /* TodoRow.swift in Sources */,
-				0465CEFADB8822952932C24E /* TodosView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -846,7 +841,6 @@
 				F3A22A2B4D3FE60B89136B56 /* TodoHubStore.swift in Sources */,
 				93BB67AB83C83B09CE1C55B2 /* TodoListView.swift in Sources */,
 				2C88335BD42E331992BF6C04 /* TodoRow.swift in Sources */,
-				289EDFE00E67CAEFA150FDB7 /* TodosView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -5,14 +5,28 @@ import SwiftUI
 /// The iPhone app: Todos, Conversations (badged with the Needs-you count) and Computers tabs.
 /// Each tab is its own navigation stack with a large title and ⚙ for Settings; opening a todo
 /// pushes its conversation full screen, without the tab bar.
+///
+/// On iPad in compact width the open conversation is kept in `AppModel.selectedTodoID`, so it
+/// survives the swap to and from `MacShell` (see `reopenSelection`).
 struct PhoneShell: View {
     enum Tab: String, Hashable {
         case todos, conversations, computers
     }
 
     enum Route: Hashable {
+        /// Opened by a tap: starts (or resumes) the conversation.
         case todo(String)
         case computer(String)
+        /// The Mac layout's selection, pushed again after an iPad shell swap: it attaches only
+        /// if the conversation runs and never starts one, like a selection on the Mac.
+        case reopened(String)
+
+        var todoID: String? {
+            switch self {
+            case let .todo(id), let .reopened(id): id
+            case .computer: nil
+            }
+        }
     }
 
     /// Settings as a sheet, optionally opened on one destination.
@@ -33,6 +47,8 @@ struct PhoneShell: View {
     @State private var settings: SettingsRequest?
     @State private var showingAdd = false
     @State private var showingNewFromConversation = false
+    /// `.attach` / `.detach` for a re-opened conversation's frame.
+    @State private var reopenRequest: FrameRequest?
 
     init() {
         #if DEBUG
@@ -108,8 +124,13 @@ struct PhoneShell: View {
             NewTodoFromConversationSheet(store: store)
                 .tint(DS.accent)
         }
-        .onAppear { applyDefaultFilter() }
+        .todoStoreErrorAlert(store)
+        .onAppear {
+            applyDefaultFilter()
+            reopenSelection()
+        }
         .onChange(of: tab) { _, _ in applyDefaultFilter() }
+        .onChange(of: openTodoID) { _, id in model.selectedTodoID = id }
         .task { await model.startSync() }
     }
 
@@ -200,6 +221,15 @@ struct PhoneShell: View {
             } else {
                 ContentUnavailableView("Todo Not Found", systemImage: "checklist")
             }
+        case let .reopened(id):
+            if let todo = store.todos.first(where: { $0.id == id }) {
+                ConversationDetail(todo: todo, request: $reopenRequest) {
+                    if path.wrappedValue.last == route { path.wrappedValue.removeLast() }
+                }
+                .toolbar(.hidden, for: .tabBar)
+            } else {
+                ContentUnavailableView("Todo Not Found", systemImage: "checklist")
+            }
         case let .computer(id):
             if let computer = store.computers.first(where: { $0.id == id }) {
                 ComputerDetailView(computer: computer) { path.wrappedValue.append(.todo($0.id)) }
@@ -207,6 +237,28 @@ struct PhoneShell: View {
                 ContentUnavailableView("Computer Not Found", systemImage: "desktopcomputer")
             }
         }
+    }
+
+    private var currentPath: Binding<[Route]> {
+        switch tab {
+        case .todos: $todosPath
+        case .conversations: $conversationsPath
+        case .computers: $computersPath
+        }
+    }
+
+    /// The conversation on screen, if any: the Mac layout selects it after an iPad shell swap.
+    private var openTodoID: String? {
+        currentPath.wrappedValue.last?.todoID
+    }
+
+    /// After an iPad shell swap (regular → compact width), the conversation the Mac layout had
+    /// selected is pushed again. It never starts one: it attaches only if it already runs.
+    private func reopenSelection() {
+        guard let id = model.selectedTodoID, store.todos.contains(where: { $0.id == id }) else { return }
+        let paths = todosPath + conversationsPath + computersPath
+        guard !paths.contains(where: { $0.todoID == id }) else { return }
+        currentPath.wrappedValue.append(.reopened(id))
     }
 
     private func openSettings(_ destination: SettingsDestination?) {

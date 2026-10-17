@@ -71,6 +71,33 @@ struct FrameStateBlock: View {
     }
 }
 
+/// Fills the terminal area with the terminal's background, in the terminal's own light/dark
+/// scheme so system text colours stay legible whatever the app's appearance.
+struct OnTerminalBackground: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("terminal.theme") private var themeRaw = TerminalTheme.system.rawValue
+
+    func body(content: Content) -> some View {
+        let palette = TerminalAppearance.palette(theme: TerminalTheme(rawValue: themeRaw) ?? .system,
+                                                 colorScheme: colorScheme)
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(palette.background))
+            .environment(\.colorScheme, palette == .dark ? .dark : .light)
+    }
+}
+
+/// The frame's progress state before there is a todo to frame (a pop-out window restored before
+/// the first sync).
+struct FrameLoadingView: View {
+    let title: String
+
+    var body: some View {
+        FrameStateBlock(showsProgress: true, title: title)
+            .modifier(OnTerminalBackground())
+    }
+}
+
 /// A `FrameProblem` as an in-frame state (spec §6): what's wrong and the action that fixes it.
 struct FrameStateView: View {
     let problem: FrameProblem

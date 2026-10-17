@@ -92,13 +92,13 @@ final class ConversationLoaderTests: XCTestCase {
 
     func testSelectionDoesNotStartConversation() async {
         let (l, calls) = loader(open: { self.conversation() })
-        await l.attachIfRunning(nil)
+        l.attachIfRunning(nil)
         XCTAssertEqual(l.phase, .idle)
-        await l.attachIfRunning(conversation(status: .closed))
+        l.attachIfRunning(conversation(status: .closed))
         XCTAssertEqual(l.phase, .idle)
         XCTAssertEqual(calls.open, 0)
         XCTAssertEqual(calls.resolve, 0)
-        await l.attachIfRunning(conversation(status: .busy))
+        l.attachIfRunning(conversation(status: .busy))
         guard case .ready = l.phase else { return XCTFail("\(l.phase)") }
         XCTAssertEqual(calls.open, 0)
     }

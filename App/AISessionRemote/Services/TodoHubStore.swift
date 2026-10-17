@@ -175,7 +175,7 @@ final class TodoHubStore {
     // MARK: Computers
     //
     // These throw instead of setting `errorMessage`: they're used from the Computers sheet,
-    // which shows its own alert (TodosView's alert can't present over the sheet).
+    // which shows its own alert (the shell's alert can't present over the sheet).
 
     func addComputer(name: String, hostname: String, port: Int, username: String) async throws {
         try await perform { client in
@@ -283,7 +283,7 @@ final class TodoHubStore {
         await refresh(trigger: .background)
     }
 
-    /// `perform` for actions on the Todos screen: failures go to its alert.
+    /// `perform` for todo changes: failures go to the shell's Todos alert.
     private func mutate(_ body: (TodoHubClient) async throws -> Void) async {
         do {
             try await perform(body)

@@ -34,9 +34,7 @@ struct ConversationFrame: View {
     private let makeTransport: (HostConnectionConfig, TerminalMode) -> any TerminalTransport
 
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.frameOwnsWindow) private var ownsWindow
-    @AppStorage("terminal.theme") private var themeRaw = TerminalTheme.system.rawValue
     @State private var terminal = TerminalHandle()
     @State private var showingCopied = false
     @State private var copiedTask: Task<Void, Never>?
@@ -217,17 +215,8 @@ struct ConversationFrame: View {
         return "Starting conversation on \(computer)…"
     }
 
-    /// Drawn on the terminal background, in the terminal's own light/dark scheme so system text
-    /// colours stay legible whatever the app's appearance.
     private func onTerminalBackground(_ content: some View) -> some View {
-        content
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(palette.background))
-            .environment(\.colorScheme, palette == .dark ? .dark : .light)
-    }
-
-    private var palette: TerminalPalette {
-        TerminalAppearance.palette(theme: TerminalTheme(rawValue: themeRaw) ?? .system, colorScheme: colorScheme)
+        content.modifier(OnTerminalBackground())
     }
 
     // MARK: Header

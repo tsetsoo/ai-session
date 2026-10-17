@@ -210,6 +210,65 @@ final class SelectionDebounceTests: XCTestCase {
         XCTAssertEqual(model.attachReadiness(forTodo: "t3"), .unknown)  // linux-box didn't answer
     }
 
+    /// Parks listings until opened, so a test controls which refresh finishes first.
+    private actor Gate {
+        private var continuations: [CheckedContinuation<Void, Never>] = []
+        private var opened = false
+        var waiting: Int { continuations.count }
+        func wait() async {
+            if opened { return }
+            await withCheckedContinuation { continuations.append($0) }
+        }
+        func open() { opened = true; continuations.forEach { $0.resume() }; continuations = [] }
+    }
+
+    func testASupersededLivenessRefreshAsksAgainAndStillAttaches() async {
+        let gate = Gate()
+        let mac = DemoFixtures.macStudio
+        let model = makeModel { computer in
+            await gate.wait()
+            if computer.id == mac.id { return ["todo-t1"] }
+            throw ListingFailed()
+        }
+        attacher.readiness = { model.attachReadiness(forTodo: $0) }
+        attacher.select("t1")
+        scheduler.run()
+        XCTAssertEqual(attacher.livenessRequests, 1)
+
+        // The detail's refresh (generation N) is superseded by another view's (N + 1), say the
+        // sidebar's, which is then cancelled: neither publishes.
+        let detail = Task { await attacher.runLivenessRefresh { await model.refreshLiveness(hosts: []) } }
+        while await gate.waiting < 2 { await Task.yield() }
+        let other = Task { await model.refreshLiveness(hosts: []) }
+        while await gate.waiting < 4 { await Task.yield() }
+        other.cancel()
+        await gate.open()
+        await detail.value
+        await other.value
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .awaitingLiveness)
+
+        // Still waiting, so the detail asks again (its task re-runs) instead of staying on
+        // "Connecting to mac-studio…".
+        XCTAssertEqual(attacher.livenessRequests, 2)
+        XCTAssertEqual(sent, [])
+        await attacher.runLivenessRefresh { await model.refreshLiveness(hosts: []) }
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .running)
+        XCTAssertEqual(attacher.livenessRequests, 2)   // answered: no further ask
+        attacher.inputsChanged()                       // the detail's onChange(of: readiness)
+        scheduler.run()
+        XCTAssertEqual(sent, ["attach t1"])
+    }
+
+    func testACancelledDetailRefreshDoesNotAskAgain() async {
+        // The detail went away (or its task restarted): the next one asks, not this one.
+        readiness = ["a": .awaitingLiveness]
+        attacher.select("a")
+        scheduler.run()
+        let task = Task { await attacher.runLivenessRefresh { withUnsafeCurrentTask { $0?.cancel() } } }
+        await task.value
+        XCTAssertEqual(attacher.livenessRequests, 1)
+    }
+
     func testDemoLaunchesKnowTheirLiveness() {
         let model = AppModel(demo: true)
         XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .running)

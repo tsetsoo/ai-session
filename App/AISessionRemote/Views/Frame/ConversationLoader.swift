@@ -109,7 +109,8 @@ final class ConversationLoader {
     }
 
     /// Selection path: attach only to a conversation that is already running. Never creates one.
-    func attachIfRunning(_ conversation: Conversation?) async {
+    /// Synchronous, so a settled selection goes straight to the terminal without an idle frame.
+    func attachIfRunning(_ conversation: Conversation?) {
         guard phase != .preparing, let conversation, conversation.status != .closed else { return }
         resolve(conversation)
     }

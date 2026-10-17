@@ -48,14 +48,6 @@ struct TodoListView: View {
                 Task { await store.createTodo(section: section, title: title) }
             }
         }
-        .alert(
-            "Todos",
-            isPresented: Binding(get: { store.errorMessage != nil }, set: { if !$0 { store.errorMessage = nil } })
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(store.errorMessage ?? "")
-        }
     }
 
     private func sectionView(_ section: TodoSection, board: ConversationBoard, now: Date) -> some View {

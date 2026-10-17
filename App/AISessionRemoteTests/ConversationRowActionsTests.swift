@@ -13,6 +13,12 @@ final class ConversationRowActionsTests: XCTestCase {
         XCTAssertEqual(ConversationRowActions.message(for: SSHRemoteError.authenticationFailed, computer: mac), setUp)
     }
 
+    func testOnlyAMissingHostOffersSetUpAccess() {
+        XCTAssertEqual(ConversationRowActions.computerToSetUp(after: HostLookup.Failure.noHost(mac))?.id, mac.id)
+        XCTAssertNil(ConversationRowActions.computerToSetUp(after: HostLookup.Failure.keyUnavailable("mac-studio")))
+        XCTAssertNil(ConversationRowActions.computerToSetUp(after: SSHRemoteError.unreachable))
+    }
+
     func testUnreachableUsesTheComputerName() {
         XCTAssertEqual(ConversationRowActions.message(for: SSHRemoteError.unreachable, computer: mac),
                        "Can't reach mac-studio. Check it's awake and on Tailscale.")
