@@ -648,7 +648,7 @@ for line in open(sys.argv[2], encoding="utf-8"):
     seen.add(kind)
 want = {"private_key", "anthropic_key", "openai_key", "github_token", "gitlab_token", "slack_token",
         "aws_key", "google_key", "stripe_key", "jwt", "bearer", "url_credentials", "secret",
-        "local_secret", "random"}
+        "local_secret", "random", "cli_credentials", "cli_secret", "basic_auth", "auth_token"}
 assert seen == want, want ^ seen
 PY
 pass "redaction replaces each rule's sample with [REDACTED:<type>] (PEM, prefixed tokens, JWT, bearer, URL credentials, key/value, local secrets, random strings)"
@@ -689,6 +689,28 @@ assert sorted(r.secret_values_from_env(env)) == ["abcdefgh12", "hub-token-123"],
 assert r.redact("x hub-token-123 y", ["hub-token-123"]) == "x [REDACTED:local_secret] y"
 PY
 pass "key_value_keeps_key: password=hunter2 -> password=[REDACTED:secret]; env secrets are collected by name"
+
+redact_py <<'PY' || fail "redaction shapes"
+import sys
+sys.path.insert(0, sys.argv[1])
+import ai_todo_redact as r
+cases = {
+    "postgres://app:pa/ss@w0rd@db.example.com/prod": "postgres://[REDACTED:url_credentials]@db.example.com/prod",
+    "redis://:s3cr3tPw@cache:6379": "redis://[REDACTED:url_credentials]@cache:6379",
+    'x {"password": "a b c", "user": "me"}': 'x {"password": [REDACTED:secret], "user": "me"}',
+    "curl -u admin:pw12345x https://h": "curl -u [REDACTED:cli_credentials] https://h",
+    "Authorization: Basic YWRtaW46aHVudGVyMg==": "Authorization: Basic [REDACTED:basic_auth]",
+    "authorization: token 3f786850e387550fdab836ed7e6dc881de23001b": "authorization: token [REDACTED:auth_token]",
+    "x --password=hunter3pw --token tok123456 y": "x --password=[REDACTED:cli_secret] --token [REDACTED:cli_secret] y",
+    "mysql -h db -uroot -pS3cretPw shop": "mysql -h db -uroot -p[REDACTED:cli_secret] shop",
+    "mysql -uroot -p shop": "mysql -uroot -p shop",
+    "sshpass -p 'Pa55word' ssh h": "sshpass -p [REDACTED:cli_secret] ssh h",
+    "Bearer 3f786850e387550fdab836ed7e6dc881de23001b": "Bearer [REDACTED:bearer]",
+}
+for raw, want in cases.items():
+    assert r.redact(raw, []) == want, (raw, r.redact(raw, []))
+PY
+pass "redaction shapes: URL credentials up to the last @ (empty user, / and @ in the password), quoted key/value values, curl -u, Authorization Basic/Token, --password/--token, mysql -p<v>, sshpass -p"
 
 # --- ai-todo-sessions stats ---------------------------------------------------------
 
@@ -1034,6 +1056,27 @@ assert "[REDACTED:" in stdin and "[REDACTED:github_token] from the vault" in hub
 PY
 pass "stdin_has_no_secrets: no sample secret (nor the hub token) reaches claude's stdin, the posted memories or the stats title"
 
+M3C=d0d0d0d0-0000-4000-8000-0000000000c3
+python3 - "$FIXTURES" "$(cfile $M3C)" "$M_APP" "$M3C" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import transcript
+w = transcript.Writer("claude", sys.argv[2], sys.argv[3], sys.argv[4])
+token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+command = "echo " + "x" * 180 + " " + token + " | gh auth login --with-token"  # the 200-char cut lands in the token
+w.add({"type": "user", "message": {"role": "user", "content": "log in with the long command"}})
+w.add({"type": "assistant", "message": {"id": "m-cut", "role": "assistant", "model": "m", "stop_reason": "tool_use",
+       "content": [{"type": "tool_use", "id": "tc", "name": "Bash", "input": {"command": command}}]}})
+w.add({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc", "content": "ok"}]}})
+w.claude_finish("y" * 1990 + " LocalTok3n_Value9 was used")  # the 2000-char cut lands in the env secret
+w.write()
+PY
+MY_SERVICE_TOKEN=LocalTok3n_Value9 mem run claude "$M3C" >/dev/null || fail "truncation run failed"
+s="$(stdin_of "$(calls)")"
+[[ "$s" == *"[Bash: echo xxx"* && "$s" == *"ASSISTANT: yyy"* ]] || fail "truncation fixture not rendered: ${s:0:400}"
+[[ "$s" != *"A1b2C3d4"* && "$s" != *"LocalTok3"* ]] || fail "a secret cut by the truncation leaked a fragment"
+pass "renderer redacts before it truncates: no fragment of a token cut at 200 chars or an env secret cut at 2000 chars"
+
 M4=d0d0d0d0-0000-4000-8000-000000000004
 TODAY="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 hub_edit "
@@ -1274,6 +1317,15 @@ diff "${FIXTURES}/digest-expected.md" "${M_APP}/CLAUDE.local.md" >"${SANDBOX}/di
 [[ "$(excluded "$M_APP" /CLAUDE.local.md)" == 1 ]] || fail "CLAUDE.local.md not in .git/info/exclude exactly once"
 pass "digest_writes_claude_local_md: group order, pinned first, dates, the 60/14-day windows, 5 done/files_changed, the 40-item cap; git-excluded once"
 
+[[ "$(cat "${M_APP}/AGENTS.md")" == "$D_USER_AGENTS" ]] || fail "the user's untracked, not ignored AGENTS.md was changed"
+dmem status --json | python3 -c '
+import json, sys
+assert {"path": sys.argv[1], "reason": "untracked", "project_id": "proj-app"} in json.load(sys.stdin)["skipped"]
+' "${M_APP}/AGENTS.md" || fail "status does not report the skipped untracked AGENTS.md"
+pass "an untracked AGENTS.md that git does not ignore is skipped and reported like a tracked one"
+
+printf 'AGENTS.md\n' >"${M_APP}/.gitignore"
+dmem digest >/dev/null || fail "digest with an ignored AGENTS.md failed"
 python3 - "${M_APP}/AGENTS.md" "${FIXTURES}/digest-expected.md" "$D_BEGIN" "$D_END" <<'PY' || fail "AGENTS.md block not replaced in place: $(cat "${M_APP}/AGENTS.md")"
 import sys
 text, digest, begin, end = open(sys.argv[1]).read(), open(sys.argv[2]).read(), sys.argv[3], sys.argv[4]
@@ -1292,7 +1344,23 @@ st = json.load(sys.stdin)
 assert {"path": sys.argv[1], "reason": "tracked", "project_id": "proj-tracked"} in st["skipped"], st["skipped"]
 ' "${D_TRACKED}/AGENTS.md" || fail "status does not report the tracked AGENTS.md"
 dmem status | grep -q "skipped: .*tracked/AGENTS.md (tracked)" || fail "status text does not report the tracked AGENTS.md"
+dmem status | grep -q "^nightly secrets: *TODO_API_TOKEN only" || fail "status does not explain the nightly run's secret coverage"
 pass "codex_block_in_place: the block is replaced with outside bytes intact; created where Codex runs (git-excluded, <= 6 KB); none without Codex sessions or in worktrees; a tracked AGENTS.md is skipped and reported"
+
+D_LATE="${HOME}/work/late"
+X5=019f0000-0000-7000-8000-0000000000e5
+mkdir -p "$D_LATE"
+python3 "$TRANSCRIPT" codex "${HOME}/.codex/sessions/2026/10/16/rollout-2026-10-16T09-00-00-${X5}.jsonl" "$D_LATE" "$X5" --turn "p" "a"
+hub_edit "s['projects'].append(dict(s['projects'][0], id='proj-late', name='late', folder='~/work/late'))
+s['memories'].append(dict(s['memories'][0], id='late-1', project_id='proj-late', kind='decision', pinned=False,
+                          created_at='2026-10-15T09:00:00Z', text='The late project became a git repository later.'))"
+dmem digest >/dev/null || fail "digest in a plain folder failed"
+[[ -f "${D_LATE}/CLAUDE.local.md" && "$(head -n 1 "${D_LATE}/AGENTS.md")" == "$D_BEGIN" ]] || fail "digests not written into the plain folder"
+git_q -C "$D_LATE" init
+dmem digest >/dev/null || fail "digest after git init failed"
+[[ "$(excluded "$D_LATE" /CLAUDE.local.md)" == 1 && "$(excluded "$D_LATE" /AGENTS.md)" == 1 ]] || fail "files we created were not git-excluded after a later git init"
+[[ -z "$(git -C "$D_LATE" status --porcelain)" ]] || fail "our files show up in git status: $(git -C "$D_LATE" status --porcelain)"
+pass "files we created are git-excluded on every write, so a folder that becomes a repo later never shows them"
 
 [[ "$(cat "${D_OWN}/CLAUDE.local.md")" == "my own notes" ]] || fail "the user's own CLAUDE.local.md was changed"
 [[ "$(head -n 1 "${D_OWN}/.claude/rules/todo-hub-memories.md")" == "<!-- Managed by ai-todo-memory"* ]] || fail "rules fallback not written"

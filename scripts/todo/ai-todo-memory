@@ -35,6 +35,12 @@
 #   AI_TODO_MEMORY_MODEL='sonnet'  AI_TODO_MEMORY_DEBOUNCE_MIN='30'  AI_TODO_MEMORY_BACKFILL_DAYS='7'
 #   AI_TODO_MEMORY_MAX_CHUNKS_NIGHT='40'  AI_TODO_MEMORY_MIN_CONFIDENCE='0.5'
 #
+# Redaction (ai_todo_redact.py) uses pattern rules plus the exact values of TODO_API_TOKEN and of
+# *_TOKEN/*_KEY/*_SECRET/*_PASSWORD variables in this process's environment. `trigger` (from the
+# Stop hook) inherits the Claude session's environment, so it knows the shell's secrets. The
+# nightly launchd run has no shell environment: there the exact-value rule only covers
+# TODO_API_TOKEN, and other secrets are caught by the pattern rules alone. `status` says so.
+#
 # State: ~/.ai-remote/memory-state/ (mode 700): sessions/<tool>-<id>.json (offsets),
 # projects.json, digests.json, nightly.json, lock, run/ (claude's cwd), memory.log (ids,
 # counts and errors only; never transcript text; rotated at 1 MB).
@@ -619,8 +625,14 @@ def turn_end_indexes(tool, lines):
 # --- Rendering ----------------------------------------------------------------------
 
 class Renderer:
-    def __init__(self, folder):
+    def __init__(self, folder, redact=None):
         self.folder = folder  # absolute; paths are shown relative to it
+        self.redact = redact or (lambda text: text)
+
+    def clip(self, text, limit):
+        """Redact the whole raw text first, then cut it: a cut must never split a secret
+        into a fragment the redaction rules no longer recognise."""
+        return cut(self.redact(text), limit)
 
     def path(self, value):
         if not isinstance(value, str) or not value:
@@ -636,23 +648,21 @@ class Renderer:
         name = str(name or "tool")
         args = args if isinstance(args, dict) else {}
         if name == "Bash" and args.get("command"):
-            return "[Bash: %s]" % cut(one_line(args["command"]), COMMAND_MAX)
+            return "[Bash: %s]" % self.clip(one_line(args["command"]), COMMAND_MAX)
         target = args.get("file_path") or args.get("notebook_path")
         if isinstance(target, str):
             return "[%s %s]" % (name, self.path(target))
         for key in ("pattern", "path", "url", "query", "description", "skill", "subagent_type"):
             if isinstance(args.get(key), str) and args[key].strip():
-                return "[%s: %s]" % (name, cut(one_line(args[key]), COMMAND_MAX))
+                return "[%s: %s]" % (name, self.clip(one_line(args[key]), COMMAND_MAX))
         return "[%s]" % name
 
-    @staticmethod
-    def user(text):
+    def user(self, text):
         text = real_prompt(text)
-        return ["USER: " + cut(text, PROMPT_MAX)] if text else []
+        return ["USER: " + self.clip(text, PROMPT_MAX)] if text else []
 
-    @staticmethod
-    def error(text):
-        return ["[tool error: %s]" % cut(one_line(text), ERROR_MAX)]
+    def error(self, text):
+        return ["[tool error: %s]" % self.clip(one_line(text), ERROR_MAX)]
 
     def claude(self, entry):
         if entry.get("isSidechain"):
@@ -678,12 +688,12 @@ class Renderer:
             return out
         if entry.get("type") == "assistant":
             if isinstance(content, str) and content.strip():
-                return ["ASSISTANT: " + cut(content.strip(), ASSISTANT_MAX)]
+                return ["ASSISTANT: " + self.clip(content.strip(), ASSISTANT_MAX)]
             for part in content if isinstance(content, list) else []:
                 if not isinstance(part, dict):
                     continue
                 if part.get("type") == "text" and str(part.get("text") or "").strip():
-                    out.append("ASSISTANT: " + cut(part["text"].strip(), ASSISTANT_MAX))
+                    out.append("ASSISTANT: " + self.clip(part["text"].strip(), ASSISTANT_MAX))
                 elif part.get("type") == "tool_use":
                     out.append(self.tool_call(part.get("name"), part.get("input")))
             return out
@@ -705,7 +715,7 @@ class Renderer:
             if p.get("role") == "user":
                 return [line for x in parts if x.get("type") == "input_text" for line in self.user(x.get("text"))]
             if p.get("role") == "assistant":
-                return ["ASSISTANT: " + cut(x["text"].strip(), ASSISTANT_MAX)
+                return ["ASSISTANT: " + self.clip(x["text"].strip(), ASSISTANT_MAX)
                         for x in parts if x.get("type") == "output_text" and str(x.get("text") or "").strip()]
             return []
         if kind in ("function_call", "custom_tool_call", "local_shell_call"):
@@ -729,7 +739,7 @@ class Renderer:
             if command:
                 if isinstance(command, list):
                     command = command[-1] if len(command) >= 3 and command[1] in ("-lc", "-c") else " ".join(map(str, command))
-                return ["[Bash: %s]" % cut(one_line(command), COMMAND_MAX)]
+                return ["[Bash: %s]" % self.clip(one_line(command), COMMAND_MAX)]
             return ["[%s]" % (p.get("name") or kind)]
         if kind in ("function_call_output", "custom_tool_call_output"):
             output = p.get("output")
@@ -1054,7 +1064,7 @@ def process_session(ctx, tool, sid, mode, hint=None):
         return "no complete turn"
     folder = expand_folder(project.get("folder")) if project else cwd
     redact = ctx.redactor()
-    renderer = Renderer(folder)
+    renderer = Renderer(folder, redact)
     turns = build_turns(tool, lines, ends, renderer, redact)
     if not any(t["prompt"] for t in turns):
         if not ctx.dry and not ctx.no_post:
@@ -1247,6 +1257,12 @@ def ensure_git_excluded(path):
     Log.write("git_exclude", path=tilde(path))
 
 
+def is_ignored(path):
+    directory = os.path.dirname(path)
+    return git_dirs(directory) is not None and \
+        git_run(directory, "check-ignore", "-q", os.path.basename(path))[0] == 0
+
+
 def is_tracked(path):
     directory = os.path.dirname(path)
     return git_dirs(directory) is not None and \
@@ -1352,8 +1368,6 @@ class DigestWriter:
         created = created_before
         if text is None:
             new, created = block, True
-            if not self.dry:
-                ensure_git_excluded(path)
         else:
             found = self.markers(text)
             if found is False:
@@ -1361,10 +1375,18 @@ class DigestWriter:
                 self.ctx.errors += 1
                 return {"path": path, "reason": "markers"}, None
             start, stop = found
+            # Only a file we created (still holding our block) or one git ignores: a block in
+            # the user's own untracked AGENTS.md would show up in `git status` and get committed.
+            if not (created and start is not None) and not is_ignored(path):
+                reason = "untracked" if git_dirs(directory) else "not ours"
+                Log.write("digest_skipped", reason=reason, path=tilde(path))
+                return {"path": path, "reason": reason}, None
             if start is None:
                 new = text + ("" if not text else "\n" if text.endswith("\n") else "\n\n") + block
             else:
                 new = text[:start] + block + text[stop:]
+        if created and not self.dry:
+            ensure_git_excluded(path)  # every time: the folder may have become a git repo since
         self.put(path, new)
         return None, {"path": path, "kind": "codex", "created_by_us": bool(created)}
 
@@ -1730,6 +1752,8 @@ def cmd_status(args):
         "last_stats_push": nightly.get("last_stats_push"),
         "digests": written,
         "skipped": skipped,
+        "nightly_env_secrets": "TODO_API_TOKEN only: launchd runs without the shell environment; "
+                               "other secrets rely on the pattern rules",
     }
     if as_json:
         print(json.dumps(status, indent=1))
@@ -1738,6 +1762,7 @@ def cmd_status(args):
         print("%-17s %s" % (key + ":", status[key]))
     for key in ("last_nightly", "last_stats_push"):
         print("%-17s %s" % (key + ":", iso(status[key]) if status[key] else "never"))
+    print("%-17s %s" % ("nightly secrets:", status["nightly_env_secrets"]))
     for d in written:
         print("digest:           %s (%s%s)" % (d["path"], d.get("kind"), ", created by us" if d.get("created_by_us") else ""))
     for d in skipped:
