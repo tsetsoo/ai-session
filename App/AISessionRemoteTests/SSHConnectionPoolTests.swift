@@ -167,7 +167,7 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
     /// has opened, in call order. A test "kills" a PTY's channel (simulating a remote exit or
     /// network drop, independent of the caller ever calling `PTYHandle.close()`) by invoking
     /// one of these directly.
-    private var ptyOnCloseCallbacks: [() -> Void] = []
+    private var ptyOnCloseCallbacks: [(Int?) -> Void] = []
 
     /// When set, `openPTY` suspends on this gate before returning — lets a test hold a
     /// `connect()` call genuinely suspended mid-`openPTY` (rather than guessing at timing) so it
@@ -181,7 +181,7 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
         cols: Int,
         rows: Int,
         onOutput: @escaping ([UInt8]) -> Void,
-        onClose: @escaping () -> Void
+        onClose: @escaping (Int?) -> Void
     ) async throws -> PTYHandle {
         lock.lock()
         openPTYStarted = true
@@ -226,11 +226,11 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
 
     /// Simulates the most recently opened PTY's channel dying on its own (remote exit, network
     /// drop) by invoking the `onClose` callback the pool wired up when it was opened.
-    func killMostRecentPTY() {
+    func killMostRecentPTY(exitStatus: Int? = nil) {
         lock.lock()
         let callback = ptyOnCloseCallbacks.last
         lock.unlock()
-        callback?()
+        callback?(exitStatus)
     }
 }
 
@@ -548,7 +548,7 @@ final class SSHConnectionPoolTests: XCTestCase {
 
         let handle = try await pool.openPTY(
             terminalHost, mode: .plainShell, cols: 80, rows: 24,
-            onOutput: { _ in }, onClose: {}
+            onOutput: { _ in }, onClose: { _ in }
         )
         _ = try await pool.exec(idleHost, command: "warm")
 
@@ -863,7 +863,7 @@ final class SSHConnectionPoolTests: XCTestCase {
 
         let handle = try await pool.openPTY(
             config, mode: .plainShell, cols: 80, rows: 24,
-            onOutput: { _ in }, onClose: {}
+            onOutput: { _ in }, onClose: { _ in }
         )
 
         let leaseWhileAttached = await pool.leaseCount(for: config)
@@ -907,7 +907,7 @@ final class SSHConnectionPoolTests: XCTestCase {
 
         let handle = try await pool.openPTY(
             config, mode: .plainShell, cols: 80, rows: 24,
-            onOutput: { _ in }, onClose: {}
+            onOutput: { _ in }, onClose: { _ in }
         )
         async let exec: SSHExecResult = pool.exec(config, command: "concurrent")
 
@@ -938,6 +938,55 @@ final class SSHConnectionPoolTests: XCTestCase {
         _ = try await exec
     }
 
+    /// The PTY's remote exit status (e.g. 127 from `ai-todo-open` when helpers are missing) must
+    /// reach the caller's `onClose` unchanged, and the lease must still be released exactly once.
+    func testPTYCloseForwardsExitStatus() async throws {
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(
+            idleTimeout: .milliseconds(1),
+            sleep: { _ in },
+            dial: { _ in
+                let connection = FakeConnection()
+                connection.isExecGated = true
+                await connections.add(connection)
+                return connection
+            }
+        )
+        let config = config()
+
+        var observedStatus: Int?? = .none
+        let handle = try await pool.openPTY(
+            config, mode: .plainShell, cols: 80, rows: 24,
+            onOutput: { _ in }, onClose: { observedStatus = .some($0) }
+        )
+        async let exec: SSHExecResult = pool.exec(config, command: "concurrent")
+
+        guard let connection = await connections.last() else {
+            XCTFail("expected a dialed connection")
+            return
+        }
+        let ready = await connection.waitForPendingExecCount(1)
+        XCTAssertTrue(ready, "concurrent exec must be gated in flight")
+        connection.killMostRecentPTY(exitStatus: 127)
+
+        await waitUntil("channel-death released the PTY lease") {
+            await pool.leaseCount(for: config) == 1
+        }
+        XCTAssertEqual(observedStatus, .some(127), "the exit status must reach the caller's onClose")
+        let lease = await pool.leaseCount(for: config)
+        XCTAssertEqual(lease, 1, "the lease must still be released exactly once")
+
+        handle.close()
+        await waitUntil("explicit close after channel death does not release again") {
+            await pool.leaseCount(for: config) == 1
+        }
+        let leaseAfterClose = await pool.leaseCount(for: config)
+        XCTAssertEqual(leaseAfterClose, 1)
+
+        connection.releaseExec(matching: "concurrent")
+        _ = try await exec
+    }
+
     /// The other ordering of the same regression: the channel can die on its own (remote exit,
     /// network drop) before `disconnect()` ever gets a chance to call `close()`. Both together
     /// must still add up to exactly one release, and the pool must still forward `onClose` to
@@ -959,7 +1008,7 @@ final class SSHConnectionPoolTests: XCTestCase {
         var observedDisconnect = false
         let handle = try await pool.openPTY(
             config, mode: .plainShell, cols: 80, rows: 24,
-            onOutput: { _ in }, onClose: { observedDisconnect = true }
+            onOutput: { _ in }, onClose: { _ in observedDisconnect = true }
         )
         async let exec: SSHExecResult = pool.exec(config, command: "concurrent")
 

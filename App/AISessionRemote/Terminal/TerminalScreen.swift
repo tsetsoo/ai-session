@@ -25,7 +25,7 @@ enum TerminalConnectionState: Equatable {
 final class TerminalCoordinator: TerminalViewDelegate {
     weak var terminalView: TerminalView?
     var onError: ((String) -> Void)?
-    var onDisconnected: (() -> Void)?
+    var onDisconnected: ((Int?) -> Void)?
     var onStateChange: ((TerminalConnectionState) -> Void)?
 
     private let hostConfig: HostConnectionConfig
@@ -90,10 +90,10 @@ final class TerminalCoordinator: TerminalViewDelegate {
             // hop itself before `feed`ing SwiftTerm.
             self?.coalescer.append(bytes)
         }
-        session.onDisconnect = { [weak self] in
+        session.onDisconnect = { [weak self] exitStatus in
             DispatchQueue.main.async {
                 self?.state = .failed
-                self?.onDisconnected?()
+                self?.onDisconnected?(exitStatus)
             }
         }
         self.session = session
@@ -447,7 +447,7 @@ struct TerminalScreen: View {
             }
             connectionState = coordinator.state
             coordinator.onError = { message in errorMessage = message }
-            coordinator.onDisconnected = {
+            coordinator.onDisconnected = { _ in
                 isDisconnected = true
                 PlatformSupport.disconnectedFeedback()
             }

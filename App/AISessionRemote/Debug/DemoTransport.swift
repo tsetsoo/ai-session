@@ -5,7 +5,7 @@ import Foundation
 /// and ignores input. Never touches the network.
 final class DemoTransport: TerminalTransport {
     var onOutput: (([UInt8]) -> Void)?
-    var onDisconnect: (() -> Void)?
+    var onDisconnect: ((Int?) -> Void)?
 
     func connect(cols: Int, rows: Int) async throws {
         onOutput?(Array(Self.screen.utf8))

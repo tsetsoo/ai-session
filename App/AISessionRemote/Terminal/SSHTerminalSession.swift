@@ -27,7 +27,7 @@ final class SSHTerminalSession: TerminalTransport {
     var onOutput: (([UInt8]) -> Void)?
     /// Invoked once, the first time the connection goes away for any reason other than an
     /// explicit `disconnect()` call (network drop, remote-side `exit`, TOFU mismatch, etc).
-    var onDisconnect: (() -> Void)?
+    var onDisconnect: ((Int?) -> Void)?
 
     private let config: HostConnectionConfig
     private let mode: TerminalMode
@@ -82,7 +82,7 @@ final class SSHTerminalSession: TerminalTransport {
             cols: cols,
             rows: rows,
             onOutput: { [weak self] bytes in self?.onOutput?(bytes) },
-            onClose: { [weak self] in self?.notifyDisconnectedIfNeeded() }
+            onClose: { [weak self] exitStatus in self?.notifyDisconnectedIfNeeded(exitStatus) }
         )
         let shouldCloseImmediately: Bool = stateLock.withLock {
             if _isDisconnecting {
@@ -123,14 +123,14 @@ final class SSHTerminalSession: TerminalTransport {
         handle?.close()
     }
 
-    private func notifyDisconnectedIfNeeded() {
+    private func notifyDisconnectedIfNeeded(_ exitStatus: Int?) {
         let shouldNotify: Bool = stateLock.withLock {
             guard !_isDisconnecting else { return false }
             _isDisconnecting = true
             return true
         }
         guard shouldNotify else { return }
-        onDisconnect?()
+        onDisconnect?(exitStatus)
     }
 
     /// Backstop in case this object is ever deallocated without `disconnect()` having run
