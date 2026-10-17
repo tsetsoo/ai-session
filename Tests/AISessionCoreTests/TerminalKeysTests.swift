@@ -18,10 +18,13 @@ final class TerminalKeysTests: XCTestCase {
     func testTypingDisarmsUntilNextWaiting() {
         var gate = ApproveGate()
         XCTAssertFalse(gate.isEnabled(tool: "claude"))
+        XCTAssertFalse(gate.isArmed)
         gate.statusChanged(to: .waiting)
         XCTAssertTrue(gate.isEnabled(tool: "claude"))
+        XCTAssertTrue(gate.isArmed)
         gate.userTyped()
         XCTAssertFalse(gate.isEnabled(tool: "claude"))
+        XCTAssertFalse(gate.isArmed)
         gate.statusChanged(to: .waiting)
         XCTAssertFalse(gate.isEnabled(tool: "claude"))
         gate.statusChanged(to: .busy)

@@ -83,7 +83,9 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
             throw SSHRemoteError.authenticationFailed
         }
 
-        let authDelegate = SSHPrivateKeyAuthDelegate(username: config.username, privateKey: privateKey)
+        let authDelegate = SSHPrivateKeyAuthDelegate(
+            username: config.username, privateKey: privateKey, hostID: config.hostID
+        )
         let hostKeyDelegate = TOFUServerAuthenticationDelegate(hostID: config.hostID, store: hostKeyStore)
 
         let channel: Channel

@@ -33,6 +33,10 @@ public struct ApproveGate: Sendable {
 
     public mutating func userTyped() { armed = false }
 
+    /// Armed by a fresh `waiting` and not typed into since. Callers check it before
+    /// `userTyped()` so a keystroke doesn't write their state when there is nothing to disarm.
+    public var isArmed: Bool { armed }
+
     public func isEnabled(tool: String) -> Bool {
         tool == "codex" || armed
     }

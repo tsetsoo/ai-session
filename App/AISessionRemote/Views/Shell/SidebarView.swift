@@ -48,7 +48,8 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             footer
         }
-        .task { await model.refreshLiveness(hosts: hosts) }
+        // Again whenever a conversation changed after its computer was listed.
+        .task(id: model.relistRequests) { await model.refreshLiveness(hosts: hosts) }
     }
 
     private var footer: some View {

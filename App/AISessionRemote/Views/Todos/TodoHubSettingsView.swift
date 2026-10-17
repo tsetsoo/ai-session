@@ -79,6 +79,13 @@ struct TodoHubSettingsView: View {
     /// Health first (proves the server is reachable), then an authenticated call (proves the token).
     private func test() async {
         guard let url = parsedURL else { return }
+        #if DEBUG
+        if DemoFixtures.isEnabled {
+            testSucceeded = false
+            testResult = "Not available in the demo."
+            return
+        }
+        #endif
         isTesting = true
         defer { isTesting = false }
         let client = TodoHubClient(baseURL: url, token: token)

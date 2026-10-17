@@ -24,7 +24,8 @@ enum TerminalConnectionState: Equatable {
 
 final class TerminalCoordinator: TerminalViewDelegate {
     weak var terminalView: TerminalView?
-    var onError: ((String) -> Void)?
+    /// The connect failed. `TerminalCoordinator.message(for:)` words it for an alert.
+    var onError: ((Error) -> Void)?
     var onDisconnected: ((Int?) -> Void)?
     var onStateChange: ((TerminalConnectionState) -> Void)?
     /// The user typed into the terminal view. SwiftTerm's own replies through the same channel
@@ -119,9 +120,8 @@ final class TerminalCoordinator: TerminalViewDelegate {
         } catch {
             self.session = nil
             state = .failed
-            let message = Self.message(for: error)
             DispatchQueue.main.async { [weak self] in
-                self?.onError?(message)
+                self?.onError?(error)
             }
         }
     }
@@ -227,7 +227,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 
-    private static func message(for error: Error) -> String {
+    static func message(for error: Error) -> String {
         if let error = error as? SSHRemoteError {
             return error.userMessage
         }
@@ -288,7 +288,7 @@ struct TerminalScreen: View {
             handle: terminal,
             onDetach: { dismiss() },
             disconnectedMessage: "The SSH connection was closed.",
-            onConnectionFailed: { message in errorMessage = message },
+            onConnectionFailed: { error in errorMessage = TerminalCoordinator.message(for: error) },
             makeTransport: makeTransport
         )
         .navigationTitle(title)
