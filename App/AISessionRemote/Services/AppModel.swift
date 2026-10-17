@@ -20,6 +20,11 @@ final class AppModel {
     /// computerID to its tmux session names. A computer that is absent is unknown (its hub
     /// status is kept).
     private(set) var liveTmux: [String: Set<String>] = [:]
+    /// computerID to when its `liveTmux` entry was listed (when the listing was asked for).
+    private(set) var listedAt: [String: Date] = [:]
+    /// Bumped when a conversation changed after its computer's listing and isn't in it (started
+    /// or reported since): the views that list tmux sessions list again (`.task(id:)`).
+    private(set) var relistRequests = 0
 
     var sidebarSelection: SidebarItem?
     var selectedTodoID: String?
@@ -32,18 +37,26 @@ final class AppModel {
 
     /// Replaces the SSH listing; tests inject it. Production builds it from the hosts.
     private let listTmuxOverride: TmuxListing?
+    /// The time of a liveness listing; tests fix it.
+    private let now: () -> Date
     /// Incremented per refresh; only the latest, uncancelled one may publish its result.
     private var livenessGeneration = 0
+    /// The conversation changes (todo, created, status time) a relist was already asked for.
+    @ObservationIgnored private var relistedFor: Set<String> = []
 
     var board: ConversationBoard {
-        ConversationBoard(todos: store.todos, conversations: store.conversations, liveTmux: liveTmux)
+        ConversationBoard(todos: store.todos, conversations: store.conversations, liveTmux: liveTmux,
+                          listedAt: listedAt)
     }
 
     #if DEBUG
-    init(store: TodoHubStore? = nil, demo: Bool = DemoFixtures.isEnabled, listTmux: TmuxListing? = nil) {
-        let store = store ?? TodoHubStore()
+    init(store: TodoHubStore? = nil, demo: Bool = DemoFixtures.isEnabled, listTmux: TmuxListing? = nil,
+         now: @escaping () -> Date = Date.init) {
+        // A demo never reads (or shows) the real offline cache.
+        let store = store ?? TodoHubStore(cache: demo ? TodoHubStore.scratchCache() : TodoHubStore.defaultCache())
         self.store = store
         self.listTmuxOverride = listTmux
+        self.now = now
         if demo {
             store.seedForDemo(
                 todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
@@ -53,14 +66,32 @@ final class AppModel {
             // Screenshots of Projects: canned hub data, no hub contacted.
             store.loadDemo(.sample)
         }
+        watchForRelist()
     }
     #else
     init(store: TodoHubStore? = nil, listTmux: TmuxListing? = nil) {
         let store = store ?? TodoHubStore()
         self.store = store
         self.listTmuxOverride = listTmux
+        self.now = Date.init
+        watchForRelist()
     }
     #endif
+
+    // MARK: Listing again
+
+    /// Follows the board for conversations newer than their computer's listing.
+    private func watchForRelist() {
+        let stale = withObservationTracking {
+            Set(board.newerThanListing.map { "\($0.todoId)|\($0.createdAt)|\($0.statusUpdatedAt ?? "")" })
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.watchForRelist() }
+        }
+        let fresh = stale.subtracting(relistedFor)
+        // Only what is still stale: a relisted conversation drops out, and the set stays small.
+        relistedFor = relistedFor.intersection(stale).union(fresh)
+        if !fresh.isEmpty { relistRequests += 1 }
+    }
 
     /// `UIApplicationShortcutItems` type of the Home-screen "New Todo" quick action.
     static let newTodoShortcutType = "com.aisessionremote.newTodo"
@@ -100,6 +131,8 @@ final class AppModel {
         #endif
         livenessGeneration += 1
         let generation = livenessGeneration
+        // Anything that changed after this moment may be missing from the listing.
+        let askedAt = now()
         let computers = store.computers
         let listing = listTmuxOverride ?? Self.sshListing(hosts: hosts, computers: computers)
         var result: [String: Set<String>] = [:]
@@ -113,6 +146,7 @@ final class AppModel {
         }
         guard generation == livenessGeneration, !Task.isCancelled else { return }
         liveTmux = result
+        listedAt = result.mapValues { _ in askedAt }
     }
 
     /// HostEntity is a SwiftData model, so resolve each computer's connection on the main actor

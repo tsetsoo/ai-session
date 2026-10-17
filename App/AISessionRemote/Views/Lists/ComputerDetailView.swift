@@ -70,7 +70,8 @@ struct ComputerDetailView: View {
             .listStyle(.insetGrouped)
         }
         .navigationTitle(computer.name)
-        .task { await model.refreshLiveness(hosts: hosts) }
+        // Again whenever a conversation changed after its computer was listed.
+        .task(id: model.relistRequests) { await model.refreshLiveness(hosts: hosts) }
         .refreshable {
             await store.refresh(trigger: .background)
             await model.refreshLiveness(hosts: hosts)
