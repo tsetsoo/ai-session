@@ -33,6 +33,8 @@ final class TodoHubStore {
     /// Non-modal problem from a background (live-update) refresh, shown as a banner, e.g. a
     /// rejected token. Cleared by the next successful refresh.
     private(set) var backgroundIssue: String?
+    /// The background issue is a rejected token, fixed in Settings → Todo server.
+    private(set) var tokenRejected = false
 
     enum RefreshTrigger {
         /// Pull-to-refresh, first load, settings change: failures raise `errorMessage`.
@@ -42,6 +44,8 @@ final class TodoHubStore {
     }
 
     private let cache: TodoHubCache
+    /// Where hub calls get their client (`TodoHubSettings.makeClient` outside tests); see `hubClient()`.
+    private let makeClient: () -> TodoHubClient?
     private var eventsTask: Task<Void, Never>?
     /// Whether live updates should be running; they pause on a rejected token and resume
     /// after the next successful refresh.
@@ -50,8 +54,10 @@ final class TodoHubStore {
     /// so an older, slower response can't overwrite newer state or the offline cache.
     private var refreshGeneration = 0
 
-    init(cache: TodoHubCache = TodoHubStore.defaultCache()) {
+    init(cache: TodoHubCache = TodoHubStore.defaultCache(),
+         makeClient: @escaping () -> TodoHubClient? = TodoHubSettings.makeClient) {
         self.cache = cache
+        self.makeClient = makeClient
         if let snapshot = cache.load() {
             apply(todos: snapshot.todos, conversations: snapshot.conversations)
             projects = snapshot.projects
@@ -84,8 +90,11 @@ final class TodoHubStore {
     }
 
     #if DEBUG
-    /// Canned data for screenshots (`-demoProjects`); no hub is contacted.
+    /// Canned data for screenshots (`-demoProjects`, `-uiDemo`); no hub is contacted.
     private(set) var demo: TodoHubDemo?
+
+    /// The offline cache file this store reads and writes.
+    var cacheFileURL: URL { cache.fileURL }
 
     func loadDemo(_ demo: TodoHubDemo) {
         self.demo = demo
@@ -112,7 +121,7 @@ final class TodoHubStore {
         #if DEBUG
         if demo != nil { revision += 1; return }
         #endif
-        guard let client = TodoHubSettings.makeClient() else { return }
+        guard let client = hubClient() else { return }
         refreshGeneration += 1
         let generation = refreshGeneration
         isLoading = true
@@ -141,6 +150,7 @@ final class TodoHubStore {
             if let sugg { self.suggestions = sugg }
             isOffline = false
             backgroundIssue = nil
+            tokenRejected = false
             revision += 1
             let snapshot = TodoHubSnapshot(todos: t, conversations: c, projects: self.projects)
             try? cache.save(snapshot)
@@ -156,9 +166,13 @@ final class TodoHubStore {
                 errorMessage = Self.message(for: error)
             case .background:
                 backgroundIssue = Self.message(for: error)
+                tokenRejected = false
                 // Every reconnect would fail the same way: pause until a refresh succeeds
                 // (pull-to-refresh or saving new settings).
-                if case TodoHubError.unauthorized = error { pauseEventsTask() }
+                if case TodoHubError.unauthorized = error {
+                    tokenRejected = true
+                    pauseEventsTask()
+                }
             }
         }
     }
@@ -175,7 +189,7 @@ final class TodoHubStore {
     }
 
     private func startEventsTask() {
-        guard eventsTask == nil, let client = TodoHubSettings.makeClient() else { return }
+        guard eventsTask == nil, let client = hubClient() else { return }
         eventsTask = Task { [weak self] in
             for await _ in TodoHubEvents.refreshes(baseURL: client.baseURL, token: client.token) {
                 await self?.refresh(trigger: .background)
@@ -211,6 +225,20 @@ final class TodoHubStore {
         await refresh()
         startLiveUpdates()
     }
+
+    #if DEBUG
+    /// Fills the store without touching the hub or the cache (demo launches and tests), and
+    /// makes it a demo store: refreshes and changes then never reach a hub.
+    func seedForDemo(todos: [Todo], conversations: [Conversation],
+                     sectionComputers: [SectionComputer], computers: [Computer]) {
+        demo = TodoHubDemo(computers: computers, projects: [], suggestions: [], todos: todos,
+                           conversations: conversations, sessions: [], memories: [])
+        apply(todos: todos, conversations: conversations)
+        self.sectionComputers = Dictionary(sectionComputers.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new })
+        self.computers = computers
+        hasLoadedOnce = true
+    }
+    #endif
 
     // MARK: Todos
 
@@ -270,7 +298,7 @@ final class TodoHubStore {
 
     /// Get-or-create the todo's conversation on the hub.
     func openConversation(for todo: Todo) async throws -> Conversation {
-        guard let client = TodoHubSettings.makeClient() else {
+        guard let client = hubClient() else {
             throw TodoHubError.invalidBaseURL
         }
         let conversation = try await client.openConversation(todoId: todo.id)
@@ -281,6 +309,9 @@ final class TodoHubStore {
     /// Kills the tmux session on the computer, then marks the conversation closed on the hub.
     /// The conversation stays resumable: opening the todo again resumes it.
     func closeConversation(_ conversation: Conversation, config: HostConnectionConfig) async throws {
+        #if DEBUG
+        if demo != nil { return } // demo data: nothing runs on a computer
+        #endif
         let result = try await NIOSSHClient().exec(
             config,
             command: TmuxCommandBuilder.killSessionExact(tmuxName: conversation.tmuxName)
@@ -289,7 +320,7 @@ final class TodoHubStore {
         guard result.exitCode == 0 || result.exitCode == 1 else {
             throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
         }
-        guard let client = TodoHubSettings.makeClient() else { throw TodoHubError.invalidBaseURL }
+        guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
         conversations[conversation.todoId] = try await client.closeConversation(todoId: conversation.todoId)
         await refresh(trigger: .background)
     }
@@ -339,7 +370,10 @@ final class TodoHubStore {
     /// Deletes the conversation on the computer (ending its tmux session first), then unlinks
     /// it from the todo on the hub. The todo itself stays.
     func deleteConversation(_ conversation: Conversation, config: HostConnectionConfig) async throws {
-        guard let client = TodoHubSettings.makeClient() else { throw TodoHubError.invalidBaseURL }
+        #if DEBUG
+        if demo != nil { return } // demo data: nothing runs on a computer
+        #endif
+        guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
         guard !isOffline else { throw OfflineChangeError() }
         try await RemoteConversations.delete(conversation, config: config)
         try await client.deleteConversation(todoId: conversation.todoId)
@@ -463,8 +497,16 @@ final class TodoHubStore {
         var errorDescription: String? { "The todo server is unreachable. Changes are disabled while offline." }
     }
 
+    /// Every hub call's client. None for a demo store: demo data never reaches a hub.
+    private func hubClient() -> TodoHubClient? {
+        #if DEBUG
+        if demo != nil { return nil }
+        #endif
+        return makeClient()
+    }
+
     private func requireClient() throws -> TodoHubClient {
-        guard let client = TodoHubSettings.makeClient() else { throw TodoHubError.invalidBaseURL }
+        guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
         return client
     }
 
@@ -473,7 +515,7 @@ final class TodoHubStore {
         #if DEBUG
         if demo != nil { return } // screenshots only: nothing to change
         #endif
-        guard let client = TodoHubSettings.makeClient() else { throw TodoHubError.invalidBaseURL }
+        guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
         guard !isOffline else { throw OfflineChangeError() }
         try await body(client)
         await refresh(trigger: .background)

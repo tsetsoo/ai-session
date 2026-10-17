@@ -23,11 +23,15 @@ struct AISessionRemoteApp: App {
         }
     }
 
+    @State private var model = AppModel()
     @AppStorage("terminal.fontSize") private var terminalFontSize = TerminalAppearance.defaultFontSize
 
     var body: some Scene {
         WindowGroup {
             RootView()
+                .environment(model)
+                // Notification permission is asked only from Settings → Notifications.
+                .onAppear { model.installSystemEntryPoints() }
                 .onReceive(NotificationCenter.default.publisher(
                     for: PlatformSupport.didEnterBackgroundNotification
                 )) { _ in

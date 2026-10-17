@@ -326,14 +326,8 @@ struct ConversationFrame: View {
     }
 
     private func openSettings(_ destination: SettingsDestination) {
-        switch destination {
-        case .server: sheet = .server
-        case .sections: sheet = .sections
-        case .access: sheet = .access
-        case .terminal, .notifications:
-            // PR 3: SettingsView
-            break
-        }
+        // "Change Folder" doesn't know the section; it is this todo's.
+        sheet = .settings(destination == .sections(nil) ? .sections(todo.section) : destination)
     }
 
     /// A settings sheet closed while a problem shows: try again with what was just fixed.
@@ -393,7 +387,11 @@ struct ConversationFrame: View {
                 let config = try openConfig ?? HostLookup.config(for: conversation.computer, in: hosts)
                 try await body(conversation, config)
             } catch {
-                failure = ActionFailure(title: failureTitle, message: TodoHubStore.message(for: error))
+                // Worded like the lists' actions: no SSH words, no raw remote output.
+                failure = ActionFailure(
+                    title: failureTitle,
+                    message: ConversationRowActions.message(for: error, computer: conversation.computer)
+                )
             }
         }
     }
@@ -403,12 +401,8 @@ struct ConversationFrame: View {
     @ViewBuilder
     private func sheetContent(_ sheet: FrameSheet) -> some View {
         switch sheet {
-        case .server:
-            TodoHubSettingsView { Task { await store.reconnect() } }
-        case .sections:
-            ComputersView(store: store)
-        case .access:
-            AccessSheet()
+        case let .settings(destination):
+            SettingsView(initial: destination)
         case let .hostEditor(prefill):
             // Create mode: the host and its key are saved together, and Cancel leaves nothing.
             HostEditorView(prefill: prefill)
@@ -422,38 +416,14 @@ private struct ActionFailure {
 }
 
 private enum FrameSheet: Identifiable {
-    case server
-    case sections
-    case access
+    case settings(SettingsDestination)
     case hostEditor(HostEditorPrefill)
 
     var id: String {
         switch self {
-        case .server: "server"
-        case .sections: "sections"
-        case .access: "access"
+        case let .settings(destination): "settings-\(destination)"
         case let .hostEditor(prefill): "host-\(prefill.id)"
         }
     }
 }
 
-/// The hosts list (SSH access and keys) as a sheet, with a way out on the Mac.
-private struct AccessSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-            .padding(.horizontal, DS.spacing.l)
-            .padding(.top, DS.spacing.m)
-            HostsListView()
-        }
-        #if os(macOS)
-        .frame(minWidth: 560, minHeight: 520)
-        #endif
-    }
-}

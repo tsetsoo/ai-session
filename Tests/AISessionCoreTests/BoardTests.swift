@@ -105,6 +105,17 @@ final class BoardTests: XCTestCase {
         XCTAssertFalse(b.sectionNeedsYou(.i))
         XCTAssertEqual(b.runningCount(computerID: "m1"), 2)
         XCTAssertEqual(b.runningCount(computerID: "m2"), 1)
+        XCTAssertEqual(b.needsYouCount(computerID: "m1"), 1)
+        XCTAssertEqual(b.needsYouCount(computerID: "m2"), 0)
+    }
+
+    func testAllListsRunningThenClosedNewestFirst() {
+        let b = board([conv("a", .busy, created: "2026-10-16T09:00:00Z"),
+                       conv("b", .closed, created: "2026-10-16T08:00:00Z"),
+                       conv("c", .closed, created: "2026-10-16T12:00:00Z"),
+                       conv("d", .idle, tmux: "gone", created: "2026-10-16T11:00:00Z")],
+                      live: ["m1": ["t-a"]])
+        XCTAssertEqual(b.all.map(\.todoId), ["a", "c", "d", "b"])
     }
 
     func testFirstSnapshotNeverNotifies() {

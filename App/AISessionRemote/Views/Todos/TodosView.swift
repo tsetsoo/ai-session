@@ -6,12 +6,14 @@ import SwiftUI
 /// section's computer over a direct SSH connection; the hub only stores the mapping.
 struct TodosView: View {
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
-    /// Shared with the Projects tab; `RootView` owns it and starts loading and live updates.
-    let store: TodoHubStore
+    @Environment(AppModel.self) private var model
+    private var store: TodoHubStore { model.store }
     @State private var showingSettings = false
     @State private var showingComputers = false
     @State private var showingAdd = false
     @State private var openTodoID: String?
+    /// The pushed frame came from a notification tap: it attaches only if the conversation runs.
+    @State private var openAttachOnly = false
     @State private var openingTodoID: String?
     @State private var missingHost: Computer?
     @State private var newHostPrefill: HostEditorPrefill?
@@ -29,11 +31,12 @@ struct TodosView: View {
                     conversationDestination(todoID)
                 }
         }
-        .task {
-            // Tapping a "needs you" notification opens that todo's conversation.
-            NotificationCenterCoordinator.shared.onOpenTodo = { todoId in
-                Task { await openFromNotification(todoId) }
-            }
+        // A tapped "needs you" notification (routed by AppModel) pushes that todo's frame.
+        .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
+            guard let todoID else { return }
+            model.pendingOpenTodoID = nil
+            openAttachOnly = true
+            openTodoID = todoID
         }
         .sheet(isPresented: $showingSettings) {
             TodoHubSettingsView { Task { await store.reconnect() } }
@@ -139,7 +142,7 @@ struct TodosView: View {
                 Text("No todos").foregroundStyle(.secondary)
             }
             ForEach(todos) { todo in
-                TodoRow(
+                LegacyTodoRow(
                     todo: todo,
                     status: store.conversations[todo.id]?.status ?? todo.conversationStatus,
                     isOpening: openingTodoID == todo.id,
@@ -147,7 +150,10 @@ struct TodosView: View {
                     onToggle: { Task { await store.toggle(todo) } }
                 )
                 .contentShape(Rectangle())
-                .onTapGesture { openTodoID = todo.id }
+                .onTapGesture {
+                    openAttachOnly = false
+                    openTodoID = todo.id
+                }
                 .contextMenu {
                     TodoProjectMenu(todo: todo, store: store)
                     if store.conversations[todo.id] != nil {
@@ -233,15 +239,6 @@ struct TodosView: View {
 
     // MARK: Conversations
 
-    /// A tapped notification pushes that todo's conversation frame, like a tap on its row.
-    private func openFromNotification(_ todoId: String) async {
-        if !store.todos.contains(where: { $0.id == todoId }) {
-            await store.refresh()
-        }
-        guard store.todos.contains(where: { $0.id == todoId }) else { return }
-        openTodoID = todoId
-    }
-
     private func deleteConversation(of todo: Todo) {
         guard let conversation = store.conversations[todo.id] else { return }
         guard HostLookup.host(for: conversation.computer, in: hosts) != nil else {
@@ -268,57 +265,14 @@ struct TodosView: View {
     @ViewBuilder
     private func conversationDestination(_ todoID: String) -> some View {
         if let todo = store.todos.first(where: { $0.id == todoID }) {
-            TodoConversationScreen(todo: todo, store: store) { openTodoID = nil }
+            TodoConversationScreen(todo: todo, store: store, attachOnly: openAttachOnly) { openTodoID = nil }
         } else {
             ContentUnavailableView("Todo Not Found", systemImage: "checklist")
         }
     }
 }
 
-/// The conversation frame for a tapped todo (from the Todos list or a project page). A tap is
-/// an explicit open, so the loader starts (or resumes) the conversation as soon as the frame
-/// appears.
-struct TodoConversationScreen: View {
-    let todo: Todo
-    let store: TodoHubStore
-    let onDeleted: () -> Void
-
-    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
-    @State private var hostList: HostList
-    @State private var loader: ConversationLoader
-
-    init(todo: Todo, store: TodoHubStore, onDeleted: @escaping () -> Void) {
-        self.todo = todo
-        self.store = store
-        self.onDeleted = onDeleted
-        let hostList = HostList()
-        _hostList = State(initialValue: hostList)
-        _loader = State(initialValue: ConversationLoader(
-            todo: todo,
-            dependencies: .live(store: store, hosts: { hostList.hosts })
-        ))
-    }
-
-    var body: some View {
-        ConversationFrame(todo: todo, loader: loader, store: store, onDeleted: onDeleted)
-            .onChange(of: hosts) { _, hosts in hostList.hosts = hosts }
-            .task {
-                hostList.hosts = hosts
-                guard loader.phase == .idle else { return }
-                await loader.start()
-            }
-    }
-}
-
-/// The current saved hosts, read by the loader on every resolve (a host added from the frame's
-/// Set Up Access then counts on retry).
-@MainActor
-private final class HostList {
-    var hosts: [HostEntity] = []
-}
-
-/// A todo with its done toggle and conversation status. Used by the Todos list and project pages.
-struct TodoRow: View {
+private struct LegacyTodoRow: View {
     let todo: Todo
     let status: ConversationStatus?
     let isOpening: Bool
@@ -390,53 +344,5 @@ struct ConversationBadge: View {
         case .unknown: .secondary
         case .closed: .gray
         }
-    }
-}
-
-private struct AddTodoSheet: View {
-    let projects: [Project]
-    let onAdd: (TodoSection, String, String?) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var section: TodoSection = .i
-    @State private var title = ""
-    @State private var projectId: String?
-    @FocusState private var titleFocused: Bool
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Picker("Section", selection: $section) {
-                    ForEach(TodoSection.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                // A plain TextField keeps the keyboard's dictation button available.
-                TextField("Title", text: $title, axis: .vertical)
-                    .focused($titleFocused)
-                if !projects.isEmpty {
-                    Picker("Project", selection: $projectId) {
-                        Text("None").tag(String?.none)
-                        ForEach(projects) { project in
-                            Text(project.name).tag(String?.some(project.id))
-                        }
-                    }
-                }
-            }
-            .navigationTitle("New Todo")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        onAdd(section, title.trimmingCharacters(in: .whitespacesAndNewlines), projectId)
-                        dismiss()
-                    }
-                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            .onAppear { titleFocused = true }
-        }
-        .presentationDetents([.medium])
     }
 }

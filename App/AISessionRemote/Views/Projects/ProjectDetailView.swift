@@ -6,8 +6,12 @@ import SwiftUI
 struct ProjectDetailView: View {
     let projectId: String
     let store: TodoHubStore
+    /// Opens a todo's conversation the shell's way (the phone shell pushes its frame without
+    /// the tab bar; the Mac selects it). Nil pushes the frame on this page's own stack.
+    var onOpenTodo: ((Todo) -> Void)?
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppModel.self) private var model
     @State private var sessions: [HubSession]?
     @State private var memories: [Memory]?
     @State private var loadError: String?
@@ -143,14 +147,19 @@ struct ProjectDetailView: View {
                 Text("No todos in this project").foregroundStyle(.secondary)
             }
             ForEach(todos) { todo in
-                TodoRow(
-                    todo: todo,
-                    status: store.conversations[todo.id]?.status ?? todo.conversationStatus,
-                    isOpening: false,
-                    onToggle: { Task { await store.toggle(todo) } }
-                )
-                .contentShape(Rectangle())
-                .onTapGesture { open(todo) }
+                // Per row, so the list keeps one row per todo; the ages tick every minute.
+                TimelineView(.everyMinute) { context in
+                    TodoRow(
+                        todo: todo,
+                        conversation: store.conversations[todo.id],
+                        status: model.board.status(forTodo: todo.id),
+                        now: context.date,
+                        isBusy: false,
+                        canToggle: !store.isOffline,
+                        onToggle: { Task { await store.toggle(todo) } }
+                    )
+                }
+                .rowTap { open(todo) }
                 .contextMenu {
                     TodoProjectMenu(todo: todo, store: store)
                 }
@@ -204,7 +213,11 @@ struct ProjectDetailView: View {
     /// Pushes the same conversation frame as the Todos list; it shows preparing, problems
     /// (such as a computer this device can't reach yet) and the terminal itself.
     private func open(_ todo: Todo) {
-        openTodoID = todo.id
+        if let onOpenTodo {
+            onOpenTodo(todo)
+        } else {
+            openTodoID = todo.id
+        }
     }
 
     @ViewBuilder

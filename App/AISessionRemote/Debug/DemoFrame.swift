@@ -97,4 +97,29 @@ struct DemoFrameScreen: View {
         )
     }
 }
+
+extension DemoFixtures {
+    /// Opening a todo in a `-uiDemo` launch: its fixture conversation (or a new one on its
+    /// section's computer) over the canned transport, never the hub or SSH.
+    @MainActor
+    static func loaderDependencies() -> ConversationLoader.Dependencies {
+        let hostID = UUID()
+        return ConversationLoader.Dependencies(
+            openConversation: { todo in
+                if let existing = conversations.first(where: { $0.todoId == todo.id }) { return existing }
+                guard let mapping = sectionComputers.first(where: { $0.section == todo.section }) else {
+                    throw TodoHubError.conflict("Section \(todo.section.rawValue) has no computer assigned")
+                }
+                return Conversation(
+                    todoId: todo.id, computer: mapping.computer, cwd: mapping.cwd, tool: mapping.tool,
+                    tmuxName: "todo-\(todo.id)", sessionId: "demo-\(todo.id)", status: .busy,
+                    statusMessage: nil, createdAt: "2026-10-17T09:00:00Z"
+                )
+            },
+            cachedConversation: { _ in nil },
+            isOffline: { false },
+            resolveConfig: { _ in (hostID, config) }
+        )
+    }
+}
 #endif
