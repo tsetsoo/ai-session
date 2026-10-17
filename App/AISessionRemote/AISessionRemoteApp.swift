@@ -7,6 +7,9 @@ struct AISessionRemoteApp: App {
         // `--hub-url …` / `--add-host …` set the app up from launch arguments
         // (see HostProvisioning). On the Mac the app exits afterwards.
         HostProvisioning.runFromCommandLineIfRequested()
+        #if os(macOS)
+        TextSizeShortcuts.installBiggerTextAliasMonitor()
+        #endif
     }
 
     @AppStorage("terminal.fontSize") private var terminalFontSize = TerminalAppearance.defaultFontSize
@@ -47,19 +50,10 @@ struct AISessionRemoteApp: App {
             // Frees ⌘N for "New Session" (bound on the sessions list's add button).
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Conversation") {
-                Button("Bigger Text") {
-                    terminalFontSize = TerminalAppearance.stepped(terminalFontSize, by: 1)
-                }
-                .keyboardShortcut("+", modifiers: .command)
-                // On a US layout ⌘+ needs Shift; plain ⌘= is what people press. Hidden alias.
-                Button("Bigger Text (⌘=)") {
-                    terminalFontSize = TerminalAppearance.stepped(terminalFontSize, by: 1)
-                }
-                .keyboardShortcut("=", modifiers: .command)
-                .hidden()
-                Button("Smaller Text") {
-                    terminalFontSize = TerminalAppearance.stepped(terminalFontSize, by: -1)
-                }
+                // Plain ⌘= is handled by a key monitor (TextSizeShortcuts), since ⌘+ needs Shift.
+                Button("Bigger Text") { TextSizeShortcuts.step(by: 1) }
+                    .keyboardShortcut("+", modifiers: .command)
+                Button("Smaller Text") { TextSizeShortcuts.step(by: -1) }
                 .keyboardShortcut("-", modifiers: .command)
                 Button("Default Text Size") {
                     terminalFontSize = TerminalAppearance.defaultFontSize
