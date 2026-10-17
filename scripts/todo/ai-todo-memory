@@ -513,26 +513,53 @@ def codex_meta(path):
     return payload
 
 
+CWD_RE = re.compile(rb'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+SIDECHAIN_RE = re.compile(rb'"isSidechain"\s*:\s*true')
+
+
+def effective_cwd(counts, last_seen):
+    """The working directory a conversation is about (same rule as ai-todo-sessions stats):
+    an ancestor of other cwds used in the session is dropped when those account for at least
+    25% of its entries; of the rest the most used wins (ties: the most recent)."""
+    if not counts:
+        return None
+    total = sum(counts.values())
+
+    def inside(path, folder):
+        return path != folder and path.startswith(folder.rstrip("/") + "/")
+
+    candidates = []
+    for c in counts:
+        below = sum(n for o, n in counts.items() if inside(o, c))
+        if below == 0 or below * 4 < total:
+            candidates.append(c)
+    candidates = candidates or list(counts)
+    return max(candidates, key=lambda c: (counts[c], last_seen.get(c, 0)))
+
+
 def transcript_cwd(tool, path):
-    if tool == "codex":
-        cwd = (codex_meta(path) or {}).get("cwd")
-        return cwd if isinstance(cwd, str) else None
+    """Effective cwd of a transcript. Scans raw lines with a regex (no JSON parsing): Claude
+    user/assistant entries and Codex session_meta / turn_context lines carry a top-level
+    "cwd"; cwds inside tool arguments are escaped (\\"cwd\\") and never match."""
+    counts, last_seen = {}, {}
     try:
         with open(path, "rb") as f:
             for n, raw in enumerate(f):
-                if n > 200:
-                    break
+                if b'"cwd"' not in raw or SIDECHAIN_RE.search(raw):
+                    continue
+                m = CWD_RE.search(raw)
+                if not m:
+                    continue
                 try:
-                    entry = json.loads(raw)
+                    cwd = json.loads(b'"' + m.group(1) + b'"')
                 except ValueError:
                     continue
-                if not isinstance(entry, dict):
-                    continue
-                if isinstance(entry.get("cwd"), str):
-                    return entry["cwd"]
+                if cwd:
+                    counts[cwd] = counts.get(cwd, 0) + 1
+                    last_seen[cwd] = n
     except OSError:
         return None
-    return None
+    return effective_cwd(counts, last_seen)
 
 
 def resume_offset(tool, path, state):

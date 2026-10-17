@@ -785,6 +785,24 @@ assert gone["repo_root"] is None and gone["repo_url"] is None, gone
 PY
 pass "stats_repo_fields: a worktree resolves to the main repo (with ~), origin credentials stripped, a missing cwd gives nulls"
 
+# Sessions are often started in a parent folder and then work in a repo below it.
+S_MOVED=c0ffee00-0000-4000-8000-000000000006
+S_DIP=c0ffee00-0000-4000-8000-000000000007
+mkdir -p "${SHOME}/work/app/sub"
+python3 "${FIXTURES}/transcript.py" claude "${S_PROJ}/${S_MOVED}.jsonl" "${SHOME}/work" "$S_MOVED" --turn "start in the parent" "ok"
+python3 "${FIXTURES}/transcript.py" claude "${S_PROJ}/${S_MOVED}.jsonl" "${SHOME}/work/app" "$S_MOVED" \
+  --turn "work in the repo 1" "ok" --turn "work in the repo 2" "ok" --turn "work in the repo 3" "ok"
+python3 "${FIXTURES}/transcript.py" claude "${S_PROJ}/${S_DIP}.jsonl" "${SHOME}/work/app" "$S_DIP" \
+  --turn "a1" "ok" --turn "a2" "ok" --turn "a3" "ok" --turn "a4" "ok" --turn "a5" "ok"
+python3 "${FIXTURES}/transcript.py" claude "${S_PROJ}/${S_DIP}.jsonl" "${SHOME}/work/app/sub" "$S_DIP" --turn "quick look below" "ok"
+stats --session "claude:${S_MOVED}" --session "claude:${S_DIP}" >"${SANDBOX}/stats-moved.json" || fail "stats for moved sessions failed"
+python3 - "${SANDBOX}/stats-moved.json" "$S_MOVED" "$S_DIP" <<'PY2' || fail "effective cwd wrong: $(cat "${SANDBOX}/stats-moved.json")"
+import json, sys
+rows = {r["session_id"]: r["cwd"] for r in json.load(open(sys.argv[1]))}
+assert rows == {sys.argv[2]: "~/work/app", sys.argv[3]: "~/work/app"}, rows
+PY2
+pass "stats_effective_cwd: a session started in a parent folder counts for the repo it worked in; a brief dip into a subfolder doesn't move it"
+
 R_SECRET=c0ffee00-0000-4000-8000-000000000004
 printf "TODO_HUB_URL='http://127.0.0.1:9'\nTODO_API_TOKEN='conf-secret-token-1'\n" >"${SANDBOX}/stats-hub.conf"
 mini_claude "${S_PROJ}/${R_SECRET}.jsonl" "$R_SECRET" "$S_CWD" "deploy with password=hunter2xyz via conf-secret-token-1 and ghp_""A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 then write a very long explanation of everything that happened so far in this project"
@@ -933,6 +951,20 @@ s="$(stdin_of $((before_calls + 1)))"
 [[ "$s" != *"first prompt"* && "$s" != *"second prompt"* ]] || fail "old turns sent again: $s"
 [[ "$(offset_of claude "$M1")" == "$(size_of "$(cfile $M1)")" ]] || fail "offset not at EOF"
 pass "appending_a_turn_sends_only_it"
+
+M_MOVED=d0d0d0d0-0000-4000-8000-0000000000a1
+python3 "$TRANSCRIPT" claude "$(cfile $M_MOVED)" "${HOME}/work" "$M_MOVED" --turn "started in the parent folder" "ok"
+python3 "$TRANSCRIPT" claude "$(cfile $M_MOVED)" "$M_APP" "$M_MOVED" \
+  --turn "then worked in the app 1" "ok" --turn "then worked in the app 2" "ok"
+before_calls=$(calls)
+mem run claude "$M_MOVED" >/dev/null || fail "run on a session that moved into the project failed"
+[[ $(calls) -eq $((before_calls + 1)) ]] || fail "a session that moved into the project was not extracted"
+last_body POST /api/memories/bulk | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert (b["session_id"], b["cwd"]) == (sys.argv[1], "~/work/app"), b
+' "$M_MOVED" || fail "moved session posted with the wrong cwd: $(last_body POST /api/memories/bulk)"
+pass "run_uses_effective_cwd: a session launched in a parent folder that worked in the project is extracted for the project"
 
 python3 - "${M_CLAUDE_LOG}" "$HOME" <<'PY' || fail "claude flags/env/cwd wrong: $(cat "${M_CLAUDE_LOG}/1.argv")"
 import json, sys

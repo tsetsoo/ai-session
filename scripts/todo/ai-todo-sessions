@@ -810,16 +810,41 @@ class StatsAcc:
         return stats, days
 
 
+def effective_cwd(counts, last_seen):
+    """The working directory a conversation is about. Sessions are often started in a parent
+    folder (e.g. ~/programming) and then work in a repo or worktree below it, so a cwd that is
+    an ancestor of other cwds used in the session is dropped when those account for at least
+    25% of its entries. Of the rest, the most used wins (ties: the most recent).
+    Keep in sync with ai-todo-memory."""
+    if not counts:
+        return None
+    total = sum(counts.values())
+
+    def inside(path, folder):
+        return path != folder and path.startswith(folder.rstrip("/") + "/")
+
+    candidates = []
+    for c in counts:
+        below = sum(n for o, n in counts.items() if inside(o, c))
+        if below == 0 or below * 4 < total:
+            candidates.append(c)
+    candidates = candidates or list(counts)
+    return max(candidates, key=lambda c: (counts[c], last_seen.get(c, 0)))
+
+
 def claude_stats(path, acc):
     """Fill acc from a Claude transcript. Returns (cwd, first real prompt)."""
-    cwd, title, usage, ended = None, "", {}, set()
+    title, usage, ended = "", {}, set()
+    cwds, last_seen = {}, {}
     for n, entry in enumerate(read_jsonl(path)):
         if not isinstance(entry, dict) or entry.get("isSidechain"):
             continue
-        cwd = cwd or entry.get("cwd")
         kind = entry.get("type")
         if kind not in ("user", "assistant"):
             continue
+        if isinstance(entry.get("cwd"), str) and entry["cwd"]:
+            cwds[entry["cwd"]] = cwds.get(entry["cwd"], 0) + 1
+            last_seen[entry["cwd"]] = n
         day = acc.tick(parse_ts(entry.get("timestamp")))
         message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
         if kind == "user":
@@ -848,13 +873,14 @@ def claude_stats(path, acc):
                 acc.file(day, args.get("file_path") or args.get("notebook_path"))
     for day, counts in usage.values():
         acc.add_tokens(day, counts)
-    return cwd, title
+    return effective_cwd(cwds, last_seen), title
 
 
 def codex_stats(path, acc):
     """Fill acc from a Codex rollout. Returns (session_id, cwd, first real prompt), or None
     for files that aren't a conversation (no session_meta) or are a sub-agent thread."""
-    meta, title = None, ""
+    meta, title, current_cwd = None, "", None
+    cwds, last_seen = {}, {}
     previous = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
     for i, entry in enumerate(read_jsonl(path)):
         if not isinstance(entry, dict):
@@ -868,12 +894,18 @@ def codex_stats(path, acc):
             if isinstance(source, dict) and "subagent" in source:
                 return None
             meta = payload
+            current_cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else None
             continue
         ts = parse_ts(entry.get("timestamp"))
         if kind == "turn_context":
             acc.model(payload.get("model"))
+            if isinstance(payload.get("cwd"), str) and payload["cwd"]:
+                current_cwd = payload["cwd"]
         elif kind == "response_item":
             day = acc.tick(ts)
+            if current_cwd:
+                cwds[current_cwd] = cwds.get(current_cwd, 0) + 1
+                last_seen[current_cwd] = i
             ptype = payload.get("type")
             if ptype == "message" and payload.get("role") == "user":
                 for part in payload.get("content") or []:
@@ -903,7 +935,7 @@ def codex_stats(path, acc):
                     previous = current
     if not meta:
         return None
-    return meta["id"], meta.get("cwd"), title
+    return meta["id"], effective_cwd(cwds, last_seen) or meta.get("cwd"), title
 
 
 def strip_credentials(url):
