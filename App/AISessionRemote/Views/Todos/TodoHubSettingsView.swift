@@ -10,6 +10,7 @@ struct TodoHubSettingsView: View {
     @State private var testResult: String?
     @State private var testSucceeded = false
     @State private var isTesting = false
+    @AppStorage(NotificationCenterCoordinator.enabledKey) private var notifyNeedsYou = false
 
     var body: some View {
         NavigationStack {
@@ -43,6 +44,22 @@ struct TodoHubSettingsView: View {
                         Label(testResult, systemImage: testSucceeded ? "checkmark.circle.fill" : "xmark.octagon.fill")
                             .foregroundStyle(testSucceeded ? .green : .red)
                     }
+                }
+
+                // Until the redesigned Settings → Notifications screen lands (UI session), the
+                // toggle lives here.
+                Section {
+                    Toggle("Notify me when a conversation needs me", isOn: Binding(
+                        get: { notifyNeedsYou },
+                        set: { on in
+                            Task { notifyNeedsYou = await NotificationCenterCoordinator.shared.setNeedsYouEnabled(on) }
+                        }
+                    ))
+                } header: {
+                    Text("Notifications")
+                }
+                if notifyNeedsYou {
+                    NotificationSettingsView()
                 }
             }
             .navigationTitle("Server")

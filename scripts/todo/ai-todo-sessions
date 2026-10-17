@@ -8,6 +8,8 @@
 #   ai-todo-sessions delete <claude|codex> <session_id> [--permanent]
 #                    [--kill-tmux <tmux_name>] [--wait SECONDS] [--missing-ok]
 #   ai-todo-sessions prune --older-than DAYS [--tool claude|codex] [--yes]
+#   ai-todo-sessions stats --json [--since DAYS] [--session <claude|codex>:<id>]...
+#                    [--tool claude|codex]
 #
 # list    Newest first (default limit 200). Claude transcripts with no real prompt and
 #         Codex sub-agent threads are skipped. A Claude id stored in several project
@@ -24,6 +26,15 @@
 #         Linked ids come from todo-server (~/.ai-remote/todo-hub.conf); if it can't be
 #         reached or answers with anything but a list, nothing is pruned. Without --yes it
 #         only prints what it would delete.
+# stats   Usage numbers per conversation and per local day, without any LLM, for
+#         ai-todo-memory to push to todo-server. Scope: conversations whose transcript
+#         changed in the last DAYS days (default 1), or exactly the --session ones. Prints
+#         a JSON array of {tool, session_id, cwd, title, repo_root, repo_url, stats, days}.
+#         Sidechain / sub-agent entries are skipped. Tokens: Claude usage once per
+#         message.id; Codex per-day deltas of the cumulative token_count (no cache-creation
+#         figure). Active time: gaps under 10 min between user/assistant entries, counted on
+#         the later entry's local day. The title is the first prompt, redacted
+#         (ai_todo_redact.py next to this script; null if it is missing), <= 120 chars.
 #
 # Running = a live claude/codex process uses it: ~/.claude/sessions/<pid>.json, the id in
 # a process's arguments, or (Codex) a process holding its rollout file open. If ps or
@@ -37,9 +48,13 @@
 #   AI_TODO_TMUX_SOCKET  private tmux server (tmux -L <name>) for tmux lookups and kills
 #   AI_TODO_HUB_CONF     todo-hub.conf path
 #   AI_TODO_PS / AI_TODO_LSOF  ps / lsof binary to run
+#   AI_TODO_TZ           timezone (e.g. Europe/Sofia) for stats day buckets
+#   AI_TODO_NOW          current time (epoch seconds) for stats --since
+AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_LIB_DIR
 export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/sbin:/sbin:$PATH"
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
 exec python3 - "$@" <<'PY'
+import calendar
 import datetime
 import glob
 import json
@@ -520,16 +535,7 @@ def cmd_delete(args):
 
 
 def linked_session_ids():
-    conf = os.environ.get("AI_TODO_HUB_CONF") or os.path.join(HOME, ".ai-remote", "todo-hub.conf")
-    values = {}
-    try:
-        with open(conf) as f:
-            for line in f:
-                m = re.match(r"\s*(TODO_HUB_URL|TODO_API_TOKEN)=['\"]?([^'\"\n]*)['\"]?\s*$", line)
-                if m:
-                    values[m.group(1)] = m.group(2)
-    except OSError:
-        pass
+    conf, values = read_hub_conf()
     url = values.get("TODO_HUB_URL", "").rstrip("/")
     if not url:
         die(f"no TODO_HUB_URL in {conf}; refusing to prune without knowing which conversations are linked", 65)
@@ -601,9 +607,494 @@ def cmd_prune(args):
     print(f"pruned {len(candidates)} conversation(s)")
 
 
+# --- Stats --------------------------------------------------------------------
+
+ACTIVE_GAP = 600  # seconds; longer pauses are not active time
+FILES_MAX = 200
+EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+CLAUDE_USAGE = (("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
+                ("cache_read_input_tokens", "cache_read_tokens"),
+                ("cache_creation_input_tokens", "cache_creation_tokens"))
+TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
+PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+?)\s*$", re.M)
+TS_RE = re.compile(r"^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(\.\d+)?(Z|[+-]\d\d:?\d\d)?$")
+SESSION_ARG_RE = re.compile(r"^(claude|codex):(.+)$")
+
+
+def now():
+    try:
+        return float(os.environ.get("AI_TODO_NOW") or time.time())
+    except ValueError:
+        return time.time()
+
+
+def parse_ts(value):
+    """Epoch seconds (float) of an ISO 8601 timestamp; no zone means UTC. None if invalid."""
+    m = TS_RE.match(value) if isinstance(value, str) else None
+    if not m:
+        return None
+    y, mo, d, h, mi, s, frac, tz = m.groups()
+    epoch = calendar.timegm((int(y), int(mo), int(d), int(h), int(mi), int(s))) + float(frac or 0)
+    if tz and tz != "Z":
+        sign = 1 if tz[0] == "+" else -1
+        digits = tz[1:].replace(":", "")
+        epoch -= sign * (int(digits[:2]) * 3600 + int(digits[2:]) * 60)
+    return epoch
+
+
+def local_day(epoch):
+    return time.strftime("%Y-%m-%d", time.localtime(epoch))
+
+
+def read_hub_conf():
+    """TODO_HUB_URL / TODO_API_TOKEN from todo-hub.conf (missing file = empty)."""
+    conf = os.environ.get("AI_TODO_HUB_CONF") or os.path.join(HOME, ".ai-remote", "todo-hub.conf")
+    values = {}
+    try:
+        with open(conf) as f:
+            for line in f:
+                m = re.match(r"\s*(TODO_HUB_URL|TODO_API_TOKEN)=['\"]?([^'\"\n]*)['\"]?\s*$", line)
+                if m:
+                    values[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    return conf, values
+
+
+def load_redactor():
+    """The shared ai_todo_redact module next to this script, or None if it is missing."""
+    lib = os.environ.get("AI_TODO_LIB_DIR")
+    if lib and lib not in sys.path:
+        sys.path.insert(0, lib)
+    sys.dont_write_bytecode = True  # no __pycache__ next to the installed scripts
+    try:
+        import ai_todo_redact
+    except ImportError:
+        return None
+    return ai_todo_redact
+
+
+def strings_in(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from strings_in(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from strings_in(v)
+
+
+def patch_files(payload):
+    """Paths in the *** Add/Update/Delete File: headers of a Codex apply_patch call."""
+    if payload.get("type") == "custom_tool_call":
+        texts = [payload.get("input")]
+    else:
+        args = payload.get("arguments")
+        try:
+            args = json.loads(args) if isinstance(args, str) else args
+        except ValueError:
+            pass
+        texts = list(strings_in(args))
+    files = []
+    for text in texts:
+        if isinstance(text, str) and "*** Begin Patch" in text:
+            files += PATCH_FILE_RE.findall(text)
+    return files
+
+
+def display_path(path, cwd):
+    """Relative to cwd when inside it, else ~-relative (or as given when already relative)."""
+    if path.startswith("~/"):
+        return path
+    if not os.path.isabs(path):
+        return os.path.normpath(path)
+    path = os.path.normpath(path)
+    if cwd and (path == cwd or path.startswith(cwd.rstrip("/") + "/")):
+        return os.path.relpath(path, cwd)
+    return tilde(path)
+
+
+class StatsAcc:
+    """Counters for one transcript, in total and per local day."""
+
+    def __init__(self):
+        self.days = {}
+        self.prompts = 0
+        self.turns = 0
+        self.active = 0.0
+        self.tokens = None  # {field: n} once any usage was seen
+        self.first = self.last = self.prev = None
+        self.files = []
+        self.models = []
+
+    def day(self, day):
+        if day not in self.days:
+            self.days[day] = {"prompts": 0, "turns": 0, "tokens": {}, "active": 0.0, "files": []}
+        return self.days[day]
+
+    def tick(self, ts):
+        """A timestamped user/assistant entry. Returns its local day (None without a timestamp)."""
+        if ts is None:
+            return None
+        day = local_day(ts)
+        bucket = self.day(day)
+        self.first = ts if self.first is None else min(self.first, ts)
+        self.last = ts if self.last is None else max(self.last, ts)
+        if self.prev is not None and 0 < ts - self.prev < ACTIVE_GAP:
+            self.active += ts - self.prev
+            bucket["active"] += ts - self.prev
+        self.prev = ts
+        return day
+
+    def prompt(self, day):
+        self.prompts += 1
+        if day:
+            self.day(day)["prompts"] += 1
+
+    def turn(self, day):
+        self.turns += 1
+        if day:
+            self.day(day)["turns"] += 1
+
+    def add_tokens(self, day, values):
+        if self.tokens is None:
+            self.tokens = {}
+        for field, n in values.items():
+            self.tokens[field] = self.tokens.get(field, 0) + n
+            if day:
+                bucket = self.day(day)["tokens"]
+                bucket[field] = bucket.get(field, 0) + n
+
+    def file(self, day, path):
+        if isinstance(path, str) and path:
+            self.files.append(path)
+            if day:
+                self.day(day)["files"].append(path)
+
+    def model(self, name):
+        if isinstance(name, str) and name and not name.startswith("<") and name not in self.models:
+            self.models.append(name)
+
+    def result(self, cwd, fields):
+        """(stats, days) in the POST /api/sessions/stats shape. `fields`: token fields the tool has."""
+        def tokens(source):
+            if self.tokens is None:
+                return {f: None for f in TOKEN_FIELDS}
+            return {f: (int(source.get(f, 0)) if f in fields else None) for f in TOKEN_FIELDS}
+
+        def files(raw):
+            seen = []
+            for path in raw:
+                shown = display_path(path, cwd)
+                if shown not in seen:
+                    seen.append(shown)
+            return seen
+
+        stats = {"prompts": self.prompts, "assistant_turns": self.turns}
+        stats.update(tokens(self.tokens or {}))
+        stats.update({
+            "active_seconds": int(round(self.active)),
+            "first_activity": iso(self.first) if self.first is not None else None,
+            "last_activity": iso(self.last) if self.last is not None else None,
+            "files_touched": files(self.files)[:FILES_MAX],
+            "models": self.models,
+        })
+        days = []
+        for day in sorted(self.days):
+            b = self.days[day]
+            row = {"day": day, "prompts": b["prompts"], "assistant_turns": b["turns"]}
+            row.update(tokens(b["tokens"]))
+            row.update({"active_seconds": int(round(b["active"])), "files_touched": len(files(b["files"]))})
+            days.append(row)
+        return stats, days
+
+
+def effective_cwd(counts, last_seen):
+    """The working directory a conversation is about. Sessions are often started in a parent
+    folder (e.g. ~/programming) and then work in a repo or worktree below it, so a cwd that is
+    an ancestor of other cwds used in the session is dropped when those account for at least
+    25% of its entries. Of the rest, the most used wins (ties: the most recent).
+    Keep in sync with ai-todo-memory."""
+    if not counts:
+        return None
+    total = sum(counts.values())
+
+    def inside(path, folder):
+        return path != folder and path.startswith(folder.rstrip("/") + "/")
+
+    candidates = []
+    for c in counts:
+        below = sum(n for o, n in counts.items() if inside(o, c))
+        if below == 0 or below * 4 < total:
+            candidates.append(c)
+    candidates = candidates or list(counts)
+    return max(candidates, key=lambda c: (counts[c], last_seen.get(c, 0)))
+
+
+def claude_stats(path, acc):
+    """Fill acc from a Claude transcript. Returns (cwd, first real prompt)."""
+    title, usage, ended = "", {}, set()
+    cwds, last_seen = {}, {}
+    for n, entry in enumerate(read_jsonl(path)):
+        if not isinstance(entry, dict) or entry.get("isSidechain"):
+            continue
+        kind = entry.get("type")
+        if kind not in ("user", "assistant"):
+            continue
+        if isinstance(entry.get("cwd"), str) and entry["cwd"]:
+            cwds[entry["cwd"]] = cwds.get(entry["cwd"], 0) + 1
+            last_seen[entry["cwd"]] = n
+        day = acc.tick(parse_ts(entry.get("timestamp")))
+        message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        if kind == "user":
+            text = "" if entry.get("isMeta") else real_prompt(claude_text(message))
+            if text:
+                acc.prompt(day)
+                title = title or text
+            continue
+        # One API response is split over several entries sharing message.id and its usage.
+        mid = message.get("id") or entry.get("uuid") or "entry-%d" % n
+        acc.model(message.get("model"))
+        u = message.get("usage")
+        if isinstance(u, dict):
+            day_of_id, counts = usage.setdefault(mid, (day, {}))
+            for src, dst in CLAUDE_USAGE:
+                v = u.get(src)
+                if isinstance(v, int) and not isinstance(v, bool):
+                    counts[dst] = max(counts.get(dst, 0), v)
+        if message.get("stop_reason") == "end_turn" and mid not in ended:
+            ended.add(mid)
+            acc.turn(day)
+        content = message.get("content")
+        for part in content if isinstance(content, list) else []:
+            if isinstance(part, dict) and part.get("type") == "tool_use" and part.get("name") in EDIT_TOOLS:
+                args = part.get("input") if isinstance(part.get("input"), dict) else {}
+                acc.file(day, args.get("file_path") or args.get("notebook_path"))
+    for day, counts in usage.values():
+        acc.add_tokens(day, counts)
+    return effective_cwd(cwds, last_seen), title
+
+
+def codex_stats(path, acc):
+    """Fill acc from a Codex rollout. Returns (session_id, cwd, first real prompt), or None
+    for files that aren't a conversation (no session_meta) or are a sub-agent thread."""
+    meta, title, current_cwd = None, "", None
+    cwds, last_seen = {}, {}
+    previous = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
+    for i, entry in enumerate(read_jsonl(path)):
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("type")
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        if i == 0:
+            if kind != "session_meta" or not payload.get("id"):
+                return None
+            source = payload.get("source")
+            if isinstance(source, dict) and "subagent" in source:
+                return None
+            meta = payload
+            current_cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else None
+            continue
+        ts = parse_ts(entry.get("timestamp"))
+        if kind == "turn_context":
+            acc.model(payload.get("model"))
+            if isinstance(payload.get("cwd"), str) and payload["cwd"]:
+                current_cwd = payload["cwd"]
+        elif kind == "response_item":
+            day = acc.tick(ts)
+            if current_cwd:
+                cwds[current_cwd] = cwds.get(current_cwd, 0) + 1
+                last_seen[current_cwd] = i
+            ptype = payload.get("type")
+            if ptype == "message" and payload.get("role") == "user":
+                for part in payload.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") == "input_text":
+                        text = real_prompt(part.get("text"))
+                        if text:
+                            acc.prompt(day)
+                            title = title or text
+                            break
+            elif ptype in ("function_call", "custom_tool_call"):
+                for f in patch_files(payload):
+                    acc.file(day, f)
+        elif kind == "event_msg":
+            day = local_day(ts) if ts is not None else None
+            ptype = payload.get("type")
+            if ptype == "task_complete":
+                acc.turn(day)
+            elif ptype == "token_count":
+                info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+                total = info.get("total_token_usage")
+                if isinstance(total, dict):
+                    cached = int(total.get("cached_input_tokens") or 0)
+                    current = {"input_tokens": max(0, int(total.get("input_tokens") or 0) - cached),
+                               "output_tokens": int(total.get("output_tokens") or 0),
+                               "cache_read_tokens": cached}
+                    acc.add_tokens(day, {k: max(0, current[k] - previous[k]) for k in current})
+                    previous = current
+    if not meta:
+        return None
+    return meta["id"], effective_cwd(cwds, last_seen) or meta.get("cwd"), title
+
+
+def strip_credentials(url):
+    """Drop user:pass@ (any user@ for http/https) from a remote URL."""
+    m = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*://)([^/@]*)@(.*)$", url)
+    if m and (":" in m.group(2) or m.group(1).lower().startswith("http")):
+        return m.group(1) + m.group(3)
+    return url
+
+
+def git_out(cwd, *args):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k == "GIT_CONFIG_NOSYSTEM"}
+    try:
+        result = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True,
+                                env=env, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = result.stdout.strip()
+    return out if result.returncode == 0 and out else None
+
+
+def repo_fields(cwd, cache):
+    """(repo_root, repo_url) for an absolute cwd, cached per cwd. A cwd that is gone (e.g. a
+    removed worktree) is looked up from its nearest existing parent, at most 4 levels up and
+    never HOME itself or above; nulls when none is in a repo."""
+    if cwd in cache:
+        return cache[cwd]
+    cwd_key = cwd
+    root = url = None
+    for _ in range(4):
+        if not cwd or os.path.isdir(cwd):
+            break
+        parent = os.path.dirname(cwd)
+        cwd = parent if parent.startswith(HOME + "/") else None
+    if cwd and os.path.isdir(cwd):
+        common = git_out(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if common is None:
+            relative = git_out(cwd, "rev-parse", "--git-common-dir")
+            common = os.path.join(cwd, relative) if relative else None
+        if common:
+            # <main repo>/.git for the main working copy and for linked worktrees alike.
+            root = tilde(os.path.dirname(os.path.normpath(common)))
+            origin = git_out(cwd, "remote", "get-url", "origin")
+            url = strip_credentials(origin) if origin else None
+    cache[cwd_key] = (root, url)
+    return cache[cwd_key]
+
+
+def stats_targets(sessions, tool, since_days):
+    """{(tool, id): newest transcript path} in scope."""
+    found = {}
+
+    def keep(t, sid, path):
+        key = (t, sid)
+        if key not in found or os.path.getmtime(path) > os.path.getmtime(found[key]):
+            found[key] = path
+
+    if sessions:
+        for t, sid in sessions:
+            one = find_one(t, sid)
+            for path in (one or {}).get("paths", []):
+                keep(t, sid, path)
+        return found
+    cutoff = now() - since_days * 86400
+    if tool in (None, "claude"):
+        for path in glob.glob(os.path.join(CLAUDE_PROJECTS, "*", "*.jsonl")):
+            if os.path.getmtime(path) >= cutoff:
+                keep("claude", os.path.basename(path)[: -len(".jsonl")], path)
+    if tool in (None, "codex"):
+        for path in glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*.jsonl"), recursive=True):
+            if os.path.getmtime(path) >= cutoff:
+                keep("codex", path, path)  # the real id comes from session_meta
+    return found
+
+
+def session_stats(tool, sid, path, redactor, secrets, repo_cache):
+    acc = StatsAcc()
+    if tool == "claude":
+        cwd, title = claude_stats(path, acc)
+        fields = TOKEN_FIELDS
+    else:
+        parsed = codex_stats(path, acc)
+        if parsed is None:
+            return None
+        sid, cwd, title = parsed
+        fields = ("input_tokens", "output_tokens", "cache_read_tokens")
+    if acc.prompts == 0:
+        return None
+    cwd_abs = os.path.normpath(os.path.expanduser(cwd)) if isinstance(cwd, str) and cwd else None
+    stats, days = acc.result(cwd_abs, fields)
+    repo_root, repo_url = repo_fields(cwd_abs, repo_cache)
+    return {
+        "tool": tool,
+        "session_id": sid,
+        "cwd": tilde(cwd_abs),
+        "title": redactor.redact(title, secrets)[:TITLE_MAX] if redactor else None,
+        "repo_root": repo_root,
+        "repo_url": repo_url,
+        "stats": stats,
+        "days": days,
+    }
+
+
+def cmd_stats(args):
+    usage = ("usage: ai-todo-sessions stats --json [--since DAYS] [--session <claude|codex>:<id>]... "
+             "[--tool claude|codex]")
+    as_json, since, tool, sessions = False, 1.0, None, []
+    while args:
+        a = args.pop(0)
+        if a == "--json":
+            as_json = True
+        elif a == "--since" and args:
+            try:
+                since = float(args.pop(0).rstrip("d"))
+            except ValueError:
+                die(usage, 64)
+        elif a == "--tool" and args:
+            tool = args.pop(0)
+        elif a == "--session" and args:
+            m = SESSION_ARG_RE.match(args.pop(0))
+            if not m or not ID_RE.match(m.group(2)):
+                die(usage, 64)
+            sessions.append((m.group(1), m.group(2)))
+        else:
+            die(usage, 64)
+    if tool not in (None, "claude", "codex"):
+        die(f"unknown tool: {tool}", 64)
+    if tool:
+        sessions = [s for s in sessions if s[0] == tool]
+    if os.environ.get("AI_TODO_TZ"):
+        os.environ["TZ"] = os.environ["AI_TODO_TZ"]
+        time.tzset()
+    redactor = load_redactor()
+    secrets = []
+    if redactor:
+        secrets = redactor.secret_values_from_env(os.environ)
+        token = read_hub_conf()[1].get("TODO_API_TOKEN")
+        if token:
+            secrets.append(token)
+    else:
+        print("warning: ai_todo_redact.py not found next to ai-todo-sessions; titles left out", file=sys.stderr)
+    targets = stats_targets(sessions, tool, since)
+    rows, repo_cache = [], {}
+    for (t, sid), path in sorted(targets.items(), key=lambda kv: os.path.getmtime(kv[1]), reverse=True):
+        row = session_stats(t, sid, path, redactor, secrets, repo_cache)
+        if row and all(r["session_id"] != row["session_id"] or r["tool"] != row["tool"] for r in rows):
+            rows.append(row)
+    if as_json:
+        print(json.dumps(rows, ensure_ascii=False))
+        return
+    for r in rows:
+        s = r["stats"]
+        print(f'{r["tool"]:<6} {r["session_id"]}  {r["cwd"]:<32} {s["prompts"]:>4}p {s["assistant_turns"]:>4}t '
+              f'{s["active_seconds"] // 60:>5}min  {(r["title"] or "")[:50]}')
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
-        die("usage: ai-todo-sessions list|delete|prune ... (see the header of this script)", 64)
+        die("usage: ai-todo-sessions list|delete|prune|stats ... (see the header of this script)", 64)
     command, rest = argv[0], list(argv[1:])
     if command == "list":
         cmd_list(rest)
@@ -611,6 +1102,8 @@ def main(argv):
         cmd_delete(rest)
     elif command == "prune":
         cmd_prune(rest)
+    elif command == "stats":
+        cmd_stats(rest)
     else:
         die(f"unknown command: {command}", 64)
 

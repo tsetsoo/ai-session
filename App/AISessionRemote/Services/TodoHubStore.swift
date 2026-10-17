@@ -13,9 +13,19 @@ final class TodoHubStore {
     private(set) var conversations: [String: Conversation] = [:]
     private(set) var sectionComputers: [TodoSection: SectionComputer] = [:]
     private(set) var computers: [Computer] = []
+    /// Ordered by name. Older hubs without projects leave this empty.
+    private(set) var projects: [Project] = []
+    /// Folders with conversations that could become projects.
+    private(set) var suggestions: [ProjectSuggestion] = []
+    /// Bumped after every successful refresh (including live updates), so screens that fetch
+    /// their own data (project pages, the memories panel) know to reload.
+    private(set) var revision = 0
     /// True while showing the cached snapshot because the hub could not be reached.
     private(set) var isOffline = false
     private(set) var cachedAt: Date?
+    /// Conversation statuses at the last refresh (`nil` before the first one): the baseline
+    /// for "turned waiting" alerts.
+    private var lastStatuses: [String: ConversationStatus]?
     private(set) var isLoading = false
     private(set) var hasLoadedOnce = false
     /// Modal error for something the user just did. Background refreshes never set it.
@@ -44,11 +54,31 @@ final class TodoHubStore {
         self.cache = cache
         if let snapshot = cache.load() {
             apply(todos: snapshot.todos, conversations: snapshot.conversations)
+            projects = snapshot.projects
             cachedAt = snapshot.savedAt
         }
     }
 
-    var isConfigured: Bool { TodoHubSettings.isConfigured }
+    var isConfigured: Bool {
+        #if DEBUG
+        if demo != nil { return true }
+        #endif
+        return TodoHubSettings.isConfigured
+    }
+
+    #if DEBUG
+    /// Canned data for screenshots (`-demoProjects`); no hub is contacted.
+    private(set) var demo: TodoHubDemo?
+
+    func loadDemo(_ demo: TodoHubDemo) {
+        self.demo = demo
+        apply(todos: demo.todos, conversations: demo.conversations)
+        projects = demo.projects
+        suggestions = demo.suggestions
+        computers = demo.computers
+        hasLoadedOnce = true
+    }
+    #endif
 
     func todos(in section: TodoSection) -> [Todo] {
         todos
@@ -62,6 +92,9 @@ final class TodoHubStore {
     // MARK: Loading
 
     func refresh(trigger: RefreshTrigger = .user) async {
+        #if DEBUG
+        if demo != nil { revision += 1; return }
+        #endif
         guard let client = TodoHubSettings.makeClient() else { return }
         refreshGeneration += 1
         let generation = refreshGeneration
@@ -75,15 +108,24 @@ final class TodoHubStore {
             async let conversations = client.listConversations()
             async let mappings = client.listSectionComputers()
             async let computers = client.listComputers()
+            // Optional: a hub from before projects answers 404 here, which must not break
+            // the todo list. On any failure the last known projects stay.
+            async let projects = try? client.listProjects()
+            async let suggestions = try? client.projectSuggestions()
             let (t, c, m, comps) = try await (todos, conversations, mappings, computers)
+            let (p, sugg) = await (projects, suggestions)
             // A refresh that started later has newer data; don't overwrite it.
             guard generation == refreshGeneration else { return }
             apply(todos: t, conversations: c)
+            alertNewlyWaiting(todos: t, conversations: c)
             sectionComputers = Dictionary(m.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new })
             self.computers = comps
+            if let p { self.projects = p }
+            if let sugg { self.suggestions = sugg }
             isOffline = false
             backgroundIssue = nil
-            let snapshot = TodoHubSnapshot(todos: t, conversations: c)
+            revision += 1
+            let snapshot = TodoHubSnapshot(todos: t, conversations: c, projects: self.projects)
             try? cache.save(snapshot)
             cachedAt = snapshot.savedAt
             if wantsLiveUpdates && eventsTask == nil { startEventsTask() }
@@ -129,8 +171,25 @@ final class TodoHubStore {
         eventsTask = nil
     }
 
+    /// Local "needs you" alerts for conversations that turned `waiting` since the last refresh.
+    /// The coordinator skips them when the server's push covers this device.
+    private func alertNewlyWaiting(todos: [Todo], conversations: [Conversation]) {
+        let statuses = Dictionary(conversations.map { ($0.todoId, $0.status) }, uniquingKeysWith: { _, new in new })
+        for todoId in NotificationPolicy.newlyWaiting(previous: lastStatuses, current: statuses) {
+            guard let conversation = conversations.first(where: { $0.todoId == todoId }) else { continue }
+            NotificationCenterCoordinator.shared.postWaiting(
+                todoId: todoId,
+                sessionId: conversation.sessionId,
+                title: todos.first(where: { $0.id == todoId })?.title ?? "Conversation",
+                body: "Needs you"
+            )
+        }
+        lastStatuses = statuses
+    }
+
     /// Call after the hub settings change.
     func reconnect() async {
+        lastStatuses = nil
         stopLiveUpdates()
         await refresh()
         startLiveUpdates()
@@ -138,9 +197,20 @@ final class TodoHubStore {
 
     // MARK: Todos
 
-    func createTodo(section: TodoSection, title: String) async {
+    func createTodo(section: TodoSection, title: String, projectId: String? = nil) async {
         await mutate { client in
-            _ = try await client.createTodo(CreateTodoRequest(section: section, title: title))
+            _ = try await client.createTodo(CreateTodoRequest(section: section, title: title, projectId: projectId))
+        }
+    }
+
+    /// Assigns the todo to a project, or clears it (`nil`).
+    func setProject(_ projectId: String?, for todo: Todo) async {
+        guard projectId != todo.projectId else { return }
+        await mutate { client in
+            _ = try await client.updateTodo(
+                id: todo.id,
+                UpdateTodoRequest(projectId: projectId.map(ProjectChange.set) ?? .clear)
+            )
         }
     }
 
@@ -222,15 +292,31 @@ final class TodoHubStore {
         }
     }
 
-    /// Creates a todo already linked to a conversation found on `computer`.
-    func createTodo(from remote: RemoteConversation, on computer: Computer, section: TodoSection, title: String) async throws {
+    /// Creates a todo already linked to a conversation found on `computer`, optionally
+    /// putting it in a project (the create endpoint has no project field, so that's a PATCH).
+    func createTodo(
+        from remote: RemoteConversation,
+        on computer: Computer,
+        section: TodoSection,
+        title: String,
+        projectId: String? = nil
+    ) async throws {
         try await perform { client in
             let created = try await client.createTodoFromConversation(TodoFromConversationRequest(
                 section: section, title: title, computerId: computer.id,
                 tool: remote.tool, sessionId: remote.sessionId, cwd: remote.cwd
             ))
             conversations[created.todo.id] = created.conversation
+            if let projectId, created.todo.projectId != projectId {
+                _ = try await client.updateTodo(id: created.todo.id, UpdateTodoRequest(projectId: .set(projectId)))
+            }
         }
+    }
+
+    /// The section this computer serves, when exactly one does.
+    func defaultSection(for computer: Computer) -> TodoSection {
+        let sections = sectionComputers.values.filter { $0.computer.id == computer.id }.map(\.section)
+        return sections.count == 1 ? sections[0] : .i
     }
 
     /// Deletes the conversation on the computer (ending its tmux session first), then unlinks
@@ -249,14 +335,127 @@ final class TodoHubStore {
         Set(conversations.values.map { "\($0.tool)/\($0.sessionId)" })
     }
 
+    // MARK: Projects
+    //
+    // Mutations throw: they run from sheets and pages that show their own errors (a nesting
+    // 409 carries the conflicting project's name, which is shown as is).
+
+    func project(id: String?) -> Project? {
+        guard let id else { return nil }
+        return projects.first { $0.id == id }
+    }
+
+    /// Projects grouped by computer (computers by name, projects by name).
+    var projectsByComputer: [(computer: Computer, projects: [Project])] {
+        let byName: (Project, Project) -> Bool = { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return Dictionary(grouping: projects, by: \.computer.id).values
+            .compactMap { items -> (computer: Computer, projects: [Project])? in
+                guard let first = items.first else { return nil }
+                return (first.computer, items.sorted(by: byName))
+            }
+            .sorted { $0.computer.name.localizedStandardCompare($1.computer.name) == .orderedAscending }
+    }
+
+    /// The project's todos, open first, newest first.
+    func todos(inProject projectId: String) -> [Todo] {
+        todos
+            .filter { $0.projectId == projectId }
+            .sorted { lhs, rhs in
+                if lhs.completed != rhs.completed { return !lhs.completed }
+                return lhs.createdAt > rhs.createdAt
+            }
+    }
+
+    @discardableResult
+    func createProject(_ request: CreateProjectRequest) async throws -> Project? {
+        var created: Project?
+        try await perform { client in created = try await client.createProject(request) }
+        return created
+    }
+
+    func updateProject(_ project: Project, _ request: UpdateProjectRequest) async throws {
+        try await perform { client in _ = try await client.updateProject(id: project.id, request) }
+    }
+
+    func deleteProject(_ project: Project) async throws {
+        try await perform { client in try await client.deleteProject(id: project.id) }
+    }
+
+    // MARK: Sessions, stats and memories (fetched per screen, not cached)
+
+    func sessions(projectId: String) async throws -> [HubSession] {
+        #if DEBUG
+        if let demo { return demo.sessions.filter { $0.projectId == projectId } }
+        #endif
+        return try await requireClient().listSessions(projectId: projectId)
+    }
+
+    func weekly(projectId: String?, weekStart: String?) async throws -> WeeklyStats {
+        #if DEBUG
+        if let demo { return demo.weekly(weekStart: weekStart) }
+        #endif
+        return try await requireClient().weeklyStats(weekStart: weekStart, projectId: projectId)
+    }
+
+    /// A project's memories, or a todo's when `projectId` is nil.
+    func memories(projectId: String?, todoId: String? = nil, includeArchived: Bool = false) async throws -> [Memory] {
+        #if DEBUG
+        if let demo {
+            return demo.memories.filter {
+                (projectId == nil || $0.projectId == projectId)
+                    && (todoId == nil || $0.todoId == todoId)
+                    && (includeArchived || !$0.archived)
+            }
+        }
+        #endif
+        return try await requireClient().listMemories(MemoryQuery(
+            projectId: projectId, todoId: projectId == nil ? todoId : nil,
+            includeArchived: includeArchived, limit: 1000
+        ))
+    }
+
+    func createMemory(_ request: CreateMemoryRequest) async throws {
+        try await perform { client in _ = try await client.createMemory(request) }
+    }
+
+    func updateMemory(_ memory: Memory, _ request: UpdateMemoryRequest) async throws {
+        try await perform { client in _ = try await client.updateMemory(id: memory.id, request) }
+    }
+
+    func deleteMemory(_ memory: Memory) async throws {
+        try await perform { client in try await client.deleteMemory(id: memory.id) }
+    }
+
+    /// Overrides the session's project; `nil` = no project.
+    func setProject(_ projectId: String?, for session: HubSession) async throws {
+        try await perform { client in
+            try await client.setSessionProject(tool: session.tool, sessionId: session.sessionId, projectId: projectId)
+        }
+    }
+
+    /// Drops the override and lets the hub match the session by folder again.
+    func matchAutomatically(_ session: HubSession) async throws {
+        try await perform { client in
+            try await client.setSessionProjectAuto(tool: session.tool, sessionId: session.sessionId)
+        }
+    }
+
     // MARK: Helpers
 
     private struct OfflineChangeError: LocalizedError {
         var errorDescription: String? { "The todo server is unreachable. Changes are disabled while offline." }
     }
 
+    private func requireClient() throws -> TodoHubClient {
+        guard let client = TodoHubSettings.makeClient() else { throw TodoHubError.invalidBaseURL }
+        return client
+    }
+
     /// Runs a hub mutation, then refreshes. Throws the mutation's error.
     private func perform(_ body: (TodoHubClient) async throws -> Void) async throws {
+        #if DEBUG
+        if demo != nil { return } // screenshots only: nothing to change
+        #endif
         guard let client = TodoHubSettings.makeClient() else { throw TodoHubError.invalidBaseURL }
         guard !isOffline else { throw OfflineChangeError() }
         try await body(client)
