@@ -113,4 +113,119 @@ final class AppModelTests: XCTestCase {
         // The newest refresh gave no answer and none runs: waiting selections ask again.
         XCTAssertEqual(model.livenessAbandoned, 1)
     }
+
+    // MARK: "Needs you" alerts
+
+    /// Records what the model would post or buzz instead of reaching the coordinator.
+    private final class AlertRecorder {
+        var posted: [WaitingAlert] = []
+        var feedbacks = 0
+        var enabled = true
+        var frontmost: String?
+
+        var alerts: WaitingAlerts {
+            WaitingAlerts(
+                isEnabled: { [unowned self] in enabled },
+                frontmostTodoID: { [unowned self] in frontmost },
+                post: { [unowned self] in posted.append($0) },
+                feedback: { [unowned self] in feedbacks += 1 }
+            )
+        }
+    }
+
+    private func makeAlertingModel(_ recorder: AlertRecorder) -> AppModel {
+        let cache = TodoHubCache(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("appmodel-\(UUID().uuidString).json"))
+        return AppModel(store: TodoHubStore(cache: cache), demo: false, alerts: recorder.alerts)
+    }
+
+    /// The demo conversations with some statuses changed (t1 and t3 carry status messages).
+    private func conversations(_ changes: [String: ConversationStatus] = [:]) -> [Conversation] {
+        DemoFixtures.conversations.map { conversation in
+            var conversation = conversation
+            if let status = changes[conversation.todoId] { conversation.status = status }
+            return conversation
+        }
+    }
+
+    private func fetched(_ changes: [String: ConversationStatus], into model: AppModel) {
+        model.store.applyFetched(todos: DemoFixtures.todos, conversations: conversations(changes))
+    }
+
+    private func assertNoConversationText(_ alerts: [WaitingAlert], file: StaticString = #filePath, line: UInt = #line) {
+        let messages = DemoFixtures.conversations.compactMap(\.statusMessage)
+        XCTAssertFalse(messages.isEmpty, "the fixtures must carry status messages", file: file, line: line)
+        for alert in alerts {
+            XCTAssertEqual(alert.body, "Needs you", file: file, line: line)
+            for message in messages {
+                XCTAssertFalse(alert.title.contains(message), file: file, line: line)
+                XCTAssertFalse(alert.body.contains(message), file: file, line: line)
+            }
+        }
+    }
+
+    func testNotifiesOnlyOnTransition() {
+        let recorder = AlertRecorder()
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        XCTAssertTrue(recorder.posted.isEmpty, "nothing turned waiting")
+
+        fetched(["t1": .waiting, "t3": .busy], into: model)
+        XCTAssertEqual(recorder.posted.map(\.todoId), ["t1"])
+        XCTAssertEqual(recorder.posted.first?.title, "Fix the rate import")
+        XCTAssertEqual(recorder.posted.first?.sessionId, "demo-t1")
+
+        fetched(["t1": .waiting, "t3": .busy], into: model)
+        XCTAssertEqual(recorder.posted.count, 1, "still waiting is not a new transition")
+
+        fetched(["t1": .busy, "t3": .waiting], into: model)
+        fetched(["t1": .waiting, "t3": .waiting], into: model)
+        XCTAssertEqual(recorder.posted.map(\.todoId), ["t1", "t3", "t1"])
+        assertNoConversationText(recorder.posted)
+        XCTAssertEqual(recorder.feedbacks, 0)
+    }
+
+    func testFirstSnapshotAfterLaunchAndReconnectNeverNotifies() {
+        let recorder = AlertRecorder()
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .waiting, "t3": .waiting], into: model)
+        XCTAssertTrue(recorder.posted.isEmpty, "already waiting at launch")
+
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        // Reconnecting to the hub (settings) or the live-update socket dropping.
+        model.store.startNewBaseline()
+        fetched(["t1": .waiting, "t3": .busy], into: model)
+        XCTAssertTrue(recorder.posted.isEmpty, "waiting by the time we reconnected")
+
+        fetched(["t1": .waiting, "t3": .waiting], into: model)
+        XCTAssertEqual(recorder.posted.map(\.todoId), ["t3"])
+        assertNoConversationText(recorder.posted)
+    }
+
+    func testSuppressedWhenFrontmostUsesHaptic() {
+        let recorder = AlertRecorder()
+        recorder.frontmost = "t1"
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .waiting, "t3": .waiting], into: model)
+        XCTAssertEqual(recorder.posted.map(\.todoId), ["t3"], "the conversation on screen is not alerted")
+        XCTAssertEqual(recorder.feedbacks, 1)
+        assertNoConversationText(recorder.posted)
+    }
+
+    func testSettingsToggleGatesAlertsAndHaptic() {
+        let recorder = AlertRecorder()
+        recorder.enabled = false
+        recorder.frontmost = "t1"
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .waiting, "t3": .waiting], into: model)
+        XCTAssertTrue(recorder.posted.isEmpty)
+        XCTAssertEqual(recorder.feedbacks, 0)
+        // Switched off, the baseline still moves on: switching on later doesn't alert old flips.
+        recorder.enabled = true
+        fetched(["t1": .waiting, "t3": .waiting], into: model)
+        XCTAssertTrue(recorder.posted.isEmpty)
+    }
 }

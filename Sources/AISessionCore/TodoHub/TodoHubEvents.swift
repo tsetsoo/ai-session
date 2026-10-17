@@ -3,7 +3,16 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// Listens on the hub's `/api/ws` and yields one value per server-side change. The server
+/// Why consumers should re-fetch.
+public enum TodoHubEvent: Equatable, Sendable {
+    /// The server changed something.
+    case changed
+    /// The socket dropped and is reconnecting: changes may have been missed. The next snapshot
+    /// is a fresh baseline (no "turned waiting" alerts for what happened meanwhile).
+    case reconnected
+}
+
+/// Listens on the hub's `/api/ws` and yields one event per server-side change. The server
 /// sends a bare `refresh` text frame on every mutation; consumers re-fetch what they show.
 ///
 /// Reconnects with exponential backoff (1s → 30s) until the stream's consumer stops
@@ -13,7 +22,7 @@ public enum TodoHubEvents {
         baseURL: URL,
         token: String?,
         session: URLSession = .shared
-    ) -> AsyncStream<Void> {
+    ) -> AsyncStream<TodoHubEvent> {
         AsyncStream { continuation in
             let task = Task {
                 var delay: UInt64 = 1
@@ -25,7 +34,7 @@ public enum TodoHubEvents {
                         while !Task.isCancelled {
                             _ = try await socket.receive()
                             delay = 1
-                            continuation.yield()
+                            continuation.yield(.changed)
                         }
                     } catch {
                         socket.cancel(with: .goingAway, reason: nil)
@@ -34,7 +43,7 @@ public enum TodoHubEvents {
                     // A reconnect may have missed changes: ask consumers to refresh once more.
                     try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
                     delay = min(delay * 2, 30)
-                    continuation.yield()
+                    continuation.yield(.reconnected)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }

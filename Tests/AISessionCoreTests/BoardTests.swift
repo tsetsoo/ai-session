@@ -98,4 +98,15 @@ final class BoardTests: XCTestCase {
         // A conversation new since the last snapshot that is already waiting.
         XCTAssertEqual(StatusTransitions.newlyWaiting(previous: [:], current: [a]), [a])
     }
+
+    /// Only a move *into* waiting counts: idle/busy → waiting and a new, already-waiting
+    /// conversation do; still waiting and moves elsewhere don't.
+    func testNewlyWaitingOnlyOnTransitionIntoWaiting() {
+        let a = conv("a", .waiting), b = conv("b", .waiting), c = conv("c", .busy), d = conv("d", .waiting)
+        XCTAssertEqual(
+            StatusTransitions.newlyWaiting(previous: ["a": .busy, "b": .waiting, "c": .idle], current: [a, b, c, d]),
+            [a, d]
+        )
+        XCTAssertEqual(StatusTransitions.newlyWaiting(previous: ["a": .waiting], current: [conv("a", .idle)]), [])
+    }
 }

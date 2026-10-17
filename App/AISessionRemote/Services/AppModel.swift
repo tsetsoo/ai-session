@@ -17,6 +17,42 @@ enum AttachReadiness: Equatable {
     case unknown
 }
 
+/// A "needs you" alert: the todo title and "Needs you", never a status message or any
+/// conversation text, so it matches what a push can carry.
+struct WaitingAlert: Equatable {
+    let todoId: String
+    let sessionId: String
+    let title: String
+    let body: String
+}
+
+/// Where a conversation that turned `waiting` goes. Tests inject it.
+@MainActor
+struct WaitingAlerts {
+    /// Settings → Notifications ("notify.needsYou"): off, neither alerts nor buzzes.
+    var isEnabled: () -> Bool
+    /// The conversation on screen while the app is active (`nil`: none).
+    var frontmostTodoID: () -> String?
+    var post: (WaitingAlert) -> Void
+    /// The buzz instead of an alert for the conversation on screen.
+    var feedback: () -> Void
+
+    /// The coordinator owns permission, push-vs-local dedup and the Mac rule; its presence is
+    /// what `VisiblePresence` reported, cleared while the app is inactive.
+    static var live: WaitingAlerts {
+        WaitingAlerts(
+            isEnabled: { NotificationCenterCoordinator.shared.isEnabled },
+            frontmostTodoID: { NotificationCenterCoordinator.shared.visibleTodoId },
+            post: { alert in
+                NotificationCenterCoordinator.shared.postWaiting(
+                    todoId: alert.todoId, sessionId: alert.sessionId, title: alert.title, body: alert.body
+                )
+            },
+            feedback: { PlatformSupport.needsYouFeedback() }
+        )
+    }
+}
+
 /// App-level state shared by the whole UI: the hub store, which tmux sessions are really alive
 /// on each computer, and the navigation selection. Created once in `AISessionRemoteApp`.
 @MainActor
@@ -55,6 +91,10 @@ final class AppModel {
 
     /// Replaces the SSH listing; tests inject it. Production builds it from the hosts.
     private let listTmuxOverride: TmuxListing?
+    private let alerts: WaitingAlerts
+    /// Conversation statuses at the last refresh (`nil` until the first one after launch or a
+    /// reconnect): the baseline for "turned waiting" alerts.
+    private var lastStatuses: [String: ConversationStatus]?
     /// Incremented per refresh; only the latest, uncancelled one may publish its result.
     private var livenessGeneration = 0
     /// The generation whose result is in `liveTmux` (0: none yet).
@@ -70,10 +110,13 @@ final class AppModel {
     }
 
     #if DEBUG
-    init(store: TodoHubStore? = nil, demo: Bool = DemoFixtures.isEnabled, listTmux: TmuxListing? = nil) {
+    init(store: TodoHubStore? = nil, demo: Bool = DemoFixtures.isEnabled, listTmux: TmuxListing? = nil,
+         alerts: WaitingAlerts? = nil) {
         let store = store ?? TodoHubStore()
         self.store = store
         self.listTmuxOverride = listTmux
+        self.alerts = alerts ?? .live
+        observeRefreshes()
         if demo {
             store.seedForDemo(
                 todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
@@ -92,12 +135,43 @@ final class AppModel {
         }
     }
     #else
-    init(store: TodoHubStore? = nil, listTmux: TmuxListing? = nil) {
+    init(store: TodoHubStore? = nil, listTmux: TmuxListing? = nil, alerts: WaitingAlerts? = nil) {
         let store = store ?? TodoHubStore()
         self.store = store
         self.listTmuxOverride = listTmux
+        self.alerts = alerts ?? .live
+        observeRefreshes()
     }
     #endif
+
+    // MARK: "Needs you" alerts
+
+    private func observeRefreshes() {
+        store.onRefresh = { [weak self] fetched in self?.alertNewlyWaiting(fetched) }
+    }
+
+    /// The one place a conversation turning `waiting` is announced: an alert through the
+    /// coordinator, or only a buzz when that conversation is on screen in the active app.
+    private func alertNewlyWaiting(_ fetched: TodoHubStore.Fetched) {
+        let previous = fetched.isBaseline ? nil : lastStatuses
+        lastStatuses = Dictionary(fetched.conversations.map { ($0.todoId, $0.status) },
+                                  uniquingKeysWith: { _, new in new })
+        let flipped = StatusTransitions.newlyWaiting(previous: previous, current: fetched.conversations)
+        guard !flipped.isEmpty, alerts.isEnabled() else { return }
+        let frontmost = alerts.frontmostTodoID()
+        for conversation in flipped {
+            if conversation.todoId == frontmost {
+                alerts.feedback()
+                continue
+            }
+            alerts.post(WaitingAlert(
+                todoId: conversation.todoId,
+                sessionId: conversation.sessionId,
+                title: fetched.todos.first { $0.id == conversation.todoId }?.title ?? "Conversation",
+                body: "Needs you"
+            ))
+        }
+    }
 
     /// Whether the todo server is set up. Demo launches always are.
     var isConfigured: Bool {
