@@ -31,6 +31,7 @@ struct AISessionRemoteApp: App {
             RootView()
                 .environment(model)
                 // Notification permission is asked only from Settings → Notifications.
+                .onAppear { model.installSystemEntryPoints() }
                 .onReceive(NotificationCenter.default.publisher(
                     for: PlatformSupport.didEnterBackgroundNotification
                 )) { _ in

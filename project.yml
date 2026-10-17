@@ -37,6 +37,11 @@ targets:
         # In-app dictation in the quick-add field.
         NSMicrophoneUsageDescription: Dictate new todos.
         NSSpeechRecognitionUsageDescription: Turns your dictation into todo text.
+        # Home-screen quick action; AppModel routes it through AppDelegate.onShortcutItem.
+        UIApplicationShortcutItems:
+          - UIApplicationShortcutItemType: com.aisessionremote.newTodo
+            UIApplicationShortcutItemTitle: New Todo
+            UIApplicationShortcutItemIconSymbolName: plus
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

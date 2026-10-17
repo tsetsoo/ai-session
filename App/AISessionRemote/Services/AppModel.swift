@@ -1,6 +1,9 @@
 import AISessionCore
 import Foundation
 import Observation
+#if os(iOS)
+import UIKit
+#endif
 
 /// App-level state shared by the whole UI: the hub store, which tmux sessions are really alive
 /// on each computer, and the navigation selection. Created once in `AISessionRemoteApp`.
@@ -23,6 +26,9 @@ final class AppModel {
     var poppedOut: Set<String> = []
     /// Set by notification taps and the palette.
     var pendingOpenTodoID: String?
+    /// The Home-screen "New Todo" quick action: show the Todos list and focus quick-add.
+    /// The quick-add field clears it once focused.
+    var quickAddFocusRequested = false
 
     /// Replaces the SSH listing; tests inject it. Production builds it from the hosts.
     private let listTmuxOverride: TmuxListing?
@@ -55,6 +61,35 @@ final class AppModel {
         self.listTmuxOverride = listTmux
     }
     #endif
+
+    /// `UIApplicationShortcutItems` type of the Home-screen "New Todo" quick action.
+    static let newTodoShortcutType = "com.aisessionremote.newTodo"
+
+    /// Routes notification taps (`pendingOpenTodoID`) and the Home-screen quick action
+    /// (`quickAddFocusRequested`) into the shells. The main window calls it; repeating is
+    /// harmless. Setting the hooks replays a tap or quick action that launched the app.
+    func installSystemEntryPoints() {
+        NotificationCenterCoordinator.shared.onOpenTodo = { [weak self] todoId in
+            Task { await self?.openFromNotification(todoId) }
+        }
+        #if os(iOS)
+        AppDelegate.onShortcutItem = { [weak self] item in
+            guard item.type == Self.newTodoShortcutType else { return false }
+            MainActor.assumeIsolated { self?.quickAddFocusRequested = true }
+            return true
+        }
+        #endif
+    }
+
+    /// A tapped "needs you" notification: open that todo's conversation, loading the todos
+    /// first if it isn't known yet.
+    func openFromNotification(_ todoId: String) async {
+        if !store.todos.contains(where: { $0.id == todoId }) {
+            await store.refresh()
+        }
+        guard store.todos.contains(where: { $0.id == todoId }) else { return }
+        pendingOpenTodoID = todoId
+    }
 
     /// Lists tmux sessions once per hub computer, in parallel. A computer with no matching
     /// host, or whose listing fails, is left out of `liveTmux`.

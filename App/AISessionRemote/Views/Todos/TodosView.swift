@@ -29,11 +29,11 @@ struct TodosView: View {
                     conversationDestination(todoID)
                 }
         }
-        .task {
-            // Tapping a "needs you" notification opens that todo's conversation.
-            NotificationCenterCoordinator.shared.onOpenTodo = { todoId in
-                Task { await openFromNotification(todoId) }
-            }
+        // A tapped "needs you" notification (routed by AppModel) pushes that todo's frame.
+        .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
+            guard let todoID else { return }
+            model.pendingOpenTodoID = nil
+            openTodoID = todoID
         }
         .sheet(isPresented: $showingSettings) {
             TodoHubSettingsView { Task { await store.reconnect() } }
@@ -232,15 +232,6 @@ struct TodosView: View {
     }
 
     // MARK: Conversations
-
-    /// A tapped notification pushes that todo's conversation frame, like a tap on its row.
-    private func openFromNotification(_ todoId: String) async {
-        if !store.todos.contains(where: { $0.id == todoId }) {
-            await store.refresh()
-        }
-        guard store.todos.contains(where: { $0.id == todoId }) else { return }
-        openTodoID = todoId
-    }
 
     private func deleteConversation(of todo: Todo) {
         guard let conversation = store.conversations[todo.id] else { return }

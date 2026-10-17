@@ -134,6 +134,18 @@ struct PhoneShell: View {
             #endif
         }
         .onChange(of: tab) { _, _ in applyDefaultFilter() }
+        // A tapped "needs you" notification (routed by AppModel).
+        .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
+            guard let todoID else { return }
+            model.pendingOpenTodoID = nil
+            openFromNotification(todoID)
+        }
+        // The Home-screen "New Todo" quick action; QuickAddBar takes the focus.
+        .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
+            guard requested else { return }
+            tab = .todos
+            todosPath = []
+        }
         .task { await startSync() }
     }
 
@@ -241,6 +253,17 @@ struct PhoneShell: View {
             }
         case let .project(id):
             ProjectDetailView(projectId: id, store: store) { path.wrappedValue.append(.todo($0.id)) }
+        }
+    }
+
+    /// Pushes the todo's frame on Todos when that's the tab on screen, else on Conversations,
+    /// in place of whatever that tab had open.
+    private func openFromNotification(_ todoID: String) {
+        if tab == .todos {
+            todosPath = [.todo(todoID)]
+        } else {
+            tab = .conversations
+            conversationsPath = [.todo(todoID)]
         }
     }
 
