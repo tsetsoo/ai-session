@@ -3,22 +3,28 @@
 #
 #   ~/.ai-remote/bin/ai-todo-open    started by the iPhone / Mac app over SSH
 #   ~/.ai-remote/bin/ai-todo-hook    Claude Code hook reporting busy/waiting/idle
-#   ~/.ai-remote/bin/ai-todo-sessions  list / delete / prune Claude + Codex conversations
+#   ~/.ai-remote/bin/ai-todo-sessions  list / delete / prune / stats of Claude + Codex conversations
 #   ~/.ai-remote/bin/ai-todo-codex-notify  Codex `notify` program reporting idle
-#   ~/.ai-remote/todo-hub.conf       todo-server URL + API token (mode 600)
+#   ~/.ai-remote/bin/ai-todo-memory  memory extraction, stats push and digests (+ ai_todo_redact.py)
+#   ~/.ai-remote/memory-state/       ai-todo-memory's offsets, caches and log (mode 700)
+#   ~/.ai-remote/todo-hub.conf       todo-server URL, API token, computer id (mode 600)
 #   ~/.ai-remote/tmux.conf           tmux settings, sourced from ~/.tmux.conf
 #   ~/.claude/settings.json          hooks merged in; other settings untouched
 #   ~/.codex/config.toml             `notify` added only if none is set (see below)
+#   ~/Library/LaunchAgents/com.ai-remote.todo-memory.plist  `ai-todo-memory nightly` at 03:30 (macOS)
 #
 # Usage:
-#   install.sh [--hub-url URL] [--token TOKEN] [--chain-codex-notify] [--dry-run]
-#   install.sh --uninstall [--dry-run]
+#   install.sh [--hub-url URL] [--token TOKEN] [--computer-id ID] [--chain-codex-notify]
+#              [--no-nightly] [--dry-run]
+#   install.sh --uninstall [--remove-digests] [--dry-run]
 #
 # Codex allows a single `notify` program. If one is already configured, install.sh leaves it
 # alone and says so; --chain-codex-notify instead wraps it so both run (the original line is
 # saved and put back by --uninstall).
 #
-# Safe to re-run. settings.json and config.toml are backed up before every change.
+# Safe to re-run. settings.json and config.toml are backed up before every change. --uninstall
+# removes hook-state/ but keeps todo-hub.conf, memory-state/ and the digests written into
+# project folders; with --remove-digests it first runs `ai-todo-memory digest --remove-all`.
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -33,15 +39,22 @@ HOOK_MARKER='/.ai-remote/bin/ai-todo-hook'
 CODEX_DIR="${CODEX_HOME:-${HOME}/.codex}"
 CODEX_CONFIG="${CODEX_DIR}/config.toml"
 CODEX_NOTIFY_SAVED="${AI_DIR}/codex-notify-original"
+STATE_DIR="${AI_DIR}/memory-state"
+LAUNCH_LABEL='com.ai-remote.todo-memory'
+PLIST="${HOME}/Library/LaunchAgents/${LAUNCH_LABEL}.plist"
 
 hub_url=""
 token=""
+computer_id=""
 dry_run=0
 uninstall=0
 chain_codex=0
+no_nightly=0
+remove_digests=0
 
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  # Print the header comment block (every leading line that starts with '#', minus the shebang).
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
   exit "${1:-0}"
 }
 
@@ -50,6 +63,9 @@ while [[ $# -gt 0 ]]; do
     --hub-url) hub_url="${2:?--hub-url needs a value}"; shift 2 ;;
     --token) token="${2:?--token needs a value}"; shift 2 ;;
     --chain-codex-notify) chain_codex=1; shift ;;
+    --computer-id) computer_id="${2:?--computer-id needs a value}"; shift 2 ;;
+    --no-nightly) no_nightly=1; shift ;;
+    --remove-digests) remove_digests=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     --uninstall) uninstall=1; shift ;;
     -h | --help) usage 0 ;;
@@ -57,9 +73,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for value in "$hub_url" "$token"; do
+for value in "$hub_url" "$token" "$computer_id"; do
   if [[ "$value" == *"'"* ]]; then
-    echo "hub URL and token must not contain single quotes" >&2
+    echo "hub URL, token and computer id must not contain single quotes" >&2
     exit 64
   fi
 done
@@ -269,34 +285,124 @@ if not dry_run and os.path.exists(saved):
 PY
 }
 
+# Set KEY='VALUE' in todo-hub.conf: replaces the KEY line, or appends one. Other lines stay.
+set_conf_value() {
+  local tmp="${HUB_CONF}.tmp.$$"
+  KEY="$1" VALUE="$2" awk '
+    BEGIN { k = ENVIRON["KEY"]; line = k "=\047" ENVIRON["VALUE"] "\047"; done = 0 }
+    $0 ~ "^[[:space:]]*(export[[:space:]]+)?" k "=" { if (!done) print line; done = 1; next }
+    { print }
+    END { if (!done) print line }
+  ' "$HUB_CONF" >"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$HUB_CONF"
+}
+
 write_hub_conf() {
-  local url="" tok=""
-  if [[ -f "$HUB_CONF" ]]; then
-    # Keep existing values for anything not passed on the command line.
-    url="$(TODO_HUB_URL=; . "$HUB_CONF" >/dev/null 2>&1; printf '%s' "${TODO_HUB_URL:-}")"
-    tok="$(TODO_API_TOKEN=; . "$HUB_CONF" >/dev/null 2>&1; printf '%s' "${TODO_API_TOKEN:-}")"
-    if [[ -z "$hub_url" && -z "$token" ]]; then
-      say "todo-hub.conf: kept"
-      return
-    fi
+  if [[ -f "$HUB_CONF" && -z "$hub_url" && -z "$token" && -z "$computer_id" ]]; then
+    say "todo-hub.conf: kept"
+    return
   fi
-  [[ -n "$hub_url" ]] && url="$hub_url"
-  [[ -n "$token" ]] && tok="$token"
   if [[ $dry_run -eq 1 ]]; then
     say "would write ${HUB_CONF}"
     return
   fi
-  (
-    umask 077
-    cat >"$HUB_CONF" <<EOF
-# todo-server for ai-todo-hook (shell syntax). Example:
+  if [[ ! -f "$HUB_CONF" ]]; then
+    (
+      umask 077
+      cat >"$HUB_CONF" <<'EOF'
+# todo-server for ai-todo-hook and ai-todo-memory (shell syntax). Example:
 #   TODO_HUB_URL='http://100.118.255.23:8080'
-TODO_HUB_URL='${url}'
-TODO_API_TOKEN='${tok}'
+TODO_HUB_URL=''
+TODO_API_TOKEN=''
+# This computer's id on todo-server (install.sh --computer-id); auto-detected when empty.
+TODO_COMPUTER_ID=''
+# ai-todo-memory switches and limits (defaults shown):
+#   AI_TODO_MEMORY='on'          extract memories with claude -p
+#   AI_TODO_STATS='on'           push usage stats, cwd/repo and a redacted title
+#   AI_TODO_MEMORY_DIGEST='on'   write project digests (CLAUDE.local.md / AGENTS.md block)
+#   AI_TODO_MEMORY_MODEL='sonnet'
+#   AI_TODO_MEMORY_DEBOUNCE_MIN='30'
+#   AI_TODO_MEMORY_BACKFILL_DAYS='7'
+#   AI_TODO_MEMORY_MAX_CHUNKS_NIGHT='40'
+#   AI_TODO_MEMORY_MIN_CONFIDENCE='0.5'
 EOF
-  )
+    )
+  fi
+  [[ -n "$hub_url" ]] && set_conf_value TODO_HUB_URL "$hub_url"
+  [[ -n "$token" ]] && set_conf_value TODO_API_TOKEN "$token"
+  [[ -n "$computer_id" ]] && set_conf_value TODO_COMPUTER_ID "$computer_id"
   chmod 600 "$HUB_CONF"
   say "todo-hub.conf: written"
+}
+
+xml_escape() {
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# The nightly LaunchAgent (macOS): bootout any loaded copy, write the plist, bootstrap it.
+install_launch_agent() {
+  if [[ "$(uname -s)" != Darwin ]]; then
+    say "nightly job: no launchd here; schedule '${BIN_DIR}/ai-todo-memory nightly' (e.g. cron 30 3 * * *) yourself"
+    return
+  fi
+  if [[ $no_nightly -eq 1 ]]; then
+    remove_launch_agent
+    say "nightly job: skipped (--no-nightly)"
+    return
+  fi
+  if [[ $dry_run -eq 1 ]]; then
+    say "would write ${PLIST} and launchctl bootstrap gui/$(id -u) it"
+    return
+  fi
+  mkdir -p "$(dirname "$PLIST")"
+  cat >"$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LAUNCH_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$(xml_escape "${BIN_DIR}/ai-todo-memory")</string>
+    <string>nightly</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$(xml_escape "${STATE_DIR}/launchd.log")</string>
+  <key>StandardErrorPath</key>
+  <string>$(xml_escape "${STATE_DIR}/launchd.log")</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
+EOF
+  launchctl bootout "gui/$(id -u)/${LAUNCH_LABEL}" >/dev/null 2>&1 || true
+  if launchctl bootstrap "gui/$(id -u)" "$PLIST"; then
+    say "nightly job: ${PLIST} loaded (ai-todo-memory nightly at 03:30)"
+  else
+    say "nightly job: launchctl bootstrap failed; load it with: launchctl bootstrap gui/$(id -u) ${PLIST}"
+  fi
+}
+
+remove_launch_agent() {
+  [[ "$(uname -s)" == Darwin ]] || return 0
+  if [[ $dry_run -eq 1 ]]; then
+    say "would launchctl bootout gui/$(id -u)/${LAUNCH_LABEL} and remove ${PLIST}"
+    return
+  fi
+  launchctl bootout "gui/$(id -u)/${LAUNCH_LABEL}" >/dev/null 2>&1 || true
+  if [[ -e "$PLIST" ]]; then
+    rm -f "$PLIST"
+    say "nightly job: removed ${PLIST}"
+  fi
 }
 
 do_install() {
@@ -305,8 +411,12 @@ do_install() {
   run install -m 755 "${SRC_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-hook"
   run install -m 755 "${SRC_DIR}/ai-todo-sessions" "${BIN_DIR}/ai-todo-sessions"
   run install -m 755 "${SRC_DIR}/ai-todo-codex-notify" "${BIN_DIR}/ai-todo-codex-notify"
+  run install -m 755 "${SRC_DIR}/ai-todo-memory" "${BIN_DIR}/ai-todo-memory"
+  run install -m 644 "${SRC_DIR}/ai_todo_redact.py" "${BIN_DIR}/ai_todo_redact.py"
   run install -m 644 "${SRC_DIR}/tmux.conf" "$TMUX_SNIPPET"
   say "scripts: installed to ${BIN_DIR}"
+  run mkdir -p "$STATE_DIR"
+  run chmod 700 "$STATE_DIR"
 
   write_hub_conf
 
@@ -321,6 +431,7 @@ do_install() {
 
   merge_settings install
   merge_codex_notify install
+  install_launch_agent
 
   if [[ $dry_run -eq 0 ]]; then
     if tmux info >/dev/null 2>&1; then
@@ -333,11 +444,21 @@ do_install() {
 }
 
 do_uninstall() {
+  if [[ $remove_digests -eq 1 ]]; then
+    if [[ -x "${BIN_DIR}/ai-todo-memory" ]]; then
+      run "${BIN_DIR}/ai-todo-memory" digest --remove-all || say "digests: ai-todo-memory digest --remove-all failed"
+    else
+      say "digests: ${BIN_DIR}/ai-todo-memory is not installed; nothing removed"
+    fi
+  fi
+  remove_launch_agent
+
   # Put Codex's own notify back before its program disappears.
   merge_codex_notify uninstall
 
   run rm -f "${BIN_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-sessions" \
-    "${BIN_DIR}/ai-todo-codex-notify" "$TMUX_SNIPPET"
+    "${BIN_DIR}/ai-todo-codex-notify" "${BIN_DIR}/ai-todo-memory" "${BIN_DIR}/ai_todo_redact.py" \
+    "$TMUX_SNIPPET"
   say "scripts: removed"
   # Per-session state kept by the hooks.
   run rm -rf "${AI_DIR}/hook-state"
@@ -356,6 +477,12 @@ do_uninstall() {
 
   merge_settings uninstall
   say "kept ${HUB_CONF} (delete it yourself if you no longer need the token)"
+  if [[ -d "$STATE_DIR" ]]; then
+    say "kept ${STATE_DIR} (memory offsets and log; delete it yourself if you no longer need it)"
+  fi
+  if [[ $remove_digests -eq 0 ]]; then
+    say "kept project digests; install.sh --uninstall --remove-digests removes them"
+  fi
 }
 
 # Refuse before touching anything if settings.json can't be merged safely.

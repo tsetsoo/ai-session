@@ -38,8 +38,8 @@ struct TodoListView: View {
             LinkConversationSheet(todo: todo, store: store)
         }
         .sheet(item: $addSection) { section in
-            AddTodoSheet(section: section) { section, title in
-                Task { await store.createTodo(section: section, title: title) }
+            AddTodoSheet(section: section, projects: store.projects) { section, title, projectId in
+                Task { await store.createTodo(section: section, title: title, projectId: projectId) }
             }
         }
         .alert(

@@ -10,7 +10,10 @@ enum TodoHubSettings {
 
     static var baseURLString: String {
         get { UserDefaults.standard.string(forKey: urlKey) ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: urlKey) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: urlKey)
+            NotificationCenter.default.post(name: .todoHubSettingsChanged, object: nil)
+        }
     }
 
     static var token: String {
@@ -26,6 +29,7 @@ enum TodoHubSettings {
         } else {
             try keychain.save(account: tokenAccount, value: trimmed)
         }
+        NotificationCenter.default.post(name: .todoHubSettingsChanged, object: nil)
     }
 
     static var isConfigured: Bool {

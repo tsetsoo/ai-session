@@ -47,6 +47,9 @@ final class AppModel {
                 todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
                 sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
             )
+        } else if ProcessInfo.processInfo.arguments.contains("-demoProjects") {
+            // Screenshots of Projects: canned hub data, no hub contacted.
+            store.loadDemo(.sample)
         }
     }
     #else

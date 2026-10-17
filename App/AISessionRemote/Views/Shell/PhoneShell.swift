@@ -99,8 +99,9 @@ struct PhoneShell: View {
             SettingsView(initial: request.initial)
         }
         .sheet(isPresented: $showingAdd) {
-            AddTodoSheet(section: QuickAdd.section(from: quickAddSection)) { section, title in
-                Task { await store.createTodo(section: section, title: title) }
+            AddTodoSheet(section: QuickAdd.section(from: quickAddSection), projects: store.projects) {
+                section, title, projectId in
+                Task { await store.createTodo(section: section, title: title, projectId: projectId) }
             }
             .tint(DS.accent)
         }
@@ -231,7 +232,7 @@ struct PhoneShell: View {
     private func startSync() async {
         #if DEBUG
         // Demo data never touches the network.
-        if DemoFixtures.isEnabled { return }
+        if DemoFixtures.isEnabled || store.demo != nil { return }
         #endif
         guard store.isConfigured else { return }
         await store.refresh()
