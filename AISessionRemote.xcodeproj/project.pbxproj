@@ -110,8 +110,10 @@
 		BC64832FF85ABCAF0A96EABD /* ProjectMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */; };
 		BDB5778417C362323812D238 /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
 		C0151AA649300EAE1F217F82 /* TerminalTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D417529F6E6B990D79BF81 /* TerminalTransport.swift */; };
+		C02C522D95113D7D02F16C02 /* MemoriesPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2036F3717F8C775B947A95B7 /* MemoriesPresenter.swift */; };
 		C449746AA3C87B38E0DCAF93 /* PooledConnecting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC825CDD2BB9FFA73CAFDE4 /* PooledConnecting.swift */; };
 		C4B27C132B9DD7F5F9BF942B /* ConversationLinkViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */; };
+		C61894B166CF872961980837 /* MemoriesPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2036F3717F8C775B947A95B7 /* MemoriesPresenter.swift */; };
 		CA54C9C224AB49CC3FFF02BD /* SessionServiceFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */; };
 		CA6E7438940A64E9925E2DDE /* NotificationCenterCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0A9E0E59778D9C468219BE9 /* NotificationCenterCoordinator.swift */; };
 		CCF7D18D1057CAC0EC45D308 /* RemoteConversations.swift in Sources */ = {isa = PBXBuildFile; fileRef = B24103E63B65EE5783B9E334 /* RemoteConversations.swift */; };
@@ -167,6 +169,7 @@
 		1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectMenus.swift; sourceTree = "<group>"; };
 		18F3BE4EBA6E99E52AEE6296 /* TodoHubDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubDemo.swift; sourceTree = "<group>"; };
 		19B17876012779CEAC4C80A8 /* TodoHubSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubSettingsView.swift; sourceTree = "<group>"; };
+		2036F3717F8C775B947A95B7 /* MemoriesPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoriesPresenter.swift; sourceTree = "<group>"; };
 		20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionServiceFactory.swift; sourceTree = "<group>"; };
 		212307B0DF157E07D51ED051 /* AISessionRemoteTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AISessionRemoteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		221C9F866472FA9B512E819B /* AppTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTheme.swift; sourceTree = "<group>"; };
@@ -299,6 +302,7 @@
 				87495E95B7CCFE26E721047A /* ConversationFrame.swift */,
 				2795545DB4B7B10EE099084F /* ConversationLoader.swift */,
 				F6DF7A48AF9E2D3EED9528A2 /* FrameStateView.swift */,
+				2036F3717F8C775B947A95B7 /* MemoriesPresenter.swift */,
 				72E273782071736284D2563C /* TerminalSurface.swift */,
 			);
 			path = Frame;
@@ -639,6 +643,7 @@
 				4057411C78160E1D7CD4628D /* HostStore.swift in Sources */,
 				47C0DBE7DC069BCC5F022E48 /* HostsListView.swift in Sources */,
 				F20B4E30CA2C51E9A3F6C76A /* MacCompatibility.swift in Sources */,
+				C02C522D95113D7D02F16C02 /* MemoriesPresenter.swift in Sources */,
 				9EF27CDA60B698C2B14EE4C8 /* MemoryViews.swift in Sources */,
 				459745DF108E3518C8BB10E3 /* NIOSSHClient.swift in Sources */,
 				FBFCEA0140DEA878AC684447 /* NewSessionSheet.swift in Sources */,
@@ -702,6 +707,7 @@
 				DE709355ECEEA8775AB8E62E /* HostStore.swift in Sources */,
 				73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */,
 				A4969E70C98FC8113339AE7A /* MacCompatibility.swift in Sources */,
+				C61894B166CF872961980837 /* MemoriesPresenter.swift in Sources */,
 				B7CDAFEC634F6464A89F0CBA /* MemoryViews.swift in Sources */,
 				FACD0EDEEFFED735236090BD /* NIOSSHClient.swift in Sources */,
 				9AC6F15718E4541263BB3B76 /* NewSessionSheet.swift in Sources */,

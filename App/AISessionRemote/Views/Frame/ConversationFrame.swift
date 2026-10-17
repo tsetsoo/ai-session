@@ -24,6 +24,7 @@ struct ConversationFrame: View {
     @State private var showingDeleteConfirmation = false
     @State private var failure: ActionFailure?
     @State private var sheet: FrameSheet?
+    @State private var showingMemories = false
     @State private var keyboardVisible = false
 
     init(
@@ -98,6 +99,8 @@ struct ConversationFrame: View {
         .sheet(item: $sheet, onDismiss: retryAfterSettings) { sheet in
             sheetContent(sheet)
         }
+        .modifier(MemoriesPresenter(isPresented: $showingMemories, todoID: todo.id, conversation: conversation,
+                                    store: store))
         // The conversation on screen is never alerted about, on any device.
         .onAppear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: todo.id) }
         .onDisappear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: nil) }
@@ -240,6 +243,7 @@ struct ConversationFrame: View {
             isReady: readyConversation != nil,
             isConnected: isConnected,
             onCopyResume: onCopyResume,
+            onMemories: { showingMemories = true },
             onClose: closeConversation,
             onDelete: { showingDeleteConfirmation = true },
             terminal: terminal
