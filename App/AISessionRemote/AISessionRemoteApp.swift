@@ -3,16 +3,21 @@ import SwiftUI
 
 @main
 struct AISessionRemoteApp: App {
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #endif
+
     init() {
         // `--hub-url …` / `--add-host …` set the app up from launch arguments
         // (see HostProvisioning). On the Mac the app exits afterwards.
         HostProvisioning.runFromCommandLineIfRequested()
+        // Before launch finishes, so a notification tap that launched the app is delivered.
+        NotificationCenterCoordinator.shared.install()
     }
 
     var body: some Scene {
         WindowGroup {
             RootView()
-                .onAppear { AttentionNotifier.requestAuthorizationIfNeeded() }
                 .onReceive(NotificationCenter.default.publisher(
                     for: PlatformSupport.didEnterBackgroundNotification
                 )) { _ in
