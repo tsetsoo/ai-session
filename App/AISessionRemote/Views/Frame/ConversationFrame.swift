@@ -102,8 +102,7 @@ struct ConversationFrame: View {
         .modifier(MemoriesPresenter(isPresented: $showingMemories, todoID: todo.id, conversation: conversation,
                                     store: store))
         // The conversation on screen is never alerted about, on any device.
-        .onAppear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: todo.id) }
-        .onDisappear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: nil) }
+        .reportsVisibleConversation(todo.id)
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardVisible = true
