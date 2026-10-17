@@ -2,21 +2,6 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// A todo's conversation opened on a known SSH host; drives navigation to the terminal.
-/// The connection config (with the private key) is resolved once when opening, not on every
-/// re-render of the destination.
-struct OpenTodoConversation: Identifiable, Hashable {
-    let conversation: Conversation
-    let hostID: UUID
-    let config: HostConnectionConfig
-    let title: String
-
-    var id: String { conversation.todoId }
-
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id && lhs.hostID == rhs.hostID }
-    func hash(into hasher: inout Hasher) { hasher.combine(id) }
-}
-
 /// Todos grouped by section (Sp / I / Si / P). Tapping a todo opens its AI conversation on the
 /// section's computer over a direct SSH connection; the hub only stores the mapping.
 struct TodosView: View {
