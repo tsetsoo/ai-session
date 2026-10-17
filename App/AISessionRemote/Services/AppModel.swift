@@ -26,6 +26,8 @@ final class AppModel {
 
     /// Replaces the SSH listing; tests inject it. Production builds it from the hosts.
     private let listTmuxOverride: TmuxListing?
+    /// Incremented per refresh; only the latest, uncancelled one may publish its result.
+    private var livenessGeneration = 0
 
     var board: ConversationBoard {
         ConversationBoard(todos: store.todos, conversations: store.conversations, liveTmux: liveTmux)
@@ -58,6 +60,8 @@ final class AppModel {
         // Demo data never touches the network; keep the seeded statuses.
         if DemoFixtures.isEnabled && listTmuxOverride == nil { return }
         #endif
+        livenessGeneration += 1
+        let generation = livenessGeneration
         let computers = store.computers
         let listing = listTmuxOverride ?? Self.sshListing(hosts: hosts, computers: computers)
         var result: [String: Set<String>] = [:]
@@ -69,6 +73,7 @@ final class AppModel {
                 if let names { result[id] = names }
             }
         }
+        guard generation == livenessGeneration, !Task.isCancelled else { return }
         liveTmux = result
     }
 

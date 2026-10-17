@@ -44,4 +44,62 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.board.needsYou.isEmpty)
         XCTAssertTrue(model.board.runningNow.isEmpty)
     }
+
+    private actor Gate {
+        private var continuations: [CheckedContinuation<Void, Never>] = []
+        private var opened = false
+        var waiting: Int { continuations.count }
+        func wait() async {
+            if opened { return }
+            await withCheckedContinuation { continuations.append($0) }
+        }
+        func open() { opened = true; continuations.forEach { $0.resume() }; continuations = [] }
+    }
+
+    private actor Mode {
+        var slow = false
+        func set(slow: Bool) { self.slow = slow }
+    }
+
+    func testStaleRefreshDoesNotOverwriteNewerResult() async {
+        let gate = Gate()
+        let mode = Mode()
+        await mode.set(slow: true)
+        let model = makeModel { _ in
+            if await mode.slow {
+                await gate.wait()
+                return ["old"]
+            }
+            return ["new"]
+        }
+        let first = Task { await model.refreshLiveness(hosts: []) }
+        while await gate.waiting == 0 { await Task.yield() }   // call 1 is parked in its listing
+        await mode.set(slow: false)
+        await model.refreshLiveness(hosts: [])
+        XCTAssertEqual(model.liveTmux[mac.id], ["new"])
+        await gate.open()
+        await first.value
+        XCTAssertEqual(model.liveTmux[mac.id], ["new"])
+    }
+
+    func testCancelledRefreshKeepsPreviousResult() async {
+        let gate = Gate()
+        let mode = Mode()
+        let model = makeModel { _ in
+            if await mode.slow {
+                await gate.wait()
+                return []
+            }
+            return ["known"]
+        }
+        await model.refreshLiveness(hosts: [])
+        XCTAssertEqual(model.liveTmux[mac.id], ["known"])
+        await mode.set(slow: true)
+        let task = Task { await model.refreshLiveness(hosts: []) }
+        while await gate.waiting == 0 { await Task.yield() }
+        task.cancel()
+        await gate.open()
+        await task.value
+        XCTAssertEqual(model.liveTmux[mac.id], ["known"])
+    }
 }
