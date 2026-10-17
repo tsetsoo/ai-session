@@ -30,6 +30,8 @@ final class NotificationCenterCoordinator {
     /// Mac only: also alert on this Mac when an iPhone receives pushes.
     static let macAlertsTooKey = "notify.macAlertsToo"
     private static let clientIdKey = "notify.clientId"
+    /// Hub URL this device's push token is registered with (see `PushRegistrationState`).
+    private static let registeredHubKey = "notify.registeredHub"
     static let category = "TODO_CONVERSATION"
     private static let muteAction = "MUTE_TODO"
     private static let presenceRefresh: Duration = .seconds(30)
@@ -47,7 +49,10 @@ final class NotificationCenterCoordinator {
     }
 
     @ObservationIgnored private var pendingOpenTodo: String?
-    @ObservationIgnored private var visibleTodoId: String?
+    @ObservationIgnored private var presence = PresenceTracker()
+    @ObservationIgnored private var registration = PushRegistrationState(
+        registeredHub: UserDefaults.standard.string(forKey: registeredHubKey)
+    )
     @ObservationIgnored private var presenceTask: Task<Void, Never>?
     @ObservationIgnored private var deviceToken: String?
     /// Mac: whether the server has a registered iPhone (refreshed when the app activates).
@@ -56,6 +61,14 @@ final class NotificationCenterCoordinator {
     @ObservationIgnored private let delegateProxy = DelegateProxy()
 
     private init() {}
+
+    private var visibleTodoId: String? { presence.visibleTodoId }
+
+    private var hub: String { TodoHubSettings.baseURLString }
+
+    private func saveRegistration() {
+        UserDefaults.standard.set(registration.registeredHub, forKey: Self.registeredHubKey)
+    }
 
     var isEnabled: Bool {
         UserDefaults.standard.bool(forKey: Self.enabledKey)
@@ -92,11 +105,12 @@ final class NotificationCenterCoordinator {
             Task { @MainActor in await NotificationCenterCoordinator.shared.didBecomeActive() }
         }
         notifications.addObserver(forName: PlatformSupport.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
-            Task { @MainActor in NotificationCenterCoordinator.shared.setVisibleConversation(todoId: nil) }
+            Task { @MainActor in NotificationCenterCoordinator.shared.didEnterBackground() }
         }
         notifications.addObserver(forName: .todoHubSettingsChanged, object: nil, queue: .main) { _ in
             Task { @MainActor in await NotificationCenterCoordinator.shared.uploadToken() }
         }
+        pushState = registration.launchState(enabled: isEnabled, hub: hub)
         if isEnabled {
             Task { await resume() }
         }
@@ -118,6 +132,8 @@ final class NotificationCenterCoordinator {
     func setNeedsYouEnabled(_ on: Bool) async -> Bool {
         guard on else {
             UserDefaults.standard.set(false, forKey: Self.enabledKey)
+            registration.disable()
+            saveRegistration()
             pushState = .off
             if let token = deviceToken, let client = TodoHubSettings.makeClient() {
                 try? await client.unregisterPushDevice(token: token)
@@ -142,7 +158,7 @@ final class NotificationCenterCoordinator {
     /// Notifications are on: register for push (iOS) or check for a registered iPhone (Mac).
     private func resume() async {
         #if os(iOS)
-        pushState = .localOnly("Registering for push…")
+        pushState = registration.launchState(enabled: true, hub: hub)
         UIApplication.shared.registerForRemoteNotifications()
         #else
         pushState = .localOnly("Alerts on this Mac while the app runs")
@@ -161,13 +177,17 @@ final class NotificationCenterCoordinator {
         pushState = .localOnly("Push registration failed: \(error.localizedDescription)")
     }
 
-    /// Sends the token to the todo server. Runs on every launch and when the server settings
-    /// change; the server upserts.
+    /// Sends the token to the todo server. Runs on every launch, when the server settings
+    /// change and (after a temporary failure) when the app becomes active; the server upserts.
     func uploadToken() async {
         guard isEnabled, let token = deviceToken else { return }
         guard let client = TodoHubSettings.makeClient() else {
             pushState = .localOnly("Set up the todo server to get push notifications")
             return
+        }
+        let hub = hub
+        if registration.registeredHub != hub {
+            pushState = .localOnly("Registering for push…")
         }
         let info = Bundle.main.infoDictionary
         let version = "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))"
@@ -184,16 +204,25 @@ final class NotificationCenterCoordinator {
             appVersion: version,
             deviceName: deviceName
         )
+        let upload = self.registration.beginUpload()
+        var failure: TodoHubError?
         do {
             _ = try await client.registerPushDevice(registration)
-            pushState = .registered
-        } catch TodoHubError.unsupported {
-            pushState = .localOnly("The todo server has no push support yet")
         } catch let error as TodoHubError {
-            pushState = .localOnly(error.userMessage)
+            failure = error
         } catch {
-            pushState = .localOnly(error.localizedDescription)
+            failure = .unreachable(error.localizedDescription)
         }
+        switch self.registration.finishUpload(upload, hub: hub, error: failure, enabled: isEnabled) {
+        case let .apply(state):
+            pushState = state
+        case .ignore:
+            break
+        case .unregisterAgain:
+            // Switched off while this registration was in flight; it may have landed after the delete.
+            try? await client.unregisterPushDevice(token: token)
+        }
+        saveRegistration()
     }
 
     private func refreshServerDevices() async {
@@ -255,8 +284,15 @@ final class NotificationCenterCoordinator {
     /// The conversation on screen (`nil`: none). Suppresses its alerts here and, through the
     /// server, its pushes on every device.
     func setVisibleConversation(todoId: String?) {
-        guard todoId != visibleTodoId else { return }
-        visibleTodoId = todoId
+        applyPresence(presence.request(todoId))
+    }
+
+    private func didEnterBackground() {
+        applyPresence(presence.enterBackground())
+    }
+
+    private func applyPresence(_ report: PresenceTracker.Report) {
+        guard case let .report(todoId) = report else { return }
         presenceTask?.cancel()
         if let todoId {
             UNUserNotificationCenter.current().removeDeliveredNotifications(
@@ -300,10 +336,15 @@ final class NotificationCenterCoordinator {
 
     // MARK: App lifecycle
 
-    /// Remove alerts for conversations that no longer need the user, and (Mac) refresh
-    /// whether an iPhone receives pushes.
+    /// Report the conversation still on screen again, retry a registration that failed for a
+    /// temporary reason, remove alerts for conversations that no longer need the user, and
+    /// (Mac) refresh whether an iPhone receives pushes.
     private func didBecomeActive() async {
+        applyPresence(presence.becomeActive())
         guard isEnabled, let client = TodoHubSettings.makeClient() else { return }
+        if registration.needsRetry {
+            await uploadToken()
+        }
         if isMac { await refreshServerDevices() }
         guard let conversations = try? await client.listConversations() else { return }
         let waiting = Set(conversations.filter { $0.status == .waiting }.map(\.todoId))

@@ -98,8 +98,18 @@ status = {"agent-turn-complete": "idle", "approval-requested": "waiting"}.get(da
 sid = data.get("thread-id")
 if status is None or not isinstance(sid, str) or not sid or not all(c.isalnum() or c == "-" for c in sid):
     sys.exit(1)
+print(sid)
+print(status)
 print(json.dumps({"session_id": sid, "tool": "codex", "status": status, "attended": sys.argv[2] == "true"}))
 ' "$json" "$attended" 2>/dev/null) || exit 0
+sid=$(printf '%s\n' "$body" | sed -n 1p)
+status=$(printf '%s\n' "$body" | sed -n 2p)
+body=$(printf '%s\n' "$body" | sed -n 3p)
+
+# The last status sent per thread, so a delayed re-check can tell the turn moved on.
+state_dir="$HOME/.ai-remote/hook-state"
+state_file="$state_dir/codex-$sid"
+mkdir -p "$state_dir" 2>/dev/null && printf '%s\n' "$status" >"$state_file" 2>/dev/null
 
 post() {
   # The token goes through curl's config on stdin so it never shows up in `ps`.
@@ -114,9 +124,10 @@ post() {
 
 # waiting only: a keystroke after the prompt means it was answered at the terminal.
 recheck() {
-  case "$body" in *'"status": "waiting"'*) ;; *) return 0 ;; esac
-  [ "$attended" = false ] || return 0
+  [ "$status" = waiting ] && [ "$attended" = false ] || return 0
   sleep "${AI_TODO_RECHECK_DELAY:-12}"
+  # Moved on (the turn completed): re-posting waiting would undo that.
+  [ "$(cat "$state_file" 2>/dev/null)" = waiting ] || return 0
   latest=$(latest_activity)
   case "$latest" in
     '' | *[!0-9]*) return 0 ;;

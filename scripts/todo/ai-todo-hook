@@ -148,6 +148,8 @@ post() {
 recheck() {
   [ "$status" = waiting ] && [ "$attended" = false ] || return 0
   sleep "${AI_TODO_RECHECK_DELAY:-12}"
+  # Moved on (a later hook posted busy/idle): re-posting waiting would undo that.
+  [ "$(cat "$state_file" 2>/dev/null)" = waiting ] || return 0
   latest=$(latest_activity)
   case "$latest" in
     '' | *[!0-9]*) return 0 ;;

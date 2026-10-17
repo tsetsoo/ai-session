@@ -562,6 +562,25 @@ python3 -c 'import json,sys; l=open(sys.argv[1]).read().splitlines(); assert jso
   || fail "the first post should not be attended"
 pass "hook re-checks a waiting prompt and reports the answer as attended"
 
+wait_for_posts() { # <count>: until the fake hub has logged this many requests
+  for _ in $(seq 1 50); do [[ $(wc -l <"$HUB_LOG") -ge $1 ]] && return 0; sleep 0.1; done
+  fail "expected $1 hub requests, got $(wc -l <"$HUB_LOG")"
+}
+
+# Answered and the quick tool finished before the re-check: the status moved on, so the
+# re-check must not post waiting again.
+before=$(wc -l <"$HUB_LOG")
+echo $(( $(date +%s) - 3600 )) >"$ACTIVITY"
+printf '%s\n' "$ACTIVITY" >"${SANDBOX}/touch-on-post"
+waiting AI_TODO_RECHECK_DELAY=2 &
+recheck_pid=$!
+wait_for_posts $((before + 1))
+tool
+wait "$recheck_pid"
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 2)) && "$(last_status)" == busy ]] \
+  || fail "re-check posted after the status moved on: $(tail -2 "$HUB_LOG")"
+pass "no re-check once the conversation moved on from waiting"
+
 before=$(wc -l <"$HUB_LOG")
 echo $(( $(date +%s) + 5 )) >"$ACTIVITY"
 printf '{"session_id":"%s","hook_event_name":"Stop"}' "$SID" \
@@ -593,6 +612,16 @@ printf '%s\n' "$ACTIVITY" >"${SANDBOX}/touch-on-post"
 before=$(wc -l <"$HUB_LOG")
 AI_TODO_TMUX_SESSION="$XTMUX" AI_TODO_CLIENT_ACTIVITY_FILE="$ACTIVITY" AI_TODO_RECHECK_DELAY=2 "$NOTIFY" "$APPROVAL"
 [[ $(wc -l <"$HUB_LOG") -eq $((before + 2)) && "$(last_attended)" == True ]] || fail "codex re-check did not report the answer: $(tail -2 "$HUB_LOG")"
+echo $(( $(date +%s) - 3600 )) >"$ACTIVITY"
+printf '%s\n' "$ACTIVITY" >"${SANDBOX}/touch-on-post"
+before=$(wc -l <"$HUB_LOG")
+AI_TODO_TMUX_SESSION="$XTMUX" AI_TODO_CLIENT_ACTIVITY_FILE="$ACTIVITY" AI_TODO_RECHECK_DELAY=2 "$NOTIFY" "$APPROVAL" &
+recheck_pid=$!
+wait_for_posts $((before + 1))
+AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" "$TURN"
+wait "$recheck_pid"
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 2)) && "$(last_status)" == idle ]] \
+  || fail "codex re-check posted after the turn completed: $(tail -2 "$HUB_LOG")"
 pass "codex notify posts idle on agent-turn-complete (waiting on approval-requested) with tool=codex and the token"
 
 before=$(wc -l <"$HUB_LOG")

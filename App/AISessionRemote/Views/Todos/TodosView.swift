@@ -43,6 +43,12 @@ struct TodosView: View {
                     conversationDestination(open)
                 }
         }
+        .task {
+            // Tapping a "needs you" notification opens that todo's conversation.
+            NotificationCenterCoordinator.shared.onOpenTodo = { todoId in
+                Task { await openFromNotification(todoId) }
+            }
+        }
         .sheet(isPresented: $showingSettings) {
             TodoHubSettingsView { Task { await store.reconnect() } }
         }
@@ -246,6 +252,14 @@ struct TodosView: View {
 
     // MARK: Conversations
 
+    private func openFromNotification(_ todoId: String) async {
+        if !store.todos.contains(where: { $0.id == todoId }) {
+            await store.refresh()
+        }
+        guard let todo = store.todos.first(where: { $0.id == todoId }) else { return }
+        open(todo)
+    }
+
     private func open(_ todo: Todo) {
         guard openingTodoID == nil else { return }
         openingTodoID = todo.id
@@ -342,6 +356,9 @@ struct TodosView: View {
                 try await store.closeConversation(conversation, config: open.config)
             }
         )
+        // Viewing it here suppresses its alerts on every device.
+        .onAppear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: conversation.todoId) }
+        .onDisappear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: nil) }
     }
 }
 
