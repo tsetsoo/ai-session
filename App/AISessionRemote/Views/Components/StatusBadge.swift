@@ -47,16 +47,18 @@ struct StatusBadge: View {
         case (.idle, .dot):
             idleDot
         case (.closed, .pill):
-            label
+            Text(status.label)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         case (.closed, .dot):
-            Circle().fill(Color.secondary.opacity(0.35)).frame(width: 6, height: 6)
+            Color.clear.frame(width: 1, height: 1)
         }
     }
 
     private var label: some View {
         Text(status.label)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(status == .working ? .primary : .secondary)
     }
 
     private var idleDot: some View {
@@ -75,7 +77,7 @@ private struct WorkingDots: View {
         HStack(spacing: 3) {
             ForEach(0..<3, id: \.self) { index in
                 Circle()
-                    .fill(Color.secondary)
+                    .fill(Color.primary)
                     .frame(width: 5, height: 5)
                     .opacity(reduceMotion || pulsing ? 1 : 0.3)
                     .animation(
