@@ -82,6 +82,69 @@ final class TmuxCommandBuilderTests: XCTestCase {
         XCTAssertTrue(command.contains("'\"'\"'"))
     }
 
+    func testShellQuotePathExpandsBareTilde() {
+        XCTAssertEqual(TmuxCommandBuilder.shellQuotePath("~"), "\"$HOME\"")
+    }
+
+    func testShellQuotePathExpandsTildeSlashAndQuotesTheRest() {
+        XCTAssertEqual(TmuxCommandBuilder.shellQuotePath("~/"), "\"$HOME\"/")
+        XCTAssertEqual(TmuxCommandBuilder.shellQuotePath("~/programming"), "\"$HOME\"/'programming'")
+        XCTAssertEqual(TmuxCommandBuilder.shellQuotePath("~/a b"), "\"$HOME\"/'a b'")
+    }
+
+    func testShellQuotePathHandlesAbsolutePathsAndApostrophes() {
+        XCTAssertEqual(TmuxCommandBuilder.shellQuotePath("/tmp/demo"), "'/tmp/demo'")
+        XCTAssertEqual(TmuxCommandBuilder.shellQuotePath("/tmp/it's"), "'/tmp/it'\"'\"'s'")
+        XCTAssertEqual(TmuxCommandBuilder.shellQuotePath("~/it's"), "\"$HOME\"/'it'\"'\"'s'")
+    }
+
+    /// `~user` is left unexpanded, like `ai-todo-open` does: it is quoted whole and reaches tmux
+    /// as a literal directory name. So is a `~` anywhere but the start.
+    func testShellQuotePathLeavesTildeUserAndInnerTildeLiteral() {
+        XCTAssertEqual(TmuxCommandBuilder.shellQuotePath("~root"), "'~root'")
+        XCTAssertEqual(TmuxCommandBuilder.shellQuotePath("~root/x"), "'~root/x'")
+        XCTAssertEqual(TmuxCommandBuilder.shellQuotePath("/tmp/~/x"), "'/tmp/~/x'")
+    }
+
+    /// End-to-end guard: what each shell an SSH login might use makes of the quoted path,
+    /// with a fake `$HOME` (never the real one).
+    func testShellQuotePathEvaluatesToExpectedPathInShells() throws {
+        #if os(macOS)
+        let home = "/fake home/user"
+        let cases: [(String, String)] = [
+            ("~", home),
+            ("~/x", home + "/x"),
+            ("~/a b", home + "/a b"),
+            ("/abs/path", "/abs/path"),
+            ("~/it's $HOME `x`", home + "/it's $HOME `x`"),
+            ("/tmp/it's", "/tmp/it's"),
+            ("~root/x", "~root/x"),
+        ]
+        for shell in ["/bin/sh", "/bin/bash", "/bin/zsh"] where FileManager.default.isExecutableFile(atPath: shell) {
+            for (input, expected) in cases {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: shell)
+                process.arguments = ["-c", "printf '%s' \(TmuxCommandBuilder.shellQuotePath(input))"]
+                process.environment = ["HOME": home, "PATH": "/usr/bin:/bin"]
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                try process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                XCTAssertEqual(String(decoding: data, as: UTF8.self), expected, "\(shell): \(input)")
+            }
+        }
+        #endif
+    }
+
+    func testCreateSessionExpandsTildeCwdOnTheHost() throws {
+        let name = try XCTUnwrap(SessionName(tool: .claude, slug: "demo"))
+        let command = TmuxCommandBuilder.createSession(
+            name: name, cwd: "~/programming", binary: "claude", metadataTemplate: "{}"
+        )
+        XCTAssertTrue(command.contains("-c \"$HOME\"/'programming' --"), command)
+    }
+
     func testPromoteSessionScriptMergesRenameAndMetadata() {
         let command = TmuxCommandBuilder.promoteSession(
             fromTmuxName: "old", toTmuxName: "ai/claude/demo", json: "{}"

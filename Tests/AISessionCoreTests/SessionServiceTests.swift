@@ -199,6 +199,24 @@ final class SessionServiceTests: XCTestCase {
         XCTAssertEqual(listed.ai.first?.status, .busy)
     }
 
+    /// `~` must reach the host unquoted as `$HOME`: inside single quotes tmux gets a literal
+    /// `~/programming`, can't enter it, and silently starts the session in `$HOME`.
+    func testCreateSessionSendsTildeCwdForTheHostToExpand() async throws {
+        let executor = FakeSSHExecutor(responsesByPrefix: [
+            "tmux ls": mergedListResult(sessions: "", statuses: ""),
+            "exec tmux new-session": SSHExecResult(exitCode: 0, stdout: "", stderr: "")
+        ])
+        let service = SessionService(ssh: executor)
+
+        _ = try await service.createSession(
+            config: config, tool: .claude, slug: "demo", cwd: "~/my projects", title: nil
+        )
+
+        let create = try XCTUnwrap(executor.recordedCommands.last)
+        XCTAssertTrue(create.contains("-c \"$HOME\"/'my projects' --"), create)
+        XCTAssertFalse(create.contains("'~/"), create)
+    }
+
     func testCreateSessionIssuesTwoExecsOnHappyPath() async throws {
         let executor = FakeSSHExecutor(responsesByPrefix: [
             "tmux ls": mergedListResult(sessions: "", statuses: ""),
