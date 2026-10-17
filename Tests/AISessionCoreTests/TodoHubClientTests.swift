@@ -243,6 +243,18 @@ final class TodoHubClientTests: XCTestCase {
         try await client.deleteTodo(id: todo.id)
     }
 
+    /// A dropped socket says so, so the store can start a fresh "turned waiting" baseline.
+    func testEventsReportAReconnectAfterTheSocketDrops() async {
+        // Nothing listens on port 1: the socket fails at once and the stream retries after 1 s.
+        let url = URL(string: "http://127.0.0.1:1")!
+        var first: TodoHubEvent?
+        for await event in TodoHubEvents.refreshes(baseURL: url, token: nil) {
+            first = event
+            break
+        }
+        XCTAssertEqual(first, .reconnected)
+    }
+
     func testTodoConversationCommands() {
         let open = TmuxCommandBuilder.openTodoConversation(
             tmuxName: "ai/claude/todo-4f3ff5fa", cwd: "~/it's here", sessionId: "20218a19"

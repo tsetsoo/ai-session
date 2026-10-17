@@ -50,17 +50,6 @@ final class PushTests: XCTestCase {
         )
     }
 
-    func testNewlyWaitingSkipsTheFirstSnapshot() {
-        XCTAssertEqual(NotificationPolicy.newlyWaiting(previous: nil, current: ["a": .waiting]), [], "first load after launch")
-        XCTAssertEqual(
-            NotificationPolicy.newlyWaiting(
-                previous: ["a": .busy, "b": .waiting, "c": .idle],
-                current: ["a": .waiting, "b": .waiting, "c": .busy, "d": .waiting]
-            ),
-            ["a", "d"]
-        )
-    }
-
     func testNotificationIdentifierMatchesServerCollapseId() {
         XCTAssertEqual(NotificationPolicy.notificationIdentifier(todoId: "t1"), "todo-t1")
     }

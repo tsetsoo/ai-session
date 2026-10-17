@@ -23,9 +23,19 @@ final class TodoHubStore {
     /// True while showing the cached snapshot because the hub could not be reached.
     private(set) var isOffline = false
     private(set) var cachedAt: Date?
-    /// Conversation statuses at the last refresh (`nil` before the first one): the baseline
-    /// for "turned waiting" alerts.
-    private var lastStatuses: [String: ConversationStatus]?
+    /// What a successful refresh fetched, for `onRefresh`.
+    struct Fetched {
+        let todos: [Todo]
+        let conversations: [Conversation]
+        /// The first fetch since launch or since reconnecting (hub settings changed, or the
+        /// live-update socket dropped): a fresh baseline for "turned waiting" alerts.
+        let isBaseline: Bool
+    }
+
+    /// Called after every successful refresh. `AppModel` diffs it for "needs you" alerts.
+    @ObservationIgnored var onRefresh: ((Fetched) -> Void)?
+    /// The next fetch starts a fresh baseline (see `Fetched.isBaseline`).
+    @ObservationIgnored private var baselinePending = true
     private(set) var isLoading = false
     private(set) var hasLoadedOnce = false
     /// Modal error for something the user just did. Background refreshes never set it.
@@ -142,8 +152,7 @@ final class TodoHubStore {
             let (p, sugg) = await (projects, suggestions)
             // A refresh that started later has newer data; don't overwrite it.
             guard generation == refreshGeneration else { return }
-            apply(todos: t, conversations: c)
-            alertNewlyWaiting(todos: t, conversations: c)
+            applyFetched(todos: t, conversations: c)
             sectionComputers = Dictionary(m.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new })
             self.computers = comps
             if let p { self.projects = p }
@@ -191,7 +200,8 @@ final class TodoHubStore {
     private func startEventsTask() {
         guard eventsTask == nil, let client = hubClient() else { return }
         eventsTask = Task { [weak self] in
-            for await _ in TodoHubEvents.refreshes(baseURL: client.baseURL, token: client.token) {
+            for await event in TodoHubEvents.refreshes(baseURL: client.baseURL, token: client.token) {
+                if event == .reconnected { self?.startNewBaseline() }
                 await self?.refresh(trigger: .background)
             }
         }
@@ -202,25 +212,22 @@ final class TodoHubStore {
         eventsTask = nil
     }
 
-    /// Local "needs you" alerts for conversations that turned `waiting` since the last refresh.
-    /// The coordinator skips them when the server's push covers this device.
-    private func alertNewlyWaiting(todos: [Todo], conversations: [Conversation]) {
-        let statuses = Dictionary(conversations.map { ($0.todoId, $0.status) }, uniquingKeysWith: { _, new in new })
-        for todoId in NotificationPolicy.newlyWaiting(previous: lastStatuses, current: statuses) {
-            guard let conversation = conversations.first(where: { $0.todoId == todoId }) else { continue }
-            NotificationCenterCoordinator.shared.postWaiting(
-                todoId: todoId,
-                sessionId: conversation.sessionId,
-                title: todos.first(where: { $0.id == todoId })?.title ?? "Conversation",
-                body: "Needs you"
-            )
-        }
-        lastStatuses = statuses
+    /// Shows what a refresh fetched and tells `onRefresh`.
+    func applyFetched(todos: [Todo], conversations: [Conversation]) {
+        apply(todos: todos, conversations: conversations)
+        let isBaseline = baselinePending
+        baselinePending = false
+        onRefresh?(Fetched(todos: todos, conversations: conversations, isBaseline: isBaseline))
+    }
+
+    /// The next fetch is a fresh baseline: nothing that turned waiting meanwhile alerts.
+    func startNewBaseline() {
+        baselinePending = true
     }
 
     /// Call after the hub settings change.
     func reconnect() async {
-        lastStatuses = nil
+        startNewBaseline()
         stopLiveUpdates()
         await refresh()
         startLiveUpdates()

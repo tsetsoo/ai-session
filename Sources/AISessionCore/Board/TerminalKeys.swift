@@ -41,3 +41,24 @@ public struct ApproveGate: Sendable {
         tool == "codex" || armed
     }
 }
+
+/// Switching to a conversation that is waiting on the user lands keyboard focus in its terminal
+/// once it connects, on the Mac too, where focus would otherwise stay in the list. Other
+/// conversations keep the terminal's own focus-after-connect.
+public struct WaitingFocus: Sendable {
+    private var armed = false
+
+    public init() {}
+
+    /// The frame's terminal area turned into a terminal (`isReady`) or away from one. `status`
+    /// is the conversation's status at that moment (`nil`: unknown).
+    public mutating func readyChanged(isReady: Bool, status: ConversationStatus?) {
+        armed = isReady && status == .waiting
+    }
+
+    /// The terminal connected. True once per ready-while-waiting: focus the terminal now.
+    public mutating func connected() -> Bool {
+        defer { armed = false }
+        return armed
+    }
+}

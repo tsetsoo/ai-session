@@ -73,7 +73,8 @@ final class NotificationCenterCoordinator {
 
     private init() {}
 
-    private var visibleTodoId: String? { presence.visibleTodoId }
+    /// The conversation on screen while the app is active (`nil`: none, or the app is away).
+    var visibleTodoId: String? { presence.visibleTodoId }
 
     private var hub: String { TodoHubSettings.baseURLString }
 
