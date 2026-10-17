@@ -4,10 +4,27 @@ import Foundation
 import Observation
 import Speech
 
-/// In-app speech-to-text for the quick-add field: the microphone through `SFSpeechRecognizer`,
-/// on-device when the recognizer supports it. `transcript` grows while it runs; `stop()` (a
-/// second tap) ends it, and so does the recognizer finishing on its own. iOS only: on the Mac the
-/// keyboard's own dictation covers it.
+/// One listening run: permission, then microphone → recognizer. `Dictation` owns the state
+/// machine; tests substitute a fake.
+@MainActor
+protocol SpeechSession: AnyObject {
+    /// Speech and microphone permission (asked the first time).
+    func authorize() async -> Bool
+    /// Starts listening. `onResult` gets the text so far and whether it is final. Throws
+    /// `Dictation.Failure.unavailable` with everything torn down.
+    func begin(onResult: @escaping @MainActor (String?, Bool) -> Void) throws
+    /// Stops the microphone; the recognizer still delivers its final result.
+    func finish()
+    /// Stops everything; no more results.
+    func cancel()
+}
+
+/// In-app speech-to-text for the quick-add field, on-device when the recognizer supports it.
+/// `transcript` grows while it runs.
+/// - `stop()` (a second tap) ends listening and lets the final result land.
+/// - `cancel()` (adding the todo, leaving, going offline) drops anything still to come.
+///
+/// iOS only: on the Mac the keyboard's own dictation covers it.
 @MainActor
 @Observable
 final class Dictation {
@@ -23,90 +40,176 @@ final class Dictation {
         }
     }
 
-    var transcript = ""
-    private(set) var isRunning = false
+    enum Phase {
+        case idle
+        /// Waiting for permission; a second tap or a cancel abandons the start.
+        case starting
+        case running
+    }
 
-    @ObservationIgnored private let recognizer = SFSpeechRecognizer()
-    @ObservationIgnored private let engine = AVAudioEngine()
-    @ObservationIgnored private var request: SFSpeechAudioBufferRecognitionRequest?
-    @ObservationIgnored private var task: SFSpeechRecognitionTask?
-    /// Incremented per start; results from an earlier run are dropped.
+    var transcript = ""
+    private(set) var phase = Phase.idle
+    /// Starting counts as running, so the mic button stops rather than starting twice.
+    var isRunning: Bool { phase != .idle }
+
+    @ObservationIgnored private let makeSession: @MainActor () -> SpeechSession
+    @ObservationIgnored private var session: SpeechSession?
+    /// Incremented per start and per cancel; anything from an older run is dropped.
     @ObservationIgnored private var generation = 0
 
-    /// Asks for speech and microphone permission the first time, then listens.
+    init(makeSession: @escaping @MainActor () -> SpeechSession = { LiveSpeechSession() }) {
+        self.makeSession = makeSession
+    }
+
+    /// Asks for permission the first time, then listens. Ignored while starting or running.
     func start() async throws {
-        guard !isRunning else { return }
-        guard await Self.speechAuthorized(), await AVAudioApplication.requestRecordPermission() else {
+        guard phase == .idle else { return }
+        session?.cancel()
+        session = nil
+        phase = .starting
+        generation += 1
+        let run = generation
+        transcript = ""
+        let session = makeSession()
+        let allowed = await session.authorize()
+        // Stopped or cancelled while permission was pending: never touch the microphone.
+        guard run == generation, phase == .starting else { return }
+        guard allowed else {
+            phase = .idle
             throw Failure.notAllowed
         }
-        guard let recognizer, recognizer.isAvailable else { throw Failure.unavailable }
+        do {
+            try session.begin { [weak self] text, isFinal in
+                self?.receive(text: text, isFinal: isFinal, run: run)
+            }
+        } catch {
+            phase = .idle
+            throw (error as? Failure) ?? Failure.unavailable
+        }
+        self.session = session
+        phase = .running
+    }
 
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement, options: .duckOthers)
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
+    /// Stops listening; the final result still lands in `transcript`.
+    func stop() {
+        switch phase {
+        case .idle:
+            return
+        case .starting:
+            cancel()
+        case .running:
+            phase = .idle
+            session?.finish()
+        }
+    }
+
+    /// Stops listening and drops any result still to come.
+    func cancel() {
+        generation += 1
+        phase = .idle
+        session?.cancel()
+        session = nil
+    }
+
+    private func receive(text: String?, isFinal: Bool, run: Int) {
+        guard run == generation else { return }
+        if let text { transcript = text }
+        guard isFinal else { return }
+        phase = .idle
+        session?.cancel()
+        session = nil
+    }
+}
+
+/// The microphone through `AVAudioEngine` into `SFSpeechRecognizer`.
+@MainActor
+final class LiveSpeechSession: SpeechSession {
+    private let recognizer = SFSpeechRecognizer()
+    private let engine = AVAudioEngine()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+    private var tapInstalled = false
+
+    func authorize() async -> Bool {
+        guard await Self.speechAuthorized() else { return false }
+        return await AVAudioApplication.requestRecordPermission()
+    }
+
+    func begin(onResult: @escaping @MainActor (String?, Bool) -> Void) throws {
+        guard let recognizer, recognizer.isAvailable else { throw Dictation.Failure.unavailable }
+        let audio = AVAudioSession.sharedInstance()
+        do {
+            try audio.setCategory(.record, mode: .measurement, options: .duckOthers)
+            try audio.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            tearDown()
+            throw Dictation.Failure.unavailable
+        }
+        // No input (e.g. during a call): installing a tap would raise an exception.
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            tearDown()
+            throw Dictation.Failure.unavailable
+        }
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         if recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
-        Self.installTap(on: engine.inputNode, feeding: request)
+        Self.installTap(on: engine.inputNode, format: format, feeding: request)
+        tapInstalled = true
+        self.request = request
         engine.prepare()
         do {
             try engine.start()
         } catch {
-            engine.inputNode.removeTap(onBus: 0)
-            try? session.setActive(false, options: .notifyOthersOnDeactivation)
-            throw Failure.unavailable
+            tearDown()
+            throw Dictation.Failure.unavailable
         }
-
-        // A previous run still finishing must not write into this one.
-        task?.cancel()
-        generation += 1
-        transcript = ""
-        isRunning = true
-        self.request = request
-        task = recognizer.recognitionTask(
-            with: request, resultHandler: Self.resultHandler(for: self, generation: generation)
-        )
+        task = recognizer.recognitionTask(with: request, resultHandler: Self.resultHandler(onResult))
     }
 
-    /// Stops listening; the recognizer still delivers what it heard so far.
-    func stop() {
-        guard isRunning else { return }
-        isRunning = false
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
+    func finish() {
+        tearDown()
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        tearDown()
+    }
+
+    /// Microphone off, tap removed, audio session back to the default. Safe to repeat.
+    private func tearDown() {
+        if engine.isRunning { engine.stop() }
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
         request?.endAudio()
         request = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-    }
-
-    private func receive(text: String?, isFinal: Bool, generation: Int) {
-        guard generation == self.generation else { return }
-        if let text { transcript = text }
-        if isFinal {
-            stop()
-            task = nil
-        }
+        let audio = AVAudioSession.sharedInstance()
+        try? audio.setActive(false, options: .notifyOthersOnDeactivation)
+        try? audio.setCategory(.soloAmbient, mode: .default, options: [])
     }
 
     // The tap and result callbacks run off the main actor; build them outside it.
 
-    private nonisolated static func installTap(on node: AVAudioInputNode,
+    private nonisolated static func installTap(on node: AVAudioInputNode, format: AVAudioFormat,
                                                feeding request: SFSpeechAudioBufferRecognitionRequest) {
-        node.installTap(onBus: 0, bufferSize: 1024, format: node.outputFormat(forBus: 0)) { buffer, _ in
+        node.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
             request.append(buffer)
         }
     }
 
     private nonisolated static func resultHandler(
-        for dictation: Dictation, generation: Int
+        _ onResult: @escaping @MainActor (String?, Bool) -> Void
     ) -> (SFSpeechRecognitionResult?, Error?) -> Void {
-        { [weak dictation] result, error in
+        { result, error in
             let text = result?.bestTranscription.formattedString
             let isFinal = (result?.isFinal ?? false) || error != nil
-            Task { @MainActor in dictation?.receive(text: text, isFinal: isFinal, generation: generation) }
+            Task { @MainActor in onResult(text, isFinal) }
         }
     }
 

@@ -77,9 +77,9 @@ struct QuickAddBar: View {
             title = QuickAdd.text(typed: typedBeforeDictation, dictated: transcript)
         }
         .onChange(of: model.store.isOffline) { _, offline in
-            if offline { dictation.stop() }
+            if offline { dictation.cancel() }
         }
-        .onDisappear { dictation.stop() }
+        .onDisappear { dictation.cancel() }
         #endif
     }
 
@@ -116,6 +116,7 @@ struct QuickAddBar: View {
     }
 
     private func toggleDictation() {
+        // Starting counts as running, so a second tap while permission is pending stops it.
         if dictation.isRunning {
             dictation.stop()
             return
@@ -134,7 +135,8 @@ struct QuickAddBar: View {
 
     private func add() {
         #if os(iOS)
-        dictation.stop()
+        // Cancel, not stop: a late final result would write the added text back.
+        dictation.cancel()
         #endif
         let text = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !model.store.isOffline else { return }
@@ -146,12 +148,13 @@ struct QuickAddBar: View {
         Task { await store.createTodo(section: section, title: text) }
     }
 
-    /// The list's grouped background, nearly opaque, so the white field stands out on it.
+    /// The list's grouped background, opaque so rows never show through; the white field stands
+    /// out on it.
     private static var barBackground: Color {
         #if os(iOS)
-        Color(uiColor: .systemGroupedBackground).opacity(0.94)
+        Color(uiColor: .systemGroupedBackground)
         #else
-        Color(nsColor: .windowBackgroundColor).opacity(0.94)
+        Color(nsColor: .windowBackgroundColor)
         #endif
     }
 
