@@ -110,6 +110,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
 
     // A fresh database gets the v3 objects here; existing ones got them in `migrate`.
     create_v3_objects(&conn).expect("Failed to create project, session and memory tables");
+    create_v4_objects(&conn).expect("Failed to create push notification tables");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -287,9 +288,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v1: todo-app #1: Claude-only `tool` CHECK, conversations keyed by `claude_session_id`
 /// - v2: `tool` in claude/codex/cursor, `session_id`, UNIQUE(tool, session_id)
 /// - v3: `projects`, `sessions`, `session_days`, `memories`, `todos.project_id` (additive)
+/// - v4: `push_devices`, `push_settings`, `push_muted_sections`, `push_muted_todos` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -302,6 +304,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if table_sql(conn, "push_devices")?.is_some() {
+        return Ok(4);
     }
     if table_sql(conn, "projects")?.is_some() {
         return Ok(3);
@@ -330,10 +335,53 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 2 {
         if !backed_up {
             backup_before_migration(conn, db_path, 3)?;
+            backed_up = true;
         }
         migrate_v2_to_v3(conn)?;
+        version = 3;
+    }
+    if version == 3 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 4)?;
+        }
+        create_v4_objects(conn)?;
     }
     Ok(())
+}
+
+/// Everything v4 adds: the push notification tables (see push/store.rs). Only creates,
+/// so it is safe to run on every start and an older binary after a rollback ignores them.
+fn create_v4_objects(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS push_devices (
+            token        TEXT PRIMARY KEY,
+            platform     TEXT NOT NULL CHECK(platform IN ('ios','macos')),
+            environment  TEXT NOT NULL CHECK(environment IN ('sandbox','production')),
+            bundle_id    TEXT NOT NULL,
+            app_version  TEXT NOT NULL,
+            device_name  TEXT,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            last_sent_at TEXT,
+            last_error   TEXT
+        );
+        CREATE TABLE IF NOT EXISTS push_settings (
+            id                 INTEGER PRIMARY KEY CHECK(id = 1),
+            notify_waiting     INTEGER NOT NULL DEFAULT 1,
+            done_after_minutes INTEGER,
+            grace_seconds      INTEGER NOT NULL DEFAULT 20,
+            quiet_start        TEXT,
+            quiet_end          TEXT,
+            quiet_tz           TEXT
+        );
+        CREATE TABLE IF NOT EXISTS push_muted_sections (
+            section TEXT PRIMARY KEY CHECK(section IN ('Sp','I','Si','P'))
+        );
+        CREATE TABLE IF NOT EXISTS push_muted_todos (
+            todo_id    TEXT PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )
 }
 
 /// v2 → v3. Nothing is rewritten: new tables, a new nullable column and indexes.
@@ -565,6 +613,82 @@ mod tests {
     ";
 
     const V3_TABLES: [&str; 4] = ["projects", "sessions", "session_days", "memories"];
+    const V4_TABLES: [&str; 4] = ["push_devices", "push_settings", "push_muted_sections", "push_muted_todos"];
+
+    /// A v3 database as the projects/memories release leaves it: the v2 fixture plus the v3
+    /// objects, one project, and user_version 3.
+    fn v3_db() -> TestDb {
+        let db = TestDb::new("migrate");
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(V2_SCHEMA).unwrap();
+        create_v3_objects(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('p1', 'todo-app', 'mac', '~/programming/todo-app');
+             UPDATE todos SET project_id = 'p1' WHERE id = 't1';
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn migrates_v3_to_v4_keeping_rows() {
+        let db = v3_db();
+        let pool = db.pool();
+        assert_eq!(db.backups().len(), 1, "one backup before the v4 step");
+        assert!(db.backups()[0].to_string_lossy().contains(".pre-v4-"), "{:?}", db.backups());
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 4);
+        for table in V4_TABLES {
+            assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
+        }
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM todos"), 3);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM conversations"), 2);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM projects"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM todos WHERE project_id = 'p1'"), 1);
+        let backup = Connection::open(&db.backups()[0]).unwrap();
+        assert_eq!(user_version(&backup), 3);
+        assert!(table_sql(&backup, "push_devices").unwrap().is_none());
+        drop(conn);
+        drop(pool);
+        drop(db.pool());
+        assert_eq!(db.backups().len(), 1, "re-opening a v4 database takes no new backup");
+    }
+
+    #[test]
+    fn migrates_v2_through_v4_with_one_backup() {
+        let db = TestDb::new("migrate");
+        Connection::open(&db.path).unwrap().execute_batch(V2_SCHEMA).unwrap();
+        let pool = db.pool();
+        assert_eq!(db.backups().len(), 1);
+        assert!(db.backups()[0].to_string_lossy().contains(".pre-v3-"));
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 4);
+        for table in V3_TABLES.iter().chain(V4_TABLES.iter()) {
+            assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
+        }
+    }
+
+    #[test]
+    fn fresh_database_is_v4_without_backup() {
+        let db = TestDb::new("migrate");
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 4);
+        assert!(db.backups().is_empty());
+        for table in V4_TABLES {
+            assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
+        }
+    }
+
+    #[test]
+    fn schema_version_sniffs_push_devices_as_4() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 4);
+    }
 
     fn column_names(conn: &Connection, table: &str) -> Vec<String> {
         conn.prepare(&format!("PRAGMA table_info({table})"))
@@ -591,7 +715,7 @@ mod tests {
         assert_eq!(db.backups().len(), 1, "re-opening a v3 database takes no new backup");
 
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 3);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM todos"), 3);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM conversations"), 2);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM section_computers"), 2);
@@ -622,7 +746,7 @@ mod tests {
         let db = TestDb::new("migrate");
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 3);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(db.backups().is_empty());
         assert!(column_names(&conn, "todos").contains(&"project_id".to_string()));
         for table in V3_TABLES {
@@ -640,8 +764,10 @@ mod tests {
         let db = TestDb::new("migrate");
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 3);
         // An unversioned database that already has the v3 tables is v3, not v2.
+        conn.execute_batch(&V4_TABLES.map(|t| format!("DROP TABLE {t};")).concat()).unwrap();
         conn.pragma_update(None, "user_version", 0).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 3);
     }
@@ -655,7 +781,7 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         assert_eq!(db.backups().len(), 1);
-        assert_eq!(user_version(&pool.get().unwrap()), 3);
+        assert_eq!(user_version(&pool.get().unwrap()), SCHEMA_VERSION);
     }
 
     fn v1_db() -> TestDb {

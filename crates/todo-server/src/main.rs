@@ -12,6 +12,7 @@ mod memories;
 mod models;
 mod paths;
 mod projects;
+mod push;
 mod sessions;
 #[cfg(test)]
 mod test_support;

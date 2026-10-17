@@ -331,6 +331,11 @@ pub struct ConversationStatusRequest {
     pub status: ConversationStatus,
     #[serde(default)]
     pub message: Option<String>,
+    /// Sent by hooks: a tmux client attached to the conversation had keyboard activity in
+    /// the last minute (or, on a repeated `waiting`, since the prompt appeared). Suppresses
+    /// the push. Older hooks omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attended: Option<bool>,
 }
 
 impl ConversationStatusRequest {
@@ -793,6 +798,197 @@ pub struct UpdateMemoryRequest {
     pub todo_id: Option<Option<String>>,
 }
 
+// ---------------------------------------------------------------------------
+// Push notifications (APNs)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApnsEnvironment {
+    Sandbox,
+    Production,
+}
+
+impl ApnsEnvironment {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ApnsEnvironment::Sandbox => "sandbox",
+            ApnsEnvironment::Production => "production",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<ApnsEnvironment> {
+        match s {
+            "sandbox" => Some(ApnsEnvironment::Sandbox),
+            "production" => Some(ApnsEnvironment::Production),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn other(&self) -> ApnsEnvironment {
+        match self {
+            ApnsEnvironment::Sandbox => ApnsEnvironment::Production,
+            ApnsEnvironment::Production => ApnsEnvironment::Sandbox,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PushPlatform {
+    Ios,
+    Macos,
+}
+
+impl PushPlatform {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PushPlatform::Ios => "ios",
+            PushPlatform::Macos => "macos",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<PushPlatform> {
+        match s {
+            "ios" => Some(PushPlatform::Ios),
+            "macos" => Some(PushPlatform::Macos),
+            _ => None,
+        }
+    }
+}
+
+/// `PUT /api/push/devices`: register (or refresh) this device's APNs token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushDeviceRequest {
+    /// APNs device token, hex
+    pub token: String,
+    pub platform: PushPlatform,
+    pub environment: ApnsEnvironment,
+    /// The app's bundle id; used as `apns-topic`
+    pub bundle_id: String,
+    pub app_version: String,
+    #[serde(default)]
+    pub device_name: Option<String>,
+}
+
+/// A registered device. The token is never returned in full.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PushDevice {
+    /// First 8 hex characters of the token
+    pub token_prefix: String,
+    pub platform: PushPlatform,
+    pub environment: ApnsEnvironment,
+    pub bundle_id: String,
+    pub app_version: String,
+    pub device_name: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_sent_at: Option<String>,
+    /// Last APNs failure reason, e.g. `BadDeviceToken`
+    pub last_error: Option<String>,
+}
+
+/// Quiet hours: pushes inside the window are delivered silently (`passive`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuietHours {
+    /// `HH:MM`
+    pub start: String,
+    /// `HH:MM`; earlier than `start` means the window crosses midnight
+    pub end: String,
+    /// IANA timezone, e.g. `Europe/Sofia`
+    pub tz: String,
+}
+
+/// Default grace before a `waiting` push is sent.
+pub const DEFAULT_PUSH_GRACE_SECONDS: u32 = 20;
+
+/// `GET /api/push/settings`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PushSettings {
+    pub notify_waiting: bool,
+    /// Push when a busy run of at least this many minutes goes idle; `None` = never
+    pub done_after_minutes: Option<u32>,
+    pub grace_seconds: u32,
+    pub quiet_hours: Option<QuietHours>,
+    pub muted_sections: Vec<Section>,
+    pub muted_todo_ids: Vec<String>,
+}
+
+impl Default for PushSettings {
+    fn default() -> Self {
+        Self {
+            notify_waiting: true,
+            done_after_minutes: None,
+            grace_seconds: DEFAULT_PUSH_GRACE_SECONDS,
+            quiet_hours: None,
+            muted_sections: Vec::new(),
+            muted_todo_ids: Vec::new(),
+        }
+    }
+}
+
+/// `PUT /api/push/settings`: replaces everything but the per-todo mutes (which have their
+/// own endpoint). Omitted fields take their defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PushSettingsUpdate {
+    pub notify_waiting: bool,
+    pub done_after_minutes: Option<u32>,
+    pub grace_seconds: u32,
+    pub quiet_hours: Option<QuietHours>,
+    pub muted_sections: Vec<Section>,
+}
+
+impl Default for PushSettingsUpdate {
+    fn default() -> Self {
+        let d = PushSettings::default();
+        Self {
+            notify_waiting: d.notify_waiting,
+            done_after_minutes: d.done_after_minutes,
+            grace_seconds: d.grace_seconds,
+            quiet_hours: d.quiet_hours,
+            muted_sections: d.muted_sections,
+        }
+    }
+}
+
+/// `POST /api/push/presence`: this client is showing `todo_id`'s conversation (or none).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceRequest {
+    pub client_id: String,
+    #[serde(default)]
+    pub todo_id: Option<String>,
+}
+
+/// `GET /api/push/status`. Never contains key material.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PushStatus {
+    /// The APNs key, key id and team id are all set
+    pub configured: bool,
+    pub last_error: Option<String>,
+    pub last_sent_at: Option<String>,
+    pub devices: usize,
+}
+
+/// `POST /api/push/test`: all devices, or the one with `token`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PushTestRequest {
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PushTestResult {
+    pub token_prefix: String,
+    pub ok: bool,
+    pub reason: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -896,5 +1092,20 @@ mod tests {
         assert!(json["input_tokens"].is_null());
         let section = SectionRollup { section: Some(Section::Sp), counters: StatsCounters::default() };
         assert_eq!(serde_json::to_value(section).unwrap()["section"], "Sp");
+    }
+
+    #[test]
+    fn push_settings_update_defaults_omitted_fields() {
+        let u: PushSettingsUpdate = serde_json::from_str(r#"{"muted_sections":["P"]}"#).unwrap();
+        assert!(u.notify_waiting);
+        assert_eq!(u.grace_seconds, DEFAULT_PUSH_GRACE_SECONDS);
+        assert_eq!(u.muted_sections, vec![Section::P]);
+        let d: PushDeviceRequest = serde_json::from_str(
+            r#"{"token":"ab","platform":"ios","environment":"sandbox","bundle_id":"b","app_version":"1"}"#,
+        )
+        .unwrap();
+        assert_eq!((d.platform, d.environment, d.device_name), (PushPlatform::Ios, ApnsEnvironment::Sandbox, None));
+        let s: ConversationStatusRequest = serde_json::from_str(r#"{"session_id":"a","status":"waiting","attended":true}"#).unwrap();
+        assert_eq!(s.attended, Some(true));
     }
 }
