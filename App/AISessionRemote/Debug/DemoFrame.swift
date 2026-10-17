@@ -49,7 +49,10 @@ struct DemoFrameScreen: View {
         guard Self.phase != "idle" else { return }
         await loader.start()
         switch Self.problem {
-        case "unreachable": loader.connectionFailed()
+        case "unreachable": loader.connectionFailed(.unreachable)
+        case "signInFailed": loader.connectionFailed(.signIn)
+        case "hostKeyChanged": loader.connectionFailed(.hostKeyChanged)
+        case "terminalFailed": loader.connectionFailed(.terminal)
         case "helpersMissing": loader.ended(exitStatus: 127)
         case "toolMissing": loader.ended(exitStatus: 90)
         case "folderMissing": loader.ended(exitStatus: 93)
@@ -78,6 +81,7 @@ struct DemoFrameScreen: View {
                 switch problem {
                 case "noComputer": throw TodoHubError.conflict("Section Sp has no computer assigned")
                 case "hub": throw TodoHubError.unreachable("The request timed out.")
+                case "tokenRejected": throw TodoHubError.unauthorized
                 default: return conversation
                 }
             },
