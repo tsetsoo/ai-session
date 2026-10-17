@@ -44,9 +44,11 @@ struct AISessionRemoteApp: App {
         // Three columns: sidebar, list and the conversation (the Main board is 1280×800).
         .defaultSize(width: 1280, height: 800)
         .commands {
-            // Frees ⌘N for "New Session" (bound on the sessions list's add button).
+            // Frees ⌘N for New Todo; New Session is ⌥⌘N on the sessions list's add button.
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Conversation") {
+                PopOutButton(model: model)
+                Divider()
                 // Plain ⌘= is handled by a key monitor (TextSizeShortcuts), since ⌘+ needs Shift.
                 Button("Bigger Text") { TextSizeShortcuts.step(by: 1) }
                     .keyboardShortcut("+", modifiers: .command)
@@ -61,6 +63,14 @@ struct AISessionRemoteApp: App {
         #endif
 
         #if os(macOS)
+        // ⧉ / ⇧⌘O: a conversation in its own window, keyed by todo id.
+        WindowGroup(id: ConversationWindow.id, for: String.self) { $todoID in
+            ConversationWindow(todoID: todoID)
+                .environment(model)
+        }
+        .modelContainer(HostStore.shared)
+        .defaultSize(width: 960, height: 640)
+
         // ⌘, and the sidebar's Settings row.
         Settings {
             SettingsView()
@@ -70,3 +80,19 @@ struct AISessionRemoteApp: App {
         #endif
     }
 }
+
+#if os(macOS)
+/// Conversation ▸ Open in New Window (⇧⌘O) for the main window's selected conversation.
+private struct PopOutButton: View {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Open in New Window") {
+            if let id = model.selectedTodoID { model.popOut(id, openWindow: openWindow) }
+        }
+        .keyboardShortcut("o", modifiers: [.command, .shift])
+        .disabled(model.selectedTodoID == nil)
+    }
+}
+#endif

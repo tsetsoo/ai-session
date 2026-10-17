@@ -1,4 +1,5 @@
 import AISessionCore
+import SwiftData
 import SwiftUI
 #if os(macOS)
 import AppKit
@@ -15,10 +16,18 @@ struct MacShell: View {
     }
 
     @Environment(AppModel.self) private var model
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @AppStorage(QuickAdd.sectionKey) private var quickAddSection = TodoSection.i.rawValue
     @State private var query = ""
     @State private var settings: SettingsRequest?
     @State private var showingAdd = false
+    /// ⏎, a double-click or Open for the selected todo's frame.
+    @State private var frameRequest: FrameRequest?
+    /// A computer's Other Sessions, On This Computer or Open Shell, shown in the detail column.
+    @State private var computerPage: ComputerPage?
 
     private var store: TodoHubStore { model.store }
 
@@ -35,6 +44,7 @@ struct MacShell: View {
         }
         .tint(DS.accent)
         .environment(\.openAppSettings) { settings = SettingsRequest(initial: $0) }
+        .environment(\.listPrimaryAction, start)
         .sheet(item: $settings) { request in
             SettingsView(initial: request.initial)
         }
@@ -44,7 +54,10 @@ struct MacShell: View {
             }
             .tint(DS.accent)
         }
-        .onChange(of: model.sidebarSelection) { _, _ in query = "" }
+        .onChange(of: model.sidebarSelection) { _, _ in
+            query = ""
+            computerPage = nil
+        }
         .onAppear(perform: applyInitialSelection)
         .task { await model.startSync() }
     }
@@ -88,23 +101,19 @@ struct MacShell: View {
         switch item {
         case .needsYou:
             ConversationListView(filter: .constant(.needsYou), showsFilterPicker: false,
-                                 query: query, selection: selection, onOpen: select)
+                                 query: query, selection: selection, onOpen: open)
         case .runningNow:
             ConversationListView(filter: .constant(.running), showsFilterPicker: false,
                                  showsShortcuts: Self.showsShortcuts, query: query, selection: selection,
-                                 onOpen: select)
+                                 onOpen: open)
         case let .section(section):
-            TodoListView(sections: [section], query: query, selection: selection, onOpen: select)
+            TodoListView(sections: [section], query: query, selection: selection, onOpen: open)
         case let .computer(id):
             if let computer = store.computers.first(where: { $0.id == id }) {
-                // Other Sessions, On This Computer and Open Shell push inside the list column,
-                // leaving the conversation in the detail column alone.
-                NavigationStack {
-                    ComputerDetailView(computer: computer, query: query, selection: selection, onOpen: select)
-                        // The stack hides the column's search field; offer it again inside.
-                        .searchable(text: $query, prompt: "Search")
-                }
-                .id(id)
+                // Other Sessions, On This Computer and Open Shell select like conversations and
+                // open in the detail column: the list column is too narrow for them.
+                ComputerDetailView(computer: computer, query: query, selection: selection, onOpen: open)
+                    .id(id)
             } else {
                 ContentUnavailableView("Computer Not Found", systemImage: "desktopcomputer")
             }
@@ -141,13 +150,19 @@ struct MacShell: View {
 
     @ViewBuilder
     private var detailColumn: some View {
-        if let id = model.selectedTodoID, let todo = store.todos.first(where: { $0.id == id }) {
-            // 5.2: debounce selection by 150 ms; ⏎ and double-click start; pop-out windows.
-            // Until then selection only attaches to a running conversation, never starts one.
-            TodoConversationScreen(todo: todo, store: store, onAppear: .attachIfRunning) {
+        if let page = computerPage, case let .computer(id) = sidebarItem,
+           let computer = store.computers.first(where: { $0.id == id }),
+           let host = HostLookup.host(for: computer, in: hosts) {
+            NavigationStack {
+                page.destination(computer: computer, host: host)
+            }
+            .id("\(id)|\(page.rawValue)")
+        } else if let id = model.selectedTodoID, let todo = store.todos.first(where: { $0.id == id }) {
+            // Selection attaches to a running conversation after 150 ms and never starts one;
+            // ⏎, a double-click or Open does.
+            ConversationDetail(todo: todo, request: $frameRequest) {
                 model.selectedTodoID = nil
             }
-            .id(todo.id)
         } else {
             ContentUnavailableView {
                 Label("Select a conversation", systemImage: "bubble.left.and.bubble.right")
@@ -159,13 +174,36 @@ struct MacShell: View {
 
     // MARK: Selection
 
+    /// Todo ids, and a computer's pages by `ComputerPage.tag`.
     private var selection: Binding<String?> {
-        Binding(get: { model.selectedTodoID }, set: { model.selectedTodoID = $0 })
+        Binding(get: { computerPage?.tag ?? model.selectedTodoID }, set: { tag in
+            if let page = ComputerPage(tag: tag) {
+                computerPage = page
+                model.selectedTodoID = nil
+            } else {
+                computerPage = nil
+                model.selectedTodoID = tag
+            }
+        })
     }
 
-    /// "Open" from a row's context menu: select it.
-    private func select(_ todo: Todo) {
+    /// "Open" from a row's context menu: select it and start (or resume) it.
+    private func open(_ todo: Todo) {
+        computerPage = nil
         model.selectedTodoID = todo.id
+        start(todo.id)
+    }
+
+    /// ⏎ or a double-click on a row: start (or resume) its conversation. A page row just shows.
+    private func start(_ tag: String) {
+        guard ComputerPage(tag: tag) == nil else { return }
+        #if os(macOS)
+        if model.poppedOut.contains(tag) {
+            model.popOut(tag, openWindow: openWindow)
+            return
+        }
+        #endif
+        frameRequest = FrameRequest(kind: .start, todoID: tag)
     }
 
     private func applyInitialSelection() {
@@ -176,15 +214,259 @@ struct MacShell: View {
                 .flatMap(AppModel.SidebarItem.init(demoArgument:)) ?? .runningNow
             model.selectedTodoID = DemoFixtures.value(after: "-uiDemoOpen") ?? model.board.runningNow.first?.todoId
             #if os(macOS)
+            // `-uiDemoPopOut <todo id>`: that conversation in its own window.
+            if let id = DemoFixtures.value(after: "-uiDemoPopOut") {
+                model.popOut(id, openWindow: openWindow)
+                // `-uiDemoMainKey`: the main window back in front, to show its placeholder active.
+                if ProcessInfo.processInfo.arguments.contains("-uiDemoMainKey") {
+                    let title = store.todos.first { $0.id == id }?.title
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        NSApplication.shared.windows
+                            .first { $0.isVisible && $0.canBecomeMain && $0.title != title }?
+                            .makeKeyAndOrderFront(nil)
+                    }
+                }
+            }
             // Launched from a script, the window would stay inactive and draw its selection grey.
             NSApplication.shared.activate(ignoringOtherApps: true)
+            // `-uiDemoFocusList`: keyboard focus in the list column, to show the focused selection.
+            if ProcessInfo.processInfo.arguments.contains("-uiDemoFocusList") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: Self.focusListColumn)
+            }
             #endif
             return
         }
         #endif
         if model.sidebarSelection == nil { model.sidebarSelection = .runningNow }
     }
+
+    #if DEBUG && os(macOS)
+    /// The key window's second table from the left: the list column (the first is the sidebar).
+    private static func focusListColumn() {
+        guard let window = NSApplication.shared.keyWindow, let root = window.contentView else { return }
+        func tables(in view: NSView) -> [NSTableView] {
+            (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap(tables)
+        }
+        let sorted = tables(in: root).sorted {
+            $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX
+        }
+        if sorted.count > 1 { window.makeFirstResponder(sorted[1]) }
+    }
+    #endif
 }
+
+// MARK: - Selecting vs attaching
+
+/// Turns the Mac's selection into attaching its conversation's terminal, never starting one.
+///
+/// - A selection settles for 150 ms first, so arrowing through the list attaches only where it
+///   stops. Like `TerminalResizeDebouncer` it takes an injectable scheduler for tests.
+/// - It attaches only once the conversation's tmux session was listed alive: attaching runs
+///   `ai-todo-open`, which would quietly recreate a dead session. If the computer hasn't been
+///   listed yet it asks for a liveness refresh and waits; if that gets no answer it stays on
+///   Start / Resume.
+/// - It re-evaluates when the selected conversation's running state changes: starting to run
+///   elsewhere attaches (debounced), closing drops to Start / Resume.
+@MainActor
+@Observable
+final class SelectionAttacher {
+    typealias Scheduler = (@escaping @MainActor @Sendable () -> Void) -> Void
+
+    nonisolated static let delay: TimeInterval = 0.15
+
+    /// The selected todo's readiness; the detail reads it from `AppModel`, tests fake it.
+    @ObservationIgnored var readiness: (String) -> AttachReadiness = { _ in .unknown }
+    /// Delivers `.attach` / `.detach` to the frame.
+    @ObservationIgnored var perform: (FrameRequest) -> Void = { _ in }
+
+    /// Between a selection (or a change in its running state) and acting on it.
+    private(set) var isSettling = false
+    /// Bumped when the selection's computer needs a liveness refresh; the detail runs it.
+    private(set) var livenessRequests = 0
+
+    @ObservationIgnored private let scheduler: Scheduler
+    @ObservationIgnored private(set) var selection: String?
+    /// The selection's last definite state (`.running` or `.closed`): only a change acts.
+    @ObservationIgnored private var lastKnown: AttachReadiness?
+    @ObservationIgnored private var askedForLiveness = false
+    @ObservationIgnored private var generation = 0
+
+    init(scheduler: @escaping Scheduler = { work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + SelectionAttacher.delay, execute: work)
+    }) {
+        self.scheduler = scheduler
+    }
+
+    func select(_ todoID: String?) {
+        guard todoID != selection else { return }
+        selection = todoID
+        lastKnown = nil
+        askedForLiveness = false
+        if todoID == nil {
+            generation += 1
+            isSettling = false
+        } else {
+            schedule()
+        }
+    }
+
+    /// The same selection, evaluated afresh (Bring Back from a pop-out window).
+    func reselect() {
+        lastKnown = nil
+        askedForLiveness = false
+        if selection != nil { schedule() }
+    }
+
+    /// The board or liveness changed for the selection.
+    func inputsChanged() {
+        guard selection != nil, !isSettling else { return }
+        schedule()
+    }
+
+    private func schedule() {
+        generation += 1
+        let thisGeneration = generation
+        isSettling = true
+        scheduler { @MainActor [weak self] in
+            guard let self, self.generation == thisGeneration else { return }
+            self.isSettling = false
+            self.evaluate()
+        }
+    }
+
+    private func evaluate() {
+        guard let todoID = selection else { return }
+        switch readiness(todoID) {
+        case .running:
+            if lastKnown != .running { perform(FrameRequest(kind: .attach, todoID: todoID)) }
+            lastKnown = .running
+        case .closed:
+            if lastKnown == .running { perform(FrameRequest(kind: .detach, todoID: todoID)) }
+            lastKnown = .closed
+        case .awaitingLiveness:
+            if !askedForLiveness {
+                askedForLiveness = true
+                livenessRequests += 1
+            }
+        case .unknown:
+            // Neither attach (it could recreate a dead session) nor drop a live terminal.
+            break
+        }
+    }
+}
+
+/// A todo's frame attached by its own `SelectionAttacher`: the shell's detail column (the
+/// selection changes underneath it) and each pop-out window (one todo).
+struct ConversationDetail: View {
+    let todo: Todo
+    @Binding var request: FrameRequest?
+    /// The pop-out window itself, rather than the main window's detail.
+    var isWindow = false
+    let onDeleted: () -> Void
+
+    @Environment(AppModel.self) private var model
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
+    @State private var attacher = SelectionAttacher()
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+    #endif
+
+    var body: some View {
+        let readiness = model.attachReadiness(forTodo: todo.id)
+        let poppedOut = !isWindow && model.poppedOut.contains(todo.id)
+        TodoConversationScreen(
+            todo: todo, store: model.store, onAppear: .onRequest, request: $request,
+            placeholder: placeholder(readiness: readiness, poppedOut: poppedOut),
+            isSuspended: poppedOut, onPopOut: popOutAction, onDeleted: onDeleted
+        )
+        .id(todo.id)
+        .onChange(of: todo.id, initial: true) { _, id in
+            // A request left for another todo must not fire when that one is selected again.
+            if request?.todoID != id { request = nil }
+            attacher.readiness = { [model] in model.attachReadiness(forTodo: $0) }
+            let request = $request
+            attacher.perform = { request.wrappedValue = $0 }
+            attacher.select(id)
+        }
+        .onChange(of: readiness) { _, _ in attacher.inputsChanged() }
+        .onChange(of: poppedOut) { _, poppedOut in
+            if !poppedOut { attacher.reselect() }
+        }
+        .task(id: attacher.livenessRequests) {
+            guard attacher.livenessRequests > 0 else { return }
+            await model.refreshLiveness(hosts: hosts)
+        }
+    }
+
+    private func placeholder(readiness: AttachReadiness, poppedOut: Bool) -> FramePlaceholder? {
+        #if os(macOS)
+        if poppedOut {
+            return .poppedOut(showWindow: { model.popOut(todo.id, openWindow: openWindow) }, bringBack: bringBack)
+        }
+        #endif
+        switch readiness {
+        case .running:
+            return attacher.isSettling ? .settling : nil
+        case .awaitingLiveness:
+            let computer = model.store.conversations[todo.id]?.computer.name ?? "the computer"
+            return attacher.isSettling ? .settling : .checking(computer: computer)
+        case .closed, .unknown:
+            return nil
+        }
+    }
+
+    #if os(macOS)
+    private var popOutAction: (() -> Void)? {
+        isWindow ? nil : { model.popOut(todo.id, openWindow: openWindow) }
+    }
+
+    /// Closes the pop-out window; this frame then attaches again under the same rules.
+    private func bringBack() {
+        dismissWindow(id: ConversationWindow.id, value: todo.id)
+        model.poppedOut.remove(todo.id)
+    }
+    #else
+    private var popOutAction: (() -> Void)? { nil }
+    #endif
+}
+
+#if os(macOS)
+/// ⧉ / ⇧⌘O: one todo's conversation in its own window, keyed by todo id. The main window's
+/// detail shows a placeholder meanwhile, so two clients don't fight over the terminal size.
+struct ConversationWindow: View {
+    static let id = "conversation"
+
+    let todoID: String?
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismissWindow) private var dismissWindow
+    @State private var request: FrameRequest?
+
+    var body: some View {
+        Group {
+            if let todoID, let todo = model.store.todos.first(where: { $0.id == todoID }) {
+                ConversationDetail(todo: todo, request: $request, isWindow: true) { dismissWindow() }
+            } else {
+                ContentUnavailableView("Conversation Not Found", systemImage: "bubble.left.and.bubble.right")
+            }
+        }
+        .environment(\.frameOwnsWindow, true)
+        .tint(DS.accent)
+        // Also when the window comes back through state restoration.
+        .onAppear { if let todoID { model.poppedOut.insert(todoID) } }
+        .onDisappear { if let todoID { model.poppedOut.remove(todoID) } }
+    }
+}
+
+extension AppModel {
+    /// Opens the todo's own window, or brings it forward.
+    func popOut(_ todoID: String, openWindow: OpenWindowAction) {
+        poppedOut.insert(todoID)
+        openWindow(id: ConversationWindow.id, value: todoID)
+    }
+}
+#endif
 
 #if DEBUG
 extension AppModel.SidebarItem {

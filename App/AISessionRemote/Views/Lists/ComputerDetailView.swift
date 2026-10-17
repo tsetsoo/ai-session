@@ -2,9 +2,48 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
+/// A computer's tools besides its conversations. In the Mac shell they open in the detail
+/// column: their rows select like conversations, tagged `page:<name>`.
+enum ComputerPage: String, CaseIterable {
+    case otherSessions, onThisComputer, shell
+
+    var tag: String { "page:\(rawValue)" }
+
+    init?(tag: String?) {
+        guard let tag, tag.hasPrefix("page:") else { return nil }
+        self.init(rawValue: String(tag.dropFirst("page:".count)))
+    }
+
+    var title: String {
+        switch self {
+        case .otherSessions: "Other Sessions"
+        case .onThisComputer: "On This Computer"
+        case .shell: "Open Shell"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .otherSessions: "terminal"
+        case .onThisComputer: "text.bubble"
+        case .shell: "apple.terminal"
+        }
+    }
+
+    @MainActor @ViewBuilder
+    func destination(computer: Computer, host: HostEntity) -> some View {
+        switch self {
+        case .otherSessions: SessionsListView(host: host)
+        case .onThisComputer: OnThisComputerView(computer: computer)
+        case .shell: ShellScreen(host: host)
+        }
+    }
+}
+
 /// One computer: its running conversations, then Other sessions, On this computer and Open
 /// Shell. Without access on this device it offers Set Up Access instead. Given a `selection`
-/// (the Mac list column) running conversations select by todo id instead of being tapped.
+/// (the Mac list column) running conversations select by todo id instead of being tapped, and
+/// the pages select by `ComputerPage.tag` for the shell to show in its detail column.
 struct ComputerDetailView: View {
     let computer: Computer
     /// Tapping a running conversation; rows aren't tappable without it.
@@ -59,20 +98,17 @@ struct ComputerDetailView: View {
                 }
                 if let host {
                     Section {
-                        NavigationLink {
-                            SessionsListView(host: host)
-                        } label: {
-                            Label("Other Sessions", systemImage: "terminal")
-                        }
-                        NavigationLink {
-                            OnThisComputerView(computer: computer)
-                        } label: {
-                            Label("On This Computer", systemImage: "text.bubble")
-                        }
-                        NavigationLink {
-                            ShellScreen(host: host)
-                        } label: {
-                            Label("Open Shell", systemImage: "apple.terminal")
+                        ForEach(ComputerPage.allCases, id: \.self) { page in
+                            if selection != nil {
+                                Label(page.title, systemImage: page.systemImage)
+                                    .tag(page.tag)
+                            } else {
+                                NavigationLink {
+                                    page.destination(computer: computer, host: host)
+                                } label: {
+                                    Label(page.title, systemImage: page.systemImage)
+                                }
+                            }
                         }
                     } footer: {
                         Text("Other sessions run here without a todo. On This Computer lists conversations you can link to a todo or turn into a new one.")
@@ -145,7 +181,7 @@ struct ComputerDetailView: View {
 }
 
 /// A plain shell on the computer, outside tmux.
-private struct ShellScreen: View {
+struct ShellScreen: View {
     let host: HostEntity
 
     var body: some View {

@@ -2,6 +2,18 @@ import AISessionCore
 import Foundation
 import Observation
 
+/// What the Mac's selection may do with a todo's conversation, from the board and liveness.
+enum AttachReadiness: Equatable {
+    /// Its tmux session was listed alive: attach.
+    case running
+    /// Closed, gone, or never started: Start / Resume.
+    case closed
+    /// Its computer hasn't been listed yet: wait for a liveness refresh.
+    case awaitingLiveness
+    /// Its computer didn't answer: neither attach nor drop a terminal already attached.
+    case unknown
+}
+
 /// App-level state shared by the whole UI: the hub store, which tmux sessions are really alive
 /// on each computer, and the navigation selection. Created once in `AISessionRemoteApp`.
 @MainActor
@@ -19,6 +31,9 @@ final class AppModel {
     /// computerID to its tmux session names. A computer that is absent is unknown (its hub
     /// status is kept).
     private(set) var liveTmux: [String: Set<String>] = [:]
+    /// Computers a liveness refresh has finished for, answered or not. Until then the Mac's
+    /// selection waits before attaching.
+    private(set) var livenessChecked: Set<String> = []
 
     var sidebarSelection: SidebarItem?
     var selectedTodoID: String?
@@ -47,6 +62,13 @@ final class AppModel {
                 todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
                 sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
             )
+            // Demo data never lists tmux: its running conversations count as alive.
+            for computer in DemoFixtures.computers {
+                liveTmux[computer.id] = Set(DemoFixtures.conversations
+                    .filter { $0.computer.id == computer.id && $0.status != .closed }
+                    .map(\.tmuxName))
+            }
+            livenessChecked = Set(DemoFixtures.computers.map(\.id))
         }
     }
     #else
@@ -98,6 +120,19 @@ final class AppModel {
         }
         guard generation == livenessGeneration, !Task.isCancelled else { return }
         liveTmux = result
+        livenessChecked.formUnion(computers.map(\.id))
+    }
+
+    /// Whether the Mac's selection may attach to this todo's conversation. Attaching runs
+    /// `ai-todo-open`, which recreates a dead tmux session, so it needs the session seen alive.
+    func attachReadiness(forTodo id: String) -> AttachReadiness {
+        guard let conversation = store.conversations[id],
+              let status = board.status(forTodo: id), status != .closed else { return .closed }
+        let computerID = conversation.computer.id
+        // Present means listed, and a listing without its tmux name would have made it closed.
+        if liveTmux[computerID] != nil { return .running }
+        let refreshable = store.computers.contains { $0.id == computerID }
+        return refreshable && !livenessChecked.contains(computerID) ? .awaitingLiveness : .unknown
     }
 
     /// HostEntity is a SwiftData model, so resolve each computer's connection on the main actor

@@ -2,6 +2,8 @@ import SwiftUI
 
 /// Shared layout and colour tokens for the redesigned screens. Only system greys plus one accent.
 enum DS {
+    /// The same colour as the asset catalog's AccentColor (the app's global accent, which the
+    /// system uses for list selection); `DesignSystemTests` keeps the two in step.
     static let accent = PlatformColor.dynamic(light: PlatformNativeColor(hex: 0xB4532E), dark: PlatformNativeColor(hex: 0xE8916F))
     /// The light accent in both modes, for fills whose label the system forces white (swipe
     /// actions).

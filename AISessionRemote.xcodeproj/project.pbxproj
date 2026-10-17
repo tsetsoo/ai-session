@@ -74,6 +74,7 @@
 		605E6B6F9F8F41A6885F4AF3 /* HostProvisioning.swift in Sources */ = {isa = PBXBuildFile; fileRef = B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */; };
 		6415FD15B68D544FA70B2E5B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BB9F3F1B36EAC5FB8B07504 /* SettingsView.swift */; };
 		65FA33B8E87008A416400E66 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 9A15C4D410D8FBA24EA1F462 /* Crypto */; };
+		6706683192E13B74B7AA1CB1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 45685B58CE2C40C0BCC9C856 /* Assets.xcassets */; };
 		68A3E02B06E4A0FB06B56C19 /* TodoListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3C31BAE70EEEAC4E0643FB /* TodoListView.swift */; };
 		6913D939F32ABA65540B8B7F /* AttentionNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3708ACD4BFADB69A73E0DB09 /* AttentionNotifier.swift */; };
 		6B4B322E64EB1EF13613EC80 /* MacShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE1413C37D001C7F1155CEB0 /* MacShellTests.swift */; };
@@ -129,6 +130,7 @@
 		B06BE65B10FD125FE3054794 /* ListSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD8D8139CC242C8EF215944D /* ListSelection.swift */; };
 		B40E160F6297F0A83546AA38 /* AddTodoSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FAAD07AAEDF8D67ADBBFBF4 /* AddTodoSheet.swift */; };
 		B45B06C6BEC4E0C3B674028A /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3869B11228A2EA6745FCCEF8 /* NIOCore */; };
+		B558D2B08125F9606C885543 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 45685B58CE2C40C0BCC9C856 /* Assets.xcassets */; };
 		B71616AC9401D6282B4AC1EA /* HostProvisioning.swift in Sources */ = {isa = PBXBuildFile; fileRef = B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */; };
 		B7C6511C2B07ACD842316E2A /* AttentionNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3708ACD4BFADB69A73E0DB09 /* AttentionNotifier.swift */; };
 		B85C5AFBA308F01C6DE79787 /* SettingsPages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4231B33E7260245EAB424FD9 /* SettingsPages.swift */; };
@@ -137,8 +139,10 @@
 		BDB5778417C362323812D238 /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
 		BF9A18AF476748AE63B0CF5E /* OnThisComputerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24947A77BA8C57130367110F /* OnThisComputerView.swift */; };
 		C0151AA649300EAE1F217F82 /* TerminalTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D417529F6E6B990D79BF81 /* TerminalTransport.swift */; };
+		C3862529F62ECE24818A8973 /* SelectionDebounceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6853D306579AF19D0E50F568 /* SelectionDebounceTests.swift */; };
 		C449746AA3C87B38E0DCAF93 /* PooledConnecting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC825CDD2BB9FFA73CAFDE4 /* PooledConnecting.swift */; };
 		C4B27C132B9DD7F5F9BF942B /* ConversationLinkViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */; };
+		C53BB97598D8F5C68D1EECCE /* DesignSystemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2E686F0583F636575A8741C /* DesignSystemTests.swift */; };
 		CA54C9C224AB49CC3FFF02BD /* SessionServiceFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */; };
 		CB713CE86C75AB17E1E11525 /* ConversationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 555A99A04217936E4F1645AD /* ConversationListView.swift */; };
 		CCF7D18D1057CAC0EC45D308 /* RemoteConversations.swift in Sources */ = {isa = PBXBuildFile; fileRef = B24103E63B65EE5783B9E334 /* RemoteConversations.swift */; };
@@ -214,11 +218,13 @@
 		3FAAD07AAEDF8D67ADBBFBF4 /* AddTodoSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddTodoSheet.swift; sourceTree = "<group>"; };
 		4231B33E7260245EAB424FD9 /* SettingsPages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPages.swift; sourceTree = "<group>"; };
 		45650CE5B948BA331E385B8B /* TerminalResizeDebouncerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalResizeDebouncerTests.swift; sourceTree = "<group>"; };
+		45685B58CE2C40C0BCC9C856 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4968C45BBA0F9D47DF734624 /* KeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBar.swift; sourceTree = "<group>"; };
 		555A99A04217936E4F1645AD /* ConversationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListView.swift; sourceTree = "<group>"; };
 		583808098DB2E6EBB3D8A7A2 /* terminal-ui-redesign */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "terminal-ui-redesign"; path = .; sourceTree = SOURCE_ROOT; };
 		5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationLinkViews.swift; sourceTree = "<group>"; };
 		603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionRemoteApp.swift; sourceTree = "<group>"; };
+		6853D306579AF19D0E50F568 /* SelectionDebounceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionDebounceTests.swift; sourceTree = "<group>"; };
 		6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParserTests.swift; sourceTree = "<group>"; };
 		72E273782071736284D2563C /* TerminalSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSurface.swift; sourceTree = "<group>"; };
 		739BB066C50D554FBFA92B3C /* ComputerListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerListView.swift; sourceTree = "<group>"; };
@@ -255,6 +261,7 @@
 		BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
 		BB775BB4D3645609923CB4D6 /* PlatformSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformSupport.swift; sourceTree = "<group>"; };
 		BEC0FF09B4815F076FB3472E /* TextSizeShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextSizeShortcuts.swift; sourceTree = "<group>"; };
+		C2E686F0583F636575A8741C /* DesignSystemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystemTests.swift; sourceTree = "<group>"; };
 		C42DA3B83B3817679DCCC8E4 /* AISessionRemoteMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AISessionRemoteMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectionPoolTests.swift; sourceTree = "<group>"; };
 		CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectionPool.swift; sourceTree = "<group>"; };
@@ -354,6 +361,7 @@
 			isa = PBXGroup;
 			children = (
 				603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */,
+				45685B58CE2C40C0BCC9C856 /* Assets.xcassets */,
 				88E98EE5BBF03E826DA7689E /* Debug */,
 				6E55E3A121D4C5A5B7EE47AC /* Persistence */,
 				069AF9166835558F09C4AB0B /* Platform */,
@@ -471,12 +479,14 @@
 				AD2D3EDC2A7192C29482DF0C /* AppModelTests.swift */,
 				9D327A6203F795192D55393F /* ConversationLoaderTests.swift */,
 				EF1398BED37E8B138CFC5C42 /* ConversationRowActionsTests.swift */,
+				C2E686F0583F636575A8741C /* DesignSystemTests.swift */,
 				907FD6FAAF64F5BE5F523F6E /* DictationTests.swift */,
 				AE1413C37D001C7F1155CEB0 /* MacShellTests.swift */,
 				6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */,
 				1E3343248834146F026E769E /* PhoneShellTests.swift */,
 				F4325A2838E2861F98B34246 /* PooledSSHConnectionCloseTests.swift */,
 				02AE6114F65FF42A87E1B35F /* ReachabilityProbeTests.swift */,
+				6853D306579AF19D0E50F568 /* SelectionDebounceTests.swift */,
 				C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */,
 				0C976B2DC40D400F315259C2 /* TerminalAppearanceTests.swift */,
 				A96BCB7E12B43FC54FCD91FC /* TerminalOutputCoalescerTests.swift */,
@@ -559,6 +569,7 @@
 			buildConfigurationList = 95DB1844F57B7B4B9A88ED16 /* Build configuration list for PBXNativeTarget "AISessionRemote" */;
 			buildPhases = (
 				481954076883DAB45640C4B4 /* Sources */,
+				5A2154B73C2A13F7D6890E60 /* Resources */,
 				7215F0CA08F93DE98AE33AE0 /* Frameworks */,
 			);
 			buildRules = (
@@ -606,6 +617,7 @@
 			buildConfigurationList = 1518182E42AC89147C3BF965 /* Build configuration list for PBXNativeTarget "AISessionRemoteMac" */;
 			buildPhases = (
 				3D5138226C0BAEFBB2B1ABA7 /* Sources */,
+				F7228DA416A9FD2CA0EC08A3 /* Resources */,
 				4BD5A47E019EA591C73FC0BE /* Frameworks */,
 			);
 			buildRules = (
@@ -666,6 +678,25 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5A2154B73C2A13F7D6890E60 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B558D2B08125F9606C885543 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F7228DA416A9FD2CA0EC08A3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6706683192E13B74B7AA1CB1 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		3D5138226C0BAEFBB2B1ABA7 /* Sources */ = {
@@ -826,6 +857,7 @@
 				F746AB50A8A7EBFF83913E08 /* AppModelTests.swift in Sources */,
 				F3946147933D7BCEEED6F7EA /* ConversationLoaderTests.swift in Sources */,
 				9E90CED5C6F5A818FDC9D6F6 /* ConversationRowActionsTests.swift in Sources */,
+				C53BB97598D8F5C68D1EECCE /* DesignSystemTests.swift in Sources */,
 				5B6254B4130F19A4079A61C7 /* DictationTests.swift in Sources */,
 				6B4B322E64EB1EF13613EC80 /* MacShellTests.swift in Sources */,
 				1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */,
@@ -833,6 +865,7 @@
 				59C45B28CBCDC28F707DDF18 /* PooledSSHConnectionCloseTests.swift in Sources */,
 				2C15E7B5071B758B1AB3938E /* ReachabilityProbeTests.swift in Sources */,
 				221D767F06B05BE1A5E982FD /* SSHConnectionPoolTests.swift in Sources */,
+				C3862529F62ECE24818A8973 /* SelectionDebounceTests.swift in Sources */,
 				EE04800E43A3B5A9887D4281 /* TOFUHostKeyStoreTests.swift in Sources */,
 				B065DED24584AB689477A1B6 /* TerminalAppearanceTests.swift in Sources */,
 				CE4FB9B633322B8B1FC642DB /* TerminalOutputCoalescerTests.swift in Sources */,
@@ -928,7 +961,8 @@
 		2FC47F7DF89010277C04C58C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -950,7 +984,8 @@
 		6717B2F2E6278721FD282988 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/AISessionRemote/Info.plist;
@@ -1048,7 +1083,8 @@
 		BC1906992779C8D9AAB9ABD2 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/AISessionRemote/Info.plist;
@@ -1066,7 +1102,8 @@
 		E1ABCCD96675293A1A84A814 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
