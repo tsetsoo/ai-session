@@ -27,8 +27,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Only clippy gates the deploy. The deploy job below already builds the
-  # release frontend and cross-compiles the server, so a compile break fails it
+  # Only clippy gates the deploy. The deploy job below already cross-compiles
+  # the server, so a compile break fails it
   # before anything is published — re-running ci.yml's Build job here would
   # duplicate that work and add minutes to every deploy for no extra signal.
   # Lint is the one check the deploy does not otherwise perform.
@@ -40,7 +40,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          targets: wasm32-unknown-unknown
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
@@ -48,8 +47,6 @@ jobs:
       - name: Clippy (server + shared)
         run: cargo clippy -p todo-shared -p todo-server -- -D warnings
 
-      - name: Clippy (frontend, wasm)
-        run: cargo clippy -p todo-frontend --target wasm32-unknown-unknown -- -D warnings
 
   deploy-pi:
     name: Build armv7 + publish pi-latest
@@ -60,17 +57,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          targets: wasm32-unknown-unknown,armv7-unknown-linux-gnueabihf
+          targets: armv7-unknown-linux-gnueabihf
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: deploy-pi
-
-      - name: Install Trunk
-        run: cargo install trunk --version 0.21.14 --locked
-
-      - name: Build frontend
-        run: cd crates/todo-frontend && trunk build --release
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -87,9 +78,11 @@ jobs:
           stage="$(mktemp -d)"
           cp "target/armv7-unknown-linux-gnueabihf/release/todo-server" "$stage/todo-server"
           chmod +x "$stage/todo-server"
-          cp -a frontend-dist "$stage/frontend-dist"
+          # The payload is just the server binary and its SHA. The Pi's updater must be
+          # the current deploy/pi/todo-update.sh (no frontend-dist requirement) before
+          # this ships: an older updater rejects a payload without frontend-dist/.
           printf '%s\n' "${GITHUB_SHA}" > "$stage/SHA"
-          tar -C "$stage" -czf todo-pi.tar.gz todo-server frontend-dist SHA
+          tar -C "$stage" -czf todo-pi.tar.gz todo-server SHA
           printf '%s\n' "${GITHUB_SHA}" > SHA
           ls -lh todo-pi.tar.gz SHA
 

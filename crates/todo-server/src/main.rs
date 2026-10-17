@@ -101,14 +101,8 @@ async fn main() -> std::io::Result<()> {
         if api_token.0.is_some() { "enabled" } else { "disabled (set TODO_API_TOKEN to enable)" }
     );
 
-    // Determine frontend dist path
-    let frontend_dir = std::env::var("FRONTEND_DIR")
-        .unwrap_or_else(|_| "./frontend-dist".to_string());
-
-    println!("Serving frontend from: {frontend_dir}");
     println!("Starting server at http://{}", args.addr);
 
-    let frontend_dir_clone = frontend_dir.clone();
     let broadcaster_clone = broadcaster.clone();
 
     HttpServer::new(move || {
@@ -117,30 +111,15 @@ async fn main() -> std::io::Result<()> {
         let logger = middleware::Logger::new(r#"%a "%{method}xi %U" %s %b "%{User-Agent}i" %T"#)
             .custom_request_replace("method", |req| req.method().to_string());
 
-        // No CORS: the web UI is served from this origin and native clients don't need it,
-        // so other sites can't call the API from the browser.
-        let mut app = App::new()
+        // API only (the web UI was retired; clients are the native apps and host scripts).
+        // No CORS, so other sites can't call the API from the browser.
+        App::new()
             .wrap(middleware::from_fn(auth::require_token))
             .wrap(logger)
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(broadcaster_clone.clone()))
             .app_data(web::Data::new(api_token.clone()))
-            .configure(api_routes);
-
-        // Serve frontend static files if the directory exists
-        let fe_path = std::path::Path::new(&frontend_dir_clone);
-        if fe_path.exists() {
-            app = app.service(
-                actix_files::Files::new("/", &frontend_dir_clone)
-                    .index_file("index.html")
-                    .default_handler(
-                        actix_files::NamedFile::open(fe_path.join("index.html"))
-                            .expect("frontend-dist/index.html not found"),
-                    ),
-            );
-        }
-
-        app
+            .configure(api_routes)
     })
     .bind(&args.addr)?
     .run()

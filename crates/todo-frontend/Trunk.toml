@@ -1,5 +1,0 @@
-[build]
-dist = "../../frontend-dist"
-
-[watch]
-ignore = ["../../frontend-dist"]

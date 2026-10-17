@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 todo-shared = { path = "../todo-shared" }
 actix-web = "4"
-actix-files = "0.6"
 rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
