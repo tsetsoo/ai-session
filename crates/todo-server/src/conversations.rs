@@ -22,6 +22,7 @@ use crate::db::DbPool;
 use crate::handlers::{insert_todo, SELECT_COLS};
 use crate::models::row_to_todo;
 use crate::projects::project_for;
+use crate::push::{PushNotifier, Transition};
 
 /// Tools a section or a linked conversation may use (matches `db::TOOLS_SQL`).
 pub(crate) const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
@@ -438,21 +439,40 @@ fn link_error_response(e: LinkError) -> HttpResponse {
     }
 }
 
-/// Apply a hook status update to the `(tool, session_id)` conversation. Returns the number
-/// of conversations updated: 0 or 1, since UNIQUE(tool, session_id) allows only one.
-/// Closed conversations are left alone: a hook that lands after the user
-/// closed the conversation must not make it look live again.
+/// A status post that matched a conversation: whose it is and what it was before.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StatusChange {
+    pub todo_id: String,
+    pub old: ConversationStatus,
+}
+
+/// Apply a hook status update to the `(tool, session_id)` conversation (UNIQUE, so at most
+/// one). `None` when there is no such conversation or it is closed: a hook that lands after
+/// the user closed the conversation must not make it look live again.
 pub(crate) fn set_status_db(
     conn: &Connection,
     tool: &str,
     session_id: &str,
     req: &ConversationStatusRequest,
-) -> rusqlite::Result<usize> {
-    conn.execute(
+) -> rusqlite::Result<Option<StatusChange>> {
+    // IMMEDIATE: take the write lock before reading, so a concurrent writer makes this wait
+    // (busy timeout) instead of failing the update on a stale read snapshot.
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let current: Option<(String, String)> = tx
+        .query_row(
+            "SELECT todo_id, status FROM conversations WHERE tool = ?1 AND session_id = ?2 AND status != 'closed'",
+            params![tool, session_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((todo_id, old)) = current else { return Ok(None) };
+    tx.execute(
         "UPDATE conversations SET status = ?1, status_message = ?2, status_updated_at = datetime('now')
          WHERE tool = ?3 AND session_id = ?4 AND status != 'closed'",
         params![req.status.as_str(), req.message, tool, session_id],
-    )
+    )?;
+    tx.commit()?;
+    Ok(Some(StatusChange { todo_id, old: ConversationStatus::parse(&old).unwrap_or(ConversationStatus::Unknown) }))
 }
 
 pub(crate) fn valid_text(s: &str) -> bool {
@@ -853,6 +873,7 @@ pub async fn post_conversation_status(
     pool: web::Data<DbPool>,
     body: web::Json<ConversationStatusRequest>,
     broadcaster: web::Data<Broadcaster>,
+    notifier: web::Data<PushNotifier>,
 ) -> HttpResponse {
     if body.status == ConversationStatus::Closed {
         return bad_request("Hooks cannot close a conversation; use POST /api/todos/{id}/conversation/close");
@@ -869,9 +890,16 @@ pub async fn post_conversation_status(
         Err(e) => return server_error(e),
     };
     match set_status_db(&conn, tool, session_id, &body) {
-        Ok(0) => not_found("Unknown or closed session_id"),
-        Ok(_) => {
+        Ok(None) => not_found("Unknown or closed session_id"),
+        Ok(Some(change)) => {
             broadcaster.send();
+            notifier.notify(Transition {
+                todo_id: change.todo_id,
+                old: change.old,
+                new: body.status,
+                attended: body.attended.unwrap_or(false),
+                at: std::time::SystemTime::now(),
+            });
             HttpResponse::NoContent().finish()
         }
         Err(e) => server_error(e),
@@ -961,6 +989,42 @@ mod tests {
     }
 
     #[test]
+    fn status_update_waits_for_a_concurrent_writer() {
+        // Another connection holds the write lock while the hook's update reads the old status;
+        // the update must wait for it rather than fail on a stale snapshot.
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let conv = open_conversation_db(&conn, TODO).unwrap();
+        let writer = pool.get().unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE; UPDATE todos SET title = 'renamed' WHERE id = 'nope';").unwrap();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            writer.execute_batch("UPDATE todos SET updated_at = datetime('now'); COMMIT;").unwrap();
+        });
+        let busy = ConversationStatusRequest { status: ConversationStatus::Busy, ..Default::default() };
+        let change = set_status_db(&conn, "claude", &conv.session_id, &busy);
+        handle.join().unwrap();
+        assert!(change.unwrap().is_some());
+    }
+
+    #[test]
+    fn status_change_reports_old_status() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let conv = open_conversation_db(&conn, TODO).unwrap();
+        let busy = ConversationStatusRequest { status: ConversationStatus::Busy, ..Default::default() };
+        let waiting = ConversationStatusRequest { status: ConversationStatus::Waiting, ..Default::default() };
+        let first = set_status_db(&conn, "claude", &conv.session_id, &busy).unwrap().unwrap();
+        assert_eq!(first, StatusChange { todo_id: TODO.into(), old: ConversationStatus::Unknown });
+        let second = set_status_db(&conn, "claude", &conv.session_id, &waiting).unwrap().unwrap();
+        assert_eq!(second.old, ConversationStatus::Busy);
+        let repeat = set_status_db(&conn, "claude", &conv.session_id, &waiting).unwrap().unwrap();
+        assert_eq!(repeat.old, ConversationStatus::Waiting);
+    }
+
+    #[test]
     fn status_updates_and_reopen_resets_closed() {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
@@ -972,15 +1036,16 @@ mod tests {
             message: Some("needs approval".into()),
             ..Default::default()
         };
-        assert_eq!(set_status_db(&conn, "claude", &conv.session_id, &req).unwrap(), 1);
+        let change = set_status_db(&conn, "claude", &conv.session_id, &req).unwrap().unwrap();
+        assert_eq!((change.todo_id.as_str(), change.old), (TODO, ConversationStatus::Unknown));
         let busy = ConversationStatusRequest { status: ConversationStatus::Busy, ..Default::default() };
-        assert_eq!(set_status_db(&conn, "claude", "nope", &busy).unwrap(), 0);
+        assert_eq!(set_status_db(&conn, "claude", "nope", &busy).unwrap(), None);
         assert_eq!(load_conversation(&conn, TODO).unwrap().unwrap().status, ConversationStatus::Waiting);
 
         conn.execute("UPDATE conversations SET status = 'closed' WHERE todo_id = ?1", params![TODO]).unwrap();
         // A late hook must not make a closed conversation look live again.
         let late = ConversationStatusRequest { status: ConversationStatus::Idle, ..Default::default() };
-        assert_eq!(set_status_db(&conn, "claude", &conv.session_id, &late).unwrap(), 0);
+        assert_eq!(set_status_db(&conn, "claude", &conv.session_id, &late).unwrap(), None);
         assert_eq!(load_conversation(&conn, TODO).unwrap().unwrap().status, ConversationStatus::Closed);
 
         let reopened = open_conversation_db(&conn, TODO).unwrap();
@@ -1076,13 +1141,13 @@ mod tests {
         let legacy: ConversationStatusRequest =
             serde_json::from_str(r#"{"claude_session_id":"shared","status":"busy"}"#).unwrap();
         assert_eq!(legacy.tool(), "claude");
-        assert_eq!(set_status_db(&conn, legacy.tool(), "shared", &legacy).unwrap(), 1);
+        assert!(set_status_db(&conn, legacy.tool(), "shared", &legacy).unwrap().is_some());
         assert_eq!(load_conversation(&conn, TODO).unwrap().unwrap().status, ConversationStatus::Busy);
         assert_eq!(load_conversation(&conn, "t-2").unwrap().unwrap().status, ConversationStatus::Unknown);
 
         let codex: ConversationStatusRequest =
             serde_json::from_str(r#"{"session_id":"shared","tool":"codex","status":"idle"}"#).unwrap();
-        assert_eq!(set_status_db(&conn, codex.tool(), "shared", &codex).unwrap(), 1);
+        assert!(set_status_db(&conn, codex.tool(), "shared", &codex).unwrap().is_some());
         assert_eq!(load_conversation(&conn, "t-2").unwrap().unwrap().status, ConversationStatus::Idle);
         assert_eq!(load_conversation(&conn, TODO).unwrap().unwrap().status, ConversationStatus::Busy);
     }

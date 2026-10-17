@@ -221,9 +221,37 @@ fn base_description() -> Value {
                 "path": "/api/conversations/status",
                 "description": "Status hook endpoint. Identify the conversation with session_id (or claude_session_id, sent by older hooks) and tool (optional, default claude: older hooks are Claude hooks); one post updates at most one conversation. 204 on success, 404 for sessions that are not todo conversations, 400 without an id or for status closed",
                 "example_request": {"session_id": "<uuid>", "tool": "claude", "status": "waiting", "message": "Claude needs your permission"}
-            }
+            },
+            {"method": "PUT", "path": "/api/push/devices", "description": "Register or refresh this device's APNs token (hex). Returns the PushDevice; the full token is never returned", "example_request": {"token": "<hex>", "platform": "ios", "environment": "sandbox", "bundle_id": "com.aisessionremote.app", "app_version": "1.0 (7)", "device_name": "iPhone"}},
+            {"method": "GET", "path": "/api/push/devices", "description": "Registered devices (PushDevice[])"},
+            {"method": "POST", "path": "/api/push/devices/unregister", "description": "Unregister a device (the toggle was switched off). The token goes in the body because request paths are logged. 404 if unknown", "example_request": {"token": "<hex>"}},
+            {"method": "GET", "path": "/api/push/settings", "description": "PushSettings: waiting pushes on/off, done-after threshold, grace, quiet hours, muted sections and todos"},
+            {"method": "PUT", "path": "/api/push/settings", "description": "Replace the settings and section mutes (todo mutes have their own endpoint). 400 for an unknown timezone or bad HH:MM", "example_request": {"notify_waiting": true, "done_after_minutes": 5, "grace_seconds": 20, "quiet_hours": {"start": "22:30", "end": "07:30", "tz": "Europe/Sofia"}, "muted_sections": ["P"]}},
+            {"method": "POST", "path": "/api/push/presence", "description": "This client is showing todo_id's conversation (null: none). Kept in memory for 90 s; refresh every 30 s. A push for a conversation someone is viewing is not sent", "example_request": {"client_id": "<uuid>", "todo_id": "<uuid>"}},
+            {"method": "GET", "path": "/api/push/status", "description": "Whether APNs is configured, the last error and send time, and the number of devices. Never contains key material"},
+            {"method": "POST", "path": "/api/push/test", "description": "Send a test notification now to every device, or to {token}. Returns per-device results; 409 when APNs is not configured"},
+            {"method": "PUT", "path": "/api/todos/{id}/push-mute", "description": "Mute push notifications for this todo. 404 for an unknown todo"},
+            {"method": "DELETE", "path": "/api/todos/{id}/push-mute", "description": "Unmute this todo"}
         ],
         "data_model": {
+            "PushDevice": {
+                "token_prefix": "string - first 8 hex characters of the APNs token",
+                "platform": "string enum: ios | macos",
+                "environment": "string enum: sandbox | production",
+                "bundle_id": "string - the app's bundle id (apns-topic)",
+                "app_version": "string",
+                "device_name": "string | null",
+                "last_sent_at": "string | null",
+                "last_error": "string | null - last APNs failure reason"
+            },
+            "PushSettings": {
+                "notify_waiting": "bool - push when a conversation needs you (default true)",
+                "done_after_minutes": "number | null - push when a busy run of at least this many minutes goes idle (null: never)",
+                "grace_seconds": "number - wait this long before a waiting push and drop it if answered (default 20)",
+                "quiet_hours": "{start: HH:MM, end: HH:MM, tz: IANA} | null - pushes inside are delivered silently",
+                "muted_sections": "string[] - section codes",
+                "muted_todo_ids": "string[]"
+            },
             "Todo": {
                 "id": "string (UUID v4) - unique identifier",
                 "section": "string enum: Sp | I | Si | P",
@@ -544,8 +572,21 @@ mod tests {
             ("POST", "/api/memories/bulk"),
             ("PATCH", "/api/memories/{id}"),
             ("DELETE", "/api/memories/{id}"),
+            ("PUT", "/api/push/devices"),
+            ("GET", "/api/push/devices"),
+            ("POST", "/api/push/devices/unregister"),
+            ("GET", "/api/push/settings"),
+            ("PUT", "/api/push/settings"),
+            ("POST", "/api/push/presence"),
+            ("GET", "/api/push/status"),
+            ("POST", "/api/push/test"),
+            ("PUT", "/api/todos/{id}/push-mute"),
+            ("DELETE", "/api/todos/{id}/push-mute"),
         ] {
             assert!(listed.contains(&(method.to_string(), path.to_string())), "{method} {path} is described");
+        }
+        for model in ["PushDevice", "PushSettings"] {
+            assert!(doc["data_model"].get(model).is_some(), "data_model.{model}");
         }
         for model in ["Project", "ProjectSuggestion", "Session", "Memory", "WeeklyStats"] {
             assert!(doc["data_model"].get(model).is_some(), "data_model.{model}");
