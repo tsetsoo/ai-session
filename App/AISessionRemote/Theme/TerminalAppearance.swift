@@ -72,7 +72,12 @@ enum TerminalAppearance {
         }
     }
 
+    /// Representables call this on every update; it only touches the view when the palette or
+    /// the font size changed since the last call for that view (`installColors` repaints).
     static func apply(to view: TerminalView, palette: TerminalPalette, fontSize: Double) {
+        let applied = Applied(palette: palette, fontSize: clamped(fontSize))
+        if objc_getAssociatedObject(view, &appliedKey) as? Applied == applied { return }
+        objc_setAssociatedObject(view, &appliedKey, applied, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         view.installColors(palette.ansi.map(swiftTermColor))
         view.nativeBackgroundColor = palette.background
         view.nativeForegroundColor = palette.foreground
@@ -90,6 +95,24 @@ enum TerminalAppearance {
         view.backgroundColor = palette.background
         #endif
     }
+
+    /// What `apply` last set on a view, kept on the view itself.
+    private final class Applied: NSObject {
+        let palette: TerminalPalette
+        let fontSize: Double
+
+        init(palette: TerminalPalette, fontSize: Double) {
+            self.palette = palette
+            self.fontSize = fontSize
+        }
+
+        override func isEqual(_ object: Any?) -> Bool {
+            guard let other = object as? Applied else { return false }
+            return palette == other.palette && fontSize == other.fontSize
+        }
+    }
+
+    private static var appliedKey: UInt8 = 0
 
     private static func swiftTermColor(_ color: PlatformNativeColor) -> SwiftTerm.Color {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0

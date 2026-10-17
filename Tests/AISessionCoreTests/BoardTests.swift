@@ -41,6 +41,37 @@ final class BoardTests: XCTestCase {
         XCTAssertNil(b.status(forTodo: "zzz"))
     }
 
+    func testConversationNewerThanListingIsUnknownNotClosed() {
+        let listed = HubDates.date(from: "2026-10-16T10:30:00Z")!
+        let started = conv("new", .busy, created: "2026-10-16T10:45:00Z")
+        let old = conv("old", .busy, created: "2026-10-16T10:00:00Z")
+        var reported = conv("rep", .waiting, created: "2026-10-16T10:00:00Z")
+        reported.statusUpdatedAt = "2026-10-16 10:40:00"    // the hub's SQLite spelling
+        let b = ConversationBoard(
+            todos: [], conversations: ["new": started, "old": old, "rep": reported],
+            liveTmux: ["m1": []], listedAt: ["m1": listed]
+        )
+        // Started or reported after the listing: trust the hub until listed again.
+        XCTAssertEqual(b.status(forTodo: "new"), .working)
+        XCTAssertEqual(b.status(forTodo: "rep"), .needsYou)
+        XCTAssertEqual(Set(b.runningNow.map(\.todoId)), ["new", "rep"])
+        XCTAssertEqual(b.needsYou.map(\.todoId), ["rep"])
+        XCTAssertEqual(b.conversation(atShortcut: 1)?.todoId, "new")
+        // Older than the listing and missing from it: closed.
+        XCTAssertEqual(b.status(forTodo: "old"), .closed)
+        XCTAssertEqual(Set(b.newerThanListing.map(\.todoId)), ["new", "rep"])
+    }
+
+    func testListedConversationIsNeverNewerThanListing() {
+        let listed = HubDates.date(from: "2026-10-16T10:30:00Z")!
+        let b = ConversationBoard(
+            todos: [], conversations: ["a": conv("a", .busy, created: "2026-10-16T10:45:00Z")],
+            liveTmux: ["m1": ["t-a"]], listedAt: ["m1": listed]
+        )
+        XCTAssertEqual(b.status(forTodo: "a"), .working)
+        XCTAssertTrue(b.newerThanListing.isEmpty)
+    }
+
     func testOrderingAndShortcuts() {
         let all = [conv("b", .busy, created: "2026-10-16T10:00:00Z"),
                    conv("a", .busy, created: "2026-10-16T10:00:00Z"),
