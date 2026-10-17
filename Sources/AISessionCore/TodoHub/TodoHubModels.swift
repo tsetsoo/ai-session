@@ -356,3 +356,125 @@ public enum TodoListFilter: String, Sendable {
     case all
     case archived
 }
+
+// MARK: Push notifications
+
+public enum PushPlatform: String, Codable, Sendable {
+    case ios, macos
+}
+
+/// `PUT /api/push/devices`.
+public struct PushDeviceRegistration: Encodable, Sendable {
+    /// APNs device token, hex
+    public var token: String
+    public var platform: PushPlatform
+    public var environment: ApsEnvironment
+    public var bundleId: String
+    public var appVersion: String
+    public var deviceName: String?
+
+    public init(token: String, platform: PushPlatform, environment: ApsEnvironment, bundleId: String, appVersion: String, deviceName: String? = nil) {
+        self.token = token
+        self.platform = platform
+        self.environment = environment
+        self.bundleId = bundleId
+        self.appVersion = appVersion
+        self.deviceName = deviceName
+    }
+}
+
+/// A registered device; the server never returns the full token.
+public struct PushDevice: Decodable, Equatable, Sendable {
+    public var tokenPrefix: String
+    public var platform: PushPlatform
+    public var environment: ApsEnvironment
+    public var bundleId: String
+    public var appVersion: String
+    public var deviceName: String?
+    public var lastSentAt: String?
+    public var lastError: String?
+}
+
+public struct QuietHours: Codable, Equatable, Sendable {
+    /// `HH:MM`
+    public var start: String
+    /// `HH:MM`; earlier than `start` means the window crosses midnight
+    public var end: String
+    /// IANA timezone
+    public var tz: String
+
+    public init(start: String, end: String, tz: String) {
+        self.start = start
+        self.end = end
+        self.tz = tz
+    }
+}
+
+/// `GET`/`PUT /api/push/settings`. The server ignores `mutedTodoIds` on PUT (todo mutes have
+/// their own endpoint).
+public struct PushSettings: Codable, Equatable, Sendable {
+    public var notifyWaiting: Bool
+    /// Push when a busy run of at least this many minutes goes idle; `nil` = never
+    public var doneAfterMinutes: Int?
+    public var graceSeconds: Int
+    public var quietHours: QuietHours?
+    public var mutedSections: [TodoSection]
+    public var mutedTodoIds: [String]
+
+    public init(
+        notifyWaiting: Bool = true,
+        doneAfterMinutes: Int? = nil,
+        graceSeconds: Int = 20,
+        quietHours: QuietHours? = nil,
+        mutedSections: [TodoSection] = [],
+        mutedTodoIds: [String] = []
+    ) {
+        self.notifyWaiting = notifyWaiting
+        self.doneAfterMinutes = doneAfterMinutes
+        self.graceSeconds = graceSeconds
+        self.quietHours = quietHours
+        self.mutedSections = mutedSections
+        self.mutedTodoIds = mutedTodoIds
+    }
+}
+
+/// `GET /api/push/status`.
+public struct PushServerStatus: Decodable, Equatable, Sendable {
+    public var configured: Bool
+    public var lastError: String?
+    public var lastSentAt: String?
+    public var devices: Int
+
+    public init(configured: Bool, lastError: String?, lastSentAt: String?, devices: Int) {
+        self.configured = configured
+        self.lastError = lastError
+        self.lastSentAt = lastSentAt
+        self.devices = devices
+    }
+}
+
+public struct PushTestResult: Decodable, Equatable, Sendable {
+    public var tokenPrefix: String
+    public var ok: Bool
+    public var reason: String?
+
+    public init(tokenPrefix: String, ok: Bool, reason: String?) {
+        self.tokenPrefix = tokenPrefix
+        self.ok = ok
+        self.reason = reason
+    }
+}
+
+/// `POST /api/push/presence`. `todo_id` is always sent, `null` to clear.
+struct PresenceBody: Encodable {
+    var clientId: String
+    var todoId: String?
+
+    enum CodingKeys: String, CodingKey { case clientId, todoId }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(clientId, forKey: .clientId)
+        try c.encode(todoId, forKey: .todoId)
+    }
+}

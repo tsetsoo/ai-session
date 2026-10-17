@@ -42,6 +42,10 @@ struct RootView: View {
                 .tabItem { Label("Hosts", systemImage: "server.rack") }
                 .tag(Tab.hosts)
         }
+        // A tapped notification opens its todo's conversation in the Todos tab.
+        .onReceive(NotificationCenter.default.publisher(for: .todoNotificationOpened)) { _ in
+            tab = .todos
+        }
     }
 
     private func startHub() async {

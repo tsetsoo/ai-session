@@ -16,6 +16,8 @@ public enum TodoHubError: Error, Equatable, Sendable {
     /// The hub could not be reached (offline, DNS, Tailscale down, timeout).
     case unreachable(String)
     case decoding(String)
+    /// The server has no such endpoint (an older todo-server).
+    case unsupported
 
     public var userMessage: String {
         switch self {
@@ -25,6 +27,7 @@ public enum TodoHubError: Error, Equatable, Sendable {
         case let .server(status, message): "Server error \(status): \(message)"
         case let .unreachable(message): "Could not reach the todo server: \(message)"
         case let .decoding(message): "Unexpected response from the todo server: \(message)"
+        case .unsupported: "The todo server is too old for this feature."
         }
     }
 }
@@ -168,6 +171,53 @@ public struct TodoHubClient: Sendable {
     /// Creates a todo that is already linked to an existing conversation.
     public func createTodoFromConversation(_ request: TodoFromConversationRequest) async throws -> TodoWithConversation {
         try await decode(TodoWithConversation.self, send("POST", "/api/todos/from-conversation", body: request))
+    }
+
+    // MARK: Push notifications
+
+    /// Registers (or refreshes) this device's APNs token. Throws `.unsupported` on a server
+    /// without push support.
+    public func registerPushDevice(_ registration: PushDeviceRegistration) async throws -> PushDevice {
+        do {
+            return try await decode(PushDevice.self, send("PUT", "/api/push/devices", body: registration))
+        } catch TodoHubError.notFound {
+            throw TodoHubError.unsupported
+        }
+    }
+
+    /// Unregisters a token; an unknown token is already gone. The token goes in the body:
+    /// the server logs request paths.
+    public func unregisterPushDevice(token: String) async throws {
+        do {
+            _ = try await send("POST", "/api/push/devices/unregister", body: ["token": token])
+        } catch TodoHubError.notFound {}
+    }
+
+    public func pushStatus() async throws -> PushServerStatus {
+        try await decode(PushServerStatus.self, send("GET", "/api/push/status"))
+    }
+
+    public func pushSettings() async throws -> PushSettings {
+        try await decode(PushSettings.self, send("GET", "/api/push/settings"))
+    }
+
+    public func savePushSettings(_ settings: PushSettings) async throws -> PushSettings {
+        try await decode(PushSettings.self, send("PUT", "/api/push/settings", body: settings))
+    }
+
+    public func setTodoPushMuted(todoId: String, _ muted: Bool) async throws {
+        _ = try await send(muted ? "PUT" : "DELETE", "/api/todos/\(escape(todoId))/push-mute")
+    }
+
+    /// "This client is showing `todoId`'s conversation" (`nil`: none).
+    public func reportPresence(clientId: String, todoId: String?) async throws {
+        _ = try await send("POST", "/api/push/presence", body: PresenceBody(clientId: clientId, todoId: todoId))
+    }
+
+    /// Sends a test notification to every registered device. `.conflict` when the server has
+    /// no APNs key configured.
+    public func sendTestPush() async throws -> [PushTestResult] {
+        try await decode([PushTestResult].self, send("POST", "/api/push/test"))
     }
 
     // MARK: Projects

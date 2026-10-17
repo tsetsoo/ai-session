@@ -120,5 +120,8 @@ struct TodoConversationScreen: View {
                 try await store.closeConversation(conversation, config: open.config)
             }
         )
+        // Viewing it here suppresses its alerts on every device, from Todos or Projects.
+        .onAppear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: conversation.todoId) }
+        .onDisappear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: nil) }
     }
 }
