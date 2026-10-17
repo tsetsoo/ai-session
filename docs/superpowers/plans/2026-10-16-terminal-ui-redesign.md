@@ -401,11 +401,24 @@ struct SettingsView: View { init(initial: SettingsDestination? = nil) }
   - Opening a todo pushes `ConversationFrame` with `.toolbar(.hidden, for: .tabBar)`.
   - Settings rows: Todo server (`TodoHubSettingsView`), Sections & computers (`ComputersView`),
     Access & keys (`HostsListView`), Terminal (text size stepper, theme picker, and the note
-    "Set Claude's theme with /theme to match."), Notifications (a toggle stored in
-    `@AppStorage("notify.needsYou")`).
+    "Set Claude's theme with /theme to match."), Notifications.
+  - Settings → Notifications (agreed with the push-notifications work; their
+    `NotificationCenterCoordinator.shared` owns permission, delegate and routing):
+    - A toggle "Notify me when a conversation needs me", stored in
+      `@AppStorage("notify.needsYou")` and off by default. Turning it on calls
+      `await coordinator.setNeedsYouEnabled(true)`, and the toggle reverts if that returns false.
+      The app never prompts for permission on first launch.
+    - A status line under the toggle from `coordinator.pushState` (`.off` / `.localOnly(reason)` /
+      `.registered`).
+    - Their `NotificationSettingsView` is embedded below.
+  - Todo and conversation rows get a "Mute Notifications" / "Unmute" context item calling
+    `coordinator.setMuted(todoId:_:)`.
+  - If the coordinator isn't on `main` yet, code against a small protocol with these exact
+    signatures and swap it in when it lands.
   - The quick-add section chip defaults to `@AppStorage("quickAdd.section")`.
-  - The `com.aisessionremote.newTodo` Home-screen action (handled through a `UIApplicationDelegateAdaptor` scene
-    delegate) selects the Todos tab and focuses the quick-add field.
+  - The `com.aisessionremote.newTodo` Home-screen action: set
+    `AppDelegate.onShortcutItem` (static, `@MainActor`, iOS; owned by the push work). The handler
+    selects the Todos tab and focuses the quick-add field. Write no app or scene delegate code here.
 - [ ] **Step 2:** `verify.sh all` → 0. Take Simulator screenshots of the three tabs in light
   and dark, and compare them with the PhoneTodos/Conversations/Computers boards. Commit, push
   `ui/03-phone-shell` and open PR 3.
@@ -432,6 +445,9 @@ struct SettingsView: View { init(initial: SettingsDestination? = nil) }
   - Every key calls `keyTapFeedback`.
   - Approve is accent-filled when enabled; the gate's `userTyped()` hooks into
     `TerminalSurface.onUserInput`.
+  - Filter the terminal's own replies: `onUserInput` also carries SwiftTerm's DA/DSR/cursor,
+    focus and mouse reports, and those must not disarm Approve. Ignore sends that start
+    with `ESC [` and end in a report final byte (`c`, `n`, `R`, `I`/`O` focus, `M`/`m` mouse).
 - [ ] **Step 2:** `verify.sh all` → 0. Take Simulator screenshots with the keyboard up and
   down, light and dark, and compare with the PhoneTerminal boards. Commit, push
   `ui/04-key-bar` and open PR 4.
@@ -490,22 +506,39 @@ struct SettingsView: View { init(initial: SettingsDestination? = nil) }
 ### Task 6.1: Notifications, haptics and focus on waiting
 
 **Files:**
-- Create: `App/AISessionRemote/Services/NotificationRouter.swift` (`UNUserNotificationCenterDelegate`: `willPresent` → banner; `didReceive` → `model.pendingOpenTodoID = userInfo["todoId"]`)
-- Modify: `AttentionNotifier.swift`: add `static func notifyNeedsYou(_ c: Conversation, todoTitle: String)`, with identifier `needs-you-<todoId>`, title = todo title, and body = `statusMessage ?? "Needs you on <computer>"`
-- Modify: `AppModel.swift`: on each store refresh, run `StatusTransitions.newlyWaiting(previous:current:)`.
-  - Skip the conversation when it is frontmost and the app is active (`scenePhase == .active`
-    and `selectedTodoID` matches). Then only call `needsYouFeedback()`.
-  - Respect `notify.needsYou`.
+- Ownership: the push-notifications work owns `NotificationCenterCoordinator.shared` (`@MainActor`).
+  It is the `UNUserNotificationCenter` delegate, owns permission and push-vs-local dedup, and
+  applies the Mac rule: a Mac posts local alerts only when no iPhone is registered for push,
+  unless its "Alert on this Mac too" switch is on.
+  - Its local identifier is `todo-<todoId>`, its thread-id is the todo ID, and its payload key
+    is `todo_id`.
+  - Do **not** create a delegate or router, read `userInfo`, or call `UNUserNotificationCenter`
+    directly.
+- Modify: `AppModel.swift`:
+  - On each store refresh, run `StatusTransitions.newlyWaiting(previous:current:)`. For each
+    result, call `coordinator.postWaiting(todoId:sessionId:title: <todo title>, body: "Needs you")`.
+  - Never put the status message or any conversation text in a notification.
+  - When the conversation is frontmost and the app is active (`scenePhase == .active` and
+    `selectedTodoID` matches), only call `needsYouFeedback()`. The coordinator also suppresses
+    it through `setVisibleConversation`.
   - `previous` is nil after launch and after every reconnect.
+  - Set `coordinator.onOpenTodo = { todoID in pendingOpenTodoID = todoID }`. A cold-launch tap
+    is replayed when the hook is set.
+- Modify: `ConversationFrame.swift`:
+  - Call `coordinator.setVisibleConversation(todoId:)` with the todo's ID when the frame
+    appears in the key window or active scene, and with `nil` when it disappears or the scene
+    goes inactive. On the Mac this applies to both the main window detail and pop-out windows.
 - Modify: `ConversationFrame.swift`: when the phase becomes `.ready` and the status is
   `waiting`, call `focusTerminal()`. On macOS this also runs after selection moves focus to
   the terminal.
-- Test: `App/AISessionRemoteTests/AppModelTests.swift`: `testNotifiesOnlyOnTransition` and `testSuppressedWhenFrontmost`, with an injected `notify` closure
+- Test: `App/AISessionRemoteTests/AppModelTests.swift`:
+  - `testNotifiesOnlyOnTransition` and `testSuppressedWhenFrontmost`, using an injected
+    `postWaiting` closure.
+  - Assert that `body == "Needs you"` and that the status message is never passed.
 
 - [ ] **Step 1:** Write the failing tests, then run `verify.sh ios` to confirm they fail.
-- [ ] **Step 2:** Implement. Install the router in `AISessionRemoteApp.init`. Handle
-  `pendingOpenTodoID` in both shells: the iPhone switches to Conversations and pushes; the Mac
-  selects the conversation.
+- [ ] **Step 2:** Implement. Handle `pendingOpenTodoID` in both shells: the iPhone switches to
+  Conversations and pushes; the Mac selects the conversation.
 - [ ] **Step 3:** `verify.sh all` → 0. Commit, push `ui/06-status` and open PR 6, with a
   screenshot of a demo-triggered notification.
 
