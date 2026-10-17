@@ -21,6 +21,7 @@ struct ConversationFrame: View {
     @State private var showingDeleteConfirmation = false
     @State private var failure: ActionFailure?
     @State private var sheet: FrameSheet?
+    @State private var showingMemories = false
     /// Arms the key bar's Approve on a fresh `waiting`; typing disarms it.
     @State private var approveGate = ApproveGate()
 
@@ -80,6 +81,11 @@ struct ConversationFrame: View {
         .sheet(item: $sheet, onDismiss: retryAfterSettings) { sheet in
             sheetContent(sheet)
         }
+        .modifier(MemoriesPresenter(isPresented: $showingMemories, todoID: todo.id, conversation: conversation,
+                                    store: store))
+        // The conversation on screen is never alerted about, on any device.
+        .onAppear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: todo.id) }
+        .onDisappear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: nil) }
     }
 
     // MARK: Terminal area
@@ -214,6 +220,7 @@ struct ConversationFrame: View {
             isReady: readyConversation != nil,
             isConnected: isConnected,
             onCopyResume: onCopyResume,
+            onMemories: { showingMemories = true },
             onClose: closeConversation,
             onDelete: { showingDeleteConfirmation = true },
             terminal: terminal

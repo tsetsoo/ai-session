@@ -2,17 +2,19 @@
 import AISessionCore
 import SwiftUI
 
-/// The iPhone app: Todos, Conversations (badged with the Needs-you count) and Computers tabs.
+/// The iPhone app: Todos, Conversations (badged with the Needs-you count), Projects and
+/// Computers tabs.
 /// Each tab is its own navigation stack with a large title and ⚙ for Settings; opening a todo
 /// pushes its conversation full screen, without the tab bar.
 struct PhoneShell: View {
     enum Tab: String, Hashable {
-        case todos, conversations, computers
+        case todos, conversations, projects, computers
     }
 
     enum Route: Hashable {
         case todo(String)
         case computer(String)
+        case project(String)
     }
 
     /// Settings as a sheet, optionally opened on one destination.
@@ -26,6 +28,7 @@ struct PhoneShell: View {
     @State private var tab: Tab = .todos
     @State private var todosPath: [Route] = []
     @State private var conversationsPath: [Route] = []
+    @State private var projectsPath: [Route] = []
     @State private var computersPath: [Route] = []
     @State private var filter = ConversationListView.Filter.running
     /// Once the filter is picked by hand it stays; until then it follows the default rule.
@@ -36,8 +39,12 @@ struct PhoneShell: View {
 
     init() {
         #if DEBUG
-        // Screenshots: `-uiDemoTab todos|conversations|computers`, `-uiDemoSettings [page]` and
-        // `-uiDemoOpen <todo id>` (pushes that todo's conversation on the selected tab).
+        // `-demoProjects` (canned projects, see TodoHubDemo) opens on the Projects tab.
+        if ProcessInfo.processInfo.arguments.contains("-demoProjects") {
+            _tab = State(initialValue: .projects)
+        }
+        // Screenshots: `-uiDemoTab todos|conversations|projects|computers`, `-uiDemoSettings
+        // [page]` and `-uiDemoOpen <todo id>` (pushes that todo's conversation on the selected tab).
         guard DemoFixtures.isEnabled else { return }
         let tab = DemoFixtures.value(after: "-uiDemoTab").flatMap(Tab.init(rawValue:)) ?? .todos
         _tab = State(initialValue: tab)
@@ -57,6 +64,7 @@ struct PhoneShell: View {
             switch tab {
             case .todos: _todosPath = State(initialValue: [.todo(todoID)])
             case .conversations: _conversationsPath = State(initialValue: [.todo(todoID)])
+            case .projects: _projectsPath = State(initialValue: [.todo(todoID)])
             case .computers: _computersPath = State(initialValue: [.todo(todoID)])
             }
         }
@@ -85,6 +93,14 @@ struct PhoneShell: View {
             .badge(model.board.needsYou.count)
             .tag(Tab.conversations)
 
+            NavigationStack(path: $projectsPath) {
+                projectsRoot
+                    .phoneTab("Projects", openSettings: openSettings)
+                    .navigationDestination(for: Route.self) { destination($0, path: $projectsPath) }
+            }
+            .tabItem { Label("Projects", systemImage: "folder") }
+            .tag(Tab.projects)
+
             NavigationStack(path: $computersPath) {
                 computersRoot
                     .phoneTab("Computers", openSettings: openSettings)
@@ -99,8 +115,9 @@ struct PhoneShell: View {
             SettingsView(initial: request.initial)
         }
         .sheet(isPresented: $showingAdd) {
-            AddTodoSheet(section: QuickAdd.section(from: quickAddSection)) { section, title in
-                Task { await store.createTodo(section: section, title: title) }
+            AddTodoSheet(section: QuickAdd.section(from: quickAddSection), projects: store.projects) {
+                section, title, projectId in
+                Task { await store.createTodo(section: section, title: title, projectId: projectId) }
             }
             .tint(DS.accent)
         }
@@ -108,8 +125,27 @@ struct PhoneShell: View {
             NewTodoFromConversationSheet(store: store)
                 .tint(DS.accent)
         }
-        .onAppear { applyDefaultFilter() }
+        .onAppear {
+            applyDefaultFilter()
+            #if DEBUG
+            if projectsPath.isEmpty, let id = ProjectsDemo.projectPage(store) {
+                projectsPath = [.project(id)]
+            }
+            #endif
+        }
         .onChange(of: tab) { _, _ in applyDefaultFilter() }
+        // A tapped "needs you" notification (routed by AppModel).
+        .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
+            guard let todoID else { return }
+            model.pendingOpenTodoID = nil
+            openFromNotification(todoID)
+        }
+        // The Home-screen "New Todo" quick action; QuickAddBar takes the focus.
+        .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
+            guard requested else { return }
+            tab = .todos
+            todosPath = []
+        }
         .task { await startSync() }
     }
 
@@ -138,6 +174,15 @@ struct PhoneShell: View {
                 get: { filter },
                 set: { filter = $0; filterChosen = true }
             )) { conversationsPath.append(.todo($0.id)) }
+        }
+    }
+
+    @ViewBuilder
+    private var projectsRoot: some View {
+        if !isConfigured {
+            notConfigured
+        } else {
+            ProjectsList(store: store, route: Route.project) { projectsPath.append(.project($0)) }
         }
     }
 
@@ -206,6 +251,19 @@ struct PhoneShell: View {
             } else {
                 ContentUnavailableView("Computer Not Found", systemImage: "desktopcomputer")
             }
+        case let .project(id):
+            ProjectDetailView(projectId: id, store: store) { path.wrappedValue.append(.todo($0.id)) }
+        }
+    }
+
+    /// Pushes the todo's frame on Todos when that's the tab on screen, else on Conversations,
+    /// in place of whatever that tab had open.
+    private func openFromNotification(_ todoID: String) {
+        if tab == .todos {
+            todosPath = [.todo(todoID)]
+        } else {
+            tab = .conversations
+            conversationsPath = [.todo(todoID)]
         }
     }
 
@@ -231,7 +289,7 @@ struct PhoneShell: View {
     private func startSync() async {
         #if DEBUG
         // Demo data never touches the network.
-        if DemoFixtures.isEnabled { return }
+        if DemoFixtures.isEnabled || store.demo != nil { return }
         #endif
         guard store.isConfigured else { return }
         await store.refresh()

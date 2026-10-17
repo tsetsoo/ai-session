@@ -66,6 +66,15 @@ struct QuickAddBar: View {
         .background(Self.barBackground)
         .overlay(alignment: .top) { Divider() }
         .disabled(model.store.isOffline)
+        // The Home-screen "New Todo" quick action, once the tab switch has settled.
+        .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
+            guard requested else { return }
+            Task {
+                try? await Task.sleep(for: .milliseconds(350))
+                model.quickAddFocusRequested = false
+                focused = true
+            }
+        }
         .onChange(of: title) { _, _ in
             #if os(iOS)
             if dictation.isRunning { return }

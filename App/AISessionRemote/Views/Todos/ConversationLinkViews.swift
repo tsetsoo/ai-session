@@ -331,7 +331,7 @@ struct NewTodoFromConversationSheet: View {
                         NewTodoDetailsForm(
                             computer: computer,
                             remote: remote,
-                            defaultSection: defaultSection(for: computer),
+                            defaultSection: store.defaultSection(for: computer),
                             onCreate: { section, title in
                                 try await store.createTodo(from: remote, on: computer, section: section, title: title)
                                 dismiss()
@@ -368,14 +368,10 @@ struct NewTodoFromConversationSheet: View {
         )
         .navigationTitle(computer.name)
     }
-
-    /// The section this computer serves, when exactly one does.
-    private func defaultSection(for computer: Computer) -> TodoSection {
-        let sections = store.sectionComputers.values.filter { $0.computer.id == computer.id }.map(\.section)
-        return sections.count == 1 ? sections[0] : .i
-    }
 }
 
+/// Section and title for a todo created from a conversation (the last step of "New Todo from
+/// Conversation…", and the sheet behind a project page's unlinked conversations).
 struct NewTodoDetailsForm: View {
     let computer: Computer
     let remote: RemoteConversation

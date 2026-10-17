@@ -1,0 +1,5 @@
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"num_turns":1,"result":"","session_id":"00000000-0000-4000-8000-000000000000","total_cost_usd":0.01,
+ "structured_output":{"memories":[
+  {"kind":"decision","text":"Transcripts are parsed with the stdlib only, no third-party JSON library.","files":["src/parser.py"],"confidence":0.9,"supersedes":[]},
+  {"kind":"gotcha","text":"The fake hub answers 201 for bulk posts even when every memory is a duplicate.","confidence":0.7},
+  {"kind":"open_thread","text":"Maybe cache the parsed transcript between runs, nobody agreed on it.","confidence":0.3}]}}

@@ -29,6 +29,17 @@
 	<string>Dictate new todos.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Turns your dictation into todo text.</string>
+	<key>UIApplicationShortcutItems</key>
+	<array>
+		<dict>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>plus</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>New Todo</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>com.aisessionremote.newTodo</string>
+		</dict>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

@@ -330,7 +330,7 @@ struct SessionsListView: View {
             guard generation == loadGeneration else { return }
             sessions = result
             bannerMessage = nil
-            AttentionNotifier.notifyWaitingSessions(
+            NotificationCenterCoordinator.shared.postSessionsWaiting(
                 hostName: hostTitle,
                 sessions: result.ai + result.other
             )

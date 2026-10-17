@@ -219,20 +219,19 @@ private struct ConversationRowMenu: ViewModifier {
     }
 }
 
-/// "Mute Notifications" for a todo's alerts. Shown only once the notifier supports muting (the
-/// push-notifications work); the local notifier doesn't. Unmute needs the muted state, which the
-/// coordinator will provide.
+/// "Mute Notifications" for a todo's alerts (stored on the todo server, so every device stays
+/// quiet). There is no Unmute here: the coordinator doesn't expose the muted state; mutes are
+/// listed and lifted in Settings → Notifications. Shown while notifications are on.
 struct MuteNotificationsButton: View {
     let todoID: String
 
-    @Environment(AppModel.self) private var model
+    @AppStorage(NotificationCenterCoordinator.enabledKey) private var notificationsOn = false
 
     var body: some View {
-        if model.notifier.supportsMuting {
+        if notificationsOn {
             Button {
-                let notifier = model.notifier
                 // The coordinator reports its own failures; there is nothing to show here.
-                Task { try? await notifier.setMuted(todoId: todoID, true) }
+                Task { try? await NotificationCenterCoordinator.shared.setMuted(todoId: todoID, true) }
             } label: {
                 Label("Mute Notifications", systemImage: "bell.slash")
             }
