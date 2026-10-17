@@ -65,7 +65,8 @@ struct MacShell: View {
             computerPage = nil
         }
         .onAppear(perform: applyInitialSelection)
-        // A tapped "needs you" notification (routed by AppModel): select and open it.
+        // A tapped "needs you" notification (routed by AppModel): select it only. The
+        // selection attaches if it runs and never starts one; a popped-out one comes forward.
         .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
             guard let todoID, let todo = store.todos.first(where: { $0.id == todoID }) else { return }
             model.pendingOpenTodoID = nil
@@ -74,13 +75,18 @@ struct MacShell: View {
             case .section(todo.section): break
             default: model.sidebarSelection = .needsYou
             }
-            open(todo)
+            computerPage = nil
+            model.selectedTodoID = todo.id
+            #if os(macOS)
+            if model.poppedOut.contains(todo.id) { model.popOut(todo.id, openWindow: openWindow) }
+            #endif
         }
-        // The Home-screen "New Todo" quick action (iPad in regular width): the New Todo sheet.
+        // The Home-screen "New Todo" quick action (iPad in regular width): the New Todo sheet,
+        // or nothing while the todo server isn't set up.
         .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
             guard requested else { return }
             model.quickAddFocusRequested = false
-            showingAdd = true
+            if model.isConfigured { showingAdd = true }
         }
         .task { await model.startSync() }
     }

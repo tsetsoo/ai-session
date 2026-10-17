@@ -7,8 +7,8 @@ struct ProjectDetailView: View {
     let projectId: String
     let store: TodoHubStore
     /// Opens a todo's conversation the shell's way (the phone shell pushes its frame without
-    /// the tab bar; the Mac selects it). Nil pushes the frame on this page's own stack.
-    var onOpenTodo: ((Todo) -> Void)?
+    /// the tab bar; the Mac selects it in its section and starts it).
+    let onOpenTodo: (Todo) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
@@ -20,8 +20,6 @@ struct ProjectDetailView: View {
     @State private var editor: ProjectEditorSheet.Mode?
     @State private var confirmingDelete = false
     @State private var errorMessage: String?
-    /// The todo whose conversation frame is pushed.
-    @State private var openTodoID: String?
     @State private var newTodoSession: HubSession?
 
     private var project: Project? { store.project(id: projectId) }
@@ -37,9 +35,6 @@ struct ProjectDetailView: View {
         }
         .navigationTitle(project?.name ?? "Project")
         .toolbar { toolbar }
-        .navigationDestination(item: $openTodoID) { todoID in
-            conversationDestination(todoID)
-        }
         .task(id: "\(projectId)|\(store.revision)|\(showArchived)") { await load() }
         .memoryActions(memoryActions, store: store)
         .sheet(item: $editor) { mode in
@@ -207,23 +202,10 @@ struct ProjectDetailView: View {
         open(todo)
     }
 
-    /// Pushes the same conversation frame as the Todos list; it shows preparing, problems
-    /// (such as a computer this device can't reach yet) and the terminal itself.
+    /// The same conversation frame as the lists; it shows preparing, problems (such as a
+    /// computer this device can't reach yet) and the terminal itself.
     private func open(_ todo: Todo) {
-        if let onOpenTodo {
-            onOpenTodo(todo)
-        } else {
-            openTodoID = todo.id
-        }
-    }
-
-    @ViewBuilder
-    private func conversationDestination(_ todoID: String) -> some View {
-        if let todo = store.todos.first(where: { $0.id == todoID }) {
-            TodoConversationScreen(todo: todo, store: store) { openTodoID = nil }
-        } else {
-            ContentUnavailableView("Todo Not Found", systemImage: "checklist")
-        }
+        onOpenTodo(todo)
     }
 
     // MARK: Memories
@@ -271,7 +253,12 @@ struct ProjectDetailView: View {
         Task {
             do {
                 try await store.deleteProject(project)
-                dismiss()
+                if model.selectedProjectID == projectId {
+                    // The Mac's detail column: nothing to pop, so drop the selection.
+                    model.selectedProjectID = nil
+                } else {
+                    dismiss()
+                }
             } catch {
                 errorMessage = TodoHubStore.message(for: error)
             }

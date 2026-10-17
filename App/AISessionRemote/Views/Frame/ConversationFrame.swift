@@ -108,7 +108,8 @@ struct ConversationFrame: View {
         .modifier(MemoriesPresenter(isPresented: $showingMemories, todoID: todo.id, conversation: conversation,
                                     store: store))
         // The conversation on screen is never alerted about, on any device.
-        .reportsVisibleConversation(todo.id)
+        // Only the frame showing the terminal: a popped-out placeholder is not on screen.
+        .reportsVisibleConversation(todo.id, isActive: !isPoppedOut)
     }
 
     // MARK: Terminal area
@@ -120,6 +121,11 @@ struct ConversationFrame: View {
         } else {
             phaseArea
         }
+    }
+
+    private var isPoppedOut: Bool {
+        if case .poppedOut = placeholder { return true }
+        return false
     }
 
     private var activePlaceholder: FramePlaceholder? {

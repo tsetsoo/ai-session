@@ -1,37 +1,9 @@
 import AISessionCore
 import SwiftUI
 
-/// Navigation value for a project page.
-struct ProjectRoute: Hashable {
-    let id: String
-}
-
-/// The Projects tab of the regular-width tabs: `ProjectsList` in its own navigation stack.
-struct ProjectsView: View {
-    let store: TodoHubStore
-    @State private var path: [ProjectRoute] = []
-
-    var body: some View {
-        NavigationStack(path: $path) {
-            ProjectsList(store: store, route: ProjectRoute.init(id:)) { path.append(ProjectRoute(id: $0)) }
-                .navigationTitle("Projects")
-                .navigationDestination(for: ProjectRoute.self) { route in
-                    ProjectDetailView(projectId: route.id, store: store)
-                }
-        }
-        #if DEBUG
-        .onAppear {
-            if path.isEmpty, let id = ProjectsDemo.projectPage(store) {
-                path = [ProjectRoute(id: id)]
-            }
-        }
-        #endif
-    }
-}
-
 #if DEBUG
 enum ProjectsDemo {
-    /// `-demoProjects -demoProjectPage`: the demo project to open for screenshots.
+    /// `-demoProjects -demoProjectPage`: the demo project the shells open for screenshots.
     @MainActor
     static func projectPage(_ store: TodoHubStore) -> String? {
         guard ProcessInfo.processInfo.arguments.contains("-demoProjectPage") else { return nil }
