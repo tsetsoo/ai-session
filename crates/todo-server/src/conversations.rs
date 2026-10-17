@@ -455,7 +455,9 @@ pub(crate) fn set_status_db(
     session_id: &str,
     req: &ConversationStatusRequest,
 ) -> rusqlite::Result<Option<StatusChange>> {
-    let tx = conn.unchecked_transaction()?;
+    // IMMEDIATE: take the write lock before reading, so a concurrent writer makes this wait
+    // (busy timeout) instead of failing the update on a stale read snapshot.
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let current: Option<(String, String)> = tx
         .query_row(
             "SELECT todo_id, status FROM conversations WHERE tool = ?1 AND session_id = ?2 AND status != 'closed'",
@@ -984,6 +986,26 @@ mod tests {
         open_conversation_db(&conn, TODO).unwrap();
         let second = open_conversation_db(&conn, "0f3a9c21-ffff-4bbb-8ccc-000000000000").unwrap();
         assert_eq!(second.tmux_name, "ai/claude/todo-0f3a9c21-ffff-4bbb-8ccc-000000000000");
+    }
+
+    #[test]
+    fn status_update_waits_for_a_concurrent_writer() {
+        // Another connection holds the write lock while the hook's update reads the old status;
+        // the update must wait for it rather than fail on a stale snapshot.
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let conv = open_conversation_db(&conn, TODO).unwrap();
+        let writer = pool.get().unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE; UPDATE todos SET title = 'renamed' WHERE id = 'nope';").unwrap();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            writer.execute_batch("UPDATE todos SET updated_at = datetime('now'); COMMIT;").unwrap();
+        });
+        let busy = ConversationStatusRequest { status: ConversationStatus::Busy, ..Default::default() };
+        let change = set_status_db(&conn, "claude", &conv.session_id, &busy);
+        handle.join().unwrap();
+        assert!(change.unwrap().is_some());
     }
 
     #[test]

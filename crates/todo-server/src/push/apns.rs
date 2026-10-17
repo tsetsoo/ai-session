@@ -276,9 +276,10 @@ impl PushTransport for HttpTransport {
             for (name, value) in headers {
                 request = request.header(name, value);
             }
-            let response = request.send().await.map_err(|e| format!("network: {e}"))?;
+            // `without_url`: reqwest's error text otherwise ends with the URL, which holds the token.
+            let response = request.send().await.map_err(|e| format!("network: {}", e.without_url()))?;
             let status = response.status().as_u16();
-            let bytes = response.bytes().await.map_err(|e| format!("network: {e}"))?;
+            let bytes = response.bytes().await.map_err(|e| format!("network: {}", e.without_url()))?;
             let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
             Ok(ApnsResponse {
                 status,
@@ -740,6 +741,17 @@ pub(crate) mod tests {
         assert_eq!((result.ok, result.reason.as_deref()), (false, Some("ExpiredProviderToken")));
         assert!(transport.call_count() <= 2);
         assert_eq!(sender.last_error().as_deref(), Some("ExpiredProviderToken"));
+    }
+
+    #[tokio::test]
+    async fn network_errors_never_contain_the_token() {
+        // Nothing listens on this port: the connect fails.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let transport = HttpTransport::new(base.clone(), base);
+        let error = transport.post(ApnsEnvironment::Sandbox, TOKEN, vec![], b"{}".to_vec()).await.unwrap_err();
+        assert!(error.starts_with("network"), "{error}");
+        assert!(!error.contains(TOKEN), "{error}");
     }
 
     #[tokio::test]

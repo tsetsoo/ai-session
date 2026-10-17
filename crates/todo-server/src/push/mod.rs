@@ -171,13 +171,17 @@ async fn run(
             Msg::Transition(t) => t,
         };
         pending.retain(|_, cancelled| Arc::strong_count(cancelled) > 1 && !cancelled.load(Ordering::SeqCst));
+        // A held push is for one prompt: leaving `waiting` (answered) or a keystroke at the
+        // terminal ends it, even if `waiting` comes back before its grace is over.
+        if transition.new != ConversationStatus::Waiting || transition.attended {
+            if let Some(cancelled) = pending.remove(&transition.todo_id) {
+                cancelled.store(true, Ordering::SeqCst);
+                println!("push: held waiting push for {} cancelled (answered)", transition.todo_id);
+            }
+        }
         let Some(event) = turns.on_transition(&transition) else { continue };
         let todo_id = transition.todo_id.clone();
         if event == Event::AttendedRecheck {
-            if let Some(cancelled) = pending.remove(&todo_id) {
-                cancelled.store(true, Ordering::SeqCst);
-                println!("push: waiting for {todo_id} cancelled (answered at the terminal)");
-            }
             continue;
         }
         let Some((ctx, settings, muted)) = load(&pool, &todo_id) else { continue };
@@ -341,6 +345,35 @@ mod tests {
         h.post(S::Busy, false);
         wait(30).await;
         assert_eq!(h.sent(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn answered_then_rewaiting_attended_within_grace_sends_nothing() {
+        // Approve at 3 s (busy after a quick tool); the hook's re-check posts waiting+attended.
+        let h = harness();
+        h.post(S::Busy, false);
+        h.post(S::Waiting, false);
+        wait(3).await;
+        h.post(S::Busy, false);
+        wait(9).await;
+        h.post(S::Waiting, true);
+        wait(30).await;
+        assert_eq!(h.sent(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn second_prompt_after_answer_gets_its_own_grace() {
+        let h = harness();
+        h.post(S::Busy, false);
+        h.post(S::Waiting, false);
+        wait(3).await;
+        h.post(S::Busy, false);
+        wait(12).await;
+        h.post(S::Waiting, false); // prompt 2 at 15 s
+        wait(6).await;
+        assert_eq!(h.sent(), 0, "prompt 1 was answered; prompt 2 is still in its grace");
+        wait(15).await;
+        assert_eq!(h.sent(), 1, "prompt 2 pushes after its own 20 s");
     }
 
     #[tokio::test(start_paused = true)]
