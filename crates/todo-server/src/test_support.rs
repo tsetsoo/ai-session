@@ -52,12 +52,24 @@ pub(crate) fn session_project(conn: &Connection, tool: &str, session_id: &str) -
 /// Send one request through the real routes and return the status and JSON body
 /// (`Null` when empty, a JSON string when the body isn't JSON).
 pub(crate) async fn call(pool: &DbPool, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    call_with(pool, &crate::push::PushNotifier::disabled(), &crate::push::Presence::default(), method, uri, body).await
+}
+
+/// `call` with a given push notifier and presence store.
+pub(crate) async fn call_with(
+    pool: &DbPool,
+    notifier: &crate::push::PushNotifier,
+    presence: &crate::push::Presence,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let app = test::init_service(
         App::new()
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(Broadcaster::new()))
-            .app_data(web::Data::new(crate::push::PushNotifier::disabled()))
-            .app_data(web::Data::new(crate::push::Presence::default()))
+            .app_data(web::Data::new(notifier.clone()))
+            .app_data(web::Data::new(presence.clone()))
             .configure(crate::api_routes),
     )
     .await;

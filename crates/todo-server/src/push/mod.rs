@@ -2,6 +2,7 @@
 //! See docs/superpowers/specs/2026-10-17-push-notifications-design.md.
 
 pub mod apns;
+pub mod handlers;
 pub mod policy;
 pub mod store;
 
@@ -75,6 +76,7 @@ impl PushNotifier {
     }
 
     /// No task, nothing sent: for tests that don't exercise push.
+    #[cfg(test)]
     pub fn disabled() -> Self {
         Self { tx: None, sender: None }
     }

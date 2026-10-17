@@ -460,10 +460,13 @@ pub(crate) mod tests {
         UNIX_EPOCH + Duration::from_secs(secs)
     }
 
+    /// One recorded post: environment, token, headers and the JSON body.
+    pub(crate) type Call = (ApnsEnvironment, String, Vec<(&'static str, String)>, serde_json::Value);
+
     #[derive(Default)]
     pub(crate) struct FakeTransport {
         pub responses: Mutex<VecDeque<Result<ApnsResponse, String>>>,
-        pub calls: Mutex<Vec<(ApnsEnvironment, String, Vec<(&'static str, String)>, serde_json::Value)>>,
+        pub calls: Mutex<Vec<Call>>,
     }
 
     impl FakeTransport {
@@ -649,10 +652,9 @@ pub(crate) mod tests {
         let target = store::devices_for_push(&pool.get().unwrap()).unwrap().remove(0);
         let result = sender.send(&pool, &target, &waiting_alert()).await;
         assert!(result.ok, "{result:?}");
-        let calls = transport.calls.lock().unwrap();
+        let calls = transport.calls.lock().unwrap().clone();
         assert_eq!((calls[0].0, calls[1].0), (ApnsEnvironment::Production, ApnsEnvironment::Sandbox));
         assert!(calls[0].2.iter().any(|(k, v)| *k == "authorization" && v.starts_with("bearer ")));
-        drop(calls);
         assert_eq!(store::devices_for_push(&pool.get().unwrap()).unwrap()[0].environment, ApnsEnvironment::Sandbox);
 
         // Bad in both environments: the token is dead.
