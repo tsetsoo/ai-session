@@ -1,7 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Fail loudly unless every test ran. bash reads a script as it goes, so a syntax error halfway
+# down, or an edit to this file mid-run, used to end the run early with exit 0. Run from a
+# private copy that parsed cleanly; cleanup() fails any exit that didn't reach the end.
+if [[ -z "${TODO_UPDATE_TEST_COPY:-}" ]]; then
+  TODO_UPDATE_TEST_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  TODO_UPDATE_TEST_COPY="$(mktemp)"
+  cp "$0" "$TODO_UPDATE_TEST_COPY"
+  if ! bash -n "$TODO_UPDATE_TEST_COPY"; then
+    rm -f "$TODO_UPDATE_TEST_COPY"
+    echo "FAIL: $0 does not parse" >&2
+    exit 1
+  fi
+  export TODO_UPDATE_TEST_SCRIPT_DIR TODO_UPDATE_TEST_COPY
+  exec bash "$TODO_UPDATE_TEST_COPY" "$@"
+fi
+SCRIPT_DIR="$TODO_UPDATE_TEST_SCRIPT_DIR"
+SCRIPT_COPY="$TODO_UPDATE_TEST_COPY"
+unset TODO_UPDATE_TEST_SCRIPT_DIR TODO_UPDATE_TEST_COPY
 UPDATE="$SCRIPT_DIR/todo-update.sh"
 MAKE_RELEASE="$SCRIPT_DIR/fixtures/make_release.sh"
 
@@ -18,11 +35,18 @@ PRUNE_SHA_4="4444444444444444444444444444444444444444"
 tmpdir="$(mktemp -d)"
 health_pid=""
 release_pid=""
+suite_complete=""
 
 cleanup() {
+  local status=$?
   [[ -n "${health_pid:-}" ]] && kill "$health_pid" 2>/dev/null || true
   [[ -n "${release_pid:-}" ]] && kill "$release_pid" 2>/dev/null || true
-  rm -rf "$tmpdir"
+  rm -rf "$tmpdir" "$SCRIPT_COPY"
+  if [[ -z "$suite_complete" ]]; then
+    echo "FAIL: tests stopped before the end" >&2
+    ((status != 0)) || status=1
+  fi
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -282,3 +306,4 @@ prune_expected="$(readlink -f "$TODO_ROOT/releases/$PRUNE_SHA_4")"
 pass "KEEP_RELEASES=3 retained three releases and kept live current"
 
 echo "All offline update tests passed."
+suite_complete=1
