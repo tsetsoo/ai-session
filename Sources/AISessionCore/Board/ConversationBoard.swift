@@ -32,6 +32,15 @@ public struct ConversationBoard: Sendable {
         running.filter { Self.display($0, liveTmux: liveTmux) == .needsYou }
     }
 
+    /// Running now, then the closed conversations, newest first.
+    public var all: [Conversation] {
+        let runningIDs = Set(running.map(\.todoId))
+        let closed = conversations.values
+            .filter { !runningIDs.contains($0.todoId) }
+            .sorted { $0.createdAt != $1.createdAt ? $0.createdAt > $1.createdAt : $0.todoId < $1.todoId }
+        return running + closed
+    }
+
     /// 1-based; only the first nine get a keyboard shortcut.
     public func conversation(atShortcut n: Int) -> Conversation? {
         guard (1...9).contains(n), n <= running.count else { return nil }
@@ -48,5 +57,9 @@ public struct ConversationBoard: Sendable {
 
     public func runningCount(computerID: String) -> Int {
         running.filter { $0.computer.id == computerID }.count
+    }
+
+    public func needsYouCount(computerID: String) -> Int {
+        needsYou.filter { $0.computer.id == computerID }.count
     }
 }
