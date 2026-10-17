@@ -50,14 +50,15 @@ final class ConversationLoader {
         /// Throws `HostLookup.Failure`.
         var resolveConfig: (Computer) throws -> (hostID: UUID, config: HostConnectionConfig)
 
+        /// `hosts` is read on every resolve, so a host added while a problem shows counts on retry.
         @MainActor
-        static func live(store: TodoHubStore, hosts: [HostEntity]) -> Dependencies {
+        static func live(store: TodoHubStore, hosts: @escaping () -> [HostEntity]) -> Dependencies {
             Dependencies(
                 openConversation: { try await store.openConversation(for: $0) },
                 cachedConversation: { store.conversations[$0] },
                 isOffline: { store.isOffline },
                 resolveConfig: { computer in
-                    guard let host = HostLookup.host(for: computer, in: hosts) else {
+                    guard let host = HostLookup.host(for: computer, in: hosts()) else {
                         throw HostLookup.Failure.noHost(computer)
                     }
                     do {
@@ -124,6 +125,11 @@ final class ConversationLoader {
         case .folderMissing: phase = .problem(.folderMissing(name, open.conversation.cwd))
         case .conversationNotFound: phase = .problem(.conversationNotFound(name))
         }
+    }
+
+    /// The conversation was closed or unlinked: back to Start / Resume.
+    func reset() {
+        phase = .idle
     }
 
     /// The frame calls this when the SSH connect fails.

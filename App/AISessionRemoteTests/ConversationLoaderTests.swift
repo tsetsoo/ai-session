@@ -160,4 +160,12 @@ final class ConversationLoaderTests: XCTestCase {
         l.connectionFailed()
         XCTAssertEqual(l.phase, .idle)
     }
+
+    func testResetAfterCloseReturnsToIdleAndCanStartAgain() async {
+        let l = await readyLoader()
+        l.reset()
+        XCTAssertEqual(l.phase, .idle)
+        await l.start()
+        guard case .ready = l.phase else { return XCTFail("\(l.phase)") }
+    }
 }

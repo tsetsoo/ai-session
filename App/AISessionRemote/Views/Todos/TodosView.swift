@@ -10,7 +10,7 @@ struct TodosView: View {
     @State private var showingSettings = false
     @State private var showingComputers = false
     @State private var showingAdd = false
-    @State private var openConversation: OpenTodoConversation?
+    @State private var openTodoID: String?
     @State private var openingTodoID: String?
     @State private var missingHost: Computer?
     @State private var newHostPrefill: HostEditorPrefill?
@@ -24,8 +24,8 @@ struct TodosView: View {
                 .navigationTitle("Todos")
                 .toolbar { toolbar }
                 .refreshable { await store.refresh() }
-                .navigationDestination(item: $openConversation) { open in
-                    conversationDestination(open)
+                .navigationDestination(item: $openTodoID) { todoID in
+                    conversationDestination(todoID)
                 }
         }
         .sheet(isPresented: $showingSettings) {
@@ -59,9 +59,7 @@ struct TodosView: View {
             Button("Cancel", role: .cancel) {}
         } message: { todo in
             if let conversation = store.conversations[todo.id] {
-                Text(conversation.tool == "codex"
-                    ? "Ends its tmux session, archives the Codex conversation on \(conversation.computer.name) and unlinks it. The todo stays."
-                    : "Ends its tmux session, deletes the conversation from \(conversation.computer.name) and unlinks it. The todo stays.")
+                Text(conversation.deleteConfirmationMessage)
             }
         }
         .alert(
@@ -146,7 +144,7 @@ struct TodosView: View {
                     onToggle: { Task { await store.toggle(todo) } }
                 )
                 .contentShape(Rectangle())
-                .onTapGesture { open(todo) }
+                .onTapGesture { openTodoID = todo.id }
                 .contextMenu {
                     if store.conversations[todo.id] != nil {
                         Button(role: .destructive) {
@@ -231,44 +229,6 @@ struct TodosView: View {
 
     // MARK: Conversations
 
-    private func open(_ todo: Todo) {
-        guard openingTodoID == nil else { return }
-        openingTodoID = todo.id
-        Task {
-            defer { openingTodoID = nil }
-            let conversation: Conversation
-            if store.isOffline, let cached = store.conversations[todo.id], cached.status != .closed {
-                // The hub is down but the computer may not be: attach with what we know.
-                conversation = cached
-            } else {
-                do {
-                    conversation = try await store.openConversation(for: todo)
-                } catch let TodoHubError.conflict(message) {
-                    store.errorMessage = Self.conflictMessage(message)
-                    return
-                } catch {
-                    store.errorMessage = TodoHubStore.message(for: error)
-                    return
-                }
-            }
-            guard let host = matchingHost(for: conversation.computer) else {
-                missingHost = conversation.computer
-                return
-            }
-            do {
-                let connection = try SessionServiceFactory().make(for: host)
-                openConversation = OpenTodoConversation(
-                    conversation: conversation,
-                    hostID: host.id,
-                    config: connection.config,
-                    title: todo.title
-                )
-            } catch {
-                store.errorMessage = "The private key for \(host.displayName) is unavailable. Edit the host under Hosts and save its key again."
-            }
-        }
-    }
-
     private func deleteConversation(of todo: Todo) {
         guard let conversation = store.conversations[todo.id] else { return }
         guard matchingHost(for: conversation.computer) != nil else {
@@ -285,12 +245,6 @@ struct TodosView: View {
                 store.errorMessage = TodoHubStore.message(for: error)
             }
         }
-    }
-
-    /// The server's 409 text, plus where to fix the common "no computer" case.
-    static func conflictMessage(_ serverMessage: String) -> String {
-        guard serverMessage.localizedCaseInsensitiveContains("no computer") else { return serverMessage }
-        return serverMessage + ". Assign one under Settings → Computers."
     }
 
     private func matchingHost(for computer: Computer) -> HostEntity? {
@@ -310,24 +264,56 @@ struct TodosView: View {
         )
     }
 
-    private func conversationDestination(_ open: OpenTodoConversation) -> some View {
-        let conversation = open.conversation
-        return TerminalScreen(
-            hostConfig: open.config,
-            mode: .attach(TmuxCommandBuilder.openTodoConversation(
-                tmuxName: conversation.tmuxName,
-                cwd: conversation.cwd,
-                sessionId: conversation.sessionId,
-                tool: conversation.tool
-            )),
-            title: open.title,
-            // "Kill Session" in the terminal menu = Close conversation: ends tmux, keeps
-            // the Claude conversation resumable.
-            onKill: {
-                try await store.closeConversation(conversation, config: open.config)
-            }
-        )
+    /// Pushed at once on tap; the frame shows preparing, problems and the terminal itself.
+    @ViewBuilder
+    private func conversationDestination(_ todoID: String) -> some View {
+        if let todo = store.todos.first(where: { $0.id == todoID }) {
+            TodoConversationScreen(todo: todo, store: store) { openTodoID = nil }
+        } else {
+            ContentUnavailableView("Todo Not Found", systemImage: "checklist")
+        }
     }
+}
+
+/// The conversation frame for a tapped todo. A tap is an explicit open, so the loader starts
+/// (or resumes) the conversation as soon as the frame appears.
+private struct TodoConversationScreen: View {
+    let todo: Todo
+    let store: TodoHubStore
+    let onDeleted: () -> Void
+
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
+    @State private var hostList: HostList
+    @State private var loader: ConversationLoader
+
+    init(todo: Todo, store: TodoHubStore, onDeleted: @escaping () -> Void) {
+        self.todo = todo
+        self.store = store
+        self.onDeleted = onDeleted
+        let hostList = HostList()
+        _hostList = State(initialValue: hostList)
+        _loader = State(initialValue: ConversationLoader(
+            todo: todo,
+            dependencies: .live(store: store, hosts: { hostList.hosts })
+        ))
+    }
+
+    var body: some View {
+        ConversationFrame(todo: todo, loader: loader, store: store, onDeleted: onDeleted)
+            .onChange(of: hosts) { _, hosts in hostList.hosts = hosts }
+            .task {
+                hostList.hosts = hosts
+                guard loader.phase == .idle else { return }
+                await loader.start()
+            }
+    }
+}
+
+/// The current saved hosts, read by the loader on every resolve (a host added from the frame's
+/// Set Up Access then counts on retry).
+@MainActor
+private final class HostList {
+    var hosts: [HostEntity] = []
 }
 
 private struct TodoRow: View {

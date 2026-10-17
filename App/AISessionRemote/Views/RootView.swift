@@ -14,6 +14,8 @@ struct RootView: View {
                     makeTransport: { _, _ in DemoTransport() }
                 )
             }
+        } else if DemoFixtures.isEnabled, DemoFixtures.screen == "frame" {
+            DemoFrameScreen()
         } else if ProcessInfo.processInfo.arguments.contains("-demoConversationPicker") {
             ConversationPickerDemo()
         } else {
