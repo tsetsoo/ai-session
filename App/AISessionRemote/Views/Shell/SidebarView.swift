@@ -2,8 +2,8 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// The Mac (and regular-width iPad) sidebar: Needs you and Running now, the todo sections, then
-/// the computers, with the sync line and Settings at the bottom.
+/// The Mac (and regular-width iPad) sidebar: Needs you and Running now, the todo sections,
+/// Projects, then the computers, with the sync line and Settings at the bottom.
 struct SidebarView: View {
     @Binding var selection: AppModel.SidebarItem?
     /// Settings on iPad; the Mac opens its Settings scene instead.
@@ -30,6 +30,10 @@ struct SidebarView: View {
                                count: row.openTodos, showsDot: row.needsYou)
                         .tag(AppModel.SidebarItem.section(row.section))
                 }
+            }
+            Section {
+                SidebarRow(title: "Projects", systemImage: "folder", count: 0)
+                    .tag(AppModel.SidebarItem.projects)
             }
             if !counts.computers.isEmpty {
                 Section("Computers") {

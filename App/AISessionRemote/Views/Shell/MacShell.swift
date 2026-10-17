@@ -65,6 +65,23 @@ struct MacShell: View {
             computerPage = nil
         }
         .onAppear(perform: applyInitialSelection)
+        // A tapped "needs you" notification (routed by AppModel): select and open it.
+        .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
+            guard let todoID, let todo = store.todos.first(where: { $0.id == todoID }) else { return }
+            model.pendingOpenTodoID = nil
+            switch sidebarItem {
+            case .needsYou, .runningNow: break
+            case .section(todo.section): break
+            default: model.sidebarSelection = .needsYou
+            }
+            open(todo)
+        }
+        // The Home-screen "New Todo" quick action (iPad in regular width): the New Todo sheet.
+        .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
+            guard requested else { return }
+            model.quickAddFocusRequested = false
+            showingAdd = true
+        }
         .task { await model.startSync() }
     }
 
@@ -90,27 +107,30 @@ struct MacShell: View {
         #endif
         .searchable(text: $query, prompt: "Search")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                // Click: new todo. The menu (its arrow on the Mac, a hold on iPad): new todo from
-                // an existing conversation.
-                Menu {
-                    Button {
-                        showingAdd = true
+            // Projects has its own + (New Project) instead.
+            if sidebarItem != .projects {
+                ToolbarItem(placement: .primaryAction) {
+                    // Click: new todo. The menu (its arrow on the Mac, a hold on iPad): new todo from
+                    // an existing conversation.
+                    Menu {
+                        Button {
+                            showingAdd = true
+                        } label: {
+                            Label("New Todo", systemImage: "plus")
+                        }
+                        Button {
+                            showingNewFromConversation = true
+                        } label: {
+                            Label("New Todo from Conversation…", systemImage: "text.bubble")
+                        }
                     } label: {
                         Label("New Todo", systemImage: "plus")
+                    } primaryAction: {
+                        showingAdd = true
                     }
-                    Button {
-                        showingNewFromConversation = true
-                    } label: {
-                        Label("New Todo from Conversation…", systemImage: "text.bubble")
-                    }
-                } label: {
-                    Label("New Todo", systemImage: "plus")
-                } primaryAction: {
-                    showingAdd = true
+                    .help("New Todo")
+                    .disabled(!model.isConfigured || store.isOffline)
                 }
-                .help("New Todo")
-                .disabled(!model.isConfigured || store.isOffline)
             }
         }
     }
@@ -127,6 +147,11 @@ struct MacShell: View {
                                  onOpen: open)
         case let .section(section):
             TodoListView(sections: [section], query: query, selection: selection, onOpen: open)
+        case .projects:
+            ProjectsList(store: store, selection: Binding(
+                get: { model.selectedProjectID },
+                set: { model.selectedProjectID = $0 }
+            ))
         case let .computer(id):
             if let computer = store.computers.first(where: { $0.id == id }) {
                 // Other Sessions, On This Computer and Open Shell select like conversations and
@@ -169,7 +194,9 @@ struct MacShell: View {
 
     @ViewBuilder
     private var detailColumn: some View {
-        if let page = computerPage, case let .computer(id) = sidebarItem,
+        if sidebarItem == .projects {
+            projectDetail
+        } else if let page = computerPage, case let .computer(id) = sidebarItem,
            let computer = store.computers.first(where: { $0.id == id }),
            let host = HostLookup.host(for: computer, in: hosts) {
             NavigationStack {
@@ -187,6 +214,27 @@ struct MacShell: View {
                 Label("Select a conversation", systemImage: "bubble.left.and.bubble.right")
             } description: {
                 Text("⌘K to jump · ⌘N new todo")
+            }
+        }
+    }
+
+    /// The selected project's page. Opening one of its todos selects that todo in its section
+    /// and starts (or resumes) it, so the conversation shows in this column as usual.
+    @ViewBuilder
+    private var projectDetail: some View {
+        if let id = model.selectedProjectID {
+            NavigationStack {
+                ProjectDetailView(projectId: id, store: store) { todo in
+                    model.sidebarSelection = .section(todo.section)
+                    open(todo)
+                }
+            }
+            .id(id)
+        } else {
+            ContentUnavailableView {
+                Label("Select a project", systemImage: "folder")
+            } description: {
+                Text("Projects group todos, conversations and memories by folder.")
             }
         }
     }
@@ -259,6 +307,11 @@ struct MacShell: View {
             }
             #endif
             return
+        }
+        // `-demoProjects` (canned projects, see TodoHubDemo): open on Projects.
+        if let demo = store.demo, model.sidebarSelection == nil {
+            model.sidebarSelection = .projects
+            model.selectedProjectID = ProjectsDemo.projectPage(store) ?? demo.projects.first?.id
         }
         #endif
         if model.sidebarSelection == nil { model.sidebarSelection = .runningNow }
@@ -517,11 +570,12 @@ extension AppModel {
 
 #if DEBUG
 extension AppModel.SidebarItem {
-    /// `-uiDemoSidebar` values: needsyou, running, a section code, or computer:<id>.
+    /// `-uiDemoSidebar` values: needsyou, running, a section code, projects, or computer:<id>.
     init?(demoArgument: String) {
         switch demoArgument {
         case "needsyou": self = .needsYou
         case "running": self = .runningNow
+        case "projects": self = .projects
         default:
             if let section = TodoSection(rawValue: demoArgument) {
                 self = .section(section)

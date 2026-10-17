@@ -90,6 +90,7 @@ enum ContentHeader {
         case .needsYou: "Needs you"
         case .runningNow: "Running now"
         case let .section(section): section.rawValue
+        case .projects: "Projects"
         case let .computer(id): computers.first { $0.id == id }?.name ?? "Computer"
         }
     }
@@ -107,6 +108,8 @@ enum ContentHeader {
         case let .section(section):
             let open = "\(board.openTodoCount(section)) open"
             return sectionComputer(section).map { "\(open) · \($0)" } ?? open
+        case .projects:
+            return ""
         case let .computer(id):
             return RowText.computerLine(running: board.runningCount(computerID: id),
                                         needsYou: board.needsYouCount(computerID: id))

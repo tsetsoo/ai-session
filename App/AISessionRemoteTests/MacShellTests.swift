@@ -99,6 +99,7 @@ final class MacShellTests: XCTestCase {
         XCTAssertEqual(ContentHeader.title(for: .needsYou, computers: computers), "Needs you")
         XCTAssertEqual(ContentHeader.title(for: .runningNow, computers: computers), "Running now")
         XCTAssertEqual(ContentHeader.title(for: .section(.si), computers: computers), "Si")
+        XCTAssertEqual(ContentHeader.title(for: .projects, computers: computers), "Projects")
         XCTAssertEqual(ContentHeader.title(for: .computer("linux-box"), computers: computers), "linux-box")
     }
 

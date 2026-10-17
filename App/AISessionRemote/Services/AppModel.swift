@@ -25,7 +25,7 @@ final class AppModel {
     typealias TmuxListing = @Sendable (Computer) async throws -> Set<String>
 
     enum SidebarItem: Hashable {
-        case needsYou, runningNow, section(TodoSection), computer(String)
+        case needsYou, runningNow, section(TodoSection), projects, computer(String)
     }
 
     let store: TodoHubStore
@@ -44,6 +44,8 @@ final class AppModel {
 
     var sidebarSelection: SidebarItem?
     var selectedTodoID: String?
+    /// The project shown in the detail column while the sidebar is on Projects.
+    var selectedProjectID: String?
     var poppedOut: Set<String> = []
     /// Set by notification taps and the palette.
     var pendingOpenTodoID: String?
