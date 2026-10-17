@@ -180,3 +180,16 @@ final class PushHubClientTests: XCTestCase {
         XCTAssertEqual(results, [PushTestResult(tokenPrefix: "a1b2c3d4", ok: false, reason: "BadDeviceToken")])
     }
 }
+
+final class QuietHoursTimeTests: XCTestCase {
+    func testHHMMRoundTripsThroughDate() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Sofia"))
+        let date = try XCTUnwrap(QuietHours.date(fromHHMM: "07:05", calendar: calendar))
+        XCTAssertEqual(calendar.component(.hour, from: date), 7)
+        XCTAssertEqual(calendar.component(.minute, from: date), 5)
+        XCTAssertEqual(QuietHours.hhmm(from: date, calendar: calendar), "07:05")
+        XCTAssertNil(QuietHours.date(fromHHMM: "7:5x", calendar: calendar))
+        XCTAssertNil(QuietHours.date(fromHHMM: "24:00", calendar: calendar))
+    }
+}

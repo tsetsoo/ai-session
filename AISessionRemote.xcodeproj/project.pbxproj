@@ -13,6 +13,7 @@
 		0465CEFADB8822952932C24E /* TodosView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9DBC3BD9869463A3CB29231 /* TodosView.swift */; };
 		04D272A8E2DC4B976A1524E5 /* TodoHubSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B17876012779CEAC4C80A8 /* TodoHubSettingsView.swift */; };
 		0D5CD8415239AAE0790F5D14 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 9E099B24A52335A5F3ED6401 /* SwiftTerm */; };
+		0EBEF766C754B360334DAFB5 /* NotificationSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D37845B7FF254EEC7823E4C /* NotificationSettingsView.swift */; };
 		10BE5487C7B5DE001354E7ED /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B5CF5ADABEA184DD911533 /* SessionsListView.swift */; };
 		1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */; };
 		179CFAD30F54E92A25FE71AA /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 05BD2283E26F32148478AD0E /* Crypto */; };
@@ -91,6 +92,7 @@
 		E4427251E3B62EF3BC42901D /* TerminalResizeDebouncer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229A4FF6F8B0899EA6FEF4D9 /* TerminalResizeDebouncer.swift */; };
 		E51413F4AD580EB8F2245E62 /* TerminalOutputCoalescer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7B4DE59A842C29732755FED /* TerminalOutputCoalescer.swift */; };
 		E66F716710375D2CAED0DD14 /* PooledSSHConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFFA46BBF4C8FFC2CCE6EE1B /* PooledSSHConnection.swift */; };
+		E7262818704634E6B9AEE94B /* NotificationSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D37845B7FF254EEC7823E4C /* NotificationSettingsView.swift */; };
 		E7BD92818C64611AE62AA149 /* TerminalTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D417529F6E6B990D79BF81 /* TerminalTransport.swift */; };
 		ED744D91953734A95A1F879D /* SoftKeyBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7BABCCCBD7DDCE94657EFD /* SoftKeyBar.swift */; };
 		EE04800E43A3B5A9887D4281 /* TOFUHostKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */; };
@@ -129,6 +131,7 @@
 		45650CE5B948BA331E385B8B /* TerminalResizeDebouncerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalResizeDebouncerTests.swift; sourceTree = "<group>"; };
 		5AEEFD06D4BF1BB591C6A637 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationLinkViews.swift; sourceTree = "<group>"; };
+		5D37845B7FF254EEC7823E4C /* NotificationSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSettingsView.swift; sourceTree = "<group>"; };
 		603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionRemoteApp.swift; sourceTree = "<group>"; };
 		6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParserTests.swift; sourceTree = "<group>"; };
 		77B5CF5ADABEA184DD911533 /* SessionsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsListView.swift; sourceTree = "<group>"; };
@@ -295,9 +298,18 @@
 				A467E31C965B1E36C7CB08F0 /* RootView.swift */,
 				77B5CF5ADABEA184DD911533 /* SessionsListView.swift */,
 				DA7BABCCCBD7DDCE94657EFD /* SoftKeyBar.swift */,
+				8D5964BFF48B21A5515B0C4D /* Notifications */,
 				B2A43EC64BFDB004D55DEF52 /* Todos */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		8D5964BFF48B21A5515B0C4D /* Notifications */ = {
+			isa = PBXGroup;
+			children = (
+				5D37845B7FF254EEC7823E4C /* NotificationSettingsView.swift */,
+			);
+			path = Notifications;
 			sourceTree = "<group>";
 		};
 		93652E77BC916774AB6D567C /* Terminal */ = {
@@ -501,6 +513,7 @@
 				459745DF108E3518C8BB10E3 /* NIOSSHClient.swift in Sources */,
 				FBFCEA0140DEA878AC684447 /* NewSessionSheet.swift in Sources */,
 				CA6E7438940A64E9925E2DDE /* NotificationCenterCoordinator.swift in Sources */,
+				0EBEF766C754B360334DAFB5 /* NotificationSettingsView.swift in Sources */,
 				9E2353625C323498C43847EE /* OpenSSHPrivateKeyParser.swift in Sources */,
 				3710CA76B3BD53C22D29B251 /* PlatformSupport.swift in Sources */,
 				C449746AA3C87B38E0DCAF93 /* PooledConnecting.swift in Sources */,
@@ -543,6 +556,7 @@
 				FACD0EDEEFFED735236090BD /* NIOSSHClient.swift in Sources */,
 				9AC6F15718E4541263BB3B76 /* NewSessionSheet.swift in Sources */,
 				AFF4FF50C69178BB03C5D2EF /* NotificationCenterCoordinator.swift in Sources */,
+				E7262818704634E6B9AEE94B /* NotificationSettingsView.swift in Sources */,
 				98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */,
 				883E428DBAA8B3F47A381CF2 /* PlatformSupport.swift in Sources */,
 				AF184E67F36F25D57DAD8E18 /* PooledConnecting.swift in Sources */,
