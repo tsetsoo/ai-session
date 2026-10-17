@@ -137,6 +137,36 @@ final class MacShellTests: XCTestCase {
         XCTAssertFalse(ListSearch.matches("codex", "Fix the rate import", nil))
     }
 
+    // MARK: ⌘K and ⌘1–⌘9
+
+    private func todo(_ id: String) -> Todo { DemoFixtures.todos.first { $0.id == id }! }
+
+    func testShortcutTargetsFollowRunningNow() {
+        // Running now: t1…t5 (same start time, by id); ⌘6 and beyond have no target.
+        XCTAssertEqual(PaletteModel.shortcutTarget(1, board: board, todos: DemoFixtures.todos)?.id, "t1")
+        XCTAssertEqual(PaletteModel.shortcutTarget(5, board: board, todos: DemoFixtures.todos)?.title,
+                       "Santé party-size rates")
+        XCTAssertNil(PaletteModel.shortcutTarget(6, board: board, todos: DemoFixtures.todos))
+    }
+
+    func testGoingToATodoKeepsAListThatHasIt() {
+        // Needs you and Running now keep what they list; a section keeps its own todos.
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t1"), from: .needsYou, board: board), .needsYou)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .runningNow, board: board), .runningNow)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .section(.sp), board: board), .section(.sp))
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t7"), from: .section(.i), board: board), .section(.i))
+    }
+
+    func testGoingToATodoElsewhereSwitchesList() {
+        // t2 works (not in Needs you); t7 has no conversation; Projects and computers never list todos.
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t2"), from: .needsYou, board: board), .runningNow)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t3"), from: .section(.sp), board: board), .runningNow)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t7"), from: .runningNow, board: board), .section(.i))
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t8"), from: .projects, board: board), .section(.p))
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t1"), from: .computer("mac-studio"), board: board),
+                       .runningNow)
+    }
+
     // MARK: Demo launch
 
     func testDemoSidebarArgument() {
