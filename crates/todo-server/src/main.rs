@@ -70,7 +70,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         // Push notifications
         .route("/api/push/devices", web::put().to(push::handlers::put_device))
         .route("/api/push/devices", web::get().to(push::handlers::list_devices))
-        .route("/api/push/devices/{token}", web::delete().to(push::handlers::delete_device))
+        .route("/api/push/devices/unregister", web::post().to(push::handlers::delete_device))
         .route("/api/push/settings", web::get().to(push::handlers::get_settings))
         .route("/api/push/settings", web::put().to(push::handlers::put_settings))
         .route("/api/push/presence", web::post().to(push::handlers::post_presence))

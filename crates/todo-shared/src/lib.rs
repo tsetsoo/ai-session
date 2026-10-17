@@ -876,6 +876,12 @@ pub struct PushDeviceRequest {
     pub device_name: Option<String>,
 }
 
+/// `POST /api/push/devices/unregister`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushUnregisterRequest {
+    pub token: String,
+}
+
 /// A registered device. The token is never returned in full.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PushDevice {

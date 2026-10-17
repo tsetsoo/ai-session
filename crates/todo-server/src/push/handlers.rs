@@ -1,7 +1,7 @@
 //! `/api/push/*` and `/api/todos/{id}/push-mute`.
 
 use actix_web::{web, HttpResponse};
-use todo_shared::{PresenceRequest, PushDeviceRequest, PushSettingsUpdate, PushStatus, PushTestRequest};
+use todo_shared::{PresenceRequest, PushDeviceRequest, PushSettingsUpdate, PushStatus, PushTestRequest, PushUnregisterRequest};
 
 use crate::broadcast::Broadcaster;
 use crate::conversations::{bad_request, error, not_found, server_error};
@@ -52,12 +52,14 @@ pub async fn list_devices(pool: web::Data<DbPool>) -> HttpResponse {
     }
 }
 
+/// `POST /api/push/devices/unregister {token}`. The token is in the body, not the path,
+/// because request paths are written to the access log.
 pub async fn delete_device(
     pool: web::Data<DbPool>,
-    path: web::Path<String>,
+    body: web::Json<PushUnregisterRequest>,
     broadcaster: web::Data<Broadcaster>,
 ) -> HttpResponse {
-    let token = path.into_inner().to_ascii_lowercase();
+    let token = body.token.trim().to_ascii_lowercase();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
@@ -209,10 +211,13 @@ mod tests {
         let (_, listed) = get(&pool, "/api/push/devices").await;
         assert_eq!(listed.as_array().unwrap().len(), 1);
         assert!(!listed.to_string().contains(TOKEN), "the full token is never returned");
-        let (status, _) = delete(&pool, &format!("/api/push/devices/{}", TOKEN.to_uppercase())).await;
+        // The token goes in the body: request paths end up in the access log.
+        let (status, _) = post(&pool, "/api/push/devices/unregister", json!({"token": TOKEN.to_uppercase()})).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
-        let (status, _) = delete(&pool, &format!("/api/push/devices/{TOKEN}")).await;
+        let (status, _) = post(&pool, "/api/push/devices/unregister", json!({"token": TOKEN})).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = delete(&pool, &format!("/api/push/devices/{TOKEN}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "no route takes the token in the path");
     }
 
     #[actix_web::test]

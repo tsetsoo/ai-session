@@ -72,9 +72,10 @@ impl TurnTracker {
         }
     }
 
-    /// Record that a push for `event` went out, so the turn sends no other one.
+    /// Record that a push for `event` went out, so the turn sends no other one. A turn that
+    /// already ended (the send took a while) is left ended.
     pub fn mark_sent(&mut self, todo_id: &str, event: Event) {
-        let turn = self.turns.entry(todo_id.to_string()).or_default();
+        let Some(turn) = self.turns.get_mut(todo_id) else { return };
         match event {
             Event::Waiting => turn.waiting_sent = true,
             Event::Done { .. } => turn.done_sent = true,
@@ -207,6 +208,16 @@ mod tests {
         // Not sent (you were there): no mark_sent.
         turns.on_transition(&t(Waiting, Busy, 20));
         assert_eq!(turns.on_transition(&t(Busy, Waiting, 30)), Some(Event::Waiting));
+    }
+
+    #[test]
+    fn sent_after_turn_ended_does_not_silence_next_prompt() {
+        // Codex (no busy): the push for prompt 1 lands after the turn already went idle.
+        let mut turns = TurnTracker::default();
+        assert_eq!(turns.on_transition(&t(Unknown, Waiting, 0)), Some(Event::Waiting));
+        turns.on_transition(&t(Waiting, Idle, 10));
+        turns.mark_sent("t1", Event::Waiting);
+        assert_eq!(turns.on_transition(&t(Idle, Waiting, 20)), Some(Event::Waiting));
     }
 
     #[test]
