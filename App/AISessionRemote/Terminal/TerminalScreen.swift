@@ -44,9 +44,18 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// the main thread.
     private let resizeDebouncer: TerminalResizeDebouncer
 
-    init(hostConfig: HostConnectionConfig, mode: TerminalMode) {
+    private let makeTransport: (HostConnectionConfig, TerminalMode) -> any TerminalTransport
+
+    init(
+        hostConfig: HostConnectionConfig,
+        mode: TerminalMode,
+        makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
+            SSHTerminalSession(config: $0, mode: $1)
+        }
+    ) {
         self.hostConfig = hostConfig
         self.mode = mode
+        self.makeTransport = makeTransport
         self.coalescer = TerminalOutputCoalescer { drain in
             DispatchQueue.main.async(execute: drain)
         }
@@ -75,7 +84,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
         let cols = terminal.cols > 0 ? terminal.cols : 80
         let rows = terminal.rows > 0 ? terminal.rows : 24
 
-        let session = SSHTerminalSession(config: hostConfig, mode: mode)
+        let session = makeTransport(hostConfig, mode)
         session.onOutput = { [weak self] bytes in
             // Arrives off the main thread; the coalescer is thread-safe and does the main-thread
             // hop itself before `feed`ing SwiftTerm.
@@ -219,37 +228,37 @@ final class TerminalCoordinator: TerminalViewDelegate {
 /// standard Edit menu: they target the first responder, which is this view once focused.
 private struct TerminalContainerView: NSViewRepresentable {
     let coordinator: TerminalCoordinator
+    let palette: TerminalPalette
+    let fontSize: Double
 
     func makeNSView(context: Context) -> TerminalView {
         let view = TerminalView(frame: .zero)
-        view.nativeBackgroundColor = .black
-        view.nativeForegroundColor = .white
+        TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         view.optionAsMetaKey = true
         coordinator.attach(to: view)
         return view
     }
 
     func updateNSView(_ nsView: TerminalView, context: Context) {
+        TerminalAppearance.apply(to: nsView, palette: palette, fontSize: fontSize)
         coordinator.attach(to: nsView)
     }
 }
 #else
 private struct TerminalContainerView: UIViewRepresentable {
     let coordinator: TerminalCoordinator
+    let palette: TerminalPalette
+    let fontSize: Double
 
     func makeUIView(context: Context) -> TerminalView {
         let view = TerminalView(frame: .zero)
-        // SwiftTerm's setup clears `nativeBackgroundColor` onto the layer then
-        // sets the property to `.clear`. Re-paint both so unused glyph gaps and
-        // safe-area bleed match the terminal chrome (no mismatched bars).
-        view.nativeBackgroundColor = .black
-        view.layer.backgroundColor = UIColor.black.cgColor
-        view.backgroundColor = .black
+        TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         coordinator.attach(to: view)
         return view
     }
 
     func updateUIView(_ uiView: TerminalView, context: Context) {
+        TerminalAppearance.apply(to: uiView, palette: palette, fontSize: fontSize)
         coordinator.attach(to: uiView)
     }
 }
@@ -265,6 +274,9 @@ struct TerminalScreen: View {
     let onKill: () async throws -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("terminal.fontSize") private var fontSize = TerminalAppearance.defaultFontSize
+    @AppStorage("terminal.theme") private var themeRaw = TerminalTheme.system.rawValue
     @State private var coordinator: TerminalCoordinator
     @State private var connectionState: TerminalConnectionState = .idle
     @State private var errorMessage: String?
@@ -283,19 +295,28 @@ struct TerminalScreen: View {
         hostConfig: HostConnectionConfig,
         mode: TerminalMode,
         title: String,
-        onKill: @escaping () async throws -> Void
+        onKill: @escaping () async throws -> Void,
+        makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
+            SSHTerminalSession(config: $0, mode: $1)
+        }
     ) {
         self.hostConfig = hostConfig
         self.mode = mode
         self.title = title
         self.onKill = onKill
-        _coordinator = State(initialValue: TerminalCoordinator(hostConfig: hostConfig, mode: mode))
+        _coordinator = State(initialValue: TerminalCoordinator(
+            hostConfig: hostConfig, mode: mode, makeTransport: makeTransport
+        ))
+    }
+
+    private var palette: TerminalPalette {
+        TerminalAppearance.palette(theme: TerminalTheme(rawValue: themeRaw) ?? .system, colorScheme: colorScheme)
     }
 
     var body: some View {
         ZStack {
-            TerminalContainerView(coordinator: coordinator)
-                .background(Color.black)
+            TerminalContainerView(coordinator: coordinator, palette: palette, fontSize: fontSize)
+                .background(Color(palette.background))
                 .ignoresSafeArea(.container, edges: .bottom)
 
             if showConnectingOverlay && (connectionState == .connecting || connectionState == .idle) {
@@ -324,8 +345,8 @@ struct TerminalScreen: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.visible, for: .navigationBar)
-        .toolbarBackground(Color.black.opacity(0.85), for: .navigationBar)
-        .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbarBackground(Color(palette.background).opacity(0.85), for: .navigationBar)
+        .toolbarColorScheme(palette == .dark ? .dark : .light, for: .navigationBar)
         .toolbar {
             #if os(iOS)
             ToolbarItem(placement: .topBarTrailing) {

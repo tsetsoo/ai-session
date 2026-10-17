@@ -14,7 +14,17 @@ struct RootView: View {
     var body: some View {
         #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
-        if arguments.contains("-demoConversationPicker") {
+        if DemoFixtures.isEnabled, DemoFixtures.screen == "terminal" {
+            NavigationStack {
+                TerminalScreen(
+                    hostConfig: DemoFixtures.config,
+                    mode: .attach("demo"),
+                    title: "Fix the rate import",
+                    onKill: {},
+                    makeTransport: { _, _ in DemoTransport() }
+                )
+            }
+        } else if arguments.contains("-demoConversationPicker") {
             ConversationPickerDemo()
         } else if arguments.contains("-demoProjects") {
             tabs

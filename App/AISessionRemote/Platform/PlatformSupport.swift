@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 #if os(iOS)
 import UIKit
@@ -76,5 +77,35 @@ enum PlatformSupport {
         #else
         return []
         #endif
+    }
+}
+
+#if os(iOS)
+typealias PlatformNativeColor = UIColor
+#else
+typealias PlatformNativeColor = NSColor
+#endif
+
+enum PlatformColor {
+    /// A SwiftUI color that resolves to `light` or `dark` with the current appearance.
+    static func dynamic(light: PlatformNativeColor, dark: PlatformNativeColor) -> Color {
+        #if os(iOS)
+        Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? dark : light })
+        #else
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        })
+        #endif
+    }
+}
+
+extension PlatformNativeColor {
+    convenience init(hex: UInt32) {
+        self.init(
+            red: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1
+        )
     }
 }

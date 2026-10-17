@@ -11,6 +11,9 @@ struct AISessionRemoteApp: App {
         // `--hub-url …` / `--add-host …` set the app up from launch arguments
         // (see HostProvisioning). On the Mac the app exits afterwards.
         HostProvisioning.runFromCommandLineIfRequested()
+        #if os(macOS)
+        TextSizeShortcuts.installBiggerTextAliasMonitor()
+        #endif
         // Before launch finishes, so a notification tap that launched the app is delivered.
         NotificationCenterCoordinator.shared.install()
         // `--notify-on` asks for notification permission and registers this device, so the
@@ -19,6 +22,8 @@ struct AISessionRemoteApp: App {
             Task { _ = await NotificationCenterCoordinator.shared.setNeedsYouEnabled(true) }
         }
     }
+
+    @AppStorage("terminal.fontSize") private var terminalFontSize = TerminalAppearance.defaultFontSize
 
     var body: some Scene {
         WindowGroup {
@@ -48,6 +53,17 @@ struct AISessionRemoteApp: App {
         .commands {
             // Frees ⌘N for "New Session" (bound on the sessions list's add button).
             CommandGroup(replacing: .newItem) {}
+            CommandMenu("Conversation") {
+                // Plain ⌘= is handled by a key monitor (TextSizeShortcuts), since ⌘+ needs Shift.
+                Button("Bigger Text") { TextSizeShortcuts.step(by: 1) }
+                    .keyboardShortcut("+", modifiers: .command)
+                Button("Smaller Text") { TextSizeShortcuts.step(by: -1) }
+                .keyboardShortcut("-", modifiers: .command)
+                Button("Default Text Size") {
+                    terminalFontSize = TerminalAppearance.defaultFontSize
+                }
+                .keyboardShortcut("0", modifiers: .command)
+            }
         }
         #endif
     }
