@@ -33,7 +33,20 @@ struct QuickAddBar: View {
     @State private var typedBeforeDictation = ""
     #endif
 
+    /// On screen: the Todos tab is selected with its list showing.
+    @State private var isShown = false
+
     private var section: TodoSection { QuickAdd.section(from: sectionRaw) }
+
+    private func takeQuickActionFocus() {
+        guard isShown, model.quickAddFocusRequested else { return }
+        Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard isShown, model.quickAddFocusRequested else { return }
+            model.quickAddFocusRequested = false
+            focused = true
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.spacing.xs) {
@@ -66,15 +79,14 @@ struct QuickAddBar: View {
         .background(Self.barBackground)
         .overlay(alignment: .top) { Divider() }
         .disabled(model.store.isOffline)
-        // The Home-screen "New Todo" quick action, once the tab switch has settled.
-        .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
-            guard requested else { return }
-            Task {
-                try? await Task.sleep(for: .milliseconds(350))
-                model.quickAddFocusRequested = false
-                focused = true
-            }
+        // The Home-screen "New Todo" quick action: taken only while this field is on screen,
+        // once the tab switch has settled.
+        .onAppear {
+            isShown = true
+            takeQuickActionFocus()
         }
+        .onDisappear { isShown = false }
+        .onChange(of: model.quickAddFocusRequested) { _, _ in takeQuickActionFocus() }
         .onChange(of: title) { _, _ in
             #if os(iOS)
             if dictation.isRunning { return }

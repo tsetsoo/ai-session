@@ -12,9 +12,12 @@ struct PhoneShell: View {
     }
 
     enum Route: Hashable {
+        /// Opened by a tap: starts (or resumes) the conversation.
         case todo(String)
         case computer(String)
         case project(String)
+        /// Shown without starting anything (a notification tap): attaches only if it runs.
+        case reopened(String)
     }
 
     /// Settings as a sheet, optionally opened on one destination.
@@ -143,6 +146,11 @@ struct PhoneShell: View {
         // The Home-screen "New Todo" quick action; QuickAddBar takes the focus.
         .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
             guard requested else { return }
+            guard isConfigured else {
+                // No list, no field: drop it so it can't grab focus later.
+                model.quickAddFocusRequested = false
+                return
+            }
             tab = .todos
             todosPath = []
         }
@@ -245,6 +253,15 @@ struct PhoneShell: View {
             } else {
                 ContentUnavailableView("Todo Not Found", systemImage: "checklist")
             }
+        case let .reopened(id):
+            if let todo = store.todos.first(where: { $0.id == id }) {
+                TodoConversationScreen(todo: todo, store: store, attachOnly: true) {
+                    if path.wrappedValue.last == route { path.wrappedValue.removeLast() }
+                }
+                .toolbar(.hidden, for: .tabBar)
+            } else {
+                ContentUnavailableView("Todo Not Found", systemImage: "checklist")
+            }
         case let .computer(id):
             if let computer = store.computers.first(where: { $0.id == id }) {
                 ComputerDetailView(computer: computer) { path.wrappedValue.append(.todo($0.id)) }
@@ -256,15 +273,11 @@ struct PhoneShell: View {
         }
     }
 
-    /// Pushes the todo's frame on Todos when that's the tab on screen, else on Conversations,
-    /// in place of whatever that tab had open.
+    /// A notification tap shows the conversation on the Conversations tab, in place of what
+    /// that tab had open. It attaches only if the conversation runs, never starts one.
     private func openFromNotification(_ todoID: String) {
-        if tab == .todos {
-            todosPath = [.todo(todoID)]
-        } else {
-            tab = .conversations
-            conversationsPath = [.todo(todoID)]
-        }
+        tab = .conversations
+        conversationsPath = [.reopened(todoID)]
     }
 
     private func openSettings(_ destination: SettingsDestination?) {

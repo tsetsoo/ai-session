@@ -2,20 +2,24 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// The conversation frame for a tapped todo. A tap is an explicit open, so the loader starts
-/// (or resumes) the conversation as soon as the frame appears.
+/// The conversation frame for a todo. A tap is an explicit open, so the loader starts (or
+/// resumes) the conversation as soon as the frame appears. `attachOnly` (a notification tap)
+/// only shows it: it attaches if the conversation runs and never starts or resumes one.
 struct TodoConversationScreen: View {
     let todo: Todo
     let store: TodoHubStore
+    let attachOnly: Bool
     let onDeleted: () -> Void
 
+    @Environment(AppModel.self) private var model
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var hostList: HostList
     @State private var loader: ConversationLoader
 
-    init(todo: Todo, store: TodoHubStore, onDeleted: @escaping () -> Void) {
+    init(todo: Todo, store: TodoHubStore, attachOnly: Bool = false, onDeleted: @escaping () -> Void) {
         self.todo = todo
         self.store = store
+        self.attachOnly = attachOnly
         self.onDeleted = onDeleted
         let hostList = HostList()
         _hostList = State(initialValue: hostList)
@@ -32,7 +36,14 @@ struct TodoConversationScreen: View {
             .task {
                 hostList.hosts = hosts
                 guard loader.phase == .idle else { return }
-                await loader.start()
+                if attachOnly {
+                    // Running as far as the board knows (hub status and listed tmux sessions);
+                    // a stale alert must not recreate a dead session.
+                    let running = model.board.status(forTodo: todo.id).map { $0 != .closed } ?? false
+                    await loader.attachIfRunning(running ? store.conversations[todo.id] : nil)
+                } else {
+                    await loader.start()
+                }
             }
     }
 
