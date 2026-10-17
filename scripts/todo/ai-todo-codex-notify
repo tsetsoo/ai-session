@@ -109,7 +109,9 @@ body=$(printf '%s\n' "$body" | sed -n 3p)
 # The last status sent per thread, so a delayed re-check can tell the turn moved on.
 state_dir="$HOME/.ai-remote/hook-state"
 state_file="$state_dir/codex-$sid"
-mkdir -p "$state_dir" 2>/dev/null && printf '%s\n' "$status" >"$state_file" 2>/dev/null
+state=$status
+[ "$status" = waiting ] && state="waiting $prompt_time.$$"
+mkdir -p "$state_dir" 2>/dev/null && printf '%s\n' "$state" >"$state_file" 2>/dev/null
 
 post() {
   # The token goes through curl's config on stdin so it never shows up in `ps`.
@@ -126,8 +128,8 @@ post() {
 recheck() {
   [ "$status" = waiting ] && [ "$attended" = false ] || return 0
   sleep "${AI_TODO_RECHECK_DELAY:-12}"
-  # Moved on (the turn completed): re-posting waiting would undo that.
-  [ "$(cat "$state_file" 2>/dev/null)" = waiting ] || return 0
+  # Moved on (the turn completed, or another prompt is waiting now).
+  [ "$(cat "$state_file" 2>/dev/null)" = "$state" ] || return 0
   latest=$(latest_activity)
   case "$latest" in
     '' | *[!0-9]*) return 0 ;;

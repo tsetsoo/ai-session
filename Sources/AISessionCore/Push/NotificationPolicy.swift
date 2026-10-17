@@ -18,6 +18,25 @@ public enum NotificationPolicy {
         "todo-\(todoId)"
     }
 
+    /// Delivered "needs you" alerts whose conversation no longer waits (answered elsewhere).
+    /// "Done" alerts stay: they are about idle conversations by definition.
+    public static func staleAlertIdentifiers(delivered: [PushPayload], waitingTodoIds: Set<String>) -> [String] {
+        delivered
+            .filter { $0.kind == "waiting" && !waitingTodoIds.contains($0.todoId) }
+            .map { notificationIdentifier(todoId: $0.todoId) }
+    }
+
+    /// Todos whose conversation turned `waiting` since `previous` (todo id → status), sorted.
+    /// `nil` (the first snapshot after launch or reconnect) reports nothing: those prompts
+    /// are old news.
+    public static func newlyWaiting(previous: [String: ConversationStatus]?, current: [String: ConversationStatus]) -> [String] {
+        guard let previous else { return [] }
+        return current
+            .filter { $0.value == .waiting && previous[$0.key] != .waiting }
+            .map(\.key)
+            .sorted()
+    }
+
     /// Whether to post a local alert for a conversation that just turned `waiting`.
     /// - Never while that conversation is on screen.
     /// - iPhone: only when the server's push isn't covering it.

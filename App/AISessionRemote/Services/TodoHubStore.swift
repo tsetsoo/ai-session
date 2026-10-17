@@ -16,6 +16,9 @@ final class TodoHubStore {
     /// True while showing the cached snapshot because the hub could not be reached.
     private(set) var isOffline = false
     private(set) var cachedAt: Date?
+    /// Conversation statuses at the last refresh (`nil` before the first one): the baseline
+    /// for "turned waiting" alerts.
+    private var lastStatuses: [String: ConversationStatus]?
     private(set) var isLoading = false
     private(set) var hasLoadedOnce = false
     /// Modal error for something the user just did. Background refreshes never set it.
@@ -79,6 +82,7 @@ final class TodoHubStore {
             // A refresh that started later has newer data; don't overwrite it.
             guard generation == refreshGeneration else { return }
             apply(todos: t, conversations: c)
+            alertNewlyWaiting(todos: t, conversations: c)
             sectionComputers = Dictionary(m.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new })
             self.computers = comps
             isOffline = false
@@ -129,8 +133,25 @@ final class TodoHubStore {
         eventsTask = nil
     }
 
+    /// Local "needs you" alerts for conversations that turned `waiting` since the last refresh.
+    /// The coordinator skips them when the server's push covers this device.
+    private func alertNewlyWaiting(todos: [Todo], conversations: [Conversation]) {
+        let statuses = Dictionary(conversations.map { ($0.todoId, $0.status) }, uniquingKeysWith: { _, new in new })
+        for todoId in NotificationPolicy.newlyWaiting(previous: lastStatuses, current: statuses) {
+            guard let conversation = conversations.first(where: { $0.todoId == todoId }) else { continue }
+            NotificationCenterCoordinator.shared.postWaiting(
+                todoId: todoId,
+                sessionId: conversation.sessionId,
+                title: todos.first(where: { $0.id == todoId })?.title ?? "Conversation",
+                body: "Needs you"
+            )
+        }
+        lastStatuses = statuses
+    }
+
     /// Call after the hub settings change.
     func reconnect() async {
+        lastStatuses = nil
         stopLiveUpdates()
         await refresh()
         startLiveUpdates()

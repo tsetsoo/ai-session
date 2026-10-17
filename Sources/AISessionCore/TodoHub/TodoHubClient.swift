@@ -180,10 +180,11 @@ public struct TodoHubClient: Sendable {
         }
     }
 
-    /// Unregisters a token; an unknown token is already gone.
+    /// Unregisters a token; an unknown token is already gone. The token goes in the body:
+    /// the server logs request paths.
     public func unregisterPushDevice(token: String) async throws {
         do {
-            _ = try await send("DELETE", "/api/push/devices/\(escape(token))")
+            _ = try await send("POST", "/api/push/devices/unregister", body: ["token": token])
         } catch TodoHubError.notFound {}
     }
 

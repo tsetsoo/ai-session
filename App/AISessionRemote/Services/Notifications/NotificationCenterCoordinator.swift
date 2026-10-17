@@ -11,6 +11,8 @@ import AppKit
 extension Notification.Name {
     /// The todo server URL or token changed: re-register for push with the new server.
     static let todoHubSettingsChanged = Notification.Name("AISessionRemote.todoHubSettingsChanged")
+    /// A notification tap is opening a todo: show the Todos tab.
+    static let todoNotificationOpened = Notification.Name("AISessionRemote.todoNotificationOpened")
 }
 
 /// The one owner of notifications: permission, categories, tap routing, local alerts,
@@ -41,15 +43,24 @@ final class NotificationCenterCoordinator {
     /// Opens a todo's conversation. A tap that launched the app is replayed once this is set.
     var onOpenTodo: ((String) -> Void)? {
         didSet {
-            if let onOpenTodo, let todo = pendingOpenTodo {
+            if let todo = pendingOpenTodo, onOpenTodo != nil {
                 pendingOpenTodo = nil
-                onOpenTodo(todo)
+                open(todo)
             }
         }
     }
 
+    private func open(_ todoId: String) {
+        guard let onOpenTodo else {
+            pendingOpenTodo = todoId
+            return
+        }
+        NotificationCenter.default.post(name: .todoNotificationOpened, object: todoId)
+        onOpenTodo(todoId)
+    }
+
     @ObservationIgnored private var pendingOpenTodo: String?
-    @ObservationIgnored private var presence = PresenceTracker()
+    @ObservationIgnored fileprivate var presence = PresenceTracker()
     @ObservationIgnored private var registration = PushRegistrationState(
         registeredHub: UserDefaults.standard.string(forKey: registeredHubKey)
     )
@@ -110,6 +121,33 @@ final class NotificationCenterCoordinator {
         notifications.addObserver(forName: .todoHubSettingsChanged, object: nil, queue: .main) { _ in
             Task { @MainActor in await NotificationCenterCoordinator.shared.uploadToken() }
         }
+        #if os(macOS)
+        // The Mac never enters the background: count switching to another app, sleeping
+        // screens and a locked screen as "not looking", or a conversation left open would
+        // suppress the iPhone's pushes for as long as the app runs.
+        let away: [(NotificationCenter, Notification.Name)] = [
+            (notifications, NSApplication.didResignActiveNotification),
+            (NSWorkspace.shared.notificationCenter, NSWorkspace.screensDidSleepNotification),
+            (DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsLocked")),
+        ]
+        for (center, name) in away {
+            center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                Task { @MainActor in NotificationCenterCoordinator.shared.didEnterBackground() }
+            }
+        }
+        let back: [(NotificationCenter, Notification.Name)] = [
+            (NSWorkspace.shared.notificationCenter, NSWorkspace.screensDidWakeNotification),
+            (DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsUnlocked")),
+        ]
+        for (center, name) in back {
+            center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                Task { @MainActor in
+                    guard NSApplication.shared.isActive else { return }
+                    NotificationCenterCoordinator.shared.applyPresence(NotificationCenterCoordinator.shared.presence.becomeActive())
+                }
+            }
+        }
+        #endif
         pushState = registration.launchState(enabled: isEnabled, hub: hub)
         if isEnabled {
             Task { await resume() }
@@ -204,7 +242,12 @@ final class NotificationCenterCoordinator {
             appVersion: version,
             deviceName: deviceName
         )
-        let upload = self.registration.beginUpload()
+        let upload = self.registration.beginUpload(hub: hub)
+        if let previous = upload.previousHub, let oldURL = TodoHubClient.baseURL(from: previous) {
+            // The server changed: the old one would keep pushing. Best effort, with the
+            // current token (it fails harmlessly when the old server used another one).
+            try? await TodoHubClient(baseURL: oldURL, token: TodoHubSettings.token).unregisterPushDevice(token: token)
+        }
         var failure: TodoHubError?
         do {
             _ = try await client.registerPushDevice(registration)
@@ -213,7 +256,7 @@ final class NotificationCenterCoordinator {
         } catch {
             failure = .unreachable(error.localizedDescription)
         }
-        switch self.registration.finishUpload(upload, hub: hub, error: failure, enabled: isEnabled) {
+        switch self.registration.finishUpload(upload.id, hub: hub, error: failure, enabled: isEnabled) {
         case let .apply(state):
             pushState = state
         case .ignore:
@@ -260,10 +303,11 @@ final class NotificationCenterCoordinator {
     }
 
     /// Host session list (plain SSH sessions, not todos): alert when a refresh finds sessions
-    /// marked `waiting`.
+    /// marked `waiting`. Independent of the todo toggle, as before it existed: posts whenever
+    /// notifications are allowed (installs that granted permission at first launch keep these).
     func postSessionsWaiting(hostName: String, sessions: [RemoteSession]) {
         let waiting = sessions.filter { $0.status == .waiting }
-        guard isEnabled, !waiting.isEmpty else { return }
+        guard !waiting.isEmpty else { return }
         let content = UNMutableNotificationContent()
         content.title = "Session needs attention"
         if waiting.count == 1, let only = waiting.first {
@@ -272,11 +316,20 @@ final class NotificationCenterCoordinator {
             content.body = "\(waiting.count) sessions on \(hostName) are waiting"
         }
         content.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(
+        let request = UNNotificationRequest(
             identifier: "waiting-\(hostName)-\(waiting.map(\.tmuxName).sorted().joined(separator: ","))",
             content: content,
             trigger: nil
-        ))
+        )
+        Task {
+            let center = UNUserNotificationCenter.current()
+            switch await center.notificationSettings().authorizationStatus {
+            case .authorized, .provisional:
+                try? await center.add(request)
+            default:
+                break
+            }
+        }
     }
 
     // MARK: Presence
@@ -291,7 +344,7 @@ final class NotificationCenterCoordinator {
         applyPresence(presence.enterBackground())
     }
 
-    private func applyPresence(_ report: PresenceTracker.Report) {
+    fileprivate func applyPresence(_ report: PresenceTracker.Report) {
         guard case let .report(todoId) = report else { return }
         presenceTask?.cancel()
         if let todoId {
@@ -349,11 +402,10 @@ final class NotificationCenterCoordinator {
         guard let conversations = try? await client.listConversations() else { return }
         let waiting = Set(conversations.filter { $0.status == .waiting }.map(\.todoId))
         let center = UNUserNotificationCenter.current()
-        let stale = await center.deliveredNotifications()
-            .compactMap { PushPayload(userInfo: $0.request.content.userInfo) }
-            .filter { !waiting.contains($0.todoId) }
-            .map { NotificationPolicy.notificationIdentifier(todoId: $0.todoId) }
-        center.removeDeliveredNotifications(withIdentifiers: stale)
+        let delivered = await center.deliveredNotifications().compactMap { PushPayload(userInfo: $0.request.content.userInfo) }
+        center.removeDeliveredNotifications(
+            withIdentifiers: NotificationPolicy.staleAlertIdentifiers(delivered: delivered, waitingTodoIds: waiting)
+        )
     }
 
     // MARK: Delegate callbacks
@@ -369,11 +421,7 @@ final class NotificationCenterCoordinator {
         case Self.muteAction:
             try? await setMuted(todoId: payload.todoId, true)
         case UNNotificationDefaultActionIdentifier:
-            if let onOpenTodo {
-                onOpenTodo(payload.todoId)
-            } else {
-                pendingOpenTodo = payload.todoId
-            }
+            open(payload.todoId)
         default:
             break
         }

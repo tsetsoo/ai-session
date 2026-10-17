@@ -581,6 +581,21 @@ wait "$recheck_pid"
   || fail "re-check posted after the status moved on: $(tail -2 "$HUB_LOG")"
 pass "no re-check once the conversation moved on from waiting"
 
+# Prompt 1's late re-check must not speak for prompt 2: a keystroke after prompt 2 appeared
+# answers neither on prompt 1's behalf.
+before=$(wc -l <"$HUB_LOG")
+echo $(( $(date +%s) - 3600 )) >"$ACTIVITY"
+waiting AI_TODO_RECHECK_DELAY=3 &
+recheck_pid=$!
+wait_for_posts $((before + 1))
+tool
+waiting AI_TODO_RECHECK_DELAY=0
+echo $(( $(date +%s) + 1 )) >"$ACTIVITY"
+wait "$recheck_pid"
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 3)) && "$(last_status)" == waiting && "$(last_attended)" == False ]] \
+  || fail "prompt 1's re-check posted for prompt 2: $(tail -3 "$HUB_LOG")"
+pass "a re-check only speaks for its own prompt"
+
 before=$(wc -l <"$HUB_LOG")
 echo $(( $(date +%s) + 5 )) >"$ACTIVITY"
 printf '{"session_id":"%s","hook_event_name":"Stop"}' "$SID" \

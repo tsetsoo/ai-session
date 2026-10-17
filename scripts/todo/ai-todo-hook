@@ -128,7 +128,11 @@ state_file="$state_dir/$sid"
 if [ -n "$only_if_changed" ] && [ "$(cat "$state_file" 2>/dev/null)" = "$status" ]; then
   exit 0
 fi
-mkdir -p "$state_dir" 2>/dev/null && printf '%s\n' "$status" >"$state_file" 2>/dev/null
+# A waiting entry names its prompt (time + pid), so a late re-check can tell whether the
+# conversation is still waiting on the same prompt.
+state=$status
+[ "$status" = waiting ] && state="waiting $prompt_time.$$"
+mkdir -p "$state_dir" 2>/dev/null && printf '%s\n' "$state" >"$state_file" 2>/dev/null
 # Drop state files for sessions not touched in a week.
 find "$state_dir" -type f -mtime +7 -exec rm -f {} + 2>/dev/null
 
@@ -148,8 +152,9 @@ post() {
 recheck() {
   [ "$status" = waiting ] && [ "$attended" = false ] || return 0
   sleep "${AI_TODO_RECHECK_DELAY:-12}"
-  # Moved on (a later hook posted busy/idle): re-posting waiting would undo that.
-  [ "$(cat "$state_file" 2>/dev/null)" = waiting ] || return 0
+  # Moved on (a later hook posted busy/idle, or another prompt is waiting now): re-posting
+  # waiting would undo that, or answer the other prompt.
+  [ "$(cat "$state_file" 2>/dev/null)" = "$state" ] || return 0
   latest=$(latest_activity)
   case "$latest" in
     '' | *[!0-9]*) return 0 ;;

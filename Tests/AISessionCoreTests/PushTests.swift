@@ -37,6 +37,30 @@ final class PushTests: XCTestCase {
         XCTAssertNil(PushPayload(userInfo: ["todo_id": ""]))
     }
 
+    func testStaleAlertsAreOnlyAnsweredWaitingOnes() {
+        let delivered = [
+            PushPayload(todoId: "answered", kind: "waiting"),
+            PushPayload(todoId: "still", kind: "waiting"),
+            PushPayload(todoId: "finished", kind: "done"),
+        ]
+        XCTAssertEqual(
+            NotificationPolicy.staleAlertIdentifiers(delivered: delivered, waitingTodoIds: ["still"]),
+            ["todo-answered"],
+            "done alerts are about idle conversations by definition: keep them"
+        )
+    }
+
+    func testNewlyWaitingSkipsTheFirstSnapshot() {
+        XCTAssertEqual(NotificationPolicy.newlyWaiting(previous: nil, current: ["a": .waiting]), [], "first load after launch")
+        XCTAssertEqual(
+            NotificationPolicy.newlyWaiting(
+                previous: ["a": .busy, "b": .waiting, "c": .idle],
+                current: ["a": .waiting, "b": .waiting, "c": .busy, "d": .waiting]
+            ),
+            ["a", "d"]
+        )
+    }
+
     func testNotificationIdentifierMatchesServerCollapseId() {
         XCTAssertEqual(NotificationPolicy.notificationIdentifier(todoId: "t1"), "todo-t1")
     }
@@ -129,11 +153,12 @@ final class PushHubClientTests: XCTestCase {
         XCTAssertEqual(StubURLProtocol.requests.count, 1, "no retry")
     }
 
-    func testUnregisterDeleteIgnoresUnknownDevice() async throws {
+    func testUnregisterSendsTokenInBodyAndIgnoresUnknownDevice() async throws {
         StubURLProtocol.handler = { _ in .init(status: 404, body: #"{"error":"Device not registered"}"#) }
         try await client().unregisterPushDevice(token: "a1b2")
-        XCTAssertEqual(StubURLProtocol.requests.last?.httpMethod, "DELETE")
-        XCTAssertEqual(StubURLProtocol.requests.last?.url?.path, "/api/push/devices/a1b2")
+        XCTAssertEqual(StubURLProtocol.requests.last?.httpMethod, "POST")
+        XCTAssertEqual(StubURLProtocol.requests.last?.url?.path, "/api/push/devices/unregister", "never the token in the path")
+        XCTAssertEqual(try lastBody()["token"] as? String, "a1b2")
     }
 
     func testPresenceSendsNullTodo() async throws {

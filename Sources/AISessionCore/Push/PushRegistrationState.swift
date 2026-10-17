@@ -30,10 +30,18 @@ public struct PushRegistrationState: Equatable, Sendable {
         return registeredHub == hub ? .registered : .localOnly("Registering for push…")
     }
 
-    /// Returns the token to pass to `finishUpload`.
-    public mutating func beginUpload() -> Int {
+    public struct Upload: Equatable, Sendable {
+        /// Pass to `finishUpload`.
+        public var id: Int
+        /// The token is registered with another hub (the server URL changed): unregister it
+        /// there, or that server keeps pushing.
+        public var previousHub: String?
+    }
+
+    public mutating func beginUpload(hub: String) -> Upload {
         generation += 1
-        return generation
+        let previous = registeredHub.flatMap { $0 == hub ? nil : $0 }
+        return Upload(id: generation, previousHub: previous)
     }
 
     /// Notifications switched off: forget the server, supersede uploads in flight.
