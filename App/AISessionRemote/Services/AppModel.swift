@@ -11,9 +11,11 @@ enum AttachReadiness: Equatable {
     case running
     /// Closed, gone, or never started: Start / Resume.
     case closed
-    /// Its computer hasn't been listed yet: wait for a liveness refresh.
+    /// Its computer hasn't been listed yet, or not in the last `AppModel.listingMaxAge`: wait
+    /// for a liveness refresh.
     case awaitingLiveness
-    /// Its computer didn't answer: neither attach nor drop a terminal already attached.
+    /// Its computer didn't answer, or the conversation changed after the listing: neither
+    /// attach nor drop a terminal already attached.
     case unknown
 }
 
@@ -32,9 +34,13 @@ final class AppModel {
     /// computerID to its tmux session names. A computer that is absent is unknown (its hub
     /// status is kept).
     private(set) var liveTmux: [String: Set<String>] = [:]
-    /// Computers a liveness refresh has finished for, answered or not. Until then the Mac's
-    /// selection waits before attaching.
-    private(set) var livenessChecked: Set<String> = []
+    /// computerID to when the newest finished liveness refresh listed it, answered or not.
+    /// Until then, and once that is older than `listingMaxAge`, the Mac's selection waits for a
+    /// fresh listing before attaching.
+    private(set) var livenessChecked: [String: Date] = [:]
+    /// How old a listing may be for the selection to attach on it: a session started since, or
+    /// one a reboot ended, only shows in a newer one.
+    static let listingMaxAge: TimeInterval = 45
     /// Bumped when the newest liveness refresh ended without publishing (cancelled, or
     /// superseded by one that was then cancelled) and none is left running. Selections still
     /// waiting on liveness ask again on this, and only on this: re-asking while another
@@ -98,7 +104,8 @@ final class AppModel {
                     .filter { $0.computer.id == computer.id && $0.status != .closed }
                     .map(\.tmuxName))
             }
-            livenessChecked = Set(DemoFixtures.computers.map(\.id))
+            // Never stale: demo launches don't list.
+            livenessChecked = Dictionary(uniqueKeysWithValues: DemoFixtures.computers.map { ($0.id, Date.distantFuture) })
         } else if ProcessInfo.processInfo.arguments.contains("-demoProjects") {
             // Screenshots of Projects: canned hub data, no hub contacted.
             store.loadDemo(.sample)
@@ -217,7 +224,7 @@ final class AppModel {
         liveTmux = result
         listedAt = result.mapValues { _ in askedAt }
         publishedLivenessGeneration = generation
-        livenessChecked.formUnion(computers.map(\.id))
+        for computer in computers { livenessChecked[computer.id] = askedAt }
     }
 
     /// Whether the Mac's selection may attach to this todo's conversation. Attaching runs
@@ -226,10 +233,17 @@ final class AppModel {
         guard let conversation = store.conversations[id],
               let status = board.status(forTodo: id), status != .closed else { return .closed }
         let computerID = conversation.computer.id
-        // Present means listed, and a listing without its tmux name would have made it closed.
-        if liveTmux[computerID] != nil { return .running }
         let refreshable = store.computers.contains { $0.id == computerID }
-        return refreshable && !livenessChecked.contains(computerID) ? .awaitingLiveness : .unknown
+        // Never listed, or listed too long ago (a reboot since would have ended the session,
+        // and the hub would still say busy): wait for a fresh listing.
+        if refreshable {
+            guard let checked = livenessChecked[computerID],
+                  now().timeIntervalSince(checked) <= Self.listingMaxAge else { return .awaitingLiveness }
+        }
+        guard let names = liveTmux[computerID] else { return .unknown }
+        // Missing from the listing yet not closed: it changed after the listing, which the
+        // board's relist request is refreshing. Neither attach nor drop a terminal meanwhile.
+        return names.contains(conversation.tmuxName) ? .running : .unknown
     }
 
     /// HostEntity is a SwiftData model, so resolve each computer's connection on the main actor
