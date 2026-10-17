@@ -1,9 +1,6 @@
 import AISessionCore
 import SwiftData
 import SwiftUI
-#if os(iOS)
-import UIKit
-#endif
 
 /// A todo's conversation: a native header (title, section · computer · folder · tool, live
 /// status pill, actions) around the terminal area. The header renders from local data at once;
@@ -25,7 +22,8 @@ struct ConversationFrame: View {
     @State private var failure: ActionFailure?
     @State private var sheet: FrameSheet?
     @State private var showingMemories = false
-    @State private var keyboardVisible = false
+    /// Arms the key bar's Approve on a fresh `waiting`; typing disarms it.
+    @State private var approveGate = ApproveGate()
 
     init(
         todo: Todo,
@@ -44,25 +42,9 @@ struct ConversationFrame: View {
     }
 
     var body: some View {
-        ZStack {
-            terminalArea
-            #if os(iOS)
-            // Until the key bar replaces it (PR 4), the same soft keys as the plain terminal.
-            if isConnected && !keyboardVisible {
-                VStack {
-                    Spacer()
-                    SoftKeyBar { key in
-                        switch key {
-                        case .ctrlC: terminal.send([0x03])
-                        case .tab: terminal.send([0x09])
-                        case .esc: terminal.send([0x1B])
-                        case .paste: terminal.paste()
-                        }
-                    }
-                }
-                .transition(.move(edge: .bottom))
-            }
-            #endif
+        terminalArea
+        .onChange(of: liveStatus, initial: true) { _, status in
+            if let status { approveGate.statusChanged(to: status) }
         }
         .overlay(alignment: .top) {
             if showingCopied {
@@ -103,14 +85,6 @@ struct ConversationFrame: View {
                                     store: store))
         // The conversation on screen is never alerted about, on any device.
         .reportsVisibleConversation(todo.id)
-        #if os(iOS)
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            keyboardVisible = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardVisible = false
-        }
-        #endif
     }
 
     // MARK: Terminal area
@@ -139,6 +113,10 @@ struct ConversationFrame: View {
                     loader.connectionFailed(.classify(error, signInProblem: noted))
                 },
                 onEnded: { exitStatus in loader.ended(exitStatus: exitStatus) },
+                // Only while armed: otherwise every keystroke would write this @State.
+                onUserInput: { if approveGate.isArmed { approveGate.userTyped() } },
+                tool: conversation.tool,
+                approveEnabled: approveGate.isEnabled(tool: conversation.tool),
                 makeTransport: makeTransport
             )
             // Re-entering `.ready` for the same conversation and host must not reconnect.
@@ -250,6 +228,11 @@ struct ConversationFrame: View {
             onDelete: { showingDeleteConfirmation = true },
             terminal: terminal
         )
+    }
+
+    /// The hub's status for this todo's conversation, as last heard.
+    private var liveStatus: ConversationStatus? {
+        store.conversations[todo.id]?.status ?? todo.conversationStatus
     }
 
     /// Live status; nil (no pill) when the todo has never had a conversation.

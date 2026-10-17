@@ -112,7 +112,7 @@ targets:
       - path: App/AISessionRemote
         excludes:
           - Info.plist
-          - Views/SoftKeyBar.swift
+          - Views/Frame/KeyBar.swift
     info:
       path: App/AISessionRemoteMac/Info.plist
       properties:

@@ -61,6 +61,27 @@ enum PlatformSupport {
         #endif
     }
 
+    /// Light tick on a key bar key. No-op on macOS.
+    static func keyTapFeedback() {
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+    }
+
+    /// Rigid tap on Approve. No-op on macOS.
+    static func approveFeedback() {
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+        #endif
+    }
+
+    /// Warning buzz when a conversation starts needing you while the app is open. No-op on macOS.
+    static func needsYouFeedback() {
+        #if os(iOS)
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        #endif
+    }
+
     /// Private keys in `~/.ssh` that look importable (`id_*` without `.pub`), sorted by name.
     /// Only meaningful on macOS, where the app is not sandboxed and can read the user's home.
     static func sshKeyCandidates() -> [URL] {
