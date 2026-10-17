@@ -1037,6 +1037,7 @@ prompt = argv[14]
 assert prompt.startswith("You extract durable project memory from an excerpt of an AI coding conversation.\n"), prompt
 assert "- Section codes like Sp, I, Si and P are opaque labels: copy them as-is, never expand or interpret them.\n" in prompt
 assert prompt.endswith("- If nothing durable happened, return an empty list."), prompt[-80:]
+assert "- Skip what only matters to this session: temporary or scratch paths" in prompt, prompt
 assert len(argv) == 15, argv
 assert open(log + "/1.env").read() == "1\n"
 assert open(log + "/1.cwd").read().strip() == home + "/.ai-remote/memory-state/run"

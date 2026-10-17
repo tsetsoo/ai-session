@@ -120,6 +120,8 @@ Rules:
   (e.g. an open thread is now done, or a decision was reversed), put that memory's id in "supersedes".
 - Section codes like Sp, I, Si and P are opaque labels: copy them as-is, never expand or interpret them.
 - File paths relative to the project folder.
+- Skip what only matters to this session: temporary or scratch paths (e.g. under ~/.claude/jobs/ or /tmp),
+  which agent or reviewer is currently working on what, and progress that the next step will make stale.
 - confidence: 0.9+ explicitly stated and confirmed; 0.6–0.8 clearly implied; below 0.5 speculative.
 - If nothing durable happened, return an empty list."""
 
