@@ -78,13 +78,11 @@ jobs:
           stage="$(mktemp -d)"
           cp "target/armv7-unknown-linux-gnueabihf/release/todo-server" "$stage/todo-server"
           chmod +x "$stage/todo-server"
-          # The web UI is retired, but the updater already installed on the Pi
-          # (copied once by bootstrap.sh, never by deploys) rejects a payload without
-          # frontend-dist/index.html. Ship a placeholder so those updaters keep working.
-          mkdir -p "$stage/frontend-dist"
-          printf '%s\n' '<!doctype html><title>todo</title><p>The web UI was retired; use the native apps.</p>' > "$stage/frontend-dist/index.html"
+          # The payload is just the server binary and its SHA. The Pi's updater must be
+          # the current deploy/pi/todo-update.sh (no frontend-dist requirement) before
+          # this ships: an older updater rejects a payload without frontend-dist/.
           printf '%s\n' "${GITHUB_SHA}" > "$stage/SHA"
-          tar -C "$stage" -czf todo-pi.tar.gz todo-server frontend-dist SHA
+          tar -C "$stage" -czf todo-pi.tar.gz todo-server SHA
           printf '%s\n' "${GITHUB_SHA}" > SHA
           ls -lh todo-pi.tar.gz SHA
 
