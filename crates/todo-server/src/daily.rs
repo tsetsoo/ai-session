@@ -7,7 +7,7 @@ use crate::db::DbPool;
 use crate::handlers::SELECT_COLS;
 use crate::models::row_to_todo;
 
-fn valid_date(s: &str) -> bool {
+pub(crate) fn valid_date(s: &str) -> bool {
     if s.len() != 10
         || s.as_bytes().get(4).is_none_or(|b| *b != b'-')
         || s.as_bytes().get(7).is_none_or(|b| *b != b'-')

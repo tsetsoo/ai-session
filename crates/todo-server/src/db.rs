@@ -108,6 +108,9 @@ pub fn init_pool(db_path: &str) -> DbPool {
     ))
     .expect("Failed to create conversation tables");
 
+    // A fresh database gets the v3 objects here; existing ones got them in `migrate`.
+    create_v3_objects(&conn).expect("Failed to create project, session and memory tables");
+
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -153,6 +156,122 @@ fn conversations_ddl(table: &str) -> String {
     )
 }
 
+pub(crate) fn projects_ddl() -> &'static str {
+    "CREATE TABLE IF NOT EXISTS projects (
+        id             TEXT PRIMARY KEY,
+        name           TEXT NOT NULL,
+        computer_id    TEXT NOT NULL REFERENCES computers(id) ON DELETE RESTRICT,
+        folder         TEXT NOT NULL,
+        repo_url       TEXT,
+        digest_enabled INTEGER NOT NULL DEFAULT 1,
+        created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(computer_id, folder)
+    )"
+}
+
+/// A Claude/Codex conversation known from a computer's transcripts (linked to a todo or not).
+pub(crate) fn sessions_ddl() -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS sessions (
+            tool                  TEXT NOT NULL CHECK(tool IN {TOOLS_SQL}),
+            session_id            TEXT NOT NULL,
+            computer_id           TEXT NOT NULL REFERENCES computers(id) ON DELETE CASCADE,
+            cwd                   TEXT NOT NULL,
+            title                 TEXT,
+            repo_root             TEXT,
+            repo_url              TEXT,
+            project_id            TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            project_override      INTEGER NOT NULL DEFAULT 0,
+            prompts               INTEGER NOT NULL DEFAULT 0,
+            assistant_turns       INTEGER NOT NULL DEFAULT 0,
+            input_tokens          INTEGER,
+            output_tokens         INTEGER,
+            cache_read_tokens     INTEGER,
+            cache_creation_tokens INTEGER,
+            active_seconds        INTEGER NOT NULL DEFAULT 0,
+            first_activity        TEXT,
+            last_activity         TEXT,
+            files_touched         TEXT NOT NULL DEFAULT '[]',
+            models                TEXT NOT NULL DEFAULT '[]',
+            stats_updated_at      TEXT,
+            created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (tool, session_id)
+        )"
+    )
+}
+
+pub(crate) fn session_days_ddl() -> &'static str {
+    "CREATE TABLE IF NOT EXISTS session_days (
+        tool                  TEXT NOT NULL,
+        session_id            TEXT NOT NULL,
+        day                   TEXT NOT NULL,
+        prompts               INTEGER NOT NULL DEFAULT 0,
+        assistant_turns       INTEGER NOT NULL DEFAULT 0,
+        input_tokens          INTEGER,
+        output_tokens         INTEGER,
+        cache_read_tokens     INTEGER,
+        cache_creation_tokens INTEGER,
+        active_seconds        INTEGER NOT NULL DEFAULT 0,
+        files_touched         INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (tool, session_id, day),
+        FOREIGN KEY (tool, session_id) REFERENCES sessions(tool, session_id) ON DELETE CASCADE
+    )"
+}
+
+pub(crate) fn memories_ddl() -> &'static str {
+    "CREATE TABLE IF NOT EXISTS memories (
+        id          TEXT PRIMARY KEY,
+        project_id  TEXT REFERENCES projects(id) ON DELETE SET NULL,
+        todo_id     TEXT REFERENCES todos(id) ON DELETE SET NULL,
+        computer_id TEXT REFERENCES computers(id) ON DELETE SET NULL,
+        tool        TEXT,
+        session_id  TEXT,
+        kind        TEXT NOT NULL CHECK(kind IN ('decision','gotcha','open_thread','done','files_changed')),
+        text        TEXT NOT NULL,
+        text_key    TEXT NOT NULL,
+        files       TEXT NOT NULL DEFAULT '[]',
+        confidence  REAL,
+        source      TEXT NOT NULL DEFAULT 'extracted' CHECK(source IN ('extracted','manual')),
+        pinned      INTEGER NOT NULL DEFAULT 0,
+        archived    INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )"
+}
+
+const V3_INDEXES: &str = "
+    CREATE INDEX IF NOT EXISTS todos_project ON todos(project_id);
+    CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project_id);
+    CREATE INDEX IF NOT EXISTS sessions_computer ON sessions(computer_id);
+    CREATE INDEX IF NOT EXISTS session_days_day ON session_days(day);
+    CREATE INDEX IF NOT EXISTS memories_project ON memories(project_id, archived, created_at);
+    CREATE INDEX IF NOT EXISTS memories_session ON memories(tool, session_id);
+    CREATE INDEX IF NOT EXISTS memories_todo ON memories(todo_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS memories_dedup ON memories(tool, session_id, kind, text_key)
+        WHERE session_id IS NOT NULL;";
+
+/// Everything v3 adds: `todos.project_id`, four tables and their indexes. Only adds,
+/// so it is safe to run on every start.
+fn create_v3_objects(conn: &Connection) -> rusqlite::Result<()> {
+    let has_project_id = conn
+        .prepare("SELECT 1 FROM pragma_table_info('todos') WHERE name = 'project_id'")?
+        .exists([])?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(&format!(
+        "{};\n{};\n{};\n{};",
+        projects_ddl(),
+        sessions_ddl(),
+        session_days_ddl(),
+        memories_ddl()
+    ))?;
+    if !has_project_id {
+        tx.execute_batch("ALTER TABLE todos ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;")?;
+    }
+    tx.execute_batch(V3_INDEXES)?;
+    tx.commit()
+}
+
 fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>> {
     conn.query_row(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -167,9 +286,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v0: no conversation tables (fresh database, or one from before todo-app #1)
 /// - v1: todo-app #1: Claude-only `tool` CHECK, conversations keyed by `claude_session_id`
 /// - v2: `tool` in claude/codex/cursor, `session_id`, UNIQUE(tool, session_id)
+/// - v3: `projects`, `sessions`, `session_days`, `memories`, `todos.project_id` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -183,6 +303,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
     }
+    if table_sql(conn, "projects")?.is_some() {
+        return Ok(3);
+    }
     let v1 = sections.as_deref().is_some_and(|sql| !sql.contains("'codex'"))
         || conversations.as_deref().is_some_and(|sql| sql.contains("claude_session_id"));
     Ok(if v1 { 1 } else { 2 })
@@ -192,13 +315,30 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
 /// Each step that rewrites tables first copies the database next to itself, because the
 /// Pi's updater can roll back to an older binary that wouldn't understand the new schema.
 /// v0 needs no step: `init_pool` creates the current tables directly.
+///
+/// One backup per start is enough: it holds the database exactly as the older binary
+/// left it, so a v1 database that goes through v2 to v3 is copied once, before v1 → v2.
 fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
-    let version = schema_version(conn)?;
+    let mut version = schema_version(conn)?;
+    let mut backed_up = false;
     if version == 1 {
         backup_before_migration(conn, db_path, 2)?;
+        backed_up = true;
         migrate_v1_to_v2(conn)?;
+        version = 2;
+    }
+    if version == 2 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 3)?;
+        }
+        migrate_v2_to_v3(conn)?;
     }
     Ok(())
+}
+
+/// v2 → v3. Nothing is rewritten: new tables, a new nullable column and indexes.
+fn migrate_v2_to_v3(conn: &Connection) -> rusqlite::Result<()> {
+    create_v3_objects(conn)
 }
 
 /// Copy the database to `<db>.pre-v<N>-<unix seconds>` with `VACUUM INTO`.
@@ -367,6 +507,157 @@ mod tests {
             VALUES ('t1', 'mac', '~/programming', 'claude', 'ai/claude/todo-t1', 'sess-1', 'waiting', 'needs ok');
     ";
 
+    /// Schema v2 as the Pi runs it before this change (todo-app #2), with rows.
+    const V2_SCHEMA: &str = "
+        CREATE TABLE todos (
+            id TEXT PRIMARY KEY,
+            section TEXT NOT NULL CHECK(section IN ('Sp','I','Si','P')),
+            title TEXT NOT NULL,
+            completed INTEGER NOT NULL DEFAULT 0,
+            importance TEXT NOT NULL DEFAULT 'medium' CHECK(importance IN ('low','medium','high','critical')),
+            due_date TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            completed_at TEXT,
+            daily_date TEXT,
+            carried_from TEXT
+        );
+        CREATE TABLE daily_days (date TEXT PRIMARY KEY);
+        CREATE TABLE computers (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, hostname TEXT NOT NULL,
+            port INTEGER NOT NULL DEFAULT 22, username TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE section_computers (
+            section     TEXT PRIMARY KEY CHECK(section IN ('Sp','I','Si','P')),
+            computer_id TEXT NOT NULL REFERENCES computers(id) ON DELETE RESTRICT,
+            cwd         TEXT NOT NULL,
+            tool        TEXT NOT NULL DEFAULT 'claude' CHECK(tool IN ('claude','codex','cursor'))
+        );
+        CREATE TABLE conversations (
+            todo_id           TEXT PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE,
+            computer_id       TEXT NOT NULL REFERENCES computers(id) ON DELETE RESTRICT,
+            cwd               TEXT NOT NULL,
+            tool              TEXT NOT NULL CHECK(tool IN ('claude','codex','cursor')),
+            tmux_name         TEXT NOT NULL UNIQUE,
+            session_id        TEXT NOT NULL,
+            status            TEXT NOT NULL DEFAULT 'unknown'
+                              CHECK(status IN ('busy','waiting','idle','unknown','closed')),
+            status_message    TEXT,
+            status_updated_at TEXT,
+            created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(tool, session_id)
+        );
+        CREATE INDEX conversations_session_id ON conversations(session_id);
+        INSERT INTO computers (id, name, hostname, username) VALUES
+            ('mac', 'this Mac', '100.103.53.126', 'me'),
+            ('codbex', 'codbex', '100.107.204.56', 'tsetso');
+        INSERT INTO section_computers (section, computer_id, cwd, tool) VALUES
+            ('I', 'codbex', '~/Repositories', 'codex'), ('Si', 'mac', '~/programming', 'claude');
+        INSERT INTO todos (id, section, title, due_date) VALUES
+            ('t1', 'Si', 'linked', '2026-10-20'), ('t2', 'I', 'plain', NULL), ('t3', 'P', 'third', NULL);
+        INSERT INTO daily_days (date) VALUES ('2026-10-16');
+        INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id, status)
+            VALUES ('t1', 'mac', '~/programming', 'claude', 'ai/claude/todo-t1', 'sess-1', 'idle'),
+                   ('t2', 'codbex', '~/Repositories', 'codex', 'ai/codex/todo-t2', 'sess-2', 'busy');
+        PRAGMA user_version = 2;
+    ";
+
+    const V3_TABLES: [&str; 4] = ["projects", "sessions", "session_days", "memories"];
+
+    fn column_names(conn: &Connection, table: &str) -> Vec<String> {
+        conn.prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn migrates_v2_to_v3_keeping_rows() {
+        let db = TestDb::new("migrate");
+        Connection::open(&db.path).unwrap().execute_batch(V2_SCHEMA).unwrap();
+        let pool = db.pool();
+        assert_eq!(db.backups().len(), 1, "one backup before the v3 step");
+        assert!(db.backups()[0].to_string_lossy().contains(".pre-v3-"), "{:?}", db.backups());
+        drop(pool);
+        let pool = db.pool();
+        assert_eq!(db.backups().len(), 1, "re-opening a v3 database takes no new backup");
+
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 3);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM todos"), 3);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM conversations"), 2);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM section_computers"), 2);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM daily_days"), 1);
+        assert!(column_names(&conn, "todos").contains(&"project_id".to_string()));
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM todos WHERE project_id IS NOT NULL"), 0);
+        for table in V3_TABLES {
+            assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
+        }
+        // The backup is the untouched v2 database.
+        let backup = Connection::open(&db.backups()[0]).unwrap();
+        assert!(!column_names(&backup, "todos").contains(&"project_id".to_string()));
+        assert_eq!(user_version(&backup), 2);
+
+        // Todos keep working with project_id NULL, through the API's own SELECT.
+        let todo = conn
+            .query_row(
+                &format!("SELECT {} FROM todos WHERE id = 't1'", crate::handlers::SELECT_COLS),
+                [],
+                crate::models::row_to_todo,
+            )
+            .unwrap();
+        assert_eq!((todo.title.as_str(), todo.due_date.as_deref(), todo.project_id), ("linked", Some("2026-10-20"), None));
+    }
+
+    #[test]
+    fn fresh_database_is_v3_without_backup() {
+        let db = TestDb::new("migrate");
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 3);
+        assert!(db.backups().is_empty());
+        assert!(column_names(&conn, "todos").contains(&"project_id".to_string()));
+        for table in V3_TABLES {
+            assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
+        }
+        for index in ["todos_project", "sessions_project", "sessions_computer", "session_days_day",
+                      "memories_project", "memories_session", "memories_todo", "memories_dedup"] {
+            let n = count(&conn, &format!("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = '{index}'"));
+            assert_eq!(n, 1, "{index}");
+        }
+    }
+
+    #[test]
+    fn schema_version_reads_stored_3() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 3);
+        // An unversioned database that already has the v3 tables is v3, not v2.
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 3);
+    }
+
+    #[test]
+    fn unversioned_v2_database_migrates_to_v3() {
+        let db = TestDb::new("migrate");
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(V2_SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        drop(conn);
+        let pool = db.pool();
+        assert_eq!(db.backups().len(), 1);
+        assert_eq!(user_version(&pool.get().unwrap()), 3);
+    }
+
     fn v1_db() -> TestDb {
         let db = TestDb::new("migrate");
         Connection::open(&db.path).unwrap().execute_batch(V1_SCHEMA).unwrap();
@@ -381,13 +672,14 @@ mod tests {
     fn migrates_v1_conversation_tables_keeping_rows() {
         let db = v1_db();
         let pool = db.pool();
-        assert_eq!(db.backups().len(), 1, "a backup is taken before rewriting the tables");
+        assert_eq!(db.backups().len(), 1, "one backup (of the untouched v1 file) before rewriting the tables");
         // Running it again on the migrated file must be a no-op (and take no second backup).
         drop(pool);
         let pool = db.pool();
         assert_eq!(db.backups().len(), 1);
         let conn = pool.get().unwrap();
         assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert!(column_names(&conn, "todos").contains(&"project_id".to_string()), "v1 goes all the way to v3");
 
         // The backup is the untouched v1 database.
         let backup = Connection::open(&db.backups()[0]).unwrap();
@@ -445,8 +737,8 @@ mod tests {
     }
 
     #[test]
-    fn unversioned_v2_database_is_recognised_without_migrating() {
-        // A database written by an earlier build of this branch: v2 tables, user_version 0.
+    fn unversioned_current_database_is_recognised_without_migrating() {
+        // A database with the current tables but user_version 0.
         let db = TestDb::new("migrate");
         drop(db.pool());
         Connection::open(&db.path).unwrap().pragma_update(None, "user_version", 0).unwrap();

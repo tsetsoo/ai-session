@@ -21,48 +21,52 @@ use crate::broadcast::Broadcaster;
 use crate::db::DbPool;
 use crate::handlers::{insert_todo, SELECT_COLS};
 use crate::models::row_to_todo;
+use crate::projects::project_for;
 
 /// Tools a section or a linked conversation may use (matches `db::TOOLS_SQL`).
-const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
+pub(crate) const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
 
 /// Tools a todo can start a new conversation with. Only Claude accepts a session id
 /// chosen up front (`claude --session-id`); the others can only be linked.
 const STARTABLE_TOOLS: &[&str] = &["claude"];
 
-const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at";
+pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at";
 
-/// Conversation columns (0..=8) followed by its computer (9..=15).
+/// Conversation columns (0..=8), its computer (9..=15), then whether its session is known
+/// and that session's project (16, 17).
 const CONVERSATION_SELECT: &str = "SELECT c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
         c.status_message, c.status_updated_at, c.created_at,
-        m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at
-     FROM conversations c JOIN computers m ON m.id = c.computer_id";
+        m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at,
+        s.session_id IS NOT NULL, s.project_id
+     FROM conversations c JOIN computers m ON m.id = c.computer_id
+     LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id";
 
 /// Section mapping columns (0..=2) followed by its computer (3..=9).
 const SECTION_COMPUTER_SELECT: &str = "SELECT s.section, s.cwd, s.tool,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at
      FROM section_computers s JOIN computers m ON m.id = s.computer_id";
 
-fn error(status: actix_web::http::StatusCode, msg: impl ToString) -> HttpResponse {
+pub(crate) fn error(status: actix_web::http::StatusCode, msg: impl ToString) -> HttpResponse {
     HttpResponse::build(status).json(serde_json::json!({"error": msg.to_string()}))
 }
 
-fn server_error(e: impl ToString) -> HttpResponse {
+pub(crate) fn server_error(e: impl ToString) -> HttpResponse {
     error(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR, e)
 }
 
-fn bad_request(msg: &str) -> HttpResponse {
+pub(crate) fn bad_request(msg: &str) -> HttpResponse {
     error(actix_web::http::StatusCode::BAD_REQUEST, msg)
 }
 
-fn not_found(msg: &str) -> HttpResponse {
+pub(crate) fn not_found(msg: &str) -> HttpResponse {
     error(actix_web::http::StatusCode::NOT_FOUND, msg)
 }
 
-fn conflict(msg: impl ToString) -> HttpResponse {
+pub(crate) fn conflict(msg: impl ToString) -> HttpResponse {
     error(actix_web::http::StatusCode::CONFLICT, msg)
 }
 
-fn computer_at(row: &Row, start: usize) -> rusqlite::Result<Computer> {
+pub(crate) fn computer_at(row: &Row, start: usize) -> rusqlite::Result<Computer> {
     Ok(Computer {
         id: row.get(start)?,
         name: row.get(start + 1)?,
@@ -74,11 +78,12 @@ fn computer_at(row: &Row, start: usize) -> rusqlite::Result<Computer> {
     })
 }
 
-fn row_to_conversation(row: &Row) -> rusqlite::Result<Conversation> {
+/// A conversation row and whether its session is known (`project_id` is then the session's).
+fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
     let status: String = row.get(5)?;
     let tool: String = row.get(2)?;
     let session_id: String = row.get(4)?;
-    Ok(Conversation {
+    let conversation = Conversation {
         todo_id: row.get(0)?,
         cwd: row.get(1)?,
         tmux_name: row.get(3)?,
@@ -92,7 +97,17 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<Conversation> {
         status_updated_at: row.get(7)?,
         created_at: row.get(8)?,
         computer: computer_at(row, 9)?,
-    })
+        project_id: row.get(17)?,
+    };
+    Ok((conversation, row.get(16)?))
+}
+
+/// A conversation whose session isn't known yet gets its project matched on the fly.
+fn with_project(conn: &Connection, (mut conversation, session_known): (Conversation, bool)) -> rusqlite::Result<Conversation> {
+    if !session_known {
+        conversation.project_id = project_for(conn, &conversation.computer.id, &conversation.cwd)?;
+    }
+    Ok(conversation)
 }
 
 fn row_to_section_computer(row: &Row) -> rusqlite::Result<SectionComputer> {
@@ -112,7 +127,9 @@ pub(crate) fn get_computer(conn: &Connection, id: &str) -> rusqlite::Result<Opti
 
 pub(crate) fn load_conversation(conn: &Connection, todo_id: &str) -> rusqlite::Result<Option<Conversation>> {
     conn.query_row(&format!("{CONVERSATION_SELECT} WHERE c.todo_id = ?1"), params![todo_id], row_to_conversation)
-        .optional()
+        .optional()?
+        .map(|row| with_project(conn, row))
+        .transpose()
 }
 
 #[derive(Debug)]
@@ -140,7 +157,7 @@ fn slug(id: &str) -> String {
         .collect()
 }
 
-fn is_constraint_violation(e: &rusqlite::Error) -> bool {
+pub(crate) fn is_constraint_violation(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == ErrorCode::ConstraintViolation)
 }
 
@@ -396,7 +413,7 @@ pub(crate) fn todo_from_conversation_db(
     if let Some(other) = todo_linked_to(&tx, target.tool, target.session_id, "")? {
         return Err(LinkError::SessionTaken(other));
     }
-    let todo_id = insert_todo(&tx, new.section, new.title, new.importance, new.due_date)?;
+    let todo_id = insert_todo(&tx, new.section, new.title, new.importance, new.due_date, None)?;
     match insert_conversation(&tx, &todo_id, target.computer_id, target.cwd, target.tool, target.session_id, false) {
         Ok(true) => {}
         Ok(false) => return Err(LinkError::NoTmuxName),
@@ -438,7 +455,7 @@ pub(crate) fn set_status_db(
     )
 }
 
-fn valid_text(s: &str) -> bool {
+pub(crate) fn valid_text(s: &str) -> bool {
     !s.trim().is_empty()
 }
 
@@ -569,7 +586,7 @@ pub async fn delete_computer(
             HttpResponse::Ok().json(DeleteResponse { deleted: id })
         }
         Err(e) if is_constraint_violation(&e) => {
-            conflict("Computer is still assigned to a section or used by a conversation")
+            conflict("Computer is still assigned to a section or used by a conversation or project")
         }
         Err(e) => server_error(e),
     }
@@ -675,11 +692,15 @@ pub async fn list_conversations(pool: web::Data<DbPool>) -> HttpResponse {
         Ok(s) => s,
         Err(e) => return server_error(e),
     };
-    let conversations: Vec<Conversation> = match stmt.query_map([], row_to_conversation) {
+    let rows: Vec<(Conversation, bool)> = match stmt.query_map([], row_to_conversation) {
         Ok(rows) => match rows.collect::<rusqlite::Result<_>>() {
             Ok(v) => v,
             Err(e) => return server_error(e),
         },
+        Err(e) => return server_error(e),
+    };
+    let conversations: Vec<Conversation> = match rows.into_iter().map(|row| with_project(&conn, row)).collect() {
+        Ok(v) => v,
         Err(e) => return server_error(e),
     };
     HttpResponse::Ok().json(conversations)
