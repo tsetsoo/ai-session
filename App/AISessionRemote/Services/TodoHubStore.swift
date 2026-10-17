@@ -136,6 +136,17 @@ final class TodoHubStore {
         startLiveUpdates()
     }
 
+    #if DEBUG
+    /// Fills the store without touching the hub or the cache (demo launches and tests).
+    func seedForDemo(todos: [Todo], conversations: [Conversation],
+                     sectionComputers: [SectionComputer], computers: [Computer]) {
+        apply(todos: todos, conversations: conversations)
+        self.sectionComputers = Dictionary(sectionComputers.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new })
+        self.computers = computers
+        hasLoadedOnce = true
+    }
+    #endif
+
     // MARK: Todos
 
     func createTodo(section: TodoSection, title: String) async {

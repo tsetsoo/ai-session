@@ -12,11 +12,13 @@ struct AISessionRemoteApp: App {
         #endif
     }
 
+    @State private var model = AppModel()
     @AppStorage("terminal.fontSize") private var terminalFontSize = TerminalAppearance.defaultFontSize
 
     var body: some Scene {
         WindowGroup {
             RootView()
+                .environment(model)
                 .onAppear {
                     #if DEBUG
                     // Demo launches (screenshots) must not be covered by the permission alert.

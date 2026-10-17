@@ -6,7 +6,8 @@ import SwiftUI
 /// section's computer over a direct SSH connection; the hub only stores the mapping.
 struct TodosView: View {
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
-    @State private var store = TodoHubStore()
+    @Environment(AppModel.self) private var model
+    private var store: TodoHubStore { model.store }
     @State private var showingSettings = false
     @State private var showingComputers = false
     @State private var showingAdd = false
