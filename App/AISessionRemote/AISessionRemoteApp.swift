@@ -19,13 +19,7 @@ struct AISessionRemoteApp: App {
         WindowGroup {
             RootView()
                 .environment(model)
-                .onAppear {
-                    #if DEBUG
-                    // Demo launches (screenshots) must not be covered by the permission alert.
-                    if DemoFixtures.isEnabled { return }
-                    #endif
-                    AttentionNotifier.requestAuthorizationIfNeeded()
-                }
+                // Notification permission is asked only from Settings → Notifications.
                 .onReceive(NotificationCenter.default.publisher(
                     for: PlatformSupport.didEnterBackgroundNotification
                 )) { _ in
