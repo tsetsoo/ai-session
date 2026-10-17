@@ -35,6 +35,8 @@ struct ConversationFrame: View {
 
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @Environment(\.frameOwnsWindow) private var ownsWindow
+    /// Absent in previews.
+    @Environment(AppModel.self) private var appModel: AppModel?
     @State private var terminal = TerminalHandle()
     @State private var showingCopied = false
     @State private var copiedTask: Task<Void, Never>?
@@ -82,6 +84,7 @@ struct ConversationFrame: View {
             guard state == .connected, waitingFocus.connected() else { return }
             focusTerminalWhenWaiting()
         }
+        .onChange(of: appModel?.terminalFocusRequest) { _, request in focusRequested(request) }
         .overlay(alignment: .top) {
             if showingCopied {
                 CopiedToast().transition(.opacity)
@@ -376,6 +379,20 @@ struct ConversationFrame: View {
         #endif
         Task {
             try? await Task.sleep(for: .milliseconds(250))
+            // Not from under the ⌘K palette's search field; closing it brings focus back.
+            guard appModel?.allowsTerminalAutoFocus ?? true else { return }
+            terminal.focus()
+        }
+    }
+
+    /// The ⌘K palette closed (or went to this conversation): keyboard focus back in the
+    /// terminal when it is already connected. One that connects later focuses itself.
+    private func focusRequested(_ request: AppModel.TerminalFocusRequest?) {
+        guard let request, request.todoID == todo.id, !isPoppedOut,
+              terminal.connectionState == .connected else { return }
+        Task {
+            // After the palette's field has left the window.
+            try? await Task.sleep(for: .milliseconds(50))
             terminal.focus()
         }
     }

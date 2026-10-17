@@ -99,6 +99,24 @@ final class AppModel {
     /// The Home-screen "New Todo" quick action: show the Todos list and focus quick-add.
     /// The quick-add field clears it once focused.
     var quickAddFocusRequested = false
+    /// The ⌘K palette is open: terminals don't take keyboard focus by themselves meanwhile (on
+    /// connect, or when a waiting conversation opens), so typing stays in its search field.
+    var isPaletteOpen = false
+    /// Asks the frame showing a todo to put keyboard focus back in its connected terminal.
+    private(set) var terminalFocusRequest: TerminalFocusRequest?
+
+    struct TerminalFocusRequest: Equatable {
+        let todoID: String
+        /// Makes each ask a change, even for the same todo.
+        let serial: Int
+    }
+
+    /// Whether a terminal may take keyboard focus by itself now.
+    var allowsTerminalAutoFocus: Bool { !isPaletteOpen }
+
+    func requestTerminalFocus(todoID: String) {
+        terminalFocusRequest = TerminalFocusRequest(todoID: todoID, serial: (terminalFocusRequest?.serial ?? 0) + 1)
+    }
 
     /// Replaces the SSH listing; tests inject it. Production builds it from the hosts.
     private let listTmuxOverride: TmuxListing?

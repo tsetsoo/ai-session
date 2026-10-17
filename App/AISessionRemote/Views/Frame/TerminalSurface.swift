@@ -97,6 +97,8 @@ struct TerminalSurface: View {
     private let approveEnabled: Bool
 
     @Environment(\.colorScheme) private var colorScheme
+    /// Absent in previews and other screens that don't provide it.
+    @Environment(AppModel.self) private var appModel: AppModel?
     @AppStorage("terminal.fontSize") private var fontSize = TerminalAppearance.defaultFontSize
     @AppStorage("terminal.theme") private var themeRaw = TerminalTheme.system.rawValue
     @State private var coordinator: TerminalCoordinator
@@ -280,6 +282,8 @@ struct TerminalSurface: View {
             guard focusOnConnect else { return }
             // Focus after the view is in a window so the soft keyboard can appear.
             try? await Task.sleep(nanoseconds: 150_000_000)
+            // Not from under the ⌘K palette's search field; closing it brings focus back.
+            guard appModel?.allowsTerminalAutoFocus ?? true else { return }
             coordinator.focusTerminal()
         }
         .onDisappear {

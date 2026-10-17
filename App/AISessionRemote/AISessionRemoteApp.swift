@@ -55,10 +55,16 @@ struct AISessionRemoteApp: App {
         #if os(macOS)
         // Three columns: sidebar, list and the conversation (the Main board is 1280×800).
         .defaultSize(width: 1280, height: 800)
+        #endif
+        // Also on iPad with a hardware keyboard, where the shell is the same.
         .commands {
             // Frees ⌘N for New Todo; New Session is ⌥⌘N on the sessions list's add button.
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Conversation") {
+                // ⌘K, ⌘N and ⌘1–⌘9, for the key window's shell (disabled elsewhere).
+                ShellCommandItems()
+                #if os(macOS)
+                Divider()
                 PopOutButton(model: model)
                 Divider()
                 // Plain ⌘= is handled by a key monitor (TextSizeShortcuts), since ⌘+ needs Shift.
@@ -70,9 +76,9 @@ struct AISessionRemoteApp: App {
                     terminalFontSize = TerminalAppearance.defaultFontSize
                 }
                 .keyboardShortcut("0", modifiers: .command)
+                #endif
             }
         }
-        #endif
 
         #if os(macOS)
         // ⧉ / ⇧⌘O: a conversation in its own window, keyed by todo id.

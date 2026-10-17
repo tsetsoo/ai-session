@@ -68,6 +68,26 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.board.needsYou.isEmpty)
     }
 
+    func testOpenPaletteHoldsTerminalAutoFocus() {
+        let model = makeModel()
+        XCTAssertTrue(model.allowsTerminalAutoFocus)
+        model.isPaletteOpen = true
+        XCTAssertFalse(model.allowsTerminalAutoFocus)
+        model.isPaletteOpen = false
+        XCTAssertTrue(model.allowsTerminalAutoFocus)
+    }
+
+    func testEachTerminalFocusRequestIsNew() {
+        // Asking twice for the same todo must still reach its frame (an onChange).
+        let model = makeModel()
+        XCTAssertNil(model.terminalFocusRequest)
+        model.requestTerminalFocus(todoID: "t1")
+        let first = model.terminalFocusRequest
+        model.requestTerminalFocus(todoID: "t1")
+        XCTAssertEqual(model.terminalFocusRequest?.todoID, "t1")
+        XCTAssertNotEqual(model.terminalFocusRequest, first)
+    }
+
     func testNotificationTapForAKnownTodoOpensIt() async {
         let model = makeModel()
         let todo = DemoFixtures.todos[0]

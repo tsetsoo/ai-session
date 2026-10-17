@@ -18,6 +18,7 @@ struct MacShell: View {
     @Environment(AppModel.self) private var model
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettingsWindow
     #endif
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @AppStorage(QuickAdd.sectionKey) private var quickAddSection = TodoSection.i.rawValue
@@ -25,6 +26,12 @@ struct MacShell: View {
     @State private var settings: SettingsRequest?
     @State private var showingAdd = false
     @State private var showingNewFromConversation = false
+    /// The palette's "Link a conversation to …".
+    @State private var linkTarget: Todo?
+    /// ⌘K.
+    @State private var showingPalette = false
+    /// `-uiDemoPalette <query>`: the palette opens with this query.
+    @State private var initialPaletteQuery = ""
     /// ⏎, a double-click or Open for the selected todo's frame.
     @State private var frameRequest: FrameRequest?
     /// A computer's Other Sessions, On This Computer or Open Shell, shown in the detail column.
@@ -59,6 +66,22 @@ struct MacShell: View {
             NewTodoFromConversationSheet(store: store)
                 .tint(DS.accent)
         }
+        .sheet(item: $linkTarget) { todo in
+            LinkConversationSheet(todo: todo, store: store)
+                .tint(DS.accent)
+        }
+        .overlay {
+            if showingPalette {
+                CommandPalette(isPresented: $showingPalette, selectedTodoID: visibleTodoID,
+                               initialQuery: initialPaletteQuery, onActivate: activate,
+                               onDismiss: returnFocusToTerminal)
+            }
+        }
+        // While it is open, terminals leave keyboard focus in its search field.
+        .onChange(of: showingPalette, initial: true) { _, open in model.isPaletteOpen = open }
+        .onDisappear { model.isPaletteOpen = false }
+        // ⌘K, ⌘1–⌘9 and ⌘N in the Conversation menu act on this window's shell.
+        .focusedSceneValue(\.shellCommands, shellCommands)
         .todoStoreErrorAlert(store)
         .onChange(of: model.sidebarSelection) { _, _ in
             query = ""
@@ -245,6 +268,98 @@ struct MacShell: View {
         }
     }
 
+    // MARK: Fast paths
+
+    /// For the Conversation menu; none while one of the shell's sheets is up.
+    private var shellCommands: ShellCommands? {
+        guard settings == nil, !showingAdd, !showingNewFromConversation, linkTarget == nil else { return nil }
+        let canAdd = model.isConfigured && !store.isOffline
+        return ShellCommands(
+            goTo: { showingPalette = true },
+            conversationCount: min(model.board.runningNow.count, 9),
+            openConversation: { n in
+                guard let todo = PaletteModel.shortcutTarget(n, board: model.board, todos: store.todos) else { return }
+                showingPalette = false
+                go(to: todo)
+            },
+            newTodo: canAdd ? {
+                showingPalette = false
+                showingAdd = true
+            } : nil
+        )
+    }
+
+    /// The todo whose conversation the detail column shows.
+    private var visibleTodoID: String? {
+        guard sidebarItem != .projects, computerPage == nil else { return nil }
+        return model.selectedTodoID
+    }
+
+    /// A palette row: ⏎ opens it here, ⌘⏎ a conversation or todo in its own window.
+    private func activate(_ item: PaletteItem, newWindow: Bool) {
+        switch item {
+        case let .conversation(todo, _, _, _), let .todo(todo, _, _):
+            #if os(macOS)
+            if newWindow {
+                model.popOut(todo.id, openWindow: openWindow)
+                return
+            }
+            #endif
+            go(to: todo)
+        case let .project(project):
+            model.sidebarSelection = .projects
+            model.selectedProjectID = project.id
+        case .action(.newTodo):
+            showingAdd = true
+        case let .action(.linkConversation(todoID, _)):
+            linkTarget = store.todos.first { $0.id == todoID }
+        case .action(.newTodoFromConversation):
+            showingNewFromConversation = true
+        case .action(.openSettings):
+            #if os(macOS)
+            openSettingsWindow()
+            #else
+            settings = SettingsRequest(initial: nil)
+            #endif
+        }
+    }
+
+    /// ⌘K and ⌘1–⌘9: show the todo in a list that has it, select it and start (or resume) its
+    /// conversation, like ⏎. A popped-out one comes forward instead.
+    private func go(to todo: Todo) {
+        model.sidebarSelection = Self.sidebarTarget(showing: todo, from: sidebarItem, board: model.board)
+        open(todo)
+        // Already attached, nothing reconnects to take focus: type into it straight away.
+        model.requestTerminalFocus(todoID: todo.id)
+    }
+
+    /// Esc or a click outside the palette: keyboard focus back in the terminal on screen.
+    private func returnFocusToTerminal() {
+        if let id = Self.terminalToFocus(visibleTodoID: visibleTodoID, poppedOut: model.poppedOut) {
+            model.requestTerminalFocus(todoID: id)
+        }
+    }
+
+    /// The terminal the detail column shows, if any: a popped-out todo shows a placeholder.
+    static func terminalToFocus(visibleTodoID: String?, poppedOut: Set<String>) -> String? {
+        guard let visibleTodoID, !poppedOut.contains(visibleTodoID) else { return nil }
+        return visibleTodoID
+    }
+
+    /// The current list when it has the todo, else Running now for a running conversation, else
+    /// the todo's section.
+    static func sidebarTarget(showing todo: Todo, from current: AppModel.SidebarItem,
+                              board: ConversationBoard) -> AppModel.SidebarItem {
+        let status = board.status(forTodo: todo.id)
+        let isRunning = status.map { $0 != .closed } ?? false
+        switch current {
+        case .needsYou where status == .needsYou: return current
+        case .runningNow where isRunning: return current
+        case .section(todo.section): return current
+        default: return isRunning ? .runningNow : .section(todo.section)
+        }
+    }
+
     // MARK: Selection
 
     /// Todo ids, and a computer's pages by `ComputerPage.tag`.
@@ -290,6 +405,11 @@ struct MacShell: View {
             }
             if model.selectedTodoID == nil {
                 model.selectedTodoID = DemoFixtures.value(after: "-uiDemoOpen") ?? model.board.runningNow.first?.todoId
+            }
+            // `-uiDemoPalette <query>`: the ⌘K palette open with that query ("" for none).
+            if let query = DemoFixtures.value(after: "-uiDemoPalette") {
+                initialPaletteQuery = query
+                showingPalette = true
             }
             #if os(macOS)
             // `-uiDemoPopOut <todo id>`: that conversation in its own window.
