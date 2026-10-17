@@ -1,0 +1,24 @@
+#!/bin/sh
+# Fake `claude -p` for test-todo-scripts.sh. Call <n> records its argv (JSON), the
+# AI_TODO_MEMORY_RUN value, its cwd and its stdin in $FAKE_CLAUDE_LOG/<n>.{argv,env,cwd,stdin},
+# then prints the canned reply and exits.
+#   FAKE_CLAUDE_REPLY    file with the --output-format json envelope, or a directory with
+#                        <n>.json files (falling back to default.json)
+#   FAKE_CLAUDE_EXIT     exit status (default 0)
+#   FAKE_CLAUDE_EXIT_AT  apply FAKE_CLAUDE_EXIT only to call number <n>
+log=${FAKE_CLAUDE_LOG:?FAKE_CLAUDE_LOG not set}
+mkdir -p "$log"
+n=$(($(cat "$log/count" 2>/dev/null || echo 0) + 1))
+echo "$n" >"$log/count"
+python3 -c 'import json, sys; json.dump(sys.argv[2:], open(sys.argv[1], "w"))' "$log/$n.argv" "$@"
+printf '%s\n' "${AI_TODO_MEMORY_RUN:-}" >"$log/$n.env"
+pwd -P >"$log/$n.cwd"
+cat >"$log/$n.stdin"
+reply=${FAKE_CLAUDE_REPLY:-}
+if [ -d "$reply" ]; then
+  if [ -f "$reply/$n.json" ]; then reply="$reply/$n.json"; else reply="$reply/default.json"; fi
+fi
+if [ -n "$reply" ] && [ -f "$reply" ]; then cat "$reply"; fi
+code=${FAKE_CLAUDE_EXIT:-0}
+if [ -n "${FAKE_CLAUDE_EXIT_AT:-}" ] && [ "$FAKE_CLAUDE_EXIT_AT" != "$n" ]; then code=0; fi
+exit "$code"

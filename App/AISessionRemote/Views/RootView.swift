@@ -1,27 +1,43 @@
 import SwiftUI
 
-/// Top level: Todos (hub-backed, each todo opens its AI conversation) and Hosts (direct SSH).
+/// Top level: Todos (hub-backed, each todo opens its AI conversation), Projects (folders that
+/// group todos, conversations and memories) and Hosts (direct SSH). Todos and Projects share
+/// one hub store.
 struct RootView: View {
-    private enum Tab { case todos, hosts }
+    @State private var store = TodoHubStore()
     @State private var tab = Tab.todos
+
+    enum Tab: Hashable {
+        case todos, projects, hosts
+    }
 
     var body: some View {
         #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("-demoConversationPicker") {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-demoConversationPicker") {
             ConversationPickerDemo()
-        } else {
+        } else if arguments.contains("-demoProjects") {
             tabs
+                .onAppear {
+                    store.loadDemo(.sample)
+                    tab = .projects
+                }
+        } else {
+            tabs.task { await startHub() }
         }
         #else
-        tabs
+        tabs.task { await startHub() }
         #endif
     }
 
     private var tabs: some View {
         TabView(selection: $tab) {
-            TodosView()
+            TodosView(store: store)
                 .tabItem { Label("Todos", systemImage: "checklist") }
                 .tag(Tab.todos)
+            ProjectsView(store: store)
+                .tabItem { Label("Projects", systemImage: "folder") }
+                .tag(Tab.projects)
             HostsListView()
                 .tabItem { Label("Hosts", systemImage: "server.rack") }
                 .tag(Tab.hosts)
@@ -30,5 +46,11 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .todoNotificationOpened)) { _ in
             tab = .todos
         }
+    }
+
+    private func startHub() async {
+        guard store.isConfigured else { return }
+        await store.refresh()
+        store.startLiveUpdates()
     }
 }

@@ -4,12 +4,27 @@ import Foundation
 public struct TodoHubSnapshot: Codable, Equatable, Sendable {
     public var todos: [Todo]
     public var conversations: [Conversation]
+    /// Absent in cache files written before projects existed.
+    public var projects: [Project]
     public var savedAt: Date
 
-    public init(todos: [Todo], conversations: [Conversation], savedAt: Date = .now) {
+    public init(todos: [Todo], conversations: [Conversation], projects: [Project] = [], savedAt: Date = .now) {
         self.todos = todos
         self.conversations = conversations
+        self.projects = projects
         self.savedAt = savedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case todos, conversations, projects, savedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        todos = try c.decode([Todo].self, forKey: .todos)
+        conversations = try c.decode([Conversation].self, forKey: .conversations)
+        projects = try c.decodeIfPresent([Project].self, forKey: .projects) ?? []
+        savedAt = try c.decode(Date.self, forKey: .savedAt)
     }
 }
 

@@ -35,6 +35,8 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
     public var completedAt: String?
     /// Absent when the todo has no conversation.
     public var conversationStatus: ConversationStatus?
+    /// Absent when the todo has no project (and from servers before projects existed).
+    public var projectId: String?
 
     public init(
         id: String,
@@ -48,7 +50,8 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
         createdAt: String = "",
         updatedAt: String = "",
         completedAt: String? = nil,
-        conversationStatus: ConversationStatus? = nil
+        conversationStatus: ConversationStatus? = nil,
+        projectId: String? = nil
     ) {
         self.id = id
         self.section = section
@@ -62,6 +65,7 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
         self.updatedAt = updatedAt
         self.completedAt = completedAt
         self.conversationStatus = conversationStatus
+        self.projectId = projectId
     }
 }
 
@@ -108,6 +112,8 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var statusMessage: String?
     public var statusUpdatedAt: String?
     public var createdAt: String
+    /// The project of the conversation's session (absent when none, and from older servers).
+    public var projectId: String?
 
     /// Older servers only send `claude_session_id`.
     @available(*, deprecated, renamed: "sessionId")
@@ -123,7 +129,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         status: ConversationStatus,
         statusMessage: String? = nil,
         statusUpdatedAt: String? = nil,
-        createdAt: String = ""
+        createdAt: String = "",
+        projectId: String? = nil
     ) {
         self.todoId = todoId
         self.computer = computer
@@ -135,12 +142,13 @@ public struct Conversation: Codable, Equatable, Sendable {
         self.statusMessage = statusMessage
         self.statusUpdatedAt = statusUpdatedAt
         self.createdAt = createdAt
+        self.projectId = projectId
     }
 
     // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
     private enum CodingKeys: String, CodingKey {
         case todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
-        case status, statusMessage, statusUpdatedAt, createdAt
+        case status, statusMessage, statusUpdatedAt, createdAt, projectId
     }
 
     public init(from decoder: Decoder) throws {
@@ -159,6 +167,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         statusMessage = try c.decodeIfPresent(String.self, forKey: .statusMessage)
         statusUpdatedAt = try c.decodeIfPresent(String.self, forKey: .statusUpdatedAt)
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+        projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -173,6 +182,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         try c.encodeIfPresent(statusMessage, forKey: .statusMessage)
         try c.encodeIfPresent(statusUpdatedAt, forKey: .statusUpdatedAt)
         try c.encode(createdAt, forKey: .createdAt)
+        try c.encodeIfPresent(projectId, forKey: .projectId)
     }
 }
 
@@ -272,11 +282,14 @@ public struct CreateTodoRequest: Encodable, Sendable {
     public var section: TodoSection
     public var title: String
     public var importance: TodoImportance?
+    /// The project must exist (`404 Project not found`).
+    public var projectId: String?
 
-    public init(section: TodoSection, title: String, importance: TodoImportance? = nil) {
+    public init(section: TodoSection, title: String, importance: TodoImportance? = nil, projectId: String? = nil) {
         self.section = section
         self.title = title
         self.importance = importance
+        self.projectId = projectId
     }
 }
 
@@ -286,13 +299,29 @@ public struct UpdateTodoRequest: Encodable, Sendable {
     public var completed: Bool?
     public var section: TodoSection?
     public var importance: TodoImportance?
+    /// `nil`: project unchanged (key absent). `.clear` sends `"project_id": null`.
+    public var projectId: ProjectChange?
 
     public init(title: String? = nil, completed: Bool? = nil, section: TodoSection? = nil,
-                importance: TodoImportance? = nil) {
+                importance: TodoImportance? = nil, projectId: ProjectChange? = nil) {
         self.title = title
         self.completed = completed
         self.section = section
         self.importance = importance
+        self.projectId = projectId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case title, completed, section, importance, projectId
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(title, forKey: .title)
+        try c.encodeIfPresent(completed, forKey: .completed)
+        try c.encodeIfPresent(section, forKey: .section)
+        try c.encodeIfPresent(importance, forKey: .importance)
+        try c.encodeChange(projectId, forKey: .projectId)
     }
 }
 
