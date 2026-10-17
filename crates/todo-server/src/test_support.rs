@@ -56,6 +56,8 @@ pub(crate) async fn call(pool: &DbPool, method: Method, uri: &str, body: Option<
         App::new()
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(Broadcaster::new()))
+            .app_data(web::Data::new(crate::push::PushNotifier::disabled()))
+            .app_data(web::Data::new(crate::push::Presence::default()))
             .configure(crate::api_routes),
     )
     .await;

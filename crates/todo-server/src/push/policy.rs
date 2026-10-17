@@ -81,11 +81,6 @@ impl TurnTracker {
             Event::AttendedRecheck => {}
         }
     }
-
-    /// Forget a todo's turn (conversation closed or deleted).
-    pub fn forget(&mut self, todo_id: &str) {
-        self.turns.remove(todo_id);
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

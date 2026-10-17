@@ -120,6 +120,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(broadcaster_clone.clone()))
             .app_data(web::Data::new(api_token.clone()))
+            .app_data(web::Data::new(push::PushNotifier::disabled()))
+            .app_data(web::Data::new(push::Presence::default()))
             .configure(api_routes)
     })
     .bind(&args.addr)?
