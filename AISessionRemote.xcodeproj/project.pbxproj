@@ -117,7 +117,6 @@
 		9E2353625C323498C43847EE /* OpenSSHPrivateKeyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */; };
 		9E90CED5C6F5A818FDC9D6F6 /* ConversationRowActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF1398BED37E8B138CFC5C42 /* ConversationRowActionsTests.swift */; };
 		9EF27CDA60B698C2B14EE4C8 /* MemoryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94877436C6D2727F5D498710 /* MemoryViews.swift */; };
-		A14519DE19C31E31A6A78AF2 /* NeedsYouNotifying.swift in Sources */ = {isa = PBXBuildFile; fileRef = A077872DB9950BF2F37C4B57 /* NeedsYouNotifying.swift */; };
 		A1EDA9CF81D79436D8F724AA /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = C2851F1ABC0544053EA972F7 /* NIOSSH */; };
 		A22C2ED227DF733D3FA7F932 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B30BC89B3A1D2CE46EB6921 /* AppModel.swift */; };
 		A362AAB9591870863050E332 /* DemoFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8A54758D4FED49A531F0BDC /* DemoFrame.swift */; };
@@ -125,7 +124,6 @@
 		A4969E70C98FC8113339AE7A /* MacCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 244B79FA4458DBBC91C4A9BA /* MacCompatibility.swift */; };
 		A698ABD1647F3AEBF7A07835 /* TodoConversationScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D950090C7A69096F9F3FF813 /* TodoConversationScreen.swift */; };
 		A9EDC3100C97630A41581C4E /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
-		AA96EDA99581FA3FCECC3EFF /* NeedsYouNotifying.swift in Sources */ = {isa = PBXBuildFile; fileRef = A077872DB9950BF2F37C4B57 /* NeedsYouNotifying.swift */; };
 		ABC66F9CB4F38FE59C4A6954 /* ConversationFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87495E95B7CCFE26E721047A /* ConversationFrame.swift */; };
 		AC785614765ABD46B73D4229 /* TextSizeShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEC0FF09B4815F076FB3472E /* TextSizeShortcuts.swift */; };
 		AC88844C58FEA9FD997A86AD /* AppTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221C9F866472FA9B512E819B /* AppTheme.swift */; };
@@ -258,7 +256,6 @@
 		9CC825CDD2BB9FFA73CAFDE4 /* PooledConnecting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PooledConnecting.swift; sourceTree = "<group>"; };
 		9D327A6203F795192D55393F /* ConversationLoaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationLoaderTests.swift; sourceTree = "<group>"; };
 		9FD7158DD9EEFF2C436D5B5D /* NewSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionSheet.swift; sourceTree = "<group>"; };
-		A077872DB9950BF2F37C4B57 /* NeedsYouNotifying.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeedsYouNotifying.swift; sourceTree = "<group>"; };
 		A467E31C965B1E36C7CB08F0 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		A5C23D18F2D719EE248BDB9A /* WeeklyStatsCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeeklyStatsCard.swift; sourceTree = "<group>"; };
 		A80E26E307013F99FC79B7F7 /* ConversationActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationActions.swift; sourceTree = "<group>"; };
@@ -426,7 +423,6 @@
 				E67B76EDE9FE683169680363 /* Dictation.swift */,
 				B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */,
 				EE3B756FF0192985AADAFF36 /* HostRepository.swift */,
-				A077872DB9950BF2F37C4B57 /* NeedsYouNotifying.swift */,
 				D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */,
 				985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */,
 				EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */,
@@ -755,7 +751,6 @@
 				C02C522D95113D7D02F16C02 /* MemoriesPresenter.swift in Sources */,
 				9EF27CDA60B698C2B14EE4C8 /* MemoryViews.swift in Sources */,
 				459745DF108E3518C8BB10E3 /* NIOSSHClient.swift in Sources */,
-				A14519DE19C31E31A6A78AF2 /* NeedsYouNotifying.swift in Sources */,
 				FBFCEA0140DEA878AC684447 /* NewSessionSheet.swift in Sources */,
 				CA6E7438940A64E9925E2DDE /* NotificationCenterCoordinator.swift in Sources */,
 				0EBEF766C754B360334DAFB5 /* NotificationSettingsView.swift in Sources */,
@@ -837,7 +832,6 @@
 				C61894B166CF872961980837 /* MemoriesPresenter.swift in Sources */,
 				B7CDAFEC634F6464A89F0CBA /* MemoryViews.swift in Sources */,
 				FACD0EDEEFFED735236090BD /* NIOSSHClient.swift in Sources */,
-				AA96EDA99581FA3FCECC3EFF /* NeedsYouNotifying.swift in Sources */,
 				9AC6F15718E4541263BB3B76 /* NewSessionSheet.swift in Sources */,
 				AFF4FF50C69178BB03C5D2EF /* NotificationCenterCoordinator.swift in Sources */,
 				E7262818704634E6B9AEE94B /* NotificationSettingsView.swift in Sources */,

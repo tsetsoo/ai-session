@@ -14,8 +14,6 @@ final class AppModel {
     }
 
     let store: TodoHubStore
-    /// "Needs you" alerts: local ones until the push-notifications work's coordinator lands.
-    let notifier: any NeedsYouNotifying
     /// computerID to its tmux session names. A computer that is absent is unknown (its hub
     /// status is kept).
     private(set) var liveTmux: [String: Set<String>] = [:]
@@ -36,11 +34,9 @@ final class AppModel {
     }
 
     #if DEBUG
-    init(store: TodoHubStore? = nil, demo: Bool = DemoFixtures.isEnabled, listTmux: TmuxListing? = nil,
-         notifier: (any NeedsYouNotifying)? = nil) {
+    init(store: TodoHubStore? = nil, demo: Bool = DemoFixtures.isEnabled, listTmux: TmuxListing? = nil) {
         let store = store ?? TodoHubStore()
         self.store = store
-        self.notifier = notifier ?? LocalNeedsYouNotifier()
         self.listTmuxOverride = listTmux
         if demo {
             store.seedForDemo(
@@ -53,10 +49,9 @@ final class AppModel {
         }
     }
     #else
-    init(store: TodoHubStore? = nil, listTmux: TmuxListing? = nil, notifier: (any NeedsYouNotifying)? = nil) {
+    init(store: TodoHubStore? = nil, listTmux: TmuxListing? = nil) {
         let store = store ?? TodoHubStore()
         self.store = store
-        self.notifier = notifier ?? LocalNeedsYouNotifier()
         self.listTmuxOverride = listTmux
     }
     #endif

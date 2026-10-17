@@ -35,10 +35,11 @@ struct TerminalSettingsView: View {
 }
 
 /// Settings → Notifications: the "needs you" switch. Turning it on asks for permission (never
-/// at launch); if that's refused the switch goes back off.
+/// at launch); if that's refused the switch goes back off. While it's on, the push settings
+/// (done alerts, quiet hours, mutes, the push state) follow below it.
 struct NeedsYouSettingsView: View {
     @Environment(AppModel.self) private var model
-    @AppStorage(NeedsYouSettings.enabledKey) private var needsYou = false
+    @AppStorage(NotificationCenterCoordinator.enabledKey) private var needsYou = false
     @State private var refused = false
 
     var body: some View {
@@ -49,29 +50,29 @@ struct NeedsYouSettingsView: View {
                     set: { on in setNeedsYou(on) }
                 ))
             } footer: {
-                VStack(alignment: .leading, spacing: DS.spacing.xs) {
-                    if let status = model.notifier.pushStatusText {
-                        Text(status)
-                    }
-                    if refused {
-                        Text("Notifications are turned off for this app. Turn them on in Settings.")
-                    }
+                if refused {
+                    Text("Notifications are turned off for this app. Turn them on in Settings.")
                 }
             }
-            // The push-notifications work embeds its `NotificationSettingsView(todoTitles:)`
-            // here (per-todo mutes, "Alert on this Mac too") when it lands on main.
+            if needsYou {
+                NotificationSettingsView(todoTitles: todoTitles)
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)
     }
 
+    /// Names the muted todos in the push settings.
+    private var todoTitles: [String: String] {
+        Dictionary(model.store.todos.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
+    }
+
     private func setNeedsYou(_ on: Bool) {
         needsYou = on
         refused = false
-        let notifier = model.notifier
         Task {
-            let accepted = await notifier.setNeedsYouEnabled(on)
+            let accepted = await NotificationCenterCoordinator.shared.setNeedsYouEnabled(on)
             if on && !accepted {
                 needsYou = false
                 refused = true
