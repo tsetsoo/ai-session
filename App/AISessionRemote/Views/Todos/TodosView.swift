@@ -12,6 +12,8 @@ struct TodosView: View {
     @State private var showingComputers = false
     @State private var showingAdd = false
     @State private var openTodoID: String?
+    /// The pushed frame came from a notification tap: it attaches only if the conversation runs.
+    @State private var openAttachOnly = false
     @State private var openingTodoID: String?
     @State private var missingHost: Computer?
     @State private var newHostPrefill: HostEditorPrefill?
@@ -33,6 +35,7 @@ struct TodosView: View {
         .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
             guard let todoID else { return }
             model.pendingOpenTodoID = nil
+            openAttachOnly = true
             openTodoID = todoID
         }
         .sheet(isPresented: $showingSettings) {
@@ -147,7 +150,10 @@ struct TodosView: View {
                     onToggle: { Task { await store.toggle(todo) } }
                 )
                 .contentShape(Rectangle())
-                .onTapGesture { openTodoID = todo.id }
+                .onTapGesture {
+                    openAttachOnly = false
+                    openTodoID = todo.id
+                }
                 .contextMenu {
                     TodoProjectMenu(todo: todo, store: store)
                     if store.conversations[todo.id] != nil {
@@ -259,7 +265,7 @@ struct TodosView: View {
     @ViewBuilder
     private func conversationDestination(_ todoID: String) -> some View {
         if let todo = store.todos.first(where: { $0.id == todoID }) {
-            TodoConversationScreen(todo: todo, store: store) { openTodoID = nil }
+            TodoConversationScreen(todo: todo, store: store, attachOnly: openAttachOnly) { openTodoID = nil }
         } else {
             ContentUnavailableView("Todo Not Found", systemImage: "checklist")
         }
