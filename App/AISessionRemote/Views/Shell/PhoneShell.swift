@@ -19,8 +19,9 @@ struct PhoneShell: View {
         case todo(String)
         case computer(String)
         case project(String)
-        /// The Mac layout's selection, pushed again after an iPad shell swap: it attaches only
-        /// if the conversation runs and never starts one, like a selection on the Mac.
+        /// Shown without starting anything: a notification tap, or the Mac layout's selection
+        /// pushed again after an iPad shell swap. It attaches only if the conversation runs,
+        /// like a selection on the Mac.
         case reopened(String)
 
         var todoID: String? {
@@ -162,6 +163,11 @@ struct PhoneShell: View {
         // The Home-screen "New Todo" quick action; QuickAddBar takes the focus.
         .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
             guard requested else { return }
+            guard isConfigured else {
+                // No list, no field: drop it so it can't grab focus later.
+                model.quickAddFocusRequested = false
+                return
+            }
             tab = .todos
             todosPath = []
         }
@@ -284,15 +290,11 @@ struct PhoneShell: View {
         }
     }
 
-    /// Pushes the todo's frame on Todos when that's the tab on screen, else on Conversations,
-    /// in place of whatever that tab had open.
+    /// A notification tap shows the conversation on the Conversations tab, in place of what
+    /// that tab had open. It attaches only if the conversation runs, never starts one.
     private func openFromNotification(_ todoID: String) {
-        if tab == .todos {
-            todosPath = [.todo(todoID)]
-        } else {
-            tab = .conversations
-            conversationsPath = [.todo(todoID)]
-        }
+        tab = .conversations
+        conversationsPath = [.reopened(todoID)]
     }
 
     private var currentPath: Binding<[Route]> {
