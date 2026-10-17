@@ -70,7 +70,7 @@ struct SessionsListView: View {
                 } label: {
                     Label("New Session", systemImage: "plus")
                 }
-                .keyboardShortcut("n", modifiers: .command)
+                .keyboardShortcut("n", modifiers: [.command, .option])
             }
             ToolbarItem(placement: .status) {
                 if isLoading && hasLoadedOnce {

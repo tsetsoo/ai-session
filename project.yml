@@ -65,6 +65,11 @@ targets:
       INFOPLIST_FILE: App/AISessionRemote/Info.plist
       SWIFT_VERSION: "5.9"
       TARGETED_DEVICE_FAMILY: "1,2"
+      # App/AISessionRemote/Assets.xcassets (a resource of both app targets, via their
+      # sources): the one accent, which the system uses for list selection too.
+      ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+      # No app icon yet; without this the catalog fails the build looking for AppIcon.
+      ASSETCATALOG_COMPILER_APPICON_NAME: ""
     dependencies:
       - package: AISessionRemote
         product: AISessionCore
@@ -128,6 +133,8 @@ targets:
       INFOPLIST_FILE: App/AISessionRemoteMac/Info.plist
       GENERATE_INFOPLIST_FILE: NO
       SWIFT_VERSION: "5.9"
+      ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+      ASSETCATALOG_COMPILER_APPICON_NAME: ""
       ENABLE_APP_SANDBOX: NO
       ENABLE_HARDENED_RUNTIME: NO
       CODE_SIGN_IDENTITY: "-"

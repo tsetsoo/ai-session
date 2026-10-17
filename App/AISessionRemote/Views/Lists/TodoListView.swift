@@ -3,10 +3,13 @@ import SwiftData
 import SwiftUI
 
 /// Todos in inset-grouped sections, each headed by its code and computer. Tapping a todo calls
-/// `onOpen`; the caller owns navigation to its conversation.
+/// `onOpen`; the caller owns navigation to its conversation. Given a `selection` (the Mac list
+/// column) rows select by todo id instead.
 struct TodoListView: View {
     let sections: [TodoSection]
     let onOpen: (Todo) -> Void
+    private let query: String
+    private let selection: Binding<String?>?
 
     @Environment(AppModel.self) private var model
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
@@ -14,8 +17,11 @@ struct TodoListView: View {
     @State private var linkTarget: Todo?
     @State private var addSection: TodoSection?
 
-    init(sections: [TodoSection], onOpen: @escaping (Todo) -> Void) {
+    init(sections: [TodoSection], query: String = "", selection: Binding<String?>? = nil,
+         onOpen: @escaping (Todo) -> Void) {
         self.sections = sections
+        self.query = query
+        self.selection = selection
         self.onOpen = onOpen
     }
 
@@ -24,7 +30,7 @@ struct TodoListView: View {
     var body: some View {
         let board = model.board
         TimelineView(.everyMinute) { context in
-            List {
+            SelectableList(selection: selection) {
                 ListStatusBanner(store: store)
                 ForEach(sections) { section in
                     sectionView(section, board: board, now: context.date)
@@ -42,20 +48,17 @@ struct TodoListView: View {
                 Task { await store.createTodo(section: section, title: title, projectId: projectId) }
             }
         }
-        .alert(
-            "Todos",
-            isPresented: Binding(get: { store.errorMessage != nil }, set: { if !$0 { store.errorMessage = nil } })
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(store.errorMessage ?? "")
-        }
     }
 
     private func sectionView(_ section: TodoSection, board: ConversationBoard, now: Date) -> some View {
         Section {
-            let todos = store.todos(in: section)
-            if todos.isEmpty {
+            let all = store.todos(in: section)
+            let todos = all.filter { ListSearch.matches(query, $0.title) }
+            if !all.isEmpty && todos.isEmpty {
+                Text("No results for “\(query)” in \(section.rawValue)")
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: DS.rowMinHeight)
+            } else if todos.isEmpty {
                 HStack {
                     Text("No todos in \(section.rawValue)")
                         .foregroundStyle(.secondary)
@@ -71,15 +74,18 @@ struct TodoListView: View {
                 row(todo, board: board, now: now)
             }
         } header: {
-            HStack {
-                Text(section.rawValue).fontWeight(.semibold)
-                Spacer()
-                if let mapping = store.sectionComputers[section] {
-                    Text(mapping.computer.name).foregroundStyle(.secondary)
+            // One section (the Mac list column) is already named above the list.
+            if sections.count > 1 {
+                HStack {
+                    Text(section.rawValue).fontWeight(.semibold)
+                    Spacer()
+                    if let mapping = store.sectionComputers[section] {
+                        Text(mapping.computer.name).foregroundStyle(.secondary)
+                    }
                 }
+                .font(.footnote)
+                .textCase(nil)
             }
-            .font(.footnote)
-            .textCase(nil)
         }
     }
 
@@ -98,7 +104,8 @@ struct TodoListView: View {
             projectName: store.project(id: todo.projectId)?.name,
             onToggle: { toggle(todo) }
         )
-        .rowTap { onOpen(todo) }
+        .tag(todo.id)
+        .rowTap(selection == nil ? { onOpen(todo) } : nil)
         // Offline, the swipes are left out: a disabled full swipe can still fire.
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             if canChange {

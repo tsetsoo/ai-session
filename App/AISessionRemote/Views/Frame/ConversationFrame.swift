@@ -2,6 +2,23 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
+/// Shown in the frame's terminal area in place of the loader's state.
+enum FramePlaceholder {
+    /// The selection is settling before it attaches: just the terminal background, so arrowing
+    /// through running conversations doesn't flash Start / Resume.
+    case settling
+    /// Waiting for the computer's tmux sessions to be listed before attaching.
+    case checking(computer: String)
+    /// The conversation is attached in its own window (Mac).
+    case poppedOut(showWindow: () -> Void, bringBack: () -> Void)
+}
+
+extension EnvironmentValues {
+    /// The frame fills its own window (the Mac pop-out), so the window's native title and
+    /// subtitle name the todo and the frame doesn't repeat them in its toolbar.
+    @Entry var frameOwnsWindow = false
+}
+
 /// A todo's conversation: a native header (title, section · computer · folder · tool, live
 /// status pill, actions) around the terminal area. The header renders from local data at once;
 /// the terminal area moves through the loader's phases on the terminal's own background.
@@ -10,11 +27,14 @@ struct ConversationFrame: View {
     let loader: ConversationLoader
     let store: TodoHubStore
     let onDeleted: () -> Void
+    /// `.settling` and `.checking` apply only while the loader is idle; `.poppedOut` always.
+    private let placeholder: FramePlaceholder?
+    /// ⧉ Open in New Window (Mac); nil hides it, as in the pop-out window itself.
+    private let onPopOut: (() -> Void)?
     private let makeTransport: (HostConnectionConfig, TerminalMode) -> any TerminalTransport
 
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
-    @Environment(\.colorScheme) private var colorScheme
-    @AppStorage("terminal.theme") private var themeRaw = TerminalTheme.system.rawValue
+    @Environment(\.frameOwnsWindow) private var ownsWindow
     @State private var terminal = TerminalHandle()
     @State private var showingCopied = false
     @State private var copiedTask: Task<Void, Never>?
@@ -29,6 +49,8 @@ struct ConversationFrame: View {
         todo: Todo,
         loader: ConversationLoader,
         store: TodoHubStore,
+        placeholder: FramePlaceholder? = nil,
+        onPopOut: (() -> Void)? = nil,
         onDeleted: @escaping () -> Void,
         makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
             SSHTerminalSession(config: $0, mode: $1)
@@ -37,6 +59,8 @@ struct ConversationFrame: View {
         self.todo = todo
         self.loader = loader
         self.store = store
+        self.placeholder = placeholder
+        self.onPopOut = onPopOut
         self.onDeleted = onDeleted
         self.makeTransport = makeTransport
     }
@@ -84,13 +108,56 @@ struct ConversationFrame: View {
         .modifier(MemoriesPresenter(isPresented: $showingMemories, todoID: todo.id, conversation: conversation,
                                     store: store))
         // The conversation on screen is never alerted about, on any device.
-        .reportsVisibleConversation(todo.id)
+        // Only the frame showing the terminal: a popped-out placeholder is not on screen.
+        .reportsVisibleConversation(todo.id, isActive: !isPoppedOut)
     }
 
     // MARK: Terminal area
 
     @ViewBuilder
     private var terminalArea: some View {
+        if let placeholder = activePlaceholder {
+            placeholderState(placeholder)
+        } else {
+            phaseArea
+        }
+    }
+
+    private var isPoppedOut: Bool {
+        if case .poppedOut = placeholder { return true }
+        return false
+    }
+
+    private var activePlaceholder: FramePlaceholder? {
+        switch placeholder {
+        case .poppedOut: placeholder
+        case .settling, .checking: loader.phase == .idle ? placeholder : nil
+        case nil: nil
+        }
+    }
+
+    @ViewBuilder
+    private func placeholderState(_ placeholder: FramePlaceholder) -> some View {
+        switch placeholder {
+        case .settling:
+            onTerminalBackground(Color.clear)
+        case let .checking(computer):
+            onTerminalBackground(FrameStateBlock(showsProgress: true, title: "Connecting to \(computer)…"))
+        case let .poppedOut(showWindow, bringBack):
+            onTerminalBackground(FrameStateBlock(
+                systemImage: Self.popOutSymbol,
+                title: "Open in its own window",
+                message: "Attached there, so this window doesn't fight it over the terminal size.",
+                primary: FrameStateButton(title: "Show Window", action: showWindow),
+                secondary: FrameStateButton(title: "Bring Back", action: bringBack)
+            ))
+        }
+    }
+
+    static let popOutSymbol = "macwindow.on.rectangle"
+
+    @ViewBuilder
+    private var phaseArea: some View {
         switch loader.phase {
         case .idle:
             onTerminalBackground(idleState)
@@ -163,17 +230,8 @@ struct ConversationFrame: View {
         return "Starting conversation on \(computer)…"
     }
 
-    /// Drawn on the terminal background, in the terminal's own light/dark scheme so system text
-    /// colours stay legible whatever the app's appearance.
     private func onTerminalBackground(_ content: some View) -> some View {
-        content
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(palette.background))
-            .environment(\.colorScheme, palette == .dark ? .dark : .light)
-    }
-
-    private var palette: TerminalPalette {
-        TerminalAppearance.palette(theme: TerminalTheme(rawValue: themeRaw) ?? .system, colorScheme: colorScheme)
+        content.modifier(OnTerminalBackground())
     }
 
     // MARK: Header
@@ -200,7 +258,23 @@ struct ConversationFrame: View {
             menu(onCopyResume: copyResumeCommand)
         }
         #else
+        // In the Mac split view the window title belongs to the list column, so the frame
+        // names its todo at the leading edge of its own toolbar (not in a pop-out window,
+        // whose own title already does).
         ToolbarItemGroup(placement: .primaryAction) {
+            if !ownsWindow {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(todo.title)
+                        .font(.headline)
+                    Text(meta(includeFolder: true))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+            }
             if let displayStatus {
                 StatusBadge(displayStatus, style: .pill)
                     .padding(.horizontal, DS.spacing.xs)
@@ -211,6 +285,13 @@ struct ConversationFrame: View {
             .help("Copy Resume Command")
             .accessibilityLabel("Copy Resume Command")
             .disabled(conversation == nil)
+            if let onPopOut {
+                Button(action: onPopOut) {
+                    Image(systemName: Self.popOutSymbol)
+                }
+                .help("Open in New Window (⇧⌘O)")
+                .accessibilityLabel("Open in New Window")
+            }
             menu(onCopyResume: nil)
         }
         #endif

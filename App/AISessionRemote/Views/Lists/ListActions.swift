@@ -10,6 +10,8 @@ final class ConversationRowActions {
     struct Failure {
         let title: String
         let message: String
+        /// A hub computer this device has no access to: the alert offers Set Up Access.
+        var setUpAccess: Computer?
     }
 
     var deleteTarget: Conversation?
@@ -52,16 +54,22 @@ final class ConversationRowActions {
             do {
                 try await body(HostLookup.config(for: conversation.computer, in: hosts))
             } catch {
-                failure = Failure(title: failureTitle, message: Self.message(for: error, computer: conversation.computer))
+                failure = Failure(title: failureTitle, message: Self.message(for: error, computer: conversation.computer),
+                                  setUpAccess: Self.computerToSetUp(after: error))
             }
         }
     }
 
-    /// Failure copy for work on a computer, without SSH words: missing access points to
-    /// Settings, and remote output is never shown raw. Hub errors keep the store's message.
+    /// Failure copy for work on a computer, without SSH words: missing access points to the
+    /// alert's Set Up Access (no host) or Settings (a key or sign-in problem), and remote
+    /// output is never shown raw. Hub errors keep the store's message.
     static func message(for error: Error, computer: Computer) -> String {
         let name = computer.name
         let setUp = "This device can't reach \(name) yet. Set up access in Settings."
+        // The alert's Set Up Access button opens the host editor for this one.
+        if computerToSetUp(after: error) != nil {
+            return "This device can't reach \(name) yet. Set up access to \(name) on this device."
+        }
         if error is HostLookup.Failure { return setUp }
         if error is RemoteConversations.ScriptMissing { return "\(name) needs the AI Session helpers." }
         if error is RemoteConversations.UnreadableList { return "Couldn't read the conversations on \(name)." }
@@ -82,6 +90,12 @@ final class ConversationRowActions {
         }
     }
 
+    /// The computer to set up access to, when the failure was having none.
+    static func computerToSetUp(after error: Error) -> Computer? {
+        if case let .noHost(computer)? = error as? HostLookup.Failure { return computer }
+        return nil
+    }
+
     private static func toolName(forBinary binary: String) -> String? {
         switch binary {
         case "claude": "Claude"
@@ -93,6 +107,19 @@ final class ConversationRowActions {
 }
 
 extension View {
+    /// The store's modal error: a todo change or a first load that failed. Each shell attaches
+    /// it once, so it shows whichever list is on screen.
+    func todoStoreErrorAlert(_ store: TodoHubStore) -> some View {
+        alert(
+            "Todos",
+            isPresented: Binding(get: { store.errorMessage != nil }, set: { if !$0 { store.errorMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(store.errorMessage ?? "")
+        }
+    }
+
     /// The delete confirmation, failure alert and Copied toast for `actions`.
     func conversationActions(_ actions: ConversationRowActions, store: TodoHubStore, hosts: [HostEntity]) -> some View {
         modifier(ConversationActionsPresenter(actions: actions, store: store, hosts: hosts))
@@ -106,12 +133,18 @@ extension View {
                                      store: store, hosts: hosts, open: open))
     }
 
-    /// Makes the whole row open something while buttons inside it stay tappable.
+    /// Makes the whole row open something while buttons inside it stay tappable. Without an
+    /// action the row is left alone, so a selectable list's own click selection still works.
+    @ViewBuilder
     func rowTap(_ action: (() -> Void)?) -> some View {
-        contentShape(Rectangle())
-            .onTapGesture { action?() }
-            .accessibilityAddTraits(action == nil ? [] : .isButton)
-            .accessibilityAction { action?() }
+        if let action {
+            contentShape(Rectangle())
+                .onTapGesture(perform: action)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { action() }
+        } else {
+            self
+        }
     }
 }
 
@@ -119,6 +152,7 @@ private struct ConversationActionsPresenter: ViewModifier {
     @Bindable var actions: ConversationRowActions
     let store: TodoHubStore
     let hosts: [HostEntity]
+    @State private var setUpPrefill: HostEditorPrefill?
 
     func body(content: Content) -> some View {
         content
@@ -139,10 +173,19 @@ private struct ConversationActionsPresenter: ViewModifier {
                 actions.failure?.title ?? "",
                 isPresented: Binding(get: { actions.failure != nil }, set: { if !$0 { actions.failure = nil } }),
                 presenting: actions.failure
-            ) { _ in
-                Button("OK", role: .cancel) {}
+            ) { failure in
+                if let computer = failure.setUpAccess {
+                    Button("Set Up Access") { setUpPrefill = HostEditorPrefill(computer: computer) }
+                    Button("Cancel", role: .cancel) {}
+                } else {
+                    Button("OK", role: .cancel) {}
+                }
             } message: { failure in
                 Text(failure.message)
+            }
+            .sheet(item: $setUpPrefill) { prefill in
+                // Create mode: the host and its key are saved together, and Cancel leaves nothing.
+                HostEditorView(prefill: prefill)
             }
             .overlay(alignment: .top) {
                 if actions.showingCopied {
@@ -277,8 +320,8 @@ struct ListStatusBanner: View {
     }
 
     private var offlineText: String {
-        guard let ago = AppTheme.relativeTime(from: store.cachedAt) else { return "Offline · showing saved todos" }
-        return "Offline · showing todos from \(ago)"
+        guard let cachedAt = store.cachedAt else { return "Offline · showing saved todos" }
+        return "Offline · showing todos from \(SyncLine.ago(cachedAt, now: .now))"
     }
 }
 

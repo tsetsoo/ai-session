@@ -6,6 +6,9 @@ import SwiftUI
 /// Computers tabs.
 /// Each tab is its own navigation stack with a large title and ⚙ for Settings; opening a todo
 /// pushes its conversation full screen, without the tab bar.
+///
+/// On iPad in compact width the open conversation is kept in `AppModel.selectedTodoID`, so it
+/// survives the swap to and from `MacShell` (see `reopenSelection`).
 struct PhoneShell: View {
     enum Tab: String, Hashable {
         case todos, conversations, projects, computers
@@ -16,8 +19,17 @@ struct PhoneShell: View {
         case todo(String)
         case computer(String)
         case project(String)
-        /// Shown without starting anything (a notification tap): attaches only if it runs.
+        /// Shown without starting anything: a notification tap, or the Mac layout's selection
+        /// pushed again after an iPad shell swap. It attaches only if the conversation runs,
+        /// like a selection on the Mac.
         case reopened(String)
+
+        var todoID: String? {
+            switch self {
+            case let .todo(id), let .reopened(id): id
+            case .computer, .project: nil
+            }
+        }
     }
 
     /// Settings as a sheet, optionally opened on one destination.
@@ -39,6 +51,8 @@ struct PhoneShell: View {
     @State private var settings: SettingsRequest?
     @State private var showingAdd = false
     @State private var showingNewFromConversation = false
+    /// `.attach` / `.detach` for a re-opened conversation's frame.
+    @State private var reopenRequest: FrameRequest?
 
     init() {
         #if DEBUG
@@ -128,8 +142,10 @@ struct PhoneShell: View {
             NewTodoFromConversationSheet(store: store)
                 .tint(DS.accent)
         }
+        .todoStoreErrorAlert(store)
         .onAppear {
             applyDefaultFilter()
+            reopenSelection()
             #if DEBUG
             if projectsPath.isEmpty, let id = ProjectsDemo.projectPage(store) {
                 projectsPath = [.project(id)]
@@ -137,6 +153,7 @@ struct PhoneShell: View {
             #endif
         }
         .onChange(of: tab) { _, _ in applyDefaultFilter() }
+        .onChange(of: openTodoID) { _, id in model.selectedTodoID = id }
         // A tapped "needs you" notification (routed by AppModel).
         .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
             guard let todoID else { return }
@@ -154,7 +171,7 @@ struct PhoneShell: View {
             tab = .todos
             todosPath = []
         }
-        .task { await startSync() }
+        .task { await model.startSync() }
     }
 
     // MARK: Tabs
@@ -255,7 +272,7 @@ struct PhoneShell: View {
             }
         case let .reopened(id):
             if let todo = store.todos.first(where: { $0.id == id }) {
-                TodoConversationScreen(todo: todo, store: store, attachOnly: true) {
+                ConversationDetail(todo: todo, request: $reopenRequest) {
                     if path.wrappedValue.last == route { path.wrappedValue.removeLast() }
                 }
                 .toolbar(.hidden, for: .tabBar)
@@ -280,6 +297,29 @@ struct PhoneShell: View {
         conversationsPath = [.reopened(todoID)]
     }
 
+    private var currentPath: Binding<[Route]> {
+        switch tab {
+        case .todos: $todosPath
+        case .conversations: $conversationsPath
+        case .projects: $projectsPath
+        case .computers: $computersPath
+        }
+    }
+
+    /// The conversation on screen, if any: the Mac layout selects it after an iPad shell swap.
+    private var openTodoID: String? {
+        currentPath.wrappedValue.last?.todoID
+    }
+
+    /// After an iPad shell swap (regular → compact width), the conversation the Mac layout had
+    /// selected is pushed again. It never starts one: it attaches only if it already runs.
+    private func reopenSelection() {
+        guard let id = model.selectedTodoID, store.todos.contains(where: { $0.id == id }) else { return }
+        let paths = todosPath + conversationsPath + projectsPath + computersPath
+        guard !paths.contains(where: { $0.todoID == id }) else { return }
+        currentPath.wrappedValue.append(.reopened(id))
+    }
+
     private func openSettings(_ destination: SettingsDestination?) {
         settings = SettingsRequest(initial: destination)
     }
@@ -290,24 +330,7 @@ struct PhoneShell: View {
         filter = .initial(needsYouCount: model.board.needsYou.count)
     }
 
-    // MARK: Sync
-
-    private var isConfigured: Bool {
-        #if DEBUG
-        if DemoFixtures.isEnabled { return true }
-        #endif
-        return store.isConfigured
-    }
-
-    private func startSync() async {
-        #if DEBUG
-        // Demo data never touches the network.
-        if DemoFixtures.isEnabled || store.demo != nil { return }
-        #endif
-        guard store.isConfigured else { return }
-        await store.refresh()
-        store.startLiveUpdates()
-    }
+    private var isConfigured: Bool { model.isConfigured }
 }
 
 private extension View {

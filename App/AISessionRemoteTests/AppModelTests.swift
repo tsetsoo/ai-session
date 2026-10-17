@@ -177,6 +177,8 @@ final class AppModelTests: XCTestCase {
         await gate.open()
         await first.value
         XCTAssertEqual(model.liveTmux[mac.id], ["new"])
+        // Superseded by a refresh that answered: nothing to ask again.
+        XCTAssertEqual(model.livenessAbandoned, 0)
     }
 
     func testCancelledRefreshKeepsPreviousResult() async {
@@ -198,5 +200,7 @@ final class AppModelTests: XCTestCase {
         await gate.open()
         await task.value
         XCTAssertEqual(model.liveTmux[mac.id], ["known"])
+        // The newest refresh gave no answer and none runs: waiting selections ask again.
+        XCTAssertEqual(model.livenessAbandoned, 1)
     }
 }
