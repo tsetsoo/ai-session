@@ -387,7 +387,11 @@ struct ConversationFrame: View {
                 let config = try openConfig ?? HostLookup.config(for: conversation.computer, in: hosts)
                 try await body(conversation, config)
             } catch {
-                failure = ActionFailure(title: failureTitle, message: TodoHubStore.message(for: error))
+                // Worded like the lists' actions: no SSH words, no raw remote output.
+                failure = ActionFailure(
+                    title: failureTitle,
+                    message: ConversationRowActions.message(for: error, computer: conversation.computer)
+                )
             }
         }
     }
