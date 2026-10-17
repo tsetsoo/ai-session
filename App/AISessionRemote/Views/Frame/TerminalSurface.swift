@@ -36,6 +36,8 @@ private struct TerminalContainerView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> TerminalView {
         let view = TerminalView(frame: .zero)
+        // The surface docks `KeyBar` instead of SwiftTerm's `TerminalAccessory`.
+        view.inputAccessoryView = UIView(frame: .zero)
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         coordinator.attach(to: view)
         return view
@@ -69,7 +71,8 @@ final class TerminalHandle {
 
 /// One live terminal on a host: connects when it appears, focuses after connecting, shows the
 /// connecting and disconnected states on the terminal's own background, and closes SSH when it
-/// goes away (tmux keeps running on the host). Navigation chrome belongs to the caller.
+/// goes away (tmux keeps running on the host). On iOS it docks the `KeyBar` under the terminal.
+/// Navigation chrome belongs to the caller.
 struct TerminalSurface: View {
     /// Room around the grid, filled with the terminal background so it reads as terminal.
     private static var inset: CGFloat {
@@ -90,6 +93,8 @@ struct TerminalSurface: View {
     private let onConnectionFailed: (String) -> Void
     private let onEnded: (Int?) -> Void
     private let onUserInput: () -> Void
+    private let tool: String?
+    private let approveEnabled: Bool
 
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("terminal.fontSize") private var fontSize = TerminalAppearance.defaultFontSize
@@ -103,6 +108,10 @@ struct TerminalSurface: View {
     /// not just the first, via the `onChange` below.
     @State private var showConnectingOverlay = false
     @State private var connectingOverlayTask: Task<Void, Never>?
+    #if os(iOS)
+    @State private var ctrlArmed = false
+    @State private var keyboardVisible = false
+    #endif
 
     /// - Parameters:
     ///   - hostName: shown while connecting; defaults to the config's host.
@@ -111,7 +120,10 @@ struct TerminalSurface: View {
     ///   - disconnectedMessage: the line under "Disconnected".
     ///   - onConnectionFailed: the SSH connect failed, with a message for the user.
     ///   - onEnded: the session ended, with the PTY's exit status (nil = connection dropped).
-    ///   - onUserInput: the user typed into the terminal.
+    ///   - onUserInput: the user typed into the terminal or used the key bar (not the terminal's
+    ///     own replies, see `TerminalInputClassifier`).
+    ///   - tool: the conversation's tool; shows Approve on the key bar (iOS). Nil hides it.
+    ///   - approveEnabled: whether Approve can be pressed now.
     init(
         config: HostConnectionConfig,
         mode: TerminalMode,
@@ -123,6 +135,8 @@ struct TerminalSurface: View {
         onConnectionFailed: @escaping (String) -> Void = { _ in },
         onEnded: @escaping (Int?) -> Void = { _ in },
         onUserInput: @escaping () -> Void = {},
+        tool: String? = nil,
+        approveEnabled: Bool = false,
         makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
             SSHTerminalSession(config: $0, mode: $1)
         }
@@ -137,6 +151,8 @@ struct TerminalSurface: View {
         self.onConnectionFailed = onConnectionFailed
         self.onEnded = onEnded
         self.onUserInput = onUserInput
+        self.tool = tool
+        self.approveEnabled = approveEnabled
         _coordinator = State(initialValue: TerminalCoordinator(
             hostConfig: config, mode: mode, makeTransport: makeTransport
         ))
@@ -147,11 +163,67 @@ struct TerminalSurface: View {
     }
 
     var body: some View {
+        #if os(iOS)
+        surface
+            .safeAreaInset(edge: .bottom, spacing: 0) { keyBar }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                keyboardVisible = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                keyboardVisible = false
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .terminalViewControlModifierReset)) { note in
+                // SwiftTerm applied Ctrl to a typed key.
+                if (note.object as AnyObject?) === coordinator.terminalView {
+                    ctrlArmed = false
+                }
+            }
+            .onChange(of: ctrlArmed) { _, armed in
+                coordinator.controlModifier = armed
+            }
+        #else
+        surface
+        #endif
+    }
+
+    #if os(iOS)
+    /// Docked under the terminal, so the terminal resizes (through SwiftTerm's normal resize)
+    /// when the keyboard comes and goes. Present from the start, so connecting doesn't resize it.
+    private var keyBar: some View {
+        KeyBar(
+            tool: tool,
+            approveEnabled: approveEnabled,
+            ctrlArmed: $ctrlArmed,
+            keyboardVisible: keyboardVisible,
+            send: { bytes in
+                coordinator.send(bytes)
+                onUserInput()
+            },
+            toggleKeyboard: {
+                if keyboardVisible {
+                    coordinator.hideKeyboard()
+                } else {
+                    coordinator.focusTerminal()
+                }
+            },
+            paste: {
+                coordinator.pasteFromClipboard()
+                onUserInput()
+            }
+        )
+        .disabled(connectionState != .connected)
+        .environment(\.colorScheme, palette == .dark ? .dark : .light)
+    }
+    #endif
+
+    private var surface: some View {
         ZStack {
             TerminalContainerView(coordinator: coordinator, palette: palette, fontSize: fontSize)
                 .padding(Self.inset)
                 .background(Color(palette.background))
+                #if os(macOS)
                 .ignoresSafeArea(.container, edges: .bottom)
+                #endif
 
             if showConnectingOverlay && (connectionState == .connecting || connectionState == .idle) {
                 connectingOverlay
@@ -198,9 +270,15 @@ struct TerminalSurface: View {
         }
         .task {
             await coordinator.connect()
+            #if DEBUG && os(iOS)
+            // Screenshots: `-uiDemoCtrlArmed` arms Ctrl, `-uiDemoKeyboard down` keeps the keyboard away.
+            if DemoFixtures.isEnabled {
+                if ProcessInfo.processInfo.arguments.contains("-uiDemoCtrlArmed") { ctrlArmed = true }
+                if DemoFixtures.value(after: "-uiDemoKeyboard") == "down" { return }
+            }
+            #endif
             guard focusOnConnect else { return }
-            // Focus after the view is in a window so the soft keyboard + SwiftTerm
-            // accessory bar (Ctrl/Esc/Tab/arrows) can appear.
+            // Focus after the view is in a window so the soft keyboard can appear.
             try? await Task.sleep(nanoseconds: 150_000_000)
             coordinator.focusTerminal()
         }

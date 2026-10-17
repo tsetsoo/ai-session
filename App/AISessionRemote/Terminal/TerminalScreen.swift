@@ -27,8 +27,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
     var onError: ((String) -> Void)?
     var onDisconnected: ((Int?) -> Void)?
     var onStateChange: ((TerminalConnectionState) -> Void)?
-    /// Anything the terminal view sends: typed keys, but also SwiftTerm's own replies (DA/DSR/
-    /// cursor reports, focus and mouse reports). Not bytes sent with `send(_:)`.
+    /// The user typed into the terminal view. SwiftTerm's own replies through the same channel
+    /// (DA/DSR/cursor, focus and mouse reports, colour and version replies) don't count, and
+    /// neither do bytes sent with `send(_:)`.
     var onUserInput: (() -> Void)?
 
     private let hostConfig: HostConnectionConfig
@@ -152,8 +153,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
         await connect()
     }
 
-    /// Makes the embedded `TerminalView` first responder so the soft keyboard and
-    /// SwiftTerm's built-in `TerminalAccessory` (Ctrl/Esc/Tab/arrows) appear.
+    /// Makes the embedded `TerminalView` first responder so the soft keyboard appears.
     func focusTerminal() {
         guard let terminalView else { return }
         #if os(iOS)
@@ -166,6 +166,21 @@ final class TerminalCoordinator: TerminalViewDelegate {
         }
         #endif
     }
+
+    #if os(iOS)
+    /// Puts the soft keyboard away.
+    func hideKeyboard() {
+        guard let terminalView, terminalView.isFirstResponder else { return }
+        _ = terminalView.resignFirstResponder()
+    }
+
+    /// SwiftTerm's sticky Ctrl: applies to the next typed key, then resets itself (posting
+    /// `.terminalViewControlModifierReset`).
+    var controlModifier: Bool {
+        get { terminalView?.controlModifier ?? false }
+        set { terminalView?.controlModifier = newValue }
+    }
+    #endif
 
     /// Best-effort clipboard copy: copies the active selection if there is one, otherwise
     /// briefly selects the whole visible buffer to grab its text.
@@ -193,7 +208,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        onUserInput?()
+        if !TerminalInputClassifier.isTerminalReport(Array(data)) {
+            onUserInput?()
+        }
         session?.send(data)
     }
 
@@ -227,9 +244,8 @@ final class TerminalCoordinator: TerminalViewDelegate {
     }
 }
 
-/// Interactive terminal for a single tmux session. SwiftTerm owns the soft-key
-/// accessory above the system keyboard (`TerminalAccessory`: Ctrl, Esc, Tab, arrows).
-/// Detaching closes SSH only — tmux keeps running on the host.
+/// Interactive terminal for a single tmux session. On iOS the surface docks the key bar (Esc,
+/// Tab, Ctrl, arrows) under it. Detaching closes SSH only — tmux keeps running on the host.
 struct TerminalScreen: View {
     let hostConfig: HostConnectionConfig
     let mode: TerminalMode
@@ -244,7 +260,6 @@ struct TerminalScreen: View {
     @State private var errorMessage: String?
     @State private var killErrorMessage: String?
     @State private var showingKillConfirmation = false
-    @State private var keyboardVisible = false
 
     init(
         hostConfig: HostConnectionConfig,
@@ -267,33 +282,15 @@ struct TerminalScreen: View {
     }
 
     var body: some View {
-        ZStack {
-            TerminalSurface(
-                config: hostConfig,
-                mode: mode,
-                handle: terminal,
-                onDetach: { dismiss() },
-                disconnectedMessage: "The SSH connection was closed.",
-                onConnectionFailed: { message in errorMessage = message },
-                makeTransport: makeTransport
-            )
-            #if os(iOS)
-            if terminal.connectionState == .connected && !keyboardVisible {
-                VStack {
-                    Spacer()
-                    SoftKeyBar { key in
-                        switch key {
-                        case .ctrlC: terminal.send([0x03])
-                        case .tab: terminal.send([0x09])
-                        case .esc: terminal.send([0x1B])
-                        case .paste: terminal.paste()
-                        }
-                    }
-                }
-                .transition(.move(edge: .bottom))
-            }
-            #endif
-        }
+        TerminalSurface(
+            config: hostConfig,
+            mode: mode,
+            handle: terminal,
+            onDetach: { dismiss() },
+            disconnectedMessage: "The SSH connection was closed.",
+            onConnectionFailed: { message in errorMessage = message },
+            makeTransport: makeTransport
+        )
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.visible, for: .navigationBar)
@@ -390,14 +387,6 @@ struct TerminalScreen: View {
         } message: {
             Text(errorMessage ?? "")
         }
-        #if os(iOS)
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            keyboardVisible = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardVisible = false
-        }
-        #endif
     }
 
     private static func killMessage(for error: Error) -> String {
