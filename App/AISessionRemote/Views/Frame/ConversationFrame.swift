@@ -44,6 +44,8 @@ struct ConversationFrame: View {
     @State private var showingMemories = false
     /// Arms the key bar's Approve on a fresh `waiting`; typing disarms it.
     @State private var approveGate = ApproveGate()
+    /// Opened while waiting: keyboard focus goes to the terminal once it connects.
+    @State private var waitingFocus = WaitingFocus()
 
     init(
         todo: Todo,
@@ -69,6 +71,16 @@ struct ConversationFrame: View {
         terminalArea
         .onChange(of: liveStatus, initial: true) { _, status in
             if let status { approveGate.statusChanged(to: status) }
+        }
+        // Switching to a conversation that waits on you lands focus in its terminal; on the
+        // Mac that takes it from the list. Other conversations keep the terminal's own
+        // focus-after-connect.
+        .onChange(of: readyTerminalID, initial: true) { _, id in
+            waitingFocus.readyChanged(isReady: id != nil, status: liveStatus)
+        }
+        .onChange(of: terminal.connectionState) { _, state in
+            guard state == .connected, waitingFocus.connected() else { return }
+            focusTerminalWhenWaiting()
         }
         .overlay(alignment: .top) {
             if showingCopied {
@@ -344,6 +356,24 @@ struct ConversationFrame: View {
     private var readyConversation: OpenTodoConversation? {
         if case let .ready(open) = loader.phase { return open }
         return nil
+    }
+
+    /// The terminal surface's identity while ready: a new one connects afresh.
+    private var readyTerminalID: String? {
+        readyConversation.map { "\($0.id)|\($0.hostID)" }
+    }
+
+    /// After the surface's own focus-after-connect and whatever the list did with the click or
+    /// key that selected this conversation.
+    private func focusTerminalWhenWaiting() {
+        #if DEBUG
+        // Screenshots: `-uiDemoKeyboard down` keeps the soft keyboard away.
+        if DemoFixtures.isEnabled, DemoFixtures.value(after: "-uiDemoKeyboard") == "down" { return }
+        #endif
+        Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            terminal.focus()
+        }
     }
 
     /// A live terminal on screen (the handle can lag behind a phase change).

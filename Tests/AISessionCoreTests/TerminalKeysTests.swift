@@ -40,4 +40,29 @@ final class TerminalKeysTests: XCTestCase {
             XCTAssertTrue(gate.isEnabled(tool: "codex"))
         }
     }
+
+    func testWaitingFocusLandsOnceOnConnect() {
+        var focus = WaitingFocus()
+        focus.readyChanged(isReady: true, status: .waiting)
+        XCTAssertTrue(focus.connected())
+        XCTAssertFalse(focus.connected(), "a reconnect of the same terminal keeps today's behaviour")
+    }
+
+    func testWaitingFocusOnlyForWaiting() {
+        for status in ConversationStatus.allCases where status != .waiting {
+            var focus = WaitingFocus()
+            focus.readyChanged(isReady: true, status: status)
+            XCTAssertFalse(focus.connected(), "\(status)")
+        }
+        var unknown = WaitingFocus()
+        unknown.readyChanged(isReady: true, status: nil)
+        XCTAssertFalse(unknown.connected())
+    }
+
+    func testWaitingFocusDisarmsWhenTheTerminalGoes() {
+        var focus = WaitingFocus()
+        focus.readyChanged(isReady: true, status: .waiting)
+        focus.readyChanged(isReady: false, status: .waiting)
+        XCTAssertFalse(focus.connected())
+    }
 }
