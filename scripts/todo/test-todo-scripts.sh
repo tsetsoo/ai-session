@@ -4,7 +4,24 @@
 # Never touches the real ~/.claude, ~/.tmux.conf, ~/.ai-remote or tmux server.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Fail loudly unless every test ran. bash reads a script as it goes, so a syntax error halfway
+# down, or an edit to this file mid-run, used to end the suite early with exit 0. Run from a
+# private copy that parsed cleanly; cleanup() fails any exit that didn't reach the end.
+if [[ -z "${AI_TODO_TEST_COPY:-}" ]]; then
+  AI_TODO_TEST_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  AI_TODO_TEST_COPY="$(mktemp)"
+  cp "$0" "$AI_TODO_TEST_COPY"
+  if ! bash -n "$AI_TODO_TEST_COPY"; then
+    rm -f "$AI_TODO_TEST_COPY"
+    echo "FAIL: $0 does not parse" >&2
+    exit 1
+  fi
+  export AI_TODO_TEST_SCRIPT_DIR AI_TODO_TEST_COPY
+  exec bash "$AI_TODO_TEST_COPY" "$@"
+fi
+SCRIPT_DIR="$AI_TODO_TEST_SCRIPT_DIR"
+SCRIPT_COPY="$AI_TODO_TEST_COPY"
+unset AI_TODO_TEST_SCRIPT_DIR AI_TODO_TEST_COPY
 SANDBOX="$(mktemp -d)"
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 export HOME="${SANDBOX}/home"
@@ -17,16 +34,23 @@ HUB_PID=""
 EXTRA_PIDS=""
 
 cleanup() {
+  local status=$?
   tmux -L "$SOCK" kill-server >/dev/null 2>&1 || true
   for pid in $HUB_PID $EXTRA_PIDS; do
     kill "$pid" >/dev/null 2>&1 || true
     wait "$pid" 2>/dev/null || true
   done
-  rm -rf "$SANDBOX"
+  rm -rf "$SANDBOX" "$SCRIPT_COPY"
+  if [[ -z "$SUITE_COMPLETE" ]]; then
+    echo "FAIL: suite stopped early after ${passes} passes" >&2
+    ((status != 0)) || status=1
+  fi
+  exit "$status"
 }
+SUITE_COMPLETE=""
+passes=0
 trap cleanup EXIT
 
-passes=0
 pass() { echo "PASS: $*"; passes=$((passes + 1)); }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -709,3 +733,4 @@ grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "uninstall removed othe
 pass "uninstall removes only our hooks, scripts, tmux line, codex notify and hook state"
 
 echo "All ${passes} todo script tests passed."
+SUITE_COMPLETE=1
