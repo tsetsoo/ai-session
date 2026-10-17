@@ -134,7 +134,10 @@ struct ConversationFrame: View {
                 )),
                 hostName: conversation.computer.name,
                 handle: terminal,
-                onConnectionFailed: { _ in loader.connectionFailed() },
+                onConnectionFailed: { error in
+                    let noted = SSHSignInRecord.problem(hostID: open.config.hostID)
+                    loader.connectionFailed(.classify(error, signInProblem: noted))
+                },
                 onEnded: { exitStatus in loader.ended(exitStatus: exitStatus) },
                 makeTransport: makeTransport
             )

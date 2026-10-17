@@ -44,6 +44,7 @@ public struct TOFUHostKeyStore: @unchecked Sendable {
     /// fingerprint) and available for a manual "Forget host key" action if a host's key
     /// legitimately changed.
     public func forget(hostID: String) {
+        SSHSignInRecord.clear(hostID: hostID)
         var map = storedFingerprints()
         guard map.removeValue(forKey: hostID) != nil else { return }
         defaults.set(map, forKey: Self.defaultsKey)
@@ -51,6 +52,39 @@ public struct TOFUHostKeyStore: @unchecked Sendable {
 
     private func storedFingerprints() -> [String: String] {
         (defaults.dictionary(forKey: Self.defaultsKey) as? [String: String]) ?? [:]
+    }
+}
+
+/// The sign-in problem the newest handshake with a host ran into, if any. A terminal's channel
+/// fails the same way whether the network, the host's identity or the key was the problem, so
+/// the handshake notes the two sign-in problems here as they happen and the frame words the
+/// failure from them. Each handshake starts by checking the host's identity, which replaces
+/// whatever an earlier attempt noted.
+enum SSHSignInRecord {
+    enum Problem: Equatable {
+        /// The host's key isn't the one trusted on first use.
+        case hostKeyChanged
+        /// The host turned this device's key down.
+        case keyRejected
+    }
+
+    private static let lock = NSLock()
+    private static var problems: [String: Problem] = [:]
+
+    static func problem(hostID: String) -> Problem? {
+        lock.withLock { problems[hostID] }
+    }
+
+    static func hostKeyChecked(hostID: String, matched: Bool) {
+        lock.withLock { problems[hostID] = matched ? nil : .hostKeyChanged }
+    }
+
+    static func keyRejected(hostID: String) {
+        lock.withLock { problems[hostID] = .keyRejected }
+    }
+
+    static func clear(hostID: String) {
+        lock.withLock { problems[hostID] = nil }
     }
 }
 
@@ -65,7 +99,9 @@ final class TOFUServerAuthenticationDelegate: NIOSSHClientServerAuthenticationDe
     }
 
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
-        if store.evaluate(hostID: hostID, publicKey: hostKey) {
+        let matched = store.evaluate(hostID: hostID, publicKey: hostKey)
+        SSHSignInRecord.hostKeyChecked(hostID: hostID, matched: matched)
+        if matched {
             validationCompletePromise.succeed(())
         } else {
             validationCompletePromise.fail(SSHRemoteError.authenticationFailed)
@@ -95,11 +131,14 @@ final class SSHConnectionErrorHandler: ChannelInboundHandler {
 final class SSHPrivateKeyAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
     private let username: String
     private let privateKey: NIOSSHPrivateKey
+    /// Where a rejected key is recorded (`SSHSignInRecord`); nil records nothing.
+    private let hostID: String?
     private var hasOffered = false
 
-    init(username: String, privateKey: NIOSSHPrivateKey) {
+    init(username: String, privateKey: NIOSSHPrivateKey, hostID: String? = nil) {
         self.username = username
         self.privateKey = privateKey
+        self.hostID = hostID
     }
 
     func nextAuthenticationType(
@@ -107,6 +146,8 @@ final class SSHPrivateKeyAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
         nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
     ) {
         guard !hasOffered, availableMethods.contains(.publicKey) else {
+            // Out of offers: the host turned the key down (or takes no keys at all).
+            if let hostID { SSHSignInRecord.keyRejected(hostID: hostID) }
             nextChallengePromise.succeed(nil)
             return
         }

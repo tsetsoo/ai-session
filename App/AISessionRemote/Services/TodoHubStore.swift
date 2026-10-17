@@ -52,7 +52,7 @@ final class TodoHubStore {
     /// so an older, slower response can't overwrite newer state or the offline cache.
     private var refreshGeneration = 0
 
-    init(cache: TodoHubCache = .applicationSupport()) {
+    init(cache: TodoHubCache = TodoHubStore.defaultCache()) {
         self.cache = cache
         if let snapshot = cache.load() {
             apply(todos: snapshot.todos, conversations: snapshot.conversations)
@@ -60,6 +60,23 @@ final class TodoHubStore {
             cachedAt = snapshot.savedAt
         }
     }
+
+    /// The offline cache in Application Support, except in a `-uiDemo` launch: a demo never
+    /// reads (or shows) the real hub's data.
+    nonisolated static func defaultCache() -> TodoHubCache {
+        #if DEBUG
+        if DemoFixtures.isEnabled { return scratchCache() }
+        #endif
+        return .applicationSupport()
+    }
+
+    #if DEBUG
+    /// A cache file of its own that doesn't exist yet: starts empty and is never the real one.
+    nonisolated static func scratchCache() -> TodoHubCache {
+        TodoHubCache(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("demo-todo-hub-cache-\(UUID().uuidString).json"))
+    }
+    #endif
 
     var isConfigured: Bool {
         #if DEBUG

@@ -116,6 +116,28 @@ struct FrameStateView: View {
                 message: "Check it's awake and on Tailscale.",
                 primary: FrameStateButton(title: "Try Again", action: actions.retry)
             )
+        case let .signInFailed(name):
+            FrameStateBlock(
+                systemImage: "lock",
+                title: "This device couldn't sign in to \(name).",
+                message: "Check this device's access to \(name) in Settings.",
+                primary: FrameStateButton(title: "Fix in Settings") { actions.openSettings(.access) },
+                secondary: FrameStateButton(title: "Try Again", action: actions.retry)
+            )
+        case let .hostKeyChanged(name):
+            FrameStateBlock(
+                systemImage: "exclamationmark.shield",
+                iconTint: DS.accent,
+                title: "\(name)'s identity changed since this device last connected.",
+                message: "If \(name) was reinstalled or replaced, reset it in Settings. If not, don't connect.",
+                primary: FrameStateButton(title: "Fix in Settings") { actions.openSettings(.access) }
+            )
+        case let .terminalFailed(name):
+            FrameStateBlock(
+                systemImage: "exclamationmark.triangle",
+                title: "Couldn't open a terminal on \(name)",
+                primary: FrameStateButton(title: "Try Again", action: actions.retry)
+            )
         case let .helpersMissing(name):
             let command = ResumeCommand.install(hubURL: TodoHubSettings.baseURLString)
             FrameStateBlock(
@@ -151,6 +173,13 @@ struct FrameStateView: View {
                 secondary: resumeCommand.map { command in
                     FrameStateButton(title: "Copy Resume Command") { actions.copy(command) }
                 }
+            )
+        case .tokenRejected:
+            FrameStateBlock(
+                systemImage: "key",
+                title: "The server didn't accept the API token",
+                message: "Check the token in Settings, then try again.",
+                primary: FrameStateButton(title: "Open Settings") { actions.openSettings(.server) }
             )
         case let .hub(message):
             FrameStateBlock(
