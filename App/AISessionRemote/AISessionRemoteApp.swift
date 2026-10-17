@@ -13,6 +13,11 @@ struct AISessionRemoteApp: App {
         HostProvisioning.runFromCommandLineIfRequested()
         // Before launch finishes, so a notification tap that launched the app is delivered.
         NotificationCenterCoordinator.shared.install()
+        // `--notify-on` asks for notification permission and registers this device, so the
+        // phone can be set up from a launch argument the same way `--hub-url` sets the server.
+        if ProcessInfo.processInfo.arguments.contains("--notify-on") {
+            Task { _ = await NotificationCenterCoordinator.shared.setNeedsYouEnabled(true) }
+        }
     }
 
     var body: some Scene {
