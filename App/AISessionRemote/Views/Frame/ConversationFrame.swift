@@ -113,7 +113,8 @@ struct ConversationFrame: View {
                     loader.connectionFailed(.classify(error, signInProblem: noted))
                 },
                 onEnded: { exitStatus in loader.ended(exitStatus: exitStatus) },
-                onUserInput: { approveGate.userTyped() },
+                // Only while armed: otherwise every keystroke would write this @State.
+                onUserInput: { if approveGate.isArmed { approveGate.userTyped() } },
                 tool: conversation.tool,
                 approveEnabled: approveGate.isEnabled(tool: conversation.tool),
                 makeTransport: makeTransport
