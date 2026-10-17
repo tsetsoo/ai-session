@@ -34,6 +34,9 @@ targets:
       properties:
         UILaunchScreen: {}
         CFBundleDisplayName: AI Session Remote
+        # In-app dictation in the quick-add field.
+        NSMicrophoneUsageDescription: Dictate new todos.
+        NSSpeechRecognitionUsageDescription: Turns your dictation into todo text.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

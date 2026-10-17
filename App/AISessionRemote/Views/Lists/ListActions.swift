@@ -200,19 +200,43 @@ private struct ConversationRowMenu: ViewModifier {
                 } label: {
                     Label("Copy Resume Command", systemImage: "doc.on.doc")
                 }
-                Button {
-                    actions.close(conversation, store: store, hosts: hosts)
-                } label: {
-                    Label("Close Conversation", systemImage: "xmark.circle")
+                MuteNotificationsButton(todoID: conversation.todoId)
+                // Offline, the changing items are left out, like the swipes.
+                if !store.isOffline {
+                    Button {
+                        actions.close(conversation, store: store, hosts: hosts)
+                    } label: {
+                        Label("Close Conversation", systemImage: "xmark.circle")
+                    }
+                    .disabled(!isRunning)
+                    Button(role: .destructive) {
+                        actions.deleteTarget = conversation
+                    } label: {
+                        Label("Delete Conversation…", systemImage: "trash")
+                    }
                 }
-                .disabled(!isRunning || store.isOffline)
-                Button(role: .destructive) {
-                    actions.deleteTarget = conversation
-                } label: {
-                    Label("Delete Conversation…", systemImage: "trash")
-                }
-                .disabled(store.isOffline)
             }
+    }
+}
+
+/// "Mute Notifications" for a todo's alerts. Shown only once the notifier supports muting (the
+/// push-notifications work); the local notifier doesn't. Unmute needs the muted state, which the
+/// coordinator will provide.
+struct MuteNotificationsButton: View {
+    let todoID: String
+
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if model.notifier.supportsMuting {
+            Button {
+                let notifier = model.notifier
+                // The coordinator reports its own failures; there is nothing to show here.
+                Task { try? await notifier.setMuted(todoId: todoID, true) }
+            } label: {
+                Label("Mute Notifications", systemImage: "bell.slash")
+            }
+        }
     }
 }
 
@@ -220,6 +244,8 @@ private struct ConversationRowMenu: ViewModifier {
 /// rejected token.
 struct ListStatusBanner: View {
     let store: TodoHubStore
+
+    @Environment(\.openAppSettings) private var openSettings
 
     var body: some View {
         if store.isOffline {
@@ -236,9 +262,17 @@ struct ListStatusBanner: View {
             }
         } else if let issue = store.backgroundIssue {
             Section {
-                Label(issue, systemImage: "exclamationmark.triangle")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: DS.spacing.m) {
+                    Label(issue, systemImage: "exclamationmark.triangle")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if store.tokenRejected, let openSettings {
+                        Button("Open Settings") { openSettings(.server) }
+                            .buttonStyle(.borderless)
+                            .tint(DS.accent)
+                    }
+                }
             }
         }
     }

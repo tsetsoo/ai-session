@@ -140,34 +140,35 @@ struct TodoListView: View {
             } label: {
                 Label("Open", systemImage: "arrow.up.forward.app")
             }
-            if let conversation {
-                Button {
-                    actions.close(conversation, store: store, hosts: hosts)
-                } label: {
-                    Label("Close Conversation", systemImage: "xmark.circle")
+            MuteNotificationsButton(todoID: todo.id)
+            // Offline, the changing items are left out, like the swipes.
+            if canChange {
+                if let conversation {
+                    Button {
+                        actions.close(conversation, store: store, hosts: hosts)
+                    } label: {
+                        Label("Close Conversation", systemImage: "xmark.circle")
+                    }
+                    .disabled(!isRunning)
+                    Button(role: .destructive) {
+                        actions.deleteTarget = conversation
+                    } label: {
+                        Label("Delete Conversation…", systemImage: "trash.slash")
+                    }
+                } else {
+                    Button {
+                        linkTarget = todo
+                    } label: {
+                        Label("Link Conversation…", systemImage: "link")
+                    }
                 }
-                .disabled(!isRunning || !canChange)
+                Divider()
                 Button(role: .destructive) {
-                    actions.deleteTarget = conversation
+                    Task { await store.delete(todo) }
                 } label: {
-                    Label("Delete Conversation…", systemImage: "trash.slash")
+                    Label("Delete Todo", systemImage: "trash")
                 }
-                .disabled(!canChange)
-            } else {
-                Button {
-                    linkTarget = todo
-                } label: {
-                    Label("Link Conversation…", systemImage: "link")
-                }
-                .disabled(!canChange)
             }
-            Divider()
-            Button(role: .destructive) {
-                Task { await store.delete(todo) }
-            } label: {
-                Label("Delete Todo", systemImage: "trash")
-            }
-            .disabled(!canChange)
         }
     }
 

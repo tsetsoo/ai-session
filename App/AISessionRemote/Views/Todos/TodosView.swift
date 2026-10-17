@@ -276,47 +276,6 @@ struct TodosView: View {
     }
 }
 
-/// The conversation frame for a tapped todo. A tap is an explicit open, so the loader starts
-/// (or resumes) the conversation as soon as the frame appears.
-private struct TodoConversationScreen: View {
-    let todo: Todo
-    let store: TodoHubStore
-    let onDeleted: () -> Void
-
-    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
-    @State private var hostList: HostList
-    @State private var loader: ConversationLoader
-
-    init(todo: Todo, store: TodoHubStore, onDeleted: @escaping () -> Void) {
-        self.todo = todo
-        self.store = store
-        self.onDeleted = onDeleted
-        let hostList = HostList()
-        _hostList = State(initialValue: hostList)
-        _loader = State(initialValue: ConversationLoader(
-            todo: todo,
-            dependencies: .live(store: store, hosts: { hostList.hosts })
-        ))
-    }
-
-    var body: some View {
-        ConversationFrame(todo: todo, loader: loader, store: store, onDeleted: onDeleted)
-            .onChange(of: hosts) { _, hosts in hostList.hosts = hosts }
-            .task {
-                hostList.hosts = hosts
-                guard loader.phase == .idle else { return }
-                await loader.start()
-            }
-    }
-}
-
-/// The current saved hosts, read by the loader on every resolve (a host added from the frame's
-/// Set Up Access then counts on retry).
-@MainActor
-private final class HostList {
-    var hosts: [HostEntity] = []
-}
-
 private struct LegacyTodoRow: View {
     let todo: Todo
     let status: ConversationStatus?

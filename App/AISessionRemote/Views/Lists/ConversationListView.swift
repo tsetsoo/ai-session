@@ -7,6 +7,11 @@ import SwiftUI
 struct ConversationListView: View {
     enum Filter: Hashable, CaseIterable {
         case needsYou, running, all
+
+        /// Needs you when something does, else Running.
+        static func initial(needsYouCount: Int) -> Filter {
+            needsYouCount > 0 ? .needsYou : .running
+        }
     }
 
     @Binding var filter: Filter

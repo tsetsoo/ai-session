@@ -10,6 +10,12 @@ struct ComputersView: View {
     /// Shown inside this sheet: the Todos screen's alert can't present over it.
     @State private var errorMessage: String?
 
+    /// `editing` opens that section's computer and folder at once (a fix from the frame).
+    init(store: TodoHubStore, editing section: TodoSection? = nil) {
+        self.store = store
+        _editingSection = State(initialValue: section)
+    }
+
     var body: some View {
         NavigationStack {
             List {

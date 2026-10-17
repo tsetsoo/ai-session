@@ -23,6 +23,8 @@ final class TodoHubStore {
     /// Non-modal problem from a background (live-update) refresh, shown as a banner, e.g. a
     /// rejected token. Cleared by the next successful refresh.
     private(set) var backgroundIssue: String?
+    /// The background issue is a rejected token, fixed in Settings → Todo server.
+    private(set) var tokenRejected = false
 
     enum RefreshTrigger {
         /// Pull-to-refresh, first load, settings change: failures raise `errorMessage`.
@@ -83,6 +85,7 @@ final class TodoHubStore {
             self.computers = comps
             isOffline = false
             backgroundIssue = nil
+            tokenRejected = false
             let snapshot = TodoHubSnapshot(todos: t, conversations: c)
             try? cache.save(snapshot)
             cachedAt = snapshot.savedAt
@@ -97,9 +100,13 @@ final class TodoHubStore {
                 errorMessage = Self.message(for: error)
             case .background:
                 backgroundIssue = Self.message(for: error)
+                tokenRejected = false
                 // Every reconnect would fail the same way: pause until a refresh succeeds
                 // (pull-to-refresh or saving new settings).
-                if case TodoHubError.unauthorized = error { pauseEventsTask() }
+                if case TodoHubError.unauthorized = error {
+                    tokenRejected = true
+                    pauseEventsTask()
+                }
             }
         }
     }

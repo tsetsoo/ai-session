@@ -1,8 +1,7 @@
 import AISessionCore
 import SwiftUI
 
-/// Where a fix lives in Settings. Until SettingsView exists (PR 3) the frame maps these onto
-/// the existing sheets.
+/// Where a fix lives in Settings; `SettingsView(initial:)` opens on it.
 enum SettingsDestination: Hashable {
     case server
     case sections(TodoSection?)
