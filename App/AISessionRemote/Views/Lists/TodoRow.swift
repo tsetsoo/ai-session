@@ -11,6 +11,8 @@ struct TodoRow: View {
     /// Closing or deleting its conversation.
     let isBusy: Bool
     let canToggle: Bool
+    /// The todo's project, in lists not already filtered by project.
+    var projectName: String?
     let onToggle: () -> Void
 
     var body: some View {
@@ -29,11 +31,21 @@ struct TodoRow: View {
                     .strikethrough(todo.completed)
                     .foregroundStyle(todo.completed ? .secondary : .primary)
                     .lineLimit(1)
-                if let subtitle = RowText.todoSubtitle(conversation, status: status, now: now) {
-                    Text(subtitle)
-                        .font(.footnote)
-                        .foregroundStyle(status == .needsYou ? DS.accent : Color.secondary)
-                        .lineLimit(1)
+                let subtitle = RowText.todoSubtitle(conversation, status: status, now: now)
+                if subtitle != nil || projectName != nil {
+                    HStack(spacing: DS.spacing.s) {
+                        if let subtitle {
+                            Text(subtitle)
+                                .foregroundStyle(status == .needsYou ? DS.accent : Color.secondary)
+                        }
+                        if let projectName {
+                            Label(projectName, systemImage: "folder")
+                                .labelStyle(.titleAndIcon)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .font(.footnote)
+                    .lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
