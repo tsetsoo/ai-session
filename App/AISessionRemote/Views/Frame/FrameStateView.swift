@@ -100,7 +100,7 @@ struct FrameStateView: View {
             FrameStateBlock(
                 systemImage: "lock",
                 title: "This device can't open conversations on \(computer.name) yet",
-                message: "Add \(computer.username)@\(computer.hostname) with its SSH key.",
+                message: "Set up access to \(computer.name) on this device, then try again.",
                 primary: FrameStateButton(title: "Set Up Access") { actions.setUpAccess(computer) }
             )
         case let .keyMissing(name):
@@ -134,7 +134,7 @@ struct FrameStateView: View {
                 systemImage: "exclamationmark.triangle",
                 iconTint: DS.accent,
                 title: "\(toolName) isn't installed on \(name)",
-                message: "Install \(toolName) and tmux there, then try again.",
+                message: "Install it on \(name), then try again.",
                 primary: FrameStateButton(title: "Try Again", action: actions.retry)
             )
         case let .folderMissing(name, folder):

@@ -27,7 +27,8 @@ final class TerminalCoordinator: TerminalViewDelegate {
     var onError: ((String) -> Void)?
     var onDisconnected: ((Int?) -> Void)?
     var onStateChange: ((TerminalConnectionState) -> Void)?
-    /// Keystrokes typed into the terminal view (not bytes sent with `send(_:)`).
+    /// Anything the terminal view sends: typed keys, but also SwiftTerm's own replies (DA/DSR/
+    /// cursor reports, focus and mouse reports). Not bytes sent with `send(_:)`.
     var onUserInput: (() -> Void)?
 
     private let hostConfig: HostConnectionConfig
@@ -272,6 +273,7 @@ struct TerminalScreen: View {
                 mode: mode,
                 handle: terminal,
                 onDetach: { dismiss() },
+                disconnectedMessage: "The SSH connection was closed.",
                 onConnectionFailed: { message in errorMessage = message },
                 makeTransport: makeTransport
             )

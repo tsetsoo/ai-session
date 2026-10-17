@@ -86,6 +86,7 @@ struct TerminalSurface: View {
     private let focusOnConnect: Bool
     private let handle: TerminalHandle?
     private let onDetach: (() -> Void)?
+    private let disconnectedMessage: String
     private let onConnectionFailed: (String) -> Void
     private let onEnded: (Int?) -> Void
     private let onUserInput: () -> Void
@@ -107,6 +108,7 @@ struct TerminalSurface: View {
     ///   - hostName: shown while connecting; defaults to the config's host.
     ///   - handle: filled in so the caller's menus can reconnect, copy, paste and focus.
     ///   - onDetach: when set, the disconnected state offers Detach next to Reconnect.
+    ///   - disconnectedMessage: the line under "Disconnected".
     ///   - onConnectionFailed: the SSH connect failed, with a message for the user.
     ///   - onEnded: the session ended, with the PTY's exit status (nil = connection dropped).
     ///   - onUserInput: the user typed into the terminal.
@@ -117,6 +119,7 @@ struct TerminalSurface: View {
         focusOnConnect: Bool = true,
         handle: TerminalHandle? = nil,
         onDetach: (() -> Void)? = nil,
+        disconnectedMessage: String = "The connection was closed.",
         onConnectionFailed: @escaping (String) -> Void = { _ in },
         onEnded: @escaping (Int?) -> Void = { _ in },
         onUserInput: @escaping () -> Void = {},
@@ -130,6 +133,7 @@ struct TerminalSurface: View {
         self.focusOnConnect = focusOnConnect
         self.handle = handle
         self.onDetach = onDetach
+        self.disconnectedMessage = disconnectedMessage
         self.onConnectionFailed = onConnectionFailed
         self.onEnded = onEnded
         self.onUserInput = onUserInput
@@ -242,7 +246,7 @@ struct TerminalSurface: View {
                     .foregroundStyle(.secondary)
                 Text("Disconnected")
                     .font(.title3.weight(.semibold))
-                Text("The SSH connection was closed.")
+                Text(disconnectedMessage)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 HStack(spacing: DS.spacing.m) {

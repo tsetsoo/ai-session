@@ -24,8 +24,8 @@ extension Conversation {
     /// Body of the "Delete this conversation?" confirmation.
     var deleteConfirmationMessage: String {
         tool == "codex"
-            ? "Ends its tmux session, archives the Codex conversation on \(computer.name) and unlinks it. The todo stays."
-            : "Ends its tmux session, deletes the conversation from \(computer.name) and unlinks it. The todo stays."
+            ? "Ends the conversation on \(computer.name), archives it there and unlinks it. The todo stays."
+            : "Ends the conversation on \(computer.name), deletes it there and unlinks it. The todo stays."
     }
 }
 
