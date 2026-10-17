@@ -57,14 +57,37 @@ final class ConversationRowActions {
         }
     }
 
-    /// Failure copy without SSH words: missing access points to Settings.
+    /// Failure copy for work on a computer, without SSH words: missing access points to
+    /// Settings, and remote output is never shown raw. Hub errors keep the store's message.
     static func message(for error: Error, computer: Computer) -> String {
-        let setUp = "This device can't reach \(computer.name) yet. Set up access in Settings."
+        let name = computer.name
+        let setUp = "This device can't reach \(name) yet. Set up access in Settings."
         if error is HostLookup.Failure { return setUp }
+        if error is RemoteConversations.ScriptMissing { return "\(name) needs the AI Session helpers." }
+        if error is RemoteConversations.UnreadableList { return "Couldn't read the conversations on \(name)." }
         switch error as? SSHRemoteError {
-        case .unreachable?: return "Can't reach \(computer.name). Check it's awake and on Tailscale."
-        case .authenticationFailed?: return setUp
-        default: return TodoHubStore.message(for: error)
+        case .unreachable?:
+            return "Can't reach \(name). Check it's awake and on Tailscale."
+        case .authenticationFailed?:
+            return setUp
+        case let .binaryMissing(binary)?:
+            guard let tool = toolName(forBinary: binary) else { return "Something \(name) needs isn't installed there." }
+            return "\(tool) isn't installed on \(name)."
+        case .tmuxMissing?:
+            return "Something \(name) needs isn't installed there."
+        case .commandFailed?:
+            return "\(name) couldn't finish that. Try again."
+        case nil:
+            return TodoHubStore.message(for: error)
+        }
+    }
+
+    private static func toolName(forBinary binary: String) -> String? {
+        switch binary {
+        case "claude": "Claude"
+        case "codex": "Codex"
+        case "agent", "cursor-agent": "Cursor"
+        default: nil
         }
     }
 }
@@ -145,24 +168,25 @@ private struct ConversationRowMenu: ViewModifier {
                 } label: {
                     Label("Copy Resume Command", systemImage: "doc.on.doc")
                 }
-                .tint(DS.accent)
+                .tint(DS.accentSolid)
             }
+            // Offline, the changing swipes are left out rather than disabled.
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                Button {
-                    actions.deleteTarget = conversation
-                } label: {
-                    Label("Delete…", systemImage: "trash")
-                }
-                .tint(.red)
-                .disabled(store.isOffline)
-                if isRunning {
+                if !store.isOffline {
                     Button {
-                        actions.close(conversation, store: store, hosts: hosts)
+                        actions.deleteTarget = conversation
                     } label: {
-                        Label("Close", systemImage: "xmark.circle")
+                        Label("Delete…", systemImage: "trash")
                     }
-                    .tint(.gray)
-                    .disabled(store.isOffline)
+                    .tint(.red)
+                    if isRunning {
+                        Button {
+                            actions.close(conversation, store: store, hosts: hosts)
+                        } label: {
+                            Label("Close", systemImage: "xmark.circle")
+                        }
+                        .tint(.gray)
+                    }
                 }
             }
             .contextMenu {

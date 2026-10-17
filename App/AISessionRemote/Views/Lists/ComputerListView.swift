@@ -130,10 +130,7 @@ private struct ComputerRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if !hasAccess {
                 Button("Set Up", action: onSetUp)
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.capsule)
-                    .controlSize(.small)
-                    .tint(DS.accent)
+                    .buttonStyle(AccentButtonStyle())
             } else {
                 #if os(iOS)
                 Image(systemName: "chevron.right")

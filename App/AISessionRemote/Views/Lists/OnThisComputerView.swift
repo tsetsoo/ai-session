@@ -32,9 +32,15 @@ struct OnThisComputerView: View {
             titleVisibility: .visible,
             presenting: picked
         ) { remote in
-            Button("New Todo from This…") { step = .newTodo(remote) }
-            Button("Link to Todo…") { step = .link(remote) }
+            if !store.isOffline {
+                Button("New Todo from This…") { step = .newTodo(remote) }
+                Button("Link to Todo…") { step = .link(remote) }
+            }
             Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            if store.isOffline {
+                Text("The todo server is unreachable. Changes are disabled while offline.")
+            }
         }
         .navigationDestination(item: $step) { step in
             switch step {

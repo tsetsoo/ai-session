@@ -68,12 +68,8 @@ struct RemoteConversationPicker: View {
         ) { conversation in
             Button("Link Anyway") { onPick(conversation) }
             Button("Cancel", role: .cancel) {}
-        } message: { conversation in
-            if let tmux = conversation.tmuxSession {
-                Text("It's running in tmux session \"\(tmux)\" on \(computerName). Opening it from the todo starts a second copy — close it there first.")
-            } else {
-                Text("It's running in a terminal on \(computerName). Opening it from the todo starts a second copy — close it there first.")
-            }
+        } message: { _ in
+            Text("It's running in a terminal on \(computerName). Opening it from the todo starts a second copy — close it there first.")
         }
     }
 
@@ -185,6 +181,12 @@ struct ComputerConversations: View {
     let onPick: (RemoteConversation) -> Void
     @Query private var hosts: [HostEntity]
     @State private var lookup: Result<HostConnectionConfig, Error>?
+    @State private var setUpPrefill: HostEditorPrefill?
+
+    /// A failure already worded for the screen (no SSH words); the picker shows its description.
+    private struct ShownError: LocalizedError {
+        let errorDescription: String?
+    }
 
     var body: some View {
         Group {
@@ -198,19 +200,44 @@ struct ComputerConversations: View {
                     linkedIDs: linkedIDs,
                     actionError: actionError,
                     isWorking: isWorking,
-                    load: { try await RemoteConversations.list(config: config, computerName: computer.name) },
+                    load: {
+                        do {
+                            return try await RemoteConversations.list(config: config, computerName: computer.name)
+                        } catch {
+                            throw ShownError(errorDescription: ConversationRowActions.message(for: error, computer: computer))
+                        }
+                    },
                     onPick: onPick
                 )
             case let .failure(error)?:
-                ContentUnavailableView(
-                    "Can't reach \(computer.name)",
-                    systemImage: "desktopcomputer.trianglebadge.exclamationmark",
-                    description: Text(error.localizedDescription)
-                )
+                failure(error)
             }
         }
-        .task(id: computer.id) {
+        // Re-run when hosts change, so Set Up Access takes effect on save.
+        .task(id: hosts.map(\.id)) {
             lookup = Result { try HostLookup.config(for: computer, in: hosts) }
+        }
+        .sheet(item: $setUpPrefill) { prefill in
+            HostEditorView(prefill: prefill)
+        }
+    }
+
+    @ViewBuilder
+    private func failure(_ error: Error) -> some View {
+        if case .noHost? = error as? HostLookup.Failure {
+            ContentUnavailableView {
+                Label("This device can't open conversations on \(computer.name) yet",
+                      systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+            } actions: {
+                Button("Set Up Access") { setUpPrefill = HostEditorPrefill(computer: computer) }
+                    .buttonStyle(AccentButtonStyle())
+            }
+        } else {
+            ContentUnavailableView(
+                "Conversations Unavailable",
+                systemImage: "desktopcomputer.trianglebadge.exclamationmark",
+                description: Text(ConversationRowActions.message(for: error, computer: computer))
+            )
         }
     }
 }
@@ -325,12 +352,7 @@ struct NewTodoFromConversationSheet: View {
             }
             ForEach(store.computers) { computer in
                 NavigationLink(value: Step.conversations(computer)) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(computer.name)
-                        Text("\(computer.username)@\(computer.hostname)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(computer.name)
                 }
             }
         }

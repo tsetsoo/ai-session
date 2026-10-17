@@ -14,6 +14,7 @@
 		0465CEFADB8822952932C24E /* TodosView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9DBC3BD9869463A3CB29231 /* TodosView.swift */; };
 		04D272A8E2DC4B976A1524E5 /* TodoHubSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B17876012779CEAC4C80A8 /* TodoHubSettingsView.swift */; };
 		0D5CD8415239AAE0790F5D14 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 9E099B24A52335A5F3ED6401 /* SwiftTerm */; };
+		0FE1099683E149F3C6E0F861 /* AccentButtonStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 953A88DC4DA95609F6AA1F02 /* AccentButtonStyle.swift */; };
 		10BE5487C7B5DE001354E7ED /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B5CF5ADABEA184DD911533 /* SessionsListView.swift */; };
 		1257CFF715CF5669E68422AC /* ComputerDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0593DCB097C923A73341EB68 /* ComputerDetailView.swift */; };
 		1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */; };
@@ -72,6 +73,7 @@
 		7F6D43567AAD0DF479531266 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 5D3154CABEED9F0C1642E75F /* Crypto */; };
 		81A45DE56228508ADE056591 /* SSHTerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */; };
 		827A5C090B3EF443328900E4 /* StatusBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDE7FB9B8AA8D5C5877AE90E /* StatusBadge.swift */; };
+		84B405941959E1F56EED1188 /* AccentButtonStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 953A88DC4DA95609F6AA1F02 /* AccentButtonStyle.swift */; };
 		85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */; };
 		8802A9FE72AD0B666E5169E7 /* PromoteSessionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3241ADE6D78A7C9BB02EC3 /* PromoteSessionSheet.swift */; };
 		883E428DBAA8B3F47A381CF2 /* PlatformSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB775BB4D3645609923CB4D6 /* PlatformSupport.swift */; };
@@ -197,6 +199,7 @@
 		87495E95B7CCFE26E721047A /* ConversationFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationFrame.swift; sourceTree = "<group>"; };
 		8F1F0DD9B231FCCD07E427F8 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		90D767C2AC93115AC1E9B3F4 /* HostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStore.swift; sourceTree = "<group>"; };
+		953A88DC4DA95609F6AA1F02 /* AccentButtonStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccentButtonStyle.swift; sourceTree = "<group>"; };
 		97D417529F6E6B990D79BF81 /* TerminalTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTransport.swift; sourceTree = "<group>"; };
 		985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParser.swift; sourceTree = "<group>"; };
 		99B0F4154BA389FF80D827AE /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
@@ -336,6 +339,7 @@
 		55F9D9E7DCB2F8B7D5DE2898 /* Components */ = {
 			isa = PBXGroup;
 			children = (
+				953A88DC4DA95609F6AA1F02 /* AccentButtonStyle.swift */,
 				EDE7FB9B8AA8D5C5877AE90E /* StatusBadge.swift */,
 			);
 			path = Components;
@@ -608,6 +612,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				DC59755DB0F6EA0F7566C0A9 /* AISessionRemoteApp.swift in Sources */,
+				84B405941959E1F56EED1188 /* AccentButtonStyle.swift in Sources */,
 				3F22FB2E2CA5703D4C1286C2 /* AddTodoSheet.swift in Sources */,
 				A22C2ED227DF733D3FA7F932 /* AppModel.swift in Sources */,
 				AC88844C58FEA9FD997A86AD /* AppTheme.swift in Sources */,
@@ -671,6 +676,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				00B684C59E7681CFF43EB203 /* AISessionRemoteApp.swift in Sources */,
+				0FE1099683E149F3C6E0F861 /* AccentButtonStyle.swift in Sources */,
 				B40E160F6297F0A83546AA38 /* AddTodoSheet.swift in Sources */,
 				7BAD97547D47B5D2812C9A76 /* AppModel.swift in Sources */,
 				2C713B734C872820F76100DD /* AppTheme.swift in Sources */,

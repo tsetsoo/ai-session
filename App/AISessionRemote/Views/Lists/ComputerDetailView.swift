@@ -88,8 +88,7 @@ struct ComputerDetailView: View {
                   systemImage: "desktopcomputer.trianglebadge.exclamationmark")
         } actions: {
             Button("Set Up Access") { setUpPrefill = HostEditorPrefill(computer: computer) }
-                .buttonStyle(.borderedProminent)
-                .tint(DS.accent)
+                .buttonStyle(AccentButtonStyle())
         }
     }
 

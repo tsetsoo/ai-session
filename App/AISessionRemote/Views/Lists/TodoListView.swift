@@ -98,39 +98,40 @@ struct TodoListView: View {
             onToggle: { toggle(todo) }
         )
         .rowTap { onOpen(todo) }
+        // Offline, the swipes are left out: a disabled full swipe can still fire.
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button {
-                toggle(todo)
-            } label: {
-                Label(todo.completed ? "Undo" : "Done",
-                      systemImage: todo.completed ? "arrow.uturn.backward" : "checkmark")
+            if canChange {
+                Button {
+                    toggle(todo)
+                } label: {
+                    Label(todo.completed ? "Undo" : "Done",
+                          systemImage: todo.completed ? "arrow.uturn.backward" : "checkmark")
+                }
+                .tint(DS.accentSolid)
             }
-            .tint(DS.accent)
-            .disabled(!canChange)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
-                Task { await store.delete(todo) }
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-            .disabled(!canChange)
-            if let conversation, isRunning {
-                Button {
-                    actions.close(conversation, store: store, hosts: hosts)
+            if canChange {
+                Button(role: .destructive) {
+                    Task { await store.delete(todo) }
                 } label: {
-                    Label("Close", systemImage: "xmark.circle")
+                    Label("Delete", systemImage: "trash")
                 }
-                .tint(.gray)
-                .disabled(!canChange)
-            } else if conversation == nil {
-                Button {
-                    linkTarget = todo
-                } label: {
-                    Label("Link…", systemImage: "link")
+                if let conversation, isRunning {
+                    Button {
+                        actions.close(conversation, store: store, hosts: hosts)
+                    } label: {
+                        Label("Close", systemImage: "xmark.circle")
+                    }
+                    .tint(.gray)
+                } else if conversation == nil {
+                    Button {
+                        linkTarget = todo
+                    } label: {
+                        Label("Link…", systemImage: "link")
+                    }
+                    .tint(.gray)
                 }
-                .tint(.gray)
-                .disabled(!canChange)
             }
         }
         .contextMenu {
