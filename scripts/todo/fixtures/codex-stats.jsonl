@@ -1,0 +1,20 @@
+{"timestamp":"2026-10-15T09:59:59.000Z","type":"session_meta","payload":{"id":"@SID@","timestamp":"2026-10-15T09:59:59.000Z","cwd":"@CWD@","originator":"codex_cli_rs","cli_version":"0.163.0","source":"cli"}}
+{"timestamp":"2026-10-15T09:59:59.500Z","type":"turn_context","payload":{"cwd":"@CWD@","model":"gpt-5.5-codex"}}
+{"timestamp":"2026-10-15T10:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-10-15T10:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>@CWD@</cwd>\n</environment_context>"}]}}
+{"timestamp":"2026-10-15T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Refactor the module"}]}}
+{"timestamp":"2026-10-15T10:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"Refactor the module"}}
+{"timestamp":"2026-10-15T10:00:05.000Z","type":"response_item","payload":{"type":"reasoning","summary":[]}}
+{"timestamp":"2026-10-15T10:00:10.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"ls src\"]}","call_id":"c1"}}
+{"timestamp":"2026-10-15T10:00:12.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"{\"output\":\"old.py\\n\",\"metadata\":{\"exit_code\":0}}"}}
+{"timestamp":"2026-10-15T10:00:13.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100,"reasoning_output_tokens":20,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100,"reasoning_output_tokens":20,"total_tokens":1100}}}}
+{"timestamp":"2026-10-15T10:00:20.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"c2","input":"*** Begin Patch\n*** Add File: src/new.py\n+print('new')\n*** Update File: src/old.py\n@@\n-a\n+b\n*** Delete File: src/gone.py\n*** End Patch\n"}}
+{"timestamp":"2026-10-15T10:00:21.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c2","output":"Success."}}
+{"timestamp":"2026-10-15T10:00:30.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Refactored."}]}}
+{"timestamp":"2026-10-15T10:00:31.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":2500,"cached_input_tokens":1500,"output_tokens":300,"reasoning_output_tokens":40,"total_tokens":2800},"last_token_usage":{"input_tokens":1500,"cached_input_tokens":1100,"output_tokens":200,"reasoning_output_tokens":20,"total_tokens":1700}}}}
+{"timestamp":"2026-10-15T10:00:32.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Refactored."}}
+{"timestamp":"2026-10-15T23:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-10-15T23:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Add tests"}]}}
+{"timestamp":"2026-10-15T23:00:20.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Added."}]}}
+{"timestamp":"2026-10-15T23:00:21.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":4000,"cached_input_tokens":2500,"output_tokens":450,"reasoning_output_tokens":60,"total_tokens":4450},"last_token_usage":{"input_tokens":1500,"cached_input_tokens":1000,"output_tokens":150,"reasoning_output_tokens":20,"total_tokens":1650}}}}
+{"timestamp":"2026-10-15T23:00:22.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Added."}}

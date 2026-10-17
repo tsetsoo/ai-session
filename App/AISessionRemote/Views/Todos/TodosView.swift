@@ -6,7 +6,8 @@ import SwiftUI
 /// section's computer over a direct SSH connection; the hub only stores the mapping.
 struct TodosView: View {
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
-    @State private var store = TodoHubStore()
+    /// Shared with the Projects tab; `RootView` owns it and starts loading and live updates.
+    let store: TodoHubStore
     @State private var showingSettings = false
     @State private var showingComputers = false
     @State private var showingAdd = false
@@ -28,6 +29,12 @@ struct TodosView: View {
                     conversationDestination(todoID)
                 }
         }
+        .task {
+            // Tapping a "needs you" notification opens that todo's conversation.
+            NotificationCenterCoordinator.shared.onOpenTodo = { todoId in
+                Task { await openFromNotification(todoId) }
+            }
+        }
         .sheet(isPresented: $showingSettings) {
             TodoHubSettingsView { Task { await store.reconnect() } }
         }
@@ -35,8 +42,8 @@ struct TodosView: View {
             ComputersView(store: store)
         }
         .sheet(isPresented: $showingAdd) {
-            AddTodoSheet { section, title in
-                Task { await store.createTodo(section: section, title: title) }
+            AddTodoSheet(projects: store.projects) { section, title, projectId in
+                Task { await store.createTodo(section: section, title: title, projectId: projectId) }
             }
         }
         .sheet(item: $newHostPrefill) { prefill in
@@ -79,11 +86,6 @@ struct TodosView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(store.errorMessage ?? "")
-        }
-        .task {
-            guard store.isConfigured else { return }
-            await store.refresh()
-            store.startLiveUpdates()
         }
     }
 
@@ -141,11 +143,13 @@ struct TodosView: View {
                     todo: todo,
                     status: store.conversations[todo.id]?.status ?? todo.conversationStatus,
                     isOpening: openingTodoID == todo.id,
+                    projectName: store.project(id: todo.projectId)?.name,
                     onToggle: { Task { await store.toggle(todo) } }
                 )
                 .contentShape(Rectangle())
                 .onTapGesture { openTodoID = todo.id }
                 .contextMenu {
+                    TodoProjectMenu(todo: todo, store: store)
                     if store.conversations[todo.id] != nil {
                         Button(role: .destructive) {
                             deleteTarget = todo
@@ -229,9 +233,18 @@ struct TodosView: View {
 
     // MARK: Conversations
 
+    /// A tapped notification pushes that todo's conversation frame, like a tap on its row.
+    private func openFromNotification(_ todoId: String) async {
+        if !store.todos.contains(where: { $0.id == todoId }) {
+            await store.refresh()
+        }
+        guard store.todos.contains(where: { $0.id == todoId }) else { return }
+        openTodoID = todoId
+    }
+
     private func deleteConversation(of todo: Todo) {
         guard let conversation = store.conversations[todo.id] else { return }
-        guard matchingHost(for: conversation.computer) != nil else {
+        guard HostLookup.host(for: conversation.computer, in: hosts) != nil else {
             missingHost = conversation.computer
             return
         }
@@ -247,21 +260,8 @@ struct TodosView: View {
         }
     }
 
-    private func matchingHost(for computer: Computer) -> HostEntity? {
-        hosts.first {
-            $0.hostname.caseInsensitiveCompare(computer.hostname) == .orderedSame
-                && $0.port == computer.port
-                && $0.username == computer.username
-        }
-    }
-
     private func addHost(for computer: Computer) {
-        newHostPrefill = HostEditorPrefill(
-            displayName: computer.name,
-            hostname: computer.hostname,
-            port: computer.port,
-            username: computer.username
-        )
+        newHostPrefill = TodoConversationLauncher.newHostPrefill(for: computer)
     }
 
     /// Pushed at once on tap; the frame shows preparing, problems and the terminal itself.
@@ -275,9 +275,10 @@ struct TodosView: View {
     }
 }
 
-/// The conversation frame for a tapped todo. A tap is an explicit open, so the loader starts
-/// (or resumes) the conversation as soon as the frame appears.
-private struct TodoConversationScreen: View {
+/// The conversation frame for a tapped todo (from the Todos list or a project page). A tap is
+/// an explicit open, so the loader starts (or resumes) the conversation as soon as the frame
+/// appears.
+struct TodoConversationScreen: View {
     let todo: Todo
     let store: TodoHubStore
     let onDeleted: () -> Void
@@ -316,10 +317,13 @@ private final class HostList {
     var hosts: [HostEntity] = []
 }
 
-private struct TodoRow: View {
+/// A todo with its done toggle and conversation status. Used by the Todos list and project pages.
+struct TodoRow: View {
     let todo: Todo
     let status: ConversationStatus?
     let isOpening: Bool
+    /// Shown as a small label when the list isn't already filtered by project.
+    var projectName: String?
     let onToggle: () -> Void
 
     var body: some View {
@@ -332,10 +336,18 @@ private struct TodoRow: View {
             .buttonStyle(.plain)
             .accessibilityLabel(todo.completed ? "Mark not done" : "Mark done")
 
-            Text(todo.title)
-                .strikethrough(todo.completed)
-                .foregroundStyle(todo.completed ? .secondary : .primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(todo.title)
+                    .strikethrough(todo.completed)
+                    .foregroundStyle(todo.completed ? .secondary : .primary)
+                if let projectName {
+                    Label(projectName, systemImage: "folder")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .labelStyle(.titleAndIcon)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if isOpening {
                 ProgressView()
@@ -382,10 +394,12 @@ struct ConversationBadge: View {
 }
 
 private struct AddTodoSheet: View {
-    let onAdd: (TodoSection, String) -> Void
+    let projects: [Project]
+    let onAdd: (TodoSection, String, String?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var section: TodoSection = .i
     @State private var title = ""
+    @State private var projectId: String?
     @FocusState private var titleFocused: Bool
 
     var body: some View {
@@ -398,6 +412,14 @@ private struct AddTodoSheet: View {
                 // A plain TextField keeps the keyboard's dictation button available.
                 TextField("Title", text: $title, axis: .vertical)
                     .focused($titleFocused)
+                if !projects.isEmpty {
+                    Picker("Project", selection: $projectId) {
+                        Text("None").tag(String?.none)
+                        ForEach(projects) { project in
+                            Text(project.name).tag(String?.some(project.id))
+                        }
+                    }
+                }
             }
             .navigationTitle("New Todo")
             .navigationBarTitleDisplayMode(.inline)
@@ -407,7 +429,7 @@ private struct AddTodoSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
-                        onAdd(section, title.trimmingCharacters(in: .whitespacesAndNewlines))
+                        onAdd(section, title.trimmingCharacters(in: .whitespacesAndNewlines), projectId)
                         dismiss()
                     }
                     .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

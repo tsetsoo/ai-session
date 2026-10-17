@@ -98,6 +98,9 @@ struct ConversationFrame: View {
         .sheet(item: $sheet, onDismiss: retryAfterSettings) { sheet in
             sheetContent(sheet)
         }
+        // The conversation on screen is never alerted about, on any device.
+        .onAppear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: todo.id) }
+        .onDisappear { NotificationCenterCoordinator.shared.setVisibleConversation(todoId: nil) }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardVisible = true
