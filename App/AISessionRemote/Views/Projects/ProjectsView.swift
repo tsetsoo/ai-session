@@ -6,46 +6,77 @@ struct ProjectRoute: Hashable {
     let id: String
 }
 
-/// The Projects tab: suggested folders on top, then projects grouped by computer.
+/// The Projects tab of the regular-width tabs: `ProjectsList` in its own navigation stack.
 struct ProjectsView: View {
     let store: TodoHubStore
     @State private var path: [ProjectRoute] = []
-    @State private var editor: ProjectEditorSheet.Mode?
 
     var body: some View {
         NavigationStack(path: $path) {
-            content
+            ProjectsList(store: store, route: ProjectRoute.init(id:)) { path.append(ProjectRoute(id: $0)) }
                 .navigationTitle("Projects")
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            editor = .create(nil)
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .accessibilityLabel("New Project")
-                        .disabled(!store.isConfigured || store.isOffline)
-                    }
-                }
-                .refreshable { await store.refresh() }
                 .navigationDestination(for: ProjectRoute.self) { route in
                     ProjectDetailView(projectId: route.id, store: store)
                 }
         }
         #if DEBUG
         .onAppear {
-            // `-demoProjects -demoProjectPage`: open the first demo project for screenshots.
-            if ProcessInfo.processInfo.arguments.contains("-demoProjectPage"), path.isEmpty,
-               let id = store.demo?.projects.last?.id {
+            if path.isEmpty, let id = ProjectsDemo.projectPage(store) {
                 path = [ProjectRoute(id: id)]
             }
         }
         #endif
-        .sheet(item: $editor) { mode in
-            ProjectEditorSheet(mode: mode, store: store) { created in
-                path.append(ProjectRoute(id: created.id))
+    }
+}
+
+#if DEBUG
+enum ProjectsDemo {
+    /// `-demoProjects -demoProjectPage`: the demo project to open for screenshots.
+    @MainActor
+    static func projectPage(_ store: TodoHubStore) -> String? {
+        guard ProcessInfo.processInfo.arguments.contains("-demoProjectPage") else { return nil }
+        return store.demo?.projects.last?.id
+    }
+}
+#endif
+
+/// Suggested folders on top, then projects grouped by computer, with + New Project. In a
+/// navigation stack rows link to the host's `Route` for a project; with a `selection` (the
+/// Mac's list column) they select instead.
+struct ProjectsList<Route: Hashable>: View {
+    let store: TodoHubStore
+    /// The selected project id; when set, rows select instead of linking.
+    var selection: Binding<String?>?
+    let route: (String) -> Route
+    /// A project was just created: show it.
+    let onCreated: (String) -> Void
+    @State private var editor: ProjectEditorSheet.Mode?
+
+    init(store: TodoHubStore, route: @escaping (String) -> Route, onCreated: @escaping (String) -> Void) {
+        self.store = store
+        self.route = route
+        self.onCreated = onCreated
+    }
+
+    var body: some View {
+        content
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        editor = .create(nil)
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("New Project")
+                    .disabled(!store.isConfigured || store.isOffline)
+                }
             }
-        }
+            .refreshable { await store.refresh() }
+            .sheet(item: $editor) { mode in
+                ProjectEditorSheet(mode: mode, store: store) { created in
+                    onCreated(created.id)
+                }
+            }
     }
 
     @ViewBuilder
@@ -54,41 +85,54 @@ struct ProjectsView: View {
             ContentUnavailableView {
                 Label("Connect to your todo server", systemImage: "folder")
             } description: {
-                Text("Set up the server URL and API token in the Todos tab to see your projects.")
+                Text("Set up the server address and API token in Settings to see your projects.")
             }
         } else if store.projects.isEmpty && !store.hasLoadedOnce {
             ProgressView()
         } else {
-            List {
-                if store.isOffline {
-                    Label("Offline — read only", systemImage: "wifi.slash")
-                        .font(.subheadline)
-                        .foregroundStyle(.orange)
-                }
-                if !store.suggestions.isEmpty && !store.isOffline {
-                    suggestionsSection
-                }
-                if store.projects.isEmpty {
-                    Section {
-                        Text(store.suggestions.isEmpty
-                            ? "No projects yet. A project is a folder on one of your computers; conversations in it are grouped automatically."
-                            : "No projects yet. Pick a suggested folder above, or add one with +.")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                ForEach(store.projectsByComputer, id: \.computer.id) { group in
-                    Section {
-                        ForEach(group.projects) { project in
-                            NavigationLink(value: ProjectRoute(id: project.id)) {
-                                ProjectRow(project: project)
-                            }
-                        }
-                    } header: {
-                        Label(group.computer.name, systemImage: "desktopcomputer")
-                    }
-                }
+            if let selection {
+                List(selection: selection) { rows }
+                    .listStyle(.insetGrouped)
+            } else {
+                List { rows }
+                    .listStyle(.insetGrouped)
             }
-            .listStyle(.insetGrouped)
+        }
+    }
+
+    @ViewBuilder
+    private var rows: some View {
+        if store.isOffline {
+            Label("Offline — read only", systemImage: "wifi.slash")
+                .font(.subheadline)
+                .foregroundStyle(.orange)
+        }
+        if !store.suggestions.isEmpty && !store.isOffline {
+            suggestionsSection
+        }
+        if store.projects.isEmpty {
+            Section {
+                Text(store.suggestions.isEmpty
+                    ? "No projects yet. A project is a folder on one of your computers; conversations in it are grouped automatically."
+                    : "No projects yet. Pick a suggested folder above, or add one with +.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        ForEach(store.projectsByComputer, id: \.computer.id) { group in
+            Section {
+                ForEach(group.projects) { project in
+                    if selection != nil {
+                        ProjectRow(project: project)
+                            .tag(project.id)
+                    } else {
+                        NavigationLink(value: route(project.id)) {
+                            ProjectRow(project: project)
+                        }
+                    }
+                }
+            } header: {
+                Label(group.computer.name, systemImage: "desktopcomputer")
+            }
         }
     }
 
@@ -130,6 +174,16 @@ struct ProjectsView: View {
         } footer: {
             Text("Folders with conversations that aren't in a project yet. Tap one to create it.")
         }
+    }
+}
+
+extension ProjectsList where Route == String {
+    /// Rows select a project id (the Mac's list column); a new project gets selected.
+    init(store: TodoHubStore, selection: Binding<String?>) {
+        self.store = store
+        self.selection = selection
+        self.route = { $0 }
+        self.onCreated = { selection.wrappedValue = $0 }
     }
 }
 

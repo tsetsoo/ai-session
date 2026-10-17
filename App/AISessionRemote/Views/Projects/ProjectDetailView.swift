@@ -6,6 +6,9 @@ import SwiftUI
 struct ProjectDetailView: View {
     let projectId: String
     let store: TodoHubStore
+    /// Opens a todo's conversation the shell's way (the phone shell pushes its frame without
+    /// the tab bar; the Mac selects it). Nil pushes the frame on this page's own stack.
+    var onOpenTodo: ((Todo) -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
@@ -207,7 +210,11 @@ struct ProjectDetailView: View {
     /// Pushes the same conversation frame as the Todos list; it shows preparing, problems
     /// (such as a computer this device can't reach yet) and the terminal itself.
     private func open(_ todo: Todo) {
-        openTodoID = todo.id
+        if let onOpenTodo {
+            onOpenTodo(todo)
+        } else {
+            openTodoID = todo.id
+        }
     }
 
     @ViewBuilder
