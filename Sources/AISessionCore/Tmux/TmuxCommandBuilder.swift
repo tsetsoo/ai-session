@@ -96,6 +96,9 @@ public enum TmuxCommandBuilder {
     /// on the host. The script ends in `exec` so the result's exit code and stderr are tmux's
     /// own, keeping duplicate-name detection working.
     ///
+    /// `cwd` may start with `~`, as typed in the app; see
+    /// `shellQuotePath` for how it reaches tmux.
+    ///
     /// Exit codes: 90 CLI missing, 91 metadata directory failed, 92 metadata write failed.
     public static func createSession(
         name: SessionName,
@@ -109,7 +112,7 @@ public enum TmuxCommandBuilder {
             p=$(command -v \(shellQuote(binary))) || exit 90
             mkdir -p ~/.ai-remote/sessions || exit 91
             printf \(shellQuote(metadataTemplate)) "$p" > ~/.ai-remote/sessions/\(shellQuote(file)) || exit 92
-            exec tmux new-session -d -s \(shellQuote(name.tmuxName)) -c \(shellQuote(cwd)) -- "$p"
+            exec tmux new-session -d -s \(shellQuote(name.tmuxName)) -c \(shellQuotePath(cwd)) -- "$p"
             """
         )
     }
@@ -133,6 +136,17 @@ public enum TmuxCommandBuilder {
 
     static func wrap(_ command: String) -> String {
         "\(pathExport); \(command)"
+    }
+
+    /// Like `shellQuote`, but a leading `~` or `~/` becomes `"$HOME"` so it expands on the host
+    /// (never on the phone or Mac). The rest of the path stays single-quoted, so spaces and
+    /// quotes are as safe as in any other argument. Matches `ai-todo-open`: `~user` forms are
+    /// not expanded and are passed through quoted, i.e. as a literal directory name.
+    static func shellQuotePath(_ value: String) -> String {
+        if value == "~" { return "\"$HOME\"" }
+        guard value.hasPrefix("~/") else { return shellQuote(value) }
+        let rest = String(value.dropFirst(2))
+        return rest.isEmpty ? "\"$HOME\"/" : "\"$HOME\"/" + shellQuote(rest)
     }
 
     static func shellQuote(_ value: String) -> String {

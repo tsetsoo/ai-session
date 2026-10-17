@@ -37,6 +37,11 @@ targets:
         # In-app dictation in the quick-add field.
         NSMicrophoneUsageDescription: Dictate new todos.
         NSSpeechRecognitionUsageDescription: Turns your dictation into todo text.
+        # Home-screen quick action; AppModel routes it through AppDelegate.onShortcutItem.
+        UIApplicationShortcutItems:
+          - UIApplicationShortcutItemType: com.aisessionremote.newTodo
+            UIApplicationShortcutItemTitle: New Todo
+            UIApplicationShortcutItemIconSymbolName: plus
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -54,6 +59,8 @@ targets:
           NSAllowsArbitraryLoads: true
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.aisessionremote.app
+      # aps-environment for push notifications (iOS only; the Mac app has no remote push).
+      CODE_SIGN_ENTITLEMENTS: App/AISessionRemote/AISessionRemote.entitlements
       GENERATE_INFOPLIST_FILE: NO
       INFOPLIST_FILE: App/AISessionRemote/Info.plist
       SWIFT_VERSION: "5.9"

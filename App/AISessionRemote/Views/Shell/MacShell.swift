@@ -50,8 +50,8 @@ struct MacShell: View {
             SettingsView(initial: request.initial)
         }
         .sheet(isPresented: $showingAdd) {
-            AddTodoSheet(section: addSection) { section, title in
-                Task { await store.createTodo(section: section, title: title) }
+            AddTodoSheet(section: addSection, projects: store.projects) { section, title, projectId in
+                Task { await store.createTodo(section: section, title: title, projectId: projectId) }
             }
             .tint(DS.accent)
         }

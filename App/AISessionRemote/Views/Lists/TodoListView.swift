@@ -44,8 +44,8 @@ struct TodoListView: View {
             LinkConversationSheet(todo: todo, store: store)
         }
         .sheet(item: $addSection) { section in
-            AddTodoSheet(section: section) { section, title in
-                Task { await store.createTodo(section: section, title: title) }
+            AddTodoSheet(section: section, projects: store.projects) { section, title, projectId in
+                Task { await store.createTodo(section: section, title: title, projectId: projectId) }
             }
         }
     }
@@ -101,6 +101,7 @@ struct TodoListView: View {
             now: now,
             isBusy: actions.inFlight.contains(todo.id),
             canToggle: canChange,
+            projectName: store.project(id: todo.projectId)?.name,
             onToggle: { toggle(todo) }
         )
         .tag(todo.id)
@@ -148,6 +149,8 @@ struct TodoListView: View {
                 Label("Open", systemImage: "arrow.up.forward.app")
             }
             MuteNotificationsButton(todoID: todo.id)
+            // Project ▸ (disabled offline or without projects).
+            TodoProjectMenu(todo: todo, store: store)
             // Offline, the changing items are left out, like the swipes.
             if canChange {
                 if let conversation {

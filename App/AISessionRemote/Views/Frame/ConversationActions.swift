@@ -38,6 +38,8 @@ struct ConversationMenu: View {
     let isConnected: Bool
     /// iOS has no ⎘ button in the header, so copying the resume command lives here.
     let onCopyResume: (() -> Void)?
+    /// The project's (or else the todo's) memories next to the conversation.
+    let onMemories: () -> Void
     let onClose: () -> Void
     let onDelete: () -> Void
     let terminal: TerminalHandle
@@ -52,6 +54,10 @@ struct ConversationMenu: View {
                 }
                 .disabled(!hasConversation)
             }
+            Button(action: onMemories) {
+                Label("Memories", systemImage: "lightbulb")
+            }
+            .disabled(!hasConversation)
             Button(action: onClose) {
                 Label("Close Conversation", systemImage: "xmark.circle")
             }

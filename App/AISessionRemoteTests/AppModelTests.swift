@@ -27,6 +27,13 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.board.needsYou.isEmpty)
     }
 
+    func testNotificationTapForAKnownTodoOpensIt() async {
+        let model = makeModel()
+        let todo = DemoFixtures.todos[0]
+        await model.openFromNotification(todo.id)
+        XCTAssertEqual(model.pendingOpenTodoID, todo.id)
+    }
+
     func testRefreshLivenessLeavesFailingComputerAbsent() async {
         let mac = mac
         let model = makeModel { computer in
