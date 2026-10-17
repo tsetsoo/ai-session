@@ -666,6 +666,7 @@ def load_redactor():
     lib = os.environ.get("AI_TODO_LIB_DIR")
     if lib and lib not in sys.path:
         sys.path.insert(0, lib)
+    sys.dont_write_bytecode = True  # no __pycache__ next to the installed scripts
     try:
         import ai_todo_redact
     except ImportError:

@@ -17,6 +17,11 @@
 # background with a 3s limit. Only sessions running in a tmux session named
 # ai/claude/todo-* are reported; todo-server answers 404 for unknown ids anyway.
 #
+# On `idle` (the Stop hook) it also starts `ai-todo-memory trigger claude <session_id>
+# --transcript <transcript_path>`, fully detached, for every conversation (not only todo
+# ones), if ~/.ai-remote/bin/ai-todo-memory is installed. It does nothing at all inside
+# ai-todo-memory's own `claude -p` run (AI_TODO_MEMORY_RUN set).
+#
 # Config: ~/.ai-remote/todo-hub.conf (shell syntax)
 #   TODO_HUB_URL='http://100.118.255.23:8080'
 #   TODO_API_TOKEN='...'
@@ -25,15 +30,45 @@
 #   AI_TODO_HUB_CONF      config file path
 #   AI_TODO_TMUX_SESSION  tmux session name instead of asking tmux
 #   AI_TODO_HOOK_SYNC     =1: wait for the HTTP call
+#   AI_TODO_MEMORY_BIN    ai-todo-memory path instead of ~/.ai-remote/bin/ai-todo-memory
 status=${1:-}
 case "$status" in
   busy | waiting | idle | tool) ;;
   *) exit 0 ;;
 esac
+[ -n "${AI_TODO_MEMORY_RUN:-}" ] && exit 0
 
 input=$(cat 2>/dev/null) || exit 0
 
 export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+
+# Stop -> memory extraction for this conversation, before the todo-only filter below.
+memory_bin=${AI_TODO_MEMORY_BIN:-$HOME/.ai-remote/bin/ai-todo-memory}
+if [ "$status" = idle ] && [ -x "$memory_bin" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    memory_args=$(printf '%s' "$input" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+sid = data.get("session_id") if isinstance(data, dict) else None
+path = data.get("transcript_path") if isinstance(data, dict) else None
+if not isinstance(sid, str) or not sid or not all(c.isalnum() or c == "-" for c in sid):
+    sys.exit(1)
+print(sid)
+print(path if isinstance(path, str) and "\n" not in path else "")
+' 2>/dev/null) || memory_args=
+  else
+    memory_args=$(printf '%s' "$input" | tr -d '\n' | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9-]*\)".*/\1/p')
+  fi
+  memory_sid=$(printf '%s\n' "$memory_args" | sed -n 1p)
+  memory_transcript=$(printf '%s\n' "$memory_args" | sed -n 2p)
+  if [ -n "$memory_sid" ]; then
+    if [ -n "$memory_transcript" ]; then
+      nohup "$memory_bin" trigger claude "$memory_sid" --transcript "$memory_transcript" </dev/null >/dev/null 2>&1 &
+    else
+      nohup "$memory_bin" trigger claude "$memory_sid" </dev/null >/dev/null 2>&1 &
+    fi
+  fi
+fi
 
 session=${AI_TODO_TMUX_SESSION:-}
 if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then

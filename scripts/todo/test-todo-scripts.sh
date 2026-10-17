@@ -18,6 +18,7 @@ done
 PATH="${GUARD_BIN}:$(printf '%s' "$PATH" | tr ':' '\n' | grep -v "^${HOME}" | paste -sd: -)"
 export PATH
 export HOME="${SANDBOX}/home"
+export PYTHONDONTWRITEBYTECODE=1  # tests import ai_todo_redact.py from the source tree
 # install.sh honours CODEX_HOME; never let it point at a real Codex config.
 unset CODEX_HOME
 mkdir -p "$HOME"
@@ -581,6 +582,41 @@ start=$(date +%s)
 printf '{"session_id":"%s"}' "$SID" | AI_TODO_HOOK_SYNC= AI_TODO_TMUX_SESSION="$NAME" "$HOOK" busy || fail "background hook failed"
 [[ $(( $(date +%s) - start )) -le 1 ]] || fail "background hook blocked"
 pass "hook exits 0 quickly when the hub is down, and returns immediately in background mode"
+
+# Stop -> ai-todo-memory trigger (detached), via a fake ai-todo-memory that records its argv.
+printf "TODO_HUB_URL='%s'\nTODO_API_TOKEN='s3cret'\n" "$HUB_URL" >"$CONF"
+FAKE_MEMORY="${SANDBOX}/bin/fake-ai-todo-memory"
+MEMORY_TRIGGERS="${SANDBOX}/memory-triggers.log"
+printf '#!/bin/sh\necho "$*" >>"%s"\nsleep 5\n' "$MEMORY_TRIGGERS" >"$FAKE_MEMORY"
+chmod +x "$FAKE_MEMORY"
+posts=$(wc -l <"$HUB_LOG")
+printf '{"session_id":"%s","hook_event_name":"Stop"}' "$SID" | AI_TODO_MEMORY_RUN=1 AI_TODO_MEMORY_BIN="$FAKE_MEMORY" AI_TODO_TMUX_SESSION="$NAME" "$HOOK" idle
+sleep 0.3
+[[ $(wc -l <"$HUB_LOG") -eq $posts && ! -e "$MEMORY_TRIGGERS" ]] || fail "hook did something under AI_TODO_MEMORY_RUN"
+pass "hook_noop_under_memory_run: no status post and no trigger inside ai-todo-memory's own claude run"
+
+start=$(python3 -c 'import time; print(time.time())')
+printf '{"session_id":"%s","transcript_path":"/x/p q/%s.jsonl","hook_event_name":"Stop"}' "$SID" "$SID" \
+  | AI_TODO_MEMORY_BIN="$FAKE_MEMORY" AI_TODO_TMUX_SESSION="ai/claude/sigma-revenue" "$HOOK" idle
+# The fake ai-todo-memory sleeps 5 s: returning well before that means it runs detached.
+python3 -c 'import sys, time; sys.exit(0 if time.time() - float(sys.argv[1]) < 4 else 1)' "$start" || fail "the hook waited for ai-todo-memory"
+for _ in $(seq 1 30); do [[ -s "$MEMORY_TRIGGERS" ]] && break; sleep 0.1; done
+[[ "$(cat "$MEMORY_TRIGGERS")" == "trigger claude ${SID} --transcript /x/p q/${SID}.jsonl" ]] || fail "trigger argv wrong: $(cat "$MEMORY_TRIGGERS" 2>/dev/null)"
+[[ $(wc -l <"$HUB_LOG") -eq $posts ]] || fail "a non-todo session posted status"
+for st in waiting busy tool; do
+  printf '{"session_id":"%s","transcript_path":"/x/y.jsonl"}' "$SID" | AI_TODO_MEMORY_BIN="$FAKE_MEMORY" AI_TODO_TMUX_SESSION="$NAME" "$HOOK" "$st"
+done
+printf '{"session_id":"%s"}' "$SID" | AI_TODO_MEMORY_BIN="$FAKE_MEMORY" AI_TODO_TMUX_SESSION="$NAME" "$HOOK" idle
+sleep 0.5
+[[ "$(wc -l <"$MEMORY_TRIGGERS" | tr -d ' ')" == 2 && "$(tail -n 1 "$MEMORY_TRIGGERS")" == "trigger claude ${SID}" ]] \
+  || fail "only idle should trigger (no --transcript when the hook gives none): $(cat "$MEMORY_TRIGGERS")"
+pass "hook_idle_triggers_memory_detached: Stop starts 'ai-todo-memory trigger claude <sid> --transcript <path>' in the background for any session; waiting/busy/tool don't"
+
+posts=$(wc -l <"$HUB_LOG")
+printf '{"session_id":"%s"}' "$SID" | AI_TODO_MEMORY_BIN="${SANDBOX}/nonexistent/ai-todo-memory" AI_TODO_TMUX_SESSION="$NAME" "$HOOK" idle \
+  || fail "hook failed without ai-todo-memory"
+[[ $(wc -l <"$HUB_LOG") -eq $((posts + 1)) && "$(last_status)" == idle ]] || fail "hook without ai-todo-memory did not post idle"
+pass "hook_without_memory_binary_still_posts_status (and a todo-hub.conf without TODO_COMPUTER_ID)"
 unset AI_TODO_HUB_CONF AI_TODO_HOOK_SYNC
 # The hook keeps per-session state under ~/.ai-remote; start the install tests clean.
 rm -rf "${HOME}/.ai-remote"
@@ -1303,7 +1339,7 @@ pass "trigger_debounce: one claude call per conversation per 30 min; the next tr
 
 T2=d0d0d0d0-0000-4000-8000-0000000000e2
 python3 "$TRANSCRIPT" claude "$(cfile $T2)" "$M_APP" "$T2" --turn "locked prompt" "answer"
-python3 -c 'import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT); fcntl.flock(fd, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(30)' \
+python3 -c 'import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT); fcntl.flock(fd, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(60)' \
   "${M_STATE}/lock" "${SANDBOX}/locked" &
 LOCKER=$!
 EXTRA_PIDS="$EXTRA_PIDS $LOCKER"
@@ -1311,7 +1347,8 @@ for _ in $(seq 1 50); do [[ -e "${SANDBOX}/locked" ]] && break; sleep 0.1; done
 base=$(calls)
 start=$(date +%s)
 mem trigger claude "$T2" || fail "trigger with the lock held should exit 0"
-[[ $(( $(date +%s) - start )) -le 2 && $(calls) -eq $base ]] || fail "trigger waited for the lock or ran claude"
+# The lock is held for 60 s: finishing well before that means the trigger did not wait for it.
+[[ $(( $(date +%s) - start )) -le 20 && $(calls) -eq $base ]] || fail "trigger waited for the lock or ran claude ($(( $(date +%s) - start ))s, calls $(calls) vs $base)"
 [[ ! -e "${M_STATE}/sessions/claude-${T2}.json" ]] || fail "a locked-out trigger recorded a run"
 kill "$LOCKER" 2>/dev/null; wait "$LOCKER" 2>/dev/null || true
 pass "trigger_skips_when_locked: exits 0 at once while another run holds the lock"
@@ -1393,6 +1430,13 @@ pass "tmux.conf loads cleanly on tmux $(tmux -V | cut -d' ' -f2)"
 
 INSTALL="${SCRIPT_DIR}/install.sh"
 SETTINGS="${HOME}/.claude/settings.json"
+# A fake launchctl that records its calls replaces the guard for the installer tests.
+LAUNCHCTL_LOG="${SANDBOX}/launchctl.log"
+printf '#!/bin/sh\necho "$*" >>"%s"\nexit 0\n' "$LAUNCHCTL_LOG" >"${GUARD_BIN}/launchctl"
+[[ "$(command -v launchctl)" == "${GUARD_BIN}/launchctl" ]] || fail "the fake launchctl is not first on PATH"
+PLIST="${HOME}/Library/LaunchAgents/com.ai-remote.todo-memory.plist"
+GUI="gui/$(id -u)"
+on_mac() { [[ "$(uname -s)" == Darwin ]]; }
 mkdir -p "${HOME}/.claude"
 cat >"$SETTINGS" <<'EOF'
 {
@@ -1410,6 +1454,7 @@ original_settings="$(cat "$SETTINGS")"
 [[ "$(cat "$SETTINGS")" == "$original_settings" ]] || fail "--dry-run changed settings.json"
 [[ ! -e "${HOME}/.ai-remote" ]] || fail "--dry-run created ~/.ai-remote"
 [[ "$(cat "${HOME}/.tmux.conf")" == "set -g status off" ]] || fail "--dry-run changed ~/.tmux.conf"
+[[ ! -e "$LAUNCHCTL_LOG" && ! -e "$PLIST" ]] || fail "--dry-run wrote the plist or ran launchctl"
 pass "install --dry-run changes nothing"
 
 "$INSTALL" --hub-url http://hub:8080 --token tok >/dev/null
@@ -1441,6 +1486,28 @@ grep -qx "TODO_HUB_URL='http://hub:8080'" "${HOME}/.ai-remote/todo-hub.conf" || 
 grep -qx "TODO_API_TOKEN='tok'" "${HOME}/.ai-remote/todo-hub.conf" || fail "token not kept on re-run"
 ls "${HOME}/.claude/settings.json.bak-"* >/dev/null 2>&1 || fail "settings.json was not backed up"
 pass "install merges hooks once, keeps existing settings and hooks, writes a 600 config, sources tmux.conf once"
+
+[[ -x "${HOME}/.ai-remote/bin/ai-todo-memory" && -f "${HOME}/.ai-remote/bin/ai_todo_redact.py" ]] || fail "ai-todo-memory / ai_todo_redact.py not installed"
+[[ "$(stat -f '%Lp' "${HOME}/.ai-remote/memory-state" 2>/dev/null || stat -c '%a' "${HOME}/.ai-remote/memory-state")" == 700 ]] \
+  || fail "memory-state is not mode 700"
+"${HOME}/.ai-remote/bin/ai-todo-sessions" stats --json >"${SANDBOX}/installed-stats.out" 2>"${SANDBOX}/installed-stats.err" \
+  && [[ ! -s "${SANDBOX}/installed-stats.err" ]] \
+  && python3 -c 'import json, sys; assert isinstance(json.load(open(sys.argv[1])), list)' "${SANDBOX}/installed-stats.out" \
+  || fail "installed ai-todo-sessions stats failed or can't find ai_todo_redact.py: $(cat "${SANDBOX}/installed-stats.err" "${SANDBOX}/installed-stats.out")"
+if on_mac; then
+  python3 - "$PLIST" "${HOME}/.ai-remote" <<'PY' || fail "plist wrong: $(cat "$PLIST")"
+import plistlib, sys
+p = plistlib.load(open(sys.argv[1], "rb"))
+ai = sys.argv[2]
+assert p["Label"] == "com.ai-remote.todo-memory", p
+assert p["ProgramArguments"] == [ai + "/bin/ai-todo-memory", "nightly"], p
+assert p["StartCalendarInterval"] == {"Hour": 3, "Minute": 30}, p
+assert p["StandardOutPath"] == p["StandardErrorPath"] == ai + "/memory-state/launchd.log", p
+PY
+  expected="bootout ${GUI}/com.ai-remote.todo-memory"$'\n'"bootstrap ${GUI} ${PLIST}"
+  [[ "$(cat "$LAUNCHCTL_LOG")" == "${expected}"$'\n'"${expected}" ]] || fail "launchctl calls wrong: $(cat "$LAUNCHCTL_LOG")"
+fi
+pass "install_memory_and_launchd: ai-todo-memory + ai_todo_redact.py installed, memory-state 700, plist (03:30, nightly) booted out then bootstrapped"
 
 "$INSTALL" --token newtok >/dev/null
 grep -qx "TODO_HUB_URL='http://hub:8080'" "${HOME}/.ai-remote/todo-hub.conf" || fail "hub URL lost when only --token was given"
@@ -1484,6 +1551,27 @@ cmp -s "${CX}/config.toml" "${SANDBOX}/codex2.orig" || fail "uninstall did not r
 pass "an existing codex notify is left alone, chained only with --chain-codex-notify, and restored by uninstall"
 "$INSTALL" >/dev/null
 
+printf "AI_TODO_MEMORY_MODEL='opus'\n" >>"${HOME}/.ai-remote/todo-hub.conf"
+"$INSTALL" --computer-id 78e7ef89-0000-4000-8000-000000000001 >/dev/null
+grep -qx "TODO_COMPUTER_ID='78e7ef89-0000-4000-8000-000000000001'" "${HOME}/.ai-remote/todo-hub.conf" || fail "--computer-id not written"
+grep -qx "TODO_HUB_URL='http://hub:8080'" "${HOME}/.ai-remote/todo-hub.conf" && grep -qx "TODO_API_TOKEN='newtok'" "${HOME}/.ai-remote/todo-hub.conf" \
+  && grep -qx "AI_TODO_MEMORY_MODEL='opus'" "${HOME}/.ai-remote/todo-hub.conf" || fail "--computer-id lost other settings: $(cat "${HOME}/.ai-remote/todo-hub.conf")"
+"$INSTALL" --computer-id 78e7ef89-0000-4000-8000-000000000002 >/dev/null
+[[ $(grep -c '^TODO_COMPUTER_ID=' "${HOME}/.ai-remote/todo-hub.conf") -eq 1 ]] || fail "TODO_COMPUTER_ID duplicated"
+[[ "$(stat -f '%Lp' "${HOME}/.ai-remote/todo-hub.conf" 2>/dev/null || stat -c '%a' "${HOME}/.ai-remote/todo-hub.conf")" == 600 ]] || fail "todo-hub.conf lost mode 600"
+pass "--computer-id is written to todo-hub.conf (once), keeping the other settings"
+
+: >"$LAUNCHCTL_LOG"
+"$INSTALL" --no-nightly >/dev/null
+check_installed || fail "settings.json changed by --no-nightly: $(cat "$SETTINGS")"
+if on_mac; then
+  [[ ! -e "$PLIST" && "$(cat "$LAUNCHCTL_LOG")" == "bootout ${GUI}/com.ai-remote.todo-memory" ]] || fail "--no-nightly left the job: $(cat "$LAUNCHCTL_LOG")"
+fi
+"$INSTALL" >/dev/null
+{ ! on_mac || [[ -f "$PLIST" ]]; } || fail "re-install did not restore the plist"
+check_installed || fail "settings.json hooks differ from before after re-installing: $(cat "$SETTINGS")"
+pass "install_no_nightly: no plist, the job is booted out; settings.json hooks stay exactly today's"
+
 cp "$SETTINGS" "${SANDBOX}/settings.good"
 printf '{ broken' >"$SETTINGS"
 if "$INSTALL" >/dev/null 2>&1; then fail "install accepted an invalid settings.json"; fi
@@ -1492,7 +1580,10 @@ cp "${SANDBOX}/settings.good" "$SETTINGS"
 pass "install refuses an invalid settings.json and leaves it alone"
 
 mkdir -p "${HOME}/.ai-remote/hook-state" && printf 'busy\n' >"${HOME}/.ai-remote/hook-state/someid"
-"$INSTALL" --uninstall >/dev/null
+mkdir -p "${HOME}/.ai-remote/memory-state/sessions"
+touch "${HOME}/.ai-remote/memory-state/sessions/claude-x.json"
+: >"$LAUNCHCTL_LOG"
+"$INSTALL" --uninstall >"${SANDBOX}/uninstall.out"
 [[ ! -e "${HOME}/.ai-remote/hook-state" ]] || fail "uninstall left ~/.ai-remote/hook-state"
 [[ ! -e "${HOME}/.ai-remote/bin/ai-todo-codex-notify" ]] || fail "uninstall left ai-todo-codex-notify"
 ! grep -q 'ai-todo-codex-notify' "${HOME}/.codex/config.toml" || fail "uninstall left our codex notify: $(cat "${HOME}/.codex/config.toml")"
@@ -1509,6 +1600,23 @@ PY
 ! grep -q 'ai-remote/tmux.conf' "${HOME}/.tmux.conf" || fail "uninstall left the tmux source line"
 grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "uninstall removed other ~/.tmux.conf lines"
 pass "uninstall removes only our hooks, scripts, tmux line, codex notify and hook state"
+
+[[ ! -e "${HOME}/.ai-remote/bin/ai-todo-memory" && ! -e "${HOME}/.ai-remote/bin/ai_todo_redact.py" ]] || fail "uninstall left ai-todo-memory"
+[[ -f "${HOME}/.ai-remote/memory-state/sessions/claude-x.json" ]] || fail "uninstall removed memory-state"
+grep -q "kept ${HOME}/.ai-remote/memory-state" "${SANDBOX}/uninstall.out" || fail "uninstall did not print the memory-state path"
+if on_mac; then
+  [[ ! -e "$PLIST" && "$(cat "$LAUNCHCTL_LOG")" == "bootout ${GUI}/com.ai-remote.todo-memory" ]] || fail "uninstall did not boot out the job: $(cat "$LAUNCHCTL_LOG")"
+fi
+pass "uninstall_removes_job_keeps_state: bootout, plist and ai-todo-memory removed, memory-state kept and printed"
+
+"$INSTALL" >/dev/null
+REMOVE_ALL_LOG="${SANDBOX}/remove-all.log"
+printf '#!/bin/sh\n[ -e "%s" ] && echo "$* (plist still there)" >>"%s" || echo "$*" >>"%s"\n' "$PLIST" "$REMOVE_ALL_LOG" "$REMOVE_ALL_LOG" \
+  >"${HOME}/.ai-remote/bin/ai-todo-memory"
+"$INSTALL" --uninstall --remove-digests >/dev/null
+[[ "$(cat "$REMOVE_ALL_LOG" 2>/dev/null)" == "digest --remove-all"* && ! -e "${HOME}/.ai-remote/bin/ai-todo-memory" ]] \
+  || fail "--remove-digests did not run digest --remove-all before removing ai-todo-memory: $(cat "$REMOVE_ALL_LOG" 2>/dev/null)"
+pass "uninstall_remove_digests_runs_remove_all_first"
 
 [[ ! -e "${SANDBOX}/guard.log" ]] || fail "a test reached a real binary: $(cat "${SANDBOX}/guard.log")"
 echo "All ${passes} todo script tests passed."

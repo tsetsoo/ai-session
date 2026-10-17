@@ -827,6 +827,7 @@ class Context:
         if self._redactor is None:
             if LIB_DIR not in sys.path:
                 sys.path.insert(0, LIB_DIR)
+            sys.dont_write_bytecode = True  # no __pycache__ next to the installed scripts
             try:
                 import ai_todo_redact
             except ImportError:
@@ -1581,6 +1582,10 @@ def cmd_run(args):
 def cmd_trigger(args):
     usage = "usage: ai-todo-memory trigger <claude|codex> <session_id> [--transcript PATH]"
     tool, sid, _, values = parse_session_args(args, usage, (), with_values=("--transcript",))
+    try:
+        os.setsid()  # leave the hook's process group: Claude may end it when the hook returns
+    except OSError:
+        pass
     conf = Config()
     if not conf.on("AI_TODO_MEMORY") and not conf.on("AI_TODO_STATS"):
         return
