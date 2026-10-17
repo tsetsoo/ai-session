@@ -83,7 +83,9 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
             throw SSHRemoteError.authenticationFailed
         }
 
-        let authDelegate = SSHPrivateKeyAuthDelegate(username: config.username, privateKey: privateKey)
+        let authDelegate = SSHPrivateKeyAuthDelegate(
+            username: config.username, privateKey: privateKey, hostID: config.hostID
+        )
         let hostKeyDelegate = TOFUServerAuthenticationDelegate(hostID: config.hostID, store: hostKeyStore)
 
         let channel: Channel
@@ -269,7 +271,7 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
         cols: Int,
         rows: Int,
         onOutput: @escaping ([UInt8]) -> Void,
-        onClose: @escaping () -> Void
+        onClose: @escaping (Int?) -> Void
     ) async throws -> PTYHandle {
         let sshHandler: NIOSSHHandler
         do {
@@ -301,7 +303,7 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
                                 }
                                 onOutput(bytes)
                             },
-                            onExit: { _ in onClose() }
+                            onExit: { onClose($0) }
                         )
                     )
                     try childChannel.pipeline.syncOperations.addHandler(SSHConnectionErrorHandler())

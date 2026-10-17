@@ -56,7 +56,7 @@ protocol PooledConnecting: AnyObject, Sendable {
         cols: Int,
         rows: Int,
         onOutput: @escaping ([UInt8]) -> Void,
-        onClose: @escaping () -> Void
+        onClose: @escaping (Int?) -> Void
     ) async throws -> PTYHandle
 
     /// Closes the connection and releases its underlying resources.

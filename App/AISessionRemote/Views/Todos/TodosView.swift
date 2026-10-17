@@ -2,21 +2,6 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// A todo's conversation opened on a known SSH host; drives navigation to the terminal.
-/// The connection config (with the private key) is resolved once when opening, not on every
-/// re-render of the destination.
-struct OpenTodoConversation: Identifiable, Hashable {
-    let conversation: Conversation
-    let hostID: UUID
-    let config: HostConnectionConfig
-    let title: String
-
-    var id: String { conversation.todoId }
-
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id && lhs.hostID == rhs.hostID }
-    func hash(into hasher: inout Hasher) { hasher.combine(id) }
-}
-
 /// Todos grouped by section (Sp / I / Si / P). Tapping a todo opens its AI conversation on the
 /// section's computer over a direct SSH connection; the hub only stores the mapping.
 struct TodosView: View {
@@ -26,7 +11,7 @@ struct TodosView: View {
     @State private var showingSettings = false
     @State private var showingComputers = false
     @State private var showingAdd = false
-    @State private var openConversation: OpenTodoConversation?
+    @State private var openTodoID: String?
     @State private var openingTodoID: String?
     @State private var missingHost: Computer?
     @State private var newHostPrefill: HostEditorPrefill?
@@ -40,8 +25,8 @@ struct TodosView: View {
                 .navigationTitle("Todos")
                 .toolbar { toolbar }
                 .refreshable { await store.refresh() }
-                .navigationDestination(item: $openConversation) { open in
-                    TodoConversationScreen(open: open, store: store)
+                .navigationDestination(item: $openTodoID) { todoID in
+                    conversationDestination(todoID)
                 }
         }
         .task {
@@ -81,9 +66,7 @@ struct TodosView: View {
             Button("Cancel", role: .cancel) {}
         } message: { todo in
             if let conversation = store.conversations[todo.id] {
-                Text(conversation.tool == "codex"
-                    ? "Ends its tmux session, archives the Codex conversation on \(conversation.computer.name) and unlinks it. The todo stays."
-                    : "Ends its tmux session, deletes the conversation from \(conversation.computer.name) and unlinks it. The todo stays.")
+                Text(conversation.deleteConfirmationMessage)
             }
         }
         .alert(
@@ -164,7 +147,7 @@ struct TodosView: View {
                     onToggle: { Task { await store.toggle(todo) } }
                 )
                 .contentShape(Rectangle())
-                .onTapGesture { open(todo) }
+                .onTapGesture { openTodoID = todo.id }
                 .contextMenu {
                     TodoProjectMenu(todo: todo, store: store)
                     if store.conversations[todo.id] != nil {
@@ -250,25 +233,13 @@ struct TodosView: View {
 
     // MARK: Conversations
 
+    /// A tapped notification pushes that todo's conversation frame, like a tap on its row.
     private func openFromNotification(_ todoId: String) async {
         if !store.todos.contains(where: { $0.id == todoId }) {
             await store.refresh()
         }
-        guard let todo = store.todos.first(where: { $0.id == todoId }) else { return }
-        open(todo)
-    }
-
-    private func open(_ todo: Todo) {
-        guard openingTodoID == nil else { return }
-        openingTodoID = todo.id
-        Task {
-            defer { openingTodoID = nil }
-            switch await TodoConversationLauncher.open(todo, store: store, hosts: hosts) {
-            case let .opened(open): openConversation = open
-            case let .missingHost(computer): missingHost = computer
-            case let .failed(message): store.errorMessage = message
-            }
-        }
+        guard store.todos.contains(where: { $0.id == todoId }) else { return }
+        openTodoID = todoId
     }
 
     private func deleteConversation(of todo: Todo) {
@@ -292,6 +263,58 @@ struct TodosView: View {
     private func addHost(for computer: Computer) {
         newHostPrefill = TodoConversationLauncher.newHostPrefill(for: computer)
     }
+
+    /// Pushed at once on tap; the frame shows preparing, problems and the terminal itself.
+    @ViewBuilder
+    private func conversationDestination(_ todoID: String) -> some View {
+        if let todo = store.todos.first(where: { $0.id == todoID }) {
+            TodoConversationScreen(todo: todo, store: store) { openTodoID = nil }
+        } else {
+            ContentUnavailableView("Todo Not Found", systemImage: "checklist")
+        }
+    }
+}
+
+/// The conversation frame for a tapped todo (from the Todos list or a project page). A tap is
+/// an explicit open, so the loader starts (or resumes) the conversation as soon as the frame
+/// appears.
+struct TodoConversationScreen: View {
+    let todo: Todo
+    let store: TodoHubStore
+    let onDeleted: () -> Void
+
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
+    @State private var hostList: HostList
+    @State private var loader: ConversationLoader
+
+    init(todo: Todo, store: TodoHubStore, onDeleted: @escaping () -> Void) {
+        self.todo = todo
+        self.store = store
+        self.onDeleted = onDeleted
+        let hostList = HostList()
+        _hostList = State(initialValue: hostList)
+        _loader = State(initialValue: ConversationLoader(
+            todo: todo,
+            dependencies: .live(store: store, hosts: { hostList.hosts })
+        ))
+    }
+
+    var body: some View {
+        ConversationFrame(todo: todo, loader: loader, store: store, onDeleted: onDeleted)
+            .onChange(of: hosts) { _, hosts in hostList.hosts = hosts }
+            .task {
+                hostList.hosts = hosts
+                guard loader.phase == .idle else { return }
+                await loader.start()
+            }
+    }
+}
+
+/// The current saved hosts, read by the loader on every resolve (a host added from the frame's
+/// Set Up Access then counts on retry).
+@MainActor
+private final class HostList {
+    var hosts: [HostEntity] = []
 }
 
 /// A todo with its done toggle and conversation status. Used by the Todos list and project pages.

@@ -109,7 +109,7 @@ actor SSHConnectionPool {
         cols: Int,
         rows: Int,
         onOutput: @escaping ([UInt8]) -> Void,
-        onClose: @escaping () -> Void
+        onClose: @escaping (Int?) -> Void
     ) async throws -> PTYHandle {
         // Mirrors `run(_:command:...)`'s use of `connection(for:)` below: it never returns
         // without the caller already holding exactly one counted lease, taken with no
@@ -137,8 +137,8 @@ actor SSHConnectionPool {
                 cols: cols,
                 rows: rows,
                 onOutput: onOutput,
-                onClose: {
-                    onClose()
+                onClose: { exitStatus in
+                    onClose(exitStatus)
                     release()
                 }
             )

@@ -1,5 +1,4 @@
 import AISessionCore
-import SwiftData
 import SwiftUI
 
 /// A project page: header (computer, folder, repo, digest toggle), this week's stats, the
@@ -8,7 +7,6 @@ struct ProjectDetailView: View {
     let projectId: String
     let store: TodoHubStore
 
-    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @Environment(\.dismiss) private var dismiss
     @State private var sessions: [HubSession]?
     @State private var memories: [Memory]?
@@ -18,10 +16,8 @@ struct ProjectDetailView: View {
     @State private var editor: ProjectEditorSheet.Mode?
     @State private var confirmingDelete = false
     @State private var errorMessage: String?
-    @State private var openConversation: OpenTodoConversation?
-    @State private var openingTodoID: String?
-    @State private var missingHost: Computer?
-    @State private var newHostPrefill: HostEditorPrefill?
+    /// The todo whose conversation frame is pushed.
+    @State private var openTodoID: String?
     @State private var newTodoSession: HubSession?
 
     private var project: Project? { store.project(id: projectId) }
@@ -37,8 +33,8 @@ struct ProjectDetailView: View {
         }
         .navigationTitle(project?.name ?? "Project")
         .toolbar { toolbar }
-        .navigationDestination(item: $openConversation) { open in
-            TodoConversationScreen(open: open, store: store)
+        .navigationDestination(item: $openTodoID) { todoID in
+            conversationDestination(todoID)
         }
         .task(id: "\(projectId)|\(store.revision)|\(showArchived)") { await load() }
         .memoryActions(memoryActions, store: store)
@@ -50,16 +46,11 @@ struct ProjectDetailView: View {
                 NewTodoFromSessionSheet(session: session, project: project, store: store)
             }
         }
-        .sheet(item: $newHostPrefill) { prefill in
-            HostEditorView(prefill: prefill)
-        }
         .modifier(ProjectDetailAlerts(
             project: project,
             confirmingDelete: $confirmingDelete,
-            missingHost: $missingHost,
             errorMessage: $errorMessage,
-            onDelete: deleteProject,
-            onAddHost: { newHostPrefill = TodoConversationLauncher.newHostPrefill(for: $0) }
+            onDelete: deleteProject
         ))
     }
 
@@ -155,7 +146,7 @@ struct ProjectDetailView: View {
                 TodoRow(
                     todo: todo,
                     status: store.conversations[todo.id]?.status ?? todo.conversationStatus,
-                    isOpening: openingTodoID == todo.id,
+                    isOpening: false,
                     onToggle: { Task { await store.toggle(todo) } }
                 )
                 .contentShape(Rectangle())
@@ -176,7 +167,7 @@ struct ProjectDetailView: View {
                     Text("No conversations in this folder yet").foregroundStyle(.secondary)
                 }
                 ForEach(sessions) { session in
-                    SessionRow(session: session, projectFolder: project.folder, isOpening: isOpening(session))
+                    SessionRow(session: session, projectFolder: project.folder)
                         .contentShape(Rectangle())
                         .onTapGesture { open(session) }
                         .contextMenu { sessionMenu(session, project: project) }
@@ -200,11 +191,6 @@ struct ProjectDetailView: View {
         SessionProjectMenu(session: session, store: store, onError: { errorMessage = $0 })
     }
 
-    private func isOpening(_ session: HubSession) -> Bool {
-        guard let todoId = session.todoId else { return false }
-        return openingTodoID == todoId
-    }
-
     /// A linked conversation opens through its todo, exactly as from the Todos tab.
     private func open(_ session: HubSession) {
         guard let todoId = session.todoId else { return }
@@ -215,16 +201,18 @@ struct ProjectDetailView: View {
         open(todo)
     }
 
+    /// Pushes the same conversation frame as the Todos list; it shows preparing, problems
+    /// (such as a computer this device can't reach yet) and the terminal itself.
     private func open(_ todo: Todo) {
-        guard openingTodoID == nil else { return }
-        openingTodoID = todo.id
-        Task {
-            defer { openingTodoID = nil }
-            switch await TodoConversationLauncher.open(todo, store: store, hosts: hosts) {
-            case let .opened(open): openConversation = open
-            case let .missingHost(computer): missingHost = computer
-            case let .failed(message): errorMessage = message
-            }
+        openTodoID = todo.id
+    }
+
+    @ViewBuilder
+    private func conversationDestination(_ todoID: String) -> some View {
+        if let todo = store.todos.first(where: { $0.id == todoID }) {
+            TodoConversationScreen(todo: todo, store: store) { openTodoID = nil }
+        } else {
+            ContentUnavailableView("Todo Not Found", systemImage: "checklist")
         }
     }
 
@@ -281,14 +269,12 @@ struct ProjectDetailView: View {
     }
 }
 
-/// Delete confirmation, missing-host and error alerts, kept apart to keep the page's body small.
+/// Delete confirmation and error alerts, kept apart to keep the page's body small.
 private struct ProjectDetailAlerts: ViewModifier {
     let project: Project?
     @Binding var confirmingDelete: Bool
-    @Binding var missingHost: Computer?
     @Binding var errorMessage: String?
     let onDelete: () -> Void
-    let onAddHost: (Computer) -> Void
 
     func body(content: Content) -> some View {
         content
@@ -301,16 +287,6 @@ private struct ProjectDetailAlerts: ViewModifier {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Its todos lose the project and its conversations are matched to the remaining projects. Memories are kept.")
-            }
-            .alert(
-                "No SSH host for this computer",
-                isPresented: Binding(get: { missingHost != nil }, set: { if !$0 { missingHost = nil } }),
-                presenting: missingHost
-            ) { computer in
-                Button("Add Host") { onAddHost(computer) }
-                Button("Cancel", role: .cancel) {}
-            } message: { computer in
-                Text("Add \(computer.username)@\(computer.hostname):\(computer.port) as a host and import its SSH key, then open the todo again.")
             }
             .alert(
                 "Project",
@@ -327,7 +303,6 @@ private struct ProjectDetailAlerts: ViewModifier {
 private struct SessionRow: View {
     let session: HubSession
     let projectFolder: String
-    let isOpening: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -335,9 +310,7 @@ private struct SessionRow: View {
                 Text(session.title?.isEmpty == false ? session.title! : "Untitled")
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if isOpening {
-                    ProgressView()
-                } else if let status = session.status {
+                if let status = session.status {
                     ConversationBadge(status: status)
                 }
             }

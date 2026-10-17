@@ -7,7 +7,7 @@ protocol TerminalTransport: AnyObject {
     /// Invoked off the main thread. Consumers must hop before touching UI.
     var onOutput: (([UInt8]) -> Void)? { get set }
     /// Invoked once when the connection goes away for any reason other than `disconnect()`.
-    var onDisconnect: (() -> Void)? { get set }
+    var onDisconnect: ((Int?) -> Void)? { get set }
 
     func connect(cols: Int, rows: Int) async throws
     func send(_ bytes: ArraySlice<UInt8>)

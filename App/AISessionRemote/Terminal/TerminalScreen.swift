@@ -24,9 +24,13 @@ enum TerminalConnectionState: Equatable {
 
 final class TerminalCoordinator: TerminalViewDelegate {
     weak var terminalView: TerminalView?
-    var onError: ((String) -> Void)?
-    var onDisconnected: (() -> Void)?
+    /// The connect failed. `TerminalCoordinator.message(for:)` words it for an alert.
+    var onError: ((Error) -> Void)?
+    var onDisconnected: ((Int?) -> Void)?
     var onStateChange: ((TerminalConnectionState) -> Void)?
+    /// Anything the terminal view sends: typed keys, but also SwiftTerm's own replies (DA/DSR/
+    /// cursor reports, focus and mouse reports). Not bytes sent with `send(_:)`.
+    var onUserInput: (() -> Void)?
 
     private let hostConfig: HostConnectionConfig
     private let mode: TerminalMode
@@ -90,10 +94,10 @@ final class TerminalCoordinator: TerminalViewDelegate {
             // hop itself before `feed`ing SwiftTerm.
             self?.coalescer.append(bytes)
         }
-        session.onDisconnect = { [weak self] in
+        session.onDisconnect = { [weak self] exitStatus in
             DispatchQueue.main.async {
                 self?.state = .failed
-                self?.onDisconnected?()
+                self?.onDisconnected?(exitStatus)
             }
         }
         self.session = session
@@ -115,9 +119,8 @@ final class TerminalCoordinator: TerminalViewDelegate {
         } catch {
             self.session = nil
             state = .failed
-            let message = Self.message(for: error)
             DispatchQueue.main.async { [weak self] in
-                self?.onError?(message)
+                self?.onError?(error)
             }
         }
     }
@@ -190,6 +193,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        onUserInput?()
         session?.send(data)
     }
 
@@ -206,7 +210,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 
-    private static func message(for error: Error) -> String {
+    static func message(for error: Error) -> String {
         if let error = error as? SSHRemoteError {
             return error.userMessage
         }
@@ -223,47 +227,6 @@ final class TerminalCoordinator: TerminalViewDelegate {
     }
 }
 
-#if os(macOS)
-/// AppKit host for SwiftTerm's macOS `TerminalView`. Copy/Paste/Select All come from the
-/// standard Edit menu: they target the first responder, which is this view once focused.
-private struct TerminalContainerView: NSViewRepresentable {
-    let coordinator: TerminalCoordinator
-    let palette: TerminalPalette
-    let fontSize: Double
-
-    func makeNSView(context: Context) -> TerminalView {
-        let view = TerminalView(frame: .zero)
-        TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
-        view.optionAsMetaKey = true
-        coordinator.attach(to: view)
-        return view
-    }
-
-    func updateNSView(_ nsView: TerminalView, context: Context) {
-        TerminalAppearance.apply(to: nsView, palette: palette, fontSize: fontSize)
-        coordinator.attach(to: nsView)
-    }
-}
-#else
-private struct TerminalContainerView: UIViewRepresentable {
-    let coordinator: TerminalCoordinator
-    let palette: TerminalPalette
-    let fontSize: Double
-
-    func makeUIView(context: Context) -> TerminalView {
-        let view = TerminalView(frame: .zero)
-        TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
-        coordinator.attach(to: view)
-        return view
-    }
-
-    func updateUIView(_ uiView: TerminalView, context: Context) {
-        TerminalAppearance.apply(to: uiView, palette: palette, fontSize: fontSize)
-        coordinator.attach(to: uiView)
-    }
-}
-#endif
-
 /// Interactive terminal for a single tmux session. SwiftTerm owns the soft-key
 /// accessory above the system keyboard (`TerminalAccessory`: Ctrl, Esc, Tab, arrows).
 /// Detaching closes SSH only — tmux keeps running on the host.
@@ -272,24 +235,16 @@ struct TerminalScreen: View {
     let mode: TerminalMode
     let title: String
     let onKill: () async throws -> Void
+    private let makeTransport: (HostConnectionConfig, TerminalMode) -> any TerminalTransport
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage("terminal.fontSize") private var fontSize = TerminalAppearance.defaultFontSize
     @AppStorage("terminal.theme") private var themeRaw = TerminalTheme.system.rawValue
-    @State private var coordinator: TerminalCoordinator
-    @State private var connectionState: TerminalConnectionState = .idle
+    @State private var terminal = TerminalHandle()
     @State private var errorMessage: String?
     @State private var killErrorMessage: String?
     @State private var showingKillConfirmation = false
     @State private var keyboardVisible = false
-    @State private var isDisconnected = false
-    /// Gates `connectingOverlay`. With a warm connection pool, attach (and reconnect) are
-    /// usually fast enough that showing this immediately would just be a flash; it's only
-    /// raised once `.connecting`/`.idle` has held for ~250ms. Applies to every connect/reconnect,
-    /// not just the first, via the `onChange` below.
-    @State private var showConnectingOverlay = false
-    @State private var connectingOverlayTask: Task<Void, Never>?
 
     init(
         hostConfig: HostConnectionConfig,
@@ -304,9 +259,7 @@ struct TerminalScreen: View {
         self.mode = mode
         self.title = title
         self.onKill = onKill
-        _coordinator = State(initialValue: TerminalCoordinator(
-            hostConfig: hostConfig, mode: mode, makeTransport: makeTransport
-        ))
+        self.makeTransport = makeTransport
     }
 
     private var palette: TerminalPalette {
@@ -315,26 +268,25 @@ struct TerminalScreen: View {
 
     var body: some View {
         ZStack {
-            TerminalContainerView(coordinator: coordinator, palette: palette, fontSize: fontSize)
-                .background(Color(palette.background))
-                .ignoresSafeArea(.container, edges: .bottom)
-
-            if showConnectingOverlay && (connectionState == .connecting || connectionState == .idle) {
-                connectingOverlay
-            }
-            if isDisconnected {
-                disconnectedOverlay
-            }
+            TerminalSurface(
+                config: hostConfig,
+                mode: mode,
+                handle: terminal,
+                onDetach: { dismiss() },
+                disconnectedMessage: "The SSH connection was closed.",
+                onConnectionFailed: { error in errorMessage = TerminalCoordinator.message(for: error) },
+                makeTransport: makeTransport
+            )
             #if os(iOS)
-            if connectionState == .connected && !keyboardVisible {
+            if terminal.connectionState == .connected && !keyboardVisible {
                 VStack {
                     Spacer()
                     SoftKeyBar { key in
                         switch key {
-                        case .ctrlC: coordinator.send([0x03])
-                        case .tab: coordinator.send([0x09])
-                        case .esc: coordinator.send([0x1B])
-                        case .paste: coordinator.pasteFromClipboard()
+                        case .ctrlC: terminal.send([0x03])
+                        case .tab: terminal.send([0x09])
+                        case .esc: terminal.send([0x1B])
+                        case .paste: terminal.paste()
                         }
                     }
                 }
@@ -351,33 +303,34 @@ struct TerminalScreen: View {
             #if os(iOS)
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    coordinator.focusTerminal()
+                    terminal.focus()
                 } label: {
                     Image(systemName: "keyboard")
                 }
                 .accessibilityLabel("Show Keyboard")
-                .disabled(connectionState != .connected)
+                .disabled(!terminal.isConnected)
             }
             #endif
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button {
-                        coordinator.focusTerminal()
+                        terminal.focus()
                     } label: {
                         Label("Show Keyboard", systemImage: "keyboard")
                     }
                     Button {
-                        coordinator.pasteFromClipboard()
+                        terminal.paste()
                     } label: {
                         Label("Paste", systemImage: "doc.on.clipboard")
                     }
                     Button {
-                        Task { await reconnect() }
+                        errorMessage = nil
+                        terminal.reconnect()
                     } label: {
                         Label("Reconnect", systemImage: "arrow.clockwise")
                     }
                     Button {
-                        coordinator.copySelection()
+                        terminal.copyScreen()
                     } label: {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
@@ -437,21 +390,6 @@ struct TerminalScreen: View {
         } message: {
             Text(errorMessage ?? "")
         }
-        .onAppear {
-            coordinator.onStateChange = { state in
-                connectionState = state
-                if state == .connected {
-                    isDisconnected = false
-                    PlatformSupport.connectedFeedback()
-                }
-            }
-            connectionState = coordinator.state
-            coordinator.onError = { message in errorMessage = message }
-            coordinator.onDisconnected = {
-                isDisconnected = true
-                PlatformSupport.disconnectedFeedback()
-            }
-        }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardVisible = true
@@ -460,90 +398,6 @@ struct TerminalScreen: View {
             keyboardVisible = false
         }
         #endif
-        .onChange(of: connectionState, initial: true) { _, newState in
-            // Re-armed on every transition into `.connecting`/`.idle`, so this also covers
-            // `reconnect()` — not just the very first connect from `.task` below.
-            connectingOverlayTask?.cancel()
-            if newState == .connecting || newState == .idle {
-                connectingOverlayTask = Task {
-                    try? await Task.sleep(nanoseconds: 250_000_000)
-                    if !Task.isCancelled {
-                        showConnectingOverlay = true
-                    }
-                }
-            } else {
-                showConnectingOverlay = false
-            }
-        }
-        .task {
-            await coordinator.connect()
-            // Focus after the view is in a window so the soft keyboard + SwiftTerm
-            // accessory bar (Ctrl/Esc/Tab/arrows) can appear.
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            coordinator.focusTerminal()
-        }
-        .onDisappear {
-            connectingOverlayTask?.cancel()
-            coordinator.disconnect()
-        }
-    }
-
-    private var connectingOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.72).ignoresSafeArea()
-            VStack(spacing: 14) {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
-                Text(connectionState == .idle ? "Preparing…" : "Connecting…")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                Text(hostConfig.host)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.white.opacity(0.65))
-            }
-            .padding(24)
-            .background(.ultraThinMaterial.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Connecting to \(hostConfig.host)")
-        .transition(.opacity)
-    }
-
-    private var disconnectedOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.78).ignoresSafeArea()
-            VStack(spacing: 14) {
-                Image(systemName: "wifi.slash")
-                    .font(.system(size: 34))
-                    .foregroundStyle(.orange)
-                Text("Disconnected")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.white)
-                Text("The SSH connection was closed.")
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.7))
-                HStack(spacing: 12) {
-                    Button("Reconnect") {
-                        Task { await reconnect() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Button("Detach") { dismiss() }
-                        .buttonStyle(.bordered)
-                        .tint(.white)
-                }
-            }
-            .padding(24)
-            .background(.ultraThinMaterial.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Disconnected. Reconnect or detach.")
-    }
-
-    private func reconnect() async {
-        isDisconnected = false
-        errorMessage = nil
-        await coordinator.reconnect()
     }
 
     private static func killMessage(for error: Error) -> String {

@@ -327,14 +327,19 @@ The terminal is pushed full screen: the tab bar is hidden and swipe-back still w
 
 ## Notifications and focus
 
-- **Where it works:** the Mac app (it stays connected) and the iPhone while the app is open.
-  iOS suspends `/api/ws` in the background, and real background alerts need APNs from the
-  server, which is out of scope. Background iPhone alerts are therefore a known gap; the
-  in-app badge and haptic cover the foreground. The existing per-host `AttentionNotifier`
-  call in `SessionsListView` stays. *My call.*
+- **Ownership (agreed 2026-10-17 with the separate push-notifications work):** that work owns
+  `NotificationCenterCoordinator`, which handles the notification delegate, permission,
+  APNs push from the todo-server, and deduplication between push and local alerts.
+  - This redesign only detects the flip and calls `postWaiting`, reports the visible
+    conversation, and owns the Settings toggle UI.
+  - Permission is asked from the Settings toggle, never on first launch.
+  - Background iPhone alerts come from that work's push, not from this redesign.
 - The store diffs each refresh against the previous one. A conversation moving *into*
-  `waiting` posts a local notification: title = todo title, body = status message or "Needs
-  you on mac-studio".
+  `waiting` calls `postWaiting` with title = the todo title and body = "Needs you". There is
+  never a status message or any conversation text, so it matches what a push can carry.
+  - The coordinator posts the alert locally or relies on push.
+  - On the Mac it alerts only when no iPhone is registered for push, unless "Alert on this
+    Mac too" is on.
   - Already-waiting conversations at launch don't notify.
   - No notification while that conversation is frontmost and the app is active (just
     the haptic). Tapping the notification opens that conversation (Mac: selects it in the

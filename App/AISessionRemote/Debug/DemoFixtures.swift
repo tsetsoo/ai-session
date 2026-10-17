@@ -8,9 +8,12 @@ enum DemoFixtures {
     static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-uiDemo") }
 
     /// Value following `-uiDemoScreen`, if any.
-    static var screen: String? {
+    static var screen: String? { value(after: "-uiDemoScreen") }
+
+    /// The launch argument following `flag`, if any.
+    static func value(after flag: String) -> String? {
         let args = ProcessInfo.processInfo.arguments
-        guard let i = args.firstIndex(of: "-uiDemoScreen"), i + 1 < args.count else { return nil }
+        guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
         return args[i + 1]
     }
 
