@@ -16,6 +16,9 @@
 # plus the JSON, exactly as Codex would have called it.
 #
 # agent-turn-complete -> idle; approval-requested -> waiting (if Codex sends it).
+# Like ai-todo-hook, every post carries "attended" (recent keyboard activity in the tmux
+# session), and waiting is re-checked ~12s later to report an answer typed at the terminal.
+#
 # Never blocks or fails Codex: always exits 0, and the HTTP call runs in the background with
 # a 3s limit. Only conversations running in a tmux session named ai/codex/todo-* are reported.
 #
@@ -23,7 +26,10 @@
 # Test hooks (not for normal use):
 #   AI_TODO_HUB_CONF      config file path
 #   AI_TODO_TMUX_SESSION  tmux session name instead of asking tmux
-#   AI_TODO_HOOK_SYNC     =1: wait for the HTTP call (and the chained program)
+#   AI_TODO_HOOK_SYNC     =1: wait for the HTTP call (and the chained program, and the re-check)
+#   AI_TODO_TMUX_SOCKET   tmux -L socket to ask about clients
+#   AI_TODO_CLIENT_ACTIVITY_FILE  file with client activity epochs instead of asking tmux
+#   AI_TODO_RECHECK_DELAY seconds before the waiting re-check (default 12)
 
 json=""
 for arg in "$@"; do json=$arg; done
@@ -61,6 +67,24 @@ TODO_API_TOKEN=
 . "$conf" 2>/dev/null || exit 0
 [ -n "$TODO_HUB_URL" ] || exit 0
 
+prompt_time=$(date +%s)
+
+# Newest keyboard activity (epoch seconds) of any tmux client attached to the session.
+latest_activity() {
+  if [ -n "${AI_TODO_CLIENT_ACTIVITY_FILE:-}" ]; then
+    cat "$AI_TODO_CLIENT_ACTIVITY_FILE" 2>/dev/null
+  else
+    tmux ${AI_TODO_TMUX_SOCKET:+-L "$AI_TODO_TMUX_SOCKET"} list-clients -t "=$session" -F '#{client_activity}' 2>/dev/null
+  fi | sort -n | tail -n 1
+}
+
+attended=false
+latest=$(latest_activity)
+case "$latest" in
+  '' | *[!0-9]*) ;;
+  *) [ "$latest" -ge $((prompt_time - 60)) ] && attended=true ;;
+esac
+
 command -v python3 >/dev/null 2>&1 || exit 0
 body=$(python3 -c '
 import json, sys
@@ -74,8 +98,8 @@ status = {"agent-turn-complete": "idle", "approval-requested": "waiting"}.get(da
 sid = data.get("thread-id")
 if status is None or not isinstance(sid, str) or not sid or not all(c.isalnum() or c == "-" for c in sid):
     sys.exit(1)
-print(json.dumps({"session_id": sid, "tool": "codex", "status": status}))
-' "$json" 2>/dev/null) || exit 0
+print(json.dumps({"session_id": sid, "tool": "codex", "status": status, "attended": sys.argv[2] == "true"}))
+' "$json" "$attended" 2>/dev/null) || exit 0
 
 post() {
   # The token goes through curl's config on stdin so it never shows up in `ps`.
@@ -88,9 +112,23 @@ post() {
     "${TODO_HUB_URL%/}/api/conversations/status"
 }
 
+# waiting only: a keystroke after the prompt means it was answered at the terminal.
+recheck() {
+  case "$body" in *'"status": "waiting"'*) ;; *) return 0 ;; esac
+  [ "$attended" = false ] || return 0
+  sleep "${AI_TODO_RECHECK_DELAY:-12}"
+  latest=$(latest_activity)
+  case "$latest" in
+    '' | *[!0-9]*) return 0 ;;
+  esac
+  [ "$latest" -gt "$prompt_time" ] || return 0
+  body=$(printf '%s' "$body" | sed 's/"attended": *false/"attended": true/')
+  post
+}
+
 if [ "${AI_TODO_HOOK_SYNC:-}" = 1 ]; then
-  post >/dev/null 2>&1
+  { post; recheck; } >/dev/null 2>&1
 else
-  post </dev/null >/dev/null 2>&1 &
+  { post; recheck; } </dev/null >/dev/null 2>&1 &
 fi
 exit 0

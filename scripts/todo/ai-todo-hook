@@ -13,6 +13,12 @@
 #   was not busy, so a long turn doesn't post once per tool call. The last sent
 #   status is kept in ~/.ai-remote/hook-state/<session_id>.
 #
+# - Every post carries "attended": a tmux client attached to the session had keyboard
+#   activity in the last 60s, so the todo server sends no push (you're there).
+# - waiting is re-checked ~12s later: a keystroke since the prompt (you answered it) re-posts
+#   waiting with "attended": true, which cancels the server's held push. busy only arrives
+#   after the approved tool finishes, which can take minutes.
+#
 # Never blocks or fails Claude: always exits 0, and the HTTP call runs in the
 # background with a 3s limit. Only sessions running in a tmux session named
 # ai/claude/todo-* are reported; todo-server answers 404 for unknown ids anyway.
@@ -24,7 +30,10 @@
 # Test hooks (not for normal use):
 #   AI_TODO_HUB_CONF      config file path
 #   AI_TODO_TMUX_SESSION  tmux session name instead of asking tmux
-#   AI_TODO_HOOK_SYNC     =1: wait for the HTTP call
+#   AI_TODO_HOOK_SYNC     =1: wait for the HTTP call (and the re-check)
+#   AI_TODO_TMUX_SOCKET   tmux -L socket to ask about clients
+#   AI_TODO_CLIENT_ACTIVITY_FILE  file with client activity epochs instead of asking tmux
+#   AI_TODO_RECHECK_DELAY seconds before the waiting re-check (default 12)
 status=${1:-}
 case "$status" in
   busy | waiting | idle | tool) ;;
@@ -52,6 +61,24 @@ TODO_API_TOKEN=
 . "$conf" 2>/dev/null || exit 0
 [ -n "$TODO_HUB_URL" ] || exit 0
 
+prompt_time=$(date +%s)
+
+# Newest keyboard activity (epoch seconds) of any tmux client attached to the session.
+latest_activity() {
+  if [ -n "${AI_TODO_CLIENT_ACTIVITY_FILE:-}" ]; then
+    cat "$AI_TODO_CLIENT_ACTIVITY_FILE" 2>/dev/null
+  else
+    tmux ${AI_TODO_TMUX_SOCKET:+-L "$AI_TODO_TMUX_SOCKET"} list-clients -t "=$session" -F '#{client_activity}' 2>/dev/null
+  fi | sort -n | tail -n 1
+}
+
+attended=false
+latest=$(latest_activity)
+case "$latest" in
+  '' | *[!0-9]*) ;;
+  *) [ "$latest" -ge $((prompt_time - 60)) ] && attended=true ;;
+esac
+
 only_if_changed=
 if [ "$status" = tool ]; then
   status=busy
@@ -76,13 +103,13 @@ if status == "waiting" and (
     data.get("notification_type") == "idle_prompt" or "waiting for your input" in msg.lower()
 ):
     status = "idle"
-out = {"claude_session_id": sid, "status": status}
+out = {"claude_session_id": sid, "status": status, "attended": sys.argv[2] == "true"}
 if status == "waiting" and msg:
     out["message"] = msg[:500]
 print(sid)
 print(status)
 print(json.dumps(out))
-' "$status" 2>/dev/null) || exit 0
+' "$status" "$attended" 2>/dev/null) || exit 0
   sid=$(printf '%s\n' "$parsed" | sed -n 1p)
   status=$(printf '%s\n' "$parsed" | sed -n 2p)
   body=$(printf '%s\n' "$parsed" | sed -n 3p)
@@ -93,7 +120,7 @@ else
   if [ "$status" = waiting ] && printf '%s' "$input" | grep -qi 'idle_prompt\|waiting for your input'; then
     status=idle
   fi
-  body=$(printf '{"claude_session_id":"%s","status":"%s"}' "$sid" "$status")
+  body=$(printf '{"claude_session_id":"%s","status":"%s","attended":%s}' "$sid" "$status" "$attended")
 fi
 
 state_dir="$HOME/.ai-remote/hook-state"
@@ -116,9 +143,23 @@ post() {
     "${TODO_HUB_URL%/}/api/conversations/status"
 }
 
+# waiting only: if a client typed after the prompt appeared, the prompt was answered at the
+# terminal; tell the server so it drops the push it is holding.
+recheck() {
+  [ "$status" = waiting ] && [ "$attended" = false ] || return 0
+  sleep "${AI_TODO_RECHECK_DELAY:-12}"
+  latest=$(latest_activity)
+  case "$latest" in
+    '' | *[!0-9]*) return 0 ;;
+  esac
+  [ "$latest" -gt "$prompt_time" ] || return 0
+  body=$(printf '%s' "$body" | sed 's/"attended": *false/"attended": true/')
+  post
+}
+
 if [ "${AI_TODO_HOOK_SYNC:-}" = 1 ]; then
-  post >/dev/null 2>&1
+  { post; recheck; } >/dev/null 2>&1
 else
-  post </dev/null >/dev/null 2>&1 &
+  { post; recheck; } </dev/null >/dev/null 2>&1 &
 fi
 exit 0

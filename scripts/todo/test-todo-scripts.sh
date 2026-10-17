@@ -440,10 +440,13 @@ pass "ai-todo-open passes the resolved PATH into new tmux sessions (nvm codex wo
 HUB_LOG="${SANDBOX}/hub.log"
 HUB_PORT_FILE="${SANDBOX}/hub.port"
 python3 - "$HUB_LOG" "$HUB_PORT_FILE" <<'PY' &
-import json, sys
+import json, os, sys, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 log_path, port_path = sys.argv[1], sys.argv[2]
+# When this file exists, the next post writes "now + 1" into the file it names: a keystroke
+# in the conversation right after the hook posted (for the waiting re-check test).
+touch_on_post = os.path.join(os.path.dirname(log_path), "touch-on-post")
 
 class Hub(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -455,6 +458,12 @@ class Hub(BaseHTTPRequestHandler):
                 "type": self.headers.get("Content-Type"),
                 "body": json.loads(body),
             }) + "\n")
+        if os.path.exists(touch_on_post):
+            with open(touch_on_post) as f:
+                target = f.read().strip()
+            os.remove(touch_on_post)
+            with open(target, "w") as f:
+                f.write(str(int(time.time()) + 1))
         self.send_response(204)
         self.end_headers()
 
@@ -474,6 +483,8 @@ HUB_URL="http://127.0.0.1:$(cat "$HUB_PORT_FILE")"
 CONF="${SANDBOX}/todo-hub.conf"
 printf "TODO_HUB_URL='%s/'\nTODO_API_TOKEN='s3cret'\n" "$HUB_URL" >"$CONF"
 export AI_TODO_HUB_CONF="$CONF" AI_TODO_HOOK_SYNC=1
+# No waiting re-check delay unless a test asks for one.
+export AI_TODO_RECHECK_DELAY=0
 
 printf '{"session_id":"%s","hook_event_name":"Notification","message":"Claude needs your \\"permission\\""}' "$SID" \
   | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" waiting
@@ -483,14 +494,14 @@ req = json.loads(open(sys.argv[1]).read().splitlines()[-1])
 assert req["path"] == "/api/conversations/status", req
 assert req["auth"] == "Bearer s3cret", req
 assert req["type"] == "application/json", req
-assert req["body"] == {"claude_session_id": sys.argv[2], "status": "waiting",
+assert req["body"] == {"claude_session_id": sys.argv[2], "status": "waiting", "attended": False,
                        "message": 'Claude needs your "permission"'}, req
 PY
 pass "hook posts status + message with the bearer token"
 
 printf '{"session_id":"%s","hook_event_name":"Stop"}' "$SID" | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" idle
 [[ $(wc -l <"$HUB_LOG") -eq 2 ]] || fail "idle hook did not post"
-python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert b=={"claude_session_id":sys.argv[2],"status":"idle"}, b' "$HUB_LOG" "$SID" \
+python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert b=={"claude_session_id":sys.argv[2],"status":"idle","attended":False}, b' "$HUB_LOG" "$SID" \
   || fail "idle hook body wrong"
 pass "hook posts idle without a message"
 
@@ -521,6 +532,43 @@ tool
 [[ $(wc -l <"$HUB_LOG") -eq 6 && "$(last_status)" == busy ]] || fail "tool call after a permission prompt did not post busy"
 pass "tool calls post busy once after waiting/idle and stay quiet while busy"
 
+# attended: a tmux client attached to the conversation had keyboard activity recently.
+ACTIVITY="${SANDBOX}/client-activity"
+last_attended() {
+  python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]["attended"])' "$HUB_LOG"
+}
+waiting() { # [env...]: one waiting hook for the todo conversation
+  printf '{"session_id":"%s","hook_event_name":"Notification","message":"Claude needs your permission"}' "$SID" \
+    | env AI_TODO_TMUX_SESSION="$NAME" AI_TODO_CLIENT_ACTIVITY_FILE="$ACTIVITY" "$@" "$HOOK" waiting
+}
+date +%s >"$ACTIVITY"
+before=$(wc -l <"$HUB_LOG")
+waiting AI_TODO_RECHECK_DELAY=0
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 1)) && "$(last_attended)" == True ]] \
+  || fail "recent client activity was not reported as attended: $(tail -1 "$HUB_LOG")"
+echo $(( $(date +%s) - 3600 )) >"$ACTIVITY"
+waiting AI_TODO_RECHECK_DELAY=0
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 2)) && "$(last_attended)" == False ]] \
+  || fail "old activity counted as attended, or a re-check posted without new activity"
+pass "hook reports attended from recent tmux client activity"
+
+# Re-check: a keystroke after the prompt (the user answered it) re-posts waiting + attended.
+before=$(wc -l <"$HUB_LOG")
+printf '%s\n' "$ACTIVITY" >"${SANDBOX}/touch-on-post"
+waiting AI_TODO_RECHECK_DELAY=2
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 2)) ]] || fail "re-check did not post: $(tail -2 "$HUB_LOG")"
+[[ "$(last_status)" == waiting && "$(last_attended)" == True ]] || fail "re-check body wrong: $(tail -1 "$HUB_LOG")"
+python3 -c 'import json,sys; l=open(sys.argv[1]).read().splitlines(); assert json.loads(l[-2])["body"]["attended"] is False, l[-2]' "$HUB_LOG" \
+  || fail "the first post should not be attended"
+pass "hook re-checks a waiting prompt and reports the answer as attended"
+
+before=$(wc -l <"$HUB_LOG")
+echo $(( $(date +%s) + 5 )) >"$ACTIVITY"
+printf '{"session_id":"%s","hook_event_name":"Stop"}' "$SID" \
+  | AI_TODO_TMUX_SESSION="$NAME" AI_TODO_CLIENT_ACTIVITY_FILE="$ACTIVITY" AI_TODO_RECHECK_DELAY=0 "$HOOK" idle
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 1)) ]] || fail "idle must not re-check"
+pass "no re-check for busy/idle"
+
 # --- ai-todo-codex-notify ---------------------------------------------------------
 
 NOTIFY="${SCRIPT_DIR}/ai-todo-codex-notify"
@@ -534,11 +582,17 @@ import json, sys
 req = json.loads(open(sys.argv[1]).read().splitlines()[-1])
 assert req["path"] == "/api/conversations/status", req
 assert req["auth"] == "Bearer s3cret", req
-assert req["body"] == {"session_id": sys.argv[2], "tool": "codex", "status": "idle"}, req
+assert req["body"] == {"session_id": sys.argv[2], "tool": "codex", "status": "idle", "attended": False}, req
 PY
 APPROVAL=$(printf '{"type":"approval-requested","thread-id":"%s"}' "$X_LINKED")
-AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" "$APPROVAL"
-[[ "$(last_status)" == waiting ]] || fail "approval-requested was not reported as waiting"
+date +%s >"$ACTIVITY"
+AI_TODO_TMUX_SESSION="$XTMUX" AI_TODO_CLIENT_ACTIVITY_FILE="$ACTIVITY" AI_TODO_RECHECK_DELAY=0 "$NOTIFY" "$APPROVAL"
+[[ "$(last_status)" == waiting && "$(last_attended)" == True ]] || fail "approval-requested was not reported as attended waiting"
+echo $(( $(date +%s) - 3600 )) >"$ACTIVITY"
+printf '%s\n' "$ACTIVITY" >"${SANDBOX}/touch-on-post"
+before=$(wc -l <"$HUB_LOG")
+AI_TODO_TMUX_SESSION="$XTMUX" AI_TODO_CLIENT_ACTIVITY_FILE="$ACTIVITY" AI_TODO_RECHECK_DELAY=2 "$NOTIFY" "$APPROVAL"
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 2)) && "$(last_attended)" == True ]] || fail "codex re-check did not report the answer: $(tail -2 "$HUB_LOG")"
 pass "codex notify posts idle on agent-turn-complete (waiting on approval-requested) with tool=codex and the token"
 
 before=$(wc -l <"$HUB_LOG")
