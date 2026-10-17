@@ -6,18 +6,59 @@ import XCTest
 final class AppModelTests: XCTestCase {
     private struct ListingFailed: Error {}
 
+    private static let listedAt = ISO8601DateFormatter().date(from: "2026-10-18T00:00:00Z")!
     private let mac = DemoFixtures.macStudio
     private let linux = DemoFixtures.linuxBox
 
     private func makeModel(listTmux: @escaping (Computer) async throws -> Set<String> = { _ in [] }) -> AppModel {
         let cache = TodoHubCache(fileURL: FileManager.default.temporaryDirectory
             .appendingPathComponent("appmodel-\(UUID().uuidString).json"))
-        let model = AppModel(store: TodoHubStore(cache: cache), demo: false, listTmux: listTmux)
+        // After the fixtures were created, whatever the wall clock says.
+        let model = AppModel(store: TodoHubStore(cache: cache), demo: false, listTmux: listTmux,
+                             now: { Self.listedAt })
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
             sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
         )
         return model
+    }
+
+    func testDemoModelUsesAScratchCacheNotTheRealOne() {
+        let model = AppModel(demo: true)
+        XCTAssertNotEqual(model.store.cacheFileURL, TodoHubCache.applicationSupport().fileURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: model.store.cacheFileURL.path))
+        XCTAssertEqual(model.store.todos, DemoFixtures.todos)
+    }
+
+    func testDemoModelNeverBuildsAHubClient() async {
+        var built = 0
+        let cache = TodoHubCache(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("appmodel-demo-\(UUID().uuidString).json"))
+        let store = TodoHubStore(cache: cache, makeClient: {
+            built += 1
+            return TodoHubClient(baseURL: URL(string: "http://127.0.0.1:9")!, token: "real-token")
+        })
+        let model = AppModel(store: store, demo: true)
+        let todo = DemoFixtures.todos[0]
+        let conversation = DemoFixtures.conversations[0]
+        await store.refresh()
+        await model.openFromNotification("not-a-demo-todo")
+        store.startLiveUpdates()
+        store.stopLiveUpdates()
+        await store.toggle(todo)
+        await store.delete(todo)
+        await store.createTodo(section: .sp, title: "Quick add")
+        await store.setProject("p1", for: todo)
+        _ = try? await store.openConversation(for: todo)
+        try? await store.closeConversation(conversation, config: DemoFixtures.config)
+        try? await store.deleteConversation(conversation, config: DemoFixtures.config)
+        _ = try? await store.sessions(projectId: "p1")
+        _ = try? await store.memories(projectId: "p1")
+        _ = try? await store.weekly(projectId: nil, weekStart: nil)
+        XCTAssertEqual(built, 0)
+        XCTAssertNil(store.errorMessage)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cache.fileURL.path))
+        XCTAssertEqual(store.todos, DemoFixtures.todos)
     }
 
     func testBoardReflectsStoreChanges() {
@@ -70,6 +111,55 @@ final class AppModelTests: XCTestCase {
         await model.refreshLiveness(hosts: [])
         XCTAssertTrue(model.board.needsYou.isEmpty)
         XCTAssertTrue(model.board.runningNow.isEmpty)
+    }
+
+    /// Lets the model's observation of the board catch up.
+    private func settle(_ model: AppModel, until done: () -> Bool) async {
+        for _ in 0..<200 where !done() { await Task.yield() }
+    }
+
+    private actor Listing {
+        var names: Set<String> = []
+        func set(_ names: Set<String>) { self.names = names }
+    }
+
+    func testConversationStartedAfterTheListingRunsAndListsAgain() async {
+        let listing = Listing()
+        let model = makeModel { _ in await listing.names }
+        await model.refreshLiveness(hosts: [])
+        XCTAssertTrue(model.board.runningNow.isEmpty)   // the fixtures' sessions aren't listed
+        let requestsBefore = model.relistRequests
+
+        // Started after that listing: the hub says busy, the listing can't know it yet.
+        let started = Conversation(
+            todoId: "t7", computer: mac, cwd: "~/notes", tool: "claude", tmuxName: "todo-t7",
+            sessionId: "s7", status: .busy,
+            createdAt: "2026-10-18T00:00:05Z"
+        )
+        model.store.seedForDemo(
+            todos: DemoFixtures.todos, conversations: DemoFixtures.conversations + [started],
+            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+        )
+        XCTAssertEqual(model.board.status(forTodo: "t7"), .working)
+        XCTAssertEqual(model.board.runningNow.map(\.todoId), ["t7"])
+        XCTAssertEqual(model.board.conversation(atShortcut: 1)?.todoId, "t7")
+        await settle(model) { model.relistRequests != requestsBefore }
+        XCTAssertEqual(model.relistRequests, requestsBefore + 1)
+
+        // Listed again: it's there, and nothing more is asked.
+        await listing.set(["todo-t7"])
+        await model.refreshLiveness(hosts: [])
+        XCTAssertEqual(model.board.status(forTodo: "t7"), .working)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(model.relistRequests, requestsBefore + 1)
+    }
+
+    func testOlderConversationMissingFromAListingIsClosedWithoutListingAgain() async {
+        let model = makeModel { _ in [] }
+        await model.refreshLiveness(hosts: [])
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(model.board.status(forTodo: "t1"), .closed)
+        XCTAssertEqual(model.relistRequests, 0)
     }
 
     private actor Gate {

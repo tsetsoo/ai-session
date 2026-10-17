@@ -185,10 +185,17 @@ final class SelectionDebounceTests: XCTestCase {
 
     private struct ListingFailed: Error {}
 
-    private func makeModel(listTmux: @escaping @Sendable (Computer) async throws -> Set<String>) -> AppModel {
+    /// The time the model lists at and judges a listing's age by.
+    private final class Clock {
+        var now = ISO8601DateFormatter().date(from: "2026-10-18T00:00:00Z")!
+    }
+
+    private func makeModel(clock: Clock = Clock(),
+                           listTmux: @escaping @Sendable (Computer) async throws -> Set<String>) -> AppModel {
         let cache = TodoHubCache(fileURL: FileManager.default.temporaryDirectory
             .appendingPathComponent("selection-\(UUID().uuidString).json"))
-        let model = AppModel(store: TodoHubStore(cache: cache), demo: false, listTmux: listTmux)
+        let model = AppModel(store: TodoHubStore(cache: cache), demo: false, listTmux: listTmux,
+                             now: { clock.now })
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
             sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
@@ -208,6 +215,75 @@ final class SelectionDebounceTests: XCTestCase {
         XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .running)
         XCTAssertEqual(model.attachReadiness(forTodo: "t2"), .closed)   // tmux session gone
         XCTAssertEqual(model.attachReadiness(forTodo: "t3"), .unknown)  // linux-box didn't answer
+    }
+
+    func testAnOldListingIsCheckedAgainBeforeAttaching() async {
+        let clock = Clock()
+        let model = makeModel(clock: clock) { _ in ["todo-t1"] }
+        await model.refreshLiveness(hosts: [])
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .running)
+        clock.now += AppModel.listingMaxAge
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .running)
+        clock.now += 1
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .awaitingLiveness)
+        await model.refreshLiveness(hosts: [])
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .running)
+    }
+
+    /// The computer rebooted after the last listing: the hub still says busy, and attaching
+    /// would recreate the session. Selecting it waits, lists again and never attaches.
+    func testSelectionAfterARebootListsAgainAndNeverAttaches() async {
+        let clock = Clock()
+        let rebooted = Rebooted()
+        let model = makeModel(clock: clock) { _ in await rebooted.value ? [] : ["todo-t1", "todo-t2"] }
+        await model.refreshLiveness(hosts: [])
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .running)
+
+        await rebooted.set()
+        clock.now += AppModel.listingMaxAge + 1
+        attacher.readiness = { model.attachReadiness(forTodo: $0) }
+        attacher.select("t1")
+        scheduler.run()
+        XCTAssertEqual(attacher.livenessRequests, 1)
+        XCTAssertEqual(sent, [])
+        await model.refreshLiveness(hosts: [])
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .closed)
+        attacher.inputsChanged()
+        scheduler.run()
+        XCTAssertEqual(sent, [])
+    }
+
+    /// Started after its computer's listing: not closed, but not attached on the hub's word
+    /// either, until a listing shows it.
+    func testAConversationNewerThanTheListingWaitsForIt() async {
+        let clock = Clock()
+        let listing = Listing()
+        let model = makeModel(clock: clock) { _ in await listing.names }
+        await model.refreshLiveness(hosts: [])
+        let started = Conversation(
+            todoId: "t7", computer: DemoFixtures.macStudio, cwd: "~/notes", tool: "claude",
+            tmuxName: "todo-t7", sessionId: "s7", status: .busy, createdAt: "2026-10-18T00:00:05Z"
+        )
+        model.store.seedForDemo(
+            todos: DemoFixtures.todos, conversations: DemoFixtures.conversations + [started],
+            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+        )
+        clock.now += 10
+        XCTAssertEqual(model.board.status(forTodo: "t7"), .working)
+        XCTAssertEqual(model.attachReadiness(forTodo: "t7"), .unknown)
+        await listing.set(["todo-t7"])
+        await model.refreshLiveness(hosts: [])
+        XCTAssertEqual(model.attachReadiness(forTodo: "t7"), .running)
+    }
+
+    private actor Rebooted {
+        private(set) var value = false
+        func set() { value = true }
+    }
+
+    private actor Listing {
+        private(set) var names: Set<String> = []
+        func set(_ names: Set<String>) { self.names = names }
     }
 
     /// Parks listings until opened, so a test controls which refresh finishes first.

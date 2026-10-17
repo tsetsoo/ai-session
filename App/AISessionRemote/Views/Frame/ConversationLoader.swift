@@ -23,11 +23,54 @@ enum FrameProblem: Equatable {
     case needsAccess(Computer)
     case keyMissing(String)
     case unreachable(String)
+    /// The computer turned this device's key down (or the key couldn't be read).
+    case signInFailed(String)
+    /// The computer's identity isn't the one this device trusted when it first connected.
+    case hostKeyChanged(String)
+    /// Signed in, but the computer wouldn't open a terminal.
+    case terminalFailed(String)
     case helpersMissing(String)
     case toolMissing(String)
     case folderMissing(String, String)
     case conversationNotFound(String)
+    /// The todo server turned the API token down.
+    case tokenRejected
     case hub(String)
+}
+
+/// Why a terminal couldn't connect, in the frame's terms.
+enum TerminalConnectFailure: Equatable {
+    case unreachable
+    case signIn
+    case hostKeyChanged
+    /// Anything else: the terminal itself couldn't be opened.
+    case terminal
+
+    /// A terminal's channel fails alike for a network, identity or key problem, so what the
+    /// newest handshake with the host noted (`SSHSignInRecord`) decides between them; a failure
+    /// to reach the host at all stays unreachable whatever an earlier attempt noted.
+    static func classify(_ error: Error, signInProblem: SSHSignInRecord.Problem?) -> TerminalConnectFailure {
+        if let failure = error as? SSHChannelOpenFailure {
+            return classify(failure.underlying, signInProblem: signInProblem)
+        }
+        switch error {
+        case SSHRemoteError.unreachable, SSHTerminalSessionError.connectionFailed:
+            return .unreachable
+        default:
+            break
+        }
+        switch signInProblem {
+        case .hostKeyChanged?: return .hostKeyChanged
+        case .keyRejected?: return .signIn
+        case nil: break
+        }
+        switch error {
+        case SSHRemoteError.authenticationFailed, SSHTerminalSessionError.invalidPrivateKey:
+            return .signIn
+        default:
+            return .terminal
+        }
+    }
 }
 
 /// State machine behind the conversation frame: get-or-create the conversation on the hub (or
@@ -100,6 +143,9 @@ final class ConversationLoader {
                         : .hub(TodoHubStore.message(for: TodoHubError.conflict(message)))
                 )
                 return
+            } catch TodoHubError.unauthorized {
+                phase = .problem(.tokenRejected)
+                return
             } catch {
                 phase = .problem(.hub(TodoHubStore.message(for: error)))
                 return
@@ -133,10 +179,16 @@ final class ConversationLoader {
         phase = .idle
     }
 
-    /// The frame calls this when the SSH connect fails.
-    func connectionFailed() {
+    /// The frame calls this when the terminal's connect fails.
+    func connectionFailed(_ failure: TerminalConnectFailure) {
         guard case let .ready(open) = phase else { return }
-        phase = .problem(.unreachable(open.conversation.computer.name))
+        let name = open.conversation.computer.name
+        switch failure {
+        case .unreachable: phase = .problem(.unreachable(name))
+        case .signIn: phase = .problem(.signInFailed(name))
+        case .hostKeyChanged: phase = .problem(.hostKeyChanged(name))
+        case .terminal: phase = .problem(.terminalFailed(name))
+        }
     }
 
     private func resolve(_ conversation: Conversation) {

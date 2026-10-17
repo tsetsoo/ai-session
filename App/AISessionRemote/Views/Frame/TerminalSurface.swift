@@ -90,7 +90,7 @@ struct TerminalSurface: View {
     private let handle: TerminalHandle?
     private let onDetach: (() -> Void)?
     private let disconnectedMessage: String
-    private let onConnectionFailed: (String) -> Void
+    private let onConnectionFailed: (Error) -> Void
     private let onEnded: (Int?) -> Void
     private let onUserInput: () -> Void
     private let tool: String?
@@ -120,7 +120,7 @@ struct TerminalSurface: View {
     ///   - handle: filled in so the caller's menus can reconnect, copy, paste and focus.
     ///   - onDetach: when set, the disconnected state offers Detach next to Reconnect.
     ///   - disconnectedMessage: the line under "Disconnected".
-    ///   - onConnectionFailed: the SSH connect failed, with a message for the user.
+    ///   - onConnectionFailed: the connect failed, with why.
     ///   - onEnded: the session ended, with the PTY's exit status (nil = connection dropped).
     ///   - onUserInput: the user typed into the terminal or used the key bar (not the terminal's
     ///     own replies, see `TerminalInputClassifier`).
@@ -134,7 +134,7 @@ struct TerminalSurface: View {
         handle: TerminalHandle? = nil,
         onDetach: (() -> Void)? = nil,
         disconnectedMessage: String = "The connection was closed.",
-        onConnectionFailed: @escaping (String) -> Void = { _ in },
+        onConnectionFailed: @escaping (Error) -> Void = { _ in },
         onEnded: @escaping (Int?) -> Void = { _ in },
         onUserInput: @escaping () -> Void = {},
         tool: String? = nil,
@@ -245,7 +245,7 @@ struct TerminalSurface: View {
             }
             connectionState = coordinator.state
             handle?.connectionState = coordinator.state
-            coordinator.onError = { message in onConnectionFailed(message) }
+            coordinator.onError = { error in onConnectionFailed(error) }
             coordinator.onDisconnected = { exitStatus in
                 isDisconnected = true
                 PlatformSupport.disconnectedFeedback()

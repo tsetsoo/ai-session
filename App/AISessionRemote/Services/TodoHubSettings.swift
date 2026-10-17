@@ -36,8 +36,13 @@ enum TodoHubSettings {
         TodoHubClient.baseURL(from: baseURLString) != nil
     }
 
-    /// `nil` until a valid URL is saved.
+    /// `nil` until a valid URL is saved, and always in a `-uiDemo` launch: every hub call
+    /// (store, live updates, presence, push registration) gets its client here, so a demo
+    /// never reaches the real hub with the real token.
     static func makeClient() -> TodoHubClient? {
+        #if DEBUG
+        if DemoFixtures.isEnabled { return nil }
+        #endif
         guard let url = TodoHubClient.baseURL(from: baseURLString) else { return nil }
         return TodoHubClient(baseURL: url, token: token)
     }
