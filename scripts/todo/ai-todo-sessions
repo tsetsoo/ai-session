@@ -958,10 +958,18 @@ def git_out(cwd, *args):
 
 
 def repo_fields(cwd, cache):
-    """(repo_root, repo_url) for an absolute cwd, cached per cwd. Nulls when cwd is gone."""
+    """(repo_root, repo_url) for an absolute cwd, cached per cwd. A cwd that is gone (e.g. a
+    removed worktree) is looked up from its nearest existing parent, at most 4 levels up and
+    never HOME itself or above; nulls when none is in a repo."""
     if cwd in cache:
         return cache[cwd]
+    cwd_key = cwd
     root = url = None
+    for _ in range(4):
+        if not cwd or os.path.isdir(cwd):
+            break
+        parent = os.path.dirname(cwd)
+        cwd = parent if parent.startswith(HOME + "/") else None
     if cwd and os.path.isdir(cwd):
         common = git_out(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
         if common is None:
@@ -972,8 +980,8 @@ def repo_fields(cwd, cache):
             root = tilde(os.path.dirname(os.path.normpath(common)))
             origin = git_out(cwd, "remote", "get-url", "origin")
             url = strip_credentials(origin) if origin else None
-    cache[cwd] = (root, url)
-    return cache[cwd]
+    cache[cwd_key] = (root, url)
+    return cache[cwd_key]
 
 
 def stats_targets(sessions, tool, since_days):

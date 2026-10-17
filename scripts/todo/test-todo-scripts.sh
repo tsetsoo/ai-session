@@ -771,10 +771,12 @@ git_q -C "$REPO" remote add origin "https://deploy:Sup3rPass@example.com/team/re
 git_q -C "$REPO" worktree add "${REPO}/.claude/worktrees/w"
 R_WT=c0ffee00-0000-4000-8000-000000000002
 R_GONE=c0ffee00-0000-4000-8000-000000000003
+R_RMWT=c0ffee00-0000-4000-8000-000000000008
 mini_claude "${S_PROJ}/${R_WT}.jsonl" "$R_WT" "${REPO}/.claude/worktrees/w" "work in the worktree"
 mini_claude "${S_PROJ}/${R_GONE}.jsonl" "$R_GONE" "${SHOME}/work/gone" "work in a deleted folder"
-stats --session "claude:${R_WT}" --session "claude:${R_GONE}" >"${SANDBOX}/stats-repo.json"
-python3 - "${SANDBOX}/stats-repo.json" "$R_WT" "$R_GONE" <<'PY' || fail "repo fields wrong: $(cat "${SANDBOX}/stats-repo.json")"
+mini_claude "${S_PROJ}/${R_RMWT}.jsonl" "$R_RMWT" "${REPO}/.claude/worktrees/removed" "work in a worktree removed since"
+stats --session "claude:${R_WT}" --session "claude:${R_GONE}" --session "claude:${R_RMWT}" >"${SANDBOX}/stats-repo.json"
+python3 - "${SANDBOX}/stats-repo.json" "$R_WT" "$R_GONE" "$R_RMWT" <<'PY' || fail "repo fields wrong: $(cat "${SANDBOX}/stats-repo.json")"
 import json, sys
 rows = {r["session_id"]: r for r in json.load(open(sys.argv[1]))}
 wt, gone = rows[sys.argv[2]], rows[sys.argv[3]]
@@ -782,8 +784,11 @@ assert wt["cwd"] == "~/work/repo/.claude/worktrees/w", wt
 assert wt["repo_root"] == "~/work/repo", wt
 assert wt["repo_url"] == "https://example.com/team/repo.git", wt
 assert gone["repo_root"] is None and gone["repo_url"] is None, gone
+removed = rows[sys.argv[4]]
+assert (removed["cwd"], removed["repo_root"], removed["repo_url"]) == (
+    "~/work/repo/.claude/worktrees/removed", "~/work/repo", "https://example.com/team/repo.git"), removed
 PY
-pass "stats_repo_fields: a worktree resolves to the main repo (with ~), origin credentials stripped, a missing cwd gives nulls"
+pass "stats_repo_fields: a worktree resolves to the main repo (with ~), origin credentials stripped, a removed worktree resolves through its parent, a missing cwd outside any repo gives nulls"
 
 # Sessions are often started in a parent folder and then work in a repo below it.
 S_MOVED=c0ffee00-0000-4000-8000-000000000006
