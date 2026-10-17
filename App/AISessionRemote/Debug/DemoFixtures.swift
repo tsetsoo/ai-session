@@ -56,9 +56,10 @@ enum DemoFixtures {
     }
 
     private static func conversation(_ id: String, _ section: TodoSection, _ computer: Computer,
-                                     tool: String, _ status: ConversationStatus) -> Conversation {
+                                     tool: String, _ status: ConversationStatus, message: String? = nil) -> Conversation {
         Conversation(todoId: id, computer: computer, cwd: cwd(for: section), tool: tool,
-                     tmuxName: "todo-\(id)", sessionId: "demo-\(id)", status: status, createdAt: now)
+                     tmuxName: "todo-\(id)", sessionId: "demo-\(id)", status: status, statusMessage: message,
+                     createdAt: now)
     }
 
     static let todos: [Todo] = [
@@ -74,9 +75,11 @@ enum DemoFixtures {
     ]
 
     static let conversations: [Conversation] = [
-        conversation("t1", .sp, macStudio, tool: "claude", .waiting),
+        conversation("t1", .sp, macStudio, tool: "claude", .waiting,
+                     message: "Claude needs your permission to use Bash"),
         conversation("t2", .sp, macStudio, tool: "claude", .busy),
-        conversation("t3", .i, linuxBox, tool: "claude", .waiting),
+        conversation("t3", .i, linuxBox, tool: "claude", .waiting,
+                     message: "Claude needs your permission to use Edit"),
         conversation("t4", .si, linuxBox, tool: "codex", .busy),
         conversation("t5", .sp, macStudio, tool: "claude", .idle),
     ]

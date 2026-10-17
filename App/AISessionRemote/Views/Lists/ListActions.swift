@@ -1,0 +1,234 @@
+import AISessionCore
+import SwiftUI
+
+/// Close, Delete… and Copy resume command for conversations shown in a list. Each list owns
+/// one and attaches `.conversationActions(_:store:hosts:)`, which shows the delete
+/// confirmation, failures and the Copied toast.
+@MainActor
+@Observable
+final class ConversationRowActions {
+    struct Failure {
+        let title: String
+        let message: String
+    }
+
+    var deleteTarget: Conversation?
+    var failure: Failure?
+    /// Todo ids whose conversation is being closed or deleted.
+    private(set) var inFlight: Set<String> = []
+    private(set) var showingCopied = false
+    private var copiedTask: Task<Void, Never>?
+
+    /// Ends the conversation on its computer; it stays resumable.
+    func close(_ conversation: Conversation, store: TodoHubStore, hosts: [HostEntity]) {
+        run("Couldn't Close Conversation", conversation, hosts: hosts) { config in
+            try await store.closeConversation(conversation, config: config)
+        }
+    }
+
+    func delete(_ conversation: Conversation, store: TodoHubStore, hosts: [HostEntity]) {
+        run("Couldn't Delete Conversation", conversation, hosts: hosts) { config in
+            try await store.deleteConversation(conversation, config: config)
+        }
+    }
+
+    func copyResumeCommand(_ conversation: Conversation) {
+        PlatformSupport.pasteboardString = ResumeCommand.string(for: conversation)
+        copiedTask?.cancel()
+        withAnimation { showingCopied = true }
+        copiedTask = Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation { showingCopied = false }
+        }
+    }
+
+    private func run(_ failureTitle: String, _ conversation: Conversation, hosts: [HostEntity],
+                     _ body: @escaping (HostConnectionConfig) async throws -> Void) {
+        let todoID = conversation.todoId
+        inFlight.insert(todoID)
+        Task {
+            defer { inFlight.remove(todoID) }
+            do {
+                try await body(HostLookup.config(for: conversation.computer, in: hosts))
+            } catch {
+                failure = Failure(title: failureTitle, message: Self.message(for: error, computer: conversation.computer))
+            }
+        }
+    }
+
+    /// Failure copy without SSH words: missing access points to Settings.
+    static func message(for error: Error, computer: Computer) -> String {
+        let setUp = "This device can't reach \(computer.name) yet. Set up access in Settings."
+        if error is HostLookup.Failure { return setUp }
+        switch error as? SSHRemoteError {
+        case .unreachable?: return "Can't reach \(computer.name). Check it's awake and on Tailscale."
+        case .authenticationFailed?: return setUp
+        default: return TodoHubStore.message(for: error)
+        }
+    }
+}
+
+extension View {
+    /// The delete confirmation, failure alert and Copied toast for `actions`.
+    func conversationActions(_ actions: ConversationRowActions, store: TodoHubStore, hosts: [HostEntity]) -> some View {
+        modifier(ConversationActionsPresenter(actions: actions, store: store, hosts: hosts))
+    }
+
+    /// Swipes and context menu for a conversation row: leading Copy resume command; trailing
+    /// Delete… and, while it runs, Close.
+    func conversationRowMenu(_ conversation: Conversation, isRunning: Bool, actions: ConversationRowActions,
+                             store: TodoHubStore, hosts: [HostEntity], open: (() -> Void)?) -> some View {
+        modifier(ConversationRowMenu(conversation: conversation, isRunning: isRunning, actions: actions,
+                                     store: store, hosts: hosts, open: open))
+    }
+
+    /// Makes the whole row open something while buttons inside it stay tappable.
+    func rowTap(_ action: (() -> Void)?) -> some View {
+        contentShape(Rectangle())
+            .onTapGesture { action?() }
+            .accessibilityAddTraits(action == nil ? [] : .isButton)
+            .accessibilityAction { action?() }
+    }
+}
+
+private struct ConversationActionsPresenter: ViewModifier {
+    @Bindable var actions: ConversationRowActions
+    let store: TodoHubStore
+    let hosts: [HostEntity]
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                "Delete this conversation?",
+                isPresented: Binding(get: { actions.deleteTarget != nil }, set: { if !$0 { actions.deleteTarget = nil } }),
+                titleVisibility: .visible,
+                presenting: actions.deleteTarget
+            ) { conversation in
+                Button("Delete Conversation", role: .destructive) {
+                    actions.delete(conversation, store: store, hosts: hosts)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { conversation in
+                Text(conversation.deleteConfirmationMessage)
+            }
+            .alert(
+                actions.failure?.title ?? "",
+                isPresented: Binding(get: { actions.failure != nil }, set: { if !$0 { actions.failure = nil } }),
+                presenting: actions.failure
+            ) { _ in
+                Button("OK", role: .cancel) {}
+            } message: { failure in
+                Text(failure.message)
+            }
+            .overlay(alignment: .top) {
+                if actions.showingCopied {
+                    CopiedToast().transition(.opacity)
+                }
+            }
+    }
+}
+
+private struct ConversationRowMenu: ViewModifier {
+    let conversation: Conversation
+    let isRunning: Bool
+    let actions: ConversationRowActions
+    let store: TodoHubStore
+    let hosts: [HostEntity]
+    let open: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        content
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                Button {
+                    actions.copyResumeCommand(conversation)
+                } label: {
+                    Label("Copy Resume Command", systemImage: "doc.on.doc")
+                }
+                .tint(DS.accent)
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button {
+                    actions.deleteTarget = conversation
+                } label: {
+                    Label("Delete…", systemImage: "trash")
+                }
+                .tint(.red)
+                .disabled(store.isOffline)
+                if isRunning {
+                    Button {
+                        actions.close(conversation, store: store, hosts: hosts)
+                    } label: {
+                        Label("Close", systemImage: "xmark.circle")
+                    }
+                    .tint(.gray)
+                    .disabled(store.isOffline)
+                }
+            }
+            .contextMenu {
+                if let open {
+                    Button(action: open) {
+                        Label("Open", systemImage: "arrow.up.forward.app")
+                    }
+                }
+                Button {
+                    actions.copyResumeCommand(conversation)
+                } label: {
+                    Label("Copy Resume Command", systemImage: "doc.on.doc")
+                }
+                Button {
+                    actions.close(conversation, store: store, hosts: hosts)
+                } label: {
+                    Label("Close Conversation", systemImage: "xmark.circle")
+                }
+                .disabled(!isRunning || store.isOffline)
+                Button(role: .destructive) {
+                    actions.deleteTarget = conversation
+                } label: {
+                    Label("Delete Conversation…", systemImage: "trash")
+                }
+                .disabled(store.isOffline)
+            }
+    }
+}
+
+/// The top-of-list sync problem: offline (with Retry) or a background issue such as a
+/// rejected token.
+struct ListStatusBanner: View {
+    let store: TodoHubStore
+
+    var body: some View {
+        if store.isOffline {
+            Section {
+                HStack(spacing: DS.spacing.m) {
+                    Label(offlineText, systemImage: "wifi.slash")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Retry") { Task { await store.refresh() } }
+                        .buttonStyle(.borderless)
+                        .tint(DS.accent)
+                }
+            }
+        } else if let issue = store.backgroundIssue {
+            Section {
+                Label(issue, systemImage: "exclamationmark.triangle")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var offlineText: String {
+        guard let ago = AppTheme.relativeTime(from: store.cachedAt) else { return "Offline · showing saved todos" }
+        return "Offline · showing todos from \(ago)"
+    }
+}
+
+extension HostEditorPrefill {
+    /// "Set Up" for a hub computer: the host editor in create mode with its address filled in.
+    init(computer: Computer) {
+        self.init(displayName: computer.name, hostname: computer.hostname, port: computer.port,
+                  username: computer.username)
+    }
+}

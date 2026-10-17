@@ -177,7 +177,7 @@ private struct Tag: View {
 
 /// A computer's conversations. Looks up its SSH host and key (a Keychain read) once when it
 /// appears, not on every render.
-private struct ComputerConversations: View {
+struct ComputerConversations: View {
     let computer: Computer
     let linkedIDs: Set<String>
     let actionError: String?
@@ -354,7 +354,7 @@ struct NewTodoFromConversationSheet: View {
     }
 }
 
-private struct NewTodoDetailsForm: View {
+struct NewTodoDetailsForm: View {
     let computer: Computer
     let remote: RemoteConversation
     let defaultSection: TodoSection
