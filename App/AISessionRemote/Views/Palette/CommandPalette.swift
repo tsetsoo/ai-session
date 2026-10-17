@@ -1,23 +1,32 @@
 import AISessionCore
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// ⌘K: a floating panel centred over the shell that jumps to a conversation, todo or project,
 /// or runs an action (`PaletteModel` lists and ranks them).
 ///
-/// The search field keeps keyboard focus: ↑/↓ move, ⏎ opens, ⌘⏎ opens in a new window (Mac)
+/// The search field has keyboard focus: ↑/↓ move, ⏎ opens, ⌘⏎ opens in a new window (Mac)
 /// and esc closes, all through `.onKeyPress` on the field. Clicking outside the panel closes it.
+/// Terminals don't take focus while it is open (`AppModel.isPaletteOpen`).
 struct CommandPalette: View {
     @Binding var isPresented: Bool
     /// The shell's selected todo, for "Link a conversation to …".
     let selectedTodoID: String?
     /// A row was chosen; `newWindow` is ⌘⏎. The palette has already closed.
     let onActivate: (_ item: PaletteItem, _ newWindow: Bool) -> Void
+    /// Closed with esc or a click outside, choosing nothing.
+    let onDismiss: () -> Void
 
     @Environment(AppModel.self) private var model
     @State private var query: String
     /// The highlighted row's id; `nil` is the first row.
     @State private var highlighted: String?
     @FocusState private var fieldFocused: Bool
+    #if os(macOS)
+    @Environment(\.controlActiveState) private var activeState
+    #endif
     /// The results' natural height; the list scrolls past `maxResultsHeight`.
     @State private var resultsHeight: CGFloat = 300
 
@@ -26,10 +35,12 @@ struct CommandPalette: View {
     private static let searchPrompt = "Search conversations, todos and actions"
 
     init(isPresented: Binding<Bool>, selectedTodoID: String? = nil, initialQuery: String = "",
-         onActivate: @escaping (_ item: PaletteItem, _ newWindow: Bool) -> Void) {
+         onActivate: @escaping (_ item: PaletteItem, _ newWindow: Bool) -> Void,
+         onDismiss: @escaping () -> Void = {}) {
         _isPresented = isPresented
         self.selectedTodoID = selectedTodoID
         self.onActivate = onActivate
+        self.onDismiss = onDismiss
         _query = State(initialValue: initialQuery)
     }
 
@@ -45,7 +56,7 @@ struct CommandPalette: View {
             Color(white: 0.08).opacity(0.18)
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
-                .onTapGesture { isPresented = false }
+                .onTapGesture(perform: dismiss)
                 .accessibilityHidden(true)
             panel(groups: groups, items: items, current: current)
                 .frame(maxWidth: Self.width)
@@ -88,12 +99,6 @@ struct CommandPalette: View {
                 .focused($fieldFocused)
                 .accessibilityLabel(Self.searchPrompt)
                 .onChange(of: query) { _, _ in highlighted = nil }
-                // The field keeps focus while the palette is open: a terminal that connects
-                // (or the window settling) would otherwise take the keys. Clicking outside closes
-                // the palette instead.
-                .onChange(of: fieldFocused) { _, focused in
-                    if !focused { DispatchQueue.main.async { fieldFocused = true } }
-                }
                 .onKeyPress(.downArrow) {
                     move(by: 1, items: items, current: current)
                     return .handled
@@ -103,7 +108,7 @@ struct CommandPalette: View {
                     return .handled
                 }
                 .onKeyPress(.escape) {
-                    isPresented = false
+                    dismiss()
                     return .handled
                 }
                 .onKeyPress(keys: [.return]) { press in
@@ -123,7 +128,30 @@ struct CommandPalette: View {
         }
         .padding(.horizontal, DS.spacing.l)
         .frame(height: 52)
-        .onAppear { fieldFocused = true }
+        .onAppear(perform: focusField)
+        #if os(macOS)
+        // Coming back to the window (or the window settling at launch) can leave focus
+        // elsewhere: take it again on becoming key, only then, so nothing loops.
+        .onChange(of: activeState) { _, state in
+            if state == .key { focusField() }
+        }
+        #endif
+    }
+
+    /// Focus with the caret after the query, rather than the query selected.
+    private func focusField() {
+        fieldFocused = true
+        #if os(macOS)
+        DispatchQueue.main.async {
+            guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor else { return }
+            editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
+        }
+        #endif
+    }
+
+    private func dismiss() {
+        isPresented = false
+        onDismiss()
     }
 
     private func move(by step: Int, items: [PaletteItem], current: String?) {
@@ -158,7 +186,7 @@ struct CommandPalette: View {
                                 .padding(.bottom, 4)
                                 .accessibilityAddTraits(.isHeader)
                             ForEach(group.items) { item in
-                                row(item, isHighlighted: item.id == current)
+                                row(item, bold: group.highlights[item.id] ?? [], isHighlighted: item.id == current)
                                     .id(item.id)
                             }
                         }
@@ -182,11 +210,11 @@ struct CommandPalette: View {
         }
     }
 
-    private func row(_ item: PaletteItem, isHighlighted: Bool) -> some View {
+    private func row(_ item: PaletteItem, bold: [Range<Int>], isHighlighted: Bool) -> some View {
         Button {
             activate(item, newWindow: false)
         } label: {
-            PaletteRow(item: item, query: query)
+            PaletteRow(item: item, bold: bold)
                 .padding(.horizontal, 10)
                 .frame(height: item.isAction ? 36 : 40)
                 .background(isHighlighted ? DS.accentTint : Color.clear,
@@ -226,11 +254,12 @@ private struct ResultsHeightKey: PreferenceKey {
 // MARK: - Rows
 
 /// One palette row, after the MacPalette board: a status dot or icon, the title with the
-/// query's match in bold, "Sp · mac-studio", then the status and ⌘n hint (conversations) or the
-/// shortcut (actions).
+/// characters that ranked it in bold, "Sp · mac-studio", then the status and ⌘n hint
+/// (conversations) or the shortcut (actions).
 private struct PaletteRow: View {
     let item: PaletteItem
-    let query: String
+    /// Character offsets into the title (`PaletteGroup.highlights`).
+    let bold: [Range<Int>]
 
     var body: some View {
         HStack(spacing: 10) {
@@ -325,16 +354,15 @@ private struct PaletteRow: View {
         }
     }
 
-    /// The query's first contiguous match in bold (case- and accent-insensitive); a scattered
-    /// fuzzy match isn't marked.
     private func highlighted(_ text: String) -> AttributedString {
         var attributed = AttributedString(text)
-        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !item.isAction, !query.isEmpty,
-              let range = attributed.range(of: query, options: [.caseInsensitive, .diacriticInsensitive])
-        else { return attributed }
-        attributed[range].inlinePresentationIntent = .stronglyEmphasized
-        if isNeedsYou { attributed[range].foregroundColor = DS.accent }
+        let count = attributed.characters.count
+        for range in bold where range.upperBound <= count {
+            let lower = attributed.characters.index(attributed.startIndex, offsetBy: range.lowerBound)
+            let upper = attributed.characters.index(attributed.startIndex, offsetBy: range.upperBound)
+            attributed[lower..<upper].inlinePresentationIntent = .stronglyEmphasized
+            if isNeedsYou { attributed[lower..<upper].foregroundColor = DS.accent }
+        }
         return attributed
     }
 

@@ -97,12 +97,62 @@ final class PaletteModelTests: XCTestCase {
     func testQueryRanksByScoreAndGroupsTodosAndProjects() {
         let result = groups("rate")
         XCTAssertEqual(result.map(\.kind), [.conversations, .todos, .actions])
-        let conversations = ids(result, .conversations)
-        XCTAssertEqual(conversations.first, "c:t1")
-        XCTAssertEqual(Array(conversations.prefix(2)), ["c:t1", "c:t5"])
+        // Only whole "rate" matches: the scattered r…a…t…e in "Draft the HTIF follow-up" and
+        // "Clean up scraper retries" is dropped once something matches contiguously.
+        XCTAssertEqual(ids(result, .conversations), ["c:t1", "c:t5"])
         // Todos: not running and not done; t10's conversation is closed, so it is a todo here.
-        XCTAssertEqual(Set(ids(result, .todos)), ["t:t8", "t:t10"])
-        XCTAssertEqual(ids(result, .todos).first, "t:t8")
+        // A title starting with the query ranks first.
+        XCTAssertEqual(ids(result, .todos), ["t:t8", "t:t10"])
+    }
+
+    // MARK: Contiguous before fuzzy
+
+    func testContiguousMatchOutranksAnyScatteredOne() {
+        let whole = PaletteMatch.best(query: "rate", candidate: "Prepare Santé rates")!
+        let scattered = PaletteMatch.best(query: "rate", candidate: "Draft the HTIF follow-up")!
+        XCTAssertEqual(whole.kind, .substring)
+        XCTAssertEqual(scattered.kind, .subsequence)
+        XCTAssertGreaterThan(whole, scattered)
+        // Even a scattered match at the very start loses to a contiguous one late in a title.
+        XCTAssertGreaterThan(PaletteMatch.best(query: "rat", candidate: "A very long title that ends in rat")!,
+                             PaletteMatch.best(query: "rat", candidate: "r a t")!)
+    }
+
+    func testWordStartBeatsMidWordWithinContiguous() {
+        let todos = [Todo(id: "a", section: .i, title: "Pirate notes"),
+                     Todo(id: "b", section: .i, title: "Rats in the attic"),
+                     Todo(id: "c", section: .i, title: "Check the rats")]
+        let result = PaletteModel.groups(query: "rat", board: board, todos: todos, projects: [],
+                                         selectedTodoID: nil, canEdit: true)
+        XCTAssertEqual(ids(result, .todos), ["t:b", "t:c", "t:a"])
+    }
+
+    func testShortQueriesKeepFuzzyRowsBelowContiguousOnes() {
+        let todos = [Todo(id: "a", section: .i, title: "Fix the rate import"),
+                     Todo(id: "b", section: .i, title: "Free the import")]
+        let result = PaletteModel.groups(query: "fr", board: board, todos: todos, projects: [],
+                                         selectedTodoID: nil, canEdit: true)
+        // "Free" has "fr"; "Fix the rate" only f…r.
+        XCTAssertEqual(ids(result, .todos), ["t:b", "t:a"])
+    }
+
+    func testFuzzyOnlyWhenNothingMatchesContiguously() {
+        let result = groups("frimp")
+        XCTAssertEqual(ids(result, .conversations), ["c:t1"])
+        // The bold characters are the ones the fuzzy match used: F, r (rate), i, m, p (import).
+        let group = result.first { $0.kind == .conversations }!
+        XCTAssertEqual(group.highlights["c:t1"], [0..<1, 8..<9, 13..<16])
+    }
+
+    func testHighlightIsTheContiguousMatchThatRanked() {
+        let group = groups("rate").first { $0.kind == .conversations }!
+        XCTAssertEqual(group.highlights["c:t1"], [8..<12])
+        // "Santé party-size rates": the word "rates", not the greedy r in "party".
+        XCTAssertEqual(group.highlights["c:t5"], [17..<21])
+        // Accents fold: "sante" bolds "Santé".
+        XCTAssertEqual(groups("sante").first { $0.kind == .conversations }!.highlights["c:t5"], [0..<5])
+        // Matched on the computer only: nothing in the title is bold.
+        XCTAssertNil(groups("linux-box").first { $0.kind == .conversations }!.highlights["c:t3"])
     }
 
     func testActionsStayWhateverTheQuery() {

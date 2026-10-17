@@ -149,6 +149,18 @@ final class MacShellTests: XCTestCase {
         XCTAssertNil(PaletteModel.shortcutTarget(6, board: board, todos: DemoFixtures.todos))
     }
 
+    func testRateOnTheDemoBoardListsOnlyWholeMatches() {
+        let groups = PaletteModel.groups(query: "rate", board: board, todos: DemoFixtures.todos, projects: [],
+                                         selectedTodoID: nil, canEdit: true)
+        let titles = groups.filter { $0.kind != .actions }.flatMap(\.items).compactMap { item -> String? in
+            switch item {
+            case let .conversation(todo, _, _, _), let .todo(todo, _, _): return todo.title
+            default: return nil
+            }
+        }
+        XCTAssertEqual(titles, ["Fix the rate import", "Santé party-size rates", "Rate shopper comparison page"])
+    }
+
     func testGoingToATodoKeepsAListThatHasIt() {
         // Needs you and Running now keep what they list; a section keeps its own todos.
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t1"), from: .needsYou, board: board), .needsYou)
@@ -165,6 +177,13 @@ final class MacShellTests: XCTestCase {
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t8"), from: .projects, board: board), .section(.p))
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t1"), from: .computer("mac-studio"), board: board),
                        .runningNow)
+    }
+
+    func testDismissingThePaletteReturnsFocusToTheVisibleTerminal() {
+        XCTAssertEqual(MacShell.terminalToFocus(visibleTodoID: "t1", poppedOut: []), "t1")
+        // Popped out: the main window shows a placeholder, not a terminal.
+        XCTAssertNil(MacShell.terminalToFocus(visibleTodoID: "t1", poppedOut: ["t1"]))
+        XCTAssertNil(MacShell.terminalToFocus(visibleTodoID: nil, poppedOut: []))
     }
 
     // MARK: Demo launch

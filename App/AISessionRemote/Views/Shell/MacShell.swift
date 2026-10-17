@@ -73,9 +73,13 @@ struct MacShell: View {
         .overlay {
             if showingPalette {
                 CommandPalette(isPresented: $showingPalette, selectedTodoID: visibleTodoID,
-                               initialQuery: initialPaletteQuery, onActivate: activate)
+                               initialQuery: initialPaletteQuery, onActivate: activate,
+                               onDismiss: returnFocusToTerminal)
             }
         }
+        // While it is open, terminals leave keyboard focus in its search field.
+        .onChange(of: showingPalette, initial: true) { _, open in model.isPaletteOpen = open }
+        .onDisappear { model.isPaletteOpen = false }
         // ⌘K, ⌘1–⌘9 and ⌘N in the Conversation menu act on this window's shell.
         .focusedSceneValue(\.shellCommands, shellCommands)
         .todoStoreErrorAlert(store)
@@ -325,6 +329,21 @@ struct MacShell: View {
     private func go(to todo: Todo) {
         model.sidebarSelection = Self.sidebarTarget(showing: todo, from: sidebarItem, board: model.board)
         open(todo)
+        // Already attached, nothing reconnects to take focus: type into it straight away.
+        model.requestTerminalFocus(todoID: todo.id)
+    }
+
+    /// Esc or a click outside the palette: keyboard focus back in the terminal on screen.
+    private func returnFocusToTerminal() {
+        if let id = Self.terminalToFocus(visibleTodoID: visibleTodoID, poppedOut: model.poppedOut) {
+            model.requestTerminalFocus(todoID: id)
+        }
+    }
+
+    /// The terminal the detail column shows, if any: a popped-out todo shows a placeholder.
+    static func terminalToFocus(visibleTodoID: String?, poppedOut: Set<String>) -> String? {
+        guard let visibleTodoID, !poppedOut.contains(visibleTodoID) else { return nil }
+        return visibleTodoID
     }
 
     /// The current list when it has the todo, else Running now for a running conversation, else
