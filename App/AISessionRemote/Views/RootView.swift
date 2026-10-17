@@ -4,7 +4,17 @@ import SwiftUI
 struct RootView: View {
     var body: some View {
         #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("-demoConversationPicker") {
+        if DemoFixtures.isEnabled, DemoFixtures.screen == "terminal" {
+            NavigationStack {
+                TerminalScreen(
+                    hostConfig: DemoFixtures.config,
+                    mode: .attach("demo"),
+                    title: "Fix the rate import",
+                    onKill: {},
+                    makeTransport: { _, _ in DemoTransport() }
+                )
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("-demoConversationPicker") {
             ConversationPickerDemo()
         } else {
             tabs

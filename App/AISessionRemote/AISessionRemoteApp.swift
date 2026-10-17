@@ -9,6 +9,8 @@ struct AISessionRemoteApp: App {
         HostProvisioning.runFromCommandLineIfRequested()
     }
 
+    @AppStorage("terminal.fontSize") private var terminalFontSize = TerminalAppearance.defaultFontSize
+
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -38,6 +40,20 @@ struct AISessionRemoteApp: App {
         .commands {
             // Frees ⌘N for "New Session" (bound on the sessions list's add button).
             CommandGroup(replacing: .newItem) {}
+            CommandMenu("Conversation") {
+                Button("Bigger Text") {
+                    terminalFontSize = TerminalAppearance.stepped(terminalFontSize, by: 1)
+                }
+                .keyboardShortcut("+", modifiers: .command)
+                Button("Smaller Text") {
+                    terminalFontSize = TerminalAppearance.stepped(terminalFontSize, by: -1)
+                }
+                .keyboardShortcut("-", modifiers: .command)
+                Button("Default Text Size") {
+                    terminalFontSize = TerminalAppearance.defaultFontSize
+                }
+                .keyboardShortcut("0", modifiers: .command)
+            }
         }
         #endif
     }

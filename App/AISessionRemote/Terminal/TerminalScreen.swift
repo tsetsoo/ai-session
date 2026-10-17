@@ -44,9 +44,18 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// the main thread.
     private let resizeDebouncer: TerminalResizeDebouncer
 
-    init(hostConfig: HostConnectionConfig, mode: TerminalMode) {
+    private let makeTransport: (HostConnectionConfig, TerminalMode) -> any TerminalTransport
+
+    init(
+        hostConfig: HostConnectionConfig,
+        mode: TerminalMode,
+        makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
+            SSHTerminalSession(config: $0, mode: $1)
+        }
+    ) {
         self.hostConfig = hostConfig
         self.mode = mode
+        self.makeTransport = makeTransport
         self.coalescer = TerminalOutputCoalescer { drain in
             DispatchQueue.main.async(execute: drain)
         }
@@ -75,7 +84,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
         let cols = terminal.cols > 0 ? terminal.cols : 80
         let rows = terminal.rows > 0 ? terminal.rows : 24
 
-        let session = SSHTerminalSession(config: hostConfig, mode: mode)
+        let session = makeTransport(hostConfig, mode)
         session.onOutput = { [weak self] bytes in
             // Arrives off the main thread; the coalescer is thread-safe and does the main-thread
             // hop itself before `feed`ing SwiftTerm.
@@ -286,13 +295,18 @@ struct TerminalScreen: View {
         hostConfig: HostConnectionConfig,
         mode: TerminalMode,
         title: String,
-        onKill: @escaping () async throws -> Void
+        onKill: @escaping () async throws -> Void,
+        makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
+            SSHTerminalSession(config: $0, mode: $1)
+        }
     ) {
         self.hostConfig = hostConfig
         self.mode = mode
         self.title = title
         self.onKill = onKill
-        _coordinator = State(initialValue: TerminalCoordinator(hostConfig: hostConfig, mode: mode))
+        _coordinator = State(initialValue: TerminalCoordinator(
+            hostConfig: hostConfig, mode: mode, makeTransport: makeTransport
+        ))
     }
 
     private var palette: TerminalPalette {
