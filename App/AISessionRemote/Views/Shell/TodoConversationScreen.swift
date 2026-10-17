@@ -45,6 +45,9 @@ struct TodoConversationScreen: View {
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var hostList: HostList
     @State private var loader: ConversationLoader
+    /// The `.start` open happens once per screen: coming back to it (another tab and back)
+    /// after Close must not resume the conversation by itself.
+    @State private var didOpen = false
 
     init(todo: Todo, store: TodoHubStore, onAppear: OnAppear = .start, request: Binding<FrameRequest?> = .constant(nil),
          placeholder: FramePlaceholder? = nil, isSuspended: Bool = false, onPopOut: (() -> Void)? = nil,
@@ -76,7 +79,8 @@ struct TodoConversationScreen: View {
             }
             .task {
                 hostList.hosts = hosts
-                guard onAppear == .start, loader.phase == .idle else { return }
+                guard onAppear == .start, !didOpen, loader.phase == .idle else { return }
+                didOpen = true
                 await loader.start()
             }
     }

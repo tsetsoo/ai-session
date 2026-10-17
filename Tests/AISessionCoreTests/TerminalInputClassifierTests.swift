@@ -17,6 +17,17 @@ final class TerminalInputClassifierTests: XCTestCase {
         }
     }
 
+    /// The kitty keyboard protocol's flags reply (`CSI ? flags u`) answers a query; a plain
+    /// `CSI … u` is a key the user pressed.
+    func testKittyKeyboardFlagsReplyIsATerminalReply() {
+        XCTAssertTrue(TerminalInputClassifier.isTerminalReport(bytes("\u{1B}[?1u")))
+        XCTAssertTrue(TerminalInputClassifier.isTerminalReport(bytes("\u{1B}[?31u")))
+        XCTAssertTrue(TerminalInputClassifier.isTerminalReport(bytes("\u{1B}[?0u")))
+        for key in ["\u{1B}[97u", "\u{1B}[97;5u", "\u{1B}[13u", "\u{1B}[27;2u", "\u{1B}[?1;5u"] {
+            XCTAssertFalse(TerminalInputClassifier.isTerminalReport(bytes(key)), key.debugDescription)
+        }
+    }
+
     func testFocusReportsAreTerminalReplies() {
         XCTAssertTrue(TerminalInputClassifier.isTerminalReport(bytes("\u{1B}[I")))
         XCTAssertTrue(TerminalInputClassifier.isTerminalReport(bytes("\u{1B}[O")))

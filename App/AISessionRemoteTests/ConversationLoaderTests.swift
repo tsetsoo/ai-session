@@ -16,6 +16,31 @@ final class ConversationLoaderTests: XCTestCase {
 
     private final class Calls { var open = 0; var resolve = 0 }
 
+    /// Holds `openConversation` until the test opens it, and tells the test when it got there.
+    @MainActor
+    private final class Gate {
+        private var reached = false
+        private var reachedWaiter: CheckedContinuation<Void, Never>?
+        private var passWaiter: CheckedContinuation<Void, Never>?
+
+        func pass() async {
+            reached = true
+            reachedWaiter?.resume()
+            reachedWaiter = nil
+            await withCheckedContinuation { passWaiter = $0 }
+        }
+
+        func untilReached() async {
+            guard !reached else { return }
+            await withCheckedContinuation { reachedWaiter = $0 }
+        }
+
+        func open() {
+            passWaiter?.resume()
+            passWaiter = nil
+        }
+    }
+
     private func loader(
         open: @escaping () async throws -> Conversation,
         cached: Conversation? = nil,
@@ -64,9 +89,16 @@ final class ConversationLoaderTests: XCTestCase {
     }
 
     func testOtherHubErrorMapsToHub() async {
+        let error = TodoHubError.server(status: 500, message: "boom")
+        let (l, _) = loader(open: { throw error })
+        await l.start()
+        XCTAssertEqual(l.phase, .problem(.hub(TodoHubStore.message(for: error))))
+    }
+
+    func testRejectedTokenIsTokenRejected() async {
         let (l, _) = loader(open: { throw TodoHubError.unauthorized })
         await l.start()
-        XCTAssertEqual(l.phase, .problem(.hub(TodoHubStore.message(for: TodoHubError.unauthorized))))
+        XCTAssertEqual(l.phase, .problem(.tokenRejected))
     }
 
     func testMissingHostIsNeedsAccess() async {
@@ -123,16 +155,21 @@ final class ConversationLoaderTests: XCTestCase {
 
     func testStartWhilePreparingIsNoOp() async {
         let conv = conversation()
+        let gate = Gate()
         let (l, calls) = loader(open: {
-            try await Task.sleep(nanoseconds: 100_000_000)
+            await gate.pass()
             return conv
         })
-        async let first: Void = l.start()
-        await Task.yield()
+        let first = Task { await l.start() }
+        // The first start is inside openConversation: deterministically `.preparing`.
+        await gate.untilReached()
         XCTAssertEqual(l.phase, .preparing)
         await l.start()
-        await first
         XCTAssertEqual(calls.open, 1)
+        gate.open()
+        await first.value
+        XCTAssertEqual(calls.open, 1)
+        guard case .ready = l.phase else { return XCTFail("\(l.phase)") }
     }
 
     func testStartFromProblemRetries() async {
@@ -149,16 +186,62 @@ final class ConversationLoaderTests: XCTestCase {
         XCTAssertEqual(calls.open, 2)
     }
 
-    func testConnectionFailedIsUnreachable() async {
-        let l = await readyLoader()
-        l.connectionFailed()
-        XCTAssertEqual(l.phase, .problem(.unreachable("Mac Studio")))
+    func testConnectionFailureCards() async {
+        let cases: [(TerminalConnectFailure, FrameProblem)] = [
+            (.unreachable, .unreachable("Mac Studio")),
+            (.signIn, .signInFailed("Mac Studio")),
+            (.hostKeyChanged, .hostKeyChanged("Mac Studio")),
+            (.terminal, .terminalFailed("Mac Studio")),
+        ]
+        for (failure, problem) in cases {
+            let l = await readyLoader()
+            l.connectionFailed(failure)
+            XCTAssertEqual(l.phase, .problem(problem))
+        }
     }
 
     func testConnectionFailedIgnoredWhenNotReady() {
         let (l, _) = loader(open: { self.conversation() })
-        l.connectionFailed()
+        l.connectionFailed(.unreachable)
         XCTAssertEqual(l.phase, .idle)
+    }
+
+    func testClassifyConnectErrors() {
+        typealias F = TerminalConnectFailure
+        // Can't reach the computer: whatever an earlier handshake noted.
+        XCTAssertEqual(F.classify(SSHRemoteError.unreachable, signInProblem: nil), .unreachable)
+        XCTAssertEqual(F.classify(SSHRemoteError.unreachable, signInProblem: .hostKeyChanged), .unreachable)
+        XCTAssertEqual(F.classify(SSHTerminalSessionError.connectionFailed, signInProblem: nil), .unreachable)
+        // Sign-in: a rejected or unreadable key.
+        XCTAssertEqual(F.classify(SSHRemoteError.authenticationFailed, signInProblem: nil), .signIn)
+        XCTAssertEqual(F.classify(SSHTerminalSessionError.invalidPrivateKey, signInProblem: nil), .signIn)
+        XCTAssertEqual(F.classify(SSHTerminalSessionError.channelSetupFailed, signInProblem: .keyRejected), .signIn)
+        // The host's identity changed: the handshake noted it, whatever the channel said.
+        XCTAssertEqual(F.classify(SSHRemoteError.authenticationFailed, signInProblem: .hostKeyChanged), .hostKeyChanged)
+        XCTAssertEqual(F.classify(SSHTerminalSessionError.channelSetupFailed, signInProblem: .hostKeyChanged),
+                       .hostKeyChanged)
+        XCTAssertEqual(
+            F.classify(SSHChannelOpenFailure(underlying: SSHRemoteError.authenticationFailed), signInProblem: nil),
+            .signIn
+        )
+        // Signed in but no terminal.
+        XCTAssertEqual(F.classify(SSHTerminalSessionError.channelSetupFailed, signInProblem: nil), .terminal)
+    }
+
+    func testSignInRecordFollowsTheNewestHandshake() {
+        let host = "record-\(UUID().uuidString)"
+        XCTAssertNil(SSHSignInRecord.problem(hostID: host))
+        SSHSignInRecord.hostKeyChecked(hostID: host, matched: false)
+        XCTAssertEqual(SSHSignInRecord.problem(hostID: host), .hostKeyChanged)
+        // Forgetting the host's key (Settings) clears it.
+        TOFUHostKeyStore(defaults: UserDefaults(suiteName: host)!).forget(hostID: host)
+        XCTAssertNil(SSHSignInRecord.problem(hostID: host))
+        SSHSignInRecord.hostKeyChecked(hostID: host, matched: true)
+        SSHSignInRecord.keyRejected(hostID: host)
+        XCTAssertEqual(SSHSignInRecord.problem(hostID: host), .keyRejected)
+        // A new handshake starts with the host's identity: an earlier rejection is stale.
+        SSHSignInRecord.hostKeyChecked(hostID: host, matched: true)
+        XCTAssertNil(SSHSignInRecord.problem(hostID: host))
     }
 
     func testResetAfterCloseReturnsToIdleAndCanStartAgain() async {

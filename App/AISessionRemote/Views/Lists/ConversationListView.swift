@@ -85,7 +85,8 @@ struct ConversationListView: View {
             }
             .listStyle(.insetGrouped)
         }
-        .task { await model.refreshLiveness(hosts: hosts) }
+        // Again whenever a conversation changed after its computer was listed.
+        .task(id: model.relistRequests) { await model.refreshLiveness(hosts: hosts) }
         .refreshable {
             // Background: a failure shows in the banner, not in the shell's Todos alert.
             await store.refresh(trigger: .background)

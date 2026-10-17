@@ -1,7 +1,8 @@
 /// Tells what the user typed apart from what the terminal answers on its own. A terminal view
 /// sends both through the same channel: keystrokes, and its replies to queries from the host
 /// (device attributes, status and cursor reports, focus and mouse reports, and the colour,
-/// version and mode replies tmux asks for when a client attaches).
+/// version and mode replies tmux asks for when a client attaches, and the kitty keyboard
+/// flags reply).
 public enum TerminalInputClassifier {
     private static let esc: UInt8 = 0x1B
     private static let csi: UInt8 = 0x5B        // [
@@ -34,6 +35,12 @@ public enum TerminalInputClassifier {
         // X10 mouse: `ESC [ M` and three raw bytes (button, column, row).
         if body.first == UInt8(ascii: "M") {
             return body.count == 4
+        }
+        // Kitty keyboard flags reply: `CSI ? flags u`. Without the `?`, `CSI … u` is a key event
+        // (user input).
+        if body.last == UInt8(ascii: "u") {
+            guard body.count >= 2, body.first == UInt8(ascii: "?") else { return false }
+            return body.dropFirst().dropLast().allSatisfy { (0x30...0x39).contains($0) }
         }
         guard let final = body.last, replyFinals.contains(final), body.count >= 2 else { return false }
         // Parameter bytes (0x30–0x3F: digits ; < = > ?) then intermediates (0x20–0x2F, e.g. `$`).
