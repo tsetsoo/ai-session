@@ -14,7 +14,13 @@ struct AISessionRemoteApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
-                .onAppear { AttentionNotifier.requestAuthorizationIfNeeded() }
+                .onAppear {
+                    #if DEBUG
+                    // Demo launches (screenshots) must not be covered by the permission alert.
+                    if DemoFixtures.isEnabled { return }
+                    #endif
+                    AttentionNotifier.requestAuthorizationIfNeeded()
+                }
                 .onReceive(NotificationCenter.default.publisher(
                     for: PlatformSupport.didEnterBackgroundNotification
                 )) { _ in
@@ -45,6 +51,12 @@ struct AISessionRemoteApp: App {
                     terminalFontSize = TerminalAppearance.stepped(terminalFontSize, by: 1)
                 }
                 .keyboardShortcut("+", modifiers: .command)
+                // On a US layout ⌘+ needs Shift; plain ⌘= is what people press. Hidden alias.
+                Button("Bigger Text (⌘=)") {
+                    terminalFontSize = TerminalAppearance.stepped(terminalFontSize, by: 1)
+                }
+                .keyboardShortcut("=", modifiers: .command)
+                .hidden()
                 Button("Smaller Text") {
                     terminalFontSize = TerminalAppearance.stepped(terminalFontSize, by: -1)
                 }
