@@ -172,6 +172,11 @@ fn checked_folder(folder: &str, username: &str) -> Result<String, ProjectError> 
     if !(folder.starts_with('~') || folder.starts_with('/')) {
         return Err(ProjectError::BadRequest("folder must start with ~ or /"));
     }
+    // Folders are compared segment by segment without resolving them, so `..` would let a
+    // project slip inside another one (and never match a conversation's cwd).
+    if folder.split('/').any(|s| s.trim() == "..") {
+        return Err(ProjectError::BadRequest("folder must not contain .."));
+    }
     Ok(paths::normalize(folder, username))
 }
 
@@ -555,6 +560,17 @@ mod tests {
         // The same folders on another computer are fine.
         create_ok(&pool, "spread", "~/a").await;
         create_ok(&pool, "spread", "~/c").await;
+    }
+
+    #[actix_web::test]
+    async fn folder_with_dotdot_is_400() {
+        let (_db, pool) = pool("proj");
+        seed_computers(&pool.get().unwrap());
+        create_ok(&pool, "mac", "~/programming/todo-app").await;
+        for folder in ["~/x/../programming/todo-app/crates", "~/programming/todo-app/../other", "/Users/me/.."] {
+            let (status, body) = create(&pool, "mac", folder).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{folder}: {body}");
+        }
     }
 
     #[actix_web::test]

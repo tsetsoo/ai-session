@@ -4,6 +4,7 @@
 //! Extracted memories are deduplicated across the whole project, so a conversation that
 //! read the project's digest doesn't store the same gotchas again.
 
+use unicode_normalization::UnicodeNormalization;
 use std::collections::HashSet;
 
 use actix_web::{web, HttpResponse};
@@ -34,12 +35,14 @@ const MAX_LIMIT: usize = 1000;
 const MEMORY_COLS: &str = "id, project_id, todo_id, computer_id, tool, session_id, kind, text, files, confidence,
     source, pinned, archived, created_at, updated_at";
 
-/// Normalized text for duplicate detection: lowercase, every run of characters that are
+/// Normalized text for duplicate detection: Unicode NFC, lowercase, every run of characters that are
 /// not alphanumeric (Unicode-aware, so Cyrillic letters stay) becomes one space, trimmed.
 pub(crate) fn text_key(text: &str) -> String {
     let mut key = String::with_capacity(text.len());
     let mut gap = false;
-    for c in text.chars().flat_map(char::to_lowercase) {
+    // NFC first: a decomposed "é" (e + combining accent) would otherwise lose its accent,
+    // since combining marks are not alphanumeric.
+    for c in text.nfc().flat_map(char::to_lowercase) {
         if c.is_alphanumeric() {
             if gap && !key.is_empty() {
                 key.push(' ');
@@ -708,6 +711,12 @@ mod tests {
         assert_eq!(resp.inserted.len(), 1);
         let resp = insert_bulk_db(&conn, &bulk("mac", "s4", "~/none", vec![mem(MemoryKind::Gotcha, "use wal mode")])).unwrap();
         assert_eq!(resp.duplicates, 1);
+    }
+
+    #[test]
+    fn nfd_and_nfc_share_text_key() {
+        assert_eq!(text_key("Use the caf\u{e9} build"), text_key("Use the cafe\u{301} build"));
+        assert_eq!(text_key("Use the cafe\u{301} build"), "use the caf\u{e9} build");
     }
 
     #[test]
