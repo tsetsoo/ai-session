@@ -60,11 +60,16 @@ final class ConversationRowActions {
         }
     }
 
-    /// Failure copy for work on a computer, without SSH words: missing access points to
-    /// Settings, and remote output is never shown raw. Hub errors keep the store's message.
+    /// Failure copy for work on a computer, without SSH words: missing access points to the
+    /// alert's Set Up Access (no host) or Settings (a key or sign-in problem), and remote
+    /// output is never shown raw. Hub errors keep the store's message.
     static func message(for error: Error, computer: Computer) -> String {
         let name = computer.name
         let setUp = "This device can't reach \(name) yet. Set up access in Settings."
+        // The alert's Set Up Access button opens the host editor for this one.
+        if computerToSetUp(after: error) != nil {
+            return "This device can't reach \(name) yet. Set up access to \(name) on this device."
+        }
         if error is HostLookup.Failure { return setUp }
         if error is RemoteConversations.ScriptMissing { return "\(name) needs the AI Session helpers." }
         if error is RemoteConversations.UnreadableList { return "Couldn't read the conversations on \(name)." }

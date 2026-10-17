@@ -313,6 +313,8 @@ final class SelectionAttacher {
     /// The selection's last definite state (`.running` or `.closed`): only a change acts.
     @ObservationIgnored private var lastKnown: AttachReadiness?
     @ObservationIgnored private var askedForLiveness = false
+    /// Popped out into its own window: that window's attacher asks for liveness, not this one.
+    @ObservationIgnored var isSuspended = false
     @ObservationIgnored private var generation = 0
 
     init(scheduler: @escaping Scheduler = { work in
@@ -341,13 +343,11 @@ final class SelectionAttacher {
         if selection != nil { schedule() }
     }
 
-    /// Runs the liveness refresh the selection asked for (the detail's task). A refresh can
-    /// return without publishing: superseded by another view's refresh that was then cancelled.
-    /// The selection would then wait on "Connecting to …" for good, so while it still waits,
-    /// ask again.
-    func runLivenessRefresh(_ refresh: @MainActor () async -> Void) async {
-        await refresh()
-        guard !Task.isCancelled, let todoID = selection, readiness(todoID) == .awaitingLiveness else { return }
+    /// The newest liveness refresh ended without an answer and none is running
+    /// (`AppModel.livenessAbandoned`): a selection still waiting asks again, or it would stay
+    /// on "Connecting to …" for good.
+    func livenessAbandoned() {
+        guard let todoID = selection, readiness(todoID) == .awaitingLiveness else { return }
         askedForLiveness = false
         if !isSettling { evaluate() }
     }
@@ -379,7 +379,7 @@ final class SelectionAttacher {
             if lastKnown == .running { perform(FrameRequest(kind: .detach, todoID: todoID)) }
             lastKnown = .closed
         case .awaitingLiveness:
-            if !askedForLiveness {
+            if !askedForLiveness, !isSuspended {
                 askedForLiveness = true
                 livenessRequests += 1
             }
@@ -426,13 +426,15 @@ struct ConversationDetail: View {
             attacher.select(id)
         }
         .onChange(of: readiness) { _, _ in attacher.inputsChanged() }
-        .onChange(of: poppedOut) { _, poppedOut in
-            if !poppedOut { attacher.reselect() }
+        .onChange(of: poppedOut, initial: true) { wasPoppedOut, poppedOut in
+            attacher.isSuspended = poppedOut
+            if wasPoppedOut, !poppedOut { attacher.reselect() }
         }
         .task(id: attacher.livenessRequests) {
             guard attacher.livenessRequests > 0 else { return }
-            await attacher.runLivenessRefresh { await model.refreshLiveness(hosts: hosts) }
+            await model.refreshLiveness(hosts: hosts)
         }
+        .onChange(of: model.livenessAbandoned) { _, _ in attacher.livenessAbandoned() }
     }
 
     private func placeholder(readiness: AttachReadiness, poppedOut: Bool) -> FramePlaceholder? {

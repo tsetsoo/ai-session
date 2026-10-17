@@ -8,7 +8,9 @@ final class ConversationRowActionsTests: XCTestCase {
 
     func testMissingAccessPointsToSettingsWithoutSSHWords() {
         let setUp = "This device can't reach mac-studio yet. Set up access in Settings."
-        XCTAssertEqual(ConversationRowActions.message(for: HostLookup.Failure.noHost(mac), computer: mac), setUp)
+        // No host at all: the alert's Set Up Access button opens the host editor.
+        XCTAssertEqual(ConversationRowActions.message(for: HostLookup.Failure.noHost(mac), computer: mac),
+                       "This device can't reach mac-studio yet. Set up access to mac-studio on this device.")
         XCTAssertEqual(ConversationRowActions.message(for: HostLookup.Failure.keyUnavailable("mac-studio"), computer: mac), setUp)
         XCTAssertEqual(ConversationRowActions.message(for: SSHRemoteError.authenticationFailed, computer: mac), setUp)
     }

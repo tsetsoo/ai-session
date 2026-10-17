@@ -34,6 +34,12 @@ final class AppModel {
     /// Computers a liveness refresh has finished for, answered or not. Until then the Mac's
     /// selection waits before attaching.
     private(set) var livenessChecked: Set<String> = []
+    /// Bumped when the newest liveness refresh ended without publishing (cancelled, or
+    /// superseded by one that was then cancelled) and none is left running. Selections still
+    /// waiting on liveness ask again on this, and only on this: re-asking while another
+    /// refresh runs would supersede it, and two waiting frames would do that to each other
+    /// forever.
+    private(set) var livenessAbandoned = 0
 
     var sidebarSelection: SidebarItem?
     var selectedTodoID: String?
@@ -45,8 +51,13 @@ final class AppModel {
     private let listTmuxOverride: TmuxListing?
     /// Incremented per refresh; only the latest, uncancelled one may publish its result.
     private var livenessGeneration = 0
-    /// `startSync` ran its first load; live updates keep the store current after that.
-    private var syncStarted = false
+    /// The generation whose result is in `liveTmux` (0: none yet).
+    private var publishedLivenessGeneration = 0
+    private var livenessRefreshesRunning = 0
+    /// The first load and the start of live updates, owned by the model rather than by the
+    /// view that asked first: that view going away (an iPad shell swap at launch, a restored
+    /// pop-out window closed) must not cancel it.
+    private var firstLoad: Task<Void, Never>?
 
     var board: ConversationBoard {
         ConversationBoard(todos: store.todos, conversations: store.conversations, liveTmux: liveTmux)
@@ -96,10 +107,15 @@ final class AppModel {
         #if DEBUG
         if DemoFixtures.isEnabled { return }
         #endif
-        guard store.isConfigured, !syncStarted else { return }
-        syncStarted = true
-        await store.refresh()
-        store.startLiveUpdates()
+        guard store.isConfigured else { return }
+        if firstLoad == nil {
+            let store = store
+            firstLoad = Task {
+                await store.refresh()
+                store.startLiveUpdates()
+            }
+        }
+        await firstLoad?.value
     }
 
     /// Lists tmux sessions once per hub computer, in parallel. A computer with no matching
@@ -111,6 +127,13 @@ final class AppModel {
         #endif
         livenessGeneration += 1
         let generation = livenessGeneration
+        livenessRefreshesRunning += 1
+        defer {
+            livenessRefreshesRunning -= 1
+            if livenessRefreshesRunning == 0, publishedLivenessGeneration != livenessGeneration {
+                livenessAbandoned += 1
+            }
+        }
         let computers = store.computers
         let listing = listTmuxOverride ?? Self.sshListing(hosts: hosts, computers: computers)
         var result: [String: Set<String>] = [:]
@@ -124,6 +147,7 @@ final class AppModel {
         }
         guard generation == livenessGeneration, !Task.isCancelled else { return }
         liveTmux = result
+        publishedLivenessGeneration = generation
         livenessChecked.formUnion(computers.map(\.id))
     }
 
