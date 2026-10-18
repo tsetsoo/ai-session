@@ -45,7 +45,7 @@ public enum TmuxCommandBuilder {
     }
 
     /// PTY command for a todo's conversation: the host-side `ai-todo-open` script attaches to
-    /// the tmux session, or creates/resumes the conversation (`claude` or `codex`) if tmux is
+    /// the tmux session, or creates/resumes the conversation (`claude`, `codex`, or `cursor`) if tmux is
     /// gone. `cwd` may start with `~`; the script expands it.
     ///
     /// The tool is passed as a 4th argument only when it isn't `claude`: scripts installed

@@ -326,8 +326,39 @@ else
   [[ $? -eq 94 ]] || fail "unknown codex conversation should exit 94"
 fi
 if AI_TODO_OPEN_DETACH=1 "$OPEN" "$NAME" '~/programming' "$X_LINKED" codex >/dev/null 2>&1; then fail "codex open accepted a claude tmux name"; fi
-if AI_TODO_OPEN_DETACH=1 "$OPEN" "$XNAME" '~/programming' "$X_LINKED" cursor >/dev/null 2>&1; then fail "open accepted an unknown tool"; fi
+if AI_TODO_OPEN_DETACH=1 "$OPEN" "$XNAME" '~/programming' "$X_LINKED" cursor >/dev/null 2>&1; then fail "cursor open accepted a codex tmux name"; fi
 pass "ai-todo-open codex: resumes in tmux, attaches when running, exits 94 for unknown ids, checks tool vs name"
+
+U_LINKED=4e21e083-3303-468c-a212-e5d1cd2c7515
+UNAME="ai/cursor/todo-0f3a9c21"
+mkdir -p "${HOME}/.cursor/chats/workspace/${U_LINKED}"
+FAKE_AGENT="${SANDBOX}/bin/agent"
+AGENT_LOG="${SANDBOX}/agent.log"
+cat >"$FAKE_AGENT" <<EOF
+#!/bin/sh
+echo "\$(pwd -P) \$*" >>"$AGENT_LOG"
+[ "\$1" = --resume ] && exec sleep 300
+exit 0
+EOF
+chmod +x "$FAKE_AGENT"
+export AI_TODO_AGENT_BIN="$FAKE_AGENT"
+out="$(AI_TODO_OPEN_DETACH=1 "$OPEN" "$UNAME" '~/programming' "$U_LINKED" cursor)"
+[[ "$out" == resumed ]] || fail "cursor open printed '$out', expected resumed"
+for _ in $(seq 1 50); do [[ -s "$AGENT_LOG" ]] && break; sleep 0.1; done
+[[ "$(cat "$AGENT_LOG")" == "${HOME}/programming --resume ${U_LINKED}" ]] || fail "unexpected cursor start: $(cat "$AGENT_LOG")"
+[[ "$(AI_TODO_OPEN_DETACH=1 "$OPEN" "$UNAME" '~/programming' "$U_LINKED" cursor)" == attach ]] || fail "second cursor open did not attach"
+if AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/cursor/todo-nothere" '~/programming' aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee cursor >/dev/null 2>&1; then
+  fail "cursor open accepted an unknown conversation"
+else
+  [[ $? -eq 94 ]] || fail "unknown cursor conversation should exit 94"
+fi
+if AI_TODO_OPEN_DETACH=1 "$OPEN" "$NAME" '~/programming' "$U_LINKED" cursor >/dev/null 2>&1; then fail "cursor open accepted a claude tmux name"; fi
+if env -u AI_TODO_AGENT_BIN AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/cursor/todo-missingbin" '~/programming' "$U_LINKED" cursor >/dev/null 2>&1; then
+  fail "cursor open ran without an agent binary"
+else
+  [[ $? -eq 90 ]] || fail "missing agent should exit 90"
+fi
+pass "ai-todo-open cursor: resumes with agent --resume, attaches when running, exits 94 for unknown ids, exits 90 without agent"
 
 # --- review fixes: open rollouts, fail closed, hub answers, duplicates, kill+wait, ids, PATH ---
 

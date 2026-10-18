@@ -17,6 +17,11 @@ final class CommandsTests: XCTestCase {
                        "cd '/srv/x' && codex resume abc-123")
     }
 
+    func testCursorResumeUsesAgent() {
+        XCTAssertEqual(ResumeCommand.string(for: conv(tool: "cursor", cwd: "~/programming/sigma-revenue")),
+                       "cd ~/'programming/sigma-revenue' && agent --resume abc-123")
+    }
+
     func testBareTildeAndQuoteEscaping() {
         XCTAssertEqual(ResumeCommand.string(for: conv(tool: "claude", cwd: "~")), "cd ~ && claude --resume abc-123")
         XCTAssertEqual(ResumeCommand.string(for: conv(tool: "claude", cwd: "/it's")),
