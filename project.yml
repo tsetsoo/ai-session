@@ -108,7 +108,11 @@ targets:
   # Native Mac app built from the same sources as the iOS app. A separate target
   # (rather than making AISessionRemote multiplatform) leaves the iOS target's
   # settings untouched. Not sandboxed: it reads keys from ~/.ssh, opens arbitrary
-  # outbound SSH connections and uses the login keychain without a signing team.
+  # outbound SSH connections and uses the login keychain without an Apple team.
+  #
+  # Signed with the local certificate from scripts/ensure-mac-signing-identity.sh.
+  # Ad-hoc signing ("-") puts the cdhash in the designated requirement, so the
+  # login keychain asks again after every rebuild and on the next SSH connect.
   AISessionRemoteMac:
     type: application
     platform: macOS
@@ -136,9 +140,16 @@ targets:
       ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       ENABLE_APP_SANDBOX: NO
       ENABLE_HARDENED_RUNTIME: NO
-      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGN_IDENTITY: "AI Session Remote Local"
       CODE_SIGN_STYLE: Manual
-    scheme: {}
+      # Local certs cannot use Apple's timestamp server.
+      OTHER_CODE_SIGN_FLAGS: "$(inherited) --timestamp=none"
+    scheme:
+      preActions:
+        - name: Ensure Mac signing identity
+          settingsTarget: AISessionRemoteMac
+          script: |
+            "${SRCROOT}/scripts/ensure-mac-signing-identity.sh"
     dependencies:
       - package: AISessionRemote
         product: AISessionCore

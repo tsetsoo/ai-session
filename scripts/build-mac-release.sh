@@ -4,7 +4,8 @@
 # Usage:
 #   scripts/build-mac-release.sh [derived-data-dir]
 #
-# The app is signed for local use (ad hoc); copy it to ~/Applications to install:
+# Signed with the stable local identity "AI Session Remote Local" so login-keychain
+# access survives rebuilds. Copy it to ~/Applications to install:
 #   cp -R "$(scripts/build-mac-release.sh | tail -1)" ~/Applications/
 set -euo pipefail
 
@@ -14,6 +15,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 
 cd "$ROOT"
 command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not found (brew install xcodegen)" >&2; exit 1; }
+"$ROOT/scripts/ensure-mac-signing-identity.sh"
 xcodegen generate >/dev/null
 
 log="$(mktemp)"
