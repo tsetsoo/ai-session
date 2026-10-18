@@ -21,7 +21,7 @@ From `todo-app/`:
 - `cargo build -p todo-server`
 - `./build.sh` for a release binary at `target/release/todo-server`
 
-GitHub Actions for the server live in `.github/workflows/` at this repo's root and run Cargo in `todo-app/`. A push to `main` publishes `pi-latest` only when server files change. The Pi's installed updater still downloads that release from `https://github.com/tsetsoo/todo-app`.
+GitHub Actions for the server live in `.github/workflows/` at this repo's root and run Cargo in `todo-app/`. A push to `main` publishes `pi-latest` on this public repo only when server files change. The Pi downloads it from `https://github.com/tsetsoo/ai-session/releases/download/pi-latest`.
 
 From `ai-session-remote/`:
 
