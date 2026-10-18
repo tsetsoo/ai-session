@@ -1,0 +1,147 @@
+#!/bin/sh
+# Open a todo's AI conversation in tmux: attach if its session is running,
+# otherwise start it (resuming the conversation if it already exists).
+# Clients (iPhone / Mac app) run this as the PTY command over SSH, with the
+# values todo-server returns from POST /api/todos/{id}/conversation.
+#
+# Usage:
+#   ai-todo-open <tmux_name> <cwd> <session_id> [claude|codex|cursor]
+#   ai-todo-open ai/claude/todo-0f3a9c21 '~/programming' 9b2f6c3e-1d4a-4e7b-8c55-2f0e8a1b7d90
+#   ai-todo-open ai/codex/todo-0f3a9c21 '~/programming' 019f8b4e-ff53-7201-8585-162b40a93fb3 codex
+#   ai-todo-open ai/cursor/todo-0f3a9c21 '~/programming' 4e21e083-3303-468c-a212-e5d1cd2c7515 cursor
+#
+# claude (default): `claude --resume <id>` if the transcript exists, else
+#                   `claude --session-id <id>` to start it with that id.
+# codex:            `codex resume <id>`; the conversation must already exist
+#                   (Codex can't start a new one with a chosen id).
+# cursor:           `agent --resume <id>` for a chat already stored under
+#                   ~/.cursor/chats. Cursor can't start a new one with a chosen id.
+#
+# Exit codes: 64 bad arguments, 90 tmux / claude / codex / agent missing, 93 cwd not usable,
+#             94 no Codex or Cursor conversation with that id.
+#
+# Test hooks (not for normal use):
+#   AI_TODO_TMUX_SOCKET  use a private tmux server (tmux -L <name>)
+#   AI_TODO_OPEN_DETACH  =1: don't attach; print created|resumed|attach and exit
+#   AI_TODO_CLAUDE_BIN   claude binary to start instead of `command -v claude`
+#   AI_TODO_CODEX_BIN    codex binary to start instead of looking it up
+#   AI_TODO_AGENT_BIN    cursor agent binary to start instead of `command -v agent`
+set -eu
+
+# Non-interactive SSH sessions often lack Homebrew paths; match TmuxCommandBuilder.
+export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+
+usage() {
+  echo "usage: $0 <ai/<tool>/todo-<slug>> <cwd> <session-uuid> [claude|codex|cursor]" >&2
+  exit 64
+}
+
+[ "$#" -eq 3 ] || [ "$#" -eq 4 ] || usage
+name=$1
+cwd=$2
+sid=$3
+tool=${4:-claude}
+
+case "$tool" in
+  claude | codex | cursor) ;;
+  *) echo "unknown tool: $tool" >&2; usage ;;
+esac
+# LC_ALL=C so [a-z] never matches uppercase in other locales.
+if ! printf '%s\n' "$name" | LC_ALL=C grep -Eqx "ai/${tool}/todo-[a-z0-9-]+"; then
+  echo "invalid tmux name for $tool: $name" >&2
+  usage
+fi
+if ! printf '%s\n' "$sid" | LC_ALL=C grep -Eqx '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'; then
+  echo "invalid session id: $sid" >&2
+  usage
+fi
+
+# todo-server stores cwd as entered, often with a leading ~.
+case "$cwd" in
+  "~") cwd=$HOME ;;
+  "~/"*) cwd="$HOME/${cwd#\~/}" ;;
+esac
+
+command -v tmux >/dev/null 2>&1 || { echo "tmux not found" >&2; exit 90; }
+# `-u` forces the tmux client into UTF-8. Without it, a non-login SSH session
+# (no LANG) makes tmux replace Cyrillic and other non-ASCII with underscores.
+if [ -n "${AI_TODO_TMUX_SOCKET:-}" ]; then
+  tmux_cmd() { tmux -L "$AI_TODO_TMUX_SOCKET" "$@"; }
+  tmux_exec() { exec tmux -L "$AI_TODO_TMUX_SOCKET" -u "$@"; }
+else
+  tmux_cmd() { tmux "$@"; }
+  tmux_exec() { exec tmux -u "$@"; }
+fi
+
+attach() {
+  if [ "${AI_TODO_OPEN_DETACH:-}" = 1 ]; then
+    echo "$1"
+    exit 0
+  fi
+  # Inside tmux already (e.g. a Mac terminal), switch instead of nesting.
+  if [ -n "${TMUX:-}" ]; then
+    tmux_exec switch-client -t "=$name"
+  fi
+  tmux_exec attach-session -t "=$name"
+}
+
+if tmux_cmd has-session -t "=$name" 2>/dev/null; then
+  attach attach
+fi
+
+[ -d "$cwd" ] || { echo "cwd not found: $cwd" >&2; exit 93; }
+
+if [ "$tool" = codex ]; then
+  codex_bin=${AI_TODO_CODEX_BIN:-$(command -v codex || true)}
+  if [ -z "$codex_bin" ]; then
+    # Installed with npm under nvm: not on PATH in a plain SSH session.
+    codex_bin=$(ls -d "$HOME"/.nvm/versions/node/*/bin/codex 2>/dev/null | tail -n 1 || true)
+    [ -n "$codex_bin" ] && PATH="$(dirname "$codex_bin"):$PATH"
+  fi
+  [ -n "$codex_bin" ] || { echo "codex not found" >&2; exit 90; }
+  # Codex stores each conversation as ~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl.
+  if [ -z "$(find "$HOME/.codex/sessions" -name "rollout-*-$sid.jsonl" -print 2>/dev/null | head -n 1)" ]; then
+    echo "no Codex conversation $sid on this computer" >&2
+    exit 94
+  fi
+  mode=resumed
+  set -- "$codex_bin" resume "$sid"
+elif [ "$tool" = cursor ]; then
+  agent_bin=${AI_TODO_AGENT_BIN:-$(command -v agent || true)}
+  [ -n "$agent_bin" ] || { echo "agent not found" >&2; exit 90; }
+  # Cursor stores each chat as ~/.cursor/chats/<cwd-hash>/<id>/.
+  if [ -z "$(find "$HOME/.cursor/chats" -mindepth 2 -maxdepth 2 -type d -name "$sid" -print 2>/dev/null | head -n 1)" ]; then
+    echo "no Cursor conversation $sid on this computer" >&2
+    exit 94
+  fi
+  mode=resumed
+  set -- "$agent_bin" --resume "$sid"
+else
+  claude_bin=${AI_TODO_CLAUDE_BIN:-$(command -v claude || true)}
+  [ -n "$claude_bin" ] || { echo "claude not found" >&2; exit 90; }
+
+  # Claude stores each conversation as ~/.claude/projects/<project>/<session-id>.jsonl.
+  if [ -n "$(find "$HOME/.claude/projects" -maxdepth 2 -name "$sid.jsonl" -print 2>/dev/null | head -n 1)" ]; then
+    mode=resumed
+    set -- "$claude_bin" --resume "$sid"
+  else
+    mode=created
+    set -- "$claude_bin" --session-id "$sid"
+  fi
+fi
+
+# Create detached, then attach, so the same path works inside and outside tmux.
+# A tmux server that is already running gives new sessions its own environment, not
+# ours, so pass the PATH resolved above explicitly: npm-installed codex (under nvm)
+# needs `node` on it. `env` instead of `new-session -e` works on every tmux version.
+# The same server environment often has no UTF-8 locale. Pass one through so a
+# program inside the pane does not replace Cyrillic and symbols. Keep a UTF-8
+# locale the caller already has (for example bg_BG.UTF-8).
+session_lang=${LANG:-en_US.UTF-8}
+session_ctype=${LC_CTYPE:-$session_lang}
+case "${LC_ALL:-}$session_ctype$session_lang" in
+  *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;;
+  *) session_lang=en_US.UTF-8; session_ctype=en_US.UTF-8 ;;
+esac
+tmux_cmd new-session -d -s "$name" -c "$cwd" -- env "PATH=$PATH" "LANG=$session_lang" "LC_CTYPE=$session_ctype" "LC_ALL=$session_lang" "$@"
+attach "$mode"
