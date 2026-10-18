@@ -47,6 +47,17 @@ public enum TmuxCommandBuilder {
         wrap("\"$HOME/.ai-remote/bin/ai-todo-sessions\" list --json --limit \(max(1, limit))")
     }
 
+    /// 5-hour, weekly and monthly limits for this tool's login on the computer.
+    /// `--session` is sent only when the chat has an id, so Codex can read that
+    /// conversation's own snapshot. The script prints JSON and does not print tokens.
+    public static func usageLimits(tool: String, sessionId: String?) -> String {
+        var command = "\"$HOME/.ai-remote/bin/ai-todo-limits\" --tool \(shellQuote(tool))"
+        if let sessionId, !sessionId.isEmpty {
+            command += " --session \(shellQuote(sessionId))"
+        }
+        return wrap(command)
+    }
+
     /// Deletes a conversation on the computer (Claude: its files; Codex: `codex archive`) in
     /// one exec: the script ends the todo's tmux session, waits up to `waitSeconds` for the
     /// conversation to stop, then deletes it. A conversation that doesn't exist counts as

@@ -111,6 +111,9 @@ The installer is safe to re-run. It sets up:
   - `prune --older-than DAYS [--tool T] [--yes]` targets conversations unused for DAYS that aren't
     running or linked to a todo. It asks todo-server which ones are linked, and refuses if it
     can't reach it. Without `--yes` it only lists what it would delete.
+- `~/.ai-remote/bin/ai-todo-limits --tool claude|codex|cursor [--session ID]`: the limits for that
+  tool's login on this computer. The chat shows a 5-hour, weekly, or monthly figure only when
+  that login has one. Tokens stay on the computer; the script prints percents and reset times.
 - `~/.ai-remote/bin/ai-todo-hook`: Claude Code hooks merged into `~/.claude/settings.json`.
   `UserPromptSubmit` posts `busy`, `Notification` posts `waiting`, and `Stop` posts `idle` to
   `POST /api/conversations/status`. Only sessions named `ai/claude/todo-*` report.

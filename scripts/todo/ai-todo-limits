@@ -1,0 +1,499 @@
+#!/bin/sh
+# Print the usage limits that apply on this computer for one tool's login.
+# The app runs this over SSH while a chat on that computer is open.
+#
+#   ai-todo-limits --tool claude|codex|cursor [--session ID]
+#
+# Stdout is one JSON object. A window this login does not have is left out:
+# Claude is a 5-hour window, a weekly window (and a separate opus or sonnet
+# weekly window when that cap is different), and a monthly window only when
+# extra usage is on and has a cap. Codex is whichever of 5-hour, weekly and
+# monthly its latest rate-limit snapshot names (300, 10080 and ~30-day
+# minutes). Cursor is the monthly included usage, plus an on-demand monthly
+# cap when one is set. Nothing to show is {"tool":"...","windows":[]} and
+# exit 0.
+#
+# Tokens stay in this process. They are never written to stdout, stderr, or a
+# file. Codex is read from the local rollout, so it makes no request.
+#
+# Exit codes: 64 bad arguments.
+#
+# Test hooks (not for normal use):
+#   AI_TODO_LIMITS_OFFLINE=1   do not touch the network or the macOS keychain
+#   AI_TODO_LIMITS_HTTP_BODY   response body used when offline
+#   AI_TODO_LIMITS_HTTP_STATUS HTTP status for that body (default 200)
+#   CLAUDE_CONFIG_DIR          Claude config directory (credentials live here)
+#   CODEX_HOME                 Codex home (sessions live under sessions/)
+AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_LIB_DIR
+export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/sbin:/sbin:$PATH"
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+exec python3 - "$@" <<'PY'
+import datetime
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+
+HOME = os.path.expanduser("~")
+SESSION_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
+USAGE = "usage: ai-todo-limits --tool claude|codex|cursor [--session ID]"
+
+
+def die(message, code):
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+def as_number(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            return None
+    if isinstance(value, (int, float)):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return float(value)
+    return None
+
+
+def iso_timestamp(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.isdigit() or (text[0] == "-" and text[1:].isdigit()):
+            return iso_timestamp(int(text))
+        if "T" in text:
+            return text
+        return None
+    number = as_number(value)
+    if number is None or number < 0:
+        return None
+    if number > 10**12:
+        number = number / 1000.0
+    try:
+        moment = datetime.datetime.fromtimestamp(number, datetime.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def window(kind, used, resets_at=None, scope=None):
+    if used is None or used < 0:
+        return None
+    item = {"kind": kind, "used_percent": round(used, 1)}
+    if resets_at:
+        item["resets_at"] = resets_at
+    if scope:
+        item["scope"] = scope
+    return item
+
+
+def kind_for_minutes(minutes):
+    """Map a Codex window length onto 5h, weekly, or monthly. Anything else
+    is a window this chat does not label, so it is left out."""
+    if minutes is None:
+        return None
+    if minutes <= 360:
+        return "5h"
+    if 6000 <= minutes <= 12000:
+        return "weekly"
+    if 25000 <= minutes <= 50000:
+        return "monthly"
+    return None
+
+
+def read_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+
+
+def http_json(method, url, token, headers, body=None):
+    if not token:
+        return None
+    if os.environ.get("AI_TODO_LIMITS_OFFLINE") == "1":
+        raw = os.environ.get("AI_TODO_LIMITS_HTTP_BODY")
+        if raw is None:
+            return None
+        try:
+            status = int(os.environ.get("AI_TODO_LIMITS_HTTP_STATUS", "200"))
+        except ValueError:
+            return None
+        if status != 200:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    data = None if body is None else body.encode("utf-8")
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", "Bearer " + token)
+    req.add_header("Accept", "application/json")
+    for key, value in headers.items():
+        req.add_header(key, value)
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            payload = resp.read(1_000_000)
+    except Exception:
+        return None
+    try:
+        parsed = json.loads(payload.decode("utf-8", "replace"))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def oauth_from(blob):
+    if not isinstance(blob, dict):
+        return None
+    oauth = blob.get("claudeAiOauth")
+    if isinstance(oauth, dict) and isinstance(oauth.get("accessToken"), str) and oauth["accessToken"]:
+        return oauth
+    return None
+
+
+def token_expired(oauth):
+    exp = oauth.get("expiresAt")
+    if not isinstance(exp, (int, float)) or isinstance(exp, bool):
+        return False
+    return exp < (time.time() * 1000) - 60_000
+
+
+def claude_credentials_path():
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+    return os.path.join(base, ".credentials.json")
+
+
+def keychain_oauth():
+    if os.environ.get("AI_TODO_LIMITS_OFFLINE") == "1" or sys.platform != "darwin":
+        return None
+    try:
+        proc = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    try:
+        blob = json.loads(proc.stdout.strip())
+    except json.JSONDecodeError:
+        return None
+    return oauth_from(blob)
+
+
+def claude_token():
+    file_oauth = oauth_from(read_json(claude_credentials_path()))
+    if file_oauth and not token_expired(file_oauth):
+        return file_oauth["accessToken"]
+    keychain = keychain_oauth()
+    if keychain and not token_expired(keychain):
+        return keychain["accessToken"]
+    for oauth in (file_oauth, keychain):
+        if oauth:
+            return oauth["accessToken"]
+    env = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or ""
+    return env if env else ""
+
+
+def claude_period(node):
+    if not isinstance(node, dict):
+        return None
+    used = as_number(node.get("utilization"))
+    if used is None or used < 0:
+        return None
+    return used, iso_timestamp(node.get("resets_at"))
+
+
+def claude_monthly(extra):
+    if not isinstance(extra, dict) or extra.get("is_enabled") is not True:
+        return None
+    used = as_number(extra.get("utilization"))
+    if used is None:
+        limit = as_number(extra.get("monthly_limit"))
+        spent = as_number(extra.get("used_credits"))
+        if limit and limit > 0 and spent is not None and spent >= 0:
+            used = spent / limit * 100.0
+    return window("monthly", used) if used is not None else None
+
+
+def claude_windows():
+    token = claude_token()
+    data = http_json(
+        "GET",
+        "https://api.anthropic.com/api/oauth/usage",
+        token,
+        {"anthropic-beta": "oauth-2025-04-20", "Content-Type": "application/json"},
+    )
+    if not isinstance(data, dict):
+        return []
+    windows = []
+    five = claude_period(data.get("five_hour"))
+    if five:
+        item = window("5h", five[0], five[1])
+        if item:
+            windows.append(item)
+    main = claude_period(data.get("seven_day"))
+    if main:
+        item = window("weekly", main[0], main[1])
+        if item:
+            windows.append(item)
+    for key, scope in (("seven_day_opus", "opus"), ("seven_day_sonnet", "sonnet")):
+        period = claude_period(data.get(key))
+        if not period:
+            continue
+        if main and period[0] == main[0] and period[1] == main[1]:
+            continue
+        item = window("weekly", period[0], period[1], scope)
+        if item:
+            windows.append(item)
+    monthly = claude_monthly(data.get("extra_usage"))
+    if monthly:
+        windows.append(monthly)
+    return windows
+
+
+def cursor_token():
+    candidates = (
+        os.path.join(HOME, ".cursor", "auth.json"),
+        os.path.join(HOME, ".config", "cursor", "auth.json"),
+    )
+    for path in candidates:
+        blob = read_json(path)
+        if not isinstance(blob, dict):
+            continue
+        token = blob.get("accessToken") or blob.get("access_token") or ""
+        if isinstance(token, str) and token:
+            return token
+    return ""
+
+
+def cursor_percent(node):
+    if not isinstance(node, dict):
+        return None
+    for key in ("totalPercentUsed", "total_percent_used", "percentUsed", "percent_used"):
+        if key in node:
+            used = as_number(node.get(key))
+            if used is not None:
+                return used
+    limit = as_number(node.get("limit"))
+    if limit is None:
+        limit = as_number(node.get("hardLimit"))
+    spend = None
+    for key in ("totalSpend", "total_spend", "includedSpend", "used"):
+        if key in node and node.get(key) is not None:
+            spend = as_number(node.get(key))
+            break
+    if limit and limit > 0 and spend is not None and spend >= 0:
+        return spend / limit * 100.0
+    return None
+
+
+def cursor_windows():
+    data = http_json(
+        "POST",
+        "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage",
+        cursor_token(),
+        {"Content-Type": "application/json", "Connect-Protocol-Version": "1"},
+        body="{}",
+    )
+    if not isinstance(data, dict):
+        return []
+    windows = []
+    plan = data.get("planUsage") or data.get("plan_usage") or {}
+    used = cursor_percent(plan)
+    if used is not None:
+        item = window("monthly", used, iso_timestamp(data.get("billingCycleEnd") or data.get("billing_cycle_end")))
+        if item:
+            windows.append(item)
+    spend = data.get("spendLimitUsage") or data.get("spend_limit_usage")
+    if isinstance(spend, dict) and spend.get("noUsageBasedAllowed") is not True:
+        on_demand = cursor_percent(spend)
+        if on_demand is not None:
+            item = window("monthly", on_demand, scope="on-demand")
+            if item:
+                windows.append(item)
+    return windows
+
+
+def last_rate_limits(path):
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as handle:
+            if size > 524288:
+                handle.seek(size - 524288)
+            raw = handle.read()
+    except OSError:
+        return None
+    text = raw.decode("utf-8", "replace")
+    if size > 524288:
+        newline = text.find("\n")
+        if newline != -1:
+            text = text[newline + 1 :]
+    last = None
+    for line in text.splitlines():
+        if '"token_count"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        payload = obj.get("payload") if isinstance(obj, dict) else None
+        if not isinstance(payload, dict) or payload.get("type") != "token_count":
+            continue
+        limits = payload.get("rate_limits")
+        if isinstance(limits, dict):
+            last = limits
+    return last
+
+
+def codex_window(node, default_kind=None):
+    if not isinstance(node, dict):
+        return None
+    used = as_number(node.get("used_percent"))
+    minutes = node.get("window_minutes")
+    try:
+        minutes = int(minutes) if minutes is not None and not isinstance(minutes, bool) else None
+    except (TypeError, ValueError):
+        minutes = None
+    kind = kind_for_minutes(minutes) or (default_kind if minutes is None else None)
+    if kind is None:
+        return None
+    resets = node.get("resets_at")
+    if resets is None:
+        resets = node.get("reset_at")
+    return window(kind, used, iso_timestamp(resets))
+
+
+def codex_windows(limits):
+    found = []
+    for slot in ("primary", "secondary"):
+        item = codex_window(limits.get(slot))
+        if item:
+            found.append(item)
+    individual = codex_window(limits.get("individual_limit"), default_kind="monthly")
+    if individual:
+        found.append(individual)
+    # Two snapshots of the same window: keep the fuller one.
+    best = {}
+    for item in found:
+        key = (item["kind"], item.get("scope"))
+        previous = best.get(key)
+        if previous is None or item["used_percent"] >= previous["used_percent"]:
+            best[key] = item
+    order = {"5h": 0, "weekly": 1, "monthly": 2}
+    return sorted(best.values(), key=lambda item: (order.get(item["kind"], 9), item.get("scope") or ""))
+
+
+def codex_candidates(session_id):
+    root = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
+    sessions = os.path.join(root, "sessions")
+    if not os.path.isdir(sessions):
+        return []
+    if session_id:
+        pattern = os.path.join(sessions, "*", "*", "*", "rollout-*" + session_id + "*.jsonl")
+        return glob.glob(pattern)
+    days = []
+    try:
+        years = os.listdir(sessions)
+    except OSError:
+        return []
+    for year in years:
+        year_path = os.path.join(sessions, year)
+        if not (len(year) == 4 and year.isdigit() and os.path.isdir(year_path)):
+            continue
+        try:
+            months = os.listdir(year_path)
+        except OSError:
+            continue
+        for month in months:
+            month_path = os.path.join(year_path, month)
+            if not os.path.isdir(month_path):
+                continue
+            try:
+                day_names = os.listdir(month_path)
+            except OSError:
+                continue
+            for day in day_names:
+                day_path = os.path.join(month_path, day)
+                if os.path.isdir(day_path):
+                    days.append((year + month.zfill(2) + day.zfill(2), day_path))
+    days.sort(reverse=True)
+    found = []
+    for _, day_path in days[:14]:
+        found.extend(glob.glob(os.path.join(day_path, "rollout-*.jsonl")))
+    return found
+
+
+def codex_limits(session_id):
+    paths = codex_candidates(session_id)
+    try:
+        paths.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+    except OSError:
+        return []
+    for path in paths[:40]:
+        limits = last_rate_limits(path)
+        if not limits:
+            continue
+        windows = codex_windows(limits)
+        if windows:
+            return windows
+    return []
+
+
+def emit(tool, windows):
+    json.dump({"tool": tool, "windows": windows}, sys.stdout, separators=(",", ":"))
+    sys.stdout.write("\n")
+
+
+def main(argv):
+    tool = None
+    session = None
+    args = argv[1:]
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--tool" and index + 1 < len(args):
+            index += 1
+            tool = args[index]
+        elif arg == "--session" and index + 1 < len(args):
+            index += 1
+            session = args[index]
+        elif arg in ("-h", "--help"):
+            print(USAGE)
+            return 0
+        else:
+            die(USAGE, 64)
+        index += 1
+    if tool not in ("claude", "codex", "cursor"):
+        die(USAGE, 64)
+    if session is not None and not SESSION_RE.fullmatch(session):
+        die("session id must be a single id, not a path", 64)
+    if tool == "claude":
+        windows = claude_windows()
+    elif tool == "codex":
+        windows = codex_limits(session)
+    else:
+        windows = cursor_windows()
+    emit(tool, windows)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+PY

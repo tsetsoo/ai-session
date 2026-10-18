@@ -71,6 +71,11 @@ struct ConversationFrame: View {
 
     var body: some View {
         terminalArea
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let target = limitsTarget, !isPoppedOut {
+                UsageLimitsBar(computer: target.computer, tool: target.tool, sessionId: target.sessionId)
+            }
+        }
         .onChange(of: liveStatus, initial: true) { _, status in
             if let status { approveGate.statusChanged(to: status) }
         }
@@ -404,6 +409,19 @@ struct ConversationFrame: View {
 
     private var conversation: Conversation? {
         store.conversations[todo.id] ?? readyConversation?.conversation
+    }
+
+    /// The computer the chat runs on, and the tool whose limits to read there.
+    /// A window that login does not have is left out by the script.
+    private var limitsTarget: (computer: Computer, tool: String, sessionId: String?)? {
+        if let conversation {
+            let session = conversation.sessionId.isEmpty ? nil : conversation.sessionId
+            return (conversation.computer, conversation.tool, session)
+        }
+        if let mapping = store.sectionComputers[todo.section] {
+            return (mapping.computer, mapping.tool, nil)
+        }
+        return nil
     }
 
     /// Where the conversation runs (or would start): the linked one, else the section's computer.

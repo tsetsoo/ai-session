@@ -1705,7 +1705,7 @@ assert hooks["PreToolUse"][0]["matcher"] == "Bash"
 PY
 }
 check_installed || fail "settings.json after install is wrong: $(cat "$SETTINGS")"
-[[ -x "${HOME}/.ai-remote/bin/ai-todo-open" && -x "${HOME}/.ai-remote/bin/ai-todo-hook" && -x "${HOME}/.ai-remote/bin/ai-todo-sessions" ]] || fail "scripts not installed"
+[[ -x "${HOME}/.ai-remote/bin/ai-todo-open" && -x "${HOME}/.ai-remote/bin/ai-todo-hook" && -x "${HOME}/.ai-remote/bin/ai-todo-sessions" && -x "${HOME}/.ai-remote/bin/ai-todo-limits" ]] || fail "scripts not installed"
 [[ "$(grep -c 'source-file -q ~/.ai-remote/tmux.conf' "${HOME}/.tmux.conf")" -eq 1 ]] || fail "tmux source line not added exactly once"
 grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "existing ~/.tmux.conf content lost"
 [[ "$(stat -f '%Lp' "${HOME}/.ai-remote/todo-hub.conf" 2>/dev/null || stat -c '%a' "${HOME}/.ai-remote/todo-hub.conf")" == 600 ]] \
@@ -1824,7 +1824,7 @@ assert [h["command"] for g in hooks["Stop"] for h in g["hooks"]] == ["afplay /Sy
 assert hooks["PreToolUse"][0]["matcher"] == "Bash"
 assert s["model"] == "opus"
 PY
-[[ ! -e "${HOME}/.ai-remote/bin/ai-todo-open" && ! -e "${HOME}/.ai-remote/bin/ai-todo-sessions" && ! -e "${HOME}/.ai-remote/tmux.conf" ]] || fail "uninstall left scripts behind"
+[[ ! -e "${HOME}/.ai-remote/bin/ai-todo-open" && ! -e "${HOME}/.ai-remote/bin/ai-todo-sessions" && ! -e "${HOME}/.ai-remote/bin/ai-todo-limits" && ! -e "${HOME}/.ai-remote/tmux.conf" ]] || fail "uninstall left scripts behind"
 ! grep -q 'ai-remote/tmux.conf' "${HOME}/.tmux.conf" || fail "uninstall left the tmux source line"
 grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "uninstall removed other ~/.tmux.conf lines"
 pass "uninstall removes only our hooks, scripts, tmux line, codex notify and hook state"
@@ -1845,6 +1845,124 @@ printf '#!/bin/sh\n[ -e "%s" ] && echo "$* (plist still there)" >>"%s" || echo "
 [[ "$(cat "$REMOVE_ALL_LOG" 2>/dev/null)" == "digest --remove-all"* && ! -e "${HOME}/.ai-remote/bin/ai-todo-memory" ]] \
   || fail "--remove-digests did not run digest --remove-all before removing ai-todo-memory: $(cat "$REMOVE_ALL_LOG" 2>/dev/null)"
 pass "uninstall_remove_digests_runs_remove_all_first"
+
+LIMITS="${SCRIPT_DIR}/ai-todo-limits"
+chmod +x "$LIMITS"
+TOKEN="sk-ant-oat01-TESTTOKEN-DO-NOT-LEAK"
+CURSOR_TOKEN="cursor-access-TESTTOKEN-DO-NOT-LEAK"
+export AI_TODO_LIMITS_OFFLINE=1
+
+mkdir -p "${HOME}/.claude"
+cat >"${HOME}/.claude/.credentials.json" <<EOF
+{"claudeAiOauth":{"accessToken":"${TOKEN}","refreshToken":"refresh-should-not-leak","expiresAt":1}}
+EOF
+export AI_TODO_LIMITS_HTTP_STATUS=200
+export AI_TODO_LIMITS_HTTP_BODY='{"five_hour":{"utilization":25,"resets_at":"2026-10-18T15:00:00Z"},"seven_day":{"utilization":40,"resets_at":"2026-10-20T00:00:00Z"},"seven_day_opus":{"utilization":40,"resets_at":"2026-10-20T00:00:00Z"},"extra_usage":{"is_enabled":false,"utilization":99,"monthly_limit":100,"used_credits":1}}'
+"$LIMITS" --tool claude >"${SANDBOX}/limits-claude.out" 2>"${SANDBOX}/limits-claude.err" \
+  || fail "claude limits failed: $(cat "${SANDBOX}/limits-claude.err")"
+[[ ! -s "${SANDBOX}/limits-claude.err" ]] || fail "claude limits stderr: $(cat "${SANDBOX}/limits-claude.err")"
+! grep -q "$TOKEN" "${SANDBOX}/limits-claude.out" "${SANDBOX}/limits-claude.err" || fail "claude token leaked"
+! grep -q "refresh-should-not-leak" "${SANDBOX}/limits-claude.out" || fail "claude refresh token leaked"
+python3 - "${SANDBOX}/limits-claude.out" <<'PY' || fail "claude limits JSON: $(cat "${SANDBOX}/limits-claude.out")"
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert data["tool"] == "claude", data
+kinds = [(w["kind"], w.get("scope"), w["used_percent"]) for w in data["windows"]]
+assert kinds == [("5h", None, 25.0), ("weekly", None, 40.0)], kinds
+assert data["windows"][0]["resets_at"] == "2026-10-18T15:00:00Z"
+assert all(w["kind"] != "monthly" for w in data["windows"])
+PY
+pass "limits_claude_5h_and_weekly: expired file token still used offline; matching opus weekly and disabled extra usage omitted"
+
+export AI_TODO_LIMITS_HTTP_BODY='{"five_hour":null,"seven_day":null,"seven_day_opus":{"utilization":80,"resets_at":"2026-10-21T00:00:00Z"},"extra_usage":{"is_enabled":true,"monthly_limit":10000,"used_credits":2500}}'
+"$LIMITS" --tool claude >"${SANDBOX}/limits-claude2.out" 2>"${SANDBOX}/limits-claude2.err" \
+  || fail "claude scoped limits failed"
+python3 - "${SANDBOX}/limits-claude2.out" <<'PY' || fail "claude scoped JSON: $(cat "${SANDBOX}/limits-claude2.out")"
+import json, sys
+data = json.load(open(sys.argv[1]))
+kinds = [(w["kind"], w.get("scope"), w["used_percent"]) for w in data["windows"]]
+assert kinds == [("weekly", "opus", 80.0), ("monthly", None, 25.0)], kinds
+PY
+pass "limits_claude_opus_weekly_and_extra_monthly: no overall weekly, monthly from credits over the cap"
+
+rm -f "${HOME}/.claude/.credentials.json"
+unset CLAUDE_CODE_OAUTH_TOKEN
+"$LIMITS" --tool claude >"${SANDBOX}/limits-claude-none.out" 2>"${SANDBOX}/limits-claude-none.err" \
+  || fail "claude limits without a login should still exit 0"
+python3 - "${SANDBOX}/limits-claude-none.out" <<'PY' || fail "signed-out claude still showed limits: $(cat "${SANDBOX}/limits-claude-none.out")"
+import json, sys
+assert json.load(open(sys.argv[1]))["windows"] == []
+PY
+export AI_TODO_LIMITS_HTTP_STATUS=401
+mkdir -p "${HOME}/.claude"
+printf '%s\n' "{\"claudeAiOauth\":{\"accessToken\":\"${TOKEN}\",\"expiresAt\":9999999999999}}" >"${HOME}/.claude/.credentials.json"
+"$LIMITS" --tool claude >"${SANDBOX}/limits-claude-401.out"
+python3 - "${SANDBOX}/limits-claude-401.out" <<'PY' || fail "401 still showed limits"
+import json, sys
+assert json.load(open(sys.argv[1]))["windows"] == []
+PY
+! grep -q "$TOKEN" "${SANDBOX}/limits-claude-401.out" || fail "token leaked on 401"
+pass "limits_claude_signed_out_or_rejected: no login and HTTP 401 print an empty window list"
+
+SID="11111111-2222-4333-8444-555555555555"
+OTHER="99999999-8888-4777-8666-000000000000"
+mkdir -p "${HOME}/.codex/sessions/2026/10/15" "${HOME}/.codex/sessions/2026/10/16"
+cat >"${HOME}/.codex/sessions/2026/10/15/rollout-2026-10-15T10-00-00-${SID}.jsonl" <<'EOF'
+{"timestamp":"2026-10-15T10:00:13.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1}},"rate_limits":{"primary":{"used_percent":10,"window_minutes":300,"resets_at":1791495755},"secondary":{"used_percent":50,"window_minutes":1440,"resets_at":1791495755}}}}
+{"timestamp":"2026-10-15T10:00:20.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":null}}
+EOF
+cat >"${HOME}/.codex/sessions/2026/10/16/rollout-2026-10-16T10-00-00-${OTHER}.jsonl" <<'EOF'
+{"timestamp":"2026-10-16T10:00:13.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":99,"window_minutes":10080,"resets_at":1791833135}}}}
+EOF
+"$LIMITS" --tool codex >"${SANDBOX}/limits-codex.out" 2>"${SANDBOX}/limits-codex.err" || fail "codex limits failed"
+python3 - "${SANDBOX}/limits-codex.out" <<'PY' || fail "newest codex snapshot: $(cat "${SANDBOX}/limits-codex.out")"
+import json, sys
+data = json.load(open(sys.argv[1]))
+kinds = [(w["kind"], w["used_percent"], w.get("resets_at")) for w in data["windows"]]
+assert kinds == [("weekly", 99.0, "2026-10-12T19:25:35Z")], kinds
+PY
+"$LIMITS" --tool codex --session "$SID" >"${SANDBOX}/limits-codex-sid.out" 2>"${SANDBOX}/limits-codex-sid.err" \
+  || fail "codex session limits failed: $(cat "${SANDBOX}/limits-codex-sid.err")"
+python3 - "${SANDBOX}/limits-codex-sid.out" <<'PY' || fail "session codex snapshot: $(cat "${SANDBOX}/limits-codex-sid.out")"
+import json, sys
+data = json.load(open(sys.argv[1]))
+kinds = [(w["kind"], w["used_percent"], w.get("resets_at")) for w in data["windows"]]
+assert kinds == [("5h", 10.0, "2026-10-08T21:42:35Z")], kinds
+PY
+pass "limits_codex_windows_by_length: newest snapshot, session id wins, a 24h window is left out"
+
+mkdir -p "${HOME}/.cursor"
+printf '%s\n' "{\"accessToken\":\"${CURSOR_TOKEN}\",\"refreshToken\":\"cursor-refresh-should-not-leak\"}" >"${HOME}/.cursor/auth.json"
+export AI_TODO_LIMITS_HTTP_STATUS=200
+export AI_TODO_LIMITS_HTTP_BODY='{"billingCycleEnd":"1784958141000","planUsage":{"totalPercentUsed":53,"limit":7000,"totalSpend":3710},"spendLimitUsage":{"limit":5000,"used":1000}}'
+"$LIMITS" --tool cursor >"${SANDBOX}/limits-cursor.out" 2>"${SANDBOX}/limits-cursor.err" || fail "cursor limits failed"
+[[ ! -s "${SANDBOX}/limits-cursor.err" ]] || fail "cursor limits stderr: $(cat "${SANDBOX}/limits-cursor.err")"
+! grep -q "$CURSOR_TOKEN" "${SANDBOX}/limits-cursor.out" || fail "cursor token leaked"
+! grep -q "cursor-refresh-should-not-leak" "${SANDBOX}/limits-cursor.out" || fail "cursor refresh token leaked"
+python3 - "${SANDBOX}/limits-cursor.out" <<'PY' || fail "cursor JSON: $(cat "${SANDBOX}/limits-cursor.out")"
+import json, sys
+data = json.load(open(sys.argv[1]))
+kinds = [(w["kind"], w.get("scope"), w["used_percent"], w.get("resets_at")) for w in data["windows"]]
+assert kinds == [("monthly", None, 53.0, "2026-07-25T05:42:21Z"), ("monthly", "on-demand", 20.0, None)], kinds
+assert all(w["kind"] not in ("5h", "weekly") for w in data["windows"])
+PY
+rm -f "${HOME}/.cursor/auth.json"
+"$LIMITS" --tool cursor >"${SANDBOX}/limits-cursor-none.out"
+python3 - "${SANDBOX}/limits-cursor-none.out" <<'PY' || fail "cursor without a login showed limits"
+import json, sys
+assert json.load(open(sys.argv[1]))["windows"] == []
+PY
+pass "limits_cursor_monthly_only: included usage and an on-demand cap; no 5h or weekly"
+
+status=0
+"$LIMITS" --tool gemini >/dev/null 2>"${SANDBOX}/limits-bad.err" || status=$?
+[[ $status -eq 64 ]] || fail "unknown tool exit was $status: $(cat "${SANDBOX}/limits-bad.err")"
+status=0
+"$LIMITS" --tool codex --session '../secrets' >/dev/null 2>>"${SANDBOX}/limits-bad.err" || status=$?
+[[ $status -eq 64 ]] || fail "path session id exit was $status"
+pass "limits_rejects_bad_arguments"
+
+unset AI_TODO_LIMITS_OFFLINE AI_TODO_LIMITS_HTTP_BODY AI_TODO_LIMITS_HTTP_STATUS
 
 [[ ! -e "${SANDBOX}/guard.log" ]] || fail "a test reached a real binary: $(cat "${SANDBOX}/guard.log")"
 echo "All ${passes} todo script tests passed."
