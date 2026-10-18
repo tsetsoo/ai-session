@@ -11,7 +11,9 @@ final class TmuxCommandBuilderTests: XCTestCase {
 
     func testListSessions() {
         let cmd = TmuxCommandBuilder.listSessions()
-        XCTAssertTrue(cmd.contains("tmux ls -F '#{session_name}\\t#{session_activity}\\t#{session_attached}'"))
+        // A real tab. The two-character `\t` escape is not a separator tmux or the parser honors.
+        XCTAssertTrue(cmd.contains("tmux ls -F '#{session_name}\t#{session_activity}\t#{session_attached}'"))
+        XCTAssertFalse(cmd.contains("\\t"))
         XCTAssertTrue(cmd.hasPrefix("export PATH="))
     }
 
@@ -40,7 +42,8 @@ final class TmuxCommandBuilderTests: XCTestCase {
 
     func testListSessionsWithStatusesEmitsMarkerAndPreservesLsExitCode() {
         let command = TmuxCommandBuilder.listSessionsWithStatuses()
-        XCTAssertTrue(command.contains("tmux ls -F"))
+        XCTAssertTrue(command.contains("tmux ls -F '#{session_name}\t#{session_activity}\t#{session_attached}'"))
+        XCTAssertFalse(command.contains("\\t"))
         XCTAssertTrue(command.contains("echo '\(RemoteScriptOutput.statusMarker)'"))
         // The script must exit with tmux ls's status so isNoServerError still fires.
         XCTAssertTrue(command.contains("exit $ls_exit"))
