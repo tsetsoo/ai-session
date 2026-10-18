@@ -138,6 +138,14 @@ final class AppModel {
     private var firstLoad: Task<Void, Never>?
     /// The conversation changes (todo, created, status time) a relist was already asked for.
     @ObservationIgnored private var relistedFor: Set<String> = []
+    /// A stale listing that failed, asked again after `staleRetryDelay`. One at a time.
+    @ObservationIgnored private var staleRetry: Task<Void, Never>?
+    /// How long a failed stale listing waits before the shell asks again.
+    var staleRetryDelay: Duration = .seconds(2)
+    /// A stale result waiting to merge after the full listing that was already in flight.
+    @ObservationIgnored private var pendingStale: StaleListing?
+    /// Full listings in flight. A stale pass does not count, so it cannot hide one.
+    @ObservationIgnored private var fullRefreshesRunning = 0
     /// One board for the current inputs. Reads in one turn return this instance.
     @ObservationIgnored private var cachedBoard: ConversationBoard?
     @ObservationIgnored private var cachedBoardInputs: BoardInputs?
@@ -261,14 +269,22 @@ final class AppModel {
     /// Follows the board for conversations newer than their computer's listing.
     private func watchForRelist() {
         let stale = withObservationTracking {
-            Set(board.newerThanListing.map { "\($0.todoId)|\($0.createdAt)|\($0.statusUpdatedAt ?? "")" })
+            Set(board.newerThanListing.map(Self.relistKey))
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in self?.watchForRelist() }
         }
         let fresh = stale.subtracting(relistedFor)
         // Only what is still stale: a relisted conversation drops out, and the set stays small.
         relistedFor = relistedFor.intersection(stale).union(fresh)
-        if !fresh.isEmpty { relistRequests += 1 }
+        if !fresh.isEmpty {
+            staleRetry?.cancel()
+            staleRetry = nil
+            relistRequests += 1
+        }
+    }
+
+    private static func relistKey(_ conversation: Conversation) -> String {
+        "\(conversation.todoId)|\(conversation.createdAt)|\(conversation.statusUpdatedAt ?? "")"
     }
 
     /// `UIApplicationShortcutItems` type of the Home-screen "New Todo" quick action.
@@ -306,7 +322,16 @@ final class AppModel {
         case full
         /// Computers with a conversation in `board.newerThanListing`. Results merge into the
         /// listings already held. Nothing stale: return without listing or a new generation.
+        /// A stale pass does not supersede a full pass already running; its result merges
+        /// after that full result lands.
         case stale
+    }
+
+    /// One stale listing's answers, held when a full listing is still in flight.
+    private struct StaleListing {
+        var result: [String: Set<String>]
+        var targets: [Computer]
+        var askedAt: Date
     }
 
     /// Lists tmux sessions on hub computers, in parallel. A computer with no matching host, or
@@ -319,20 +344,40 @@ final class AppModel {
         #endif
         let computers = store.computers
         let targets: [Computer]
+        let isFull: Bool
         switch scope {
         case .full:
             targets = computers
+            isFull = true
+            // Nothing to list yet: the hub refresh has not filled computers, or no host is
+            // saved. Publishing would store an empty result and, with no hosts, stamp every
+            // computer checked. The shell task id includes both, so this runs again when they
+            // arrive. A test double may list with an empty host array.
+            if targets.isEmpty || (listTmuxOverride == nil && hosts.isEmpty) { return }
         case .stale:
             let staleIDs = Set(board.newerThanListing.map(\.computer.id))
             targets = computers.filter { staleIDs.contains($0.id) }
-            // Before the generation bump: an empty stale pass must not supersede a refresh
+            // Before any generation change: an empty stale pass must not supersede a refresh
             // already running, and must not mark that refresh abandoned.
             if targets.isEmpty { return }
+            isFull = false
         }
-        livenessGeneration += 1
+        // Only a full pass takes a generation. A stale pass must not discard one in flight.
+        if isFull {
+            livenessGeneration += 1
+            fullRefreshesRunning += 1
+        }
         let generation = livenessGeneration
         livenessRefreshesRunning += 1
+        var wrote = false
         defer {
+            if isFull {
+                fullRefreshesRunning -= 1
+                if !wrote, fullRefreshesRunning == 0, let pending = pendingStale {
+                    pendingStale = nil
+                    mergeStale(pending)
+                }
+            }
             livenessRefreshesRunning -= 1
             if livenessRefreshesRunning == 0, publishedLivenessGeneration != livenessGeneration {
                 livenessAbandoned += 1
@@ -350,29 +395,83 @@ final class AppModel {
                 if let names { result[id] = names }
             }
         }
-        guard generation == livenessGeneration, !Task.isCancelled else { return }
+        guard !Task.isCancelled else { return }
         switch scope {
         case .full:
+            guard generation == livenessGeneration else { return }
             liveTmux = result
-            listedAt = result.mapValues { _ in askedAt }
-            for computer in computers { livenessChecked[computer.id] = askedAt }
-        case .stale:
-            var sessions = liveTmux
-            var listed = listedAt
-            var checked = livenessChecked
-            for computer in targets {
-                // A failed listing is not a check: the previous names stay, and the selection
-                // keeps waiting instead of attaching on a list this pass could not confirm.
-                guard let names = result[computer.id] else { continue }
-                sessions[computer.id] = names
-                listed[computer.id] = askedAt
-                checked[computer.id] = askedAt
+            // A computer that did not answer still has a stamp, so a conversation that
+            // starts afterwards is stale and the next pass can clear the check.
+            var listed = result.mapValues { _ in askedAt }
+            for computer in computers {
+                livenessChecked[computer.id] = askedAt
+                if listed[computer.id] == nil { listed[computer.id] = askedAt }
             }
-            liveTmux = sessions
             listedAt = listed
-            livenessChecked = checked
+            publishedLivenessGeneration = generation
+            wrote = true
+            if let pending = pendingStale {
+                pendingStale = nil
+                mergeStale(pending)
+            }
+        case .stale:
+            let stale = StaleListing(result: result, targets: targets, askedAt: askedAt)
+            if fullRefreshesRunning > 0 {
+                pendingStale = stale
+            } else {
+                mergeStale(stale)
+            }
+            let failed = Set(targets.lazy.filter { result[$0.id] == nil }.map(\.id))
+            if !failed.isEmpty { scheduleStaleRetry(failedComputers: failed) }
         }
-        publishedLivenessGeneration = generation
+    }
+
+    /// Merges a stale listing into the listings already held. A computer that did not answer
+    /// keeps its previous names.
+    private func mergeStale(_ listing: StaleListing) {
+        var sessions = liveTmux
+        var listed = listedAt
+        var checked = livenessChecked
+        for computer in listing.targets {
+            guard let names = listing.result[computer.id] else {
+                // A failed pass is not a check. Leaving the old stamp would make a conversation
+                // that started since then `.unknown` (Start) instead of waiting for the retry.
+                checked.removeValue(forKey: computer.id)
+                continue
+            }
+            sessions[computer.id] = names
+            listed[computer.id] = listing.askedAt
+            checked[computer.id] = listing.askedAt
+        }
+        if sessions != liveTmux { liveTmux = sessions }
+        if listed != listedAt { listedAt = listed }
+        if checked != livenessChecked { livenessChecked = checked }
+    }
+
+    /// Shell task identity. A pass that starts before computers or hosts exist changes this
+    /// when they arrive, so the listing runs again instead of keeping the empty result.
+    func automaticLivenessID(hostIDs: [UUID]) -> String {
+        let computers = store.computers.map(\.id).sorted().joined(separator: ",")
+        let hosts = hostIDs.map(\.uuidString).sorted().joined(separator: ",")
+        return "\(relistRequests)|\(computers)|\(hosts)"
+    }
+
+    /// The shell asks once per change. A failed computer is forgotten, then asked again after
+    /// `staleRetryDelay`, so a throw does not leave the conversation unconfirmed.
+    private func scheduleStaleRetry(failedComputers: Set<String>) {
+        let keys = Set(board.newerThanListing.filter { failedComputers.contains($0.computer.id) }.map(Self.relistKey))
+        guard !keys.isEmpty else { return }
+        relistedFor.subtract(keys)
+        staleRetry?.cancel()
+        let delay = staleRetryDelay
+        staleRetry = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            self.staleRetry = nil
+            let still = Set(self.board.newerThanListing.map(Self.relistKey)).subtracting(self.relistedFor)
+            guard !still.isEmpty else { return }
+            self.relistRequests += 1
+        }
     }
 
     /// Whether the Mac's selection may attach to this todo's conversation. Attaching runs

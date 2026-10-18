@@ -5,6 +5,17 @@ import XCTest
 
 /// A terminal that connects instantly and can report a close later, the way a Cursor pane
 /// exits after the SSH channel is already up.
+private final class RecordingTransport: TerminalTransport {
+    var onOutput: (([UInt8]) -> Void)?
+    var onDisconnect: ((Int?) -> Void)?
+    var resizes: [(Int, Int)] = []
+
+    func connect(cols: Int, rows: Int) async throws {}
+    func send(_ bytes: ArraySlice<UInt8>) {}
+    func resize(cols: Int, rows: Int) { resizes.append((cols, rows)) }
+    func disconnect() {}
+}
+
 private final class ClosingTransport: TerminalTransport {
     var onOutput: (([UInt8]) -> Void)?
     var onDisconnect: ((Int?) -> Void)?
@@ -53,10 +64,60 @@ final class TerminalReconnectTests: XCTestCase {
         XCTAssertTrue(output.held.isEmpty)
 
         XCTAssertEqual(output.receive(Array("old".utf8), isShown: false), .hold)
+        // A warm session that keeps printing must not hold an unbounded buffer.
+        var capped = HiddenTerminalOutput()
+        let chunk = [UInt8](repeating: 1, count: HiddenTerminalOutput.maxHeldBytes)
+        XCTAssertEqual(capped.receive(chunk, isShown: false), .hold)
+        XCTAssertEqual(capped.receive([2, 3], isShown: false), .hold)
+        XCTAssertEqual(capped.held.count, HiddenTerminalOutput.maxHeldBytes)
+        XCTAssertEqual(Array(capped.held.suffix(2)), [2, 3])
         output.clear()
         XCTAssertTrue(output.held.isEmpty)
         XCTAssertNil(output.flushHeld(isShown: true))
         XCTAssertEqual(output.receive(Array("new".utf8), isShown: true), .feed(Array("new".utf8)))
+    }
+
+    /// A drain already queued when the session disconnects must not flush those bytes, and a
+    /// later flush still carries the session token so a retired generation can be ignored.
+    func testDiscardDropsBytesQueuedBeforeDisconnect() {
+        var queued: [() -> Void] = []
+        var flushed: [(Int, [UInt8])] = []
+        let coalescer = TerminalOutputCoalescer { drain in queued.append(drain) }
+        coalescer.onFlush = { token, bytes in flushed.append((token, bytes)) }
+
+        coalescer.append(Array("old".utf8), token: 1)
+        coalescer.append(Array("er".utf8), token: 2)
+        coalescer.discard()
+        queued.forEach { $0() }
+        queued.removeAll()
+        XCTAssertTrue(flushed.isEmpty)
+
+        coalescer.append(Array("next".utf8), token: 3)
+        queued.forEach { $0() }
+        XCTAssertEqual(flushed.map(\.0), [3])
+        XCTAssertEqual(flushed.map(\.1), [Array("next".utf8)])
+    }
+
+    /// A size reported while the surface was visible can still be waiting out the debounce
+    /// when the surface is hidden. That window-change must not reach the hidden session.
+    func testHidingDropsAResizeThatWasAlreadyQueued() async {
+        let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
+        let transport = RecordingTransport()
+        var queued: (() -> Void)?
+        let coordinator = TerminalCoordinator(
+            hostConfig: HostConnectionConfig(host: "mac", port: 22, username: "me", privateKeyPEM: Data()),
+            mode: .plainShell,
+            makeTransport: { _, _ in transport },
+            resizeScheduler: { queued = $0 }
+        )
+        coordinator.attach(to: view)
+        await coordinator.connect()
+        transport.resizes.removeAll()
+
+        coordinator.sizeChanged(source: view, newCols: 40, newRows: 12)
+        coordinator.setShown(false)
+        queued?()
+        XCTAssertTrue(transport.resizes.isEmpty)
     }
 
     func testReconnectIgnoresThePaneThatAlreadyExited() async {

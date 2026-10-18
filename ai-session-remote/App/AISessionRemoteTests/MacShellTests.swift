@@ -63,6 +63,17 @@ final class MacShellTests: XCTestCase {
         XCTAssertEqual(ids, ["c", "d", "b"])
     }
 
+    /// A closed todo is shown in front of the warm terminals. It does not take one of the
+    /// three slots, so arrowing through closed rows leaves the live terminals mounted.
+    func testWarmMountKeepsRunningConversationsWhenClosedTodosAreSelected() {
+        let running: Set = ["a", "b", "c"]
+        var ids = ["a", "b", "c"]
+        ids = WarmConversationMount.select("x", in: ids) { running.contains($0) }
+        ids = WarmConversationMount.select("y", in: ids) { running.contains($0) }
+        ids = WarmConversationMount.select("z", in: ids) { running.contains($0) }
+        XCTAssertEqual(ids, ["a", "b", "c", "z"])
+    }
+
     // MARK: Sync line
 
     private let now = Date(timeIntervalSince1970: 1_800_000_000)

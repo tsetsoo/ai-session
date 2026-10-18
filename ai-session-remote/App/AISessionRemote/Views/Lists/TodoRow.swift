@@ -7,9 +7,6 @@ struct TodoRow: View {
     let todo: Todo
     let conversation: Conversation?
     let status: ConversationDisplayStatus?
-    /// Callers that already tick (the project page) pass their clock. The age line also keeps
-    /// its own minute timer, so a list does not have to wrap every row to pass a fresh date.
-    let now: Date
     /// Closing or deleting its conversation.
     let isBusy: Bool
     let canToggle: Bool
@@ -35,7 +32,6 @@ struct TodoRow: View {
                     .lineLimit(1)
                 if conversation != nil || projectName != nil {
                     TodoSubtitleLabel(conversation: conversation, status: status, projectName: projectName)
-                        .id(now)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -96,7 +96,6 @@ struct TodoListView: View {
             todo: todo,
             conversation: conversation,
             status: status,
-            now: .now,
             isBusy: actions.inFlight.contains(todo.id),
             canToggle: canChange,
             projectName: store.project(id: todo.projectId)?.name,

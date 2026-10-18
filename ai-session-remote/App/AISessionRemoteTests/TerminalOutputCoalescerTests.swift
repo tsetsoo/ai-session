@@ -6,11 +6,11 @@ final class TerminalOutputCoalescerTests: XCTestCase {
         var pendingDrain: (() -> Void)?
         let coalescer = TerminalOutputCoalescer { drain in pendingDrain = drain }
         var flushed: [[UInt8]] = []
-        coalescer.onFlush = { flushed.append($0) }
+        coalescer.onFlush = { _, bytes in flushed.append(bytes) }
 
-        coalescer.append([1, 2])
-        coalescer.append([3])
-        coalescer.append([4, 5])
+        coalescer.append([1, 2], token: 1)
+        coalescer.append([3], token: 1)
+        coalescer.append([4, 5], token: 1)
 
         XCTAssertTrue(flushed.isEmpty, "must not flush before the scheduled drain runs")
         pendingDrain?()
@@ -25,16 +25,16 @@ final class TerminalOutputCoalescerTests: XCTestCase {
             scheduleCount += 1
             pendingDrain = drain
         }
-        coalescer.onFlush = { _ in }
+        coalescer.onFlush = { _, _ in }
 
-        coalescer.append([1])
-        coalescer.append([2])
-        coalescer.append([3])
+        coalescer.append([1], token: 1)
+        coalescer.append([2], token: 1)
+        coalescer.append([3], token: 1)
 
         XCTAssertEqual(scheduleCount, 1)
         pendingDrain?()
 
-        coalescer.append([4])
+        coalescer.append([4], token: 1)
         XCTAssertEqual(scheduleCount, 2, "a new drain is scheduled after the previous one ran")
     }
 
@@ -42,9 +42,9 @@ final class TerminalOutputCoalescerTests: XCTestCase {
         var pendingDrain: (() -> Void)?
         let coalescer = TerminalOutputCoalescer { drain in pendingDrain = drain }
         var flushCount = 0
-        coalescer.onFlush = { _ in flushCount += 1 }
+        coalescer.onFlush = { _, _ in flushCount += 1 }
 
-        coalescer.append([1])
+        coalescer.append([1], token: 1)
         pendingDrain?()
         pendingDrain?()
 
@@ -64,7 +64,7 @@ final class TerminalOutputCoalescerTests: XCTestCase {
         // Thread-safe collection of flushed bytes
         let flushLock = NSLock()
         var totalBytesFlushed = 0
-        coalescer.onFlush = { bytes in
+        coalescer.onFlush = { _, bytes in
             flushLock.lock()
             totalBytesFlushed += bytes.count
             flushLock.unlock()
@@ -78,7 +78,7 @@ final class TerminalOutputCoalescerTests: XCTestCase {
         DispatchQueue.concurrentPerform(iterations: totalProducers) { index in
             let startByte = UInt8(index * bytesPerProducer % 256)
             let bytes = Array(repeating: startByte, count: bytesPerProducer)
-            coalescer.append(bytes)
+            coalescer.append(bytes, token: 1)
         }
 
         // Drain all pending drains

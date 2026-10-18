@@ -176,7 +176,7 @@ struct PhoneShell: View {
         .task { await model.startSync() }
         // One listing for this shell. The first pass (still 0) lists every computer; a later
         // bump lists only computers whose conversations changed after their listing.
-        .task(id: model.relistRequests) {
+        .task(id: model.automaticLivenessID(hostIDs: hosts.map(\.id))) {
             let scope: AppModel.LivenessScope = model.relistRequests == 0 ? .full : .stale
             await model.refreshLiveness(hosts: hosts, scope: scope)
         }

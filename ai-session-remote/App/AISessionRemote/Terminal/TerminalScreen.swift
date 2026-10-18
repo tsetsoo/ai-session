@@ -32,14 +32,16 @@ struct HiddenTerminalOutput {
 
     private(set) var held: [UInt8] = []
 
+    /// How much hidden output is kept. Older bytes are dropped so a warm session that keeps
+    /// printing cannot grow the hold without bound. The tail is what the screen shows on return.
+    static let maxHeldBytes = 256 * 1024
+
     /// Shown output is returned for an immediate feed. Hidden output is appended to the hold.
     /// If the surface is already shown and bytes were still held, they are released in front of
     /// `bytes` as one feed so the screen catches up in order.
     mutating func receive(_ bytes: [UInt8], isShown: Bool) -> Decision {
         guard isShown else {
-            if !bytes.isEmpty {
-                held.append(contentsOf: bytes)
-            }
+            appendHeld(bytes)
             return .hold
         }
         guard !held.isEmpty else { return .feed(bytes) }
@@ -63,6 +65,14 @@ struct HiddenTerminalOutput {
     /// Drops held bytes. Used on disconnect and reconnect so the next session is not replayed.
     mutating func clear() {
         held.removeAll(keepingCapacity: false)
+    }
+
+    private mutating func appendHeld(_ bytes: [UInt8]) {
+        guard !bytes.isEmpty else { return }
+        held.append(contentsOf: bytes)
+        if held.count > Self.maxHeldBytes {
+            held.removeFirst(held.count - Self.maxHeldBytes)
+        }
     }
 }
 
@@ -113,7 +123,8 @@ final class TerminalCoordinator: TerminalViewDelegate {
         mode: TerminalMode,
         makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
             SSHTerminalSession(config: $0, mode: $1)
-        }
+        },
+        resizeScheduler: TerminalResizeDebouncer.Scheduler? = nil
     ) {
         self.hostConfig = hostConfig
         self.mode = mode
@@ -121,19 +132,22 @@ final class TerminalCoordinator: TerminalViewDelegate {
         self.coalescer = TerminalOutputCoalescer { drain in
             DispatchQueue.main.async(execute: drain)
         }
-        self.resizeDebouncer = TerminalResizeDebouncer { work in
+        let scheduler = resizeScheduler ?? { work in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
         }
+        self.resizeDebouncer = TerminalResizeDebouncer(scheduler: scheduler)
         // Safe to capture `self` here: by this point every stored property has an initial
         // value, so `self` is fully initialized.
-        self.coalescer.onFlush = { [weak self] bytes in
-            self?.deliverFlushed(bytes)
+        self.coalescer.onFlush = { [weak self] token, bytes in
+            self?.deliverFlushed(token, bytes)
         }
     }
 
     /// Shown surfaces feed SwiftTerm immediately. Hidden ones append to `hiddenOutput` and
-    /// catch up in one feed from `setShown(true)`.
-    private func deliverFlushed(_ bytes: [UInt8]) {
+    /// catch up in one feed from `setShown(true)`. Bytes from a session `disconnect()` already
+    /// retired are ignored, including a drain that was queued before the disconnect.
+    private func deliverFlushed(_ token: Int, _ bytes: [UInt8]) {
+        guard token == sessionGeneration else { return }
         switch hiddenOutput.receive(bytes, isShown: isShown) {
         case .feed(let pending):
             guard !pending.isEmpty else { return }
@@ -144,10 +158,15 @@ final class TerminalCoordinator: TerminalViewDelegate {
     }
 
     /// Records whether this surface is on screen and, when it becomes visible, feeds every
-    /// byte held while it was hidden.
+    /// byte held while it was hidden. Hiding cancels a resize already waiting out the
+    /// debounce, so that window-change cannot land on the hidden session.
     func setShown(_ shown: Bool) {
         isShown = shown
-        guard shown, let terminalView else { return }
+        guard shown else {
+            resizeDebouncer.cancelPending()
+            return
+        }
+        guard let terminalView else { return }
         guard let pending = hiddenOutput.flushHeld(isShown: true) else { return }
         terminalView.feed(byteArray: pending[...])
     }
@@ -170,10 +189,13 @@ final class TerminalCoordinator: TerminalViewDelegate {
         let rows = terminal.rows > 0 ? terminal.rows : 24
 
         let session = makeTransport(hostConfig, mode)
+        let outputToken = generation
         session.onOutput = { [weak self] bytes in
             // Arrives off the main thread. The coalescer is thread-safe and hops to the main
             // thread, where a shown surface feeds SwiftTerm and a hidden one holds the bytes.
-            self?.coalescer.append(bytes)
+            // `outputToken` is this connect's generation, so a flush from the session
+            // `disconnect()` retired cannot land on the next one.
+            self?.coalescer.append(bytes, token: outputToken)
         }
         session.onDisconnect = { [weak self] exitStatus in
             DispatchQueue.main.async {
@@ -220,9 +242,11 @@ final class TerminalCoordinator: TerminalViewDelegate {
         // cannot fail the session `reconnect()` is about to open.
         sessionGeneration += 1
         resizeDebouncer.cancelPending()
-        // Drop output held while this surface was hidden. `reconnect()` calls this before
-        // opening the next session, so that session is not replayed on top of the old one.
+        // Drop output held while this surface was hidden, and anything still queued in the
+        // coalescer. A drain already scheduled then flushes an empty buffer. `reconnect()`
+        // calls this before opening the next session, so that session is not replayed.
         hiddenOutput.clear()
+        coalescer.discard()
         session?.disconnect()
         session = nil
     }
@@ -314,7 +338,8 @@ final class TerminalCoordinator: TerminalViewDelegate {
         // it would resize that tmux session. The real size is sent again when it is shown.
         guard isShown else { return }
         resizeDebouncer.sizeChanged(cols: newCols, rows: newRows) { [weak self] cols, rows in
-            self?.session?.resize(cols: cols, rows: rows)
+            guard let self, self.isShown else { return }
+            self.session?.resize(cols: cols, rows: rows)
         }
     }
 

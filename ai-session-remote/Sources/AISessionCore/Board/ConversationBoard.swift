@@ -6,8 +6,8 @@ import Foundation
 /// so later reads do not scan or parse again. `AppModel` keeps one instance and replaces it only
 /// when the inputs change.
 public final class ConversationBoard: Sendable {
-    private let conversations: [String: Conversation]
     private let running: [Conversation]
+    private let closed: [Conversation]
     private let statusByTodoID: [String: ConversationDisplayStatus]
     private let openTodoCounts: [TodoSection: Int]
     private let sectionNeedsYouFlags: [TodoSection: Bool]
@@ -22,12 +22,11 @@ public final class ConversationBoard: Sendable {
     ///     unknown rather than closed. Without a date the listing counts as current.
     public init(todos: [Todo], conversations: [String: Conversation], liveTmux: [String: Set<String>],
                 listedAt: [String: Date] = [:]) {
-        self.conversations = conversations
-
         var statuses: [String: ConversationDisplayStatus] = [:]
         statuses.reserveCapacity(conversations.count)
         var open: [Conversation] = []
         open.reserveCapacity(conversations.count)
+        var closedConversations: [Conversation] = []
         var newer: [Conversation] = []
 
         for conversation in conversations.values {
@@ -35,12 +34,17 @@ public final class ConversationBoard: Sendable {
             let alive = Self.tmuxAlive(conversation, changed: changed, liveTmux: liveTmux, listedAt: listedAt)
             let status = ConversationDisplayStatus(conversation.status, tmuxAlive: alive)
             statuses[conversation.todoId] = status
-            if status != .closed { open.append(conversation) }
+            if status == .closed {
+                closedConversations.append(conversation)
+            } else {
+                open.append(conversation)
+            }
             if Self.isNewerThanListing(conversation, changed: changed, liveTmux: liveTmux, listedAt: listedAt) {
                 newer.append(conversation)
             }
         }
         open.sort(by: Self.newestFirst)
+        closedConversations.sort(by: Self.newestFirst)
 
         var needing: [Conversation] = []
         var runningByComputer: [String: Int] = [:]
@@ -61,6 +65,7 @@ public final class ConversationBoard: Sendable {
         }
 
         self.running = open
+        self.closed = closedConversations
         self.needsYou = needing
         self.newerThanListing = newer
         self.statusByTodoID = statuses
@@ -87,9 +92,10 @@ public final class ConversationBoard: Sendable {
 
     private static func isNewerThanListing(_ conversation: Conversation, changed: Date?,
                                            liveTmux: [String: Set<String>], listedAt: [String: Date]) -> Bool {
-        guard let names = liveTmux[conversation.computer.id], !names.contains(conversation.tmuxName) else { return false }
-        guard let changed, let listed = listedAt[conversation.computer.id] else { return false }
-        return changed > listed
+        if liveTmux[conversation.computer.id]?.contains(conversation.tmuxName) == true { return false }
+        guard let changed, let listed = listedAt[conversation.computer.id], changed > listed else { return false }
+        // Missing from the name set, or the computer never answered (no name set at all).
+        return true
     }
 
     /// `createdAt` is sortable UTC ISO-8601, so strings compare in time order.
@@ -110,13 +116,9 @@ public final class ConversationBoard: Sendable {
     /// that computer needs listing again before they can count as closed.
     public let newerThanListing: [Conversation]
 
-    /// Running now, then the closed conversations, newest first.
-    public var all: [Conversation] {
-        let closed = conversations.values
-            .filter { statusByTodoID[$0.todoId] == .closed }
-            .sorted(by: Self.newestFirst)
-        return running + closed
-    }
+    /// Running now, then the closed conversations, newest first. Both lists are stored
+    /// with the snapshot, so a list refresh does not sort the closed rows again.
+    public var all: [Conversation] { running + closed }
 
     /// 1-based; only the first nine get a keyboard shortcut.
     public func conversation(atShortcut n: Int) -> Conversation? {

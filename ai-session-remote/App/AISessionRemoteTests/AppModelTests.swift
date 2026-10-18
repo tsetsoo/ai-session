@@ -175,7 +175,11 @@ final class AppModelTests: XCTestCase {
 
     private actor Mode {
         var slow = false
+        var staleMac = false
+        var failMac = false
         func set(slow: Bool) { self.slow = slow }
+        func set(staleMac: Bool) { self.staleMac = staleMac }
+        func set(failMac: Bool) { self.failMac = failMac }
     }
 
     func testStaleRefreshDoesNotOverwriteNewerResult() async {
@@ -309,10 +313,56 @@ final class AppModelTests: XCTestCase {
         let checkedLinux = model.livenessChecked[linux.id]
         clock.date = Self.listedAt.addingTimeInterval(10)
         await model.refreshLiveness(hosts: [], scope: .stale)
-        XCTAssertEqual(model.livenessChecked[mac.id], Self.listedAt)
+        XCTAssertNil(model.livenessChecked[mac.id])
+        XCTAssertEqual(model.attachReadiness(forTodo: "t7"), .awaitingLiveness)
         XCTAssertNil(model.liveTmux[mac.id])
         XCTAssertEqual(model.livenessChecked[linux.id], checkedLinux)
         XCTAssertEqual(model.liveTmux[linux.id], ["keep-linux"])
+    }
+
+    func testFullRefreshWithNoComputersDoesNotSupersedeAnInFlightListing() async {
+        let gate = Gate()
+        let mode = Mode()
+        let model = makeModel { _ in
+            if await mode.slow {
+                await gate.wait()
+                return ["from-full"]
+            }
+            return ["listed"]
+        }
+        await mode.set(slow: true)
+        let full = Task { await model.refreshLiveness(hosts: []) }
+        while await gate.waiting < DemoFixtures.computers.count { await Task.yield() }
+        model.store.seedForDemo(todos: [], conversations: [], sectionComputers: [], computers: [])
+        await model.refreshLiveness(hosts: [])
+        await gate.open()
+        await full.value
+        XCTAssertEqual(model.liveTmux[mac.id], ["from-full"])
+        XCTAssertEqual(model.liveTmux[linux.id], ["from-full"])
+        XCTAssertEqual(model.livenessAbandoned, 0)
+    }
+
+    func testFullRefreshWithNoHostsDoesNotStampChecks() async {
+        let cache = TodoHubCache(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("appmodel-\(UUID().uuidString).json"))
+        let model = AppModel(store: TodoHubStore(cache: cache), demo: false, now: { Self.listedAt })
+        model.store.seedForDemo(
+            todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
+            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+        )
+        await model.refreshLiveness(hosts: [])
+        XCTAssertTrue(model.livenessChecked.isEmpty)
+        XCTAssertTrue(model.liveTmux.isEmpty)
+        XCTAssertEqual(model.livenessAbandoned, 0)
+    }
+
+    func testAutomaticLivenessIDChangesWhenComputersOrHostsArrive() {
+        let model = makeModel()
+        let empty = model.automaticLivenessID(hostIDs: [])
+        model.store.seedForDemo(todos: [], conversations: [], sectionComputers: [], computers: [])
+        XCTAssertNotEqual(model.automaticLivenessID(hostIDs: []), empty)
+        let host = UUID()
+        XCTAssertNotEqual(model.automaticLivenessID(hostIDs: [host]), model.automaticLivenessID(hostIDs: []))
     }
 
     func testEmptyStaleRefreshDoesNotSupersedeAnInFlightListing() async {
@@ -336,6 +386,76 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.liveTmux[mac.id], ["from-full"])
         XCTAssertEqual(model.liveTmux[linux.id], ["from-full"])
         XCTAssertEqual(model.livenessAbandoned, 0)
+    }
+
+    /// A full listing already in flight must keep its result. The stale pass merges after it,
+    /// and only for the computers it listed.
+    func testStaleRefreshMergesAfterAnInFlightFullListing() async {
+        let gate = Gate()
+        let mode = Mode()
+        let mac = mac
+        let model = makeModel { computer in
+            if await mode.staleMac, computer.id == mac.id { return ["from-stale"] }
+            if await mode.slow {
+                await gate.wait()
+                return ["from-full"]
+            }
+            return ["before"]
+        }
+        await model.refreshLiveness(hosts: [])
+        XCTAssertEqual(model.liveTmux[mac.id], ["before"])
+        XCTAssertEqual(model.liveTmux[linux.id], ["before"])
+
+        let started = Conversation(
+            todoId: "t7", computer: mac, cwd: "~/notes", tool: "claude", tmuxName: "todo-t7",
+            sessionId: "s7", status: .busy, createdAt: "2026-10-18T00:00:05Z"
+        )
+        model.store.seedForDemo(
+            todos: DemoFixtures.todos, conversations: DemoFixtures.conversations + [started],
+            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+        )
+        await mode.set(slow: true)
+        let full = Task { await model.refreshLiveness(hosts: []) }
+        while await gate.waiting == 0 { await Task.yield() }
+        await mode.set(staleMac: true)
+        await model.refreshLiveness(hosts: [], scope: .stale)
+        await gate.open()
+        await full.value
+        XCTAssertEqual(model.liveTmux[linux.id], ["from-full"])
+        XCTAssertEqual(model.liveTmux[mac.id], ["from-stale"])
+        XCTAssertEqual(model.livenessAbandoned, 0)
+    }
+
+    /// A stale listing that throws is asked again. Recording the conversation before the
+    /// listing returns leaves it unconfirmed until some other conversation goes stale.
+    func testFailedStaleListingIsAskedAgain() async {
+        let mac = mac
+        let mode = Mode()
+        let model = makeModel { computer in
+            if computer.id == mac.id {
+                if await mode.failMac { throw ListingFailed() }
+                return ["mac-before"]
+            }
+            return ["keep-linux"]
+        }
+        model.staleRetryDelay = .zero
+        await model.refreshLiveness(hosts: [])
+        XCTAssertEqual(model.liveTmux[mac.id], ["mac-before"])
+        await mode.set(failMac: true)
+        let started = Conversation(
+            todoId: "t7", computer: mac, cwd: "~/notes", tool: "claude", tmuxName: "todo-t7",
+            sessionId: "s7", status: .busy, createdAt: "2026-10-18T00:00:05Z"
+        )
+        model.store.seedForDemo(
+            todos: DemoFixtures.todos, conversations: DemoFixtures.conversations + [started],
+            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+        )
+        await settle(model) { model.relistRequests > 0 }
+        let asked = model.relistRequests
+        await model.refreshLiveness(hosts: [], scope: .stale)
+        XCTAssertEqual(model.liveTmux[mac.id], ["mac-before"], "a failed listing keeps the previous names")
+        await settle(model) { model.relistRequests > asked }
+        XCTAssertGreaterThan(model.relistRequests, asked)
     }
 
     private actor ListingCalls {
@@ -615,7 +735,7 @@ final class TodoHubRefreshTests: XCTestCase {
         HubRefreshStub.set { bodies in
             bodies.conversations = Self.encoded(conversations)
         }
-        await store.refresh()
+        await store.refresh(trigger: .background)
         XCTAssertEqual(store.conversations[conversations[0].todoId]?.status, conversations[0].status)
         XCTAssertEqual(store.revision, revision, "a status heartbeat must not refetch project pages")
 
@@ -623,7 +743,7 @@ final class TodoHubRefreshTests: XCTestCase {
         HubRefreshStub.set { bodies in
             bodies.conversations = Self.encoded(conversations)
         }
-        await store.refresh()
+        await store.refresh(trigger: .background)
         XCTAssertEqual(store.conversations[conversations[0].todoId]?.statusMessage, "still working")
         XCTAssertEqual(store.revision, revision)
 
@@ -632,16 +752,19 @@ final class TodoHubRefreshTests: XCTestCase {
         HubRefreshStub.set { bodies in
             bodies.todos = Self.encoded(renamed)
         }
-        await store.refresh()
+        await store.refresh(trigger: .background)
         XCTAssertEqual(store.todos.first { $0.id == renamed[0].id }?.title, "Renamed")
         XCTAssertEqual(store.revision, revision)
 
         HubRefreshStub.set { bodies in
             bodies.computers = Self.encoded([DemoFixtures.macStudio])
         }
-        await store.refresh()
+        await store.refresh(trigger: .background)
         XCTAssertEqual(store.computers.map(\.id), [DemoFixtures.macStudio.id])
         XCTAssertEqual(store.revision, revision)
+
+        await store.refresh(trigger: .user)
+        XCTAssertGreaterThan(store.revision, revision, "pull to refresh reloads project conversations and memories")
         XCTAssertNil(store.errorMessage)
     }
 

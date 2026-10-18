@@ -142,18 +142,14 @@ struct ProjectDetailView: View {
                 Text("No todos in this project").foregroundStyle(.secondary)
             }
             ForEach(todos) { todo in
-                // Per row, so the list keeps one row per todo; the ages tick every minute.
-                TimelineView(.everyMinute) { context in
-                    TodoRow(
-                        todo: todo,
-                        conversation: store.conversations[todo.id],
-                        status: model.board.status(forTodo: todo.id),
-                        now: context.date,
-                        isBusy: false,
-                        canToggle: !store.isOffline,
-                        onToggle: { Task { await store.toggle(todo) } }
-                    )
-                }
+                TodoRow(
+                    todo: todo,
+                    conversation: store.conversations[todo.id],
+                    status: model.board.status(forTodo: todo.id),
+                    isBusy: false,
+                    canToggle: !store.isOffline,
+                    onToggle: { Task { await store.toggle(todo) } }
+                )
                 .rowTap { open(todo) }
                 .contextMenu {
                     TodoProjectMenu(todo: todo, store: store)

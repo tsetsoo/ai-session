@@ -115,7 +115,7 @@ struct MacShell: View {
         .task { await model.startSync() }
         // One listing for this shell. The first pass (still 0) lists every computer; a later
         // bump lists only computers whose conversations changed after their listing.
-        .task(id: model.relistRequests) {
+        .task(id: model.automaticLivenessID(hostIDs: hosts.map(\.id))) {
             let scope: AppModel.LivenessScope = model.relistRequests == 0 ? .full : .stale
             await model.refreshLiveness(hosts: hosts, scope: scope)
         }
@@ -532,7 +532,7 @@ private struct ConversationColumn: View {
             guard let pendingID else { return }
             try? await Task.sleep(for: .seconds(SelectionAttacher.delay))
             guard !Task.isCancelled, self.pendingID == pendingID else { return }
-            shown = WarmConversationMount.select(pendingID, in: shown)
+            shown = WarmConversationMount.select(pendingID, in: shown, protects: protectsTerminal)
             self.pendingID = nil
         }
     }
@@ -557,17 +557,28 @@ private struct ConversationColumn: View {
             pendingID = nil
             return
         }
-        if shown.contains(id) {
-            pendingID = nil
-            shown = WarmConversationMount.select(id, in: shown)
-            return
-        }
         switch model.attachReadiness(forTodo: id) {
         case .running, .awaitingLiveness:
-            pendingID = id
+            if shown.contains(id) {
+                pendingID = nil
+                shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal)
+            } else {
+                pendingID = id
+            }
         case .closed, .unknown:
+            // In front of the warm terminals, not in one of their slots. Arrowing through
+            // closed rows must not disconnect a live session.
             pendingID = nil
-            shown = WarmConversationMount.select(id, in: shown)
+            shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal)
+        }
+    }
+
+    /// Running, and a conversation still waiting on its first listing. Closed and unknown
+    /// are the one card swapped in front.
+    private func protectsTerminal(_ id: String) -> Bool {
+        switch model.attachReadiness(forTodo: id) {
+        case .running, .awaitingLiveness: return true
+        case .closed, .unknown: return false
         }
     }
 }
@@ -727,21 +738,27 @@ final class SelectionAttacher {
 }
 
 /// Which conversation frames stay mounted in the detail column. The most recently selected
-/// stay, oldest first, so coming back to one shows the terminal that is already attached.
+/// running conversations stay, oldest first, so coming back to one shows the terminal that
+/// is already attached. A closed conversation is one extra card in front of those; it does
+/// not take a slot, and the next closed conversation replaces it.
 enum WarmConversationMount {
     /// Three live terminals: the one on screen and the two you just left. Older ones disconnect.
     static let capacity = 3
 
-    static func select(_ id: String, in ids: [String]) -> [String] {
-        var ids = ids
-        if let index = ids.firstIndex(of: id) {
-            ids.remove(at: index)
+    /// Mounts `id`. `protects` is true for a conversation whose terminal must stay (running,
+    /// or still waiting on a listing). A closed or unknown id is shown in addition and
+    /// replaces the previous one. The default treats every id as a live terminal.
+    static func select(_ id: String, in ids: [String], protects: (String) -> Bool = { _ in true }) -> [String] {
+        var warm = ids.filter(protects)
+        guard protects(id) else { return warm + [id] }
+        if let index = warm.firstIndex(of: id) {
+            warm.remove(at: index)
         }
-        ids.append(id)
-        if ids.count > capacity {
-            ids.removeFirst(ids.count - capacity)
+        warm.append(id)
+        if warm.count > capacity {
+            warm.removeFirst(warm.count - capacity)
         }
-        return ids
+        return warm
     }
 }
 

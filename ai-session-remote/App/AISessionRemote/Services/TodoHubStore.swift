@@ -187,7 +187,8 @@ final class TodoHubStore {
             guard generation == refreshGeneration else { return }
             await acceptFetch(
                 todos: t, conversations: c, sectionComputers: m, computers: comps,
-                projects: p, suggestions: sugg, startedAtEpoch: startedAtEpoch
+                projects: p, suggestions: sugg, startedAtEpoch: startedAtEpoch,
+                trigger: trigger
             )
             if wantsLiveUpdates && eventsTask == nil { startEventsTask() }
         } catch TodoHubError.unreachable {
@@ -577,8 +578,9 @@ final class TodoHubStore {
     }
 
     /// Applies one successful fetch: assigns a collection only when it changed, bumps `revision`
-    /// only for project, suggestion, or conversation-identity changes, and skips the cache write
-    /// when todos, conversations, and projects match the last successful save.
+    /// only for project, suggestion, or conversation-identity changes. A user refresh bumps it
+    /// too, so pull-to-refresh reloads project conversations, memories, and weekly stats.
+    /// Skips the cache write when todos, conversations, and projects match the last successful save.
     private func acceptFetch(
         todos: [Todo],
         conversations: [Conversation],
@@ -586,7 +588,8 @@ final class TodoHubStore {
         computers: [Computer],
         projects: [Project]?,
         suggestions: [ProjectSuggestion]?,
-        startedAtEpoch: Int
+        startedAtEpoch: Int,
+        trigger: RefreshTrigger
     ) async {
         let previousIdentities = Self.conversationIdentities(self.conversations)
         deliver(todos: todos, conversations: conversations, startedAtEpoch: startedAtEpoch)
@@ -608,7 +611,7 @@ final class TodoHubStore {
             self.suggestions = suggestions
             suggestionsChanged = true
         }
-        if identitiesChanged || projectsChanged || suggestionsChanged {
+        if identitiesChanged || projectsChanged || suggestionsChanged || trigger == .user {
             revision += 1
         }
         isOffline = false
