@@ -20,7 +20,6 @@ struct MacShell: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettingsWindow
     #endif
-    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @AppStorage(QuickAdd.sectionKey) private var quickAddSection = TodoSection.i.rawValue
     @State private var query = ""
     @State private var settings: SettingsRequest?
@@ -48,7 +47,8 @@ struct MacShell: View {
             contentColumn
                 .navigationSplitViewColumnWidth(min: 300, ideal: 352, max: 520)
         } detail: {
-            detailColumn
+            // Its own view, so choosing a conversation does not rebuild the list column.
+            ShellDetail(frameRequest: $frameRequest, computerPage: computerPage, onOpen: open)
         }
         .tint(DS.accent)
         .environment(\.openAppSettings) { settings = SettingsRequest(initial: $0) }
@@ -217,55 +217,6 @@ struct MacShell: View {
     private var addSection: TodoSection {
         if case let .section(section) = sidebarItem { return section }
         return QuickAdd.section(from: quickAddSection)
-    }
-
-    // MARK: Detail column
-
-    @ViewBuilder
-    private var detailColumn: some View {
-        if sidebarItem == .projects {
-            projectDetail
-        } else if let page = computerPage, case let .computer(id) = sidebarItem,
-           let computer = store.computers.first(where: { $0.id == id }),
-           let host = HostLookup.host(for: computer, in: hosts) {
-            NavigationStack {
-                page.destination(computer: computer, host: host)
-            }
-            .id("\(id)|\(page.rawValue)")
-        } else if let id = model.selectedTodoID, let todo = store.todos.first(where: { $0.id == id }) {
-            // Selection attaches to a running conversation after 150 ms and never starts one;
-            // ⏎, a double-click or Open does.
-            ConversationDetail(todo: todo, request: $frameRequest) {
-                model.selectedTodoID = nil
-            }
-        } else {
-            ContentUnavailableView {
-                Label("Select a conversation", systemImage: "bubble.left.and.bubble.right")
-            } description: {
-                Text("⌘K to jump · ⌘N new todo")
-            }
-        }
-    }
-
-    /// The selected project's page. Opening one of its todos selects that todo in its section
-    /// and starts (or resumes) it, so the conversation shows in this column as usual.
-    @ViewBuilder
-    private var projectDetail: some View {
-        if let id = model.selectedProjectID {
-            NavigationStack {
-                ProjectDetailView(projectId: id, store: store) { todo in
-                    model.sidebarSelection = .section(todo.section)
-                    open(todo)
-                }
-            }
-            .id(id)
-        } else {
-            ContentUnavailableView {
-                Label("Select a project", systemImage: "folder")
-            } description: {
-                Text("Projects group todos, conversations and memories by folder.")
-            }
-        }
     }
 
     // MARK: Fast paths
@@ -458,18 +409,178 @@ struct MacShell: View {
     #endif
 }
 
+// MARK: - Detail column
+
+/// The detail column. Kept off `MacShell`'s body so clicking a conversation does not rebuild
+/// the list. Conversations you have already opened stay mounted underneath Projects and a
+/// computer page, so coming back shows the terminal that is still attached.
+private struct ShellDetail: View {
+    @Binding var frameRequest: FrameRequest?
+    let computerPage: ComputerPage?
+    let onOpen: (Todo) -> Void
+
+    @Environment(AppModel.self) private var model
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
+
+    private var store: TodoHubStore { model.store }
+
+    private var showsConversation: Bool {
+        model.sidebarSelection != .projects && computerPage == nil
+    }
+
+    var body: some View {
+        ZStack {
+            ConversationColumn(request: $frameRequest, showsConversation: showsConversation)
+            if model.sidebarSelection == .projects {
+                projectDetail
+            } else if let page = computerPage, case let .computer(id) = model.sidebarSelection,
+                      let computer = store.computers.first(where: { $0.id == id }),
+                      let host = HostLookup.host(for: computer, in: hosts) {
+                NavigationStack {
+                    page.destination(computer: computer, host: host)
+                }
+                .id("\(id)|\(page.rawValue)")
+            } else if showsConversation, model.selectedTodoID == nil {
+                ContentUnavailableView {
+                    Label("Select a conversation", systemImage: "bubble.left.and.bubble.right")
+                } description: {
+                    Text("⌘K to jump · ⌘N new todo")
+                }
+            }
+        }
+    }
+
+    /// The selected project's page. Opening one of its todos selects that todo in its section
+    /// and starts (or resumes) it, so the conversation shows in this column as usual.
+    @ViewBuilder
+    private var projectDetail: some View {
+        if let id = model.selectedProjectID {
+            NavigationStack {
+                ProjectDetailView(projectId: id, store: store) { todo in
+                    model.sidebarSelection = .section(todo.section)
+                    onOpen(todo)
+                }
+            }
+            .id(id)
+        } else {
+            ContentUnavailableView {
+                Label("Select a project", systemImage: "folder")
+            } description: {
+                Text("Projects group todos, conversations and memories by folder.")
+            }
+        }
+    }
+}
+
+/// The conversations whose terminals stay alive. Selecting one that is already mounted shows
+/// it immediately. A new running conversation waits `SelectionAttacher.delay` before it is
+/// mounted, so arrowing through the list does not attach every row.
+private struct ConversationColumn: View {
+    @Binding var request: FrameRequest?
+    let showsConversation: Bool
+
+    @Environment(AppModel.self) private var model
+    @State private var shown: [String] = []
+    /// A running conversation selected, not mounted yet: the settle window.
+    @State private var pendingID: String?
+
+    private var frontmostID: String? {
+        guard showsConversation else { return nil }
+        return model.selectedTodoID
+    }
+
+    var body: some View {
+        ZStack {
+            ForEach(shown, id: \.self) { id in
+                if let todo = model.store.todos.first(where: { $0.id == id }) {
+                    ConversationDetail(
+                        todo: todo, request: $request, isFrontmost: frontmostID == id, sharesColumn: true,
+                        attachImmediately: true
+                    ) {
+                        shown.removeAll { $0 == id }
+                        if model.selectedTodoID == id { model.selectedTodoID = nil }
+                    }
+                    .opacity(frontmostID == id ? 1 : 0)
+                    .allowsHitTesting(frontmostID == id)
+                    .accessibilityHidden(frontmostID != id)
+                    .zIndex(frontmostID == id ? 1 : 0)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            if let pendingID, pendingID == model.selectedTodoID, showsConversation, !shown.contains(pendingID) {
+                // The same blank the frame shows while a selection settles.
+                Color.clear.modifier(OnTerminalBackground())
+                    .allowsHitTesting(false)
+            }
+        }
+        .background { windowTitle }
+        .onChange(of: model.selectedTodoID, initial: true) { _, id in syncSelection(id) }
+        .onChange(of: model.store.todos.map(\.id)) { _, ids in
+            let alive = Set(ids)
+            let kept = shown.filter { alive.contains($0) }
+            if kept != shown { shown = kept }
+            if let pendingID, !alive.contains(pendingID) { self.pendingID = nil }
+        }
+        .task(id: pendingID) {
+            guard let pendingID else { return }
+            try? await Task.sleep(for: .seconds(SelectionAttacher.delay))
+            guard !Task.isCancelled, self.pendingID == pendingID else { return }
+            shown = WarmConversationMount.select(pendingID, in: shown)
+            self.pendingID = nil
+        }
+    }
+
+    /// The column owns the window title: each mounted frame would otherwise publish its own.
+    @ViewBuilder
+    private var windowTitle: some View {
+        if showsConversation, let id = model.selectedTodoID,
+           let todo = model.store.todos.first(where: { $0.id == id }) {
+            Color.clear
+                .frame(width: 0, height: 0)
+                .navigationTitle(todo.title)
+                #if os(macOS)
+                .navigationSubtitle(ConversationFrame.subtitle(todo: todo, store: model.store, includeFolder: true))
+                #endif
+                .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private func syncSelection(_ id: String?) {
+        guard let id, model.store.todos.contains(where: { $0.id == id }) else {
+            pendingID = nil
+            return
+        }
+        if shown.contains(id) {
+            pendingID = nil
+            shown = WarmConversationMount.select(id, in: shown)
+            return
+        }
+        switch model.attachReadiness(forTodo: id) {
+        case .running, .awaitingLiveness:
+            pendingID = id
+        case .closed, .unknown:
+            pendingID = nil
+            shown = WarmConversationMount.select(id, in: shown)
+        }
+    }
+}
+
 // MARK: - Selecting vs attaching
 
 /// Turns the Mac's selection into attaching its conversation's terminal, never starting one.
 ///
 /// - A selection settles for 150 ms first, so arrowing through the list attaches only where it
-///   stops. Like `TerminalResizeDebouncer` it takes an injectable scheduler for tests.
+///   stops. Like `TerminalResizeDebouncer` it takes an injectable scheduler for tests. The
+///   detail column waits that long before mounting a new frame, then selects with `immediate`
+///   so the wait is not paid twice.
 /// - It attaches only once the conversation's tmux session was listed alive: attaching runs
 ///   `ai-todo-open`, which would quietly recreate a dead session. If the computer hasn't been
 ///   listed yet it asks for a liveness refresh and waits; if that gets no answer it stays on
 ///   Start / Resume.
 /// - It re-evaluates when the selected conversation's running state changes: starting to run
 ///   elsewhere attaches (debounced), closing drops to Start / Resume.
+/// - A frame kept mounted behind the one on screen does not open a terminal. One that is
+///   already attached stays attached, so coming back shows it at once.
 @MainActor
 @Observable
 final class SelectionAttacher {
@@ -484,8 +595,12 @@ final class SelectionAttacher {
 
     /// Between a selection (or a change in its running state) and acting on it.
     private(set) var isSettling = false
+    /// True after the first `evaluate`, so the frame can avoid a Start card flash before then.
+    private(set) var hasEvaluated = false
     /// Bumped when the selection's computer needs a liveness refresh; the detail runs it.
     private(set) var livenessRequests = 0
+    /// False while another conversation is the one on screen.
+    private(set) var isFrontmost = true
 
     @ObservationIgnored private let scheduler: Scheduler
     @ObservationIgnored private(set) var selection: String?
@@ -502,14 +617,22 @@ final class SelectionAttacher {
         self.scheduler = scheduler
     }
 
-    func select(_ todoID: String?) {
+    /// - Parameter immediate: the caller already waited out `delay` (the detail column does,
+    ///   before it mounts the frame). Evaluate in this turn instead of waiting again.
+    func select(_ todoID: String?, immediate: Bool = false) {
         guard todoID != selection else { return }
         selection = todoID
         lastKnown = nil
         askedForLiveness = false
+        hasEvaluated = false
         if todoID == nil {
             generation += 1
             isSettling = false
+            hasEvaluated = true
+        } else if immediate {
+            generation += 1
+            isSettling = false
+            evaluate()
         } else {
             schedule()
         }
@@ -520,6 +643,21 @@ final class SelectionAttacher {
         lastKnown = nil
         askedForLiveness = false
         if selection != nil { schedule() }
+    }
+
+    /// The detail column shows one conversation at a time and keeps the others mounted.
+    /// Leaving cancels an attach that has not fired yet and leaves a live terminal up.
+    /// Coming back to a live terminal does not attach again.
+    func setFrontmost(_ frontmost: Bool) {
+        guard frontmost != isFrontmost else { return }
+        isFrontmost = frontmost
+        if !frontmost {
+            generation += 1
+            isSettling = false
+            return
+        }
+        guard selection != nil, lastKnown != .running else { return }
+        schedule()
     }
 
     /// The newest liveness refresh ended without an answer and none is running
@@ -533,7 +671,15 @@ final class SelectionAttacher {
 
     /// The board or liveness changed for the selection.
     func inputsChanged() {
-        guard selection != nil, !isSettling else { return }
+        guard let todoID = selection, !isSettling else { return }
+        if !isFrontmost {
+            // A terminal left open in the background still has to drop when its session ends.
+            if readiness(todoID) == .closed, lastKnown == .running {
+                perform(FrameRequest(kind: .detach, todoID: todoID))
+                lastKnown = .closed
+            }
+            return
+        }
         schedule()
     }
 
@@ -549,15 +695,19 @@ final class SelectionAttacher {
     }
 
     private func evaluate() {
+        hasEvaluated = true
         guard let todoID = selection else { return }
         switch readiness(todoID) {
         case .running:
+            // A hidden frame must not open a second client.
+            guard isFrontmost else { return }
             if lastKnown != .running { perform(FrameRequest(kind: .attach, todoID: todoID)) }
             lastKnown = .running
         case .closed:
             if lastKnown == .running { perform(FrameRequest(kind: .detach, todoID: todoID)) }
             lastKnown = .closed
         case .awaitingLiveness:
+            guard isFrontmost else { return }
             if !askedForLiveness, !isSuspended {
                 askedForLiveness = true
                 livenessRequests += 1
@@ -569,6 +719,25 @@ final class SelectionAttacher {
     }
 }
 
+/// Which conversation frames stay mounted in the detail column. The most recently selected
+/// stay, oldest first, so coming back to one shows the terminal that is already attached.
+enum WarmConversationMount {
+    /// Three live terminals: the one on screen and the two you just left. Older ones disconnect.
+    static let capacity = 3
+
+    static func select(_ id: String, in ids: [String]) -> [String] {
+        var ids = ids
+        if let index = ids.firstIndex(of: id) {
+            ids.remove(at: index)
+        }
+        ids.append(id)
+        if ids.count > capacity {
+            ids.removeFirst(ids.count - capacity)
+        }
+        return ids
+    }
+}
+
 /// A todo's frame attached by its own `SelectionAttacher`: the shell's detail column (the
 /// selection changes underneath it), each pop-out window (one todo), and the phone shell's
 /// frame re-opened after an iPad shell swap.
@@ -577,6 +746,12 @@ struct ConversationDetail: View {
     @Binding var request: FrameRequest?
     /// The pop-out window itself, rather than the main window's detail.
     var isWindow = false
+    /// False while this frame is kept mounted behind the conversation on screen.
+    var isFrontmost = true
+    /// Several frames share the detail column. See `ConversationFrame.sharesColumn`.
+    var sharesColumn = false
+    /// The column already waited `SelectionAttacher.delay` before mounting this frame.
+    var attachImmediately = false
     let onDeleted: () -> Void
 
     @Environment(AppModel.self) private var model
@@ -593,17 +768,22 @@ struct ConversationDetail: View {
         TodoConversationScreen(
             todo: todo, store: model.store, onAppear: .onRequest, request: $request,
             placeholder: placeholder(readiness: readiness, poppedOut: poppedOut),
-            isSuspended: poppedOut, onPopOut: popOutAction, onDeleted: onDeleted
+            isSuspended: poppedOut, isFrontmost: isFrontmost, sharesColumn: sharesColumn,
+            onPopOut: popOutAction, onDeleted: onDeleted
         )
         .id(todo.id)
         .onChange(of: todo.id, initial: true) { _, id in
             // A request left for another todo must not fire when that one is selected again.
-            if request?.todoID != id { request = nil }
+            // Clear it before select: an immediate attach writes a new request.
+            if isFrontmost, request?.todoID != id { request = nil }
             attacher.readiness = { [model] in model.attachReadiness(forTodo: $0) }
             let request = $request
             attacher.perform = { request.wrappedValue = $0 }
-            attacher.select(id)
+            // Before select: an immediate attach must see whether this frame is on screen.
+            attacher.setFrontmost(isFrontmost)
+            attacher.select(id, immediate: attachImmediately)
         }
+        .onChange(of: isFrontmost) { _, front in attacher.setFrontmost(front) }
         .onChange(of: readiness) { _, _ in attacher.inputsChanged() }
         .onChange(of: poppedOut, initial: true) { wasPoppedOut, poppedOut in
             attacher.isSuspended = poppedOut
@@ -622,6 +802,13 @@ struct ConversationDetail: View {
             return .poppedOut(showWindow: { model.popOut(todo.id, openWindow: openWindow) }, bringBack: bringBack)
         }
         #endif
+        // The first body runs before select. A running conversation would otherwise flash Start.
+        if !attacher.hasEvaluated {
+            switch readiness {
+            case .running, .awaitingLiveness: return .settling
+            case .closed, .unknown: break
+            }
+        }
         switch readiness {
         case .running:
             return attacher.isSettling ? .settling : nil

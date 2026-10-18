@@ -31,6 +31,12 @@ struct ConversationFrame: View {
     private let placeholder: FramePlaceholder?
     /// ⧉ Open in New Window (Mac); nil hides it, as in the pop-out window itself.
     private let onPopOut: (() -> Void)?
+    /// The detail column keeps other conversations mounted. Only the one on screen names
+    /// itself in the window and takes the keyboard.
+    private let isFrontmost: Bool
+    /// Several frames share the detail column, so the column owns the window title. A phone
+    /// screen and a pop-out window are the only frame in their navigation, and name themselves.
+    private let sharesColumn: Bool
     private let makeTransport: (HostConnectionConfig, TerminalMode) -> any TerminalTransport
 
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
@@ -55,6 +61,8 @@ struct ConversationFrame: View {
         store: TodoHubStore,
         placeholder: FramePlaceholder? = nil,
         onPopOut: (() -> Void)? = nil,
+        isFrontmost: Bool = true,
+        sharesColumn: Bool = false,
         onDeleted: @escaping () -> Void,
         makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
             SSHTerminalSession(config: $0, mode: $1)
@@ -65,11 +73,28 @@ struct ConversationFrame: View {
         self.store = store
         self.placeholder = placeholder
         self.onPopOut = onPopOut
+        self.isFrontmost = isFrontmost
+        self.sharesColumn = sharesColumn
         self.onDeleted = onDeleted
         self.makeTransport = makeTransport
     }
 
     var body: some View {
+        // `sharesColumn` is fixed for the life of the frame. The branch stays put, so the
+        // terminal inside is not rebuilt when another conversation is selected.
+        if sharesColumn {
+            frame
+        } else {
+            frame
+                .navigationTitle(todo.title)
+                #if os(macOS)
+                .navigationSubtitle(meta(includeFolder: true))
+                #endif
+                .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private var frame: some View {
         terminalArea
         .onChange(of: liveStatus, initial: true) { _, status in
             if let status { approveGate.statusChanged(to: status) }
@@ -84,21 +109,27 @@ struct ConversationFrame: View {
             guard state == .connected, waitingFocus.connected() else { return }
             focusTerminalWhenWaiting()
         }
+        .onChange(of: isFrontmost) { _, front in
+            // Coming back to a terminal that is already connected: focus it when it is waiting.
+            // One that is still connecting focuses itself when it connects.
+            guard front, terminal.connectionState == .connected else { return }
+            waitingFocus.readyChanged(isReady: true, status: liveStatus)
+            guard waitingFocus.connected() else { return }
+            focusTerminalWhenWaiting()
+        }
         .onChange(of: appModel?.terminalFocusRequest) { _, request in focusRequested(request) }
         .overlay(alignment: .top) {
-            if showingCopied {
+            if isFrontmost && showingCopied {
                 CopiedToast().transition(.opacity)
             }
         }
-        .navigationTitle(todo.title)
-        #if os(macOS)
-        .navigationSubtitle(meta(includeFolder: true))
-        #endif
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbar }
+        .toolbar { if isFrontmost { frameToolbar } }
         .confirmationDialog(
             "Delete this conversation?",
-            isPresented: $showingDeleteConfirmation,
+            isPresented: Binding(
+                get: { isFrontmost && showingDeleteConfirmation },
+                set: { if !$0 { showingDeleteConfirmation = false } }
+            ),
             titleVisibility: .visible
         ) {
             Button("Delete Conversation", role: .destructive) { deleteConversation() }
@@ -110,21 +141,27 @@ struct ConversationFrame: View {
         }
         .alert(
             failure?.title ?? "",
-            isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } }),
+            isPresented: Binding(get: { isFrontmost && failure != nil }, set: { if !$0 { failure = nil } }),
             presenting: failure
         ) { _ in
             Button("OK", role: .cancel) {}
         } message: { failure in
             Text(failure.message)
         }
-        .sheet(item: $sheet, onDismiss: retryAfterSettings) { sheet in
+        .sheet(
+            item: Binding(get: { isFrontmost ? sheet : nil }, set: { sheet = $0 }),
+            onDismiss: retryAfterSettings
+        ) { sheet in
             sheetContent(sheet)
         }
-        .modifier(MemoriesPresenter(isPresented: $showingMemories, todoID: todo.id, conversation: conversation,
-                                    store: store))
+        .modifier(MemoriesPresenter(
+            isPresented: Binding(get: { isFrontmost && showingMemories }, set: { showingMemories = $0 }),
+            todoID: todo.id, conversation: conversation, store: store
+        ))
         // The conversation on screen is never alerted about, on any device.
-        // Only the frame showing the terminal: a popped-out placeholder is not on screen.
-        .reportsVisibleConversation(todo.id, isActive: !isPoppedOut)
+        // Only the frame showing the terminal: a popped-out placeholder is not on screen,
+        // and neither is a conversation kept attached behind the one on screen.
+        .reportsVisibleConversation(todo.id, isActive: isFrontmost && !isPoppedOut)
     }
 
     // MARK: Terminal area
@@ -199,6 +236,7 @@ struct ConversationFrame: View {
                 onUserInput: { if approveGate.isArmed { approveGate.userTyped() } },
                 tool: conversation.tool,
                 approveEnabled: approveGate.isEnabled(tool: conversation.tool),
+                isFrontmost: isFrontmost,
                 makeTransport: makeTransport
             )
             // Re-entering `.ready` for the same conversation and host must not reconnect.
@@ -252,7 +290,7 @@ struct ConversationFrame: View {
     // MARK: Header
 
     @ToolbarContentBuilder
-    private var toolbar: some ToolbarContent {
+    private var frameToolbar: some ToolbarContent {
         #if os(iOS)
         ToolbarItem(placement: .principal) {
             VStack(spacing: 1) {
@@ -340,13 +378,27 @@ struct ConversationFrame: View {
         )
     }
 
-    /// `section · computer · folder · tool`, from the conversation or else the section's
-    /// computer. The folder is middle-truncated.
     private func meta(includeFolder: Bool) -> String {
-        guard let target = startTarget else { return "\(todo.section.rawValue) · no computer" }
+        Self.subtitle(todo: todo, store: store, includeFolder: includeFolder)
+    }
+
+    /// `section · computer · folder · tool`, from the conversation or else the section's
+    /// computer. The folder is middle-truncated. The detail column uses the same line for the
+    /// window subtitle while several frames stay mounted.
+    static func subtitle(todo: Todo, store: TodoHubStore, includeFolder: Bool) -> String {
+        let target: (computer: String, folder: String, tool: String)? = {
+            if let conversation = store.conversations[todo.id] {
+                return (conversation.computer.name, conversation.cwd, conversation.tool)
+            }
+            if let mapping = store.sectionComputers[todo.section] {
+                return (mapping.computer.name, mapping.cwd, mapping.tool)
+            }
+            return nil
+        }()
+        guard let target else { return "\(todo.section.rawValue) · no computer" }
         var parts = [todo.section.rawValue, target.computer]
         if includeFolder {
-            parts.append(Self.middleTruncated(target.folder))
+            parts.append(middleTruncated(target.folder))
         }
         parts.append(RemoteConversationPicker.toolName(target.tool))
         return parts.joined(separator: " · ")
