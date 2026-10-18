@@ -21,6 +21,8 @@ From `todo-app/`:
 - `cargo build -p todo-server`
 - `./build.sh` for a release binary at `target/release/todo-server`
 
+GitHub Actions for the server live in `.github/workflows/` at this repo's root and run Cargo in `todo-app/`. A push to `main` publishes `pi-latest` only when server files change. The Pi's installed updater still downloads that release from `https://github.com/tsetsoo/todo-app`.
+
 From `ai-session-remote/`:
 
 - `xcodegen generate` then open `AISessionRemote.xcodeproj` (Xcode 16+, XcodeGen)
@@ -35,4 +37,4 @@ git subtree pull --prefix=todo-app todo-app main
 git subtree pull --prefix=ai-session-remote ai-session-remote main
 ```
 
-There is no `origin` on this repo until it is pushed.
+`origin` is `git@github.com:tsetsoo/ai-session.git`. The `todo-app` and `ai-session-remote` remotes are the original repos.

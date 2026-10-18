@@ -3,12 +3,21 @@ name: CI
 # Pull requests only. Pushes to main are covered by deploy-pi.yml, which gates
 # the deploy on Clippy and then cross-compiles the server itself — running these
 # jobs there too would just do the same work twice per push.
+# Cargo runs in todo-app/. Session-app pull requests do not build the server.
 on:
   pull_request:
     branches: [main]
+    paths:
+      - "todo-app/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/deploy-pi.yml"
 
 env:
   CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    working-directory: todo-app
 
 jobs:
   clippy:
@@ -20,6 +29,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: todo-app
       - name: Clippy (server + shared)
         run: cargo clippy -p todo-shared -p todo-server -- -D warnings
 
@@ -30,6 +41,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: todo-app
       - name: Build server
         run: cargo build -p todo-server
       - name: Test server
