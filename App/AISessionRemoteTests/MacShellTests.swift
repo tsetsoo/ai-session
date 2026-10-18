@@ -50,6 +50,19 @@ final class MacShellTests: XCTestCase {
         XCTAssertEqual(SidebarCounts.label(12), "12")
     }
 
+    func testWarmMountKeepsTheMostRecentConversations() {
+        XCTAssertEqual(WarmConversationMount.capacity, 3)
+        var ids: [String] = []
+        ids = WarmConversationMount.select("a", in: ids)
+        ids = WarmConversationMount.select("b", in: ids)
+        ids = WarmConversationMount.select("c", in: ids)
+        ids = WarmConversationMount.select("d", in: ids)
+        XCTAssertEqual(ids, ["b", "c", "d"])
+        // Coming back moves it to the end, so it is the last one dropped.
+        ids = WarmConversationMount.select("b", in: ids)
+        XCTAssertEqual(ids, ["c", "d", "b"])
+    }
+
     // MARK: Sync line
 
     private let now = Date(timeIntervalSince1970: 1_800_000_000)

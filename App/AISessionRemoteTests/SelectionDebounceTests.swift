@@ -181,6 +181,61 @@ final class SelectionDebounceTests: XCTestCase {
         XCTAssertEqual(sent, ["attach a"])
     }
 
+    // MARK: Already attached
+
+    func testImmediateSelectAttachesWithoutWaiting() {
+        readiness = ["a": .running]
+        attacher.select("a", immediate: true)
+        XCTAssertEqual(sent, ["attach a"])
+        XCTAssertFalse(attacher.isSettling)
+        XCTAssertTrue(attacher.hasEvaluated)
+    }
+
+    func testLeavingDuringTheSettleCancelsTheAttach() {
+        readiness = ["a": .running]
+        attacher.select("a")
+        XCTAssertTrue(attacher.isSettling)
+        attacher.setFrontmost(false)
+        XCTAssertFalse(attacher.isSettling)
+        scheduler.run()
+        XCTAssertEqual(sent, [])
+    }
+
+    func testABackgroundFrameDoesNotAttach() {
+        readiness = ["a": .closed]
+        attacher.select("a")
+        scheduler.run()
+        attacher.setFrontmost(false)
+        readiness["a"] = .running
+        attacher.inputsChanged()
+        scheduler.run()
+        XCTAssertEqual(sent, [])
+        attacher.setFrontmost(true)
+        scheduler.run()
+        XCTAssertEqual(sent, ["attach a"])
+    }
+
+    func testReturningToAnAttachedFrameDoesNotAttachAgain() {
+        readiness = ["a": .running]
+        attacher.select("a")
+        scheduler.run()
+        attacher.setFrontmost(false)
+        attacher.setFrontmost(true)
+        scheduler.run()
+        XCTAssertEqual(sent, ["attach a"])
+        XCTAssertFalse(attacher.isSettling)
+    }
+
+    func testABackgroundFrameDropsWhenItsSessionCloses() {
+        readiness = ["a": .running]
+        attacher.select("a")
+        scheduler.run()
+        attacher.setFrontmost(false)
+        readiness["a"] = .closed
+        attacher.inputsChanged()
+        XCTAssertEqual(sent, ["attach a", "detach a"])
+    }
+
     // MARK: Readiness from the board
 
     private struct ListingFailed: Error {}

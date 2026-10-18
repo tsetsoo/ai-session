@@ -63,6 +63,7 @@ final class TerminalHandle {
 
     func reconnect() { reconnectAction() }
     func focus() { coordinator?.focusTerminal() }
+    func resignFocus() { coordinator?.resignFocus() }
     func paste() { coordinator?.pasteFromClipboard() }
     /// The selection if there is one, otherwise the whole visible screen.
     func copyScreen() { coordinator?.copySelection() }
@@ -95,6 +96,8 @@ struct TerminalSurface: View {
     private let onUserInput: () -> Void
     private let tool: String?
     private let approveEnabled: Bool
+    /// False while another conversation is the one on screen. The session stays connected.
+    private let isFrontmost: Bool
 
     @Environment(\.colorScheme) private var colorScheme
     /// Absent in previews and other screens that don't provide it.
@@ -139,6 +142,7 @@ struct TerminalSurface: View {
         onUserInput: @escaping () -> Void = {},
         tool: String? = nil,
         approveEnabled: Bool = false,
+        isFrontmost: Bool = true,
         makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
             SSHTerminalSession(config: $0, mode: $1)
         }
@@ -155,6 +159,7 @@ struct TerminalSurface: View {
         self.onUserInput = onUserInput
         self.tool = tool
         self.approveEnabled = approveEnabled
+        self.isFrontmost = isFrontmost
         _coordinator = State(initialValue: TerminalCoordinator(
             hostConfig: config, mode: mode, makeTransport: makeTransport
         ))
@@ -235,12 +240,14 @@ struct TerminalSurface: View {
             }
         }
         .onAppear {
+            coordinator.isShown = isFrontmost
             coordinator.onStateChange = { state in
                 connectionState = state
                 handle?.connectionState = state
                 if state == .connected {
                     isDisconnected = false
-                    PlatformSupport.connectedFeedback()
+                    // A session that finished connecting behind another conversation stays quiet.
+                    if coordinator.isShown { PlatformSupport.connectedFeedback() }
                 }
             }
             connectionState = coordinator.state
@@ -248,12 +255,23 @@ struct TerminalSurface: View {
             coordinator.onError = { error in onConnectionFailed(error) }
             coordinator.onDisconnected = { exitStatus in
                 isDisconnected = true
-                PlatformSupport.disconnectedFeedback()
+                if coordinator.isShown { PlatformSupport.disconnectedFeedback() }
                 onEnded(exitStatus)
             }
             coordinator.onUserInput = onUserInput
             handle?.coordinator = coordinator
             handle?.reconnectAction = { Task { await reconnect() } }
+        }
+        .onChange(of: isFrontmost) { _, shown in
+            coordinator.isShown = shown
+            if shown {
+                // Not on first appear: connect already tells tmux the size, and a second
+                // window-change makes it repaint.
+                coordinator.syncSizeToView()
+            } else {
+                coordinator.resignFocus()
+                handle?.resignFocus()
+            }
         }
         .onChange(of: connectionState, initial: true) { _, newState in
             // Re-armed on every transition into `.connecting`/`.idle`, so this also covers

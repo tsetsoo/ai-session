@@ -39,6 +39,10 @@ struct TodoConversationScreen: View {
     let placeholder: FramePlaceholder?
     /// Popped out into its own window: this frame holds no terminal and ignores requests.
     let isSuspended: Bool
+    /// Another mounted conversation is the one on screen. This one keeps its terminal.
+    let isFrontmost: Bool
+    /// See `ConversationFrame.sharesColumn`.
+    let sharesColumn: Bool
     let onPopOut: (() -> Void)?
     let onDeleted: () -> Void
 
@@ -50,14 +54,16 @@ struct TodoConversationScreen: View {
     @State private var didOpen = false
 
     init(todo: Todo, store: TodoHubStore, onAppear: OnAppear = .start, request: Binding<FrameRequest?> = .constant(nil),
-         placeholder: FramePlaceholder? = nil, isSuspended: Bool = false, onPopOut: (() -> Void)? = nil,
-         onDeleted: @escaping () -> Void) {
+         placeholder: FramePlaceholder? = nil, isSuspended: Bool = false, isFrontmost: Bool = true,
+         sharesColumn: Bool = false, onPopOut: (() -> Void)? = nil, onDeleted: @escaping () -> Void) {
         self.todo = todo
         self.store = store
         self.onAppear = onAppear
         _request = request
         self.placeholder = placeholder
         self.isSuspended = isSuspended
+        self.isFrontmost = isFrontmost
+        self.sharesColumn = sharesColumn
         self.onPopOut = onPopOut
         self.onDeleted = onDeleted
         let hostList = HostList()
@@ -113,12 +119,13 @@ struct TodoConversationScreen: View {
         #if DEBUG
         if DemoFixtures.isEnabled {
             return ConversationFrame(todo: todo, loader: loader, store: store, placeholder: placeholder,
-                                     onPopOut: onPopOut, onDeleted: onDeleted,
-                                     makeTransport: { _, _ in DemoTransport() })
+                                     onPopOut: onPopOut, isFrontmost: isFrontmost, sharesColumn: sharesColumn,
+                                     onDeleted: onDeleted, makeTransport: { _, _ in DemoTransport() })
         }
         #endif
         return ConversationFrame(todo: todo, loader: loader, store: store, placeholder: placeholder,
-                                 onPopOut: onPopOut, onDeleted: onDeleted)
+                                 onPopOut: onPopOut, isFrontmost: isFrontmost, sharesColumn: sharesColumn,
+                                 onDeleted: onDeleted)
     }
 }
 

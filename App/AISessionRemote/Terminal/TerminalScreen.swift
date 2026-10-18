@@ -32,6 +32,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// (DA/DSR/cursor, focus and mouse reports, colour and version replies) don't count, and
     /// neither do bytes sent with `send(_:)`.
     var onUserInput: (() -> Void)?
+    /// The surface is the one on screen. A conversation kept attached in the background still
+    /// receives output, but it must not take the keyboard or play the connect sound.
+    var isShown = true
 
     private let hostConfig: HostConnectionConfig
     private let mode: TerminalMode
@@ -155,7 +158,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
     /// Makes the embedded `TerminalView` first responder so the soft keyboard appears.
     func focusTerminal() {
-        guard let terminalView else { return }
+        guard isShown, let terminalView else { return }
         #if os(iOS)
         if !terminalView.isFirstResponder {
             _ = terminalView.becomeFirstResponder()
@@ -163,6 +166,20 @@ final class TerminalCoordinator: TerminalViewDelegate {
         #else
         if terminalView.window?.firstResponder !== terminalView {
             terminalView.window?.makeFirstResponder(terminalView)
+        }
+        #endif
+    }
+
+    /// Drops keyboard focus if this terminal has it, so a hidden session doesn't keep typing.
+    func resignFocus() {
+        guard let terminalView else { return }
+        #if os(iOS)
+        if terminalView.isFirstResponder {
+            _ = terminalView.resignFirstResponder()
+        }
+        #else
+        if terminalView.window?.firstResponder === terminalView {
+            terminalView.window?.makeFirstResponder(nil)
         }
         #endif
     }
@@ -202,9 +219,19 @@ final class TerminalCoordinator: TerminalViewDelegate {
     // MARK: TerminalViewDelegate
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        // A frame kept mounted behind the one on screen can be given a useless size. Applying
+        // it would resize that tmux session. The real size is sent again when it is shown.
+        guard isShown else { return }
         resizeDebouncer.sizeChanged(cols: newCols, rows: newRows) { [weak self] cols, rows in
             self?.session?.resize(cols: cols, rows: rows)
         }
+    }
+
+    /// The frame came back on screen: tell tmux the size it has now.
+    func syncSizeToView() {
+        guard let terminalView else { return }
+        let terminal = terminalView.getTerminal()
+        sizeChanged(source: terminalView, newCols: terminal.cols, newRows: terminal.rows)
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
