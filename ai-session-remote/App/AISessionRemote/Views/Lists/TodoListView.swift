@@ -29,15 +29,13 @@ struct TodoListView: View {
 
     var body: some View {
         let board = model.board
-        TimelineView(.everyMinute) { context in
-            SelectableList(selection: selection) {
-                ListStatusBanner(store: store)
-                ForEach(sections) { section in
-                    sectionView(section, board: board, now: context.date)
-                }
+        SelectableList(selection: selection) {
+            ListStatusBanner(store: store)
+            ForEach(sections) { section in
+                sectionView(section, board: board)
             }
-            .listStyle(.insetGrouped)
         }
+        .listStyle(.insetGrouped)
         .refreshable { await store.refresh() }
         .conversationActions(actions, store: store, hosts: hosts)
         .sheet(item: $linkTarget) { todo in
@@ -50,7 +48,7 @@ struct TodoListView: View {
         }
     }
 
-    private func sectionView(_ section: TodoSection, board: ConversationBoard, now: Date) -> some View {
+    private func sectionView(_ section: TodoSection, board: ConversationBoard) -> some View {
         Section {
             let all = store.todos(in: section)
             let todos = all.filter { ListSearch.matches(query, $0.title) }
@@ -71,7 +69,7 @@ struct TodoListView: View {
                 .frame(minHeight: DS.rowMinHeight)
             }
             ForEach(todos) { todo in
-                row(todo, board: board, now: now)
+                row(todo, board: board)
             }
         } header: {
             // One section (the Mac list column) is already named above the list.
@@ -89,7 +87,7 @@ struct TodoListView: View {
         }
     }
 
-    private func row(_ todo: Todo, board: ConversationBoard, now: Date) -> some View {
+    private func row(_ todo: Todo, board: ConversationBoard) -> some View {
         let conversation = store.conversations[todo.id]
         let status = board.status(forTodo: todo.id)
         let isRunning = status.map { $0 != .closed } ?? false
@@ -98,7 +96,7 @@ struct TodoListView: View {
             todo: todo,
             conversation: conversation,
             status: status,
-            now: now,
+            now: .now,
             isBusy: actions.inFlight.contains(todo.id),
             canToggle: canChange,
             projectName: store.project(id: todo.projectId)?.name,

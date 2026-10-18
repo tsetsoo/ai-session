@@ -5,12 +5,14 @@ public enum TmuxCommandBuilder {
     private static let pathExport =
         #"export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH""#
 
-    /// A non-login SSH exec has no `LANG`. tmux then attaches with UTF-8 off and
-    /// replaces Cyrillic, emoji, and other non-ASCII with `_` (`tty_check_codeset`).
-    /// Leave a locale alone when it is already UTF-8; otherwise force one.
-    /// `LC_ALL` has to be set too: it overrides `LANG` when the server exported `C`.
+    /// A non-login SSH exec often has no UTF-8 locale. tmux then attaches with
+    /// UTF-8 off and replaces Cyrillic, emoji, and other non-ASCII with `_`
+    /// (`tty_check_codeset`). `LC_ALL` overrides `LANG` and `LC_CTYPE`, so it is
+    /// judged on its own: a value that is set and is not UTF-8 is replaced even
+    /// when `LANG` already contains UTF-8. When `LC_ALL` is unset, an existing
+    /// UTF-8 `LANG` or `LC_CTYPE` is left alone; otherwise a UTF-8 locale is forced.
     private static let utf8Locale =
-        #"case "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;; *) export LANG=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 LC_ALL=en_US.UTF-8 ;; esac"#
+        #"case "${LC_ALL+x}" in x) case "$LC_ALL" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;; *) export LANG=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 LC_ALL=en_US.UTF-8 ;; esac ;; *) case "${LC_CTYPE:-}${LANG:-}" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;; *) export LANG=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 LC_ALL=en_US.UTF-8 ;; esac ;; esac"#
 
     public static func ensureTmuxInstalledCheck() -> String {
         wrap("command -v tmux")

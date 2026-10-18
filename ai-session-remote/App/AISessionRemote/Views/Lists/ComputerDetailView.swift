@@ -74,52 +74,48 @@ struct ComputerDetailView: View {
             conversation.computer.id == computer.id
                 && ListSearch.matches(query, todos[conversation.todoId]?.title, conversation.statusMessage)
         }
-        TimelineView(.everyMinute) { context in
-            SelectableList(selection: selection) {
-                ListStatusBanner(store: store)
-                if host == nil {
-                    Section {
-                        noAccess
-                    }
-                }
+        SelectableList(selection: selection) {
+            ListStatusBanner(store: store)
+            if host == nil {
                 Section {
-                    if running.isEmpty && !query.isEmpty {
-                        Text("No results for “\(query)”")
-                            .foregroundStyle(.secondary)
-                    } else if running.isEmpty {
-                        Text("No conversations running. Open a todo to start one.")
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(running, id: \.todoId) { conversation in
-                        row(conversation, todo: todos[conversation.todoId], board: board, now: context.date)
-                    }
-                } header: {
-                    Text("Running").textCase(nil)
-                }
-                if let host {
-                    Section {
-                        ForEach(ComputerPage.allCases, id: \.self) { page in
-                            if selection != nil {
-                                Label(page.title, systemImage: page.systemImage)
-                                    .tag(page.tag)
-                            } else {
-                                NavigationLink {
-                                    page.destination(computer: computer, host: host)
-                                } label: {
-                                    Label(page.title, systemImage: page.systemImage)
-                                }
-                            }
-                        }
-                    } footer: {
-                        Text("Other sessions run here without a todo. On This Computer lists conversations you can link to a todo or turn into a new one.")
-                    }
+                    noAccess
                 }
             }
-            .listStyle(.insetGrouped)
+            Section {
+                if running.isEmpty && !query.isEmpty {
+                    Text("No results for “\(query)”")
+                        .foregroundStyle(.secondary)
+                } else if running.isEmpty {
+                    Text("No conversations running. Open a todo to start one.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(running, id: \.todoId) { conversation in
+                    row(conversation, todo: todos[conversation.todoId], board: board)
+                }
+            } header: {
+                Text("Running").textCase(nil)
+            }
+            if let host {
+                Section {
+                    ForEach(ComputerPage.allCases, id: \.self) { page in
+                        if selection != nil {
+                            Label(page.title, systemImage: page.systemImage)
+                                .tag(page.tag)
+                        } else {
+                            NavigationLink {
+                                page.destination(computer: computer, host: host)
+                            } label: {
+                                Label(page.title, systemImage: page.systemImage)
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("Other sessions run here without a todo. On This Computer lists conversations you can link to a todo or turn into a new one.")
+                }
+            }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle(computer.name)
-        // Again whenever a conversation changed after its computer was listed.
-        .task(id: model.relistRequests) { await model.refreshLiveness(hosts: hosts) }
         .refreshable {
             await store.refresh(trigger: .background)
             await model.refreshLiveness(hosts: hosts)
@@ -163,7 +159,7 @@ struct ComputerDetailView: View {
         }
     }
 
-    private func row(_ conversation: Conversation, todo: Todo?, board: ConversationBoard, now: Date) -> some View {
+    private func row(_ conversation: Conversation, todo: Todo?, board: ConversationBoard) -> some View {
         let status = board.status(forTodo: conversation.todoId) ?? .closed
         let open: (() -> Void)? = todo.flatMap { todo in onOpen.map { onOpen in { onOpen(todo) } } }
         return ConversationRow(
@@ -171,7 +167,6 @@ struct ComputerDetailView: View {
             section: todo?.section,
             conversation: conversation,
             status: status,
-            now: now,
             isBusy: actions.inFlight.contains(conversation.todoId)
         )
         .tag(conversation.todoId)

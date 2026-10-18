@@ -96,11 +96,7 @@ struct ConversationFrame: View {
 
     private var frame: some View {
         terminalArea
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if let target = limitsTarget, !isPoppedOut {
-                UsageLimitsBar(computer: target.computer, tool: target.tool, sessionId: target.sessionId)
-            }
-        }
+        .safeAreaInset(edge: .top, spacing: 0) { limitsBar }
         .onChange(of: liveStatus, initial: true) { _, status in
             if let status { approveGate.statusChanged(to: status) }
         }
@@ -461,6 +457,20 @@ struct ConversationFrame: View {
 
     private var conversation: Conversation? {
         store.conversations[todo.id] ?? readyConversation?.conversation
+    }
+
+    /// Warm frames stay mounted. Only the one on screen refreshes limits. A popped-out
+    /// placeholder has no bar.
+    @ViewBuilder
+    private var limitsBar: some View {
+        if let target = limitsTarget, !isPoppedOut {
+            UsageLimitsBar(
+                computer: target.computer,
+                tool: target.tool,
+                sessionId: target.sessionId,
+                polls: isFrontmost
+            )
+        }
     }
 
     /// The computer the chat runs on, and the tool whose limits to read there.

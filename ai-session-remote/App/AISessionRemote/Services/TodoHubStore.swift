@@ -17,8 +17,10 @@ final class TodoHubStore {
     private(set) var projects: [Project] = []
     /// Folders with conversations that could become projects.
     private(set) var suggestions: [ProjectSuggestion] = []
-    /// Bumped after every successful refresh (including live updates), so screens that fetch
-    /// their own data (project pages, the memories panel) know to reload.
+    /// Bumped when projects or suggestions change, or when the set of conversation identities
+    /// changes (todo id + session id). Status and status-message heartbeats do not bump it:
+    /// project pages, weekly stats, and memories refetch off this, while lists observe `todos`
+    /// and `conversations` directly.
     private(set) var revision = 0
     /// True while showing the cached snapshot because the hub could not be reached.
     private(set) var isOffline = false
@@ -36,6 +38,9 @@ final class TodoHubStore {
     @ObservationIgnored var onRefresh: ((Fetched) -> Void)?
     /// The next fetch starts a fresh baseline (see `Fetched.isBaseline`).
     @ObservationIgnored private var baselinePending = true
+    /// Bumped by `startNewBaseline`. A fetch only clears the flag when this is still the epoch
+    /// it started in, so a reconnect during an in-flight fetch leaves the baseline for the follow-up.
+    @ObservationIgnored private var baselineEpoch = 0
     private(set) var isLoading = false
     private(set) var hasLoadedOnce = false
     /// Modal error for something the user just did. Background refreshes never set it.
@@ -48,14 +53,26 @@ final class TodoHubStore {
 
     enum RefreshTrigger {
         /// Pull-to-refresh, first load, settings change: failures raise `errorMessage`.
+        /// Runs immediately.
         case user
         /// Live updates and post-mutation refreshes: failures only set `backgroundIssue`.
+        /// Coalesced onto one fetch per burst (see `TodoHubRefreshCoalescer`).
         case background
     }
 
     private let cache: TodoHubCache
     /// Where hub calls get their client (`TodoHubSettings.makeClient` outside tests); see `hubClient()`.
     private let makeClient: () -> TodoHubClient?
+    /// Background refreshes (websocket and post-mutation) share this one coalescer.
+    /// Internal so tests can see how many requests have joined a burst.
+    let coalescer: TodoHubRefreshCoalescer
+    /// Todos, conversations, and projects last successfully written. A matching snapshot skips
+    /// the encode and the disk write. Nil until the cache is loaded or the first save lands.
+    private var savedTodos: [Todo]?
+    private var savedConversations: [Conversation]?
+    private var savedProjects: [Project]?
+    /// Successful cache writes. Unchanged snapshots do not increment it.
+    private(set) var cacheSaveCount = 0
     private var eventsTask: Task<Void, Never>?
     /// Whether live updates should be running; they pause on a rejected token and resume
     /// after the next successful refresh.
@@ -65,13 +82,20 @@ final class TodoHubStore {
     private var refreshGeneration = 0
 
     init(cache: TodoHubCache = TodoHubStore.defaultCache(),
-         makeClient: @escaping () -> TodoHubClient? = TodoHubSettings.makeClient) {
+         makeClient: @escaping () -> TodoHubClient? = TodoHubSettings.makeClient,
+         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
         self.cache = cache
         self.makeClient = makeClient
+        let coalescer = TodoHubRefreshCoalescer(sleep: sleep)
+        self.coalescer = coalescer
+        coalescer.onRefresh = { [weak self] immediate in
+            await self?.performRefresh(trigger: immediate ? .user : .background)
+        }
         if let snapshot = cache.load() {
             apply(todos: snapshot.todos, conversations: snapshot.conversations)
             projects = snapshot.projects
             cachedAt = snapshot.savedAt
+            rememberSaved(snapshot)
         }
     }
 
@@ -131,7 +155,16 @@ final class TodoHubStore {
         #if DEBUG
         if demo != nil { revision += 1; return }
         #endif
+        guard hubClient() != nil else { return }
+        // User refreshes (first load, settings) run now. Background ones share the coalescer
+        // with the websocket loop, so a mutation and its echo become one fetch.
+        await coalescer.submit(immediate: trigger == .user)
+    }
+
+    /// The fetch behind `refresh`. One runs at a time; the coalescer starts the follow-up.
+    private func performRefresh(trigger: RefreshTrigger) async {
         guard let client = hubClient() else { return }
+        let startedAtEpoch = baselineEpoch
         refreshGeneration += 1
         let generation = refreshGeneration
         isLoading = true
@@ -152,18 +185,10 @@ final class TodoHubStore {
             let (p, sugg) = await (projects, suggestions)
             // A refresh that started later has newer data; don't overwrite it.
             guard generation == refreshGeneration else { return }
-            applyFetched(todos: t, conversations: c)
-            sectionComputers = Dictionary(m.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new })
-            self.computers = comps
-            if let p { self.projects = p }
-            if let sugg { self.suggestions = sugg }
-            isOffline = false
-            backgroundIssue = nil
-            tokenRejected = false
-            revision += 1
-            let snapshot = TodoHubSnapshot(todos: t, conversations: c, projects: self.projects)
-            try? cache.save(snapshot)
-            cachedAt = snapshot.savedAt
+            await acceptFetch(
+                todos: t, conversations: c, sectionComputers: m, computers: comps,
+                projects: p, suggestions: sugg, startedAtEpoch: startedAtEpoch
+            )
             if wantsLiveUpdates && eventsTask == nil { startEventsTask() }
         } catch TodoHubError.unreachable {
             guard generation == refreshGeneration else { return }
@@ -202,7 +227,11 @@ final class TodoHubStore {
         eventsTask = Task { [weak self] in
             for await event in TodoHubEvents.refreshes(baseURL: client.baseURL, token: client.token) {
                 if event == .reconnected { self?.startNewBaseline() }
-                await self?.refresh(trigger: .background)
+                // Don't await. The loop has to keep reading so the next event joins this
+                // burst; awaiting here would fetch once per event.
+                Task { [weak self] in
+                    await self?.refresh(trigger: .background)
+                }
             }
         }
     }
@@ -214,15 +243,23 @@ final class TodoHubStore {
 
     /// Shows what a refresh fetched and tells `onRefresh`.
     func applyFetched(todos: [Todo], conversations: [Conversation]) {
+        deliver(todos: todos, conversations: conversations, startedAtEpoch: baselineEpoch)
+    }
+
+    /// `startedAtEpoch` is the baseline epoch when this fetch began. A reconnect in between
+    /// leaves `baselinePending` set so the follow-up, not this snapshot, is the fresh baseline.
+    private func deliver(todos: [Todo], conversations: [Conversation], startedAtEpoch: Int) {
         apply(todos: todos, conversations: conversations)
-        let isBaseline = baselinePending
-        baselinePending = false
+        let superseded = baselineEpoch != startedAtEpoch
+        let isBaseline = superseded || baselinePending
+        if !superseded { baselinePending = false }
         onRefresh?(Fetched(todos: todos, conversations: conversations, isBaseline: isBaseline))
     }
 
     /// The next fetch is a fresh baseline: nothing that turned waiting meanwhile alerts.
     func startNewBaseline() {
         baselinePending = true
+        baselineEpoch += 1
     }
 
     /// Call after the hub settings change.
@@ -539,14 +576,232 @@ final class TodoHubStore {
         }
     }
 
+    /// Applies one successful fetch: assigns a collection only when it changed, bumps `revision`
+    /// only for project, suggestion, or conversation-identity changes, and skips the cache write
+    /// when todos, conversations, and projects match the last successful save.
+    private func acceptFetch(
+        todos: [Todo],
+        conversations: [Conversation],
+        sectionComputers: [SectionComputer],
+        computers: [Computer],
+        projects: [Project]?,
+        suggestions: [ProjectSuggestion]?,
+        startedAtEpoch: Int
+    ) async {
+        let previousIdentities = Self.conversationIdentities(self.conversations)
+        deliver(todos: todos, conversations: conversations, startedAtEpoch: startedAtEpoch)
+        let identitiesChanged = Self.conversationIdentities(self.conversations) != previousIdentities
+
+        let mappedSections = Dictionary(
+            sectionComputers.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new }
+        )
+        if self.sectionComputers != mappedSections { self.sectionComputers = mappedSections }
+        if self.computers != computers { self.computers = computers }
+
+        var projectsChanged = false
+        if let projects, projects != self.projects {
+            self.projects = projects
+            projectsChanged = true
+        }
+        var suggestionsChanged = false
+        if let suggestions, suggestions != self.suggestions {
+            self.suggestions = suggestions
+            suggestionsChanged = true
+        }
+        if identitiesChanged || projectsChanged || suggestionsChanged {
+            revision += 1
+        }
+        isOffline = false
+        backgroundIssue = nil
+        tokenRejected = false
+        await saveCacheIfChanged(todos: todos, conversations: conversations, projects: self.projects)
+    }
+
+    /// Todo id + session id. Status and status message are not part of the identity, so a
+    /// heartbeat does not look like a new conversation.
+    private static func conversationIdentities(_ conversations: [String: Conversation]) -> Set<ConversationIdentity> {
+        Set(conversations.values.map { ConversationIdentity(todoId: $0.todoId, sessionId: $0.sessionId) })
+    }
+
+    private struct ConversationIdentity: Hashable {
+        var todoId: String
+        var sessionId: String
+    }
+
+    private func rememberSaved(_ snapshot: TodoHubSnapshot) {
+        savedTodos = snapshot.todos
+        savedConversations = snapshot.conversations
+        savedProjects = snapshot.projects
+    }
+
+    /// Encodes and writes off the main actor. `TodoHubCache.save` is the existing file format.
+    private func saveCacheIfChanged(todos: [Todo], conversations: [Conversation], projects: [Project]) async {
+        if savedTodos == todos, savedConversations == conversations, savedProjects == projects {
+            cachedAt = .now
+            return
+        }
+        let snapshot = TodoHubSnapshot(todos: todos, conversations: conversations, projects: projects)
+        let cache = self.cache
+        let wrote = await Task.detached { () -> Bool in
+            do {
+                try cache.save(snapshot)
+                return true
+            } catch {
+                return false
+            }
+        }.value
+        if wrote {
+            rememberSaved(snapshot)
+            cacheSaveCount += 1
+        }
+        cachedAt = snapshot.savedAt
+    }
+
     private func apply(todos: [Todo], conversations: [Conversation]) {
-        self.todos = todos
-        self.conversations = Dictionary(conversations.map { ($0.todoId, $0) }, uniquingKeysWith: { _, new in new })
+        if self.todos != todos { self.todos = todos }
+        let mapped = Dictionary(conversations.map { ($0.todoId, $0) }, uniquingKeysWith: { _, new in new })
+        if self.conversations != mapped { self.conversations = mapped }
     }
 
     static func message(for error: Error) -> String {
         if let error = error as? TodoHubError { return error.userMessage }
         if let error = error as? SSHRemoteError { return error.userMessage }
         return error.localizedDescription
+    }
+}
+
+/// Collapses a burst of refresh requests onto one fetch.
+///
+/// A background request waits `window` from the first request in the burst, then runs once.
+/// Later requests in that wait join it; they do not push the deadline out. A user request
+/// does not wait: it cancels a pending window and runs now. If a fetch is already in flight,
+/// every request that arrives during it is remembered and exactly one more fetch runs when
+/// the in-flight one finishes (immediate if any of those requests was a user refresh).
+///
+/// `sleep` is `Task.sleep` in the app. Tests pass a clock they can advance.
+@MainActor
+final class TodoHubRefreshCoalescer {
+    typealias Sleep = @Sendable (Duration) async throws -> Void
+
+    /// Not main-actor isolated: the initializer's default argument is evaluated off the actor.
+    nonisolated static let window: Duration = .milliseconds(400)
+
+    /// `immediate` is true when the run should use user-refresh error handling.
+    var onRefresh: ((Bool) async -> Void)?
+
+    private let delay: Duration
+    private let sleep: Sleep
+    /// How many fetches have finished.
+    private var finished = 0
+    /// Generation of the fetch currently running, if any.
+    private var inflight: Int?
+    /// `nil` when nothing arrived during the in-flight fetch. `false` is a background follow-up.
+    private var followUpImmediate: Bool?
+    /// Generation the pending window will satisfy.
+    private var waitingGeneration: Int?
+    /// Bumped to invalidate a delay that already left `sleep` or that a later window replaced.
+    private var delayID = 0
+    private var delayTask: Task<Void, Never>?
+    private var waiters: [Int: [CheckedContinuation<Void, Never>]] = [:]
+    /// Requests that have been scheduled. Tests wait until a burst has actually joined.
+    private(set) var submitted = 0
+
+    init(delay: Duration = TodoHubRefreshCoalescer.window, sleep: @escaping Sleep = { try await Task.sleep(for: $0) }) {
+        self.delay = delay
+        self.sleep = sleep
+    }
+
+    /// Returns when the fetch that covers this request has finished.
+    func submit(immediate: Bool) async {
+        let needed = schedule(immediate: immediate)
+        await waitUntil(finishedAtLeast: needed)
+    }
+
+    private func schedule(immediate: Bool) -> Int {
+        let needed: Int
+        if let inflight {
+            followUpImmediate = (followUpImmediate ?? false) || immediate
+            needed = inflight + 1
+        } else if !immediate, let waitingGeneration {
+            needed = waitingGeneration
+        } else if immediate {
+            cancelDelay()
+            needed = begin(immediate: true)
+        } else {
+            let generation = finished + 1
+            startDelay(generation: generation)
+            needed = generation
+        }
+        submitted += 1
+        return needed
+    }
+
+    private func startDelay(generation: Int) {
+        delayID += 1
+        let id = delayID
+        waitingGeneration = generation
+        let delay = self.delay
+        let sleep = self.sleep
+        delayTask = Task { [weak self] in
+            do {
+                try await sleep(delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            self?.delayElapsed(id: id)
+        }
+    }
+
+    private func cancelDelay() {
+        delayID += 1
+        delayTask?.cancel()
+        delayTask = nil
+        waitingGeneration = nil
+    }
+
+    private func delayElapsed(id: Int) {
+        guard id == delayID, inflight == nil, waitingGeneration != nil else { return }
+        waitingGeneration = nil
+        delayTask = nil
+        begin(immediate: false)
+    }
+
+    @discardableResult
+    private func begin(immediate: Bool) -> Int {
+        let generation = finished + 1
+        inflight = generation
+        let onRefresh = self.onRefresh
+        Task { [weak self] in
+            await onRefresh?(immediate)
+            self?.ended(generation)
+        }
+        return generation
+    }
+
+    private func ended(_ generation: Int) {
+        guard inflight == generation else { return }
+        inflight = nil
+        finished = generation
+        let ready = waiters.keys.filter { $0 <= finished }
+        for key in ready {
+            let pending = waiters.removeValue(forKey: key) ?? []
+            for waiter in pending { waiter.resume() }
+        }
+        if let follow = followUpImmediate {
+            followUpImmediate = nil
+            begin(immediate: follow)
+        }
+    }
+
+    private func waitUntil(finishedAtLeast needed: Int) async {
+        if finished >= needed { return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            if finished >= needed {
+                cont.resume()
+                return
+            }
+            waiters[needed, default: []].append(cont)
+        }
     }
 }

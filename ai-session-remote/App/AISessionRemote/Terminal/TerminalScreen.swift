@@ -22,6 +22,50 @@ enum TerminalConnectionState: Equatable {
     case failed
 }
 
+/// Decides whether flushed PTY bytes are drawn now or held until the surface is on screen.
+/// `isShown` and flush both run on the main thread.
+struct HiddenTerminalOutput {
+    enum Decision: Equatable {
+        case feed([UInt8])
+        case hold
+    }
+
+    private(set) var held: [UInt8] = []
+
+    /// Shown output is returned for an immediate feed. Hidden output is appended to the hold.
+    /// If the surface is already shown and bytes were still held, they are released in front of
+    /// `bytes` as one feed so the screen catches up in order.
+    mutating func receive(_ bytes: [UInt8], isShown: Bool) -> Decision {
+        guard isShown else {
+            if !bytes.isEmpty {
+                held.append(contentsOf: bytes)
+            }
+            return .hold
+        }
+        guard !held.isEmpty else { return .feed(bytes) }
+        if !bytes.isEmpty {
+            held.append(contentsOf: bytes)
+        }
+        let pending = held
+        held.removeAll(keepingCapacity: true)
+        return .feed(pending)
+    }
+
+    /// Bytes to feed when the surface becomes visible. Hiding leaves the hold in place.
+    /// A second call after a successful flush returns nil so the same bytes are not replayed.
+    mutating func flushHeld(isShown: Bool) -> [UInt8]? {
+        guard isShown, !held.isEmpty else { return nil }
+        let pending = held
+        held.removeAll(keepingCapacity: true)
+        return pending
+    }
+
+    /// Drops held bytes. Used on disconnect and reconnect so the next session is not replayed.
+    mutating func clear() {
+        held.removeAll(keepingCapacity: false)
+    }
+}
+
 final class TerminalCoordinator: TerminalViewDelegate {
     weak var terminalView: TerminalView?
     /// The connect failed. `TerminalCoordinator.message(for:)` words it for an alert.
@@ -32,9 +76,10 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// (DA/DSR/cursor, focus and mouse reports, colour and version replies) don't count, and
     /// neither do bytes sent with `send(_:)`.
     var onUserInput: (() -> Void)?
-    /// The surface is the one on screen. A conversation kept attached in the background still
-    /// receives output, but it must not take the keyboard or play the connect sound.
-    var isShown = true
+    /// The surface is the one on screen. Output for a background conversation is held and fed
+    /// once from `setShown(true)`. A hidden surface does not take the keyboard or play the
+    /// connect sound. Set on the main thread; the coalescer flushes on the main thread too.
+    private(set) var isShown = true
 
     private let hostConfig: HostConnectionConfig
     private let mode: TerminalMode
@@ -47,6 +92,10 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// chunk. `append` is thread-safe and called from `session.onOutput`, which arrives off the
     /// main thread; `onFlush` runs after the injected scheduler hops to the main thread.
     private let coalescer: TerminalOutputCoalescer
+
+    /// Bytes flushed while this surface is off screen. Cleared in `disconnect()`, which
+    /// `reconnect()` calls first, so the next session is not replayed.
+    private var hiddenOutput = HiddenTerminalOutput()
 
     /// Debounces `sizeChanged` reports (see `TerminalResizeDebouncer`). Only ever touched from
     /// the main thread.
@@ -78,8 +127,29 @@ final class TerminalCoordinator: TerminalViewDelegate {
         // Safe to capture `self` here: by this point every stored property has an initial
         // value, so `self` is fully initialized.
         self.coalescer.onFlush = { [weak self] bytes in
-            self?.terminalView?.feed(byteArray: bytes[...])
+            self?.deliverFlushed(bytes)
         }
+    }
+
+    /// Shown surfaces feed SwiftTerm immediately. Hidden ones append to `hiddenOutput` and
+    /// catch up in one feed from `setShown(true)`.
+    private func deliverFlushed(_ bytes: [UInt8]) {
+        switch hiddenOutput.receive(bytes, isShown: isShown) {
+        case .feed(let pending):
+            guard !pending.isEmpty else { return }
+            terminalView?.feed(byteArray: pending[...])
+        case .hold:
+            break
+        }
+    }
+
+    /// Records whether this surface is on screen and, when it becomes visible, feeds every
+    /// byte held while it was hidden.
+    func setShown(_ shown: Bool) {
+        isShown = shown
+        guard shown, let terminalView else { return }
+        guard let pending = hiddenOutput.flushHeld(isShown: true) else { return }
+        terminalView.feed(byteArray: pending[...])
     }
 
     func attach(to terminalView: TerminalView) {
@@ -101,8 +171,8 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
         let session = makeTransport(hostConfig, mode)
         session.onOutput = { [weak self] bytes in
-            // Arrives off the main thread; the coalescer is thread-safe and does the main-thread
-            // hop itself before `feed`ing SwiftTerm.
+            // Arrives off the main thread. The coalescer is thread-safe and hops to the main
+            // thread, where a shown surface feeds SwiftTerm and a hidden one holds the bytes.
             self?.coalescer.append(bytes)
         }
         session.onDisconnect = { [weak self] exitStatus in
@@ -150,6 +220,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
         // cannot fail the session `reconnect()` is about to open.
         sessionGeneration += 1
         resizeDebouncer.cancelPending()
+        // Drop output held while this surface was hidden. `reconnect()` calls this before
+        // opening the next session, so that session is not replayed on top of the old one.
+        hiddenOutput.clear()
         session?.disconnect()
         session = nil
     }

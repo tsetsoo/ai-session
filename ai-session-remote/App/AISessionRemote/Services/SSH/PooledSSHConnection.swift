@@ -26,9 +26,12 @@ import NIOSSH
 ///   map to `.authenticationFailed`.
 /// - A non-zero remote exit code is not an error at this layer.
 final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
-    /// Single-threaded, matching the group `NIOSSHClient` used to create fresh per command; now
-    /// shared across every pooled connection instead of one per exec.
-    private static let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    /// Shared by every pooled connection. Same-connection PTY and exec still share one loop
+    /// (a swift-nio-ssh child channel stays on its parent channel's loop); different connections
+    /// are distributed across loops. One group per connection would leak threads.
+    private static let eventLoopGroup = MultiThreadedEventLoopGroup(
+        numberOfThreads: max(2, ProcessInfo.processInfo.activeProcessorCount)
+    )
 
     private enum InternalError: Error {
         case unexpectedChannelType

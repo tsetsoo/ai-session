@@ -16,6 +16,7 @@ struct MacShell: View {
     }
 
     @Environment(AppModel.self) private var model
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettingsWindow
@@ -112,6 +113,12 @@ struct MacShell: View {
             if model.isConfigured { showingAdd = true }
         }
         .task { await model.startSync() }
+        // One listing for this shell. The first pass (still 0) lists every computer; a later
+        // bump lists only computers whose conversations changed after their listing.
+        .task(id: model.relistRequests) {
+            let scope: AppModel.LivenessScope = model.relistRequests == 0 ? .full : .stale
+            await model.refreshLiveness(hosts: hosts, scope: scope)
+        }
     }
 
     // MARK: List column

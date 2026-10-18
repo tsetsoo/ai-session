@@ -1,5 +1,6 @@
 #if os(iOS)
 import AISessionCore
+import SwiftData
 import SwiftUI
 
 /// The iPhone app: Todos, Conversations (badged with the Needs-you count), Projects and
@@ -39,6 +40,7 @@ struct PhoneShell: View {
     }
 
     @Environment(AppModel.self) private var model
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @AppStorage(QuickAdd.sectionKey) private var quickAddSection = TodoSection.i.rawValue
     @State private var tab: Tab = .todos
     @State private var todosPath: [Route] = []
@@ -172,6 +174,12 @@ struct PhoneShell: View {
             todosPath = []
         }
         .task { await model.startSync() }
+        // One listing for this shell. The first pass (still 0) lists every computer; a later
+        // bump lists only computers whose conversations changed after their listing.
+        .task(id: model.relistRequests) {
+            let scope: AppModel.LivenessScope = model.relistRequests == 0 ? .full : .stale
+            await model.refreshLiveness(hosts: hosts, scope: scope)
+        }
     }
 
     // MARK: Tabs

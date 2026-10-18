@@ -1,12 +1,18 @@
 import Foundation
 
 /// Derived view of todos and their conversations: what is running, what needs attention, counts.
-public struct ConversationBoard: Sendable {
-    private let todos: [Todo]
+///
+/// Immutable. Each conversation's change date is parsed once here; the lists and counts are stored
+/// so later reads do not scan or parse again. `AppModel` keeps one instance and replaces it only
+/// when the inputs change.
+public final class ConversationBoard: Sendable {
     private let conversations: [String: Conversation]
-    private let liveTmux: [String: Set<String>]
-    private let listedAt: [String: Date]
     private let running: [Conversation]
+    private let statusByTodoID: [String: ConversationDisplayStatus]
+    private let openTodoCounts: [TodoSection: Int]
+    private let sectionNeedsYouFlags: [TodoSection: Bool]
+    private let runningCounts: [String: Int]
+    private let needsYouCounts: [String: Int]
 
     /// - Parameters:
     ///   - conversations: keyed by todo id.
@@ -16,61 +22,99 @@ public struct ConversationBoard: Sendable {
     ///     unknown rather than closed. Without a date the listing counts as current.
     public init(todos: [Todo], conversations: [String: Conversation], liveTmux: [String: Set<String>],
                 listedAt: [String: Date] = [:]) {
-        self.todos = todos
         self.conversations = conversations
-        self.liveTmux = liveTmux
-        self.listedAt = listedAt
-        self.running = conversations.values
-            .filter { Self.display($0, liveTmux: liveTmux, listedAt: listedAt) != .closed }
-            .sorted { $0.createdAt != $1.createdAt ? $0.createdAt > $1.createdAt : $0.todoId < $1.todoId }
+
+        var statuses: [String: ConversationDisplayStatus] = [:]
+        statuses.reserveCapacity(conversations.count)
+        var open: [Conversation] = []
+        open.reserveCapacity(conversations.count)
+        var newer: [Conversation] = []
+
+        for conversation in conversations.values {
+            let changed = Self.changeDate(conversation)
+            let alive = Self.tmuxAlive(conversation, changed: changed, liveTmux: liveTmux, listedAt: listedAt)
+            let status = ConversationDisplayStatus(conversation.status, tmuxAlive: alive)
+            statuses[conversation.todoId] = status
+            if status != .closed { open.append(conversation) }
+            if Self.isNewerThanListing(conversation, changed: changed, liveTmux: liveTmux, listedAt: listedAt) {
+                newer.append(conversation)
+            }
+        }
+        open.sort(by: Self.newestFirst)
+
+        var needing: [Conversation] = []
+        var runningByComputer: [String: Int] = [:]
+        var needsByComputer: [String: Int] = [:]
+        for conversation in open {
+            runningByComputer[conversation.computer.id, default: 0] += 1
+            if statuses[conversation.todoId] == .needsYou {
+                needing.append(conversation)
+                needsByComputer[conversation.computer.id, default: 0] += 1
+            }
+        }
+
+        var openCounts = Dictionary(uniqueKeysWithValues: TodoSection.allCases.map { ($0, 0) })
+        var needsSection = Dictionary(uniqueKeysWithValues: TodoSection.allCases.map { ($0, false) })
+        for todo in todos {
+            if !todo.completed { openCounts[todo.section, default: 0] += 1 }
+            if statuses[todo.id] == .needsYou { needsSection[todo.section] = true }
+        }
+
+        self.running = open
+        self.needsYou = needing
+        self.newerThanListing = newer
+        self.statusByTodoID = statuses
+        self.openTodoCounts = openCounts
+        self.sectionNeedsYouFlags = needsSection
+        self.runningCounts = runningByComputer
+        self.needsYouCounts = needsByComputer
     }
 
-    private static func display(_ c: Conversation, liveTmux: [String: Set<String>],
-                                listedAt: [String: Date]) -> ConversationDisplayStatus {
-        ConversationDisplayStatus(c.status, tmuxAlive: tmuxAlive(c, liveTmux: liveTmux, listedAt: listedAt))
+    /// The later of `createdAt` and `statusUpdatedAt`, parsed once per conversation.
+    private static func changeDate(_ conversation: Conversation) -> Date? {
+        [conversation.createdAt, conversation.statusUpdatedAt].compactMap { HubDates.date(from: $0) }.max()
     }
 
     /// `nil` (unknown) when the computer wasn't listed, or was listed before the conversation
     /// last changed and the listing doesn't have it.
-    private static func tmuxAlive(_ c: Conversation, liveTmux: [String: Set<String>],
-                                  listedAt: [String: Date]) -> Bool? {
-        guard let names = liveTmux[c.computer.id] else { return nil }
-        if names.contains(c.tmuxName) { return true }
-        return isNewer(c, than: listedAt[c.computer.id]) ? nil : false
+    private static func tmuxAlive(_ conversation: Conversation, changed: Date?,
+                                  liveTmux: [String: Set<String>], listedAt: [String: Date]) -> Bool? {
+        guard let names = liveTmux[conversation.computer.id] else { return nil }
+        if names.contains(conversation.tmuxName) { return true }
+        guard let changed, let listed = listedAt[conversation.computer.id], changed > listed else { return false }
+        return nil
     }
 
-    private static func isNewer(_ c: Conversation, than listed: Date?) -> Bool {
-        guard let listed else { return false }
-        let changed = [c.createdAt, c.statusUpdatedAt].compactMap { HubDates.date(from: $0) }.max()
-        return changed.map { $0 > listed } ?? false
+    private static func isNewerThanListing(_ conversation: Conversation, changed: Date?,
+                                           liveTmux: [String: Set<String>], listedAt: [String: Date]) -> Bool {
+        guard let names = liveTmux[conversation.computer.id], !names.contains(conversation.tmuxName) else { return false }
+        guard let changed, let listed = listedAt[conversation.computer.id] else { return false }
+        return changed > listed
     }
 
-    /// Conversations missing from their computer's listing that changed after it was taken:
-    /// that computer needs listing again before they can count as closed.
-    public var newerThanListing: [Conversation] {
-        conversations.values.filter { c in
-            guard let names = liveTmux[c.computer.id], !names.contains(c.tmuxName) else { return false }
-            return Self.isNewer(c, than: listedAt[c.computer.id])
-        }
+    /// `createdAt` is sortable UTC ISO-8601, so strings compare in time order.
+    private static func newestFirst(_ lhs: Conversation, _ rhs: Conversation) -> Bool {
+        lhs.createdAt != rhs.createdAt ? lhs.createdAt > rhs.createdAt : lhs.todoId < rhs.todoId
     }
 
     public func status(forTodo id: String) -> ConversationDisplayStatus? {
-        conversations[id].map { Self.display($0, liveTmux: liveTmux, listedAt: listedAt) }
+        statusByTodoID[id]
     }
 
     /// `createdAt` is sortable UTC ISO-8601, so strings compare in time order.
     public var runningNow: [Conversation] { running }
 
-    public var needsYou: [Conversation] {
-        running.filter { Self.display($0, liveTmux: liveTmux, listedAt: listedAt) == .needsYou }
-    }
+    public let needsYou: [Conversation]
+
+    /// Conversations missing from their computer's listing that changed after it was taken:
+    /// that computer needs listing again before they can count as closed.
+    public let newerThanListing: [Conversation]
 
     /// Running now, then the closed conversations, newest first.
     public var all: [Conversation] {
-        let runningIDs = Set(running.map(\.todoId))
         let closed = conversations.values
-            .filter { !runningIDs.contains($0.todoId) }
-            .sorted { $0.createdAt != $1.createdAt ? $0.createdAt > $1.createdAt : $0.todoId < $1.todoId }
+            .filter { statusByTodoID[$0.todoId] == .closed }
+            .sorted(by: Self.newestFirst)
         return running + closed
     }
 
@@ -81,18 +125,18 @@ public struct ConversationBoard: Sendable {
     }
 
     public func openTodoCount(_ section: TodoSection) -> Int {
-        todos.filter { $0.section == section && !$0.completed }.count
+        openTodoCounts[section] ?? 0
     }
 
     public func sectionNeedsYou(_ section: TodoSection) -> Bool {
-        todos.contains { $0.section == section && status(forTodo: $0.id) == .needsYou }
+        sectionNeedsYouFlags[section] ?? false
     }
 
     public func runningCount(computerID: String) -> Int {
-        running.filter { $0.computer.id == computerID }.count
+        runningCounts[computerID] ?? 0
     }
 
     public func needsYouCount(computerID: String) -> Int {
-        needsYou.filter { $0.computer.id == computerID }.count
+        needsYouCounts[computerID] ?? 0
     }
 }

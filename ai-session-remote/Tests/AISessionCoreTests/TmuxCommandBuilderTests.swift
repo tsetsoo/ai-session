@@ -34,6 +34,83 @@ final class TmuxCommandBuilderTests: XCTestCase {
         XCTAssertTrue(cmd.contains("*[Uu][Tt][Ff]-8*"))
     }
 
+    /// `LC_ALL` overrides `LANG`. A UTF-8 `LANG` must not hide `LC_ALL=C`, or
+    /// tmux still draws Cyrillic as underscores.
+    func testWrapReplacesLcAllCWhenLangIsAlreadyUtf8() throws {
+        #if os(macOS)
+        for shell in ["/bin/sh", "/bin/bash", "/bin/zsh"] where FileManager.default.isExecutableFile(atPath: shell) {
+            let locale = try localeAfterWrap(shell: shell, lcAll: "C", lang: "en_US.UTF-8")
+            XCTAssertEqual(locale.lcAll, "en_US.UTF-8", shell)
+            XCTAssertEqual(locale.lcCtype, "en_US.UTF-8", shell)
+            XCTAssertEqual(locale.lang, "en_US.UTF-8", shell)
+        }
+        #endif
+    }
+
+    /// A UTF-8 `LC_ALL` already wins, including one that is not `en_US`.
+    func testWrapLeavesUtf8LcAllUntouched() throws {
+        #if os(macOS)
+        let locale = try localeAfterWrap(shell: "/bin/sh", lcAll: "bg_BG.UTF-8", lang: "C")
+        XCTAssertEqual(locale.lcAll, "bg_BG.UTF-8")
+        XCTAssertEqual(locale.lang, "C")
+        #endif
+    }
+
+    /// With `LC_ALL` unset, a UTF-8 `LANG` is the locale tmux will use.
+    func testWrapLeavesUtf8LangWhenLcAllIsUnset() throws {
+        #if os(macOS)
+        let locale = try localeAfterWrap(shell: "/bin/sh", lang: "bg_BG.UTF-8")
+        XCTAssertEqual(locale.lcAll, "")
+        XCTAssertEqual(locale.lcCtype, "")
+        XCTAssertEqual(locale.lang, "bg_BG.UTF-8")
+        #endif
+    }
+
+    func testWrapForcesUtf8WhenNoLocaleIsSet() throws {
+        #if os(macOS)
+        let locale = try localeAfterWrap(shell: "/bin/sh")
+        XCTAssertEqual(locale.lcAll, "en_US.UTF-8")
+        XCTAssertEqual(locale.lcCtype, "en_US.UTF-8")
+        XCTAssertEqual(locale.lang, "en_US.UTF-8")
+        #endif
+    }
+
+    /// Runs the locale prefix `wrap` puts in front of every remote command.
+    private func localeAfterWrap(
+        shell: String,
+        lcAll: String? = nil,
+        lcCtype: String? = nil,
+        lang: String? = nil
+    ) throws -> (lcAll: String, lcCtype: String, lang: String) {
+        let command = TmuxCommandBuilder.listSessions()
+        guard let tmux = command.range(of: "; tmux ") else {
+            XCTFail("wrapped command has no tmux payload")
+            return ("", "", "")
+        }
+        let script = String(command[..<tmux.lowerBound])
+            + #"; printf '%s\n%s\n%s' "${LC_ALL-}" "${LC_CTYPE-}" "${LANG-}""#
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-c", script]
+        var environment = ["PATH": "/usr/bin:/bin", "HOME": "/tmp"]
+        if let lcAll { environment["LC_ALL"] = lcAll }
+        if let lcCtype { environment["LC_CTYPE"] = lcCtype }
+        if let lang { environment["LANG"] = lang }
+        process.environment = environment
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, shell)
+        let lines = String(decoding: data, as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        XCTAssertEqual(lines.count, 3, "\(shell): \(String(decoding: data, as: UTF8.self))")
+        return (lines[0], lines[1], lines[2])
+    }
+
     func testKillSession() {
         let cmd = TmuxCommandBuilder.killSession(tmuxName: "random")
         XCTAssertTrue(cmd.contains("tmux kill-session -t 'random'"))

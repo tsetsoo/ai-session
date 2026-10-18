@@ -8,7 +8,6 @@ struct ConversationRow: View {
     let section: TodoSection?
     let conversation: Conversation
     let status: ConversationDisplayStatus
-    let now: Date
     /// Closing or deleting it.
     let isBusy: Bool
     /// Its ⌘n in Running now on the Mac.
@@ -28,10 +27,8 @@ struct ConversationRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if isBusy {
                     ProgressView().controlSize(.small)
-                } else if let age = RowText.age(of: conversation, now: now) {
-                    Text(age)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                } else {
+                    ConversationAgeLabel(conversation: conversation)
                 }
             }
             Group {
@@ -45,8 +42,7 @@ struct ConversationRow: View {
                     }
                 }
                 .foregroundStyle(.secondary)
-                Text(RowText.conversationMessage(conversation, status: status, now: now))
-                    .foregroundStyle(status == .needsYou ? DS.accent : Color.secondary)
+                ConversationMessageLabel(conversation: conversation, status: status)
             }
             .font(.footnote)
             .lineLimit(1)
@@ -55,5 +51,34 @@ struct ConversationRow: View {
         .padding(.vertical, DS.spacing.xs)
         .frame(minHeight: DS.rowMinHeight)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// The row's age, redrawn once a minute on its own so the list around the row stays put.
+private struct ConversationAgeLabel: View {
+    let conversation: Conversation
+
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            if let age = RowText.age(of: conversation, now: context.date) {
+                Text(age)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// "Working for 4m" advances with the same minute clock. Needs-you text does not depend on it,
+/// but one label is cheaper than rebuilding the list to pass a date in.
+private struct ConversationMessageLabel: View {
+    let conversation: Conversation
+    let status: ConversationDisplayStatus
+
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            Text(RowText.conversationMessage(conversation, status: status, now: context.date))
+                .foregroundStyle(status == .needsYou ? DS.accent : Color.secondary)
+        }
     }
 }

@@ -9,6 +9,16 @@ struct UsageLimitsBar: View {
     let computer: Computer
     let tool: String
     let sessionId: String?
+    /// Off for a conversation that is mounted but not the one on screen. Included in `taskID`,
+    /// so turning it off cancels an in-flight loop and turning it on starts a load.
+    let polls: Bool
+
+    init(computer: Computer, tool: String, sessionId: String?, polls: Bool = true) {
+        self.computer = computer
+        self.tool = tool
+        self.sessionId = sessionId
+        self.polls = polls
+    }
 
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var limits: UsageLimits?
@@ -20,17 +30,20 @@ struct UsageLimitsBar: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: hasWindows ? nil : 0)
-        .task(id: taskID) { await poll() }
+        .task(id: taskID) {
+            guard polls else { return }
+            await poll()
+        }
     }
 
     private var hasWindows: Bool {
         !(limits?.windows.isEmpty ?? true)
     }
 
-    /// Reloads when the chat's computer, tool, or saved host changes.
+    /// Reloads when the chat's computer, tool, saved host, or polling gate changes.
     private var taskID: String {
         let ready = HostLookup.host(for: computer, in: hosts) != nil
-        return "\(computer.id)|\(tool)|\(sessionId ?? "")|\(ready)"
+        return "\(computer.id)|\(tool)|\(sessionId ?? "")|\(ready)|\(polls)"
     }
 
     private func chips(_ windows: [UsageLimitWindow]) -> some View {

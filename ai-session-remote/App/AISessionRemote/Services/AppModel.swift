@@ -86,7 +86,8 @@ final class AppModel {
     /// computerID to when its `liveTmux` entry was listed (when the listing was asked for).
     private(set) var listedAt: [String: Date] = [:]
     /// Bumped when a conversation changed after its computer's listing and isn't in it (started
-    /// or reported since): the views that list tmux sessions list again (`.task(id:)`).
+    /// or reported since). Each shell lists again on this (`.task(id:)`); the first value, 0,
+    /// lists every computer, and later values list only the stale ones.
     private(set) var relistRequests = 0
 
     var sidebarSelection: SidebarItem?
@@ -137,10 +138,27 @@ final class AppModel {
     private var firstLoad: Task<Void, Never>?
     /// The conversation changes (todo, created, status time) a relist was already asked for.
     @ObservationIgnored private var relistedFor: Set<String> = []
+    /// One board for the current inputs. Reads in one turn return this instance.
+    @ObservationIgnored private var cachedBoard: ConversationBoard?
+    @ObservationIgnored private var cachedBoardInputs: BoardInputs?
+
+    /// Todos, conversations and the listings the cached board was built from.
+    private struct BoardInputs: Equatable {
+        var todos: [Todo]
+        var conversations: [String: Conversation]
+        var liveTmux: [String: Set<String>]
+        var listedAt: [String: Date]
+    }
 
     var board: ConversationBoard {
-        ConversationBoard(todos: store.todos, conversations: store.conversations, liveTmux: liveTmux,
-                          listedAt: listedAt)
+        let inputs = BoardInputs(todos: store.todos, conversations: store.conversations, liveTmux: liveTmux,
+                                 listedAt: listedAt)
+        if let cachedBoard, cachedBoardInputs == inputs { return cachedBoard }
+        let built = ConversationBoard(todos: inputs.todos, conversations: inputs.conversations,
+                                      liveTmux: inputs.liveTmux, listedAt: inputs.listedAt)
+        cachedBoard = built
+        cachedBoardInputs = inputs
+        return built
     }
 
     #if DEBUG
@@ -282,13 +300,35 @@ final class AppModel {
         pendingOpenTodoID = todoId
     }
 
-    /// Lists tmux sessions once per hub computer, in parallel. A computer with no matching
-    /// host, or whose listing fails, is left out of `liveTmux`.
-    func refreshLiveness(hosts: [HostEntity]) async {
+    /// Which computers `refreshLiveness` lists. The default replaces every computer's listing.
+    enum LivenessScope: Sendable {
+        /// Every hub computer. The result replaces `liveTmux` and `listedAt`.
+        case full
+        /// Computers with a conversation in `board.newerThanListing`. Results merge into the
+        /// listings already held. Nothing stale: return without listing or a new generation.
+        case stale
+    }
+
+    /// Lists tmux sessions on hub computers, in parallel. A computer with no matching host, or
+    /// whose listing fails, is left out of a `.full` result. `.stale` writes only the computers
+    /// it listed successfully and leaves every other computer's listing in place.
+    func refreshLiveness(hosts: [HostEntity], scope: LivenessScope = .full) async {
         #if DEBUG
         // Demo data never touches the network; keep the seeded statuses.
         if DemoFixtures.isEnabled && listTmuxOverride == nil { return }
         #endif
+        let computers = store.computers
+        let targets: [Computer]
+        switch scope {
+        case .full:
+            targets = computers
+        case .stale:
+            let staleIDs = Set(board.newerThanListing.map(\.computer.id))
+            targets = computers.filter { staleIDs.contains($0.id) }
+            // Before the generation bump: an empty stale pass must not supersede a refresh
+            // already running, and must not mark that refresh abandoned.
+            if targets.isEmpty { return }
+        }
         livenessGeneration += 1
         let generation = livenessGeneration
         livenessRefreshesRunning += 1
@@ -300,11 +340,10 @@ final class AppModel {
         }
         // Anything that changed after this moment may be missing from the listing.
         let askedAt = now()
-        let computers = store.computers
-        let listing = listTmuxOverride ?? Self.sshListing(hosts: hosts, computers: computers)
+        let listing = listTmuxOverride ?? Self.sshListing(hosts: hosts, computers: targets)
         var result: [String: Set<String>] = [:]
         await withTaskGroup(of: (String, Set<String>?).self) { group in
-            for computer in computers {
+            for computer in targets {
                 group.addTask { (computer.id, try? await listing(computer)) }
             }
             for await (id, names) in group {
@@ -312,10 +351,28 @@ final class AppModel {
             }
         }
         guard generation == livenessGeneration, !Task.isCancelled else { return }
-        liveTmux = result
-        listedAt = result.mapValues { _ in askedAt }
+        switch scope {
+        case .full:
+            liveTmux = result
+            listedAt = result.mapValues { _ in askedAt }
+            for computer in computers { livenessChecked[computer.id] = askedAt }
+        case .stale:
+            var sessions = liveTmux
+            var listed = listedAt
+            var checked = livenessChecked
+            for computer in targets {
+                // A failed listing is not a check: the previous names stay, and the selection
+                // keeps waiting instead of attaching on a list this pass could not confirm.
+                guard let names = result[computer.id] else { continue }
+                sessions[computer.id] = names
+                listed[computer.id] = askedAt
+                checked[computer.id] = askedAt
+            }
+            liveTmux = sessions
+            listedAt = listed
+            livenessChecked = checked
+        }
         publishedLivenessGeneration = generation
-        for computer in computers { livenessChecked[computer.id] = askedAt }
     }
 
     /// Whether the Mac's selection may attach to this todo's conversation. Attaching runs

@@ -52,41 +52,41 @@ struct ConversationListView: View {
             return ListSearch.matches(query, todo?.title, RowText.conversationMeta(conversation, section: todo?.section),
                                       conversation.statusMessage)
         }
-        TimelineView(.everyMinute) { context in
-            SelectableList(selection: selection) {
-                ListStatusBanner(store: store)
-                if showsFilterPicker {
-                    Section {
-                        filterPicker(needsYouCount: board.needsYou.count)
-                    }
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets())
+        let shortcuts: [String: Int] = showsShortcuts
+            ? Dictionary(uniqueKeysWithValues: board.runningNow.prefix(9).enumerated().map { ($1.todoId, $0 + 1) })
+            : [:]
+        SelectableList(selection: selection) {
+            ListStatusBanner(store: store)
+            if showsFilterPicker {
+                Section {
+                    filterPicker(needsYouCount: board.needsYou.count)
                 }
-                if conversations.isEmpty {
-                    Section {
-                        if filtered.isEmpty {
-                            emptyState
-                        } else {
-                            ContentUnavailableView.search(text: query)
-                        }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+            }
+            if conversations.isEmpty {
+                Section {
+                    if filtered.isEmpty {
+                        emptyState
+                    } else {
+                        ContentUnavailableView.search(text: query)
                     }
-                    .listRowBackground(Color.clear)
-                } else {
-                    Section {
-                        ForEach(conversations, id: \.todoId) { conversation in
-                            row(conversation, todo: todos[conversation.todoId], board: board, now: context.date)
-                        }
-                    } footer: {
-                        #if os(iOS)
-                        Text("Swipe left to close or delete. Swipe right to copy the resume command.")
-                        #endif
+                }
+                .listRowBackground(Color.clear)
+            } else {
+                Section {
+                    ForEach(conversations, id: \.todoId) { conversation in
+                        row(conversation, todo: todos[conversation.todoId], board: board,
+                            shortcut: shortcuts[conversation.todoId])
                     }
+                } footer: {
+                    #if os(iOS)
+                    Text("Swipe left to close or delete. Swipe right to copy the resume command.")
+                    #endif
                 }
             }
-            .listStyle(.insetGrouped)
         }
-        // Again whenever a conversation changed after its computer was listed.
-        .task(id: model.relistRequests) { await model.refreshLiveness(hosts: hosts) }
+        .listStyle(.insetGrouped)
         .refreshable {
             // Background: a failure shows in the banner, not in the shell's Todos alert.
             await store.refresh(trigger: .background)
@@ -105,7 +105,8 @@ struct ConversationListView: View {
         .labelsHidden()
     }
 
-    private func row(_ conversation: Conversation, todo: Todo?, board: ConversationBoard, now: Date) -> some View {
+    private func row(_ conversation: Conversation, todo: Todo?, board: ConversationBoard,
+                     shortcut: Int?) -> some View {
         let status = board.status(forTodo: conversation.todoId) ?? .closed
         let open: (() -> Void)? = todo.map { todo in { onOpen(todo) } }
         return ConversationRow(
@@ -113,19 +114,13 @@ struct ConversationListView: View {
             section: todo?.section,
             conversation: conversation,
             status: status,
-            now: now,
             isBusy: actions.inFlight.contains(conversation.todoId),
-            shortcut: showsShortcuts ? Self.shortcut(for: conversation, board: board) : nil
+            shortcut: shortcut
         )
         .tag(conversation.todoId)
         .rowTap(selection == nil ? open : nil)
         .conversationRowMenu(conversation, isRunning: status != .closed, actions: actions,
                              store: store, hosts: hosts, open: open)
-    }
-
-    /// Its ⌘n number in Running now, if it is among the first nine.
-    private static func shortcut(for conversation: Conversation, board: ConversationBoard) -> Int? {
-        (1...9).first { board.conversation(atShortcut: $0)?.todoId == conversation.todoId }
     }
 
     @ViewBuilder private var emptyState: some View {

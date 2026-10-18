@@ -363,7 +363,7 @@ struct TerminalSurface: View {
             #endif
         }
         .onAppear {
-            coordinator.isShown = isFrontmost
+            coordinator.setShown(isFrontmost)
             coordinator.onStateChange = { state in
                 connectionState = state
                 handle?.connectionState = state
@@ -386,7 +386,7 @@ struct TerminalSurface: View {
             handle?.reconnectAction = { Task { await reconnect() } }
         }
         .onChange(of: isFrontmost) { _, shown in
-            coordinator.isShown = shown
+            coordinator.setShown(shown)
             if shown {
                 // Not on first appear: connect already tells tmux the size, and a second
                 // window-change makes it repaint.

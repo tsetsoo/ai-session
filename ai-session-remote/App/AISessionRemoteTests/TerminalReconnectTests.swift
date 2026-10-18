@@ -28,6 +28,37 @@ final class TerminalReconnectTests: XCTestCase {
         XCTAssertEqual(TerminalHitTarget.resolve(isFrontmost: false, isDisconnected: true), .passThrough)
     }
 
+    /// Background sessions hold flushed bytes and feed them once when shown. Disconnect
+    /// drops the hold so the next session is not replayed.
+    func testHiddenOutputIsHeldUntilShownAndClearedOnDisconnect() {
+        var output = HiddenTerminalOutput()
+
+        XCTAssertEqual(output.receive(Array("ab".utf8), isShown: false), .hold)
+        XCTAssertEqual(output.receive(Array("c".utf8), isShown: false), .hold)
+        XCTAssertEqual(output.held, Array("abc".utf8))
+        // Hiding leaves the hold in place.
+        XCTAssertNil(output.flushHeld(isShown: false))
+
+        XCTAssertEqual(output.flushHeld(isShown: true), Array("abc".utf8))
+        XCTAssertTrue(output.held.isEmpty)
+        // A second show must not replay the same bytes.
+        XCTAssertNil(output.flushHeld(isShown: true))
+
+        XCTAssertEqual(output.receive(Array("now".utf8), isShown: true), .feed(Array("now".utf8)))
+        XCTAssertTrue(output.held.isEmpty)
+
+        // Shown before a separate flush: the next chunk releases the hold, in order, as one feed.
+        XCTAssertEqual(output.receive(Array("de".utf8), isShown: false), .hold)
+        XCTAssertEqual(output.receive(Array("f".utf8), isShown: true), .feed(Array("def".utf8)))
+        XCTAssertTrue(output.held.isEmpty)
+
+        XCTAssertEqual(output.receive(Array("old".utf8), isShown: false), .hold)
+        output.clear()
+        XCTAssertTrue(output.held.isEmpty)
+        XCTAssertNil(output.flushHeld(isShown: true))
+        XCTAssertEqual(output.receive(Array("new".utf8), isShown: true), .feed(Array("new".utf8)))
+    }
+
     func testReconnectIgnoresThePaneThatAlreadyExited() async {
         let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
         var made: [ClosingTransport] = []

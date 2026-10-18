@@ -118,6 +118,133 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(b.all.map(\.todoId), ["a", "c", "d", "b"])
     }
 
+    /// Stored status, needs-you, counts and `all` are one snapshot. A path that parsed dates again
+    /// and disagreed with `status(forTodo:)` fails here, including the cases above.
+    func testPrecomputedStatusAgreesAcrossNeedsYouCountsAndAll() {
+        let dead = board([
+            conv("a", .busy), conv("b", .closed), conv("c", .idle, tmux: "gone"),
+            conv("d", .idle, tmux: "other", computer: box),
+        ], live: ["m1": ["t-a"]])
+        assertAgrees(dead)
+        XCTAssertEqual(dead.status(forTodo: "c"), .closed)
+        XCTAssertEqual(dead.needsYou.map(\.todoId), dead.runningNow.filter { dead.status(forTodo: $0.todoId) == .needsYou }.map(\.todoId))
+        XCTAssertEqual(dead.all.map(\.todoId), ["a", "d", "b", "c"])
+
+        let listed = HubDates.date(from: "2026-10-16T10:30:00Z")!
+        let started = conv("new", .busy, created: "2026-10-16T10:45:00Z")
+        let old = conv("old", .busy, created: "2026-10-16T10:00:00Z")
+        var reported = conv("rep", .waiting, created: "2026-10-16T10:00:00Z")
+        reported.statusUpdatedAt = "2026-10-16 10:40:00"
+        let fresh = ConversationBoard(
+            todos: [], conversations: ["new": started, "old": old, "rep": reported],
+            liveTmux: ["m1": []], listedAt: ["m1": listed]
+        )
+        assertAgrees(fresh)
+        XCTAssertEqual(fresh.needsYou.map(\.todoId), ["rep"])
+        XCTAssertEqual(fresh.status(forTodo: "new"), .working)
+        XCTAssertEqual(fresh.status(forTodo: "old"), .closed)
+        XCTAssertEqual(Set(fresh.newerThanListing.map(\.todoId)), ["new", "rep"])
+
+        let present = ConversationBoard(
+            todos: [], conversations: ["a": conv("a", .busy, created: "2026-10-16T10:45:00Z")],
+            liveTmux: ["m1": ["t-a"]], listedAt: ["m1": listed]
+        )
+        assertAgrees(present)
+        XCTAssertTrue(present.newerThanListing.isEmpty)
+        XCTAssertEqual(present.status(forTodo: "a"), .working)
+
+        let ordered = board([
+            conv("a", .waiting, created: "2026-10-16T09:00:00Z"),
+            conv("b", .busy),
+            conv("c", .waiting, created: "2026-10-16T11:00:00Z"),
+        ])
+        assertAgrees(ordered)
+        XCTAssertEqual(ordered.needsYou.map(\.todoId), ["c", "a"])
+
+        let todos = [Todo(id: "a", section: .sp, title: "A"),
+                     Todo(id: "b", section: .sp, title: "B", completed: true),
+                     Todo(id: "c", section: .i, title: "C")]
+        let counted = board([conv("a", .waiting), conv("c", .busy), conv("x", .busy, computer: box)], todos: todos)
+        assertAgrees(counted, todos: todos)
+        XCTAssertEqual(counted.openTodoCount(.sp), 1)
+        XCTAssertTrue(counted.sectionNeedsYou(.sp))
+        XCTAssertFalse(counted.sectionNeedsYou(.i))
+        XCTAssertEqual(counted.runningCount(computerID: "m1"), 2)
+        XCTAssertEqual(counted.needsYouCount(computerID: "m1"), 1)
+        XCTAssertEqual(counted.needsYouCount(computerID: "m2"), 0)
+    }
+
+    /// The change date is the later of the two timestamps, parsed once. Reading status and
+    /// needs-you again returns that same snapshot.
+    func testChangeDateIsTheLaterTimestampAndStaysStable() {
+        let listed = HubDates.date(from: "2026-10-16T10:30:00Z")!
+        var updatedLater = conv("u", .waiting, created: "2026-10-16T10:00:00Z")
+        updatedLater.statusUpdatedAt = "2026-10-16T10:45:00.250Z"
+        var createdLater = conv("c", .busy, created: "2026-10-16T10:45:00Z")
+        createdLater.statusUpdatedAt = "2026-10-16T10:00:00Z"
+        var unparseable = conv("x", .busy, created: "not-a-date")
+        unparseable.statusUpdatedAt = "also-not"
+        let b = ConversationBoard(
+            todos: [],
+            conversations: ["u": updatedLater, "c": createdLater, "x": unparseable],
+            liveTmux: ["m1": []], listedAt: ["m1": listed]
+        )
+        XCTAssertEqual(b.status(forTodo: "u"), .needsYou)
+        XCTAssertEqual(b.status(forTodo: "c"), .working)
+        XCTAssertEqual(b.status(forTodo: "x"), .closed)
+        XCTAssertEqual(Set(b.newerThanListing.map(\.todoId)), ["u", "c"])
+        XCTAssertEqual(b.needsYou.map(\.todoId), ["u"])
+        XCTAssertEqual(b.needsYou.map(\.todoId), b.runningNow.filter { b.status(forTodo: $0.todoId) == .needsYou }.map(\.todoId))
+        XCTAssertEqual(b.status(forTodo: "u"), b.status(forTodo: "u"))
+        assertAgrees(b)
+    }
+
+    private func assertAgrees(_ board: ConversationBoard, todos: [Todo] = [],
+                              file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(
+            board.needsYou.map(\.todoId),
+            board.runningNow.filter { board.status(forTodo: $0.todoId) == .needsYou }.map(\.todoId),
+            "needsYou must be the running conversations whose stored status is needs you",
+            file: file, line: line
+        )
+        let runningIDs = Set(board.runningNow.map(\.todoId))
+        for conversation in board.all {
+            let status = board.status(forTodo: conversation.todoId)
+            XCTAssertNotNil(status, file: file, line: line)
+            if runningIDs.contains(conversation.todoId) {
+                XCTAssertNotEqual(status, .closed, file: file, line: line)
+            } else {
+                XCTAssertEqual(status, .closed, file: file, line: line)
+            }
+        }
+        for conversation in board.newerThanListing {
+            XCTAssertNotEqual(board.status(forTodo: conversation.todoId), .closed, file: file, line: line)
+            XCTAssertTrue(runningIDs.contains(conversation.todoId), file: file, line: line)
+        }
+        var computerIDs = Set(board.runningNow.map(\.computer.id))
+        computerIDs.formUnion(board.needsYou.map(\.computer.id))
+        computerIDs.insert("missing")
+        for id in computerIDs {
+            XCTAssertEqual(board.runningCount(computerID: id), board.runningNow.filter { $0.computer.id == id }.count,
+                           file: file, line: line)
+            XCTAssertEqual(board.needsYouCount(computerID: id), board.needsYou.filter { $0.computer.id == id }.count,
+                           file: file, line: line)
+        }
+        for section in TodoSection.allCases {
+            XCTAssertEqual(board.openTodoCount(section), todos.filter { $0.section == section && !$0.completed }.count,
+                           file: file, line: line)
+            XCTAssertEqual(
+                board.sectionNeedsYou(section),
+                todos.contains { $0.section == section && board.status(forTodo: $0.id) == .needsYou },
+                file: file, line: line
+            )
+        }
+        for n in 1...9 {
+            let expected = n <= board.runningNow.count ? board.runningNow[n - 1].todoId : nil
+            XCTAssertEqual(board.conversation(atShortcut: n)?.todoId, expected, file: file, line: line)
+        }
+    }
+
     func testFirstSnapshotNeverNotifies() {
         XCTAssertEqual(StatusTransitions.newlyWaiting(previous: nil, current: [conv("a", .waiting)]), [])
     }
