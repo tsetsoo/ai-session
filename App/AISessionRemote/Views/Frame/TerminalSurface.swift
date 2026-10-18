@@ -7,25 +7,74 @@ import UIKit
 import AppKit
 #endif
 
+/// Whether the terminal grid may take pointer events.
+///
+/// The grid is an AppKit or UIKit view. SwiftUI draws the Disconnected card above it, but
+/// hit testing still reaches the grid first. Cursor's UI turns mouse reporting on, so the
+/// click becomes a report to a session that has already exited and Reconnect does nothing.
+/// A conversation kept mounted behind the one on screen has the same problem: its grid can
+/// sit above the visible card. Both cases have to miss.
+enum TerminalPointerPolicy {
+    static func acceptsPointer(isFrontmost: Bool, isDisconnected: Bool) -> Bool {
+        isFrontmost && !isDisconnected
+    }
+}
+
 #if os(macOS)
+/// Wraps `TerminalView` so a covered grid can decline clicks. `hitTest` returning nil lets
+/// the hosting view deliver the event to the SwiftUI button drawn over it.
+final class TerminalClickGate: NSView {
+    let terminalView: TerminalView
+    var acceptsPointer = true
+
+    init(terminalView: TerminalView) {
+        self.terminalView = terminalView
+        super.init(frame: .zero)
+        terminalView.autoresizingMask = [.width, .height]
+        terminalView.frame = bounds
+        addSubview(terminalView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func layout() {
+        super.layout()
+        if terminalView.frame != bounds {
+            terminalView.frame = bounds
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard acceptsPointer else { return nil }
+        return super.hitTest(point)
+    }
+}
+
 /// AppKit host for SwiftTerm's macOS `TerminalView`. Copy/Paste/Select All come from the
 /// standard Edit menu: they target the first responder, which is this view once focused.
 private struct TerminalContainerView: NSViewRepresentable {
     let coordinator: TerminalCoordinator
     let palette: TerminalPalette
     let fontSize: Double
+    let acceptsPointer: Bool
 
-    func makeNSView(context: Context) -> TerminalView {
+    func makeNSView(context: Context) -> TerminalClickGate {
         let view = TerminalView(frame: .zero)
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         view.optionAsMetaKey = true
         coordinator.attach(to: view)
-        return view
+        let gate = TerminalClickGate(terminalView: view)
+        gate.acceptsPointer = acceptsPointer
+        return gate
     }
 
-    func updateNSView(_ nsView: TerminalView, context: Context) {
-        TerminalAppearance.apply(to: nsView, palette: palette, fontSize: fontSize)
-        coordinator.attach(to: nsView)
+    func updateNSView(_ gate: TerminalClickGate, context: Context) {
+        TerminalAppearance.apply(to: gate.terminalView, palette: palette, fontSize: fontSize)
+        coordinator.attach(to: gate.terminalView)
+        if gate.acceptsPointer != acceptsPointer {
+            gate.acceptsPointer = acceptsPointer
+        }
     }
 }
 #else
@@ -33,12 +82,14 @@ private struct TerminalContainerView: UIViewRepresentable {
     let coordinator: TerminalCoordinator
     let palette: TerminalPalette
     let fontSize: Double
+    let acceptsPointer: Bool
 
     func makeUIView(context: Context) -> TerminalView {
         let view = TerminalView(frame: .zero)
         // The surface docks `KeyBar` instead of SwiftTerm's `TerminalAccessory`.
         view.inputAccessoryView = UIView(frame: .zero)
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
+        view.isUserInteractionEnabled = acceptsPointer
         coordinator.attach(to: view)
         return view
     }
@@ -46,6 +97,9 @@ private struct TerminalContainerView: UIViewRepresentable {
     func updateUIView(_ uiView: TerminalView, context: Context) {
         TerminalAppearance.apply(to: uiView, palette: palette, fontSize: fontSize)
         coordinator.attach(to: uiView)
+        if uiView.isUserInteractionEnabled != acceptsPointer {
+            uiView.isUserInteractionEnabled = acceptsPointer
+        }
     }
 }
 #endif
@@ -223,20 +277,31 @@ struct TerminalSurface: View {
     }
     #endif
 
+    private var terminalAcceptsPointer: Bool {
+        TerminalPointerPolicy.acceptsPointer(isFrontmost: isFrontmost, isDisconnected: isDisconnected)
+    }
+
     private var surface: some View {
         ZStack {
-            TerminalContainerView(coordinator: coordinator, palette: palette, fontSize: fontSize)
-                .padding(Self.inset)
-                .background(Color(palette.background))
-                #if os(macOS)
-                .ignoresSafeArea(.container, edges: .bottom)
-                #endif
+            TerminalContainerView(
+                coordinator: coordinator,
+                palette: palette,
+                fontSize: fontSize,
+                acceptsPointer: terminalAcceptsPointer
+            )
+            .padding(Self.inset)
+            .background(Color(palette.background))
+            .allowsHitTesting(terminalAcceptsPointer)
+            #if os(macOS)
+            .ignoresSafeArea(.container, edges: .bottom)
+            #endif
 
             if showConnectingOverlay && (connectionState == .connecting || connectionState == .idle) {
                 connectingOverlay
             }
             if isDisconnected {
                 disconnectedOverlay
+                    .zIndex(1)
             }
         }
         .onAppear {
@@ -363,8 +428,6 @@ struct TerminalSurface: View {
                 .padding(.top, DS.spacing.xs)
             }
         )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(onDetach == nil ? "Disconnected. Reconnect." : "Disconnected. Reconnect or detach.")
     }
 
     private func reconnect() async {
