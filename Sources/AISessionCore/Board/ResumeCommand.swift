@@ -1,7 +1,12 @@
 /// Shell commands shown to the user to copy into a terminal.
 public enum ResumeCommand {
     public static func string(for c: Conversation) -> String {
-        let resume = c.tool == "codex" ? "codex resume \(c.sessionId)" : "\(c.tool) --resume \(c.sessionId)"
+        let resume: String
+        switch c.tool {
+        case "codex": resume = "codex resume \(c.sessionId)"
+        case "cursor": resume = "agent --resume \(c.sessionId)"
+        default: resume = "\(c.tool) --resume \(c.sessionId)"
+        }
         return "cd \(quotedPath(c.cwd)) && \(resume)"
     }
 
