@@ -270,6 +270,20 @@ final class TerminalCoordinator: TerminalViewDelegate {
         PlatformSupport.open(url)
     }
 
+    /// OSC 52 from the session: tmux (`set-clipboard on`) or the program itself. SwiftTerm's
+    /// default delegate drops this, so a copy inside the session never reached this computer.
+    func clipboardCopy(source: TerminalView, content: Data) {
+        guard let text = TerminalClipboard.pasteboardText(from: content) else { return }
+        let apply = {
+            PlatformSupport.pasteboardString = text.isEmpty ? nil : text
+        }
+        if Thread.isMainThread {
+            apply()
+        } else {
+            DispatchQueue.main.async(execute: apply)
+        }
+    }
+
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 
     static func message(for error: Error) -> String {

@@ -28,6 +28,15 @@ enum TerminalHitTarget: Equatable {
 }
 
 #if os(macOS)
+/// Cmd+C reaches this view when it is first responder. A drag under tmux mouse tracking is
+/// not a local selection, and SwiftTerm's `copy` still clears the pasteboard in that case.
+private final class LocalClipboardTerminalView: TerminalView {
+    override func copy(_ sender: Any) {
+        guard selectionActive else { return }
+        super.copy(sender)
+    }
+}
+
 /// Hosts the terminal and, while disconnected, the Reconnect card in front of it.
 /// The card is a subview, so AppKit hit testing reaches the button. The grid keeps its
 /// autoresizing mask and is not resized again from `layout()`.
@@ -108,7 +117,7 @@ private struct TerminalContainerView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> TerminalClickGate {
-        let view = TerminalView(frame: .zero)
+        let view = LocalClipboardTerminalView(frame: .zero)
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         view.optionAsMetaKey = true
         coordinator.attach(to: view)
