@@ -16,8 +16,16 @@ public enum TmuxCommandBuilder {
         wrap("command -v tmux")
     }
 
+    /// `tmux ls -F` fields. The separators are tab characters, which `TmuxListParser` splits on.
+    ///
+    /// A `\t` written inside these single quotes is the two characters `\` and `t`. tmux
+    /// prints that literally, so the parser keeps `name\t<activity>\t<attached>` as the
+    /// session name and every conversation looks closed.
+    private static let listSessionsFormat =
+        "'#{session_name}\t#{session_activity}\t#{session_attached}'"
+
     public static func listSessions() -> String {
-        wrap("tmux ls -F '#{session_name}\\t#{session_activity}\\t#{session_attached}'")
+        wrap("tmux ls -F \(listSessionsFormat)")
     }
 
     public static func attach(tmuxName: String) -> String {
@@ -90,7 +98,7 @@ public enum TmuxCommandBuilder {
     public static func listSessionsWithStatuses() -> String {
         wrap(
             """
-            tmux ls -F '#{session_name}\\t#{session_activity}\\t#{session_attached}'; ls_exit=$?
+            tmux ls -F \(listSessionsFormat); ls_exit=$?
             echo '\(RemoteScriptOutput.statusMarker)'
             if [ $ls_exit -eq 0 ]; then mkdir -p ~/.ai-remote/status; setopt NULL_GLOB 2>/dev/null || true; shopt -s nullglob 2>/dev/null || true; for f in ~/.ai-remote/status/*.json; do [ -f "$f" ] && echo "---$(basename "$f")---" && cat "$f"; done; fi
             exit $ls_exit
