@@ -16,7 +16,8 @@
 # Tokens stay in this process. They are never written to stdout, stderr, or a
 # file. Codex is read from the local rollout, so it makes no request.
 #
-# Exit codes: 64 bad arguments.
+# Exit codes: 64 bad arguments, 75 the login is present but the usage request
+#             failed (the app keeps the reading it already has).
 #
 # Test hooks (not for normal use):
 #   AI_TODO_LIMITS_OFFLINE=1   do not touch the network or the macOS keychain
@@ -24,7 +25,6 @@
 #   AI_TODO_LIMITS_HTTP_STATUS HTTP status for that body (default 200)
 #   CLAUDE_CONFIG_DIR          Claude config directory (credentials live here)
 #   CODEX_HOME                 Codex home (sessions live under sessions/)
-AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_LIB_DIR
 export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/sbin:/sbin:$PATH"
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
 exec python3 - "$@" <<'PY'
@@ -41,6 +41,10 @@ import urllib.request
 HOME = os.path.expanduser("~")
 SESSION_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
 USAGE = "usage: ai-todo-limits --tool claude|codex|cursor [--session ID]"
+
+
+class RequestFailed(Exception):
+    """The login is present, but the usage request did not succeed."""
 
 
 def die(message, code):
@@ -101,7 +105,7 @@ def window(kind, used, resets_at=None, scope=None):
 def kind_for_minutes(minutes):
     """Map a Codex window length onto 5h, weekly, or monthly. Anything else
     is a window this chat does not label, so it is left out."""
-    if minutes is None:
+    if minutes is None or minutes < 1:
         return None
     if minutes <= 360:
         return "5h"
@@ -177,7 +181,12 @@ def claude_credentials_path():
 
 
 def keychain_oauth():
+    # The app always runs this over SSH. A locked login keychain cannot be
+    # read there, and asking `security` can pop a dialog on the Mac every
+    # refresh. The credentials file is the copy that works from SSH.
     if os.environ.get("AI_TODO_LIMITS_OFFLINE") == "1" or sys.platform != "darwin":
+        return None
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"):
         return None
     try:
         proc = subprocess.run(
@@ -234,6 +243,8 @@ def claude_monthly(extra):
 
 def claude_windows():
     token = claude_token()
+    if not token:
+        return []
     data = http_json(
         "GET",
         "https://api.anthropic.com/api/oauth/usage",
@@ -241,7 +252,7 @@ def claude_windows():
         {"anthropic-beta": "oauth-2025-04-20", "Content-Type": "application/json"},
     )
     if not isinstance(data, dict):
-        return []
+        raise RequestFailed()
     windows = []
     five = claude_period(data.get("five_hour"))
     if five:
@@ -283,14 +294,21 @@ def cursor_token():
     return ""
 
 
-def cursor_percent(node):
+def explicit_percent(node):
     if not isinstance(node, dict):
         return None
     for key in ("totalPercentUsed", "total_percent_used", "percentUsed", "percent_used"):
         if key in node:
-            used = as_number(node.get(key))
-            if used is not None:
-                return used
+            return as_number(node.get(key))
+    return None
+
+
+def cursor_percent(node):
+    if not isinstance(node, dict):
+        return None
+    stated = explicit_percent(node)
+    if stated is not None:
+        return stated
     limit = as_number(node.get("limit"))
     if limit is None:
         limit = as_number(node.get("hardLimit"))
@@ -305,15 +323,18 @@ def cursor_percent(node):
 
 
 def cursor_windows():
+    token = cursor_token()
+    if not token:
+        return []
     data = http_json(
         "POST",
         "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage",
-        cursor_token(),
+        token,
         {"Content-Type": "application/json", "Connect-Protocol-Version": "1"},
         body="{}",
     )
     if not isinstance(data, dict):
-        return []
+        raise RequestFailed()
     windows = []
     plan = data.get("planUsage") or data.get("plan_usage") or {}
     used = cursor_percent(plan)
@@ -322,8 +343,10 @@ def cursor_windows():
         if item:
             windows.append(item)
     spend = data.get("spendLimitUsage") or data.get("spend_limit_usage")
+    # On-demand limit and used are not both cents in every response, so only
+    # an explicit percent is shown. Guessing the ratio would print a wrong cap.
     if isinstance(spend, dict) and spend.get("noUsageBasedAllowed") is not True:
-        on_demand = cursor_percent(spend)
+        on_demand = explicit_percent(spend)
         if on_demand is not None:
             item = window("monthly", on_demand, scope="on-demand")
             if item:
@@ -484,12 +507,15 @@ def main(argv):
         die(USAGE, 64)
     if session is not None and not SESSION_RE.fullmatch(session):
         die("session id must be a single id, not a path", 64)
-    if tool == "claude":
-        windows = claude_windows()
-    elif tool == "codex":
-        windows = codex_limits(session)
-    else:
-        windows = cursor_windows()
+    try:
+        if tool == "claude":
+            windows = claude_windows()
+        elif tool == "codex":
+            windows = codex_limits(session)
+        else:
+            windows = cursor_windows()
+    except RequestFailed:
+        die("usage request failed", 75)
     emit(tool, windows)
     return 0
 

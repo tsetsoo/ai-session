@@ -60,6 +60,8 @@ struct UsageLimitsBar: View {
         #if DEBUG
         if DemoFixtures.isEnabled { return }
         #endif
+        // A host saved later changes `taskID` and starts a new poll.
+        guard HostLookup.host(for: computer, in: hosts) != nil else { return }
         while !Task.isCancelled {
             await load()
             try? await Task.sleep(for: .seconds(60))

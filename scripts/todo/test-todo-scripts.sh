@@ -1896,13 +1896,12 @@ PY
 export AI_TODO_LIMITS_HTTP_STATUS=401
 mkdir -p "${HOME}/.claude"
 printf '%s\n' "{\"claudeAiOauth\":{\"accessToken\":\"${TOKEN}\",\"expiresAt\":9999999999999}}" >"${HOME}/.claude/.credentials.json"
-"$LIMITS" --tool claude >"${SANDBOX}/limits-claude-401.out"
-python3 - "${SANDBOX}/limits-claude-401.out" <<'PY' || fail "401 still showed limits"
-import json, sys
-assert json.load(open(sys.argv[1]))["windows"] == []
-PY
-! grep -q "$TOKEN" "${SANDBOX}/limits-claude-401.out" || fail "token leaked on 401"
-pass "limits_claude_signed_out_or_rejected: no login and HTTP 401 print an empty window list"
+status=0
+"$LIMITS" --tool claude >"${SANDBOX}/limits-claude-401.out" 2>"${SANDBOX}/limits-claude-401.err" || status=$?
+[[ $status -eq 75 ]] || fail "401 exit was $status: $(cat "${SANDBOX}/limits-claude-401.err" "${SANDBOX}/limits-claude-401.out")"
+[[ ! -s "${SANDBOX}/limits-claude-401.out" ]] || fail "401 wrote a limits body: $(cat "${SANDBOX}/limits-claude-401.out")"
+! grep -q "$TOKEN" "${SANDBOX}/limits-claude-401.out" "${SANDBOX}/limits-claude-401.err" || fail "token leaked on 401"
+pass "limits_claude_signed_out_or_rejected: no login prints an empty list; a failed request exits 75 and prints nothing"
 
 SID="11111111-2222-4333-8444-555555555555"
 OTHER="99999999-8888-4777-8666-000000000000"
@@ -1934,7 +1933,7 @@ pass "limits_codex_windows_by_length: newest snapshot, session id wins, a 24h wi
 mkdir -p "${HOME}/.cursor"
 printf '%s\n' "{\"accessToken\":\"${CURSOR_TOKEN}\",\"refreshToken\":\"cursor-refresh-should-not-leak\"}" >"${HOME}/.cursor/auth.json"
 export AI_TODO_LIMITS_HTTP_STATUS=200
-export AI_TODO_LIMITS_HTTP_BODY='{"billingCycleEnd":"1784958141000","planUsage":{"totalPercentUsed":53,"limit":7000,"totalSpend":3710},"spendLimitUsage":{"limit":5000,"used":1000}}'
+export AI_TODO_LIMITS_HTTP_BODY='{"billingCycleEnd":"1784958141000","planUsage":{"totalPercentUsed":53,"limit":7000,"totalSpend":3710},"spendLimitUsage":{"percentUsed":20,"limit":1,"used":9999}}'
 "$LIMITS" --tool cursor >"${SANDBOX}/limits-cursor.out" 2>"${SANDBOX}/limits-cursor.err" || fail "cursor limits failed"
 [[ ! -s "${SANDBOX}/limits-cursor.err" ]] || fail "cursor limits stderr: $(cat "${SANDBOX}/limits-cursor.err")"
 ! grep -q "$CURSOR_TOKEN" "${SANDBOX}/limits-cursor.out" || fail "cursor token leaked"
@@ -1945,6 +1944,14 @@ data = json.load(open(sys.argv[1]))
 kinds = [(w["kind"], w.get("scope"), w["used_percent"], w.get("resets_at")) for w in data["windows"]]
 assert kinds == [("monthly", None, 53.0, "2026-07-25T05:42:21Z"), ("monthly", "on-demand", 20.0, None)], kinds
 assert all(w["kind"] not in ("5h", "weekly") for w in data["windows"])
+PY
+export AI_TODO_LIMITS_HTTP_BODY='{"planUsage":{"totalPercentUsed":53},"spendLimitUsage":{"limit":1,"used":9999}}'
+"$LIMITS" --tool cursor >"${SANDBOX}/limits-cursor-ratio.out" 2>"${SANDBOX}/limits-cursor-ratio.err" \
+  || fail "cursor without an on-demand percent failed: $(cat "${SANDBOX}/limits-cursor-ratio.err")"
+python3 - "${SANDBOX}/limits-cursor-ratio.out" <<'PY' || fail "on-demand was guessed from limit/used: $(cat "${SANDBOX}/limits-cursor-ratio.out")"
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert [(w["kind"], w.get("scope")) for w in data["windows"]] == [("monthly", None)], data
 PY
 rm -f "${HOME}/.cursor/auth.json"
 "$LIMITS" --tool cursor >"${SANDBOX}/limits-cursor-none.out"

@@ -59,7 +59,7 @@ public struct UsageLimitWindow: Equatable, Sendable, Identifiable {
 
     public var id: String { "\(kind)|\(scope ?? "")" }
 
-    /// Short label in the chat strip: `5h`, `week`, `opus`, `month`, `on-demand`.
+    /// Short label in the chat strip: `5h`, `week`, `opus week`, `month`, `on-demand`.
     public var title: String {
         switch kind {
         case "5h": "5h"
