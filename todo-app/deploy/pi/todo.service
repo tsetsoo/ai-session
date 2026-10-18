@@ -1,0 +1,16 @@
+[Unit]
+Description=Todo app server (Actix API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/todo/current
+ExecStart=/opt/todo/current/todo-server --db /opt/todo/data/todos.db --addr 0.0.0.0:8080
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

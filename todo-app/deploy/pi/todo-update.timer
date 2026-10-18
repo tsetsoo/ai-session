@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for todo-app updates every 2 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Persistent=true
+Unit=todo-update.service
+
+[Install]
+WantedBy=timers.target

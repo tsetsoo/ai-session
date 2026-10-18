@@ -1,0 +1,36 @@
+name: CI
+
+# Pull requests only. Pushes to main are covered by deploy-pi.yml, which gates
+# the deploy on Clippy and then cross-compiles the server itself — running these
+# jobs there too would just do the same work twice per push.
+on:
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (server + shared)
+        run: cargo clippy -p todo-shared -p todo-server -- -D warnings
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Build server
+        run: cargo build -p todo-server
+      - name: Test server
+        run: cargo test -p todo-server

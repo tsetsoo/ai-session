@@ -1,0 +1,9 @@
+[Unit]
+Description=Pull latest todo-app release from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/todo/todo-update.sh

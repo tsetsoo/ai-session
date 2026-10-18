@@ -1,0 +1,29 @@
+[package]
+name = "todo-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+todo-shared = { path = "../todo-shared" }
+actix-web = "4"
+rusqlite = { version = "0.31", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+actix-ws = "0.3"
+tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }
+# APNs push. reqwest 0.12's rustls uses ring with bundled webpki roots: no OpenSSL or
+# aws-lc, so it cross-compiles to the Pi (armv7, glibc 2.28) with cargo-zigbuild.
+# 0.13 switched to aws-lc by default; re-run the armv7 zigbuild before bumping.
+reqwest = { version = "0.12", default-features = false, features = ["http2", "rustls-tls", "json"] }
+ring = "0.17"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

@@ -1,0 +1,103 @@
+name: Deploy Pi
+
+on:
+  push:
+    branches: [main]
+    # Don't spend a deploy on commits that cannot change the artifact. A commit
+    # touching both docs and code still deploys — paths-ignore only skips when
+    # every changed path matches. Host-side scripts and units are copied to the
+    # Pi by hand and never reach the tarball.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".gitignore"
+      - "deploy/**/*.sh"
+      - "deploy/**/*.service"
+      - "deploy/**/*.timer"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-pi
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Only clippy gates the deploy. The deploy job below already cross-compiles
+  # the server, so a compile break fails it
+  # before anything is published — re-running ci.yml's Build job here would
+  # duplicate that work and add minutes to every deploy for no extra signal.
+  # Lint is the one check the deploy does not otherwise perform.
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (server + shared)
+        run: cargo clippy -p todo-shared -p todo-server -- -D warnings
+
+
+  deploy-pi:
+    name: Build armv7 + publish pi-latest
+    needs: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: armv7-unknown-linux-gnueabihf
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: deploy-pi
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Cross-compile server (armv7, glibc <= 2.28 for Raspbian Buster)
+        run: cargo zigbuild --release -p todo-server --target armv7-unknown-linux-gnueabihf.2.28
+
+      - name: Pack release
+        run: |
+          stage="$(mktemp -d)"
+          cp "target/armv7-unknown-linux-gnueabihf/release/todo-server" "$stage/todo-server"
+          chmod +x "$stage/todo-server"
+          # The payload is just the server binary and its SHA. The Pi's updater must be
+          # the current deploy/pi/todo-update.sh (no frontend-dist requirement) before
+          # this ships: an older updater rejects a payload without frontend-dist/.
+          printf '%s\n' "${GITHUB_SHA}" > "$stage/SHA"
+          tar -C "$stage" -czf todo-pi.tar.gz todo-server SHA
+          printf '%s\n' "${GITHUB_SHA}" > SHA
+          ls -lh todo-pi.tar.gz SHA
+
+      - name: Publish pi-latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view pi-latest >/dev/null 2>&1; then
+            gh release upload pi-latest todo-pi.tar.gz SHA --clobber
+          else
+            gh release create pi-latest todo-pi.tar.gz SHA \
+              --title "Pi deploy (rolling)" \
+              --notes "Rolling artifact for raspberrypi. Updated on every main push." \
+              --latest=false
+          fi
+          # Move tag to this commit so release points at current main tip
+          git tag -f pi-latest "$GITHUB_SHA"
+          git push -f origin refs/tags/pi-latest
