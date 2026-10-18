@@ -28,6 +28,7 @@
 		1826D7E4A49A784C721EA193 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = DC38767DC17E0C380BF3BE4F /* NIOSSH */; };
 		18A7EDF090E6A1F432619041 /* ConversationActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80E26E307013F99FC79B7F7 /* ConversationActions.swift */; };
 		19C8B2ADB49568C98E8EE5A5 /* RemoteConversations.swift in Sources */ = {isa = PBXBuildFile; fileRef = B24103E63B65EE5783B9E334 /* RemoteConversations.swift */; };
+		1A857ECC035AA702F05AE617 /* TerminalReconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA8B20C587DEA3DCF7492AD7 /* TerminalReconnectTests.swift */; };
 		2010BBF69DDB52210D4DAB2F /* ConversationRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E36AD351C0A22DEC339CAE5 /* ConversationRow.swift */; };
 		211FB7AE45A3D3197F1AA0BF /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0002157EA5ADE38E9ADEDD3E /* SidebarView.swift */; };
 		221D767F06B05BE1A5E982FD /* SSHConnectionPoolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */; };
@@ -307,6 +308,7 @@
 		C42DA3B83B3817679DCCC8E4 /* AISessionRemoteMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AISessionRemoteMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectionPoolTests.swift; sourceTree = "<group>"; };
 		CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectionPool.swift; sourceTree = "<group>"; };
+		CA8B20C587DEA3DCF7492AD7 /* TerminalReconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalReconnectTests.swift; sourceTree = "<group>"; };
 		CAA172C22AAE74D2E6E00975 /* RemoteLimits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLimits.swift; sourceTree = "<group>"; };
 		CACA4D506127E0997E071460 /* UsageLimitsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageLimitsBar.swift; sourceTree = "<group>"; };
 		CD3241ADE6D78A7C9BB02EC3 /* PromoteSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromoteSessionSheet.swift; sourceTree = "<group>"; };
@@ -568,6 +570,7 @@
 				0C976B2DC40D400F315259C2 /* TerminalAppearanceTests.swift */,
 				AAD0AE2D1A40744617114C38 /* TerminalClipboardTests.swift */,
 				A96BCB7E12B43FC54FCD91FC /* TerminalOutputCoalescerTests.swift */,
+				CA8B20C587DEA3DCF7492AD7 /* TerminalReconnectTests.swift */,
 				45650CE5B948BA331E385B8B /* TerminalResizeDebouncerTests.swift */,
 				EB3E3B07720B67742A9A99D8 /* TextSizeShortcutsTests.swift */,
 				E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */,
@@ -994,6 +997,7 @@
 				B065DED24584AB689477A1B6 /* TerminalAppearanceTests.swift in Sources */,
 				CB1C224747927CB288259D96 /* TerminalClipboardTests.swift in Sources */,
 				CE4FB9B633322B8B1FC642DB /* TerminalOutputCoalescerTests.swift in Sources */,
+				1A857ECC035AA702F05AE617 /* TerminalReconnectTests.swift in Sources */,
 				F3FBF7D8557E8B4852C6EF47 /* TerminalResizeDebouncerTests.swift in Sources */,
 				011E0983CD76CF63F6989F28 /* TextSizeShortcutsTests.swift in Sources */,
 				7C3A539C3130EFED602DDF5E /* VisiblePresenceTests.swift in Sources */,
