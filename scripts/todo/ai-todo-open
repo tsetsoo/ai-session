@@ -59,12 +59,14 @@ case "$cwd" in
 esac
 
 command -v tmux >/dev/null 2>&1 || { echo "tmux not found" >&2; exit 90; }
+# `-u` forces the tmux client into UTF-8. Without it, a non-login SSH session
+# (no LANG) makes tmux replace Cyrillic and other non-ASCII with underscores.
 if [ -n "${AI_TODO_TMUX_SOCKET:-}" ]; then
   tmux_cmd() { tmux -L "$AI_TODO_TMUX_SOCKET" "$@"; }
-  tmux_exec() { exec tmux -L "$AI_TODO_TMUX_SOCKET" "$@"; }
+  tmux_exec() { exec tmux -L "$AI_TODO_TMUX_SOCKET" -u "$@"; }
 else
   tmux_cmd() { tmux "$@"; }
-  tmux_exec() { exec tmux "$@"; }
+  tmux_exec() { exec tmux -u "$@"; }
 fi
 
 attach() {
@@ -118,5 +120,14 @@ fi
 # A tmux server that is already running gives new sessions its own environment, not
 # ours, so pass the PATH resolved above explicitly: npm-installed codex (under nvm)
 # needs `node` on it. `env` instead of `new-session -e` works on every tmux version.
-tmux_cmd new-session -d -s "$name" -c "$cwd" -- env "PATH=$PATH" "$@"
+# The same server environment often has no UTF-8 locale. Pass one through so a
+# program inside the pane does not replace Cyrillic and symbols. Keep a UTF-8
+# locale the caller already has (for example bg_BG.UTF-8).
+session_lang=${LANG:-en_US.UTF-8}
+session_ctype=${LC_CTYPE:-$session_lang}
+case "${LC_ALL:-}$session_ctype$session_lang" in
+  *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;;
+  *) session_lang=en_US.UTF-8; session_ctype=en_US.UTF-8 ;;
+esac
+tmux_cmd new-session -d -s "$name" -c "$cwd" -- env "PATH=$PATH" "LANG=$session_lang" "LC_CTYPE=$session_ctype" "LC_ALL=$session_lang" "$@"
 attach "$mode"

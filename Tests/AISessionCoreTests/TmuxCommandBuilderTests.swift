@@ -17,8 +17,19 @@ final class TmuxCommandBuilderTests: XCTestCase {
 
     func testAttach() {
         let cmd = TmuxCommandBuilder.attach(tmuxName: "ai/claude/app")
-        XCTAssertTrue(cmd.contains("tmux attach -t 'ai/claude/app'"))
+        // `-u` is before the subcommand: `tmux attach -u` is not the client flag.
+        XCTAssertTrue(cmd.contains("tmux -u attach -t 'ai/claude/app'"))
         XCTAssertTrue(cmd.hasPrefix("export PATH="))
+    }
+
+    /// tmux replaces Cyrillic and other non-ASCII with `_` unless the client
+    /// locale contains UTF-8 (or `-u` is set). Non-login SSH execs have neither
+    /// until this prefix runs. An existing UTF-8 locale is left alone.
+    func testWrapForcesUtf8LocaleWhenMissing() {
+        let cmd = TmuxCommandBuilder.listSessions()
+        XCTAssertTrue(cmd.contains("en_US.UTF-8"))
+        XCTAssertTrue(cmd.contains("LC_ALL"))
+        XCTAssertTrue(cmd.contains("*[Uu][Tt][Ff]-8*"))
     }
 
     func testKillSession() {

@@ -426,7 +426,12 @@ final class PTYChannelHandler: ChannelDuplexHandler {
             terminalRowHeight: max(initialRows, 1),
             terminalPixelWidth: 0,
             terminalPixelHeight: 0,
-            terminalModes: SSHTerminalModes([:])
+            // IUTF8 (RFC 4254 opcode 42). This NIOSSH version has no named
+            // constant. The remote tty then treats input as UTF-8, so erase
+            // deletes one character instead of one byte.
+            terminalModes: SSHTerminalModes([
+                SSHTerminalModes.Opcode(rawValue: 42): 1,
+            ])
         )
         context.triggerUserOutboundEvent(pty, promise: nil)
 

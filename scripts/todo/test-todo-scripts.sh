@@ -101,6 +101,12 @@ for args in "ai/claude/other x $SID" "ai/claude/todo-Bad ~ $SID" "$NAME ~ not-a-
 done
 pass "ai-todo-open rejects bad tmux names, session ids and argument counts"
 
+# tmux without CLIENT_UTF8 rewrites Cyrillic and symbols as underscores.
+grep -q 'exec tmux -u ' "$OPEN" || fail "ai-todo-open must exec tmux -u (UTF-8 client)"
+grep -q ' -u "$@"' "$OPEN" || fail "ai-todo-open must pass -u for a private tmux socket too"
+grep -q 'LANG=$session_lang' "$OPEN" || fail "ai-todo-open must give new sessions a UTF-8 locale"
+pass "ai-todo-open attaches with UTF-8 so Cyrillic and symbols are not replaced"
+
 out="$(AI_TODO_OPEN_DETACH=1 "$OPEN" "$NAME" '~/programming' "$SID")"
 [[ "$out" == created ]] || fail "first open printed '$out', expected created"
 tmux -L "$SOCK" has-session -t "=$NAME" || fail "tmux session $NAME was not created"
