@@ -4,6 +4,7 @@
 #   ~/.ai-remote/bin/ai-todo-open    started by the iPhone / Mac app over SSH
 #   ~/.ai-remote/bin/ai-todo-hook    Claude Code hook reporting busy/waiting/idle
 #   ~/.ai-remote/bin/ai-todo-sessions  list / delete / prune / stats of Claude + Codex conversations
+#   ~/.ai-remote/bin/ai-todo-limits    5h / weekly / monthly usage for the chat's tool on this computer
 #   ~/.ai-remote/bin/ai-todo-codex-notify  Codex `notify` program reporting idle
 #   ~/.ai-remote/bin/ai-todo-memory  memory extraction, stats push and digests (+ ai_todo_redact.py)
 #   ~/.ai-remote/memory-state/       ai-todo-memory's offsets, caches and log (mode 700)
@@ -410,6 +411,7 @@ do_install() {
   run install -m 755 "${SRC_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-open"
   run install -m 755 "${SRC_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-hook"
   run install -m 755 "${SRC_DIR}/ai-todo-sessions" "${BIN_DIR}/ai-todo-sessions"
+  run install -m 755 "${SRC_DIR}/ai-todo-limits" "${BIN_DIR}/ai-todo-limits"
   run install -m 755 "${SRC_DIR}/ai-todo-codex-notify" "${BIN_DIR}/ai-todo-codex-notify"
   run install -m 755 "${SRC_DIR}/ai-todo-memory" "${BIN_DIR}/ai-todo-memory"
   run install -m 644 "${SRC_DIR}/ai_todo_redact.py" "${BIN_DIR}/ai_todo_redact.py"
@@ -457,8 +459,8 @@ do_uninstall() {
   merge_codex_notify uninstall
 
   run rm -f "${BIN_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-sessions" \
-    "${BIN_DIR}/ai-todo-codex-notify" "${BIN_DIR}/ai-todo-memory" "${BIN_DIR}/ai_todo_redact.py" \
-    "$TMUX_SNIPPET"
+    "${BIN_DIR}/ai-todo-limits" "${BIN_DIR}/ai-todo-codex-notify" "${BIN_DIR}/ai-todo-memory" \
+    "${BIN_DIR}/ai_todo_redact.py" "$TMUX_SNIPPET"
   say "scripts: removed"
   # Per-session state kept by the hooks.
   run rm -rf "${AI_DIR}/hook-state"
