@@ -1657,6 +1657,7 @@ if ! tmux -L "${SOCK}-conf" source-file "${SCRIPT_DIR}/tmux.conf" 2>"${SANDBOX}/
 fi
 [[ "$(tmux -L "${SOCK}-conf" show -sv escape-time)" == 0 ]] || fail "escape-time not applied"
 [[ "$(tmux -L "${SOCK}-conf" show -gv mouse)" == on ]] || fail "mouse not applied"
+tmux -L "${SOCK}-conf" show -g terminal-features | grep -q clipboard || fail "clipboard terminal feature not applied"
 tmux -L "${SOCK}-conf" kill-server
 pass "tmux.conf loads cleanly on tmux $(tmux -V | cut -d' ' -f2)"
 

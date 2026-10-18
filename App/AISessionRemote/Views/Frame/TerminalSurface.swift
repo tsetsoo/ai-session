@@ -8,6 +8,15 @@ import AppKit
 #endif
 
 #if os(macOS)
+/// Cmd+C reaches this view when it is first responder. A drag under tmux mouse tracking is
+/// not a local selection, and SwiftTerm's `copy` still clears the pasteboard in that case.
+private final class LocalClipboardTerminalView: TerminalView {
+    override func copy(_ sender: Any) {
+        guard selectionActive else { return }
+        super.copy(sender)
+    }
+}
+
 /// AppKit host for SwiftTerm's macOS `TerminalView`. Copy/Paste/Select All come from the
 /// standard Edit menu: they target the first responder, which is this view once focused.
 private struct TerminalContainerView: NSViewRepresentable {
@@ -16,7 +25,7 @@ private struct TerminalContainerView: NSViewRepresentable {
     let fontSize: Double
 
     func makeNSView(context: Context) -> TerminalView {
-        let view = TerminalView(frame: .zero)
+        let view = LocalClipboardTerminalView(frame: .zero)
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         view.optionAsMetaKey = true
         coordinator.attach(to: view)
