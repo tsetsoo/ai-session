@@ -21,11 +21,11 @@ private final class ClosingTransport: TerminalTransport {
 
 @MainActor
 final class TerminalReconnectTests: XCTestCase {
-    func testCoveredGridDoesNotTakeTheClick() {
-        XCTAssertFalse(TerminalPointerPolicy.acceptsPointer(isFrontmost: true, isDisconnected: true))
-        XCTAssertFalse(TerminalPointerPolicy.acceptsPointer(isFrontmost: false, isDisconnected: false))
-        XCTAssertFalse(TerminalPointerPolicy.acceptsPointer(isFrontmost: false, isDisconnected: true))
-        XCTAssertTrue(TerminalPointerPolicy.acceptsPointer(isFrontmost: true, isDisconnected: false))
+    func testHitTargetPutsTheCardInFrontOfTheGrid() {
+        XCTAssertEqual(TerminalHitTarget.resolve(isFrontmost: true, isDisconnected: true), .cover)
+        XCTAssertEqual(TerminalHitTarget.resolve(isFrontmost: true, isDisconnected: false), .grid)
+        XCTAssertEqual(TerminalHitTarget.resolve(isFrontmost: false, isDisconnected: false), .passThrough)
+        XCTAssertEqual(TerminalHitTarget.resolve(isFrontmost: false, isDisconnected: true), .passThrough)
     }
 
     func testReconnectIgnoresThePaneThatAlreadyExited() async {
@@ -63,16 +63,56 @@ final class TerminalReconnectTests: XCTestCase {
         XCTAssertEqual(ended, [1])
     }
 
+    /// The close is queued and has not run. `reconnect()` bumps the generation before its
+    /// first await, so that close must not fail the session it then opens.
+    func testCloseQueuedBeforeReconnectDoesNotFailTheNewSession() async {
+        let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 200, height: 100))
+        var made: [ClosingTransport] = []
+        let coordinator = TerminalCoordinator(
+            hostConfig: HostConnectionConfig(host: "mac", port: 22, username: "me", privateKeyPEM: Data()),
+            mode: .plainShell
+        ) { _, _ in
+            let transport = ClosingTransport()
+            made.append(transport)
+            return transport
+        }
+        coordinator.attach(to: view)
+        var ended: [Int?] = []
+        coordinator.onDisconnected = { ended.append($0) }
+
+        await coordinator.connect()
+        made[0].closePane(exitStatus: 1)
+        XCTAssertEqual(ended, [])
+
+        await coordinator.reconnect()
+        await Self.nextMainTurn()
+        XCTAssertEqual(made.count, 2)
+        XCTAssertEqual(coordinator.state, .connected)
+        XCTAssertEqual(ended, [])
+    }
+
     #if os(macOS)
-    func testClickGateMissesWhenTheCardIsShowing() {
-        let terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
+    func testReconnectCardIsTheViewInFrontOfTheGrid() {
+        let terminal = TerminalView(frame: .zero)
         let gate = TerminalClickGate(terminalView: terminal)
-        gate.frame = NSRect(x: 0, y: 0, width: 120, height: 80)
-        gate.layoutSubtreeIfNeeded()
-        gate.acceptsPointer = true
-        XCTAssertNotNil(gate.hitTest(NSPoint(x: 10, y: 10)))
-        gate.acceptsPointer = false
-        XCTAssertNil(gate.hitTest(NSPoint(x: 10, y: 10)))
+        let parent = NSView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
+        gate.frame = parent.bounds
+        parent.addSubview(gate)
+
+        gate.apply(.grid)
+        parent.layoutSubtreeIfNeeded()
+        let gridHit = gate.hitTest(NSPoint(x: 40, y: 40))
+        XCTAssertTrue(gridHit === terminal || gridHit?.isDescendant(of: terminal) == true)
+
+        let card = NSView()
+        gate.apply(.cover, cover: card)
+        parent.layoutSubtreeIfNeeded()
+        XCTAssertIdentical(gate.subviews.last, card)
+        let cardHit = gate.hitTest(NSPoint(x: 40, y: 40))
+        XCTAssertTrue(cardHit === card || cardHit?.isDescendant(of: card) == true)
+
+        gate.apply(.passThrough)
+        XCTAssertNil(gate.hitTest(NSPoint(x: 40, y: 40)))
     }
     #endif
 

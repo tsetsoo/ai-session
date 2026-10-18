@@ -166,6 +166,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
         send(bytes)
     }
 
+    /// Runs `disconnect()` on this turn, before the first await, so a close already queued
+    /// for the pane that just exited cannot fail the session this opens.
+    @MainActor
     func reconnect() async {
         disconnect()
         await connect()
