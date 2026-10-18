@@ -5,6 +5,13 @@ public enum TmuxCommandBuilder {
     private static let pathExport =
         #"export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH""#
 
+    /// A non-login SSH exec has no `LANG`. tmux then attaches with UTF-8 off and
+    /// replaces Cyrillic, emoji, and other non-ASCII with `_` (`tty_check_codeset`).
+    /// Leave a locale alone when it is already UTF-8; otherwise force one.
+    /// `LC_ALL` has to be set too: it overrides `LANG` when the server exported `C`.
+    private static let utf8Locale =
+        #"case "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;; *) export LANG=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 LC_ALL=en_US.UTF-8 ;; esac"#
+
     public static func ensureTmuxInstalledCheck() -> String {
         wrap("command -v tmux")
     }
@@ -14,7 +21,9 @@ public enum TmuxCommandBuilder {
     }
 
     public static func attach(tmuxName: String) -> String {
-        wrap("tmux attach -t \(shellQuote(tmuxName))")
+        // `-u` is a tmux client flag (before the command). It sets CLIENT_UTF8 even
+        // when the locale check above did not, so the pane is not rewritten as `_`.
+        wrap("tmux -u attach -t \(shellQuote(tmuxName))")
     }
 
     public static func killSession(tmuxName: String) -> String {
@@ -135,7 +144,7 @@ public enum TmuxCommandBuilder {
     }
 
     static func wrap(_ command: String) -> String {
-        "\(pathExport); \(command)"
+        "\(pathExport); \(utf8Locale); \(command)"
     }
 
     /// Like `shellQuote`, but a leading `~` or `~/` becomes `"$HOME"` so it expands on the host
