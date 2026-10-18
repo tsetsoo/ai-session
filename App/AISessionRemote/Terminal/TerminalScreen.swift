@@ -54,6 +54,11 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
     private let makeTransport: (HostConnectionConfig, TerminalMode) -> any TerminalTransport
 
+    /// Bumped on every connect and disconnect. A pane that exits (Cursor does this) delivers
+    /// its close on the next main turn. Reconnect must ignore that late close, or it marks
+    /// the new session failed and the Disconnected card never leaves.
+    private var sessionGeneration = 0
+
     init(
         hostConfig: HostConnectionConfig,
         mode: TerminalMode,
@@ -87,6 +92,8 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// SwiftUI `.task` re-run) are a no-op while a session already exists.
     func connect() async {
         guard session == nil, let terminalView else { return }
+        sessionGeneration += 1
+        let generation = sessionGeneration
         state = .connecting
         let terminal = terminalView.getTerminal()
         let cols = terminal.cols > 0 ? terminal.cols : 80
@@ -100,14 +107,17 @@ final class TerminalCoordinator: TerminalViewDelegate {
         }
         session.onDisconnect = { [weak self] exitStatus in
             DispatchQueue.main.async {
-                self?.state = .failed
-                self?.onDisconnected?(exitStatus)
+                guard let self, self.sessionGeneration == generation else { return }
+                self.session = nil
+                self.state = .failed
+                self.onDisconnected?(exitStatus)
             }
         }
         self.session = session
 
         do {
             try await session.connect(cols: cols, rows: rows)
+            guard sessionGeneration == generation else { return }
             let liveTerminal = terminalView.getTerminal()
             // The PTY was already requested at cols x rows; only tell the host if the view
             // actually changed size while connecting. An unnecessary window-change makes tmux
@@ -121,10 +131,12 @@ final class TerminalCoordinator: TerminalViewDelegate {
             }
             state = .connected
         } catch {
+            guard sessionGeneration == generation else { return }
             self.session = nil
             state = .failed
             DispatchQueue.main.async { [weak self] in
-                self?.onError?(error)
+                guard let self, self.sessionGeneration == generation else { return }
+                self.onError?(error)
             }
         }
     }
@@ -134,6 +146,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
         // Must run before tearing down `session`: without it, a resize debounced for this
         // session could still fire later (after a `reconnect()`) and land — at a now-stale
         // size — on whatever new session replaces it.
+        // Also drops this session's generation so its close, which arrives on a later turn,
+        // cannot fail the session `reconnect()` is about to open.
+        sessionGeneration += 1
         resizeDebouncer.cancelPending()
         session?.disconnect()
         session = nil
@@ -151,6 +166,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
         send(bytes)
     }
 
+    /// Runs `disconnect()` on this turn, before the first await, so a close already queued
+    /// for the pane that just exited cannot fail the session this opens.
+    @MainActor
     func reconnect() async {
         disconnect()
         await connect()
