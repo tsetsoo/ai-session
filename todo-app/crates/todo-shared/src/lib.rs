@@ -138,7 +138,9 @@ pub struct Todo {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTodoRequest {
-    pub section: Section,
+    /// Omitted means the new todo uses its project's section.
+    #[serde(default)]
+    pub section: Option<Section>,
     pub title: String,
     #[serde(default)]
     pub importance: Option<Importance>,
@@ -161,7 +163,7 @@ pub struct UpdateTodoRequest {
     /// `null` clears the due date.
     #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
     pub due_date: Option<Option<String>>,
-    /// `null` removes the todo from its project.
+    /// A project. JSON `null` is rejected: a todo keeps a project.
     #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<Option<String>>,
 }

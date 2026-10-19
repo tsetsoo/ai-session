@@ -115,14 +115,14 @@ fn base_description() -> Value {
                 "request_body": {
                     "content_type": "application/json",
                     "fields": {
-                        "section": {"type": "string", "required": true, "enum": ["Sp", "I", "Si", "P"]},
+                        "section": {"type": "string", "required": false, "enum": ["Sp", "I", "Si", "P"], "description": "Must match the project. Omitted uses the project's section"},
                         "title": {"type": "string", "required": true, "description": "The todo title (non-empty)"},
                         "importance": {"type": "string", "required": false, "enum": ["low", "medium", "high", "critical"], "default": "medium"},
                         "due_date": {"type": "string", "required": false, "format": "YYYY-MM-DD", "description": "Optional due date"},
-                        "project_id": {"type": "string", "required": false, "description": "Optional project; 404 if it doesn't exist"}
+                        "project_id": {"type": "string", "required": true, "description": "The project this todo belongs to; 404 if it doesn't exist"}
                     }
                 },
-                "example_request": {"section": "P", "title": "Go for a run", "importance": "high", "due_date": "2026-02-21"},
+                "example_request": {"title": "Go for a run", "project_id": "<uuid>", "importance": "high", "due_date": "2026-02-21"},
                 "example_response": {
                     "id": "550e8400-e29b-41d4-a716-446655440000",
                     "section": "P",
@@ -150,7 +150,7 @@ fn base_description() -> Value {
                         "section": {"type": "string", "required": false, "enum": ["Sp", "I", "Si", "P"]},
                         "importance": {"type": "string", "required": false, "enum": ["low", "medium", "high", "critical"]},
                         "due_date": {"type": "string or null", "required": false, "format": "YYYY-MM-DD", "description": "Set to null to clear the due date"},
-                        "project_id": {"type": "string or null", "required": false, "description": "Set to null to remove the todo from its project; 404 for an unknown project"}
+                        "project_id": {"type": "string", "required": false, "description": "Move the todo to this project and its section. JSON null is rejected. 404 for an unknown project"}
                     }
                 },
                 "example_request": {"title": "Go for a long run", "importance": "critical"}

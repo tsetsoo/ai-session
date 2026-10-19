@@ -950,28 +950,31 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         assert_eq!(body["error"], "Project not found");
 
-        let (status, with) = post(&pool, "/api/todos", json!({"section": "P", "title": "with", "project_id": project})).await;
+        let other = create_ok(&pool, "P", "~/b").await;
+        let (status, with) = post(&pool, "/api/todos", json!({"section": "Si", "title": "with", "project_id": project})).await;
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(with["project_id"], json!(project));
-        let (_, without) = post(&pool, "/api/todos", json!({"section": "Si", "title": "without"})).await;
-        assert!(without.get("project_id").is_none(), "omitted when null: {without}");
+        assert_eq!((&with["project_id"], &with["section"]), (&json!(project), &json!("Si")));
+        let (status, elsewhere) = post(&pool, "/api/todos", json!({"title": "elsewhere", "project_id": other})).await;
+        assert_eq!(status, StatusCode::CREATED, "{elsewhere}");
+        assert_eq!(elsewhere["section"], "P");
 
         let (status, body) = get(&pool, &format!("/api/todos?project_id={project}")).await;
         assert_eq!(status, StatusCode::OK);
         let ids: Vec<&str> = body.as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
         assert_eq!(ids, vec![with["id"].as_str().unwrap()]);
-        let (_, body) = get(&pool, &format!("/api/todos?section=Si&project_id={project}")).await;
+        let (_, body) = get(&pool, &format!("/api/todos?section=P&project_id={project}")).await;
         assert_eq!(body, json!([]));
         let (_, all) = get(&pool, "/api/todos").await;
         assert_eq!(all.as_array().unwrap().len(), 2);
 
-        let wid = without["id"].as_str().unwrap();
+        let wid = elsewhere["id"].as_str().unwrap();
         let (status, body) = patch(&pool, &format!("/api/todos/{wid}"), json!({"project_id": project})).await;
-        assert_eq!((status, &body["project_id"]), (StatusCode::OK, &json!(project)));
+        assert_eq!((status, &body["project_id"], &body["section"]), (StatusCode::OK, &json!(project), &json!("Si")));
         let (_, body) = patch(&pool, &format!("/api/todos/{wid}"), json!({"title": "renamed"})).await;
         assert_eq!(body["project_id"], json!(project), "absent leaves it");
-        let (_, body) = patch(&pool, &format!("/api/todos/{wid}"), json!({"project_id": null})).await;
-        assert!(body.get("project_id").is_none(), "null clears: {body}");
+        let (status, body) = patch(&pool, &format!("/api/todos/{wid}"), json!({"project_id": null})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "project_id is required");
         assert_eq!(patch(&pool, &format!("/api/todos/{wid}"), json!({"project_id": "nope"})).await.0, StatusCode::NOT_FOUND);
         assert_eq!(patch(&pool, "/api/todos/missing", json!({"project_id": null})).await.0, StatusCode::NOT_FOUND);
 
