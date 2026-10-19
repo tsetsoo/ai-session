@@ -1475,24 +1475,18 @@ def digest_project(ctx, writer, project, record):
         return record
     groups = select_digest(memories)
     new = {"targets": [], "skipped": []}
-    claude = writer.claude(folder, render_digest(project, groups, CLAUDE_DIGEST_BYTES))
-    if claude:
-        new["targets"].append(claude)
+    # Claude reads AGENTS.md once project instructions say so. A CLAUDE.local.md we wrote
+    # would hide that file, so only a marker-owned one is removed.
+    writer.remove_claude(folder)
     old_codex = {t["path"]: t for t in (record or {}).get("targets", []) if t.get("kind") == "codex"}
     body_limit = CODEX_BLOCK_BYTES - len((BLOCK_BEGIN + "\n" + BLOCK_END + "\n").encode("utf-8"))
     body = render_digest(project, groups, body_limit)
-    directories = []
-    for cwd in codex_cwds(folder):
-        target = codex_target(cwd, folder)
-        if target and target not in directories:
-            directories.append(target)
-    for directory in directories:
-        path = os.path.join(directory, "AGENTS.md")
-        created = (old_codex.get(path) or {}).get("created_by_us", False)
-        if body is None:
-            writer.remove_codex(path, created)
-            continue
-        skipped, written = writer.codex(directory, body, created)
+    path = os.path.join(folder, "AGENTS.md")
+    created = (old_codex.get(path) or {}).get("created_by_us", False)
+    if body is None:
+        writer.remove_codex(path, created)
+    else:
+        skipped, written = writer.codex(folder, body, created)
         if skipped:
             new["skipped"].append(skipped)
         if written:

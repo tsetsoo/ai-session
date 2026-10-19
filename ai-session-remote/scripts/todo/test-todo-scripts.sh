@@ -1466,6 +1466,7 @@ git_q -C "$D_TRACKED" commit -m agents
 git_q -C "$D_OWN" init
 git_q -C "$D_OWN" commit --allow-empty -m init
 printf 'my own notes\n' >"${D_OWN}/CLAUDE.local.md"
+printf '%s\nold digest\n' '<!-- Managed by ai-todo-memory (todo-hub). Rewritten automatically — edit, pin or archive memories in the todo app. -->' >"${M_APP}/CLAUDE.local.md"
 D_USER_AGENTS="$(printf '# Agents\nUser text above.\n\n%s\nstale digest\n%s\n\nUser text below.\n' "$D_BEGIN" "$D_END")"
 printf '%s\n' "$D_USER_AGENTS" >"${M_APP}/AGENTS.md"
 for spec in "x2:${M_APP}/.claude/worktrees/w" "x3:${D_MULTI}/repo-a" "x4:${D_TRACKED}"; do
@@ -1506,9 +1507,8 @@ s['memories'] = ms"
 write_conf "AI_TODO_MEMORY_DIGEST='on'"
 
 dmem digest >/dev/null || fail "digest failed"
-diff "${FIXTURES}/digest-expected.md" "${M_APP}/CLAUDE.local.md" >"${SANDBOX}/digest.diff" || fail "digest differs from fixtures/digest-expected.md: $(cat "${SANDBOX}/digest.diff")"
-[[ "$(excluded "$M_APP" /CLAUDE.local.md)" == 1 ]] || fail "CLAUDE.local.md not in .git/info/exclude exactly once"
-pass "digest_writes_claude_local_md: group order, pinned first, dates, the 60/14-day windows, 5 done/files_changed, the 40-item cap; git-excluded once"
+[[ ! -e "${M_APP}/CLAUDE.local.md" ]] || fail "a marker-owned CLAUDE.local.md was kept"
+pass "digest_removes_our_claude_local_md: the marker file is deleted and no new one is written"
 
 [[ "$(cat "${M_APP}/AGENTS.md")" == "$D_USER_AGENTS" ]] || fail "the user's untracked, not ignored AGENTS.md was changed"
 dmem status --json | python3 -c '
@@ -1525,11 +1525,13 @@ text, digest, begin, end = open(sys.argv[1]).read(), open(sys.argv[2]).read(), s
 assert text == "# Agents\nUser text above.\n\n" + begin + "\n" + digest + end + "\n\nUser text below.\n", text
 PY
 [[ ! -e "${M_APP}/.claude/worktrees/w/AGENTS.md" ]] || fail "a block was written into a linked worktree"
-[[ ! -e "${D_MULTI}/repo-b/AGENTS.md" && ! -e "${D_OWN}/AGENTS.md" ]] || fail "AGENTS.md written without a Codex conversation there"
-[[ -f "${D_MULTI}/repo-a/AGENTS.md" && "$(excluded "${D_MULTI}/repo-a" /AGENTS.md)" == 1 ]] || fail "created AGENTS.md missing or not git-excluded"
-[[ "$(head -n 1 "${D_MULTI}/repo-a/AGENTS.md")" == "$D_BEGIN" && "$(tail -n 1 "${D_MULTI}/repo-a/AGENTS.md")" == "$D_END" ]] || fail "created AGENTS.md is not just our block"
-[[ $(wc -c <"${D_MULTI}/repo-a/AGENTS.md") -le 6144 && $(wc -c <"${D_MULTI}/repo-a/AGENTS.md") -gt 5000 ]] || fail "codex block not capped near 6 KB: $(wc -c <"${D_MULTI}/repo-a/AGENTS.md")"
-[[ $(wc -c <"${D_MULTI}/CLAUDE.local.md") -le 8192 && $(wc -c <"${D_MULTI}/CLAUDE.local.md") -gt 7000 ]] || fail "claude digest not capped near 8 KB: $(wc -c <"${D_MULTI}/CLAUDE.local.md")"
+[[ -f "${D_OWN}/AGENTS.md" && "$(head -n 1 "${D_OWN}/AGENTS.md")" == "$D_BEGIN" ]] || fail "a project with only a Claude session did not get an AGENTS.md block"
+[[ "$(cat "${D_OWN}/CLAUDE.local.md")" == "my own notes" ]] || fail "the user's own CLAUDE.local.md was changed"
+[[ ! -e "${D_OWN}/.claude/rules/todo-hub-memories.md" ]] || fail "a Claude rules digest was written"
+[[ ! -e "${D_MULTI}/repo-a/AGENTS.md" && ! -e "${D_MULTI}/repo-b/AGENTS.md" ]] || fail "AGENTS.md written outside the project folder"
+[[ -f "${D_MULTI}/AGENTS.md" && "$(head -n 1 "${D_MULTI}/AGENTS.md")" == "$D_BEGIN" && "$(tail -n 1 "${D_MULTI}/AGENTS.md")" == "$D_END" ]] || fail "project AGENTS.md is not just our block"
+[[ $(wc -c <"${D_MULTI}/AGENTS.md") -le 6144 && $(wc -c <"${D_MULTI}/AGENTS.md") -gt 5000 ]] || fail "AGENTS.md block not capped near 6 KB: $(wc -c <"${D_MULTI}/AGENTS.md")"
+[[ ! -e "${D_MULTI}/CLAUDE.local.md" && ! -e "${M_APP}/CLAUDE.local.md" ]] || fail "CLAUDE.local.md was created"
 [[ "$(git -C "$D_TRACKED" status --porcelain)" == "" && "$(cat "${D_TRACKED}/AGENTS.md")" == $'# Tracked agents\nKeep this file in git.' ]] || fail "tracked AGENTS.md was touched"
 dmem status --json | python3 -c '
 import json, sys
@@ -1538,7 +1540,7 @@ assert {"path": sys.argv[1], "reason": "tracked", "project_id": "proj-tracked"} 
 ' "${D_TRACKED}/AGENTS.md" || fail "status does not report the tracked AGENTS.md"
 dmem status | grep -q "skipped: .*tracked/AGENTS.md (tracked)" || fail "status text does not report the tracked AGENTS.md"
 dmem status | grep -q "^nightly secrets: *TODO_API_TOKEN only" || fail "status does not explain the nightly run's secret coverage"
-pass "codex_block_in_place: the block is replaced with outside bytes intact; created where Codex runs (git-excluded, <= 6 KB); none without Codex sessions or in worktrees; a tracked AGENTS.md is skipped and reported"
+pass "agents_md_for_every_project: the block is replaced with outside bytes intact; every digest-enabled project gets AGENTS.md (git-excluded when created, <= 6 KB), including one with only a Claude session; a tracked AGENTS.md is skipped and reported"
 
 D_LATE="${HOME}/work/late"
 X5=019f0000-0000-7000-8000-0000000000e5
@@ -1548,25 +1550,24 @@ hub_edit "s['projects'].append(dict(s['projects'][0], id='proj-late', name='late
 s['memories'].append(dict(s['memories'][0], id='late-1', project_id='proj-late', kind='decision', pinned=False,
                           created_at='2026-10-15T09:00:00Z', text='The late project became a git repository later.'))"
 dmem digest >/dev/null || fail "digest in a plain folder failed"
-[[ -f "${D_LATE}/CLAUDE.local.md" && "$(head -n 1 "${D_LATE}/AGENTS.md")" == "$D_BEGIN" ]] || fail "digests not written into the plain folder"
+[[ -f "${D_LATE}/AGENTS.md" && "$(head -n 1 "${D_LATE}/AGENTS.md")" == "$D_BEGIN" && ! -e "${D_LATE}/CLAUDE.local.md" ]] || fail "AGENTS.md not written into the plain folder"
 git_q -C "$D_LATE" init
 dmem digest >/dev/null || fail "digest after git init failed"
-[[ "$(excluded "$D_LATE" /CLAUDE.local.md)" == 1 && "$(excluded "$D_LATE" /AGENTS.md)" == 1 ]] || fail "files we created were not git-excluded after a later git init"
+[[ "$(excluded "$D_LATE" /AGENTS.md)" == 1 ]] || fail "AGENTS.md we created was not git-excluded after a later git init"
 [[ -z "$(git -C "$D_LATE" status --porcelain)" ]] || fail "our files show up in git status: $(git -C "$D_LATE" status --porcelain)"
 pass "files we created are git-excluded on every write, so a folder that becomes a repo later never shows them"
 
 [[ "$(cat "${D_OWN}/CLAUDE.local.md")" == "my own notes" ]] || fail "the user's own CLAUDE.local.md was changed"
-[[ "$(head -n 1 "${D_OWN}/.claude/rules/todo-hub-memories.md")" == "<!-- Managed by ai-todo-memory"* ]] || fail "rules fallback not written"
-[[ "$(excluded "$D_OWN" /.claude/rules/todo-hub-memories.md)" == 1 ]] || fail "rules fallback not git-excluded"
-pass "digest_respects_users_own_claude_local_md: falls back to .claude/rules/todo-hub-memories.md"
+[[ ! -e "${D_OWN}/.claude/rules/todo-hub-memories.md" ]] || fail "a rules digest was written for a file the user owns"
+pass "digest_leaves_the_users_claude_local_md: a file we did not write stays, and the notes go to AGENTS.md"
 
-D_FILES=("${M_APP}/CLAUDE.local.md" "${M_APP}/AGENTS.md" "${D_MULTI}/CLAUDE.local.md" "${D_MULTI}/repo-a/AGENTS.md" "${D_OWN}/.claude/rules/todo-hub-memories.md")
+D_FILES=("${M_APP}/AGENTS.md" "${D_MULTI}/AGENTS.md" "${D_OWN}/AGENTS.md" "${D_LATE}/AGENTS.md")
 before=""; for f in "${D_FILES[@]}"; do before="$before $(mtime "$f")"; done
 sleep 1
 dmem digest >/dev/null || fail "second digest failed"
 after=""; for f in "${D_FILES[@]}"; do after="$after $(mtime "$f")"; done
 [[ "$before" == "$after" ]] || fail "an unchanged digest touched files: $before vs $after"
-[[ "$(excluded "$M_APP" /CLAUDE.local.md)" == 1 && "$(excluded "${D_MULTI}/repo-a" /AGENTS.md)" == 1 ]] || fail "exclude lines duplicated"
+[[ "$(excluded "$M_APP" /AGENTS.md)" == 0 && "$(excluded "${D_OWN}" /AGENTS.md)" == 1 ]] || fail "exclude lines duplicated"
 pass "digest_is_idempotent: a second run leaves every mtime and exclude line alone"
 
 cp "${M_APP}/AGENTS.md" "${SANDBOX}/agents.good"
@@ -1578,43 +1579,47 @@ grep -q "unbalanced or duplicated markers" "${M_STATE}/memory.log" || fail "mark
 cp "${SANDBOX}/agents.good" "${M_APP}/AGENTS.md"
 pass "unbalanced markers: AGENTS.md left untouched, error logged"
 
-rm "${M_APP}/CLAUDE.local.md"
+rm -f "${D_OWN}/AGENTS.md"
 dmem digest --dry-run >"${SANDBOX}/digest-dry.out" || fail "digest --dry-run failed"
-[[ ! -e "${M_APP}/CLAUDE.local.md" ]] && grep -q "would write ${M_APP}/CLAUDE.local.md" "${SANDBOX}/digest-dry.out" || fail "digest --dry-run wrote or did not report"
+[[ ! -e "${D_OWN}/AGENTS.md" && ! -e "${M_APP}/CLAUDE.local.md" ]] && grep -q "would write ${D_OWN}/AGENTS.md" "${SANDBOX}/digest-dry.out" || fail "digest --dry-run wrote or did not report"
 pass "digest --dry-run prints what it would write and writes nothing"
 
 hub_edit "s['projects'][0]['folder'] = '~/work/app/'"
 dmem digest >/dev/null || fail "digest with a trailing slash failed"
-cmp -s "${FIXTURES}/digest-expected.md" "${M_APP}/CLAUDE.local.md" || fail "folder ~/work/app/ not written correctly"
+python3 - "${M_APP}/AGENTS.md" "${FIXTURES}/digest-expected.md" "$D_BEGIN" "$D_END" <<'PY' || fail "folder ~/work/app/ not written correctly"
+import sys
+text, digest, begin, end = open(sys.argv[1]).read(), open(sys.argv[2]).read(), sys.argv[3], sys.argv[4]
+assert text == "# Agents\nUser text above.\n\n" + begin + "\n" + digest + end + "\n\nUser text below.\n", text
+PY
 hub_edit "s['projects'][0]['folder'] = '~//work/app'"
 dmem digest >/dev/null || fail "digest with // failed"
-[[ ! -e "${HOME}/work/app/CLAUDE.local.md.tmp" && $(ls -a "$M_APP" | grep -c 'CLAUDE') -eq 1 ]] || fail "// spelling wrote a second file"
+[[ ! -e "${HOME}/work/app/AGENTS.md.tmp" && $(ls -a "$M_APP" | grep -c 'CLAUDE') -eq 0 ]] || fail "// spelling wrote a second file"
 hub_edit "s['projects'][0]['folder'] = '~/work/app'"
 pass "digest_target_accepts_trailing_slash: ~/work/app/ and ~//work/app land in the same file"
 
-cp "${M_APP}/CLAUDE.local.md" "${SANDBOX}/claude-local.before"
-before="$(mtime "${M_APP}/CLAUDE.local.md") $(mtime "${M_APP}/AGENTS.md")"
+cp "${M_APP}/AGENTS.md" "${SANDBOX}/agents.before-down"
+before="$(mtime "${M_APP}/AGENTS.md")"
 printf "TODO_HUB_URL='http://127.0.0.1:9'\nTODO_COMPUTER_ID='comp-1'\nAI_TODO_MEMORY_DIGEST='on'\n" >"$M_CONF"
 if dmem digest >/dev/null 2>&1; then fail "digest succeeded with the hub down"; fi
 write_conf "AI_TODO_MEMORY_DIGEST='on'"
-cmp -s "${SANDBOX}/claude-local.before" "${M_APP}/CLAUDE.local.md" && cmp -s "${SANDBOX}/agents.good" "${M_APP}/AGENTS.md" \
-  && [[ "$before" == "$(mtime "${M_APP}/CLAUDE.local.md") $(mtime "${M_APP}/AGENTS.md")" ]] || fail "hub down changed the digest"
+cmp -s "${SANDBOX}/agents.before-down" "${M_APP}/AGENTS.md" \
+  && [[ "$before" == "$(mtime "${M_APP}/AGENTS.md")" ]] || fail "hub down changed the digest"
 [[ -f "${M_STATE}/projects.json" ]] || fail "projects.json lost when the hub was down"
 pass "hub_down_keeps_digest: unreachable hub -> files untouched, projects.json kept, non-zero exit"
 
 hub_edit "s['projects'][0]['digest_enabled'] = False; s['projects'][1]['digest_enabled'] = False"
 dmem digest >/dev/null || fail "digest with projects switched off failed"
-[[ ! -e "${M_APP}/CLAUDE.local.md" && ! -e "${D_MULTI}/CLAUDE.local.md" && ! -e "${D_MULTI}/repo-a/AGENTS.md" ]] || fail "switched-off digests not removed"
+[[ ! -e "${M_APP}/CLAUDE.local.md" && ! -e "${D_MULTI}/AGENTS.md" ]] || fail "switched-off digests not removed"
 [[ "$(cat "${M_APP}/AGENTS.md")" == $'# Agents\nUser text above.\n\n\nUser text below.' ]] || fail "user AGENTS.md wrong after removing the block: $(cat "${M_APP}/AGENTS.md")"
-[[ "$(cat "${D_OWN}/CLAUDE.local.md")" == "my own notes" && -f "${D_OWN}/.claude/rules/todo-hub-memories.md" ]] || fail "other projects' files changed"
+[[ "$(cat "${D_OWN}/CLAUDE.local.md")" == "my own notes" ]] || fail "the user's CLAUDE.local.md changed"
 [[ "$(cat "${D_TRACKED}/AGENTS.md")" == $'# Tracked agents\nKeep this file in git.' ]] || fail "tracked AGENTS.md touched"
-pass "digest_disabled_removes_only_ours: our CLAUDE.local.md and created AGENTS.md go, the user's AGENTS.md keeps its text"
+pass "digest_disabled_removes_only_ours: a created AGENTS.md goes, the user's AGENTS.md keeps its text, their CLAUDE.local.md stays"
 
 hub_edit "s['projects'][0]['digest_enabled'] = True; s['projects'][1]['digest_enabled'] = True"
 dmem digest >/dev/null || fail "digest after re-enabling failed"
-[[ -f "${M_APP}/CLAUDE.local.md" && -f "${D_MULTI}/repo-a/AGENTS.md" ]] || fail "re-enabled digests not written"
+[[ "$(head -n 1 "${D_MULTI}/AGENTS.md")" == "$D_BEGIN" ]] || fail "re-enabled digests not written"
 mem digest --remove-all >/dev/null || fail "digest --remove-all failed"
-[[ ! -e "${M_APP}/CLAUDE.local.md" && ! -e "${D_MULTI}/CLAUDE.local.md" && ! -e "${D_MULTI}/repo-a/AGENTS.md" && ! -e "${D_OWN}/.claude/rules/todo-hub-memories.md" ]] \
+[[ ! -e "${D_MULTI}/AGENTS.md" && ! -e "${D_LATE}/AGENTS.md" && ! -e "${M_APP}/CLAUDE.local.md" ]] \
   || fail "--remove-all left digests"
 [[ "$(cat "${D_OWN}/CLAUDE.local.md")" == "my own notes" && "$(cat "${M_APP}/AGENTS.md")" == $'# Agents\nUser text above.\n\n\nUser text below.' ]] \
   || fail "--remove-all touched user files"
@@ -1689,15 +1694,15 @@ assert "/api/memories/bulk" in [p for p, _ in posts[1:]]
 PY
 [[ -f "${M_STATE}/nightly.json" ]] || fail "nightly.json not written"
 pass "nightly_pushes_stats_then_extracts_oldest_first_within_cap"
-head -n 1 "${M_APP}/CLAUDE.local.md" 2>/dev/null | grep -q "^<!-- Managed by ai-todo-memory" || fail "nightly did not rewrite the digest"
-grep -q "^- .*Transcripts are parsed with the stdlib only" "${M_APP}/CLAUDE.local.md" || fail "digest lacks the extracted memories"
+grep -q "^<!-- BEGIN ai-todo-memory" "${M_APP}/AGENTS.md" || fail "nightly did not rewrite the digest"
+grep -q "^- .*Transcripts are parsed with the stdlib only" "${M_APP}/AGENTS.md" || fail "digest lacks the extracted memories"
 pass "nightly_rewrites_digests"
 
 H1=d0d0d0d0-0000-4000-8000-0000000000a1
 python3 "$TRANSCRIPT" claude "$(cfile $H1)" "$M_APP" "$H1" --turn "hub down prompt" "answer"
 python3 "$TRANSCRIPT" claude "$(cfile $N3)" "$M_APP" "$N3" --turn "nightly prompt 3b" "answer"
 printf "TODO_HUB_URL='http://127.0.0.1:9'\nTODO_COMPUTER_ID='comp-1'\nAI_TODO_MEMORY_DIGEST='on'\n" >"$M_CONF"
-cp "${M_APP}/CLAUDE.local.md" "${SANDBOX}/claude-local.nightly"
+cp "${M_APP}/AGENTS.md" "${SANDBOX}/agents.nightly"
 offsets_before="$(offset_of claude "$H1") $(offset_of claude "$N3") $(offset_of claude "$M1")"
 base=$(calls)
 if mem nightly >/dev/null 2>&1; then fail "nightly succeeded with the hub down"; fi
@@ -1705,7 +1710,7 @@ if mem run claude "$H1" >/dev/null 2>&1; then fail "run succeeded with the hub d
 mem trigger claude "$H1" >/dev/null 2>&1 || true
 [[ "$offsets_before" == "$(offset_of claude "$H1") $(offset_of claude "$N3") $(offset_of claude "$M1")" ]] || fail "offsets changed with the hub down"
 [[ $(calls) -eq $base ]] || fail "claude was called although the already-known list could not be fetched"
-cmp -s "${SANDBOX}/claude-local.nightly" "${M_APP}/CLAUDE.local.md" || fail "the digest changed with the hub down"
+cmp -s "${SANDBOX}/agents.nightly" "${M_APP}/AGENTS.md" || fail "the digest changed with the hub down"
 write_conf "AI_TODO_MEMORY_DIGEST='on'"
 pass "hub_down_keeps_offsets: nightly, run and trigger with the hub unreachable advance nothing and keep the digest"
 
@@ -1773,6 +1778,8 @@ assert commands("Stop") == ["afplay /System/Library/Sounds/Glass.aiff", f"{bin_d
 assert commands("PostToolUse") == [f"{bin_dir}/ai-todo-hook tool"], commands("PostToolUse")
 assert commands("PreToolUse") == ["echo pre"], commands("PreToolUse")
 assert hooks["PreToolUse"][0]["matcher"] == "Bash"
+assert s["projectInstructions"] == "claude-md-and-agents-md", s.get("projectInstructions")
+assert s["model"] == "opus"
 PY
 }
 check_installed || fail "settings.json after install is wrong: $(cat "$SETTINGS")"
@@ -1894,6 +1901,7 @@ assert "UserPromptSubmit" not in hooks and "Notification" not in hooks, hooks
 assert [h["command"] for g in hooks["Stop"] for h in g["hooks"]] == ["afplay /System/Library/Sounds/Glass.aiff"], hooks
 assert hooks["PreToolUse"][0]["matcher"] == "Bash"
 assert s["model"] == "opus"
+assert "projectInstructions" not in s, s.get("projectInstructions")
 PY
 [[ ! -e "${HOME}/.ai-remote/bin/ai-todo-open" && ! -e "${HOME}/.ai-remote/bin/ai-todo-sessions" && ! -e "${HOME}/.ai-remote/bin/ai-todo-limits" && ! -e "${HOME}/.ai-remote/tmux.conf" ]] || fail "uninstall left scripts behind"
 ! grep -q 'ai-remote/tmux.conf' "${HOME}/.tmux.conf" || fail "uninstall left the tmux source line"

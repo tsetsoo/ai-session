@@ -153,6 +153,10 @@ if mode == "install":
         hooks.setdefault(event, []).append(
             {"hooks": [{"type": "command", "command": f"{bin_dir}/ai-todo-hook {status}"}]}
         )
+    # Claude skips AGENTS.md when a CLAUDE.md is present unless this is set. Other keys stay.
+    data["projectInstructions"] = "claude-md-and-agents-md"
+elif data.get("projectInstructions") == "claude-md-and-agents-md":
+    del data["projectInstructions"]
 if not hooks:
     del data["hooks"]
 
