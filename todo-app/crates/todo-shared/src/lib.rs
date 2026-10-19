@@ -376,6 +376,7 @@ pub struct LinkConversationRequest {
 pub struct TodoFromConversationRequest {
     pub section: Section,
     pub title: String,
+    pub project_id: String,
     pub computer_id: String,
     pub tool: String,
     pub session_id: String,

@@ -120,6 +120,13 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
     public var lastActivityDate: Date? { HubDates.date(from: lastActivity) }
 }
 
+/// The todo menu's project row. The section code stays the short code (`Sp`, `I`, `Si`, `P`).
+public enum TodoProjectMenuTitle {
+    public static func row(section: TodoSection, name: String) -> String {
+        "\(section.rawValue) · \(name)"
+    }
+}
+
 /// A folder the hub saw conversations in that could become a project.
 /// Accepted through `POST /api/projects` (there is no separate accept endpoint).
 public struct ProjectSuggestion: Decodable, Hashable, Identifiable, Sendable {

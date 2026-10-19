@@ -110,7 +110,7 @@ final class ConversationLinkingTests: XCTestCase {
         """
         StubURLProtocol.handler = { _ in .init(status: 201, body: response) }
         let created = try await client().createTodoFromConversation(TodoFromConversationRequest(
-            section: .sp, title: "PR 630 review", computerId: "m1", tool: "codex",
+            section: .sp, title: "PR 630 review", projectId: "p-sp", computerId: "m1", tool: "codex",
             sessionId: "019f8b4e-ff53-7201-8585-162b40a93fb3", cwd: "~/Spread/Repository"
         ))
         XCTAssertEqual(created.todo.section, .sp)
@@ -119,6 +119,7 @@ final class ConversationLinkingTests: XCTestCase {
         let sent = StubURLProtocol.requests.last
         XCTAssertEqual(sent?.url?.path, "/api/todos/from-conversation")
         XCTAssertEqual(try body(sent)["section"], "Sp")
+        XCTAssertEqual(try body(sent)["project_id"], "p-sp")
         XCTAssertEqual(try body(sent)["computer_id"], "m1")
     }
 

@@ -239,7 +239,9 @@ struct ConversationFrame: View {
     private var phaseArea: some View {
         switch loader.phase {
         case .idle:
-            if ConversationStart.needsConfirm(hasConversation: store.conversations[todo.id] != nil) {
+            if ConversationStart.needsConfirm(
+                hasConversation: ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId)
+            ) {
                 onTerminalBackground(toolStep)
             } else {
                 onTerminalBackground(idleState)
@@ -629,7 +631,7 @@ struct ConversationFrame: View {
     /// A settings sheet closed while a problem shows: try again with what was just fixed.
     private func retryAfterSettings() {
         guard case .problem = loader.phase else { return }
-        if store.conversations[todo.id] == nil {
+        if !ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId) {
             loader.reset()
             return
         }

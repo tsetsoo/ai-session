@@ -364,22 +364,32 @@ final class TodoHubStore {
             throw TodoHubError.invalidBaseURL
         }
         var conversation = try await client.openConversation(todoId: todo.id, tool: tool)
-        conversations[todo.id] = conversation
-        guard ConversationStart.startsFresh(tool), conversation.sessionId.isEmpty else { return conversation }
-        guard let config else { throw TodoHubError.invalidBaseURL }
-        let result = try await NIOSSHClient().exec(
-            config,
-            command: TmuxCommandBuilder.freshTodoConversation(
-                tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool
-            )
-        )
-        let created = ConversationStart.createdSessionId(from: result.stdout)
-        guard result.exitCode != 94, let created else {
-            try? await client.deleteConversation(todoId: todo.id)
-            conversations[todo.id] = nil
-            throw TodoHubError.conflict("No new \(tool) conversation appeared")
+        if conversation.sessionId.isEmpty {
+            // An empty id is a start that has not finished. Keep it out of the store, and drop
+            // the hub row unless this call is about to fill the id in.
+            guard ConversationStart.startsFresh(tool), let config else {
+                try? await client.deleteConversation(todoId: todo.id)
+                conversations[todo.id] = nil
+                throw TodoHubError.conflict("No \(tool) conversation appeared")
+            }
+            do {
+                let result = try await NIOSSHClient().exec(
+                    config,
+                    command: TmuxCommandBuilder.freshTodoConversation(
+                        tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool
+                    )
+                )
+                let created = ConversationStart.createdSessionId(from: result.stdout)
+                guard result.exitCode != 94, let created else {
+                    throw TodoHubError.conflict("No new \(tool) conversation appeared")
+                }
+                conversation = try await client.setConversationSession(todoId: todo.id, sessionId: created)
+            } catch {
+                try? await client.deleteConversation(todoId: todo.id)
+                conversations[todo.id] = nil
+                throw error
+            }
         }
-        conversation = try await client.setConversationSession(todoId: todo.id, sessionId: created)
         conversations[todo.id] = conversation
         return conversation
     }
@@ -428,7 +438,7 @@ final class TodoHubStore {
     ) async throws {
         try await perform { client in
             let created = try await client.createTodoFromConversation(TodoFromConversationRequest(
-                section: section, title: title, computerId: computer.id,
+                section: section, title: title, projectId: projectId, computerId: computer.id,
                 tool: remote.tool, sessionId: remote.sessionId, cwd: remote.cwd
             ))
             conversations[created.todo.id] = created.conversation

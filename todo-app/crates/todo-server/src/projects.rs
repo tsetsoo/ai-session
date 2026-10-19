@@ -341,8 +341,8 @@ pub(crate) fn update_project_db(conn: &Connection, id: &str, req: &UpdateProject
     Ok(project)
 }
 
-/// Todos lose the project, sessions are matched again (overrides pointing at it are
-/// cleared), and memories follow their session or become project-less. Nothing else is deleted.
+/// A project that still has todos is refused. Sessions are matched again (overrides pointing
+/// at it are cleared), and memories follow their session or become project-less.
 pub(crate) fn delete_project_db(conn: &Connection, id: &str) -> Result<(), ProjectError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let computer_id: Option<String> = tx
@@ -355,6 +355,10 @@ pub(crate) fn delete_project_db(conn: &Connection, id: &str) -> Result<(), Proje
         )
         .optional()?
         .ok_or(ProjectError::NotFound("Project not found"))?;
+    let todos: i64 = tx.query_row("SELECT COUNT(*) FROM todos WHERE project_id = ?1", params![id], |r| r.get(0))?;
+    if todos > 0 {
+        return Err(ProjectError::Conflict("Project still has todos".into()));
+    }
     tx.execute("UPDATE sessions SET project_override = 0 WHERE project_id = ?1", params![id])?;
     // Foreign keys set todos, sessions and memories that point at it to NULL.
     tx.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
@@ -811,8 +815,7 @@ mod tests {
         conn.execute("UPDATE sessions SET project_id = ?1, project_override = 1 WHERE session_id = 's2'", [&outer]).unwrap();
         conn.execute("UPDATE sessions SET project_id = ?1 WHERE session_id = 's1'", [&outer]).unwrap();
         conn.execute_batch(&format!(
-            "INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'P', 'x', '{outer}');
-             INSERT INTO memories (id, project_id, tool, session_id, kind, text, text_key)
+            "INSERT INTO memories (id, project_id, tool, session_id, kind, text, text_key)
                  VALUES ('m-s1', '{outer}', 'claude', 's1', 'decision', 'D', 'd');
              INSERT INTO memories (id, project_id, kind, text, text_key, source)
                  VALUES ('m-manual', '{outer}', 'gotcha', 'Manual', 'manual', 'manual');"
@@ -823,8 +826,6 @@ mod tests {
         assert_eq!((status, &body), (StatusCode::OK, &json!({"deleted": outer})));
         assert_eq!(delete(&pool, &format!("/api/projects/{outer}")).await.0, StatusCode::NOT_FOUND);
 
-        let todo_project: Option<String> = conn.query_row("SELECT project_id FROM todos WHERE id = 't1'", [], |r| r.get(0)).unwrap();
-        assert_eq!(todo_project, None, "the todo stays, without a project");
         let memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap();
         assert_eq!(memories, 2, "nothing is deleted");
         let override_cleared: i64 =
@@ -840,6 +841,26 @@ mod tests {
         let manual: Option<String> =
             conn.query_row("SELECT project_id FROM memories WHERE id = 'm-manual'", [], |r| r.get(0)).unwrap();
         assert_eq!(manual, None, "a manual memory of the deleted project becomes project-less");
+    }
+
+    #[actix_web::test]
+    async fn delete_project_with_todos_is_409() {
+        let (_db, pool) = pool("proj");
+        let conn = pool.get().unwrap();
+        seed_computers(&conn);
+        let project = create_ok(&pool, "Si", "~/work").await;
+        conn.execute(
+            "INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'Si', 'x', ?1)",
+            [&project],
+        )
+        .unwrap();
+
+        let (status, _) = delete(&pool, &format!("/api/projects/{project}")).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let still: i64 = conn.query_row("SELECT COUNT(*) FROM projects WHERE id = ?1", [&project], |r| r.get(0)).unwrap();
+        assert_eq!(still, 1, "the project stays");
+        let todo_project: String = conn.query_row("SELECT project_id FROM todos WHERE id = 't1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(todo_project, project);
     }
 
     #[actix_web::test]

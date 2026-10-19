@@ -92,7 +92,7 @@ struct TodoConversationScreen: View {
                 guard onAppear == .start, !didOpen, loader.phase == .idle else { return }
                 didOpen = true
                 // A first conversation waits on the tool step. One that exists resumes.
-                guard store.conversations[todo.id] != nil else { return }
+                guard ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId) else { return }
                 await loader.start()
             }
     }
@@ -113,7 +113,7 @@ struct TodoConversationScreen: View {
             // An open terminal stays as it is; a problem retries. No conversation yet: the
             // tool step confirms before anything is created.
             guard !isSuspended, loader.phase == .idle || isProblem else { return }
-            guard store.conversations[todo.id] != nil || isProblem else { return }
+            guard ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId) || isProblem else { return }
             Task { await loader.start() }
         }
     }

@@ -391,6 +391,20 @@ else
   [[ $? -eq 94 ]] || fail "missing fresh id should exit 94"
 fi
 tmux -L "$SOCK" has-session -t "=ai/codex/todo-quiet" 2>/dev/null && fail "failed fresh start left a tmux session"
+TWO="${SANDBOX}/bin/codex-two"
+cat >"$TWO" <<EOF
+#!/bin/sh
+mkdir -p "\$HOME/.codex/sessions/2026/10/20"
+: > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-ONE.jsonl"
+: > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-01-TWO.jsonl"
+exec sleep 300
+EOF
+chmod +x "$TWO"
+if AI_TODO_CODEX_BIN="$TWO" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-two" '~/programming' - codex >/dev/null 2>&1; then
+  fail "two new codex files should not be guessed"
+else
+  [[ $? -eq 94 ]] || fail "two new codex files should exit 94"
+fi
 pass "ai-todo-open starts a new Codex or Cursor conversation and reports the id the tool assigns"
 
 # --- review fixes: open rollouts, fail closed, hub answers, duplicates, kill+wait, ids, PATH ---
@@ -1583,6 +1597,21 @@ rm -f "${D_OWN}/AGENTS.md"
 dmem digest --dry-run >"${SANDBOX}/digest-dry.out" || fail "digest --dry-run failed"
 [[ ! -e "${D_OWN}/AGENTS.md" && ! -e "${M_APP}/CLAUDE.local.md" ]] && grep -q "would write ${D_OWN}/AGENTS.md" "${SANDBOX}/digest-dry.out" || fail "digest --dry-run wrote or did not report"
 pass "digest --dry-run prints what it would write and writes nothing"
+
+D_SHARE="${HOME}/work/share"
+mkdir -p "$D_SHARE"
+hub_edit "s['projects'].append(dict(s['projects'][0], id='proj-share-a', name='share-a', folder='~/work/share'))
+s['projects'].append(dict(s['projects'][0], id='proj-share-b', name='share-b', folder='~/work/share'))
+s['memories'].append(dict(s['memories'][0], id='share-a', project_id='proj-share-a', kind='decision', pinned=True,
+                          text='Alpha share note.', created_at='2026-10-15T09:00:00Z'))
+s['memories'].append(dict(s['memories'][0], id='share-b', project_id='proj-share-b', kind='decision', pinned=True,
+                          text='Beta share note.', created_at='2026-10-15T09:00:00Z'))"
+dmem digest >/dev/null || fail "shared-folder digest failed"
+[[ -f "${D_SHARE}/AGENTS.md" ]] || fail "shared folder has no AGENTS.md"
+grep -q "Alpha share note" "${D_SHARE}/AGENTS.md" || fail "first project's note missing from the shared AGENTS.md"
+grep -q "Beta share note" "${D_SHARE}/AGENTS.md" || fail "second project's note missing from the shared AGENTS.md"
+[[ $(grep -c "BEGIN ai-todo-memory" "${D_SHARE}/AGENTS.md") -eq 1 ]] || fail "shared folder was written as more than one block"
+pass "one AGENTS.md for two projects at the same folder"
 
 hub_edit "s['projects'][0]['folder'] = '~/work/app/'"
 dmem digest >/dev/null || fail "digest with a trailing slash failed"

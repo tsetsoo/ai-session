@@ -210,8 +210,8 @@ fn base_description() -> Value {
             {
                 "method": "POST",
                 "path": "/api/todos/from-conversation",
-                "description": "Create a todo linked to an existing conversation, atomically. 201 {todo, conversation}. Same 400/404/409 rules as link. Optional importance and due_date, as for POST /api/todos",
-                "example_request": {"section": "Sp", "title": "Review data-management PR 630", "computer_id": "<uuid>", "tool": "claude", "session_id": "<uuid>", "cwd": "~/Spread/Repository", "importance": "high"},
+                "description": "Create a todo linked to an existing conversation, atomically. project_id is required and stored in the same transaction; 400 when it is missing or the section disagrees, 404 when the project does not exist. 201 {todo, conversation}. Same 400/404/409 rules as link. Optional importance and due_date, as for POST /api/todos",
+                "example_request": {"section": "Sp", "title": "Review data-management PR 630", "project_id": "<uuid>", "computer_id": "<uuid>", "tool": "claude", "session_id": "<uuid>", "cwd": "~/Spread/Repository", "importance": "high"},
                 "response_status": 201
             },
             {"method": "POST", "path": "/api/todos/{id}/conversation/close", "description": "Mark closed after the client killed the tmux session; the conversation stays resumable"},

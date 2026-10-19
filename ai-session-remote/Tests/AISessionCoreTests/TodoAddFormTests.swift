@@ -31,4 +31,9 @@ final class TodoAddFormTests: XCTestCase {
             title: "A", newProject: TodoAddNewProject(name: "App", folder: "~/code"), hasComputer: true
         ))
     }
+
+    func testAProjectRowShowsTheSectionCode() {
+        XCTAssertEqual(TodoProjectMenuTitle.row(section: .sp, name: "sigma"), "Sp · sigma")
+        XCTAssertEqual(TodoProjectMenuTitle.row(section: .i, name: "notes"), "I · notes")
+    }
 }

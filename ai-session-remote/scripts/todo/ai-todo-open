@@ -115,7 +115,8 @@ wait_for_fresh_id() {
   deadline=$(( $(date +%s) + 30 ))
   while [ "$(date +%s)" -le "$deadline" ]; do
     now=$(fresh_ids "$1")
-    path=
+    ids=
+    count=0
     while IFS= read -r candidate; do
       [ -n "$candidate" ] || continue
       case "
@@ -124,17 +125,24 @@ $fresh_before
         *"
 $candidate
 "*) ;;
-        *) path=$candidate; break ;;
+        *)
+          id=$(fresh_id_of "$1" "$candidate")
+          if [ -n "$id" ]; then
+            count=$((count + 1))
+            ids=$id
+            if [ "$count" -gt 1 ]; then
+              echo "more than one new $1 conversation appeared" >&2
+              return 1
+            fi
+          fi
+          ;;
       esac
     done <<EOF
 $now
 EOF
-    if [ -n "$path" ]; then
-      id=$(fresh_id_of "$1" "$path")
-      if [ -n "$id" ]; then
-        printf '%s\n' "$id"
-        return 0
-      fi
+    if [ "$count" -eq 1 ]; then
+      printf '%s\n' "$ids"
+      return 0
     fi
     sleep 0.2
   done

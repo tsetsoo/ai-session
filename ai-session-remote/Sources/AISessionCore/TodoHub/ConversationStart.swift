@@ -13,6 +13,13 @@ public enum ConversationStart {
         return remembered
     }
 
+    /// A conversation has started only once it has the id the tool is using. An empty id is a
+    /// start that did not finish, and the tool step asks again.
+    public static func hasStartedSession(_ sessionId: String?) -> Bool {
+        guard let sessionId else { return false }
+        return !sessionId.isEmpty
+    }
+
     /// A todo with no conversation asks before anything is created. One that already has a
     /// conversation resumes it.
     public static func needsConfirm(hasConversation: Bool) -> Bool {

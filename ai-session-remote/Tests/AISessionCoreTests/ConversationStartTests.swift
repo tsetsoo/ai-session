@@ -16,6 +16,9 @@ final class ConversationStartTests: XCTestCase {
     func testAMissingConversationNeedsConfirm() {
         XCTAssertTrue(ConversationStart.needsConfirm(hasConversation: false))
         XCTAssertFalse(ConversationStart.needsConfirm(hasConversation: true))
+        XCTAssertFalse(ConversationStart.hasStartedSession(nil))
+        XCTAssertFalse(ConversationStart.hasStartedSession(""))
+        XCTAssertTrue(ConversationStart.hasStartedSession("019f8b4e"))
     }
 
     /// Preselecting Claude is not a start. The tool step stays up until confirm.

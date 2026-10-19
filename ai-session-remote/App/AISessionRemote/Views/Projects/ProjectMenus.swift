@@ -1,32 +1,25 @@
 import AISessionCore
 import SwiftUI
 
-/// "Project ▸" submenu for a todo's context menu: pick a project or none.
+/// "Project ▸" submenu for a todo's context menu. A todo always has a project, so the menu
+/// only offers projects, each labeled with its section code.
 struct TodoProjectMenu: View {
     let todo: Todo
     let store: TodoHubStore
 
     var body: some View {
         Menu {
-            Button {
-                Task { await store.setProject(nil, for: todo) }
-            } label: {
-                if todo.projectId == nil {
-                    Label("No Project", systemImage: "checkmark")
-                } else {
-                    Text("No Project")
-                }
-            }
             ForEach(store.projectsByComputer, id: \.computer.id) { group in
                 Section(group.computer.name) {
                     ForEach(group.projects) { project in
                         Button {
                             Task { await store.setProject(project.id, for: todo) }
                         } label: {
+                            let title = TodoProjectMenuTitle.row(section: project.section, name: project.name)
                             if todo.projectId == project.id {
-                                Label(project.name, systemImage: "checkmark")
+                                Label(title, systemImage: "checkmark")
                             } else {
-                                Text(project.name)
+                                Text(title)
                             }
                         }
                     }

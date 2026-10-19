@@ -299,6 +299,9 @@ pub(crate) enum LinkError {
     /// That conversation is already linked to another todo (its id).
     SessionTaken(String),
     NoTmuxName,
+    ProjectRequired,
+    ProjectNotFound,
+    SectionMismatch,
     Db(rusqlite::Error),
 }
 
@@ -416,6 +419,7 @@ pub(crate) fn link_conversation_db(
 pub(crate) struct NewTodo<'a> {
     pub section: Section,
     pub title: &'a str,
+    pub project_id: &'a str,
     pub importance: Option<Importance>,
     pub due_date: Option<&'a str>,
 }
@@ -433,7 +437,20 @@ pub(crate) fn todo_from_conversation_db(
     if let Some(other) = todo_linked_to(&tx, target.tool, target.session_id, "")? {
         return Err(LinkError::SessionTaken(other));
     }
-    let todo_id = insert_todo(&tx, new.section, new.title, new.importance, new.due_date, None)?;
+    let project_id = new.project_id.trim();
+    if project_id.is_empty() {
+        return Err(LinkError::ProjectRequired);
+    }
+    let project_section: Option<String> = tx
+        .query_row("SELECT section FROM projects WHERE id = ?1", params![project_id], |r| r.get(0))
+        .optional()?;
+    let Some(project_section) = project_section else {
+        return Err(LinkError::ProjectNotFound);
+    };
+    if project_section != new.section.as_str() {
+        return Err(LinkError::SectionMismatch);
+    }
+    let todo_id = insert_todo(&tx, new.section, new.title, new.importance, new.due_date, Some(project_id))?;
     match insert_conversation(&tx, &todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), false) {
         Ok(true) => {}
         Ok(false) => return Err(LinkError::NoTmuxName),
@@ -454,6 +471,9 @@ fn link_error_response(e: LinkError) -> HttpResponse {
         }
         LinkError::SessionTaken(other) => conflict(format!("That conversation is already linked to todo {other}")),
         LinkError::NoTmuxName => conflict("No free tmux session name for this todo"),
+        LinkError::ProjectRequired => bad_request("project_id is required"),
+        LinkError::ProjectNotFound => not_found("Project not found"),
+        LinkError::SectionMismatch => bad_request("section does not match project"),
         LinkError::Db(e) => server_error(e),
     }
 }
@@ -858,7 +878,17 @@ pub async fn todo_from_conversation(
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    let new = NewTodo { section: body.section, title, importance: body.importance, due_date: body.due_date.as_deref() };
+    let project_id = body.project_id.trim();
+    if project_id.is_empty() {
+        return bad_request("project_id is required");
+    }
+    let new = NewTodo {
+        section: body.section,
+        title,
+        project_id,
+        importance: body.importance,
+        due_date: body.due_date.as_deref(),
+    };
     match todo_from_conversation_db(&conn, &new, &target) {
         Ok(created) => {
             broadcaster.send();
@@ -967,8 +997,8 @@ mod tests {
         (db, pool)
     }
 
-    fn new_todo(section: Section, title: &str) -> NewTodo<'_> {
-        NewTodo { section, title, importance: None, due_date: None }
+    fn new_todo<'a>(section: Section, title: &'a str, project_id: &'a str) -> NewTodo<'a> {
+        NewTodo { section, title, project_id, importance: None, due_date: None }
     }
 
     fn seed(conn: &Connection) {
@@ -1239,7 +1269,7 @@ mod tests {
         // Same id under another tool is a different conversation.
         assert!(link_conversation_db(&conn, "t-2", &target("codex", "shared"), false).is_ok());
         assert!(matches!(
-            todo_from_conversation_db(&conn, &new_todo(Section::I, "dup"), &target("claude", "shared")),
+            todo_from_conversation_db(&conn, &new_todo(Section::I, "dup", "p1"), &target("claude", "shared")),
             Err(LinkError::SessionTaken(_))
         ));
     }
@@ -1256,7 +1286,7 @@ mod tests {
         let nowhere = link_target("nope", "claude", "x", "~").unwrap();
         assert!(matches!(link_conversation_db(&conn, TODO, &nowhere, false), Err(LinkError::ComputerNotFound)));
         assert!(matches!(
-            todo_from_conversation_db(&conn, &new_todo(Section::P, "t"), &nowhere),
+            todo_from_conversation_db(&conn, &new_todo(Section::P, "t", "p1"), &nowhere),
             Err(LinkError::ComputerNotFound)
         ));
         let todos: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
@@ -1268,13 +1298,20 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
+        conn.execute(
+            "INSERT INTO projects (id, name, section, folder) VALUES ('p-sp', 'site', 'Sp', '~/site')",
+            [],
+        )
+        .unwrap();
         let new = NewTodo {
             section: Section::Sp,
             title: "Review PR 630",
+            project_id: "p-sp",
             importance: Some(Importance::High),
             due_date: Some("2026-10-20"),
         };
         let created = todo_from_conversation_db(&conn, &new, &target("claude", "49e9880f")).unwrap();
+        assert_eq!(created.todo.project_id.as_deref(), Some("p-sp"));
         assert_eq!(created.todo.importance, Importance::High);
         assert_eq!(created.todo.due_date.as_deref(), Some("2026-10-20"));
         assert_eq!(created.todo.section, Section::Sp);
@@ -1283,6 +1320,26 @@ mod tests {
         assert_eq!(created.conversation.todo_id, created.todo.id);
         assert_eq!(created.conversation.session_id, "49e9880f");
         assert!(created.conversation.tmux_name.starts_with("ai/claude/todo-"));
+    }
+
+    #[test]
+    fn todo_from_conversation_without_a_project_inserts_nothing() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let before: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+        assert!(matches!(
+            todo_from_conversation_db(&conn, &new_todo(Section::I, "from a chat", ""), &target("claude", "from-none")),
+            Err(LinkError::ProjectRequired)
+        ));
+        assert!(matches!(
+            todo_from_conversation_db(&conn, &new_todo(Section::I, "from a chat", "missing"), &target("claude", "from-missing")),
+            Err(LinkError::ProjectNotFound)
+        ));
+        let after: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+        assert_eq!(before, after, "a from-conversation without a project inserts nothing");
+        let conversations: i64 = conn.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0)).unwrap();
+        assert_eq!(conversations, 0);
     }
 
     #[test]

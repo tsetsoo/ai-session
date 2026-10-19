@@ -204,14 +204,19 @@ public struct LinkConversationRequest: Encodable, Sendable {
 public struct TodoFromConversationRequest: Encodable, Sendable {
     public var section: TodoSection
     public var title: String
+    public var projectId: String
     public var computerId: String
     public var tool: String
     public var sessionId: String
     public var cwd: String
 
-    public init(section: TodoSection, title: String, computerId: String, tool: String, sessionId: String, cwd: String) {
+    public init(
+        section: TodoSection, title: String, projectId: String, computerId: String,
+        tool: String, sessionId: String, cwd: String
+    ) {
         self.section = section
         self.title = title
+        self.projectId = projectId
         self.computerId = computerId
         self.tool = tool
         self.sessionId = sessionId

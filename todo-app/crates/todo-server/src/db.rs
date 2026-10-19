@@ -453,7 +453,7 @@ fn migrate_v4_to_v5(conn: &Connection) -> rusqlite::Result<()> {
 fn migrate_v4_to_v5_in(conn: &Connection) -> rusqlite::Result<()> {
     let tx = conn.unchecked_transaction()?;
     let has_computer = column_exists(&tx, "projects", "computer_id")?;
-    let sections: Vec<(String, String, Option<String>)> = {
+    let mut sections: Vec<(String, String, Option<String>)> = {
         let cwd = column_exists(&tx, "section_computers", "cwd")?;
         let sql = if cwd {
             "SELECT section, computer_id, cwd FROM section_computers"
@@ -503,7 +503,18 @@ fn migrate_v4_to_v5_in(conn: &Connection) -> rusqlite::Result<()> {
             used.sort_by_key(|s| section_rank(s));
             used.dedup();
             if used.is_empty() {
-                used.push(section_for_computer(&sections, &computer_id, &folder));
+                if let Some(section) = section_for_computer(&sections, &computer_id, &folder) {
+                    used.push(section);
+                } else if let Some(section) = claim_unassigned_section(&tx, &mut sections, &computer_id)? {
+                    used.push(section);
+                } else {
+                    return Err(rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                        Some(format!(
+                            "project {name} is on computer {computer_id}, which is not on a section"
+                        )),
+                    ));
+                }
             }
             for (i, section) in used.iter().enumerate() {
                 let new_id = if i == 0 { id.clone() } else { uuid::Uuid::new_v4().to_string() };
@@ -697,17 +708,13 @@ fn column_not_null(conn: &Connection, table: &str, column: &str) -> rusqlite::Re
     Ok(notnull == Some(1))
 }
 
-fn section_for_computer(sections: &[(String, String, Option<String>)], computer_id: &str, folder: &str) -> String {
+fn section_for_computer(sections: &[(String, String, Option<String>)], computer_id: &str, folder: &str) -> Option<String> {
     let on: Vec<_> = sections.iter().filter(|(_, computer, _)| computer == computer_id).collect();
-    if on.len() == 1 {
-        return on[0].0.clone();
-    }
     if on.is_empty() {
-        return sections
-            .iter()
-            .min_by_key(|(section, _, _)| section_rank(section))
-            .map(|(section, _, _)| section.clone())
-            .unwrap_or_else(|| "Sp".into());
+        return None;
+    }
+    if on.len() == 1 {
+        return Some(on[0].0.clone());
     }
     let mut best: Option<(&str, usize)> = None;
     for (section, _, cwd) in &on {
@@ -720,12 +727,36 @@ fn section_for_computer(sections: &[(String, String, Option<String>)], computer_
         }
     }
     if let Some((section, _)) = best {
-        return section.into();
+        return Some(section.into());
     }
     on.into_iter()
         .min_by_key(|(section, _, _)| section_rank(section))
         .map(|(section, _, _)| section.clone())
-        .unwrap_or_else(|| "Sp".into())
+}
+
+/// Give `computer_id` a section that has no computer yet, in section order. None when every
+/// section already has a computer: the project must not move onto a different machine.
+fn claim_unassigned_section(
+    tx: &Connection,
+    sections: &mut Vec<(String, String, Option<String>)>,
+    computer_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    let Some(section) = SECTION_ORDER.iter().copied().find(|code| !sections.iter().any(|(s, _, _)| s == code)) else {
+        return Ok(None);
+    };
+    if column_exists(tx, "section_computers", "cwd")? {
+        tx.execute(
+            "INSERT INTO section_computers (section, computer_id, cwd, tool) VALUES (?1, ?2, '~', 'claude')",
+            params![section, computer_id],
+        )?;
+    } else {
+        tx.execute(
+            "INSERT INTO section_computers (section, computer_id) VALUES (?1, ?2)",
+            params![section, computer_id],
+        )?;
+    }
+    sections.push((section.to_string(), computer_id.to_string(), Some("~".into())));
+    Ok(Some(section.to_string()))
 }
 
 fn rematch_migrated_sessions(
@@ -1218,6 +1249,69 @@ mod tests {
             )
             .unwrap();
         assert_eq!(memory_section, "Si");
+    }
+
+    fn v4_ready(name: &str) -> (TestDb, Connection) {
+        let db = TestDb::new(name);
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(V2_SCHEMA).unwrap();
+        create_v4_objects(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE todos ADD COLUMN project_id TEXT;
+             CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                computer_id TEXT NOT NULL,
+                folder TEXT NOT NULL,
+                repo_url TEXT,
+                digest_enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO computers (id, name, hostname, username) VALUES ('pi', 'pi', 'pi.local', 'me');
+             INSERT INTO projects (id, name, computer_id, folder) VALUES ('p-orphan', 'orphan', 'pi', '~/orphan');
+             PRAGMA user_version = 4;",
+        )
+        .unwrap();
+        (db, conn)
+    }
+
+    #[test]
+    fn migration_refuses_a_project_whose_computer_is_on_no_section() {
+        let (_db, conn) = v4_ready("migrate-orphan");
+        conn.execute_batch(
+            "INSERT INTO section_computers (section, computer_id, cwd, tool) VALUES
+                ('Sp', 'mac', '~', 'claude'), ('P', 'mac', '~', 'claude');",
+        )
+        .unwrap();
+        let err = migrate_v4_to_v5(&conn).unwrap_err().to_string();
+        assert!(err.contains("not on a section"), "{err}");
+        let computer: String = conn
+            .query_row("SELECT computer_id FROM projects WHERE id = 'p-orphan'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(computer, "pi", "the project stays on its own computer");
+        let stolen: i64 = conn
+            .query_row("SELECT COUNT(*) FROM section_computers WHERE computer_id = 'pi'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stolen, 0);
+    }
+
+    #[test]
+    fn migration_gives_an_unassigned_section_to_the_projects_computer() {
+        let (_db, conn) = v4_ready("migrate-claim");
+        conn.execute_batch(
+            "DELETE FROM section_computers WHERE section = 'I';
+             INSERT INTO section_computers (section, computer_id, cwd, tool) VALUES
+                ('Sp', 'mac', '~', 'claude'), ('P', 'mac', '~', 'claude');",
+        )
+        .unwrap();
+        migrate_v4_to_v5(&conn).unwrap();
+        let section: String = conn.query_row("SELECT section FROM projects WHERE id = 'p-orphan'", [], |r| r.get(0)).unwrap();
+        assert_eq!(section, "I");
+        let computer: String = conn
+            .query_row("SELECT computer_id FROM section_computers WHERE section = 'I'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(computer, "pi");
     }
 
     #[test]
