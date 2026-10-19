@@ -1,7 +1,7 @@
 import AISessionCore
 import SwiftUI
 
-/// Manage the hub's computers and which computer + working directory each section uses.
+/// Manage the hub's computers and which computer each section uses.
 struct ComputersView: View {
     let store: TodoHubStore
     @Environment(\.dismiss) private var dismiss
@@ -10,7 +10,7 @@ struct ComputersView: View {
     /// Shown inside this sheet: the Todos screen's alert can't present over it.
     @State private var errorMessage: String?
 
-    /// `editing` opens that section's computer and folder at once (a fix from the frame).
+    /// `editing` opens that section's computer at once (a fix from the frame).
     init(store: TodoHubStore, editing section: TodoSection? = nil) {
         self.store = store
         _editingSection = State(initialValue: section)
@@ -27,10 +27,7 @@ struct ComputersView: View {
                             HStack {
                                 Text(section.rawValue).font(.headline).frame(width: 32, alignment: .leading)
                                 if let mapping = store.sectionComputers[section] {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(mapping.computer.name)
-                                        Text(mapping.cwd).font(.caption.monospaced()).foregroundStyle(.secondary)
-                                    }
+                                    Text(mapping.computer.name)
                                 } else {
                                     Text("No computer").foregroundStyle(.secondary)
                                 }
@@ -90,8 +87,8 @@ struct ComputersView: View {
                     section: section,
                     computers: store.computers,
                     current: store.sectionComputers[section]
-                ) { computerID, cwd in
-                    run { try await store.assign(section, computerID: computerID, cwd: cwd) }
+                ) { computerID in
+                    run { try await store.assign(section, computerID: computerID) }
                 }
             }
             .alert(
@@ -164,18 +161,16 @@ private struct AddComputerSheet: View {
 private struct SectionMappingSheet: View {
     let section: TodoSection
     let computers: [Computer]
-    let onSave: (String?, String) -> Void
+    let onSave: (String?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var computerID: String?
-    @State private var cwd: String
 
     init(section: TodoSection, computers: [Computer], current: SectionComputer?,
-         onSave: @escaping (String?, String) -> Void) {
+         onSave: @escaping (String?) -> Void) {
         self.section = section
         self.computers = computers
         self.onSave = onSave
         _computerID = State(initialValue: current?.computer.id)
-        _cwd = State(initialValue: current?.cwd ?? "~")
     }
 
     var body: some View {
@@ -184,18 +179,6 @@ private struct SectionMappingSheet: View {
                 Picker("Computer", selection: $computerID) {
                     Text("None").tag(String?.none)
                     ForEach(computers) { Text($0.name).tag(Optional($0.id)) }
-                }
-                if computerID != nil {
-                    Section {
-                        TextField("~/programming", text: $cwd)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .font(.body.monospaced())
-                    } header: {
-                        Text("Working directory")
-                    } footer: {
-                        Text("Existing conversations keep the folder they started in.")
-                    }
                 }
             }
             .navigationTitle(section.rawValue)
@@ -206,10 +189,9 @@ private struct SectionMappingSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        onSave(computerID, cwd.trimmed)
+                        onSave(computerID)
                         dismiss()
                     }
-                    .disabled(computerID != nil && cwd.trimmed.isEmpty)
                 }
             }
         }

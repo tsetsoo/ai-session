@@ -48,9 +48,10 @@ struct OnThisComputerView: View {
                 NewTodoDetailsForm(
                     computer: computer,
                     remote: remote,
-                    defaultSection: defaultSection,
-                    onCreate: { section, title in
-                        try await store.createTodo(from: remote, on: computer, section: section, title: title)
+                    store: store,
+                    onCreate: { section, title, projectId in
+                        try await store.createTodo(from: remote, on: computer, section: section, title: title,
+                                                   projectId: projectId)
                         self.step = nil
                     }
                 )
@@ -58,12 +59,6 @@ struct OnThisComputerView: View {
                 LinkToTodoList(remote: remote, computer: computer, store: store) { self.step = nil }
             }
         }
-    }
-
-    /// The section this computer serves, when exactly one does.
-    private var defaultSection: TodoSection {
-        let sections = TodoSection.allCases.filter { store.sectionComputers[$0]?.computer.id == computer.id }
-        return sections.count == 1 ? sections[0] : .i
     }
 }
 

@@ -394,16 +394,19 @@ struct ConversationFrame: View {
                 return (conversation.computer.name, conversation.cwd, conversation.tool)
             }
             if let mapping = store.sectionComputers[todo.section] {
-                return (mapping.computer.name, mapping.cwd, mapping.tool)
+                let folder = store.project(id: todo.projectId)?.folder ?? ""
+                return (mapping.computer.name, folder, "")
             }
             return nil
         }()
         guard let target else { return "\(todo.section.rawValue) · no computer" }
         var parts = [todo.section.rawValue, target.computer]
-        if includeFolder {
+        if includeFolder, !target.folder.isEmpty {
             parts.append(middleTruncated(target.folder))
         }
-        parts.append(RemoteConversationPicker.toolName(target.tool))
+        if !target.tool.isEmpty {
+            parts.append(RemoteConversationPicker.toolName(target.tool))
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -482,9 +485,6 @@ struct ConversationFrame: View {
             let session = conversation.sessionId.isEmpty ? nil : conversation.sessionId
             return (conversation.computer, conversation.tool, session)
         }
-        if let mapping = store.sectionComputers[todo.section] {
-            return (mapping.computer, mapping.tool, nil)
-        }
         return nil
     }
 
@@ -494,7 +494,8 @@ struct ConversationFrame: View {
             return (conversation.computer.name, conversation.cwd, conversation.tool)
         }
         if let mapping = store.sectionComputers[todo.section] {
-            return (mapping.computer.name, mapping.cwd, mapping.tool)
+            let folder = store.project(id: todo.projectId)?.folder ?? ""
+            return (mapping.computer.name, folder, "")
         }
         return nil
     }

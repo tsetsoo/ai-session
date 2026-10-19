@@ -21,7 +21,6 @@ struct MacShell: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettingsWindow
     #endif
-    @AppStorage(QuickAdd.sectionKey) private var quickAddSection = TodoSection.i.rawValue
     @State private var query = ""
     @State private var settings: SettingsRequest?
     @State private var showingAdd = false
@@ -58,10 +57,8 @@ struct MacShell: View {
             SettingsView(initial: request.initial)
         }
         .sheet(isPresented: $showingAdd) {
-            AddTodoSheet(section: addSection, projects: store.projects) { section, title, projectId in
-                Task { await store.createTodo(section: section, title: title, projectId: projectId) }
-            }
-            .tint(DS.accent)
+            AddTodoSheet(fixedSection: selectedSection, store: store)
+                .tint(DS.accent)
         }
         .sheet(isPresented: $showingNewFromConversation) {
             NewTodoFromConversationSheet(store: store)
@@ -220,10 +217,10 @@ struct MacShell: View {
         }
     }
 
-    /// New todos go to the selected section, else the quick-add section.
-    private var addSection: TodoSection {
+    /// The section list, when one is selected. The toolbar sheet asks for a section otherwise.
+    private var selectedSection: TodoSection? {
         if case let .section(section) = sidebarItem { return section }
-        return QuickAdd.section(from: quickAddSection)
+        return nil
     }
 
     // MARK: Fast paths

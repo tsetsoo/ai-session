@@ -10,18 +10,20 @@ struct TodoListView: View {
     let onOpen: (Todo) -> Void
     private let query: String
     private let selection: Binding<String?>?
+    /// The section whose add field takes the phone Home-screen focus.
+    private let quickAddSection: TodoSection?
 
     @Environment(AppModel.self) private var model
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var actions = ConversationRowActions()
     @State private var linkTarget: Todo?
-    @State private var addSection: TodoSection?
 
     init(sections: [TodoSection], query: String = "", selection: Binding<String?>? = nil,
-         onOpen: @escaping (Todo) -> Void) {
+         quickAddSection: TodoSection? = nil, onOpen: @escaping (Todo) -> Void) {
         self.sections = sections
         self.query = query
         self.selection = selection
+        self.quickAddSection = quickAddSection
         self.onOpen = onOpen
     }
 
@@ -41,15 +43,11 @@ struct TodoListView: View {
         .sheet(item: $linkTarget) { todo in
             LinkConversationSheet(todo: todo, store: store)
         }
-        .sheet(item: $addSection) { section in
-            AddTodoSheet(section: section, projects: store.projects) { section, title, projectId in
-                Task { await store.createTodo(section: section, title: title, projectId: projectId) }
-            }
-        }
     }
 
     private func sectionView(_ section: TodoSection, board: ConversationBoard) -> some View {
         Section {
+            InlineTodoAdd(place: .section(section), acceptsQuickAddFocus: quickAddSection == section)
             let all = store.todos(in: section)
             let todos = all.filter { ListSearch.matches(query, $0.title) }
             if !all.isEmpty && todos.isEmpty {
@@ -57,16 +55,9 @@ struct TodoListView: View {
                     .foregroundStyle(.secondary)
                     .frame(minHeight: DS.rowMinHeight)
             } else if todos.isEmpty {
-                HStack {
-                    Text("No todos in \(section.rawValue)")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button("New Todo") { addSection = section }
-                        .buttonStyle(.borderless)
-                        .tint(DS.accent)
-                        .disabled(store.isOffline)
-                }
-                .frame(minHeight: DS.rowMinHeight)
+                Text("No todos in \(section.rawValue)")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight, alignment: .leading)
             }
             ForEach(todos) { todo in
                 row(todo, board: board)

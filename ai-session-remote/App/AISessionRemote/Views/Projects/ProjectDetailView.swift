@@ -137,6 +137,7 @@ struct ProjectDetailView: View {
 
     private func todosSection(_ project: Project) -> some View {
         Section("Todos") {
+            InlineTodoAdd(place: .project(project))
             let todos = store.todos(inProject: project.id)
             if todos.isEmpty {
                 Text("No todos in this project").foregroundStyle(.secondary)
@@ -352,10 +353,11 @@ private struct NewTodoFromSessionSheet: View {
                     NewTodoDetailsForm(
                         computer: computer,
                         remote: remote,
-                        defaultSection: store.defaultSection(for: computer),
-                        onCreate: { section, title in
+                        store: store,
+                        lockedProject: project,
+                        onCreate: { section, title, projectId in
                             try await store.createTodo(from: remote, on: computer, section: section, title: title,
-                                                       projectId: project.id)
+                                                       projectId: projectId)
                             dismiss()
                         }
                     )
