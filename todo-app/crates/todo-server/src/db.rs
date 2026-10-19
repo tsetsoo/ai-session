@@ -99,12 +99,11 @@ pub fn init_pool(db_path: &str) -> DbPool {
     migrate(&conn, db_path).expect("Failed to migrate the database schema");
 
     conn.execute_batch(&format!(
-        "{};\n{};\n{};",
+        "{};\n{};\n{};\n{};",
         section_computers_ddl("section_computers"),
         conversations_ddl("conversations"),
-        // Hooks look conversations up by (tool, session_id); UNIQUE(tool, session_id)
-        // already covers that, this also serves lookups by id alone.
-        "CREATE INDEX IF NOT EXISTS conversations_session_id ON conversations(session_id)"
+        "CREATE INDEX IF NOT EXISTS conversations_session_id ON conversations(session_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS conversations_tool_session ON conversations(tool, session_id) WHERE session_id IS NOT NULL"
     ))
     .expect("Failed to create conversation tables");
 
@@ -131,6 +130,16 @@ fn section_computers_ddl(table: &str) -> String {
     format!(
         "CREATE TABLE IF NOT EXISTS {table} (
             section     TEXT PRIMARY KEY CHECK(section IN ('Sp','I','Si','P')),
+            computer_id TEXT NOT NULL REFERENCES computers(id) ON DELETE RESTRICT
+        )"
+    )
+}
+
+/// v2 shape, kept only so the v1 → v2 rebuild still copies cwd and tool for v5 to retire.
+fn section_computers_v2_ddl(table: &str) -> String {
+    format!(
+        "CREATE TABLE {table} (
+            section     TEXT PRIMARY KEY CHECK(section IN ('Sp','I','Si','P')),
             computer_id TEXT NOT NULL REFERENCES computers(id) ON DELETE RESTRICT,
             cwd         TEXT NOT NULL,
             tool        TEXT NOT NULL DEFAULT 'claude' CHECK(tool IN {TOOLS_SQL})
@@ -146,28 +155,27 @@ fn conversations_ddl(table: &str) -> String {
             cwd               TEXT NOT NULL,
             tool              TEXT NOT NULL CHECK(tool IN {TOOLS_SQL}),
             tmux_name         TEXT NOT NULL UNIQUE,
-            session_id        TEXT NOT NULL,
+            session_id        TEXT,
             status            TEXT NOT NULL DEFAULT 'unknown'
                               CHECK(status IN ('busy','waiting','idle','unknown','closed')),
             status_message    TEXT,
             status_updated_at TEXT,
-            created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(tool, session_id)
+            created_at        TEXT NOT NULL DEFAULT (datetime('now'))
         )"
     )
 }
 
 pub(crate) fn projects_ddl() -> &'static str {
-    "CREATE TABLE IF NOT EXISTS projects (
+        "CREATE TABLE IF NOT EXISTS projects (
         id             TEXT PRIMARY KEY,
         name           TEXT NOT NULL,
-        computer_id    TEXT NOT NULL REFERENCES computers(id) ON DELETE RESTRICT,
+        section        TEXT NOT NULL CHECK(section IN ('Sp','I','Si','P')),
         folder         TEXT NOT NULL,
         repo_url       TEXT,
         digest_enabled INTEGER NOT NULL DEFAULT 1,
         created_at     TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
-        UNIQUE(computer_id, folder)
+        UNIQUE(section, folder)
     )"
 }
 
@@ -289,9 +297,11 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v2: `tool` in claude/codex/cursor, `session_id`, UNIQUE(tool, session_id)
 /// - v3: `projects`, `sessions`, `session_days`, `memories`, `todos.project_id` (additive)
 /// - v4: `push_devices`, `push_settings`, `push_muted_sections`, `push_muted_todos` (additive)
+/// - v5: a project belongs to a section; section folder and tool are dropped; conversation
+///   session ids may be null until Codex or Cursor reports one; every todo has a project
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -304,6 +314,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if table_sql(conn, "projects")?.is_some_and(|sql| sql.contains("section") && !sql.contains("computer_id")) {
+        return Ok(5);
     }
     if table_sql(conn, "push_devices")?.is_some() {
         return Ok(4);
@@ -343,8 +356,16 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 3 {
         if !backed_up {
             backup_before_migration(conn, db_path, 4)?;
+            backed_up = true;
         }
         create_v4_objects(conn)?;
+        version = 4;
+    }
+    if version == 4 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 5)?;
+        }
+        migrate_v4_to_v5(conn)?;
     }
     Ok(())
 }
@@ -403,6 +424,415 @@ fn backup_before_migration(conn: &Connection, db_path: &str, to_version: i64) ->
     Ok(Some(backup))
 }
 
+const SECTION_ORDER: [&str; 4] = ["Sp", "I", "Si", "P"];
+
+fn section_rank(section: &str) -> usize {
+    SECTION_ORDER.iter().position(|s| *s == section).unwrap_or(SECTION_ORDER.len())
+}
+
+fn last_path_segment(path: &str) -> String {
+    let trimmed = path.trim().trim_end_matches('/');
+    let segment = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    if segment.is_empty() || segment == "~" { "inbox".into() } else { segment.into() }
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    conn.prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"))?
+        .exists(params![column])
+}
+
+/// v4 → v5. Projects belong to a section. Section cwd and tool are copied onto projects
+/// where a todo still needs a folder, then dropped.
+fn migrate_v4_to_v5(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+    let result = migrate_v4_to_v5_in(conn);
+    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+    result
+}
+
+fn migrate_v4_to_v5_in(conn: &Connection) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let has_computer = column_exists(&tx, "projects", "computer_id")?;
+    let sections: Vec<(String, String, Option<String>)> = {
+        let cwd = column_exists(&tx, "section_computers", "cwd")?;
+        let sql = if cwd {
+            "SELECT section, computer_id, cwd FROM section_computers"
+        } else {
+            "SELECT section, computer_id, NULL FROM section_computers"
+        };
+        let mut stmt = tx.prepare(sql)?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    #[derive(Clone)]
+    struct NewProject {
+        id: String,
+        name: String,
+        section: String,
+        folder: String,
+        repo_url: Option<String>,
+        digest_enabled: i64,
+        created_at: String,
+        updated_at: String,
+    }
+    let mut projects: Vec<NewProject> = Vec::new();
+    let mut todo_project: Vec<(String, String)> = Vec::new();
+
+    if has_computer {
+        let old: Vec<(String, String, String, String, Option<String>, i64, String, String)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, name, computer_id, folder, repo_url, digest_enabled, created_at, updated_at FROM projects",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let linked: Vec<(String, String, String)> = {
+            let mut stmt = tx.prepare("SELECT id, section, project_id FROM todos WHERE project_id IS NOT NULL")?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (id, name, computer_id, folder, repo_url, digest, created_at, updated_at) in old {
+            let mut used: Vec<String> = linked
+                .iter()
+                .filter(|(_, _, project_id)| project_id == &id)
+                .map(|(_, section, _)| section.clone())
+                .collect();
+            used.sort_by_key(|s| section_rank(s));
+            used.dedup();
+            if used.is_empty() {
+                used.push(section_for_computer(&sections, &computer_id, &folder));
+            }
+            for (i, section) in used.iter().enumerate() {
+                let new_id = if i == 0 { id.clone() } else { uuid::Uuid::new_v4().to_string() };
+                projects.push(NewProject {
+                    id: new_id.clone(),
+                    name: name.clone(),
+                    section: section.clone(),
+                    folder: folder.clone(),
+                    repo_url: repo_url.clone(),
+                    digest_enabled: digest,
+                    created_at: created_at.clone(),
+                    updated_at: updated_at.clone(),
+                });
+                for (todo_id, todo_section, project_id) in &linked {
+                    if project_id == &id && todo_section == section {
+                        todo_project.push((todo_id.clone(), new_id.clone()));
+                    }
+                }
+            }
+        }
+    } else {
+        let mut stmt = tx.prepare(
+            "SELECT id, name, section, folder, repo_url, digest_enabled, created_at, updated_at FROM projects",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(NewProject {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                section: r.get(2)?,
+                folder: r.get(3)?,
+                repo_url: r.get(4)?,
+                digest_enabled: r.get(5)?,
+                created_at: r.get(6)?,
+                updated_at: r.get(7)?,
+            })
+        })?;
+        projects = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    }
+
+    let loose: Vec<(String, String)> = {
+        let mut stmt = tx.prepare("SELECT id, section FROM todos WHERE project_id IS NULL")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (todo_id, section) in loose {
+        let folder = sections
+            .iter()
+            .find(|(s, _, _)| s == &section)
+            .and_then(|(_, _, cwd)| cwd.clone())
+            .unwrap_or_else(|| "~".into());
+        let name = last_path_segment(&folder);
+        let existing = projects.iter().find(|p| p.section == section && p.folder == folder);
+        let id = if let Some(existing) = existing {
+            existing.id.clone()
+        } else {
+            let id = uuid::Uuid::new_v4().to_string();
+            projects.push(NewProject {
+                id: id.clone(),
+                name,
+                section: section.clone(),
+                folder,
+                repo_url: None,
+                digest_enabled: 1,
+                created_at: String::new(),
+                updated_at: String::new(),
+            });
+            id
+        };
+        todo_project.push((todo_id, id));
+    }
+
+    if has_computer {
+        tx.execute_batch("DROP TABLE projects;")?;
+        tx.execute_batch(projects_ddl())?;
+    }
+    for project in &projects {
+        let already: bool = tx
+            .query_row("SELECT 1 FROM projects WHERE id = ?1", params![project.id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if already {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO projects (id, name, section, folder, repo_url, digest_enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, COALESCE(NULLIF(?7, ''), datetime('now')), COALESCE(NULLIF(?8, ''), datetime('now')))",
+            params![
+                project.id,
+                project.name,
+                project.section,
+                project.folder,
+                project.repo_url,
+                project.digest_enabled,
+                project.created_at,
+                project.updated_at
+            ],
+        )?;
+    }
+    for (todo_id, project_id) in &todo_project {
+        tx.execute("UPDATE todos SET project_id = ?1 WHERE id = ?2", params![project_id, todo_id])?;
+    }
+    if column_exists(&tx, "memories", "id")? {
+        tx.execute(
+            "UPDATE memories SET project_id = (
+                SELECT project_id FROM todos WHERE todos.id = memories.todo_id
+             ) WHERE todo_id IS NOT NULL",
+            [],
+        )?;
+    }
+    let project_keys: Vec<(String, String, String)> = projects
+        .iter()
+        .map(|p| (p.id.clone(), p.section.clone(), p.folder.clone()))
+        .collect();
+    rematch_migrated_sessions(&tx, &project_keys, &sections)?;
+
+    if column_exists(&tx, "section_computers", "cwd")? {
+        tx.execute_batch(&format!(
+            "{};
+             INSERT INTO section_computers_new (section, computer_id)
+                 SELECT section, computer_id FROM section_computers;
+             DROP TABLE section_computers;
+             ALTER TABLE section_computers_new RENAME TO section_computers;",
+            section_computers_ddl("section_computers_new").replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE")
+        ))?;
+    }
+    if column_not_null(&tx, "conversations", "session_id")? {
+        tx.execute_batch(&format!(
+            "{};
+             INSERT INTO conversations_new (todo_id, computer_id, cwd, tool, tmux_name, session_id,
+                                            status, status_message, status_updated_at, created_at)
+                 SELECT todo_id, computer_id, cwd, tool, tmux_name, session_id,
+                        status, status_message, status_updated_at, created_at FROM conversations;
+             DROP TABLE conversations;
+             ALTER TABLE conversations_new RENAME TO conversations;
+             CREATE UNIQUE INDEX IF NOT EXISTS conversations_tool_session
+                 ON conversations(tool, session_id) WHERE session_id IS NOT NULL;",
+            conversations_ddl("conversations_new").replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE")
+        ))?;
+    }
+    // Every todo now has a project. Rebuild so the column cannot go back to null.
+    if !column_not_null(&tx, "todos", "project_id")? {
+        let nulls: i64 = tx.query_row("SELECT COUNT(*) FROM todos WHERE project_id IS NULL", [], |r| r.get(0))?;
+        if nulls > 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                Some(format!("{nulls} todos still have no project")),
+            ));
+        }
+        tx.execute_batch(
+            "CREATE TABLE todos_new (
+                id         TEXT PRIMARY KEY,
+                section    TEXT NOT NULL CHECK(section IN ('Sp','I','Si','P')),
+                title      TEXT NOT NULL,
+                completed  INTEGER NOT NULL DEFAULT 0,
+                importance TEXT NOT NULL DEFAULT 'medium' CHECK(importance IN ('low','medium','high','critical')),
+                due_date   TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                daily_date TEXT,
+                carried_from TEXT,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT
+            );
+            INSERT INTO todos_new (id, section, title, completed, importance, due_date, created_at, updated_at,
+                                   completed_at, daily_date, carried_from, project_id)
+                SELECT id, section, title, completed, importance, due_date, created_at, updated_at,
+                       completed_at, daily_date, carried_from, project_id FROM todos;
+            DROP TABLE todos;
+            ALTER TABLE todos_new RENAME TO todos;
+            CREATE INDEX IF NOT EXISTS todos_project ON todos(project_id);",
+        )?;
+    }
+    let violations: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
+    if violations > 0 {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+            Some(format!("{violations} foreign key violations after migration")),
+        ));
+    }
+    tx.commit()
+}
+
+fn column_not_null(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let notnull: Option<i64> = conn
+        .query_row(
+            &format!("SELECT \"notnull\" FROM pragma_table_info('{table}') WHERE name = ?1"),
+            params![column],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(notnull == Some(1))
+}
+
+fn section_for_computer(sections: &[(String, String, Option<String>)], computer_id: &str, folder: &str) -> String {
+    let on: Vec<_> = sections.iter().filter(|(_, computer, _)| computer == computer_id).collect();
+    if on.len() == 1 {
+        return on[0].0.clone();
+    }
+    if on.is_empty() {
+        return sections
+            .iter()
+            .min_by_key(|(section, _, _)| section_rank(section))
+            .map(|(section, _, _)| section.clone())
+            .unwrap_or_else(|| "Sp".into());
+    }
+    let mut best: Option<(&str, usize)> = None;
+    for (section, _, cwd) in &on {
+        let Some(cwd) = cwd else { continue };
+        if crate::paths::is_within(folder, cwd) {
+            let len = cwd.split('/').filter(|s| !s.is_empty()).count();
+            if best.map(|(_, n)| len > n).unwrap_or(true) {
+                best = Some((section, len));
+            }
+        }
+    }
+    if let Some((section, _)) = best {
+        return section.into();
+    }
+    on.into_iter()
+        .min_by_key(|(section, _, _)| section_rank(section))
+        .map(|(section, _, _)| section.clone())
+        .unwrap_or_else(|| "Sp".into())
+}
+
+fn rematch_migrated_sessions(
+    conn: &Connection,
+    projects: &[(String, String, String)],
+    sections: &[(String, String, Option<String>)],
+) -> rusqlite::Result<()> {
+    let has_sessions: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sessions'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_sessions == 0 {
+        return Ok(());
+    }
+    let usernames: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, username FROM computers")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let sessions: Vec<(String, String, String, String, Option<String>, i64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT tool, session_id, computer_id, cwd, project_id, project_override FROM sessions",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (tool, session_id, computer_id, cwd, current, override_flag) in sessions {
+        if override_flag == 1 && current.as_ref().is_some_and(|id| projects.iter().any(|(pid, _, _)| pid == id)) {
+            continue;
+        }
+        let username = usernames.iter().find(|(id, _)| id == &computer_id).map(|(_, name)| name.as_str()).unwrap_or("");
+        let cwd = crate::paths::normalize(&cwd, username);
+        let on_computer: Vec<&(String, String, String)> = projects
+            .iter()
+            .filter(|(_, section, folder)| {
+                sections.iter().any(|(s, computer, _)| s == section && computer == &computer_id)
+                    && crate::paths::is_within(&cwd, folder)
+            })
+            .collect();
+        let longest = on_computer
+            .iter()
+            .map(|(_, _, folder)| folder.split('/').filter(|s| !s.is_empty()).count())
+            .max()
+            .unwrap_or(0);
+        let mut matches: Vec<(String, String)> = on_computer
+            .iter()
+            .filter(|(_, _, folder)| folder.split('/').filter(|s| !s.is_empty()).count() == longest)
+            .map(|(id, section, _)| ((*id).clone(), (*section).clone()))
+            .collect();
+        let chosen = if longest == 0 {
+            None
+        } else if let Some(todo_project) = session_todo_project(conn, &tool, &session_id)? {
+            if matches.iter().any(|(id, _)| id == &todo_project) {
+                Some(todo_project)
+            } else {
+                pick_session_project(&mut matches, current.as_deref())
+            }
+        } else {
+            pick_session_project(&mut matches, current.as_deref())
+        };
+        if chosen != current {
+            conn.execute(
+                "UPDATE sessions SET project_id = ?1 WHERE tool = ?2 AND session_id = ?3",
+                params![chosen, tool, session_id],
+            )?;
+        }
+    }
+    if column_exists(conn, "memories", "session_id")? {
+        conn.execute(
+            "UPDATE memories SET project_id = (
+                SELECT sessions.project_id FROM sessions
+                WHERE sessions.tool = memories.tool AND sessions.session_id = memories.session_id
+             )
+             WHERE todo_id IS NULL AND tool IS NOT NULL AND session_id IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM sessions
+                   WHERE sessions.tool = memories.tool AND sessions.session_id = memories.session_id
+                     AND sessions.project_id IS NOT NULL
+               )",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn session_todo_project(conn: &Connection, tool: &str, session_id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT todos.project_id FROM conversations
+         JOIN todos ON todos.id = conversations.todo_id
+         WHERE conversations.tool = ?1 AND conversations.session_id = ?2",
+        params![tool, session_id],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+fn pick_session_project(matches: &mut [(String, String)], current: Option<&str>) -> Option<String> {
+    if let Some(current) = current {
+        if let Some((id, _)) = matches.iter().find(|(id, _)| id == current) {
+            return Some(id.clone());
+        }
+    }
+    matches.sort_by_key(|(_, section)| section_rank(section));
+    matches.first().map(|(id, _)| id.clone())
+}
+
 /// v1 → v2. SQLite can't alter a CHECK constraint or rename a column's meaning in place,
 /// so rebuild both conversation tables, keeping every row.
 fn migrate_v1_to_v2(conn: &Connection) -> rusqlite::Result<()> {
@@ -424,7 +854,7 @@ fn migrate_v1_to_v2(conn: &Connection) -> rusqlite::Result<()> {
                      SELECT section, computer_id, cwd, tool FROM section_computers;
                  DROP TABLE section_computers;
                  ALTER TABLE section_computers_new RENAME TO section_computers;",
-                section_computers_ddl("section_computers_new")
+                section_computers_v2_ddl("section_computers_new")
             ))?;
         }
         if conversations_old {
@@ -623,7 +1053,20 @@ mod tests {
         conn.execute_batch(V2_SCHEMA).unwrap();
         create_v3_objects(&conn).unwrap();
         conn.execute_batch(
-            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('p1', 'todo-app', 'mac', '~/programming/todo-app');
+            "PRAGMA foreign_keys = OFF;
+             DROP TABLE projects;
+             CREATE TABLE projects (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 computer_id TEXT NOT NULL REFERENCES computers(id),
+                 folder TEXT NOT NULL,
+                 repo_url TEXT,
+                 digest_enabled INTEGER NOT NULL DEFAULT 1,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 UNIQUE(computer_id, folder)
+             );
+             INSERT INTO projects (id, name, computer_id, folder) VALUES ('p1', 'todo-app', 'mac', '~/programming/todo-app');
              UPDATE todos SET project_id = 'p1' WHERE id = 't1';
              PRAGMA user_version = 3;",
         )
@@ -638,13 +1081,13 @@ mod tests {
         assert_eq!(db.backups().len(), 1, "one backup before the v4 step");
         assert!(db.backups()[0].to_string_lossy().contains(".pre-v4-"), "{:?}", db.backups());
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         for table in V4_TABLES {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
         }
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM todos"), 3);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM conversations"), 2);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM projects"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM projects"), 3);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM todos WHERE project_id = 'p1'"), 1);
         let backup = Connection::open(&db.backups()[0]).unwrap();
         assert_eq!(user_version(&backup), 3);
@@ -656,6 +1099,127 @@ mod tests {
     }
 
     #[test]
+    fn migrates_v4_to_v5_splits_projects_and_places_loose_todos() {
+        let db = TestDb::new("migrate-v5");
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(V2_SCHEMA).unwrap();
+        create_v4_objects(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE todos ADD COLUMN project_id TEXT;
+             CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                computer_id TEXT NOT NULL,
+                folder TEXT NOT NULL,
+                repo_url TEXT,
+                digest_enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(computer_id, folder)
+             );
+             CREATE TABLE memories (
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                todo_id TEXT,
+                computer_id TEXT,
+                tool TEXT,
+                session_id TEXT,
+                kind TEXT NOT NULL,
+                text TEXT NOT NULL,
+                text_key TEXT NOT NULL,
+                files TEXT NOT NULL DEFAULT '[]',
+                confidence REAL,
+                source TEXT NOT NULL DEFAULT 'extracted',
+                pinned INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             DELETE FROM section_computers WHERE section = 'I';
+             INSERT INTO section_computers (section, computer_id, cwd, tool)
+                 VALUES ('P', 'mac', '~/programming', 'claude');
+             INSERT INTO projects (id, name, computer_id, folder)
+                 VALUES ('p1', 'sigma', 'mac', '~/programming/sigma-revenue');
+             UPDATE todos SET project_id = 'p1' WHERE id = 't1';
+             UPDATE todos SET section = 'P', project_id = 'p1' WHERE id = 't3';
+             INSERT INTO todos (id, section, title) VALUES ('t-loose', 'Si', 'loose');
+             INSERT INTO memories (id, project_id, todo_id, kind, text, text_key)
+                 VALUES ('m1', 'p1', 't1', 'decision', 'Keep', 'keep');
+             PRAGMA user_version = 4;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 5);
+        let project_cols = column_names(&conn, "projects");
+        assert!(!project_cols.iter().any(|c| c == "computer_id"));
+        assert!(project_cols.iter().any(|c| c == "section"));
+        let section_cols = column_names(&conn, "section_computers");
+        assert!(!section_cols.iter().any(|c| c == "cwd" || c == "tool"));
+
+        let pieces: Vec<(String, String)> = conn
+            .prepare("SELECT section, folder FROM projects WHERE name = 'sigma' ORDER BY section")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            pieces,
+            vec![
+                ("P".into(), "~/programming/sigma-revenue".into()),
+                ("Si".into(), "~/programming/sigma-revenue".into()),
+            ]
+        );
+        let t1_section: String = conn
+            .query_row(
+                "SELECT p.section FROM todos t JOIN projects p ON p.id = t.project_id WHERE t.id = 't1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(t1_section, "Si");
+        let t3_section: String = conn
+            .query_row(
+                "SELECT p.section FROM todos t JOIN projects p ON p.id = t.project_id WHERE t.id = 't3'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(t3_section, "P");
+        let loose: (String, String, String) = conn
+            .query_row(
+                "SELECT p.section, p.folder, p.name FROM todos t JOIN projects p ON p.id = t.project_id WHERE t.id = 't-loose'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(loose, ("Si".into(), "~/programming".into(), "programming".into()));
+        let sigma_on_si: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE section = 'Si' AND folder = '~/programming/sigma-revenue'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sigma_on_si, 1, "the nested project still exists under the section folder");
+        let session: String = conn
+            .query_row("SELECT session_id FROM conversations WHERE todo_id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(session, "sess-1");
+        let memory_section: String = conn
+            .query_row(
+                "SELECT p.section FROM memories m JOIN projects p ON p.id = m.project_id WHERE m.id = 'm1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(memory_section, "Si");
+    }
+
+    #[test]
     fn migrates_v2_through_v4_with_one_backup() {
         let db = TestDb::new("migrate");
         Connection::open(&db.path).unwrap().execute_batch(V2_SCHEMA).unwrap();
@@ -663,7 +1227,7 @@ mod tests {
         assert_eq!(db.backups().len(), 1);
         assert!(db.backups()[0].to_string_lossy().contains(".pre-v3-"));
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         for table in V3_TABLES.iter().chain(V4_TABLES.iter()) {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
         }
@@ -674,7 +1238,7 @@ mod tests {
         let db = TestDb::new("migrate");
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(db.backups().is_empty());
         for table in V4_TABLES {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
@@ -687,7 +1251,7 @@ mod tests {
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.pragma_update(None, "user_version", 0).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 4);
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     fn column_names(conn: &Connection, table: &str) -> Vec<String> {
@@ -721,7 +1285,7 @@ mod tests {
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM section_computers"), 2);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM daily_days"), 1);
         assert!(column_names(&conn, "todos").contains(&"project_id".to_string()));
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM todos WHERE project_id IS NOT NULL"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM todos WHERE project_id IS NOT NULL"), 3);
         for table in V3_TABLES {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
         }
@@ -730,7 +1294,7 @@ mod tests {
         assert!(!column_names(&backup, "todos").contains(&"project_id".to_string()));
         assert_eq!(user_version(&backup), 2);
 
-        // Todos keep working with project_id NULL, through the API's own SELECT.
+        // A loose todo from v2 now belongs to a project on its section.
         let todo = conn
             .query_row(
                 &format!("SELECT {} FROM todos WHERE id = 't1'", crate::handlers::SELECT_COLS),
@@ -738,7 +1302,8 @@ mod tests {
                 crate::models::row_to_todo,
             )
             .unwrap();
-        assert_eq!((todo.title.as_str(), todo.due_date.as_deref(), todo.project_id), ("linked", Some("2026-10-20"), None));
+        assert_eq!((todo.title.as_str(), todo.due_date.as_deref()), ("linked", Some("2026-10-20")));
+        assert!(todo.project_id.is_some());
     }
 
     #[test]
@@ -766,10 +1331,10 @@ mod tests {
         let conn = Connection::open(&db.path).unwrap();
         conn.pragma_update(None, "user_version", 3).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 3);
-        // An unversioned database that already has the v3 tables is v3, not v2.
+        // An unversioned database whose projects already belong to a section is v5.
         conn.execute_batch(&V4_TABLES.map(|t| format!("DROP TABLE {t};")).concat()).unwrap();
         conn.pragma_update(None, "user_version", 0).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 3);
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]
@@ -823,9 +1388,8 @@ mod tests {
         assert_eq!((session.as_str(), status.as_str(), message.as_str(), tmux.as_str()),
                    ("sess-1", "waiting", "needs ok", "ai/claude/todo-t1"));
 
-        // The widened CHECKs accept codex; unknown tools are still rejected.
-        conn.execute("UPDATE section_computers SET tool = 'codex' WHERE section = 'I'", []).unwrap();
-        assert!(conn.execute("UPDATE section_computers SET tool = 'vim' WHERE section = 'I'", []).is_err());
+        // Unknown tools are still rejected. A section no longer stores one.
+        assert!(conn.execute("UPDATE conversations SET tool = 'vim' WHERE todo_id = 't1'", []).is_err());
         conn.execute(
             "INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id)
              VALUES ('t2', 'codbex', '~/Repositories', 'codex', 'ai/codex/todo-t2', 'sess-1')",
@@ -851,7 +1415,9 @@ mod tests {
         assert!(db.backups().is_empty());
         let sql = table_sql(&conn, "conversations").unwrap().unwrap();
         assert!(sql.contains("session_id") && !sql.contains("claude_session_id"), "{sql}");
-        assert!(table_sql(&conn, "section_computers").unwrap().unwrap().contains("'codex'"));
+        let sections = table_sql(&conn, "section_computers").unwrap().unwrap();
+        assert!(!sections.contains("cwd") && !sections.contains("tool"), "{sections}");
+        assert!(sql.contains("'codex'"), "{sql}");
         let index: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'conversations_session_id'",
