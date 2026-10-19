@@ -387,13 +387,14 @@ pub struct TodoWithConversation {
 }
 
 // ---------------------------------------------------------------------------
-// Projects: a folder on one computer
+// Projects: a folder on one section. The computer is the section's computer.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
     pub name: String,
+    pub section: Section,
     pub computer: Computer,
     /// Folder on the computer, `~`-relative when under its home, no trailing `/`
     pub folder: String,
@@ -418,7 +419,7 @@ pub struct Project {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateProjectRequest {
     pub name: String,
-    pub computer_id: String,
+    pub section: Section,
     pub folder: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_url: Option<String>,

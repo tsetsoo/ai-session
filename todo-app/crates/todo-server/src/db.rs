@@ -818,9 +818,10 @@ fn session_todo_project(conn: &Connection, tool: &str, session_id: &str) -> rusq
          JOIN todos ON todos.id = conversations.todo_id
          WHERE conversations.tool = ?1 AND conversations.session_id = ?2",
         params![tool, session_id],
-        |r| r.get(0),
+        |r| r.get::<_, Option<String>>(0),
     )
     .optional()
+    .map(Option::flatten)
 }
 
 fn pick_session_project(matches: &mut [(String, String)], current: Option<&str>) -> Option<String> {

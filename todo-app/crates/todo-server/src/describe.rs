@@ -303,14 +303,14 @@ fn project_endpoints() -> Vec<Value> {
         json!({
             "method": "POST",
             "path": "/api/projects",
-            "description": "Create a project: a folder on one computer. folder must start with ~ or /; /Users/<username>/… and /home/<username>/… of that computer are stored as ~/…, without a trailing /. 201 with the Project. 404 for an unknown computer. 409 when (computer, folder) is taken, or when the folder is inside or contains another project's folder on the same computer (the message names it; projects can't be nested). Re-matches that computer's conversations",
-            "example_request": {"name": "todo-app", "computer_id": "<uuid>", "folder": "~/programming/todo-app", "repo_url": "git@github.com:tsetsoo/todo-app.git", "digest_enabled": true},
+            "description": "Create a project on a section. folder must start with ~ or /; /Users/<username>/… and /home/<username>/… of that section's computer are stored as ~/…, without a trailing /. 201 with the Project, including the section and its computer. 409 when the section has no computer, or when that section already has this folder. A folder inside another project is allowed. Re-matches that computer's conversations",
+            "example_request": {"name": "todo-app", "section": "Si", "folder": "~/programming/todo-app", "repo_url": "git@github.com:tsetsoo/todo-app.git", "digest_enabled": true},
             "response_status": 201
         }),
         json!({
             "method": "GET",
             "path": "/api/projects/suggestions",
-            "description": "Suggested projects from the cwds of known conversations: a /.claude/worktrees/<x> suffix is dropped, then the path is cut to two segments below ~ (three for other absolute paths). Grouped by computer and folder, with the session count, latest activity, example cwds and the repo URL of a session whose repo root is that folder. Folders that already are, lie inside, or contain a project are left out. Ordered by session count. Accept one with POST /api/projects",
+            "description": "Suggested projects from the cwds of known conversations: a /.claude/worktrees/<x> suffix is dropped, then the path is cut to two segments below ~ (three for other absolute paths). Grouped by computer and folder, with the session count, latest activity, example cwds and the repo URL of a session whose repo root is that folder. A folder that is already a project on that computer is left out. Ordered by session count. Accept one with POST /api/projects",
             "example_response": [{"computer": "Computer", "folder": "~/programming/sigma-revenue", "name": "sigma-revenue", "repo_url": null, "sessions": 19, "last_activity": "2026-10-16T09:12:03Z", "example_cwds": ["~/programming/sigma-revenue/sigma-revenue-backend"]}]
         }),
         json!({"method": "GET", "path": "/api/projects/{id}", "description": "One project (same shape as the list items); 404 if missing"}),
