@@ -9,7 +9,7 @@ final class ProjectsClientTests: XCTestCase {
     """
 
     static let projectJSON = """
-    {"id":"p1","name":"sigma-revenue","computer":\(computerJSON),"folder":"~/programming/sigma-revenue",
+    {"id":"p1","name":"sigma-revenue","section":"Si","computer":\(computerJSON),"folder":"~/programming/sigma-revenue",
      "repo_url":null,"digest_enabled":true,"created_at":"2026-10-16 08:00:00","updated_at":"2026-10-16 08:00:00",
      "open_todos":3,"sessions":41,"memories":57,"last_activity":"2026-10-16T09:12:03Z"}
     """
@@ -121,6 +121,7 @@ final class ProjectsClientTests: XCTestCase {
         let decoder = TodoHubClient.makeDecoder()
         let project = try decoder.decode(Project.self, from: Data(Self.projectJSON.utf8))
         XCTAssertEqual(project.name, "sigma-revenue")
+        XCTAssertEqual(project.section, .si)
         XCTAssertEqual(project.computer.name, "spreads-macbook-pro")
         XCTAssertNil(project.repoUrl)
         XCTAssertTrue(project.digestEnabled)
@@ -132,7 +133,7 @@ final class ProjectsClientTests: XCTestCase {
 
         // Counts are optional on the wire (e.g. a minimal create response).
         let minimal = """
-        {"id":"p2","name":"x","computer":\(Self.computerJSON),"folder":"~/x","digest_enabled":false,"created_at":"","updated_at":""}
+        {"id":"p2","name":"x","section":"Si","computer":\(Self.computerJSON),"folder":"~/x","digest_enabled":false,"created_at":"","updated_at":""}
         """
         let bare = try decoder.decode(Project.self, from: Data(minimal.utf8))
         XCTAssertEqual(bare.openTodos, 0)
@@ -250,12 +251,11 @@ final class ProjectsClientTests: XCTestCase {
 
     func testCreateTodoWithProject() async throws {
         respond(#"{"id":"t1","section":"I","title":"a","completed":false,"importance":"medium","created_at":"","updated_at":"","project_id":"p1"}"#)
-        let todo = try await client().createTodo(CreateTodoRequest(section: .i, title: "a", projectId: "p1"))
+        let todo = try await client().createTodo(CreateTodoRequest(title: "a", projectId: "p1"))
         XCTAssertEqual(todo.projectId, "p1")
-        XCTAssertEqual(try lastBody()["project_id"] as? String, "p1")
-
-        _ = try await client().createTodo(CreateTodoRequest(section: .i, title: "a"))
-        XCTAssertFalse(try lastBody().keys.contains("project_id"))
+        let body = try lastBody()
+        XCTAssertEqual(body["project_id"] as? String, "p1")
+        XCTAssertFalse(body.keys.contains("section"))
     }
 
     // MARK: Projects
@@ -273,13 +273,14 @@ final class ProjectsClientTests: XCTestCase {
 
         respond(Self.projectJSON, status: 201)
         _ = try await client().createProject(CreateProjectRequest(
-            name: "sigma-revenue", computerId: "c1", folder: "~/programming/sigma-revenue"
+            name: "sigma-revenue", section: .si, folder: "~/programming/sigma-revenue"
         ))
         XCTAssertEqual(lastRequest.httpMethod, "POST")
         XCTAssertEqual(lastRequest.url?.path, "/api/projects")
         var body = try lastBody()
         XCTAssertEqual(body["name"] as? String, "sigma-revenue")
-        XCTAssertEqual(body["computer_id"] as? String, "c1")
+        XCTAssertEqual(body["section"] as? String, "Si")
+        XCTAssertFalse(body.keys.contains("computer_id"))
         XCTAssertEqual(body["folder"] as? String, "~/programming/sigma-revenue")
         XCTAssertFalse(body.keys.contains("repo_url"))
         XCTAssertFalse(body.keys.contains("digest_enabled"))
@@ -315,7 +316,7 @@ final class ProjectsClientTests: XCTestCase {
     func testProjectNestingConflictKeepsServerMessage() async {
         respond(#"{"error":"Folder is inside project sigma-revenue"}"#, status: 409)
         do {
-            _ = try await client().createProject(CreateProjectRequest(name: "x", computerId: "c1", folder: "~/a/b"))
+            _ = try await client().createProject(CreateProjectRequest(name: "x", section: .si, folder: "~/a/b"))
             XCTFail("expected a conflict")
         } catch {
             XCTAssertEqual(error as? TodoHubError, .conflict("Folder is inside project sigma-revenue"))

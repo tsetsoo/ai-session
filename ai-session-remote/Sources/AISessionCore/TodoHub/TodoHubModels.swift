@@ -94,9 +94,6 @@ public struct Computer: Codable, Hashable, Identifiable, Sendable {
 public struct SectionComputer: Codable, Equatable, Sendable {
     public var section: TodoSection
     public var computer: Computer
-    /// Default working directory for new conversations (may start with `~`).
-    public var cwd: String
-    public var tool: String
 }
 
 public struct Conversation: Codable, Equatable, Sendable {
@@ -160,8 +157,10 @@ public struct Conversation: Codable, Equatable, Sendable {
         tmuxName = try c.decode(String.self, forKey: .tmuxName)
         if let id = try c.decodeIfPresent(String.self, forKey: .sessionId) {
             sessionId = id
+        } else if let legacy = try c.decodeIfPresent(String.self, forKey: .claudeSessionId) {
+            sessionId = legacy
         } else {
-            sessionId = try c.decode(String.self, forKey: .claudeSessionId)
+            sessionId = ""
         }
         status = try c.decode(ConversationStatus.self, forKey: .status)
         statusMessage = try c.decodeIfPresent(String.self, forKey: .statusMessage)
@@ -279,17 +278,29 @@ public struct RemoteConversation: Codable, Hashable, Identifiable, Sendable {
 }
 
 public struct CreateTodoRequest: Encodable, Sendable {
-    public var section: TodoSection
     public var title: String
+    public var projectId: String
+    /// Sent only to reject a section that is not the project's. Omitted uses the project's section.
+    public var section: TodoSection?
     public var importance: TodoImportance?
-    /// The project must exist (`404 Project not found`).
-    public var projectId: String?
 
-    public init(section: TodoSection, title: String, importance: TodoImportance? = nil, projectId: String? = nil) {
-        self.section = section
+    public init(title: String, projectId: String, section: TodoSection? = nil, importance: TodoImportance? = nil) {
         self.title = title
-        self.importance = importance
         self.projectId = projectId
+        self.section = section
+        self.importance = importance
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case title, projectId, section, importance
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(title, forKey: .title)
+        try c.encode(projectId, forKey: .projectId)
+        try c.encodeIfPresent(section, forKey: .section)
+        try c.encodeIfPresent(importance, forKey: .importance)
     }
 }
 
@@ -341,13 +352,25 @@ public struct CreateComputerRequest: Encodable, Sendable {
 
 public struct SetSectionComputerRequest: Encodable, Sendable {
     public var computerId: String
-    public var cwd: String
-    public var tool: String?
 
-    public init(computerId: String, cwd: String, tool: String? = nil) {
+    public init(computerId: String) {
         self.computerId = computerId
-        self.cwd = cwd
+    }
+}
+
+public struct OpenConversationRequest: Encodable, Sendable {
+    public var tool: String
+
+    public init(tool: String) {
         self.tool = tool
+    }
+}
+
+public struct SetConversationSessionRequest: Encodable, Sendable {
+    public var sessionId: String
+
+    public init(sessionId: String) {
+        self.sessionId = sessionId
     }
 }
 

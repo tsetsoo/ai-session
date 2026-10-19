@@ -58,6 +58,7 @@ public enum HubDates {
 public struct Project: Codable, Hashable, Identifiable, Sendable {
     public var id: String
     public var name: String
+    public var section: TodoSection
     public var computer: Computer
     /// May start with `~`, no trailing `/`.
     public var folder: String
@@ -74,12 +75,14 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
     public var lastActivity: String?
 
     public init(
-        id: String, name: String, computer: Computer, folder: String, repoUrl: String? = nil,
+        id: String, name: String, computer: Computer, folder: String, section: TodoSection = .si,
+        repoUrl: String? = nil,
         digestEnabled: Bool = true, createdAt: String = "", updatedAt: String = "",
         openTodos: Int = 0, sessions: Int = 0, memories: Int = 0, lastActivity: String? = nil
     ) {
         self.id = id
         self.name = name
+        self.section = section
         self.computer = computer
         self.folder = folder
         self.repoUrl = repoUrl
@@ -93,7 +96,7 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, computer, folder, repoUrl, digestEnabled, createdAt, updatedAt
+        case id, name, section, computer, folder, repoUrl, digestEnabled, createdAt, updatedAt
         case openTodos, sessions, memories, lastActivity
     }
 
@@ -101,6 +104,7 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
+        section = try c.decode(TodoSection.self, forKey: .section)
         computer = try c.decode(Computer.self, forKey: .computer)
         folder = try c.decode(String.self, forKey: .folder)
         repoUrl = try c.decodeIfPresent(String.self, forKey: .repoUrl)
@@ -161,14 +165,14 @@ public struct ProjectSuggestion: Decodable, Hashable, Identifiable, Sendable {
 /// `POST /api/projects`. `nil` fields are omitted.
 public struct CreateProjectRequest: Encodable, Sendable {
     public var name: String
-    public var computerId: String
+    public var section: TodoSection
     public var folder: String
     public var repoUrl: String?
     public var digestEnabled: Bool?
 
-    public init(name: String, computerId: String, folder: String, repoUrl: String? = nil, digestEnabled: Bool? = nil) {
+    public init(name: String, section: TodoSection, folder: String, repoUrl: String? = nil, digestEnabled: Bool? = nil) {
         self.name = name
-        self.computerId = computerId
+        self.section = section
         self.folder = folder
         self.repoUrl = repoUrl
         self.digestEnabled = digestEnabled
