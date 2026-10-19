@@ -350,12 +350,36 @@ final class TodoHubStore {
 
     // MARK: Conversations
 
-    /// Get-or-create the todo's conversation on the hub.
+    /// Get-or-create the todo's conversation on the hub. An existing conversation is resumed
+    /// with the tool it already has.
     func openConversation(for todo: Todo) async throws -> Conversation {
+        try await openConversation(for: todo, tool: "claude", config: nil)
+    }
+
+    /// Opens for `tool`. Codex and Cursor have no id yet: the computer starts one, and the id
+    /// it prints is stored before the terminal attaches. A start that never produces an id
+    /// removes the hub conversation so the tool step shows again.
+    func openConversation(for todo: Todo, tool: String, config: HostConnectionConfig?) async throws -> Conversation {
         guard let client = hubClient() else {
             throw TodoHubError.invalidBaseURL
         }
-        let conversation = try await client.openConversation(todoId: todo.id, tool: "claude")
+        var conversation = try await client.openConversation(todoId: todo.id, tool: tool)
+        conversations[todo.id] = conversation
+        guard ConversationStart.startsFresh(tool), conversation.sessionId.isEmpty else { return conversation }
+        guard let config else { throw TodoHubError.invalidBaseURL }
+        let result = try await NIOSSHClient().exec(
+            config,
+            command: TmuxCommandBuilder.freshTodoConversation(
+                tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool
+            )
+        )
+        let created = ConversationStart.createdSessionId(from: result.stdout)
+        guard result.exitCode != 94, let created else {
+            try? await client.deleteConversation(todoId: todo.id)
+            conversations[todo.id] = nil
+            throw TodoHubError.conflict("No new \(tool) conversation appeared")
+        }
+        conversation = try await client.setConversationSession(todoId: todo.id, sessionId: created)
         conversations[todo.id] = conversation
         return conversation
     }

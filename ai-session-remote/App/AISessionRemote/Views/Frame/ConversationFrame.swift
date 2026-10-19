@@ -55,6 +55,11 @@ struct ConversationFrame: View {
     @State private var approveGate = ApproveGate()
     /// Opened while waiting: keyboard focus goes to the terminal once it connects.
     @State private var waitingFocus = WaitingFocus()
+    /// The tool step. Empty until the frame appears, then the device's last tool, or Claude.
+    @AppStorage(ConversationStart.storageKey) private var lastStartedTool = ""
+    @State private var toolChoice = ""
+    @State private var isStarting = false
+    @State private var toolError: String?
 
     init(
         todo: Todo,
@@ -234,7 +239,11 @@ struct ConversationFrame: View {
     private var phaseArea: some View {
         switch loader.phase {
         case .idle:
-            onTerminalBackground(idleState)
+            if ConversationStart.needsConfirm(hasConversation: store.conversations[todo.id] != nil) {
+                onTerminalBackground(toolStep)
+            } else {
+                onTerminalBackground(idleState)
+            }
         case .preparing:
             onTerminalBackground(FrameStateBlock(showsProgress: true, title: preparingTitle))
         case let .ready(open):
@@ -271,6 +280,99 @@ struct ConversationFrame: View {
                 resumeCommand: conversation.map(ResumeCommand.string(for:))
             ))
         }
+    }
+
+    private var toolStep: some View {
+        let folder = store.project(id: todo.projectId)?.folder
+        let computer = store.sectionComputers[todo.section]?.computer.name
+        return VStack(spacing: DS.spacing.m) {
+            Text("Start a conversation")
+                .font(.title3.weight(.semibold))
+            if let computer {
+                Text(computer)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("No computer")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            if let folder, !folder.isEmpty {
+                Text(folder)
+                    .font(.subheadline.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Picker("Tool", selection: $toolChoice) {
+                Text("Claude").tag("claude")
+                Text("Codex").tag("codex")
+                Text("Cursor").tag("cursor")
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 360)
+            .labelsHidden()
+            if let toolError {
+                Text(toolError)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+            }
+            HStack(spacing: DS.spacing.m) {
+                Button("Cancel", action: onDeleted)
+                    .buttonStyle(.bordered)
+                    .disabled(isStarting)
+                Button(isStarting ? "Starting…" : "Start") { confirmTool() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(DS.accent)
+                    .disabled(isStarting || store.sectionComputers[todo.section] == nil)
+            }
+        }
+        .frame(maxWidth: 440)
+        .padding(DS.spacing.xl)
+        .onAppear {
+            if toolChoice.isEmpty {
+                toolChoice = ConversationStart.selectedTool(remembered: lastStartedTool.isEmpty ? nil : lastStartedTool)
+            }
+        }
+    }
+
+    private func confirmTool() {
+        guard !isStarting else { return }
+        let tool = ConversationStart.selectedTool(remembered: toolChoice)
+        lastStartedTool = tool
+        isStarting = true
+        toolError = nil
+        Task {
+            defer { isStarting = false }
+            do {
+                let conversation = try await startConversation(tool: tool)
+                loader.attachOpened(conversation)
+            } catch {
+                toolError = TodoHubStore.message(for: error)
+            }
+        }
+    }
+
+    private func startConversation(tool: String) async throws -> Conversation {
+        #if DEBUG
+        if DemoFixtures.isEnabled {
+            return try await DemoFixtures.loaderDependencies().openConversation(todo)
+        }
+        #endif
+        guard let computer = store.sectionComputers[todo.section]?.computer else {
+            throw TodoHubError.conflict("Section \(todo.section.rawValue) has no computer assigned")
+        }
+        guard let host = HostLookup.host(for: computer, in: hosts) else {
+            throw HostLookup.Failure.noHost(computer)
+        }
+        let connection: (service: SessionService, config: HostConnectionConfig)
+        do {
+            connection = try SessionServiceFactory().make(for: host)
+        } catch {
+            throw HostLookup.Failure.keyUnavailable(host.displayName)
+        }
+        return try await store.openConversation(for: todo, tool: tool, config: connection.config)
     }
 
     private var idleState: some View {
@@ -527,6 +629,10 @@ struct ConversationFrame: View {
     /// A settings sheet closed while a problem shows: try again with what was just fixed.
     private func retryAfterSettings() {
         guard case .problem = loader.phase else { return }
+        if store.conversations[todo.id] == nil {
+            loader.reset()
+            return
+        }
         Task { await loader.start() }
     }
 
