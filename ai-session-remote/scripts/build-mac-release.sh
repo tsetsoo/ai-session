@@ -5,8 +5,8 @@
 #   scripts/build-mac-release.sh [derived-data-dir]
 #
 # Signed with Apple Development team 233QTK6KCL so login-keychain access survives
-# rebuilds. Copy it to ~/Applications to install:
-#   cp -R "$(scripts/build-mac-release.sh | tail -1)" ~/Applications/
+# rebuilds. To quit the running app and replace ~/Applications, run
+# scripts/rebuild-mac-app.sh instead of copying the result by hand.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

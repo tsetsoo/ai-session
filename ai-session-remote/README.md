@@ -127,7 +127,7 @@ The installer is safe to re-run. It sets up:
   - Codex allows only one `notify`. If one is already configured, `install.sh` leaves it alone and explains how to proceed.
   - `install.sh --chain-codex-notify` wraps an existing `notify` so both run. `--uninstall` puts the original back.
 
-To build a Release Mac app, run `scripts/build-mac-release.sh`, which prints the `.app` path.
+To rebuild the Mac app you run, use `scripts/rebuild-mac-app.sh`. It builds Release, checks the Apple Development team, and replaces `~/Applications/AI Session Remote.app`. `scripts/build-mac-release.sh` only prints the built `.app` path.
 - `~/.ai-remote/todo-hub.conf` (mode 600): `TODO_HUB_URL` and `TODO_API_TOKEN` for the hook.
 - `~/.ai-remote/tmux.conf`, sourced from `~/.tmux.conf`. Run `tmux source-file ~/.tmux.conf`
   to apply it to a running server. It sets:
