@@ -76,7 +76,7 @@ The Mac app can add SSH hosts without the host editor, then exit:
   --add-host "this Mac" me@100.103.53.126:22 ~/.ssh/id_ed25519_aisession
 ```
 
-- Each key must be an unencrypted Ed25519 or ECDSA key. It is stored in the app's Keychain, the same as when you pick it in the editor. The Mac app is signed with a local certificate (`scripts/ensure-mac-signing-identity.sh`) so that prompt does not come back on every rebuild. After this signing change, click Always Allow once for keys already stored.
+- Each key must be an unencrypted Ed25519 or ECDSA key. It is stored in the app's Keychain, the same as when you pick it in the editor. The Mac app is signed with the Apple Development certificate for team 233QTK6KCL so that prompt does not come back on every rebuild. After this signing change, click Always Allow once for keys already stored.
 - If a host with the same user, hostname and port already exists, its key is replaced instead of adding a duplicate.
 - Open the app normally afterwards.
 

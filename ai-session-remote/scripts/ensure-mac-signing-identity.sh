@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Create a reusable local code-signing identity for the Mac app.
+# Unused by the build. The Mac app is signed with the Apple Development
+# certificate for team 233QTK6KCL. A self-signed certificate has no Team ID, so
+# the login keychain pins each rebuild by cdhash and asks again.
 #
-# Ad-hoc signatures change every build, and the login keychain trusts an app by
-# its designated requirement. A stable certificate keeps that requirement the
-# same, so SSH keys and the hub token stop prompting after one Allow.
-#
-# The certificate lives only in this Mac's login keychain. Other Macs create
-# their own on first build. It is not an Apple Developer certificate.
+# Kept so an existing local identity can still be recreated by hand. It is not
+# an Apple Developer certificate.
 set -euo pipefail
 
 CERT_NAME="AI Session Remote Local"
