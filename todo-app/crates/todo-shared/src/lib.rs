@@ -282,17 +282,21 @@ pub struct UpdateComputerRequest {
 pub struct SectionComputer {
     pub section: Section,
     pub computer: Computer,
-    /// Default working directory for new conversations (may start with ~)
-    pub cwd: String,
-    pub tool: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SetSectionComputerRequest {
     pub computer_id: String,
-    pub cwd: String,
-    #[serde(default)]
-    pub tool: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OpenConversationRequest {
+    pub tool: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetConversationSessionRequest {
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -187,8 +187,8 @@ fn base_description() -> Value {
             {
                 "method": "PUT",
                 "path": "/api/sections/{code}/computer",
-                "description": "Assign a computer and default working directory to a section. tool: claude | codex | cursor (default claude). Only claude sections can start new conversations; the others can only link existing ones",
-                "example_request": {"computer_id": "<uuid>", "cwd": "~/programming", "tool": "claude"}
+                "description": "Assign a computer to a section",
+                "example_request": {"computer_id": "<uuid>"}
             },
             {"method": "DELETE", "path": "/api/sections/{code}/computer", "description": "Remove a section's computer"},
             {"method": "GET", "path": "/api/conversations", "description": "All conversations with their computer and status"},
@@ -196,7 +196,7 @@ fn base_description() -> Value {
             {
                 "method": "POST",
                 "path": "/api/todos/{id}/conversation",
-                "description": "Get or create the todo's conversation from its section's computer (snapshotting computer and cwd). Reopening a closed one resets status to unknown. 409 if the section has no computer, or if the section's tool can't start conversations (codex, cursor: link one instead). The client then SSHes to the computer and runs: ai-todo-open <tmux_name> <cwd> <session_id> <tool>"
+                "description": "Get or create the todo's conversation. Body is {tool: claude|codex|cursor}. The computer is the section's; the folder is the project's. Claude stores a new session id. Codex and Cursor store none until PUT .../conversation/session. A second open returns the existing row unchanged. 400 for a missing or unknown tool, or a todo with no project. 409 if the section has no computer",
             },
             {
                 "method": "POST",
@@ -215,7 +215,7 @@ fn base_description() -> Value {
                 "response_status": 201
             },
             {"method": "POST", "path": "/api/todos/{id}/conversation/close", "description": "Mark closed after the client killed the tmux session; the conversation stays resumable"},
-            {"method": "DELETE", "path": "/api/todos/{id}/conversation", "description": "Forget the conversation link (the conversation itself stays on the computer); afterwards only sections whose tool is claude can start a new conversation on open (POST /conversation); for codex and cursor sections, link a conversation again"},
+            {"method": "DELETE", "path": "/api/todos/{id}/conversation", "description": "Forget the conversation link (the conversation itself stays on the computer). A later open starts a new one for the tool in the request"},
             {
                 "method": "POST",
                 "path": "/api/conversations/status",

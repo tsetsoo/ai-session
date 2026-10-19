@@ -4,15 +4,16 @@
 //! SSH to the computer themselves and run `ai-todo-open` with the stored
 //! `tmux_name`, `cwd`, `session_id` and `tool`.
 //!
-//! A conversation is either started from a todo (Claude only: the server picks the
-//! session id and the client runs `claude --session-id`) or linked to one that already
-//! exists on the computer (Claude, Codex or Cursor, by the tool's own session id).
+//! A conversation is started from a todo for Claude, Codex, or Cursor. Claude gets a
+//! server-minted session id. Codex and Cursor start without one; the client stores the
+//! id the tool assigns. An existing conversation can also be linked by its session id.
 
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
     Computer, Conversation, ConversationStatus, ConversationStatusRequest, CreateComputerRequest, DeleteResponse,
-    Importance, LinkConversationRequest, Section, SectionComputer, SetSectionComputerRequest,
+    Importance, LinkConversationRequest, OpenConversationRequest, Section, SectionComputer,
+    SetConversationSessionRequest, SetSectionComputerRequest,
     TodoFromConversationRequest, TodoWithConversation, UpdateComputerRequest,
 };
 use uuid::Uuid;
@@ -24,12 +25,8 @@ use crate::models::row_to_todo;
 use crate::projects::project_for;
 use crate::push::{PushNotifier, Transition};
 
-/// Tools a section or a linked conversation may use (matches `db::TOOLS_SQL`).
+/// Tools a conversation may use (matches `db::TOOLS_SQL`).
 pub(crate) const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
-
-/// Tools a todo can start a new conversation with. Only Claude accepts a session id
-/// chosen up front (`claude --session-id`); the others can only be linked.
-const STARTABLE_TOOLS: &[&str] = &["claude"];
 
 pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at";
 
@@ -42,8 +39,8 @@ const CONVERSATION_SELECT: &str = "SELECT c.todo_id, c.cwd, c.tool, c.tmux_name,
      FROM conversations c JOIN computers m ON m.id = c.computer_id
      LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id";
 
-/// Section mapping columns (0..=2) followed by its computer (3..=9).
-const SECTION_COMPUTER_SELECT: &str = "SELECT s.section, s.cwd, s.tool,
+/// Section mapping columns (0) followed by its computer (1..=7).
+const SECTION_COMPUTER_SELECT: &str = "SELECT s.section,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at
      FROM section_computers s JOIN computers m ON m.id = s.computer_id";
 
@@ -83,7 +80,8 @@ pub(crate) fn computer_at(row: &Row, start: usize) -> rusqlite::Result<Computer>
 fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
     let status: String = row.get(5)?;
     let tool: String = row.get(2)?;
-    let session_id: String = row.get(4)?;
+    let session_id: Option<String> = row.get(4)?;
+    let session_id = session_id.unwrap_or_default();
     let conversation = Conversation {
         todo_id: row.get(0)?,
         cwd: row.get(1)?,
@@ -115,9 +113,7 @@ fn row_to_section_computer(row: &Row) -> rusqlite::Result<SectionComputer> {
     let section: String = row.get(0)?;
     Ok(SectionComputer {
         section: Section::parse(&section).unwrap_or(Section::P),
-        cwd: row.get(1)?,
-        tool: row.get(2)?,
-        computer: computer_at(row, 3)?,
+        computer: computer_at(row, 1)?,
     })
 }
 
@@ -137,9 +133,9 @@ pub(crate) fn load_conversation(conn: &Connection, todo_id: &str) -> rusqlite::R
 pub(crate) enum OpenError {
     TodoNotFound,
     NoComputer(String),
-    /// The section's tool can't start a conversation with a preset id; link one instead.
-    CannotStart(String),
-    /// Both the short and the full tmux name are taken by other todos.
+    UnsupportedTool,
+    NoProject,
+    BadRequest(&'static str),
     NoTmuxName,
     Db(rusqlite::Error),
 }
@@ -167,14 +163,18 @@ pub(crate) fn is_constraint_violation(e: &rusqlite::Error) -> bool {
 ///
 /// Runs in one IMMEDIATE transaction so it can't interleave with a concurrent
 /// close, status update or todo delete.
-pub(crate) fn open_conversation_db(conn: &Connection, todo_id: &str) -> Result<Conversation, OpenError> {
+pub(crate) fn open_conversation_db(conn: &Connection, todo_id: &str, tool: &str) -> Result<Conversation, OpenError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let conversation = open_conversation_in(&tx, todo_id)?;
+    let conversation = open_conversation_in(&tx, todo_id, tool)?;
     tx.commit()?;
     Ok(conversation)
 }
 
-fn open_conversation_in(conn: &Connection, todo_id: &str) -> Result<Conversation, OpenError> {
+fn open_conversation_in(conn: &Connection, todo_id: &str, tool: &str) -> Result<Conversation, OpenError> {
+    let tool = tool.trim();
+    if !SUPPORTED_TOOLS.contains(&tool) {
+        return Err(OpenError::UnsupportedTool);
+    }
     let section: String = conn
         .query_row("SELECT section FROM todos WHERE id = ?1", params![todo_id], |r| r.get(0))
         .optional()?
@@ -189,23 +189,42 @@ fn open_conversation_in(conn: &Connection, todo_id: &str) -> Result<Conversation
         return load_conversation(conn, todo_id)?.ok_or(OpenError::Db(rusqlite::Error::QueryReturnedNoRows));
     }
 
-    let mapping: Option<(String, String, String)> = conn
-        .query_row(
-            "SELECT computer_id, cwd, tool FROM section_computers WHERE section = ?1",
-            params![section],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
+    let computer_id: Option<String> = conn
+        .query_row("SELECT computer_id FROM section_computers WHERE section = ?1", params![section], |r| r.get(0))
         .optional()?;
-    let Some((computer_id, cwd, tool)) = mapping else {
+    let Some(computer_id) = computer_id else {
         return Err(OpenError::NoComputer(section));
     };
-    if !STARTABLE_TOOLS.contains(&tool.as_str()) {
-        return Err(OpenError::CannotStart(tool));
-    }
-
-    let session_id = Uuid::new_v4().to_string();
-    if !insert_conversation(conn, todo_id, &computer_id, &cwd, &tool, &session_id, false)? {
+    let cwd: String = conn
+        .query_row(
+            "SELECT p.folder FROM todos t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
+            params![todo_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or(OpenError::NoProject)?;
+    let session_id = (tool == "claude").then(|| Uuid::new_v4().to_string());
+    if !insert_conversation(conn, todo_id, &computer_id, &cwd, tool, session_id.as_deref(), false)? {
         return Err(OpenError::NoTmuxName);
+    }
+    load_conversation(conn, todo_id)?.ok_or(OpenError::TodoNotFound)
+}
+
+pub(crate) fn set_conversation_session_db(
+    conn: &Connection,
+    todo_id: &str,
+    session_id: &str,
+) -> Result<Conversation, OpenError> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err(OpenError::BadRequest("session_id is required"));
+    }
+    let updated = conn.execute(
+        "UPDATE conversations SET session_id = ?1 WHERE todo_id = ?2",
+        params![session_id, todo_id],
+    )?;
+    if updated == 0 {
+        return Err(OpenError::TodoNotFound);
     }
     load_conversation(conn, todo_id)?.ok_or(OpenError::TodoNotFound)
 }
@@ -257,10 +276,10 @@ fn insert_conversation(
     computer_id: &str,
     cwd: &str,
     tool: &str,
-    session_id: &str,
+    session_id: Option<&str>,
     replacing: bool,
 ) -> rusqlite::Result<bool> {
-    let Some(name) = pick_tmux_name(conn, tool, todo_id, session_id, replacing)? else {
+    let Some(name) = pick_tmux_name(conn, tool, todo_id, session_id.unwrap_or(""), replacing)? else {
         return Ok(false);
     };
     conn.execute(
@@ -383,7 +402,7 @@ pub(crate) fn link_conversation_db(
         tx.execute("DELETE FROM conversations WHERE todo_id = ?1", params![todo_id])?;
         replacing = true;
     }
-    match insert_conversation(&tx, todo_id, target.computer_id, target.cwd, target.tool, target.session_id, replacing) {
+    match insert_conversation(&tx, todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), replacing) {
         Ok(true) => {}
         Ok(false) => return Err(LinkError::NoTmuxName),
         Err(e) => return Err(link_insert_error(&tx, e, todo_id, target)),
@@ -415,7 +434,7 @@ pub(crate) fn todo_from_conversation_db(
         return Err(LinkError::SessionTaken(other));
     }
     let todo_id = insert_todo(&tx, new.section, new.title, new.importance, new.due_date, None)?;
-    match insert_conversation(&tx, &todo_id, target.computer_id, target.cwd, target.tool, target.session_id, false) {
+    match insert_conversation(&tx, &todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), false) {
         Ok(true) => {}
         Ok(false) => return Err(LinkError::NoTmuxName),
         Err(e) => return Err(link_insert_error(&tx, e, &todo_id, target)),
@@ -645,12 +664,8 @@ pub async fn set_section_computer(
     let Some(section) = Section::parse(&path.into_inner()) else {
         return bad_request("Invalid section");
     };
-    let tool = body.tool.as_deref().unwrap_or("claude");
-    if !SUPPORTED_TOOLS.contains(&tool) {
-        return bad_request("Unsupported tool");
-    }
-    if !valid_text(&body.cwd) {
-        return bad_request("cwd is required");
+    if !valid_text(&body.computer_id) {
+        return bad_request("computer_id is required");
     }
     let conn = match pool.get() {
         Ok(c) => c,
@@ -662,9 +677,9 @@ pub async fn set_section_computer(
         Err(e) => return server_error(e),
     }
     if let Err(e) = conn.execute(
-        "INSERT INTO section_computers (section, computer_id, cwd, tool) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(section) DO UPDATE SET computer_id = excluded.computer_id, cwd = excluded.cwd, tool = excluded.tool",
-        params![section.as_str(), body.computer_id, body.cwd.trim(), tool],
+        "INSERT INTO section_computers (section, computer_id) VALUES (?1, ?2)
+         ON CONFLICT(section) DO UPDATE SET computer_id = excluded.computer_id",
+        params![section.as_str(), body.computer_id],
     ) {
         return server_error(e);
     }
@@ -741,24 +756,58 @@ pub async fn get_conversation(pool: web::Data<DbPool>, path: web::Path<String>) 
 pub async fn open_conversation(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
+    body: web::Json<OpenConversationRequest>,
     broadcaster: web::Data<Broadcaster>,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match open_conversation_db(&conn, &path.into_inner()) {
+    match open_conversation_db(&conn, &path.into_inner(), &body.tool) {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)
         }
         Err(OpenError::TodoNotFound) => not_found("Todo not found"),
         Err(OpenError::NoComputer(section)) => conflict(format!("Section {section} has no computer assigned")),
-        Err(OpenError::CannotStart(tool)) => conflict(format!(
-            "New {tool} conversations can't be started from a todo; link an existing one instead"
-        )),
+        Err(OpenError::UnsupportedTool) => bad_request("Unsupported tool"),
+        Err(OpenError::NoProject) => bad_request("project_id is required"),
+        Err(OpenError::BadRequest(msg)) => bad_request(msg),
         Err(OpenError::NoTmuxName) => conflict("No free tmux session name for this todo"),
         Err(OpenError::Db(e)) => server_error(e),
+    }
+}
+
+pub async fn set_conversation_session(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<SetConversationSessionRequest>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match set_conversation_session_db(&conn, &path.into_inner(), &body.session_id) {
+        Ok(c) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(c)
+        }
+        Err(OpenError::TodoNotFound) => not_found("Todo has no conversation"),
+        Err(OpenError::Db(e)) if is_constraint_violation(&e) => conflict("That conversation is already linked to another todo"),
+        Err(e) => open_error(e),
+    }
+}
+
+fn open_error(e: OpenError) -> HttpResponse {
+    match e {
+        OpenError::TodoNotFound => not_found("Todo not found"),
+        OpenError::NoComputer(section) => conflict(format!("Section {section} has no computer assigned")),
+        OpenError::UnsupportedTool => bad_request("Unsupported tool"),
+        OpenError::NoProject => bad_request("project_id is required"),
+        OpenError::BadRequest(msg) => bad_request(msg),
+        OpenError::NoTmuxName => conflict("No free tmux session name for this todo"),
+        OpenError::Db(e) => server_error(e),
     }
 }
 
@@ -929,12 +978,17 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO section_computers (section, computer_id, cwd) VALUES ('I', 'm1', '~/programming')",
+            "INSERT INTO section_computers (section, computer_id) VALUES ('I', 'm1')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO todos (id, section, title) VALUES ('0f3a9c21-aaaa-4bbb-8ccc-123456789abc', 'I', 'with mapping')",
+            "INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'programming', 'I', '~/programming')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO todos (id, section, title, project_id) VALUES ('0f3a9c21-aaaa-4bbb-8ccc-123456789abc', 'I', 'with mapping', 'p1')",
             [],
         )
         .unwrap();
@@ -949,7 +1003,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
 
-        let first = open_conversation_db(&conn, TODO).unwrap();
+        let first = open_conversation_db(&conn, TODO, "claude").unwrap();
         assert_eq!(first.tmux_name, "ai/claude/todo-0f3a9c21");
         assert_eq!(first.cwd, "~/programming");
         assert_eq!(first.computer.id, "m1");
@@ -958,8 +1012,8 @@ mod tests {
         assert_eq!(first.claude_session_id.as_deref(), Some(first.session_id.as_str()));
 
         // Changing the section mapping does not move an existing conversation.
-        conn.execute("UPDATE section_computers SET cwd = '/elsewhere' WHERE section = 'I'", []).unwrap();
-        let again = open_conversation_db(&conn, TODO).unwrap();
+        conn.execute("UPDATE projects SET folder = '/elsewhere' WHERE id = 'p1'", []).unwrap();
+        let again = open_conversation_db(&conn, TODO, "claude").unwrap();
         assert_eq!(again.claude_session_id, first.claude_session_id);
         assert_eq!(again.cwd, "~/programming");
     }
@@ -969,8 +1023,8 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        assert!(matches!(open_conversation_db(&conn, "missing"), Err(OpenError::TodoNotFound)));
-        assert!(matches!(open_conversation_db(&conn, "t-p"), Err(OpenError::NoComputer(s)) if s == "P"));
+        assert!(matches!(open_conversation_db(&conn, "missing", "claude"), Err(OpenError::TodoNotFound)));
+        assert!(matches!(open_conversation_db(&conn, "t-p", "claude"), Err(OpenError::NoComputer(s)) if s == "P"));
     }
 
     #[test]
@@ -979,12 +1033,12 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         conn.execute(
-            "INSERT INTO todos (id, section, title) VALUES ('0f3a9c21-ffff-4bbb-8ccc-000000000000', 'I', 'same prefix')",
+            "INSERT INTO todos (id, section, title, project_id) VALUES ('0f3a9c21-ffff-4bbb-8ccc-000000000000', 'I', 'same prefix', 'p1')",
             [],
         )
         .unwrap();
-        open_conversation_db(&conn, TODO).unwrap();
-        let second = open_conversation_db(&conn, "0f3a9c21-ffff-4bbb-8ccc-000000000000").unwrap();
+        open_conversation_db(&conn, TODO, "claude").unwrap();
+        let second = open_conversation_db(&conn, "0f3a9c21-ffff-4bbb-8ccc-000000000000", "claude").unwrap();
         assert_eq!(second.tmux_name, "ai/claude/todo-0f3a9c21-ffff-4bbb-8ccc-000000000000");
     }
 
@@ -995,7 +1049,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude").unwrap();
         let writer = pool.get().unwrap();
         writer.execute_batch("BEGIN IMMEDIATE; UPDATE todos SET title = 'renamed' WHERE id = 'nope';").unwrap();
         let handle = std::thread::spawn(move || {
@@ -1013,7 +1067,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude").unwrap();
         let busy = ConversationStatusRequest { status: ConversationStatus::Busy, ..Default::default() };
         let waiting = ConversationStatusRequest { status: ConversationStatus::Waiting, ..Default::default() };
         let first = set_status_db(&conn, "claude", &conv.session_id, &busy).unwrap().unwrap();
@@ -1029,7 +1083,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude").unwrap();
 
         let req = ConversationStatusRequest {
             status: ConversationStatus::Waiting,
@@ -1048,7 +1102,7 @@ mod tests {
         assert_eq!(set_status_db(&conn, "claude", &conv.session_id, &late).unwrap(), None);
         assert_eq!(load_conversation(&conn, TODO).unwrap().unwrap().status, ConversationStatus::Closed);
 
-        let reopened = open_conversation_db(&conn, TODO).unwrap();
+        let reopened = open_conversation_db(&conn, TODO, "claude").unwrap();
         assert_eq!(reopened.status, ConversationStatus::Unknown);
         assert_eq!(reopened.claude_session_id, conv.claude_session_id);
     }
@@ -1058,7 +1112,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        open_conversation_db(&conn, TODO).unwrap();
+        open_conversation_db(&conn, TODO, "claude").unwrap();
 
         let err = conn.execute("DELETE FROM computers WHERE id = 'm1'", []).unwrap_err();
         assert!(is_constraint_violation(&err));
@@ -1098,7 +1152,7 @@ mod tests {
         // Linking the same conversation again is a no-op; opening keeps it.
         let again = link_conversation_db(&conn, TODO, &target("codex", "019f8b4e-ff53"), false).unwrap();
         assert_eq!(again.session_id, conv.session_id);
-        assert_eq!(open_conversation_db(&conn, TODO).unwrap().tool, "codex");
+        assert_eq!(open_conversation_db(&conn, TODO, "claude").unwrap().tool, "codex");
     }
 
     #[test]
@@ -1106,7 +1160,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let started = open_conversation_db(&conn, TODO).unwrap();
+        let started = open_conversation_db(&conn, TODO, "claude").unwrap();
         assert!(matches!(
             link_conversation_db(&conn, TODO, &target("claude", "other-id"), false),
             Err(LinkError::TodoHasConversation)
@@ -1161,12 +1215,12 @@ mod tests {
         link_conversation_db(&conn, TODO, &target("claude", "taken"), false).unwrap();
 
         // Insert the same (tool, session) for another todo, bypassing the pre-checks.
-        let err = insert_conversation(&conn, "t-2", "m1", "~", "claude", "taken", false).unwrap_err();
+        let err = insert_conversation(&conn, "t-2", "m1", "~", "claude", Some("taken"), false).unwrap_err();
         assert!(matches!(
             link_insert_error(&conn, err, "t-2", &target("claude", "taken")),
             LinkError::SessionTaken(t) if t == TODO
         ));
-        let err = insert_conversation(&conn, "t-2", "missing-computer", "~", "codex", "x", false).unwrap_err();
+        let err = insert_conversation(&conn, "t-2", "missing-computer", "~", "codex", Some("x"), false).unwrap_err();
         let nowhere = link_target("missing-computer", "codex", "x", "~").unwrap();
         assert!(matches!(link_insert_error(&conn, err, "t-2", &nowhere), LinkError::ComputerNotFound));
     }
@@ -1232,15 +1286,52 @@ mod tests {
     }
 
     #[test]
-    fn sections_mapped_to_codex_cannot_start_new_conversations() {
+    fn open_codex_stores_a_null_session_id() {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        conn.execute("UPDATE section_computers SET tool = 'codex' WHERE section = 'I'", []).unwrap();
-        assert!(matches!(open_conversation_db(&conn, TODO), Err(OpenError::CannotStart(t)) if t == "codex"));
-        // A linked one still opens.
-        link_conversation_db(&conn, TODO, &target("codex", "abc"), false).unwrap();
-        assert_eq!(open_conversation_db(&conn, TODO).unwrap().session_id, "abc");
+        let conv = open_conversation_db(&conn, TODO, "codex").unwrap();
+        assert_eq!(conv.tool, "codex");
+        assert!(conv.session_id.is_empty());
+        assert_eq!(conv.cwd, "~/programming");
+        assert!(Uuid::parse_str(&conv.session_id).is_err());
+        let stored: Option<String> = conn
+            .query_row("SELECT session_id FROM conversations WHERE todo_id = ?1", [TODO], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, None);
+    }
+
+    #[test]
+    fn open_claude_stores_a_server_uuid() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let conv = open_conversation_db(&conn, TODO, "claude").unwrap();
+        assert!(Uuid::parse_str(&conv.session_id).is_ok());
+    }
+
+    #[test]
+    fn set_session_id_then_reopen_keeps_it() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        open_conversation_db(&conn, TODO, "codex").unwrap();
+        let set = set_conversation_session_db(&conn, TODO, "019f8b4e").unwrap();
+        assert_eq!(set.session_id, "019f8b4e");
+        let again = open_conversation_db(&conn, TODO, "claude").unwrap();
+        assert_eq!(again.session_id, "019f8b4e");
+        assert_eq!(again.tool, "codex");
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn open_rejects_an_unknown_tool() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        assert!(matches!(open_conversation_db(&conn, TODO, "vim"), Err(OpenError::UnsupportedTool)));
+        assert!(matches!(open_conversation_db(&conn, TODO, ""), Err(OpenError::UnsupportedTool)));
     }
 
     #[test]

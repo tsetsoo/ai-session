@@ -64,6 +64,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/conversations/status", web::post().to(conversations::post_conversation_status))
         .route("/api/todos/{id}/conversation", web::get().to(conversations::get_conversation))
         .route("/api/todos/{id}/conversation", web::post().to(conversations::open_conversation))
+        .route("/api/todos/{id}/conversation/session", web::put().to(conversations::set_conversation_session))
         .route("/api/todos/{id}/conversation", web::delete().to(conversations::delete_conversation))
         .route("/api/todos/{id}/conversation/close", web::post().to(conversations::close_conversation))
         .route("/api/todos/{id}/conversation/link", web::post().to(conversations::link_conversation))
