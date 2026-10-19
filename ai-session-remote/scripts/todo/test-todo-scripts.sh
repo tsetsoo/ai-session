@@ -360,6 +360,39 @@ else
 fi
 pass "ai-todo-open cursor: resumes with agent --resume, attaches when running, exits 94 for unknown ids, exits 90 without agent"
 
+# A fresh Codex or Cursor conversation has no id until the tool creates one.
+FRESH_CODEX="${SANDBOX}/bin/codex-fresh"
+cat >"$FRESH_CODEX" <<EOF
+#!/bin/sh
+mkdir -p "\$HOME/.codex/sessions/2026/10/20"
+: > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-NEWCODX.jsonl"
+exec sleep 300
+EOF
+chmod +x "$FRESH_CODEX"
+out="$(AI_TODO_CODEX_BIN="$FRESH_CODEX" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-new1" '~/programming' - codex)"
+[[ "$out" == "created NEWCODX" ]] || fail "fresh codex printed '$out'"
+
+FRESH_AGENT="${SANDBOX}/bin/agent-fresh"
+cat >"$FRESH_AGENT" <<EOF
+#!/bin/sh
+mkdir -p "\$HOME/.cursor/chats/abc/NEWCURS"
+exec sleep 300
+EOF
+chmod +x "$FRESH_AGENT"
+out="$(AI_TODO_AGENT_BIN="$FRESH_AGENT" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/cursor/todo-new1" '~/programming' - cursor)"
+[[ "$out" == "created NEWCURS" ]] || fail "fresh cursor printed '$out'"
+
+QUIET="${SANDBOX}/bin/quiet-tool"
+printf '#!/bin/sh\nexec sleep 300\n' >"$QUIET"
+chmod +x "$QUIET"
+if AI_TODO_CODEX_BIN="$QUIET" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-quiet" '~/programming' - codex >/dev/null 2>&1; then
+  fail "a fresh codex that writes no id should fail"
+else
+  [[ $? -eq 94 ]] || fail "missing fresh id should exit 94"
+fi
+tmux -L "$SOCK" has-session -t "=ai/codex/todo-quiet" 2>/dev/null && fail "failed fresh start left a tmux session"
+pass "ai-todo-open starts a new Codex or Cursor conversation and reports the id the tool assigns"
+
 # --- review fixes: open rollouts, fail closed, hub answers, duplicates, kill+wait, ids, PATH ---
 
 # A Codex conversation whose rollout file a process holds open (no id in any argv).
