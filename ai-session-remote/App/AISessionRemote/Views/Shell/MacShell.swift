@@ -145,7 +145,7 @@ struct MacShell: View {
         .toolbar {
             // Projects has its own + (New Project) instead.
             if sidebarItem != .projects {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItem(id: "list.newTodo", placement: .primaryAction) {
                     // Click: new todo. The menu (its arrow on the Mac, a hold on iPad): new todo from
                     // an existing conversation.
                     Menu {
@@ -487,9 +487,16 @@ private struct ConversationColumn: View {
     let showsConversation: Bool
 
     @Environment(AppModel.self) private var model
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
     @State private var shown: [String] = []
     /// A running conversation selected, not mounted yet: the settle window.
     @State private var pendingID: String?
+    /// Commands from this column's single toolbar to the frontmost frame.
+    @State private var toolbarRequest: ConversationToolbarRequest?
+    /// The frontmost frame's terminal, for enabling Reconnect / Copy / Paste.
+    @State private var terminalState: ConversationTerminalState?
 
     private var frontmostID: String? {
         guard showsConversation else { return nil }
@@ -501,7 +508,8 @@ private struct ConversationColumn: View {
             ForEach(shown, id: \.self) { id in
                 if let todo = model.store.todos.first(where: { $0.id == id }) {
                     ConversationDetail(
-                        todo: todo, request: $request, isFrontmost: frontmostID == id, sharesColumn: true,
+                        todo: todo, request: $request, toolbarRequest: $toolbarRequest,
+                        isFrontmost: frontmostID == id, sharesColumn: true,
                         attachImmediately: true
                     ) {
                         shown.removeAll { $0 == id }
@@ -521,6 +529,8 @@ private struct ConversationColumn: View {
             }
         }
         .background { windowTitle }
+        .onPreferenceChange(ConversationTerminalStateKey.self) { terminalState = $0 }
+        .toolbar { columnToolbar }
         .onChange(of: model.selectedTodoID, initial: true) { _, id in syncSelection(id) }
         .onChange(of: model.store.todos.map(\.id)) { _, ids in
             let alive = Set(ids)
@@ -550,6 +560,95 @@ private struct ConversationColumn: View {
                 #endif
                 .navigationBarTitleDisplayMode(.inline)
         }
+    }
+
+    /// One toolbar for every mounted frame. The title and the actions keep the same
+    /// identifiers when the selection changes, so AppKit updates them instead of inserting
+    /// a second set. On the Mac they are a group: the title takes the leading space and the
+    /// buttons stay at the trailing edge, the way a toolbar group lays out.
+    @ToolbarContentBuilder
+    private var columnToolbar: some ToolbarContent {
+        if showsConversation, let id = model.selectedTodoID,
+           let todo = model.store.todos.first(where: { $0.id == id }) {
+            let ids = ConversationToolbar.columnItemIDs(todoID: id)
+            let state = terminalState?.todoID == id ? terminalState : nil
+            let hasConversation = model.store.conversations[todo.id] != nil
+            #if os(iOS)
+            ToolbarItem(id: ids[0], placement: .principal) {
+                ConversationToolbarTitle(
+                    title: todo.title,
+                    subtitle: ConversationFrame.subtitle(
+                        todo: todo, store: model.store, includeFolder: false
+                    ),
+                    style: .centered
+                )
+            }
+            ToolbarItem(id: ids[1], placement: .topBarTrailing) {
+                columnActions(
+                    todo: todo, hasConversation: hasConversation, state: state,
+                    showsCopy: false, showsPopOut: false, copyInMenu: true
+                )
+            }
+            #else
+            ToolbarItemGroup(placement: .primaryAction) {
+                ConversationToolbarTitle(
+                    title: todo.title,
+                    subtitle: ConversationFrame.subtitle(
+                        todo: todo, store: model.store, includeFolder: true
+                    ),
+                    style: .leading
+                )
+                .id(ids[0])
+                .frame(maxWidth: .infinity, alignment: .leading)
+                columnActions(
+                    todo: todo, hasConversation: hasConversation, state: state,
+                    showsCopy: true, showsPopOut: true, copyInMenu: false
+                )
+                .id(ids[1])
+            }
+            #endif
+        }
+    }
+
+    private func columnActions(
+        todo: Todo,
+        hasConversation: Bool,
+        state: ConversationTerminalState?,
+        showsCopy: Bool,
+        showsPopOut: Bool,
+        copyInMenu: Bool
+    ) -> some View {
+        ConversationToolbarActions(
+            status: ConversationToolbar.displayStatus(todo: todo, store: model.store),
+            showsCopy: showsCopy,
+            canCopy: hasConversation,
+            showsPopOut: showsPopOut,
+            hasConversation: hasConversation,
+            canChange: hasConversation && !model.store.isOffline,
+            isReady: state?.isReady ?? false,
+            isConnected: state?.isConnected ?? false,
+            copyInMenu: copyInMenu,
+            onCopy: { send(.copyResume, for: todo.id) },
+            onPopOut: popOut(todo.id),
+            onMemories: { send(.memories, for: todo.id) },
+            onClose: { send(.close, for: todo.id) },
+            onDelete: { send(.delete, for: todo.id) },
+            onReconnect: { send(.reconnect, for: todo.id) },
+            onCopyScreen: { send(.copyScreen, for: todo.id) },
+            onPaste: { send(.paste, for: todo.id) }
+        )
+    }
+
+    private func send(_ command: ConversationToolbarCommand, for todoID: String) {
+        toolbarRequest = ConversationToolbarRequest(command: command, todoID: todoID)
+    }
+
+    private func popOut(_ todoID: String) -> () -> Void {
+        #if os(macOS)
+        return { model.popOut(todoID, openWindow: openWindow) }
+        #else
+        return {}
+        #endif
     }
 
     private func syncSelection(_ id: String?) {
@@ -768,6 +867,8 @@ enum WarmConversationMount {
 struct ConversationDetail: View {
     let todo: Todo
     @Binding var request: FrameRequest?
+    /// The column toolbar. Pop-out windows pass `.constant(nil)` and keep the frame's toolbar.
+    var toolbarRequest: Binding<ConversationToolbarRequest?> = .constant(nil)
     /// The pop-out window itself, rather than the main window's detail.
     var isWindow = false
     /// False while this frame is kept mounted behind the conversation on screen.
@@ -793,7 +894,7 @@ struct ConversationDetail: View {
             todo: todo, store: model.store, onAppear: .onRequest, request: $request,
             placeholder: placeholder(readiness: readiness, poppedOut: poppedOut),
             isSuspended: poppedOut, isFrontmost: isFrontmost, sharesColumn: sharesColumn,
-            onPopOut: popOutAction, onDeleted: onDeleted
+            toolbarRequest: toolbarRequest, onPopOut: popOutAction, onDeleted: onDeleted
         )
         .id(todo.id)
         .onChange(of: todo.id, initial: true) { _, id in

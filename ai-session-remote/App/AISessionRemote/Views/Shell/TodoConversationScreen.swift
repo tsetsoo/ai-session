@@ -43,6 +43,8 @@ struct TodoConversationScreen: View {
     let isFrontmost: Bool
     /// See `ConversationFrame.sharesColumn`.
     let sharesColumn: Bool
+    /// The column toolbar's commands. Only the frontmost frame acts on one.
+    var toolbarRequest: Binding<ConversationToolbarRequest?> = .constant(nil)
     let onPopOut: (() -> Void)?
     let onDeleted: () -> Void
 
@@ -55,7 +57,8 @@ struct TodoConversationScreen: View {
 
     init(todo: Todo, store: TodoHubStore, onAppear: OnAppear = .start, request: Binding<FrameRequest?> = .constant(nil),
          placeholder: FramePlaceholder? = nil, isSuspended: Bool = false, isFrontmost: Bool = true,
-         sharesColumn: Bool = false, onPopOut: (() -> Void)? = nil, onDeleted: @escaping () -> Void) {
+         sharesColumn: Bool = false, toolbarRequest: Binding<ConversationToolbarRequest?> = .constant(nil),
+         onPopOut: (() -> Void)? = nil, onDeleted: @escaping () -> Void) {
         self.todo = todo
         self.store = store
         self.onAppear = onAppear
@@ -64,6 +67,7 @@ struct TodoConversationScreen: View {
         self.isSuspended = isSuspended
         self.isFrontmost = isFrontmost
         self.sharesColumn = sharesColumn
+        self.toolbarRequest = toolbarRequest
         self.onPopOut = onPopOut
         self.onDeleted = onDeleted
         let hostList = HostList()
@@ -120,12 +124,13 @@ struct TodoConversationScreen: View {
         if DemoFixtures.isEnabled {
             return ConversationFrame(todo: todo, loader: loader, store: store, placeholder: placeholder,
                                      onPopOut: onPopOut, isFrontmost: isFrontmost, sharesColumn: sharesColumn,
-                                     onDeleted: onDeleted, makeTransport: { _, _ in DemoTransport() })
+                                     toolbarRequest: toolbarRequest, onDeleted: onDeleted,
+                                     makeTransport: { _, _ in DemoTransport() })
         }
         #endif
         return ConversationFrame(todo: todo, loader: loader, store: store, placeholder: placeholder,
                                  onPopOut: onPopOut, isFrontmost: isFrontmost, sharesColumn: sharesColumn,
-                                 onDeleted: onDeleted)
+                                 toolbarRequest: toolbarRequest, onDeleted: onDeleted)
     }
 }
 

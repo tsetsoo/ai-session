@@ -34,10 +34,11 @@ struct ConversationFrame: View {
     /// The detail column keeps other conversations mounted. Only the one on screen names
     /// itself in the window and takes the keyboard.
     private let isFrontmost: Bool
-    /// Several frames share the detail column, so the column owns the window title. A phone
-    /// screen and a pop-out window are the only frame in their navigation, and name themselves.
+    /// Several frames share the detail column, so the column owns the window title and the
+    /// toolbar. A phone screen and a pop-out window are the only frame in their navigation.
     private let sharesColumn: Bool
     private let makeTransport: (HostConnectionConfig, TerminalMode) -> any TerminalTransport
+    @Binding private var toolbarRequest: ConversationToolbarRequest?
 
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @Environment(\.frameOwnsWindow) private var ownsWindow
@@ -63,6 +64,7 @@ struct ConversationFrame: View {
         onPopOut: (() -> Void)? = nil,
         isFrontmost: Bool = true,
         sharesColumn: Bool = false,
+        toolbarRequest: Binding<ConversationToolbarRequest?> = .constant(nil),
         onDeleted: @escaping () -> Void,
         makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
             SSHTerminalSession(config: $0, mode: $1)
@@ -75,6 +77,7 @@ struct ConversationFrame: View {
         self.onPopOut = onPopOut
         self.isFrontmost = isFrontmost
         self.sharesColumn = sharesColumn
+        self._toolbarRequest = toolbarRequest
         self.onDeleted = onDeleted
         self.makeTransport = makeTransport
     }
@@ -82,16 +85,35 @@ struct ConversationFrame: View {
     var body: some View {
         // `sharesColumn` is fixed for the life of the frame. The branch stays put, so the
         // terminal inside is not rebuilt when another conversation is selected.
-        if sharesColumn {
-            frame
-        } else {
+        // Shared frames publish no toolbar: the column owns the one window toolbar.
+        if ConversationToolbar.framePublishesToolbar(sharesColumn: sharesColumn) {
             frame
                 .navigationTitle(todo.title)
                 #if os(macOS)
                 .navigationSubtitle(meta(includeFolder: true))
                 #endif
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar { frameToolbar }
+        } else {
+            frame
+                .preference(key: ConversationTerminalStateKey.self, value: terminalState)
+                .onChange(of: toolbarRequest, initial: true) { _, request in
+                    guard let command = ConversationToolbar.commandToRun(
+                        pending: request, todoID: todo.id, isFrontmost: isFrontmost
+                    ) else { return }
+                    toolbarRequest = nil
+                    performToolbar(command)
+                }
         }
+    }
+
+    private var terminalState: ConversationTerminalState? {
+        guard isFrontmost else { return nil }
+        return ConversationTerminalState(
+            todoID: todo.id,
+            isReady: readyConversation != nil,
+            isConnected: isConnected
+        )
     }
 
     private var frame: some View {
@@ -124,7 +146,6 @@ struct ConversationFrame: View {
                 CopiedToast().transition(.opacity)
             }
         }
-        .toolbar { if isFrontmost { frameToolbar } }
         .confirmationDialog(
             "Delete this conversation?",
             isPresented: Binding(
@@ -290,79 +311,64 @@ struct ConversationFrame: View {
 
     // MARK: Header
 
+    /// Phone and pop-out only. The shared column installs its own items.
     @ToolbarContentBuilder
     private var frameToolbar: some ToolbarContent {
+        let ids = ConversationToolbar.frameItemIDs(showsTitle: !ownsWindow)
         #if os(iOS)
-        ToolbarItem(placement: .principal) {
-            VStack(spacing: 1) {
-                Text(todo.title)
-                    .font(.headline)
-                    .lineLimit(1)
-                Text(meta(includeFolder: false))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        if ids.contains(ConversationToolbar.titleID) {
+            ToolbarItem(id: ConversationToolbar.titleID, placement: .principal) {
+                ConversationToolbarTitle(title: todo.title, subtitle: meta(includeFolder: false), style: .centered)
             }
-            .accessibilityElement(children: .combine)
         }
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            if let displayStatus {
-                StatusBadge(displayStatus, style: .pill)
-            }
-            menu(onCopyResume: copyResumeCommand)
+        ToolbarItem(id: ConversationToolbar.actionsID, placement: .topBarTrailing) {
+            toolbarActions(showsCopy: false, showsPopOut: false, copyInMenu: true)
         }
         #else
-        // In the Mac split view the window title belongs to the list column, so the frame
-        // names its todo at the leading edge of its own toolbar (not in a pop-out window,
-        // whose own title already does).
-        ToolbarItemGroup(placement: .primaryAction) {
-            if !ownsWindow {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(todo.title)
-                        .font(.headline)
-                    Text(meta(includeFolder: true))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityElement(children: .combine)
-                .accessibilityAddTraits(.isHeader)
+        if ids.contains(ConversationToolbar.titleID) {
+            ToolbarItem(id: ConversationToolbar.titleID, placement: .primaryAction) {
+                ConversationToolbarTitle(title: todo.title, subtitle: meta(includeFolder: true), style: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if let displayStatus {
-                StatusBadge(displayStatus, style: .pill)
-                    .padding(.horizontal, DS.spacing.xs)
-            }
-            Button(action: copyResumeCommand) {
-                Image(systemName: "doc.on.doc")
-            }
-            .help("Copy Resume Command")
-            .accessibilityLabel("Copy Resume Command")
-            .disabled(conversation == nil)
-            if let onPopOut {
-                Button(action: onPopOut) {
-                    Image(systemName: Self.popOutSymbol)
-                }
-                .help("Open in New Window (⇧⌘O)")
-                .accessibilityLabel("Open in New Window")
-            }
-            menu(onCopyResume: nil)
+        }
+        ToolbarItem(id: ConversationToolbar.actionsID, placement: .primaryAction) {
+            toolbarActions(showsCopy: true, showsPopOut: onPopOut != nil, copyInMenu: false)
         }
         #endif
     }
 
-    private func menu(onCopyResume: (() -> Void)?) -> some View {
-        ConversationMenu(
+    private func toolbarActions(showsCopy: Bool, showsPopOut: Bool, copyInMenu: Bool) -> some View {
+        ConversationToolbarActions(
+            status: displayStatus,
+            showsCopy: showsCopy,
+            canCopy: conversation != nil,
+            showsPopOut: showsPopOut,
             hasConversation: conversation != nil,
             canChange: conversation != nil && !store.isOffline,
             isReady: readyConversation != nil,
             isConnected: isConnected,
-            onCopyResume: onCopyResume,
+            copyInMenu: copyInMenu,
+            onCopy: copyResumeCommand,
+            onPopOut: { onPopOut?() },
             onMemories: { showingMemories = true },
             onClose: closeConversation,
             onDelete: { showingDeleteConfirmation = true },
-            terminal: terminal
+            onReconnect: { terminal.reconnect() },
+            onCopyScreen: { terminal.copyScreen() },
+            onPaste: { terminal.paste() }
         )
+    }
+
+    private func performToolbar(_ command: ConversationToolbarCommand) {
+        switch command {
+        case .copyResume: copyResumeCommand()
+        case .memories: showingMemories = true
+        case .close: closeConversation()
+        case .delete: showingDeleteConfirmation = true
+        case .reconnect: terminal.reconnect()
+        case .copyScreen: terminal.copyScreen()
+        case .paste: terminal.paste()
+        }
     }
 
     /// The hub's status for this todo's conversation, as last heard.
@@ -372,11 +378,7 @@ struct ConversationFrame: View {
 
     /// Live status; nil (no pill) when the todo has never had a conversation.
     private var displayStatus: ConversationDisplayStatus? {
-        guard store.conversations[todo.id] != nil || todo.conversationStatus != nil else { return nil }
-        return ConversationDisplayStatus(
-            store.conversations[todo.id]?.status ?? todo.conversationStatus ?? .unknown,
-            tmuxAlive: nil
-        )
+        ConversationToolbar.displayStatus(todo: todo, store: store)
     }
 
     private func meta(includeFolder: Bool) -> String {

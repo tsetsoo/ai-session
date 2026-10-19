@@ -50,6 +50,42 @@ final class MacShellTests: XCTestCase {
         XCTAssertEqual(SidebarCounts.label(12), "12")
     }
 
+    /// The detail column keeps several frames mounted. Only the column may install toolbar
+    /// items, and those identifiers stay put when another conversation is selected. Each
+    /// frame installing its own set makes AppKit throw while inserting a duplicate.
+    /// The title and the actions are separate items so the title can sit on the leading
+    /// edge, and the controls keep a real gap between them.
+    func testSharedColumnOwnsOneStableToolbar() {
+        XCTAssertFalse(ConversationToolbar.framePublishesToolbar(sharesColumn: true))
+        XCTAssertTrue(ConversationToolbar.framePublishesToolbar(sharesColumn: false))
+        let first = ConversationToolbar.columnItemIDs(todoID: "a")
+        let second = ConversationToolbar.columnItemIDs(todoID: "b")
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first, [ConversationToolbar.titleID, ConversationToolbar.actionsID])
+        XCTAssertEqual(
+            ConversationToolbar.frameItemIDs(showsTitle: true),
+            [ConversationToolbar.titleID, ConversationToolbar.actionsID]
+        )
+        XCTAssertEqual(
+            ConversationToolbar.frameItemIDs(showsTitle: false),
+            [ConversationToolbar.actionsID]
+        )
+        XCTAssertGreaterThan(ConversationToolbar.controlSpacing, 0)
+    }
+
+    /// A click can land before the frame is mounted. The request stays until that frame
+    /// is the one on screen.
+    func testToolbarCommandWaitsForTheFrontmostFrame() {
+        let request = ConversationToolbarRequest(command: .copyResume, todoID: "a")
+        XCTAssertEqual(
+            ConversationToolbar.commandToRun(pending: request, todoID: "a", isFrontmost: true),
+            .copyResume
+        )
+        XCTAssertNil(ConversationToolbar.commandToRun(pending: request, todoID: "a", isFrontmost: false))
+        XCTAssertNil(ConversationToolbar.commandToRun(pending: request, todoID: "b", isFrontmost: true))
+        XCTAssertNil(ConversationToolbar.commandToRun(pending: nil, todoID: "a", isFrontmost: true))
+    }
+
     func testWarmMountKeepsTheMostRecentConversations() {
         XCTAssertEqual(WarmConversationMount.capacity, 3)
         var ids: [String] = []
