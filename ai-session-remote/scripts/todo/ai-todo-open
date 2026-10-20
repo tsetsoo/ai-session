@@ -6,19 +6,21 @@
 #
 # Usage:
 #   ai-todo-open <tmux_name> <cwd> <session_id> [claude|codex|cursor]
+#   ai-todo-open <tmux_name> <cwd> - <codex|cursor>
 #   ai-todo-open ai/claude/todo-0f3a9c21 '~/programming' 9b2f6c3e-1d4a-4e7b-8c55-2f0e8a1b7d90
 #   ai-todo-open ai/codex/todo-0f3a9c21 '~/programming' 019f8b4e-ff53-7201-8585-162b40a93fb3 codex
-#   ai-todo-open ai/cursor/todo-0f3a9c21 '~/programming' 4e21e083-3303-468c-a212-e5d1cd2c7515 cursor
+#   ai-todo-open ai/cursor/todo-0f3a9c21 '~/programming' - cursor
 #
 # claude (default): `claude --resume <id>` if the transcript exists, else
 #                   `claude --session-id <id>` to start it with that id.
-# codex:            `codex resume <id>`; the conversation must already exist
-#                   (Codex can't start a new one with a chosen id).
+# codex:            `codex resume <id>` when the conversation exists.
+#                   `-` starts a new one and waits for the id Codex assigns.
 # cursor:           `agent --resume <id>` for a chat already stored under
-#                   ~/.cursor/chats. Cursor can't start a new one with a chosen id.
+#                   ~/.cursor/chats. `-` starts a new one and waits for its id.
 #
 # Exit codes: 64 bad arguments, 90 tmux / claude / codex / agent missing, 93 cwd not usable,
-#             94 no Codex or Cursor conversation with that id.
+#             94 no Codex or Cursor conversation with that id, or a new one
+#             did not appear within 30 seconds.
 #
 # Test hooks (not for normal use):
 #   AI_TODO_TMUX_SOCKET  use a private tmux server (tmux -L <name>)
@@ -51,7 +53,13 @@ if ! printf '%s\n' "$name" | LC_ALL=C grep -Eqx "ai/${tool}/todo-[a-z0-9-]+"; th
   echo "invalid tmux name for $tool: $name" >&2
   usage
 fi
-if ! printf '%s\n' "$sid" | LC_ALL=C grep -Eqx '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'; then
+fresh=0
+if [ "$sid" = - ]; then
+  case "$tool" in
+    codex | cursor) fresh=1 ;;
+    *) echo "claude needs a session id" >&2; usage ;;
+  esac
+elif ! printf '%s\n' "$sid" | LC_ALL=C grep -Eqx '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'; then
   echo "invalid session id: $sid" >&2
   usage
 fi
@@ -85,8 +93,70 @@ attach() {
   tmux_exec attach-session -t "=$name"
 }
 
+# Paths of conversation files that already exist, one per line.
+fresh_ids() {
+  if [ "$1" = codex ]; then
+    find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -print 2>/dev/null | LC_ALL=C sort || true
+  else
+    find "$HOME/.cursor/chats" -mindepth 2 -maxdepth 2 -type d -print 2>/dev/null | LC_ALL=C sort || true
+  fi
+}
+
+fresh_id_of() {
+  if [ "$1" = codex ]; then
+    basename "$2" .jsonl | sed -n 's/^rollout-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-//p'
+  else
+    basename "$2"
+  fi
+}
+
+# The id of a conversation file that was not in $fresh_before. Empty until one appears.
+wait_for_fresh_id() {
+  deadline=$(( $(date +%s) + 30 ))
+  while [ "$(date +%s)" -le "$deadline" ]; do
+    now=$(fresh_ids "$1")
+    ids=
+    count=0
+    while IFS= read -r candidate; do
+      [ -n "$candidate" ] || continue
+      case "
+$fresh_before
+" in
+        *"
+$candidate
+"*) ;;
+        *)
+          id=$(fresh_id_of "$1" "$candidate")
+          if [ -n "$id" ]; then
+            count=$((count + 1))
+            ids=$id
+            if [ "$count" -gt 1 ]; then
+              echo "more than one new $1 conversation appeared" >&2
+              return 1
+            fi
+          fi
+          ;;
+      esac
+    done <<EOF
+$now
+EOF
+    if [ "$count" -eq 1 ]; then
+      printf '%s\n' "$ids"
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
 if tmux_cmd has-session -t "=$name" 2>/dev/null; then
-  attach attach
+  # A fresh start has no id yet. A session left by a failed start would only
+  # attach, and every later open would do the same. Replace it.
+  if [ "$fresh" = 1 ]; then
+    tmux_cmd kill-session -t "=$name" 2>/dev/null || true
+  else
+    attach attach
+  fi
 fi
 
 [ -d "$cwd" ] || { echo "cwd not found: $cwd" >&2; exit 93; }
@@ -99,23 +169,29 @@ if [ "$tool" = codex ]; then
     [ -n "$codex_bin" ] && PATH="$(dirname "$codex_bin"):$PATH"
   fi
   [ -n "$codex_bin" ] || { echo "codex not found" >&2; exit 90; }
-  # Codex stores each conversation as ~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl.
-  if [ -z "$(find "$HOME/.codex/sessions" -name "rollout-*-$sid.jsonl" -print 2>/dev/null | head -n 1)" ]; then
+  if [ "$fresh" = 1 ]; then
+    mode=created
+    set -- "$codex_bin"
+  elif [ -z "$(find "$HOME/.codex/sessions" -name "rollout-*-$sid.jsonl" -print 2>/dev/null | head -n 1)" ]; then
     echo "no Codex conversation $sid on this computer" >&2
     exit 94
+  else
+    mode=resumed
+    set -- "$codex_bin" resume "$sid"
   fi
-  mode=resumed
-  set -- "$codex_bin" resume "$sid"
 elif [ "$tool" = cursor ]; then
   agent_bin=${AI_TODO_AGENT_BIN:-$(command -v agent || true)}
   [ -n "$agent_bin" ] || { echo "agent not found" >&2; exit 90; }
-  # Cursor stores each chat as ~/.cursor/chats/<cwd-hash>/<id>/.
-  if [ -z "$(find "$HOME/.cursor/chats" -mindepth 2 -maxdepth 2 -type d -name "$sid" -print 2>/dev/null | head -n 1)" ]; then
+  if [ "$fresh" = 1 ]; then
+    mode=created
+    set -- "$agent_bin"
+  elif [ -z "$(find "$HOME/.cursor/chats" -mindepth 2 -maxdepth 2 -type d -name "$sid" -print 2>/dev/null | head -n 1)" ]; then
     echo "no Cursor conversation $sid on this computer" >&2
     exit 94
+  else
+    mode=resumed
+    set -- "$agent_bin" --resume "$sid"
   fi
-  mode=resumed
-  set -- "$agent_bin" --resume "$sid"
 else
   claude_bin=${AI_TODO_CLAUDE_BIN:-$(command -v claude || true)}
   [ -n "$claude_bin" ] || { echo "claude not found" >&2; exit 90; }
@@ -143,5 +219,17 @@ case "${LC_ALL:-}$session_ctype$session_lang" in
   *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;;
   *) session_lang=en_US.UTF-8; session_ctype=en_US.UTF-8 ;;
 esac
+fresh_before=
+if [ "$fresh" = 1 ]; then
+  fresh_before=$(fresh_ids "$tool")
+fi
 tmux_cmd new-session -d -s "$name" -c "$cwd" -- env "PATH=$PATH" "LANG=$session_lang" "LC_CTYPE=$session_ctype" "LC_ALL=$session_lang" "$@"
+if [ "$fresh" = 1 ]; then
+  new_id=$(wait_for_fresh_id "$tool") || {
+    tmux_cmd kill-session -t "=$name" 2>/dev/null || true
+    echo "no new $tool conversation appeared" >&2
+    exit 94
+  }
+  mode="created $new_id"
+fi
 attach "$mode"

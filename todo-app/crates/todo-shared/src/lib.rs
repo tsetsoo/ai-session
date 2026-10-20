@@ -138,7 +138,9 @@ pub struct Todo {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTodoRequest {
-    pub section: Section,
+    /// Omitted means the new todo uses its project's section.
+    #[serde(default)]
+    pub section: Option<Section>,
     pub title: String,
     #[serde(default)]
     pub importance: Option<Importance>,
@@ -161,7 +163,7 @@ pub struct UpdateTodoRequest {
     /// `null` clears the due date.
     #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
     pub due_date: Option<Option<String>>,
-    /// `null` removes the todo from its project.
+    /// A project. JSON `null` is rejected: a todo keeps a project.
     #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<Option<String>>,
 }
@@ -280,17 +282,21 @@ pub struct UpdateComputerRequest {
 pub struct SectionComputer {
     pub section: Section,
     pub computer: Computer,
-    /// Default working directory for new conversations (may start with ~)
-    pub cwd: String,
-    pub tool: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SetSectionComputerRequest {
     pub computer_id: String,
-    pub cwd: String,
-    #[serde(default)]
-    pub tool: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OpenConversationRequest {
+    pub tool: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetConversationSessionRequest {
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,6 +376,7 @@ pub struct LinkConversationRequest {
 pub struct TodoFromConversationRequest {
     pub section: Section,
     pub title: String,
+    pub project_id: String,
     pub computer_id: String,
     pub tool: String,
     pub session_id: String,
@@ -387,13 +394,14 @@ pub struct TodoWithConversation {
 }
 
 // ---------------------------------------------------------------------------
-// Projects: a folder on one computer
+// Projects: a folder on one section. The computer is the section's computer.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
     pub name: String,
+    pub section: Section,
     pub computer: Computer,
     /// Folder on the computer, `~`-relative when under its home, no trailing `/`
     pub folder: String,
@@ -418,7 +426,7 @@ pub struct Project {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateProjectRequest {
     pub name: String,
-    pub computer_id: String,
+    pub section: Section,
     pub folder: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_url: Option<String>,

@@ -115,14 +115,14 @@ fn base_description() -> Value {
                 "request_body": {
                     "content_type": "application/json",
                     "fields": {
-                        "section": {"type": "string", "required": true, "enum": ["Sp", "I", "Si", "P"]},
+                        "section": {"type": "string", "required": false, "enum": ["Sp", "I", "Si", "P"], "description": "Must match the project. Omitted uses the project's section"},
                         "title": {"type": "string", "required": true, "description": "The todo title (non-empty)"},
                         "importance": {"type": "string", "required": false, "enum": ["low", "medium", "high", "critical"], "default": "medium"},
                         "due_date": {"type": "string", "required": false, "format": "YYYY-MM-DD", "description": "Optional due date"},
-                        "project_id": {"type": "string", "required": false, "description": "Optional project; 404 if it doesn't exist"}
+                        "project_id": {"type": "string", "required": true, "description": "The project this todo belongs to; 404 if it doesn't exist"}
                     }
                 },
-                "example_request": {"section": "P", "title": "Go for a run", "importance": "high", "due_date": "2026-02-21"},
+                "example_request": {"title": "Go for a run", "project_id": "<uuid>", "importance": "high", "due_date": "2026-02-21"},
                 "example_response": {
                     "id": "550e8400-e29b-41d4-a716-446655440000",
                     "section": "P",
@@ -150,7 +150,7 @@ fn base_description() -> Value {
                         "section": {"type": "string", "required": false, "enum": ["Sp", "I", "Si", "P"]},
                         "importance": {"type": "string", "required": false, "enum": ["low", "medium", "high", "critical"]},
                         "due_date": {"type": "string or null", "required": false, "format": "YYYY-MM-DD", "description": "Set to null to clear the due date"},
-                        "project_id": {"type": "string or null", "required": false, "description": "Set to null to remove the todo from its project; 404 for an unknown project"}
+                        "project_id": {"type": "string", "required": false, "description": "Move the todo to this project and its section. JSON null is rejected. 404 for an unknown project"}
                     }
                 },
                 "example_request": {"title": "Go for a long run", "importance": "critical"}
@@ -187,16 +187,16 @@ fn base_description() -> Value {
             {
                 "method": "PUT",
                 "path": "/api/sections/{code}/computer",
-                "description": "Assign a computer and default working directory to a section. tool: claude | codex | cursor (default claude). Only claude sections can start new conversations; the others can only link existing ones",
-                "example_request": {"computer_id": "<uuid>", "cwd": "~/programming", "tool": "claude"}
+                "description": "Assign a computer to a section",
+                "example_request": {"computer_id": "<uuid>"}
             },
-            {"method": "DELETE", "path": "/api/sections/{code}/computer", "description": "Remove a section's computer"},
+            {"method": "DELETE", "path": "/api/sections/{code}/computer", "description": "Remove a section's computer. 409 while the section still has projects"},
             {"method": "GET", "path": "/api/conversations", "description": "All conversations with their computer and status"},
             {"method": "GET", "path": "/api/todos/{id}/conversation", "description": "The todo's conversation; 404 if none"},
             {
                 "method": "POST",
                 "path": "/api/todos/{id}/conversation",
-                "description": "Get or create the todo's conversation from its section's computer (snapshotting computer and cwd). Reopening a closed one resets status to unknown. 409 if the section has no computer, or if the section's tool can't start conversations (codex, cursor: link one instead). The client then SSHes to the computer and runs: ai-todo-open <tmux_name> <cwd> <session_id> <tool>"
+                "description": "Get or create the todo's conversation. Body is {tool: claude|codex|cursor}. The computer is the section's; the folder is the project's. Claude stores a new session id. Codex and Cursor store none until PUT .../conversation/session. A second open returns the existing row unchanged. 400 for a missing or unknown tool, or a todo with no project. 409 if the section has no computer",
             },
             {
                 "method": "POST",
@@ -210,12 +210,12 @@ fn base_description() -> Value {
             {
                 "method": "POST",
                 "path": "/api/todos/from-conversation",
-                "description": "Create a todo linked to an existing conversation, atomically. 201 {todo, conversation}. Same 400/404/409 rules as link. Optional importance and due_date, as for POST /api/todos",
-                "example_request": {"section": "Sp", "title": "Review data-management PR 630", "computer_id": "<uuid>", "tool": "claude", "session_id": "<uuid>", "cwd": "~/Spread/Repository", "importance": "high"},
+                "description": "Create a todo linked to an existing conversation, atomically. project_id is required and stored in the same transaction; 400 when it is missing or the section disagrees, 404 when the project does not exist. 201 {todo, conversation}. Same 400/404/409 rules as link. Optional importance and due_date, as for POST /api/todos",
+                "example_request": {"section": "Sp", "title": "Review data-management PR 630", "project_id": "<uuid>", "computer_id": "<uuid>", "tool": "claude", "session_id": "<uuid>", "cwd": "~/Spread/Repository", "importance": "high"},
                 "response_status": 201
             },
             {"method": "POST", "path": "/api/todos/{id}/conversation/close", "description": "Mark closed after the client killed the tmux session; the conversation stays resumable"},
-            {"method": "DELETE", "path": "/api/todos/{id}/conversation", "description": "Forget the conversation link (the conversation itself stays on the computer); afterwards only sections whose tool is claude can start a new conversation on open (POST /conversation); for codex and cursor sections, link a conversation again"},
+            {"method": "DELETE", "path": "/api/todos/{id}/conversation", "description": "Forget the conversation link (the conversation itself stays on the computer). A later open starts a new one for the tool in the request"},
             {
                 "method": "POST",
                 "path": "/api/conversations/status",
@@ -303,14 +303,14 @@ fn project_endpoints() -> Vec<Value> {
         json!({
             "method": "POST",
             "path": "/api/projects",
-            "description": "Create a project: a folder on one computer. folder must start with ~ or /; /Users/<username>/… and /home/<username>/… of that computer are stored as ~/…, without a trailing /. 201 with the Project. 404 for an unknown computer. 409 when (computer, folder) is taken, or when the folder is inside or contains another project's folder on the same computer (the message names it; projects can't be nested). Re-matches that computer's conversations",
-            "example_request": {"name": "todo-app", "computer_id": "<uuid>", "folder": "~/programming/todo-app", "repo_url": "git@github.com:tsetsoo/todo-app.git", "digest_enabled": true},
+            "description": "Create a project on a section. folder must start with ~ or /; /Users/<username>/… and /home/<username>/… of that section's computer are stored as ~/…, without a trailing /. 201 with the Project, including the section and its computer. 409 when the section has no computer, or when that section already has this folder. A folder inside another project is allowed. Re-matches that computer's conversations",
+            "example_request": {"name": "todo-app", "section": "Si", "folder": "~/programming/todo-app", "repo_url": "git@github.com:tsetsoo/todo-app.git", "digest_enabled": true},
             "response_status": 201
         }),
         json!({
             "method": "GET",
             "path": "/api/projects/suggestions",
-            "description": "Suggested projects from the cwds of known conversations: a /.claude/worktrees/<x> suffix is dropped, then the path is cut to two segments below ~ (three for other absolute paths). Grouped by computer and folder, with the session count, latest activity, example cwds and the repo URL of a session whose repo root is that folder. Folders that already are, lie inside, or contain a project are left out. Ordered by session count. Accept one with POST /api/projects",
+            "description": "Suggested projects from the cwds of known conversations: a /.claude/worktrees/<x> suffix is dropped, then the path is cut to two segments below ~ (three for other absolute paths). Grouped by computer and folder, with the session count, latest activity, example cwds and the repo URL of a session whose repo root is that folder. A folder that is already a project on that computer is left out. Ordered by session count. Accept one with POST /api/projects",
             "example_response": [{"computer": "Computer", "folder": "~/programming/sigma-revenue", "name": "sigma-revenue", "repo_url": null, "sessions": 19, "last_activity": "2026-10-16T09:12:03Z", "example_cwds": ["~/programming/sigma-revenue/sigma-revenue-backend"]}]
         }),
         json!({"method": "GET", "path": "/api/projects/{id}", "description": "One project (same shape as the list items); 404 if missing"}),

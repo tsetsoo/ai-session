@@ -331,9 +331,10 @@ struct NewTodoFromConversationSheet: View {
                         NewTodoDetailsForm(
                             computer: computer,
                             remote: remote,
-                            defaultSection: store.defaultSection(for: computer),
-                            onCreate: { section, title in
-                                try await store.createTodo(from: remote, on: computer, section: section, title: title)
+                            store: store,
+                            onCreate: { section, title, projectId in
+                                try await store.createTodo(from: remote, on: computer, section: section, title: title,
+                                                           projectId: projectId)
                                 dismiss()
                             }
                         )
@@ -370,26 +371,83 @@ struct NewTodoFromConversationSheet: View {
     }
 }
 
-/// Section and title for a todo created from a conversation (the last step of "New Todo from
-/// Conversation…", and the sheet behind a project page's unlinked conversations).
+/// Section, project and title for a todo created from a conversation. The tool is already
+/// known, so it is shown and not chosen. The section starts set only when this computer
+/// belongs to exactly one section. A new project offers this conversation's folder.
 struct NewTodoDetailsForm: View {
     let computer: Computer
     let remote: RemoteConversation
-    let defaultSection: TodoSection
-    let onCreate: (TodoSection, String) async throws -> Void
+    let store: TodoHubStore
+    /// Set when the todo already belongs to a project, as on a project page.
+    var lockedProject: Project?
+    let onCreate: (TodoSection, String, String) async throws -> Void
 
-    @State private var section: TodoSection = .i
+    @State private var section: TodoSection?
     @State private var title = ""
+    @State private var projectID: String?
+    @State private var makingNew = false
+    @State private var newName = ""
+    @State private var newFolder = ""
     @State private var error: String?
     @State private var isWorking = false
+
+    private var chosenSection: TodoSection? { lockedProject?.section ?? section }
+
+    private var sectionProjects: [Project] {
+        guard let chosenSection else { return [] }
+        return store.projects.filter { $0.section == chosenSection }
+    }
+
+    private var hasComputer: Bool {
+        guard let chosenSection else { return false }
+        return store.sectionComputers[chosenSection] != nil
+    }
+
+    private var canCreate: Bool {
+        guard !trimmedTitle.isEmpty, !isWorking, hasComputer else { return false }
+        if lockedProject != nil { return true }
+        if makingNew {
+            return TodoAddForm.canSubmit(
+                title: title,
+                newProject: TodoAddNewProject(name: newName, folder: newFolder),
+                hasComputer: true
+            )
+        }
+        return projectID != nil
+    }
 
     var body: some View {
         Form {
             Section {
-                Picker("Section", selection: $section) {
-                    ForEach(TodoSection.allCases) { Text($0.rawValue).tag($0) }
+                if lockedProject == nil {
+                    Picker("Section", selection: $section) {
+                        Text("Choose").tag(TodoSection?.none)
+                        ForEach(TodoSection.allCases) { Text($0.rawValue).tag(Optional($0)) }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
+                if let chosenSection, let mapping = store.sectionComputers[chosenSection] {
+                    LabeledContent("Computer", value: mapping.computer.name)
+                } else if chosenSection != nil {
+                    Text("No computer").foregroundStyle(.secondary)
+                }
+                if let lockedProject {
+                    LabeledContent("Project", value: lockedProject.name)
+                } else if hasComputer {
+                    Picker("Project", selection: projectChoice) {
+                        ForEach(sectionProjects) { project in
+                            Text(project.name).tag(project.id)
+                        }
+                        Text("New project").tag("new")
+                    }
+                    if makingNew {
+                        TextField("Project name", text: $newName)
+                        TextField("Folder", text: $newFolder)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                    }
+                }
                 TextField("Title", text: $title, axis: .vertical)
             }
             Section("Conversation") {
@@ -407,26 +465,81 @@ struct NewTodoDetailsForm: View {
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Create") { create() }
-                    .disabled(trimmedTitle.isEmpty || isWorking)
+                    .disabled(!canCreate)
             }
         }
         .onAppear {
             if title.isEmpty {
-                section = defaultSection
+                section = store.onlySection(for: computer)
                 title = remote.title
+                newFolder = remote.cwd
+                if let lockedProject {
+                    section = lockedProject.section
+                    projectID = lockedProject.id
+                } else {
+                    pickDefaultProject()
+                }
             }
+        }
+        .onChange(of: section) { _, _ in
+            guard lockedProject == nil else { return }
+            projectID = nil
+            makingNew = false
+            pickDefaultProject()
+        }
+    }
+
+    private var projectChoice: Binding<String> {
+        Binding(
+            get: { makingNew ? "new" : (projectID ?? "new") },
+            set: { value in
+                if value == "new" {
+                    makingNew = true
+                    projectID = nil
+                } else {
+                    makingNew = false
+                    projectID = value
+                }
+            }
+        )
+    }
+
+    private func pickDefaultProject() {
+        guard lockedProject == nil, hasComputer else { return }
+        if makingNew { return }
+        if let projectID, sectionProjects.contains(where: { $0.id == projectID }) { return }
+        if sectionProjects.isEmpty {
+            makingNew = true
+        } else {
+            projectID = sectionProjects[0].id
         }
     }
 
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private func create() {
+        guard let chosenSection else { return }
         isWorking = true
         error = nil
+        let makingNew = makingNew && lockedProject == nil
+        let newName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newFolder = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing = lockedProject?.id ?? projectID
         Task {
             defer { isWorking = false }
             do {
-                try await onCreate(section, trimmedTitle)
+                let projectId: String
+                if makingNew {
+                    guard let created = try await store.createProject(CreateProjectRequest(
+                        name: newName, section: chosenSection, folder: newFolder
+                    )) else { return }
+                    projectId = created.id
+                } else if let existing {
+                    projectId = existing
+                } else {
+                    return
+                }
+                try await onCreate(chosenSection, trimmedTitle, projectId)
             } catch {
                 self.error = TodoHubStore.message(for: error)
             }

@@ -87,7 +87,7 @@ final class TodoHubClientTests: XCTestCase {
                 ? .init(status: 200, body: Self.conversationJSON)
                 : .init(status: 200, body: Self.sectionComputersJSON)
         }
-        let conversation = try await client().openConversation(todoId: "4f3ff5fa-c99d-4fb0-b15f-734eb42d0f3f")
+        let conversation = try await client().openConversation(todoId: "4f3ff5fa-c99d-4fb0-b15f-734eb42d0f3f", tool: "claude")
         XCTAssertEqual(conversation.tmuxName, "ai/claude/todo-4f3ff5fa")
         XCTAssertEqual(conversation.sessionId, "20218a19-fdb7-4835-9c7f-ed31b2fd4423")
         XCTAssertEqual(conversation.computer.hostname, "mac.tailnet")
@@ -96,7 +96,32 @@ final class TodoHubClientTests: XCTestCase {
 
         let mappings = try await client().listSectionComputers()
         XCTAssertEqual(mappings.first?.section, .i)
-        XCTAssertEqual(mappings.first?.cwd, "~/programming")
+        XCTAssertEqual(mappings.first?.computer.id, "f3dde920-1744-4b76-9104-2c2b078ee3d9")
+    }
+
+    func testOpenSendsTheToolAndSessionUpdateSendsTheId() async throws {
+        StubURLProtocol.handler = { _ in .init(status: 200, body: Self.conversationJSON) }
+        _ = try await client().openConversation(todoId: "t1", tool: "codex")
+        let open = try XCTUnwrap(StubURLProtocol.requests.last)
+        XCTAssertEqual(open.httpMethod, "POST")
+        XCTAssertEqual(open.url?.path, "/api/todos/t1/conversation")
+        let openBody = try XCTUnwrap(open.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        XCTAssertEqual(openBody["tool"] as? String, "codex")
+
+        _ = try await client().setConversationSession(todoId: "t1", sessionId: "019f8b4e")
+        let put = try XCTUnwrap(StubURLProtocol.requests.last)
+        XCTAssertEqual(put.httpMethod, "PUT")
+        XCTAssertEqual(put.url?.path, "/api/todos/t1/conversation/session")
+        let putBody = try XCTUnwrap(put.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        XCTAssertEqual(putBody["session_id"] as? String, "019f8b4e")
+    }
+
+    func testNullSessionIdDecodesAsEmpty() throws {
+        let json = """
+        {"todo_id":"t","computer":{"id":"m","name":"Mac","hostname":"h","port":22,"username":"me","created_at":"","updated_at":""},"cwd":"~/x","tool":"codex","tmux_name":"ai/codex/todo-t","session_id":null,"status":"unknown","created_at":""}
+        """
+        let conversation = try TodoHubClient.makeDecoder().decode(Conversation.self, from: Data(json.utf8))
+        XCTAssertEqual(conversation.sessionId, "")
     }
 
     func testSendsBearerTokenExceptOnHealth() async throws {
@@ -114,13 +139,13 @@ final class TodoHubClientTests: XCTestCase {
 
     func testEncodesSnakeCaseBodies() async throws {
         StubURLProtocol.handler = { _ in .init(status: 200, body: Self.sectionComputersJSON.dropFirst().dropLast().description) }
-        _ = try await client().setSectionComputer(.i, SetSectionComputerRequest(computerId: "m1", cwd: "~/x"))
+        _ = try await client().setSectionComputer(.i, SetSectionComputerRequest(computerId: "m1"))
         let request = try XCTUnwrap(StubURLProtocol.requests.last)
         XCTAssertEqual(request.httpMethod, "PUT")
         XCTAssertEqual(request.url?.path, "/api/sections/I/computer")
         let body = try XCTUnwrap(request.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
         XCTAssertEqual(body["computer_id"] as? String, "m1")
-        XCTAssertEqual(body["cwd"] as? String, "~/x")
+        XCTAssertFalse(body.keys.contains("cwd"))
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
     }
 
@@ -130,12 +155,12 @@ final class TodoHubClientTests: XCTestCase {
 
         StubURLProtocol.handler = { _ in .init(status: 409, body: #"{"error":"Section P has no computer assigned"}"#) }
         await XCTAssertThrowsHubError(
-            try await client().openConversation(todoId: "t"), .conflict("Section P has no computer assigned")
+            try await client().openConversation(todoId: "t", tool: "claude"), .conflict("Section P has no computer assigned")
         )
         // Other 409s keep their own text; the UI must not assume "no computer".
         StubURLProtocol.handler = { _ in .init(status: 409, body: #"{"error":"No free tmux session name for this todo"}"#) }
         await XCTAssertThrowsHubError(
-            try await client().openConversation(todoId: "t"), .conflict("No free tmux session name for this todo")
+            try await client().openConversation(todoId: "t", tool: "claude"), .conflict("No free tmux session name for this todo")
         )
         XCTAssertEqual(
             TodoHubError.conflict("No free tmux session name for this todo").userMessage,
@@ -199,9 +224,10 @@ final class TodoHubClientTests: XCTestCase {
         let computer = try await client.createComputer(
             CreateComputerRequest(name: "Live", hostname: "live.tailnet", username: "me")
         )
-        _ = try await client.setSectionComputer(.si, SetSectionComputerRequest(computerId: computer.id, cwd: "~/live"))
-        let todo = try await client.createTodo(CreateTodoRequest(section: .si, title: "live test"))
-        let opened = try await client.openConversation(todoId: todo.id)
+        _ = try await client.setSectionComputer(.si, SetSectionComputerRequest(computerId: computer.id))
+        let project = try await client.createProject(CreateProjectRequest(name: "live", section: .si, folder: "~/live"))
+        let todo = try await client.createTodo(CreateTodoRequest(title: "live test", projectId: project.id))
+        let opened = try await client.openConversation(todoId: todo.id, tool: "claude")
         XCTAssertEqual(opened.computer.id, computer.id)
         XCTAssertEqual(opened.cwd, "~/live")
         XCTAssertTrue(opened.tmuxName.hasPrefix("ai/claude/todo-"))
@@ -237,10 +263,16 @@ final class TodoHubClientTests: XCTestCase {
             }
         }
         try await Task.sleep(nanoseconds: 500_000_000) // let the socket connect
-        let todo = try await client.createTodo(CreateTodoRequest(section: .p, title: "event test"))
+        let computer = try await client.createComputer(CreateComputerRequest(name: "Event", hostname: "event.tailnet", username: "me"))
+        _ = try await client.setSectionComputer(.p, SetSectionComputerRequest(computerId: computer.id))
+        let project = try await client.createProject(CreateProjectRequest(name: "event", section: .p, folder: "~/event"))
+        let todo = try await client.createTodo(CreateTodoRequest(title: "event test", projectId: project.id))
         await fulfillment(of: [received], timeout: 5)
         listener.cancel()
         try await client.deleteTodo(id: todo.id)
+        try await client.deleteProject(id: project.id)
+        try await client.clearSectionComputer(.p)
+        try await client.deleteComputer(id: computer.id)
     }
 
     /// A dropped socket says so, so the store can start a fresh "turned waiting" baseline.

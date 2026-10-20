@@ -41,7 +41,6 @@ struct PhoneShell: View {
 
     @Environment(AppModel.self) private var model
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
-    @AppStorage(QuickAdd.sectionKey) private var quickAddSection = TodoSection.i.rawValue
     @State private var tab: Tab = .todos
     @State private var todosPath: [Route] = []
     @State private var conversationsPath: [Route] = []
@@ -134,11 +133,8 @@ struct PhoneShell: View {
             SettingsView(initial: request.initial)
         }
         .sheet(isPresented: $showingAdd) {
-            AddTodoSheet(section: QuickAdd.section(from: quickAddSection), projects: store.projects) {
-                section, title, projectId in
-                Task { await store.createTodo(section: section, title: title, projectId: projectId) }
-            }
-            .tint(DS.accent)
+            AddTodoSheet(store: store)
+                .tint(DS.accent)
         }
         .sheet(isPresented: $showingNewFromConversation) {
             NewTodoFromConversationSheet(store: store)
@@ -162,7 +158,7 @@ struct PhoneShell: View {
             model.pendingOpenTodoID = nil
             openFromNotification(todoID)
         }
-        // The Home-screen "New Todo" quick action; QuickAddBar takes the focus.
+        // The Home-screen "New Todo" quick action. The I section's title field takes the focus.
         .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
             guard requested else { return }
             guard isConfigured else {
@@ -191,10 +187,9 @@ struct PhoneShell: View {
         } else if store.todos.isEmpty && !store.hasLoadedOnce {
             ProgressView()
         } else {
-            TodoListView(sections: TodoSection.allCases) { todosPath.append(.todo($0.id)) }
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    QuickAddBar()
-                }
+            TodoListView(sections: TodoSection.allCases, quickAddSection: .i) {
+                todosPath.append(.todo($0.id))
+            }
         }
     }
 

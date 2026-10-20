@@ -58,6 +58,14 @@ public enum TmuxCommandBuilder {
         return wrap(command)
     }
 
+    /// Starts a new Codex or Cursor conversation and prints `created <id>`. `-` tells the
+    /// script the id does not exist yet. Detach returns as soon as the id appears.
+    public static func freshTodoConversation(tmuxName: String, cwd: String, tool: String) -> String {
+        let command = "AI_TODO_OPEN_DETACH=1 exec \"$HOME/.ai-remote/bin/ai-todo-open\" "
+            + "\(shellQuote(tmuxName)) \(shellQuote(cwd)) - \(shellQuote(tool))"
+        return wrap(command)
+    }
+
     /// Exit status when the host-side scripts aren't installed (`command not found`).
     public static let scriptMissingExitCode: Int32 = 127
 

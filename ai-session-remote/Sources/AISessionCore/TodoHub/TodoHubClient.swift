@@ -138,9 +138,20 @@ public struct TodoHubClient: Sendable {
         }
     }
 
-    /// Get-or-create. Throws `.conflict` when the todo's section has no computer.
-    public func openConversation(todoId: String) async throws -> Conversation {
-        try await decode(Conversation.self, send("POST", "/api/todos/\(escape(todoId))/conversation"))
+    /// Get-or-create for the chosen tool. Throws `.conflict` when the todo's section has no computer.
+    public func openConversation(todoId: String, tool: String) async throws -> Conversation {
+        try await decode(
+            Conversation.self,
+            send("POST", "/api/todos/\(escape(todoId))/conversation", body: OpenConversationRequest(tool: tool))
+        )
+    }
+
+    /// Stores the id a new Codex or Cursor conversation reported.
+    public func setConversationSession(todoId: String, sessionId: String) async throws -> Conversation {
+        try await decode(
+            Conversation.self,
+            send("PUT", "/api/todos/\(escape(todoId))/conversation/session", body: SetConversationSessionRequest(sessionId: sessionId))
+        )
     }
 
     /// Marks the conversation closed. Kill the tmux session on the computer first.

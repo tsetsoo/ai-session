@@ -154,6 +154,14 @@ final class ConversationLoader {
         resolve(conversation)
     }
 
+    /// The hub conversation already exists (the tool step just created it). Attach without
+    /// opening a second one.
+    func attachOpened(_ conversation: Conversation) {
+        guard phase != .preparing else { return }
+        phase = .preparing
+        resolve(conversation)
+    }
+
     /// Selection path: attach only to a conversation that is already running. Never creates one.
     /// Synchronous, so a settled selection goes straight to the terminal without an idle frame.
     func attachIfRunning(_ conversation: Conversation?) {

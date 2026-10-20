@@ -1,12 +1,11 @@
 use actix_web::{web, HttpRequest, HttpResponse};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use todo_shared::{CreateTodoRequest, DeleteResponse, Importance, Section, SectionCount, UpdateTodoRequest};
 use uuid::Uuid;
 
 use crate::broadcast::Broadcaster;
 use crate::db::DbPool;
 use crate::models::row_to_todo;
-use crate::projects::project_exists;
 
 pub(crate) const SELECT_COLS: &str = "id, section, title, completed, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, project_id, \
     (SELECT status FROM conversations WHERE conversations.todo_id = todos.id) AS conversation_status";
@@ -121,6 +120,29 @@ fn project_not_found() -> HttpResponse {
     HttpResponse::NotFound().json(serde_json::json!({"error": "Project not found"}))
 }
 
+fn named_section(value: &str) -> Option<Section> {
+    match value {
+        "Sp" => Some(Section::Sp),
+        "I" => Some(Section::I),
+        "Si" => Some(Section::Si),
+        "P" => Some(Section::P),
+        _ => None,
+    }
+}
+
+fn project_section(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT section FROM projects WHERE id = ?1", params![id], |row| row.get(0)).optional()
+}
+
+fn project_section_of_todo(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT p.section FROM todos t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
+        params![id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequest>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
@@ -132,15 +154,22 @@ pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequ
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "Title cannot be empty"}));
     }
 
-    if let Some(project_id) = body.project_id.as_deref() {
-        match project_exists(&conn, project_id) {
-            Ok(true) => {}
-            Ok(false) => return project_not_found(),
-            Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-        }
+    let Some(project_id) = body.project_id.as_deref().filter(|id| !id.trim().is_empty()) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "project_id is required"}));
+    };
+    let project_section = match project_section(&conn, project_id) {
+        Ok(Some(section)) => section,
+        Ok(None) => return project_not_found(),
+        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+    };
+    let Some(section) = named_section(&project_section) else {
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "project section is invalid"}));
+    };
+    if body.section.is_some_and(|asked| asked != section) {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "section does not match project"}));
     }
 
-    match insert_todo(&conn, body.section, title, body.importance, body.due_date.as_deref(), body.project_id.as_deref()) {
+    match insert_todo(&conn, section, title, body.importance, body.due_date.as_deref(), Some(project_id)) {
         Ok(id) => {
             broadcaster.send();
             let sql = format!("SELECT {SELECT_COLS} FROM todos WHERE id = ?1");
@@ -171,11 +200,30 @@ pub async fn update_todo(
         return HttpResponse::NotFound().json(serde_json::json!({"error": "Todo not found"}));
     }
 
-    if let Some(Some(project_id)) = body.project_id.as_ref() {
-        match project_exists(&conn, project_id) {
-            Ok(true) => {}
-            Ok(false) => return project_not_found(),
+    if matches!(body.project_id, Some(None)) {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "project_id is required"}));
+    }
+
+    let new_project = if let Some(Some(project_id)) = body.project_id.as_ref() {
+        match project_section(&conn, project_id) {
+            Ok(Some(section)) => Some((project_id.clone(), section)),
+            Ok(None) => return project_not_found(),
             Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+        }
+    } else {
+        None
+    };
+    if let Some(asked) = body.section {
+        let expected = if let Some((_, section)) = &new_project {
+            Some(section.clone())
+        } else {
+            match project_section_of_todo(&conn, &id) {
+                Ok(section) => section,
+                Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+            }
+        };
+        if expected.is_some_and(|section| section != asked.as_str()) {
+            return HttpResponse::BadRequest().json(serde_json::json!({"error": "section does not match project"}));
         }
     }
 
@@ -199,8 +247,10 @@ pub async fn update_todo(
         }
     }
 
-    if let Some(section) = body.section {
-        conn.execute("UPDATE todos SET section = ?1, updated_at = datetime('now') WHERE id = ?2", params![section.as_str(), id]).unwrap();
+    if new_project.is_none() {
+        if let Some(section) = body.section {
+            conn.execute("UPDATE todos SET section = ?1, updated_at = datetime('now') WHERE id = ?2", params![section.as_str(), id]).unwrap();
+        }
     }
 
     if let Some(importance) = body.importance {
@@ -211,8 +261,12 @@ pub async fn update_todo(
         conn.execute("UPDATE todos SET due_date = ?1, updated_at = datetime('now') WHERE id = ?2", params![due_date_opt.as_deref(), id]).unwrap();
     }
 
-    if let Some(ref project_opt) = body.project_id {
-        conn.execute("UPDATE todos SET project_id = ?1, updated_at = datetime('now') WHERE id = ?2", params![project_opt.as_deref(), id]).unwrap();
+    if let Some((project_id, section)) = new_project {
+        conn.execute(
+            "UPDATE todos SET project_id = ?1, section = ?2, updated_at = datetime('now') WHERE id = ?3",
+            params![project_id, section, id],
+        )
+        .unwrap();
     }
 
     broadcaster.send();
@@ -284,4 +338,61 @@ pub async fn ws_handler(
     });
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::http::StatusCode;
+    use serde_json::json;
+
+    use crate::test_support::{pool, post, seed_computers};
+
+    fn project_on(conn: &rusqlite::Connection, section: &str) -> String {
+        let id = format!("p-{section}");
+        conn.execute(
+            "INSERT INTO projects (id, name, section, folder) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, section, section, format!("~/{section}")],
+        )
+        .unwrap();
+        id
+    }
+
+    #[actix_web::test]
+    async fn create_todo_without_a_project_inserts_nothing() {
+        let (_db, pool) = pool("todo");
+        seed_computers(&pool.get().unwrap());
+        let (status, body) = post(&pool, "/api/todos", json!({"section": "Si", "title": "loose"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "project_id is required");
+        let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[actix_web::test]
+    async fn create_todo_rejects_a_section_that_disagrees_with_the_project() {
+        let (_db, pool) = pool("todo");
+        let conn = pool.get().unwrap();
+        seed_computers(&conn);
+        let project = project_on(&conn, "Si");
+        let (status, body) = post(&pool, "/api/todos", json!({"section": "P", "title": "x", "project_id": project})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "section does not match project");
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[actix_web::test]
+    async fn create_todo_stores_the_projects_section() {
+        let (_db, pool) = pool("todo");
+        let conn = pool.get().unwrap();
+        seed_computers(&conn);
+        let project = project_on(&conn, "Si");
+        let (status, body) = post(&pool, "/api/todos", json!({"title": "x", "project_id": project})).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["section"], "Si");
+        assert_eq!(body["project_id"], project);
+        let (status, cleared) = crate::test_support::patch(&pool, &format!("/api/todos/{}", body["id"].as_str().unwrap()), json!({"project_id": null})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{cleared}");
+        assert_eq!(cleared["error"], "project_id is required");
+    }
 }

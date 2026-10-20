@@ -1,9 +1,9 @@
 import AISessionCore
 import SwiftUI
 
-/// Create a project (blank, or prefilled from a suggestion) or edit one. The hub rejects a
-/// duplicate folder and a folder inside, or containing, another project on the same computer
-/// with a `409` that names the other project; that message is shown as is.
+/// Create a project (blank, or prefilled from a suggestion) or edit one. A project belongs to
+/// a section. The hub rejects a section with no computer, and a second project at the same
+/// folder in that section, with a `409` that is shown as is.
 struct ProjectEditorSheet: View {
     enum Mode: Identifiable {
         case create(ProjectSuggestion?)
@@ -23,7 +23,8 @@ struct ProjectEditorSheet: View {
     var onCreated: (Project) -> Void = { _ in }
 
     @Environment(\.dismiss) private var dismiss
-    @State private var computerId = ""
+    @Environment(\.openAppSettings) private var openAppSettings
+    @State private var section: TodoSection?
     @State private var name = ""
     @State private var folder = ""
     @State private var repoUrl = ""
@@ -37,11 +38,18 @@ struct ProjectEditorSheet: View {
             Form {
                 Section {
                     if case let .edit(project) = mode {
+                        LabeledContent("Section", value: project.section.rawValue)
                         LabeledContent("Computer", value: project.computer.name)
                     } else {
-                        Picker("Computer", selection: $computerId) {
-                            if computerId.isEmpty { Text("Choose…").tag("") }
-                            ForEach(store.computers) { Text($0.name).tag($0.id) }
+                        Picker("Section", selection: $section) {
+                            Text("Choose").tag(TodoSection?.none)
+                            ForEach(TodoSection.allCases) { item in
+                                let computer = store.sectionComputers[item]?.computer.name ?? "No computer"
+                                Text("\(item.rawValue) · \(computer)").tag(Optional(item))
+                            }
+                        }
+                        if let section, store.sectionComputers[section] == nil {
+                            Button("Choose Computer") { openAppSettings?(.sections(section)) }
                         }
                     }
                     TextField("Name", text: $name)
@@ -50,7 +58,7 @@ struct ProjectEditorSheet: View {
                         .autocorrectionDisabled()
                         .font(.body.monospaced())
                 } footer: {
-                    Text("Conversations in this folder or below it belong to the project. Projects on one computer can't be nested.")
+                    Text("The section's computer is where this folder lives. A nested folder is its own project.")
                 }
                 Section {
                     TextField("Repository URL (optional)", text: $repoUrl)
@@ -103,7 +111,9 @@ struct ProjectEditorSheet: View {
     private func trimmed(_ text: String) -> String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var canSave: Bool {
-        !isSaving && !trimmed(name).isEmpty && !trimmed(folder).isEmpty && !computerId.isEmpty
+        guard !isSaving, !trimmed(name).isEmpty, !trimmed(folder).isEmpty, let section else { return false }
+        if isCreate { return store.sectionComputers[section] != nil }
+        return true
     }
 
     private func load() {
@@ -112,15 +122,19 @@ struct ProjectEditorSheet: View {
         switch mode {
         case let .create(suggestion):
             if let suggestion {
-                computerId = suggestion.computer.id
                 name = suggestion.name
                 folder = suggestion.folder
                 repoUrl = suggestion.repoUrl ?? ""
-            } else if store.computers.count == 1 {
-                computerId = store.computers[0].id
+                let matches = TodoSection.allCases.filter {
+                    store.sectionComputers[$0]?.computer.id == suggestion.computer.id
+                }
+                if matches.count == 1 { section = matches[0] }
+            } else {
+                let ready = TodoSection.allCases.filter { store.sectionComputers[$0] != nil }
+                if ready.count == 1 { section = ready[0] }
             }
         case let .edit(project):
-            computerId = project.computer.id
+            section = project.section
             name = project.name
             folder = project.folder
             repoUrl = project.repoUrl ?? ""
@@ -139,8 +153,9 @@ struct ProjectEditorSheet: View {
             do {
                 switch mode {
                 case .create:
+                    guard let section else { return }
                     let created = try await store.createProject(CreateProjectRequest(
-                        name: name, computerId: computerId, folder: folder,
+                        name: name, section: section, folder: folder,
                         repoUrl: repo.isEmpty ? nil : repo, digestEnabled: digestEnabled
                     ))
                     dismiss()

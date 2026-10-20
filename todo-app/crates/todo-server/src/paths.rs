@@ -57,7 +57,8 @@ pub fn is_within(path: &str, folder: &str) -> bool {
 
 /// The project whose folder is the longest segment prefix of `cwd`.
 /// `projects` holds `(id, folder)` pairs of one computer.
-pub fn best_project<'a>(cwd: &str, projects: &'a [(String, String)]) -> Option<&'a str> {
+#[cfg(test)]
+fn best_project<'a>(cwd: &str, projects: &'a [(String, String)]) -> Option<&'a str> {
     let cwd = segments(cwd);
     projects
         .iter()

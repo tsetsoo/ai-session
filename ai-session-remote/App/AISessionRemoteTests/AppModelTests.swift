@@ -47,7 +47,7 @@ final class AppModelTests: XCTestCase {
         store.stopLiveUpdates()
         await store.toggle(todo)
         await store.delete(todo)
-        await store.createTodo(section: .sp, title: "Quick add")
+        await store.createTodo(title: "Quick add", projectId: "p1")
         await store.setProject("p1", for: todo)
         _ = try? await store.openConversation(for: todo)
         try? await store.closeConversation(conversation, config: DemoFixtures.config)

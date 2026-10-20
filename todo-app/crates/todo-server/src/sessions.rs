@@ -270,9 +270,13 @@ pub(crate) fn set_session_project_db(
         Some(None) => assign_session_project(&tx, tool, session_id, None, true)?,
         Some(Some(project_id)) => {
             let (computer_id, name): (String, String) = tx
-                .query_row("SELECT computer_id, name FROM projects WHERE id = ?1", params![project_id], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
+                .query_row(
+                    "SELECT sc.computer_id, p.name FROM projects p
+                     JOIN section_computers sc ON sc.section = p.section
+                     WHERE p.id = ?1",
+                    params![project_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
                 .optional()?
                 .ok_or(SessionError::NotFound("Project not found"))?;
             if computer_id != session.computer_id {
@@ -550,8 +554,8 @@ mod tests {
     fn seed(conn: &Connection) {
         seed_computers(conn);
         conn.execute_batch(
-            "INSERT INTO projects (id, name, computer_id, folder) VALUES
-                 ('pa', 'a', 'mac', '~/a'), ('pb', 'b', 'mac', '~/b'), ('ps', 'spread-a', 'spread', '~/a');",
+            "INSERT INTO projects (id, name, section, folder) VALUES
+                 ('pa', 'a', 'Si', '~/a'), ('pb', 'b', 'Si', '~/b'), ('ps', 'spread-a', 'Sp', '~/a');",
         )
         .unwrap();
     }

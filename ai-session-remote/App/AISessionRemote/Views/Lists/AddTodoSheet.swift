@@ -1,40 +1,92 @@
 import AISessionCore
 import SwiftUI
 
+/// Toolbar new-todo. A selected section asks for a project and a title. With no section
+/// selected it asks for the section first. The title stays after a successful add.
 struct AddTodoSheet: View {
-    /// Offered as a Project picker when there are any.
-    let projects: [Project]
-    let onAdd: (TodoSection, String, String?) -> Void
+    var fixedSection: TodoSection?
+    let store: TodoHubStore
+
     @Environment(\.dismiss) private var dismiss
-    @State private var section: TodoSection
+    @Environment(\.openAppSettings) private var openAppSettings
+    @State private var section: TodoSection?
     @State private var title = ""
-    @State private var projectId: String?
+    @State private var projectID: String?
+    @State private var makingNew = false
+    @State private var newName = ""
+    @State private var newFolder = ""
+    @State private var localError: String?
     @FocusState private var titleFocused: Bool
 
-    init(section: TodoSection = .i, projects: [Project] = [],
-         onAdd: @escaping (TodoSection, String, String?) -> Void) {
-        self.projects = projects
-        self.onAdd = onAdd
-        _section = State(initialValue: section)
+    init(fixedSection: TodoSection? = nil, store: TodoHubStore) {
+        self.fixedSection = fixedSection
+        self.store = store
+        _section = State(initialValue: fixedSection)
+    }
+
+    private var chosenSection: TodoSection? { fixedSection ?? section }
+
+    private var fields: TodoAddFields {
+        TodoAddForm.fields(
+            inProject: false,
+            inSection: chosenSection != nil,
+            hasComputer: hasComputer
+        )
+    }
+
+    private var hasComputer: Bool {
+        guard let chosenSection else { return false }
+        return store.sectionComputers[chosenSection] != nil
+    }
+
+    private var sectionProjects: [Project] {
+        guard let chosenSection else { return [] }
+        return store.projects.filter { $0.section == chosenSection }
+    }
+
+    private var newProject: TodoAddNewProject? {
+        guard makingNew else { return nil }
+        return TodoAddNewProject(name: newName, folder: newFolder)
+    }
+
+    private var canSubmit: Bool {
+        guard fields != .sectionProjectAndTitle || chosenSection != nil else { return false }
+        guard TodoAddForm.canSubmit(title: title, newProject: newProject, hasComputer: hasComputer) else { return false }
+        if makingNew { return true }
+        return projectID != nil
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Picker("Section", selection: $section) {
-                    ForEach(TodoSection.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                // A plain TextField keeps the keyboard's dictation button available.
-                TextField("Title", text: $title, axis: .vertical)
-                    .focused($titleFocused)
-                if !projects.isEmpty {
-                    Picker("Project", selection: $projectId) {
-                        Text("None").tag(String?.none)
-                        ForEach(projects) { project in
-                            Text(project.name).tag(String?.some(project.id))
-                        }
+                if fixedSection == nil {
+                    Picker("Section", selection: $section) {
+                        Text("Choose").tag(TodoSection?.none)
+                        ForEach(TodoSection.allCases) { Text($0.rawValue).tag(Optional($0)) }
                     }
+                    .pickerStyle(.segmented)
+                }
+                computerRow
+                if hasComputer {
+                    Picker("Project", selection: projectChoice) {
+                        ForEach(sectionProjects) { project in
+                            Text(project.name).tag(project.id)
+                        }
+                        Text("New project").tag("new")
+                    }
+                    if makingNew {
+                        TextField("Project name", text: $newName)
+                        TextField("Folder, e.g. ~/programming/app", text: $newFolder)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                    }
+                    TodoTitleField(title: $title, focused: $titleFocused, onSubmit: submit)
+                }
+                if let localError {
+                    Label(localError, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(.subheadline)
                 }
             }
             .navigationTitle("New Todo")
@@ -44,15 +96,103 @@ struct AddTodoSheet: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        onAdd(section, title.trimmingCharacters(in: .whitespacesAndNewlines), projectId)
-                        dismiss()
-                    }
-                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Add", action: submit)
+                        .disabled(!canSubmit)
                 }
             }
-            .onAppear { titleFocused = true }
+            .onAppear {
+                pickDefaultProject()
+                titleFocused = true
+            }
+            .onChange(of: chosenSection) { _, _ in
+                projectID = nil
+                makingNew = false
+                pickDefaultProject()
+            }
         }
-        .presentationDetents([.medium])
+        #if os(macOS)
+        .frame(minWidth: 420, minHeight: 380)
+        #else
+        .presentationDetents([.medium, .large])
+        #endif
+    }
+
+    @ViewBuilder
+    private var computerRow: some View {
+        if let chosenSection, let mapping = store.sectionComputers[chosenSection] {
+            LabeledContent("Computer", value: mapping.computer.name)
+        } else if chosenSection != nil {
+            HStack {
+                Text("No computer").foregroundStyle(.secondary)
+                Spacer()
+                Button("Choose Computer") {
+                    if let chosenSection { openAppSettings?(.sections(chosenSection)) }
+                }
+            }
+        }
+    }
+
+    private var projectChoice: Binding<String> {
+        Binding(
+            get: { makingNew ? "new" : (projectID ?? "new") },
+            set: { value in
+                if value == "new" {
+                    makingNew = true
+                    projectID = nil
+                } else {
+                    makingNew = false
+                    projectID = value
+                }
+            }
+        )
+    }
+
+    private func pickDefaultProject() {
+        guard hasComputer else { return }
+        if makingNew { return }
+        if let projectID, sectionProjects.contains(where: { $0.id == projectID }) { return }
+        if let first = sectionProjects.first {
+            self.projectID = first.id
+            makingNew = false
+        } else {
+            projectID = nil
+            makingNew = true
+        }
+    }
+
+    private func submit() {
+        guard canSubmit, let chosenSection, !store.isOffline else { return }
+        let text = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let makingNew = makingNew
+        let newName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newFolder = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing = projectID
+        Task {
+            do {
+                let projectId: String
+                if makingNew {
+                    guard let created = try await store.createProject(CreateProjectRequest(
+                        name: newName, section: chosenSection, folder: newFolder
+                    )) else { return }
+                    projectId = created.id
+                } else if let existing {
+                    projectId = existing
+                } else {
+                    return
+                }
+                guard await store.createTodo(title: text, projectId: projectId) else { return }
+                title = ""
+                if makingNew {
+                    self.makingNew = false
+                    self.newName = ""
+                    self.newFolder = ""
+                    self.projectID = projectId
+                }
+                localError = nil
+                titleFocused = true
+            } catch {
+                localError = TodoHubStore.message(for: error)
+            }
+        }
     }
 }

@@ -289,9 +289,16 @@ final class TodoHubStore {
 
     // MARK: Todos
 
-    func createTodo(section: TodoSection, title: String, projectId: String? = nil) async {
-        await mutate { client in
-            _ = try await client.createTodo(CreateTodoRequest(section: section, title: title, projectId: projectId))
+    @discardableResult
+    func createTodo(title: String, projectId: String) async -> Bool {
+        do {
+            try await perform { client in
+                _ = try await client.createTodo(CreateTodoRequest(title: title, projectId: projectId))
+            }
+            return true
+        } catch {
+            errorMessage = Self.message(for: error)
+            return false
         }
     }
 
@@ -331,10 +338,10 @@ final class TodoHubStore {
         try await perform { client in try await client.deleteComputer(id: computer.id) }
     }
 
-    func assign(_ section: TodoSection, computerID: String?, cwd: String) async throws {
+    func assign(_ section: TodoSection, computerID: String?) async throws {
         try await perform { client in
             if let computerID {
-                _ = try await client.setSectionComputer(section, SetSectionComputerRequest(computerId: computerID, cwd: cwd))
+                _ = try await client.setSectionComputer(section, SetSectionComputerRequest(computerId: computerID))
             } else {
                 try await client.clearSectionComputer(section)
             }
@@ -343,12 +350,53 @@ final class TodoHubStore {
 
     // MARK: Conversations
 
-    /// Get-or-create the todo's conversation on the hub.
+    /// Get-or-create the todo's conversation on the hub. An existing conversation is resumed
+    /// with the tool it already has.
     func openConversation(for todo: Todo) async throws -> Conversation {
+        try await openConversation(for: todo, tool: "claude", config: nil)
+    }
+
+    /// Opens for `tool`. Codex and Cursor have no id yet: the computer starts one, and the id
+    /// it prints is stored before the terminal attaches. A start that never produces an id
+    /// kills the tmux session it may have left and removes the hub conversation, so the tool
+    /// step shows again and the next start is a new one.
+    func openConversation(for todo: Todo, tool: String, config: HostConnectionConfig?) async throws -> Conversation {
         guard let client = hubClient() else {
             throw TodoHubError.invalidBaseURL
         }
-        let conversation = try await client.openConversation(todoId: todo.id)
+        var conversation = try await client.openConversation(todoId: todo.id, tool: tool)
+        if conversation.sessionId.isEmpty {
+            // An empty id is a start that has not finished. Keep it out of the store, and drop
+            // the hub row unless this call is about to fill the id in.
+            guard ConversationStart.startsFresh(tool), let config else {
+                try? await client.deleteConversation(todoId: todo.id)
+                conversations[todo.id] = nil
+                throw TodoHubError.conflict("No \(tool) conversation appeared")
+            }
+            do {
+                let result = try await NIOSSHClient().exec(
+                    config,
+                    command: TmuxCommandBuilder.freshTodoConversation(
+                        tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool
+                    )
+                )
+                let created = ConversationStart.createdSessionId(from: result.stdout)
+                guard result.exitCode != 94, let created else {
+                    throw TodoHubError.conflict("No new \(tool) conversation appeared")
+                }
+                conversation = try await client.setConversationSession(todoId: todo.id, sessionId: created)
+            } catch {
+                // The script may already have created the tmux session. Leaving it makes the
+                // next fresh open attach to a session that never printed an id.
+                _ = try? await NIOSSHClient().exec(
+                    config,
+                    command: TmuxCommandBuilder.killSessionExact(tmuxName: conversation.tmuxName)
+                )
+                try? await client.deleteConversation(todoId: todo.id)
+                conversations[todo.id] = nil
+                throw error
+            }
+        }
         conversations[todo.id] = conversation
         return conversation
     }
@@ -387,31 +435,30 @@ final class TodoHubStore {
         }
     }
 
-    /// Creates a todo already linked to a conversation found on `computer`, optionally
-    /// putting it in a project (the create endpoint has no project field, so that's a PATCH).
+    /// Creates a todo already linked to a conversation found on `computer`, in `projectId`.
     func createTodo(
         from remote: RemoteConversation,
         on computer: Computer,
         section: TodoSection,
         title: String,
-        projectId: String? = nil
+        projectId: String
     ) async throws {
         try await perform { client in
             let created = try await client.createTodoFromConversation(TodoFromConversationRequest(
-                section: section, title: title, computerId: computer.id,
+                section: section, title: title, projectId: projectId, computerId: computer.id,
                 tool: remote.tool, sessionId: remote.sessionId, cwd: remote.cwd
             ))
             conversations[created.todo.id] = created.conversation
-            if let projectId, created.todo.projectId != projectId {
+            if created.todo.projectId != projectId {
                 _ = try await client.updateTodo(id: created.todo.id, UpdateTodoRequest(projectId: .set(projectId)))
             }
         }
     }
 
     /// The section this computer serves, when exactly one does.
-    func defaultSection(for computer: Computer) -> TodoSection {
-        let sections = sectionComputers.values.filter { $0.computer.id == computer.id }.map(\.section)
-        return sections.count == 1 ? sections[0] : .i
+    func onlySection(for computer: Computer) -> TodoSection? {
+        let sections = TodoSection.allCases.filter { sectionComputers[$0]?.computer.id == computer.id }
+        return sections.count == 1 ? sections[0] : nil
     }
 
     /// Deletes the conversation on the computer (ending its tmux session first), then unlinks

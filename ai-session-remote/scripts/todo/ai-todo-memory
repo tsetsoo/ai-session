@@ -1475,24 +1475,18 @@ def digest_project(ctx, writer, project, record):
         return record
     groups = select_digest(memories)
     new = {"targets": [], "skipped": []}
-    claude = writer.claude(folder, render_digest(project, groups, CLAUDE_DIGEST_BYTES))
-    if claude:
-        new["targets"].append(claude)
+    # Claude reads AGENTS.md once project instructions say so. A CLAUDE.local.md we wrote
+    # would hide that file, so only a marker-owned one is removed.
+    writer.remove_claude(folder)
     old_codex = {t["path"]: t for t in (record or {}).get("targets", []) if t.get("kind") == "codex"}
     body_limit = CODEX_BLOCK_BYTES - len((BLOCK_BEGIN + "\n" + BLOCK_END + "\n").encode("utf-8"))
     body = render_digest(project, groups, body_limit)
-    directories = []
-    for cwd in codex_cwds(folder):
-        target = codex_target(cwd, folder)
-        if target and target not in directories:
-            directories.append(target)
-    for directory in directories:
-        path = os.path.join(directory, "AGENTS.md")
-        created = (old_codex.get(path) or {}).get("created_by_us", False)
-        if body is None:
-            writer.remove_codex(path, created)
-            continue
-        skipped, written = writer.codex(directory, body, created)
+    path = os.path.join(folder, "AGENTS.md")
+    created = (old_codex.get(path) or {}).get("created_by_us", False)
+    if body is None:
+        writer.remove_codex(path, created)
+    else:
+        skipped, written = writer.codex(folder, body, created)
         if skipped:
             new["skipped"].append(skipped)
         if written:
@@ -1504,8 +1498,74 @@ def digest_project(ctx, writer, project, record):
     return new if new["targets"] or new["skipped"] else None
 
 
+def digest_shared(ctx, writer, projects, records):
+    """One AGENTS.md for every project at this folder, from all of their memories."""
+    enabled = [project for project in projects if project.get("digest_enabled") is not False]
+    if not enabled:
+        for project in projects:
+            record = digest_project(ctx, writer, project, records["projects"].get(project["id"]))
+            if record:
+                records["projects"][project["id"]] = record
+            else:
+                records["projects"].pop(project["id"], None)
+        return
+    folder = expand_folder(enabled[0].get("folder"))
+    if not folder or not os.path.isdir(folder):
+        for project in projects:
+            record = digest_project(ctx, writer, project, records["projects"].get(project["id"]))
+            if record:
+                records["projects"][project["id"]] = record
+            else:
+                records["projects"].pop(project["id"], None)
+        return
+    memories = []
+    for project in enabled:
+        try:
+            batch = ctx.hub.request("GET", "/api/memories", query={"project_id": project["id"], "limit": 1000})
+            if not isinstance(batch, list):
+                raise HubError("GET /api/memories: not a list")
+            memories.extend(batch)
+        except HubError as e:
+            Log.write("error", step="digest", project=project.get("id"), error=e)
+            ctx.errors += 1
+            return
+    writer.remove_claude(folder)
+    names = " · ".join(one_line(project.get("name") or "project") for project in enabled)
+    body_limit = CODEX_BLOCK_BYTES - len((BLOCK_BEGIN + "\n" + BLOCK_END + "\n").encode("utf-8"))
+    body = render_digest({"name": names}, select_digest(memories), body_limit)
+    path = os.path.join(folder, "AGENTS.md")
+    created = False
+    for project in projects:
+        for target in (records["projects"].get(project["id"]) or {}).get("targets") or []:
+            if target.get("path") == path and target.get("created_by_us"):
+                created = True
+    new = {"targets": [], "skipped": []}
+    if body is None:
+        writer.remove_codex(path, created)
+    else:
+        skipped, written = writer.codex(folder, body, created)
+        if skipped:
+            new["skipped"].append(skipped)
+        if written:
+            new["targets"].append(written)
+    kept = {target["path"] for target in new["targets"]}
+    stored = new if new["targets"] or new["skipped"] else None
+    for project in projects:
+        for target in (records["projects"].get(project["id"]) or {}).get("targets") or []:
+            if target["path"] not in kept:
+                remove_recorded(writer, {"targets": [target]})
+        if stored:
+            records["projects"][project["id"]] = stored
+        else:
+            records["projects"].pop(project["id"], None)
+
+
 def refresh_digests(ctx, project_ids=None):
-    """Rewrite the digests of these projects (all of this computer's when None)."""
+    """Rewrite these projects' digests. None rewrites every project on this computer.
+
+    A folder shared by several projects is one AGENTS.md, so refreshing any of
+    them rewrites that file from all of their memories.
+    """
     if ctx.no_digest:
         return
     projects = ctx.load_projects()
@@ -1517,14 +1577,42 @@ def refresh_digests(ctx, project_ids=None):
     records.setdefault("projects", {})
     writer = DigestWriter(ctx)
     mine = projects.mine()
-    for project in mine:
-        if project_ids is not None and project.get("id") not in project_ids:
-            continue
-        record = digest_project(ctx, writer, project, records["projects"].get(project["id"]))
-        if record:
-            records["projects"][project["id"]] = record
+    if project_ids is None:
+        selected = list(mine)
+    else:
+        wanted = {project.get("id") for project in mine if project.get("id") in project_ids}
+        folders = set()
+        for project in mine:
+            if project.get("id") not in wanted:
+                continue
+            folder = expand_folder(project.get("folder"))
+            if folder:
+                folders.add(os.path.normpath(folder))
+        selected = []
+        for project in mine:
+            folder = expand_folder(project.get("folder"))
+            key = os.path.normpath(folder) if folder else None
+            if project.get("id") in wanted or (key is not None and key in folders):
+                selected.append(project)
+    groups, by_folder = [], {}
+    for project in selected:
+        folder = expand_folder(project.get("folder"))
+        key = os.path.normpath(folder) if folder else "id:" + str(project.get("id"))
+        if key not in by_folder:
+            by_folder[key] = []
+            groups.append(key)
+        by_folder[key].append(project)
+    for key in groups:
+        batch = by_folder[key]
+        if len(batch) == 1:
+            project = batch[0]
+            record = digest_project(ctx, writer, project, records["projects"].get(project["id"]))
+            if record:
+                records["projects"][project["id"]] = record
+            else:
+                records["projects"].pop(project["id"], None)
         else:
-            records["projects"].pop(project["id"], None)
+            digest_shared(ctx, writer, batch, records)
     if project_ids is None and projects.fresh:
         mine_ids = {p.get("id") for p in mine}
         for pid in [p for p in records["projects"] if p not in mine_ids]:  # deleted or moved away

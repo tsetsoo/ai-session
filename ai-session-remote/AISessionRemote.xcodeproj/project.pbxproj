@@ -79,6 +79,7 @@
 		5BA3E1B8237FDA5412EAC38D /* WeeklyStatsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5C23D18F2D719EE248BDB9A /* WeeklyStatsCard.swift */; };
 		6053A3AC11C84A1C10F6BEE5 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */; };
 		605E6B6F9F8F41A6885F4AF3 /* HostProvisioning.swift in Sources */ = {isa = PBXBuildFile; fileRef = B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */; };
+		62BF5DE110162E7CAB151ADD /* InlineTodoAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D77F4B71B24E6F3E37B3E21 /* InlineTodoAdd.swift */; };
 		62EE3364D3A7193767345B7E /* UsageLimitsBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = CACA4D506127E0997E071460 /* UsageLimitsBar.swift */; };
 		6415FD15B68D544FA70B2E5B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BB9F3F1B36EAC5FB8B07504 /* SettingsView.swift */; };
 		65FA33B8E87008A416400E66 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 9A15C4D410D8FBA24EA1F462 /* Crypto */; };
@@ -201,6 +202,7 @@
 		EFD1D9AE413BB9E5324D3E4B /* DemoFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8A54758D4FED49A531F0BDC /* DemoFrame.swift */; };
 		F1988BA76AB221169EB92640 /* DemoTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30E2A2B651F1B7DA51A3FF0B /* DemoTransport.swift */; };
 		F20B4E30CA2C51E9A3F6C76A /* MacCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 244B79FA4458DBBC91C4A9BA /* MacCompatibility.swift */; };
+		F30EFD6029FB33BB5973773B /* InlineTodoAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D77F4B71B24E6F3E37B3E21 /* InlineTodoAdd.swift */; };
 		F3946147933D7BCEEED6F7EA /* ConversationLoaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D327A6203F795192D55393F /* ConversationLoaderTests.swift */; };
 		F3A22A2B4D3FE60B89136B56 /* TodoHubStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ABB2CBA22446496FCC5434A /* TodoHubStore.swift */; };
 		F3FBF7D8557E8B4852C6EF47 /* TerminalResizeDebouncerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45650CE5B948BA331E385B8B /* TerminalResizeDebouncerTests.swift */; };
@@ -261,6 +263,7 @@
 		603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionRemoteApp.swift; sourceTree = "<group>"; };
 		6853D306579AF19D0E50F568 /* SelectionDebounceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionDebounceTests.swift; sourceTree = "<group>"; };
 		6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParserTests.swift; sourceTree = "<group>"; };
+		6D77F4B71B24E6F3E37B3E21 /* InlineTodoAdd.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineTodoAdd.swift; sourceTree = "<group>"; };
 		6E4A53D3BFF6584E29811BD0 /* CommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPalette.swift; sourceTree = "<group>"; };
 		6F1B1C90764CF03BCFD9E812 /* ShellCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellCommands.swift; sourceTree = "<group>"; };
 		6FD185A20B04E7AD8AE4F055 /* ProjectDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDetailView.swift; sourceTree = "<group>"; };
@@ -641,6 +644,7 @@
 				739BB066C50D554FBFA92B3C /* ComputerListView.swift */,
 				555A99A04217936E4F1645AD /* ConversationListView.swift */,
 				7E36AD351C0A22DEC339CAE5 /* ConversationRow.swift */,
+				6D77F4B71B24E6F3E37B3E21 /* InlineTodoAdd.swift */,
 				2BFD9EB6DE7519501FD14139 /* ListActions.swift */,
 				DD8D8139CC242C8EF215944D /* ListSelection.swift */,
 				24947A77BA8C57130367110F /* OnThisComputerView.swift */,
@@ -831,6 +835,7 @@
 				3538D4106650FB5DD44CE028 /* HostRepository.swift in Sources */,
 				4057411C78160E1D7CD4628D /* HostStore.swift in Sources */,
 				47C0DBE7DC069BCC5F022E48 /* HostsListView.swift in Sources */,
+				62BF5DE110162E7CAB151ADD /* InlineTodoAdd.swift in Sources */,
 				EB6822F143F473431F7E86B7 /* ListActions.swift in Sources */,
 				3C20726A071B705FCC2F9714 /* ListSelection.swift in Sources */,
 				F20B4E30CA2C51E9A3F6C76A /* MacCompatibility.swift in Sources */,
@@ -920,6 +925,7 @@
 				DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */,
 				DE709355ECEEA8775AB8E62E /* HostStore.swift in Sources */,
 				73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */,
+				F30EFD6029FB33BB5973773B /* InlineTodoAdd.swift in Sources */,
 				E2A339E52CAD6A60C4906591 /* KeyBar.swift in Sources */,
 				4E3846485AA10B3B7344F5E0 /* ListActions.swift in Sources */,
 				B06BE65B10FD125FE3054794 /* ListSelection.swift in Sources */,

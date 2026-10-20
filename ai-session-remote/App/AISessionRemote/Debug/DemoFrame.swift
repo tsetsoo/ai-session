@@ -111,7 +111,7 @@ extension DemoFixtures {
                     throw TodoHubError.conflict("Section \(todo.section.rawValue) has no computer assigned")
                 }
                 return Conversation(
-                    todoId: todo.id, computer: mapping.computer, cwd: mapping.cwd, tool: mapping.tool,
+                    todoId: todo.id, computer: mapping.computer, cwd: "~", tool: "claude",
                     tmuxName: "todo-\(todo.id)", sessionId: "demo-\(todo.id)", status: .busy,
                     statusMessage: nil, createdAt: "2026-10-17T09:00:00Z"
                 )

@@ -46,7 +46,12 @@ enum DemoFixtures {
     private static let now = "2026-10-17T09:00:00Z"
 
     private static func cwd(for section: TodoSection) -> String {
-        sectionComputers.first { $0.section == section }?.cwd ?? "~"
+        switch section {
+        case .sp: "~/code/rms-backend"
+        case .i: "~/notes"
+        case .si: "~/scraper"
+        case .p: "~/code/website"
+        }
     }
 
     private static func todo(_ id: String, _ section: TodoSection, _ title: String,
