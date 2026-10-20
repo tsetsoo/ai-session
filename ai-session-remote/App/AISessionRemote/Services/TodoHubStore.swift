@@ -382,7 +382,10 @@ final class TodoHubStore {
                 )
                 let created = ConversationStart.createdSessionId(from: result.stdout)
                 guard result.exitCode != 94, let created else {
-                    throw TodoHubError.conflict("No new \(tool) conversation appeared")
+                    let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                    throw TodoHubError.conflict(
+                        detail.isEmpty ? "No new \(tool) conversation appeared" : detail
+                    )
                 }
                 conversation = try await client.setConversationSession(todoId: todo.id, sessionId: created)
             } catch {

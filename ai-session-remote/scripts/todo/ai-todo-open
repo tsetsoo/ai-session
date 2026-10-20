@@ -16,7 +16,10 @@
 # codex:            `codex resume <id>` when the conversation exists.
 #                   `-` starts a new one and waits for the id Codex assigns.
 # cursor:           `agent --resume <id>` for a chat already stored under
-#                   ~/.cursor/chats. `-` starts a new one and waits for its id.
+#                   ~/.cursor/chats. `-` starts a new one with `--new-session-id`
+#                   and waits for that chat directory. A logged-out CLI fails
+#                   immediately: it would otherwise sit on the login screen and
+#                   never write a chat.
 #
 # Exit codes: 64 bad arguments, 90 tmux / claude / codex / agent missing, 93 cwd not usable,
 #             94 no Codex or Cursor conversation with that id, or a new one
@@ -182,9 +185,28 @@ if [ "$tool" = codex ]; then
 elif [ "$tool" = cursor ]; then
   agent_bin=${AI_TODO_AGENT_BIN:-$(command -v agent || true)}
   [ -n "$agent_bin" ] || { echo "agent not found" >&2; exit 90; }
+  # The keychain store says "Not logged in" from this tmux server, and a
+  # keychain `agent login` does not help: every launch below uses the file
+  # store. A logged-out CLI sits on the login screen or exits, so the attach
+  # closes. Say so before starting tmux, for a new chat and a resume.
+  agent_status=$(AGENT_CLI_CREDENTIAL_STORE=file "$agent_bin" status 2>&1 || true)
+  case "$agent_status" in
+    *"Not logged in"*)
+      echo "Cursor agent is not logged in on this computer. Run \`AGENT_CLI_CREDENTIAL_STORE=file agent login\`, then start again." >&2
+      exit 94
+      ;;
+  esac
   if [ "$fresh" = 1 ]; then
+    # The CLI reserves this id at startup (`--new-session-id`), which is what
+    # makes a chat directory appear before the user types. A bare `agent`
+    # waits on its welcome screen and never writes one.
+    if command -v uuidgen >/dev/null 2>&1; then
+      cursor_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+    else
+      cursor_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+    fi
     mode=created
-    set -- "$agent_bin"
+    set -- "$agent_bin" --new-session-id "$cursor_id" --trust
   elif [ -z "$(find "$HOME/.cursor/chats" -mindepth 2 -maxdepth 2 -type d -name "$sid" -print 2>/dev/null | head -n 1)" ]; then
     echo "no Cursor conversation $sid on this computer" >&2
     exit 94
@@ -222,6 +244,12 @@ esac
 fresh_before=
 if [ "$fresh" = 1 ]; then
   fresh_before=$(fresh_ids "$tool")
+fi
+# Cursor's CLI probes the macOS login keychain when it thinks it is on SSH.
+# This tmux server cannot pass that probe, so `agent` exits immediately and
+# the attach looks like a closed connection. The file store resumes the chat.
+if [ "$tool" = cursor ]; then
+  set -- env "AGENT_CLI_CREDENTIAL_STORE=file" "$@"
 fi
 tmux_cmd new-session -d -s "$name" -c "$cwd" -- env "PATH=$PATH" "LANG=$session_lang" "LC_CTYPE=$session_ctype" "LC_ALL=$session_lang" "$@"
 if [ "$fresh" = 1 ]; then

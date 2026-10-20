@@ -336,7 +336,11 @@ FAKE_AGENT="${SANDBOX}/bin/agent"
 AGENT_LOG="${SANDBOX}/agent.log"
 cat >"$FAKE_AGENT" <<EOF
 #!/bin/sh
-echo "\$(pwd -P) \$*" >>"$AGENT_LOG"
+if [ "\$1" = status ]; then
+  echo "Logged in as test"
+  exit 0
+fi
+echo "\$(pwd -P) \$* store=\${AGENT_CLI_CREDENTIAL_STORE:-}" >>"$AGENT_LOG"
 [ "\$1" = --resume ] && exec sleep 300
 exit 0
 EOF
@@ -345,7 +349,7 @@ export AI_TODO_AGENT_BIN="$FAKE_AGENT"
 out="$(AI_TODO_OPEN_DETACH=1 "$OPEN" "$UNAME" '~/programming' "$U_LINKED" cursor)"
 [[ "$out" == resumed ]] || fail "cursor open printed '$out', expected resumed"
 for _ in $(seq 1 50); do [[ -s "$AGENT_LOG" ]] && break; sleep 0.1; done
-[[ "$(cat "$AGENT_LOG")" == "${HOME}/programming --resume ${U_LINKED}" ]] || fail "unexpected cursor start: $(cat "$AGENT_LOG")"
+[[ "$(cat "$AGENT_LOG")" == "${HOME}/programming --resume ${U_LINKED} store=file" ]] || fail "unexpected cursor start: $(cat "$AGENT_LOG")"
 [[ "$(AI_TODO_OPEN_DETACH=1 "$OPEN" "$UNAME" '~/programming' "$U_LINKED" cursor)" == attach ]] || fail "second cursor open did not attach"
 if AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/cursor/todo-nothere" '~/programming' aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee cursor >/dev/null 2>&1; then
   fail "cursor open accepted an unknown conversation"
@@ -375,12 +379,54 @@ out="$(AI_TODO_CODEX_BIN="$FRESH_CODEX" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/
 FRESH_AGENT="${SANDBOX}/bin/agent-fresh"
 cat >"$FRESH_AGENT" <<EOF
 #!/bin/sh
+if [ "\$1" = status ]; then
+  # The keychain store is logged out on this machine. Only the file store counts.
+  if [ "\${AGENT_CLI_CREDENTIAL_STORE:-}" != file ]; then
+    echo "Not logged in"
+    exit 0
+  fi
+  echo "Logged in as test"
+  exit 0
+fi
+case " \$* " in
+  *" --new-session-id "*) ;;
+  *) echo "expected --new-session-id, got: \$*" >&2; exit 1 ;;
+esac
 mkdir -p "\$HOME/.cursor/chats/abc/NEWCURS"
 exec sleep 300
 EOF
 chmod +x "$FRESH_AGENT"
 out="$(AI_TODO_AGENT_BIN="$FRESH_AGENT" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/cursor/todo-new1" '~/programming' - cursor)"
 [[ "$out" == "created NEWCURS" ]] || fail "fresh cursor printed '$out'"
+
+LOGGED_OUT="${SANDBOX}/bin/agent-logged-out"
+LOGGED_OUT_LOG="${SANDBOX}/agent-logged-out.log"
+cat >"$LOGGED_OUT" <<EOF
+#!/bin/sh
+if [ "\$1" = status ]; then
+  echo "Not logged in"
+  exit 0
+fi
+echo "started \$*" >>"$LOGGED_OUT_LOG"
+exec sleep 300
+EOF
+chmod +x "$LOGGED_OUT"
+if AI_TODO_AGENT_BIN="$LOGGED_OUT" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/cursor/todo-loggedout" '~/programming' - cursor >"${SANDBOX}/loggedout.out" 2>"${SANDBOX}/loggedout.err"; then
+  fail "logged-out cursor start should fail"
+else
+  [[ $? -eq 94 ]] || fail "logged-out cursor start should exit 94"
+fi
+grep -q "AGENT_CLI_CREDENTIAL_STORE=file agent login" "${SANDBOX}/loggedout.err" || fail "logged-out cursor start stderr: $(cat "${SANDBOX}/loggedout.err")"
+tmux -L "$SOCK" has-session -t "=ai/cursor/todo-loggedout" 2>/dev/null && fail "logged-out cursor start left a tmux session"
+[[ ! -s "$LOGGED_OUT_LOG" ]] || fail "logged-out cursor start launched agent"
+if AI_TODO_AGENT_BIN="$LOGGED_OUT" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/cursor/todo-loggedout2" '~/programming' "$U_LINKED" cursor >"${SANDBOX}/loggedout-resume.out" 2>"${SANDBOX}/loggedout-resume.err"; then
+  fail "logged-out cursor resume should fail"
+else
+  [[ $? -eq 94 ]] || fail "logged-out cursor resume should exit 94"
+fi
+grep -q "AGENT_CLI_CREDENTIAL_STORE=file agent login" "${SANDBOX}/loggedout-resume.err" || fail "logged-out cursor resume stderr: $(cat "${SANDBOX}/loggedout-resume.err")"
+tmux -L "$SOCK" has-session -t "=ai/cursor/todo-loggedout2" 2>/dev/null && fail "logged-out cursor resume left a tmux session"
+pass "ai-todo-open refuses a new Cursor conversation when agent is not logged in"
 
 QUIET="${SANDBOX}/bin/quiet-tool"
 printf '#!/bin/sh\nexec sleep 300\n' >"$QUIET"
