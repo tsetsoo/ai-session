@@ -3,7 +3,7 @@
 #
 #   ~/.ai-remote/bin/ai-todo-open    started by the iPhone / Mac app over SSH
 #   ~/.ai-remote/bin/ai-todo-hook    Claude Code hook reporting busy/waiting/idle
-#   ~/.ai-remote/bin/ai-todo-sessions  list / delete / prune / stats of Claude + Codex conversations
+#   ~/.ai-remote/bin/ai-todo-sessions  list / delete / prune / stats of Claude and Codex; delete also removes Cursor chats
 #   ~/.ai-remote/bin/ai-todo-limits    5h / weekly / monthly usage for the chat's tool on this computer
 #   ~/.ai-remote/bin/ai-todo-codex-notify  Codex `notify` program reporting idle
 #   ~/.ai-remote/bin/ai-todo-memory  memory extraction, stats push and digests (+ ai_todo_redact.py)

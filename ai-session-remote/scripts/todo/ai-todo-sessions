@@ -5,7 +5,7 @@
 #
 # Usage:
 #   ai-todo-sessions list [--json] [--tool claude|codex] [--limit N]
-#   ai-todo-sessions delete <claude|codex> <session_id> [--permanent]
+#   ai-todo-sessions delete <claude|codex|cursor> <session_id> [--permanent]
 #                    [--kill-tmux <tmux_name>] [--wait SECONDS] [--missing-ok]
 #   ai-todo-sessions prune --older-than DAYS [--tool claude|codex] [--yes]
 #   ai-todo-sessions stats --json [--since DAYS] [--session <claude|codex>:<id>]...
@@ -18,6 +18,8 @@
 # delete  Claude: removes every copy of the transcript (+ sub-agent dirs), its
 #         sessions-index.json entries, file-history, session-env and todos entries.
 #         Codex: `codex archive` (reversible), or `codex delete` with --permanent.
+#         Cursor: removes every ~/.cursor/chats/<hash>/<id>/ copy and the
+#         agent-transcripts/<id>/ directory.
 #         --kill-tmux ends that tmux session first, then waits up to --wait seconds
 #         (default 10) for the conversation to stop. Refuses while it still runs.
 #         --missing-ok (implied by --kill-tmux): a conversation that doesn't exist is
@@ -36,9 +38,9 @@
 #         the later entry's local day. The title is the first prompt, redacted
 #         (ai_todo_redact.py next to this script; null if it is missing), <= 120 chars.
 #
-# Running = a live claude/codex process uses it: ~/.claude/sessions/<pid>.json, the id in
-# a process's arguments, or (Codex) a process holding its rollout file open. If ps or
-# lsof can't be run, delete and prune refuse rather than assume nothing is running.
+# Running = a live claude/codex/agent process uses it: ~/.claude/sessions/<pid>.json, the id
+# in a process's arguments, or a process holding a Codex rollout or Cursor chat file open.
+# If ps or lsof can't be run, delete and prune refuse rather than assume nothing is running.
 #
 # Exit codes: 64 bad arguments, 65 refused (running / unknown / hub unreachable),
 #             66 not found.
@@ -71,8 +73,10 @@ HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude")
 CLAUDE_PROJECTS = os.path.join(CLAUDE_DIR, "projects")
 CODEX_SESSIONS = os.path.join(HOME, ".codex", "sessions")
+CURSOR_CHATS = os.path.join(HOME, ".cursor", "chats")
+CURSOR_PROJECTS = os.path.join(HOME, ".cursor", "projects")
 ID_RE = re.compile(r"^[0-9a-fA-F][0-9a-fA-F-]{7,63}$")
-TMUX_RE = re.compile(r"^ai/(claude|codex)/todo-[a-z0-9-]+$")
+TMUX_RE = re.compile(r"^ai/(claude|codex|cursor)/todo-[a-z0-9-]+$")
 TITLE_MAX = 120
 
 
@@ -223,12 +227,24 @@ def find_codex():
     return None
 
 
+def cursor_paths(sid):
+    """Chat directories plus the agent transcript directory for this id."""
+    escaped = glob.escape(sid)
+    chats = glob.glob(os.path.join(CURSOR_CHATS, "*", escaped))
+    transcripts = glob.glob(os.path.join(CURSOR_PROJECTS, "*", "agent-transcripts", escaped))
+    return chats + transcripts
+
+
 def find_one(tool, sid):
     """The conversation's files by name, without reading every transcript. None if absent."""
     if tool == "claude":
         paths = glob.glob(os.path.join(CLAUDE_PROJECTS, "*", glob.escape(sid) + ".jsonl"))
-    else:
+    elif tool == "codex":
         paths = glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*-" + glob.escape(sid) + ".jsonl"), recursive=True)
+    elif tool == "cursor":
+        paths = cursor_paths(sid)
+    else:
+        return None
     if not paths:
         return None
     return {"tool": tool, "session_id": sid, "paths": paths,
@@ -344,15 +360,29 @@ def running_index(sessions):
     for sid, pid in claude_live_sessions().items():
         if sid in ids:
             mark(sid, pid)
+    cursor_ids = {s["session_id"] for s in sessions if s["tool"] == "cursor"}
     for pid, _, command in procs:
         words = command.split()
         if not words or os.path.basename(words[0]) in ("tmux", "ps", "grep"):
             continue  # a tmux server keeps the argv it was started with, even after that session ends
-        if not re.search(r"(^|/|\s)(claude|codex)(\s|$)", command):
+        agent = re.search(r"(^|/|\s)agent(\s|$)", command)
+        if agent:
+            if not cursor_ids:
+                continue
+        elif not re.search(r"(^|/|\s)(claude|codex)(\s|$)", command):
             continue
         for i, word in enumerate(words[:-1]):
-            if word in ("--resume", "-r", "--session-id", "resume") and words[i + 1] in ids:
-                mark(words[i + 1], pid)
+            nxt = words[i + 1]
+            if nxt not in ids:
+                continue
+            # A new Cursor chat is `agent --new-session-id <id>`, not --resume.
+            if word == "--new-session-id":
+                if nxt in cursor_ids:
+                    mark(nxt, pid)
+            elif word in ("--resume", "-r", "--session-id", "resume"):
+                if agent and nxt not in cursor_ids:
+                    continue
+                mark(nxt, pid)
     # Codex started plainly, resumed from its own picker, or run by the desktop app has no
     # id in its argv, but keeps the rollout file open while the conversation is live.
     codex_paths = {os.path.realpath(p): s["session_id"]
@@ -360,7 +390,30 @@ def running_index(sessions):
     for path, pid in open_by(sorted(codex_paths)).items():
         if path in codex_paths:
             mark(codex_paths[path], pid)
+    # Cursor keeps the chat directory (store.db) open while the conversation is live,
+    # including when `agent` was started without the id in its arguments.
+    cursor_files = {}
+    for s in sessions:
+        if s["tool"] != "cursor":
+            continue
+        for path in files_of(s.get("paths", [])):
+            cursor_files[os.path.realpath(path)] = s["session_id"]
+    for path, pid in open_by(sorted(cursor_files)).items():
+        if path in cursor_files:
+            mark(cursor_files[path], pid)
     return running
+
+
+def files_of(paths):
+    """Files held open under these paths (a directory's contents, or the file itself)."""
+    files = []
+    for path in paths:
+        if os.path.isdir(path):
+            for root, _, names in os.walk(path):
+                files.extend(os.path.join(root, name) for name in names)
+        elif os.path.isfile(path):
+            files.append(path)
+    return files
 
 
 def all_sessions(tool=None):
@@ -422,6 +475,11 @@ def delete_session(session, permanent=False):
         for todo_file in glob.glob(os.path.join(CLAUDE_DIR, "todos", glob.escape(sid) + "-*.json")):
             remove(todo_file, removed)
         return f"deleted claude {sid} ({len(removed)} paths)"
+    if session["tool"] == "cursor":
+        removed = []
+        for path in session["paths"]:
+            remove(path, removed)
+        return f"deleted cursor {sid} ({len(removed)} paths)"
     codex = find_codex()
     if not codex:
         die("codex not found", 90)
@@ -485,7 +543,7 @@ def kill_tmux(name):
 
 
 def cmd_delete(args):
-    usage = ("usage: ai-todo-sessions delete <claude|codex> <session_id> [--permanent] "
+    usage = ("usage: ai-todo-sessions delete <claude|codex|cursor> <session_id> [--permanent] "
              "[--kill-tmux <tmux_name>] [--wait SECONDS] [--missing-ok]")
     permanent, missing_ok, kill, wait, rest = False, False, None, 10.0, []
     while args:
@@ -505,7 +563,7 @@ def cmd_delete(args):
             die(usage, 64)
         else:
             rest.append(a)
-    if len(rest) != 2 or rest[0] not in ("claude", "codex") or not ID_RE.match(rest[1]):
+    if len(rest) != 2 or rest[0] not in ("claude", "codex", "cursor") or not ID_RE.match(rest[1]):
         die(usage, 64)
     tool, sid = rest
     if kill is not None:

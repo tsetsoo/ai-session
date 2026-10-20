@@ -589,6 +589,79 @@ fi
 [[ $(( $(date +%s) - start )) -le 4 && -f "${PROJ}/${C_RUN}.jsonl" ]] || fail "--wait didn't time out promptly or deleted"
 pass "delete --kill-tmux ends the tmux session, waits, deletes; missing = already gone; refuses if still running"
 
+# Cursor chats live in ~/.cursor/chats/<hash>/<id>/ and transcripts in agent-transcripts/<id>/.
+U_DEL=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+U_KEEP=cccccccc-cccc-4ccc-8ccc-cccccccccccc
+U_RUN=dddddddd-dddd-4ddd-8ddd-dddddddddddd
+U_KILL=eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee
+U_OPEN=ffffffff-ffff-4fff-8fff-ffffffffffff
+U_MISS=12121212-1212-4121-8121-121212121212
+cursor_chat() { printf '%s\n' "$1" >"${HOME}/.cursor/chats/workspace/${1}/store.db"; }
+mkdir -p "${HOME}/.cursor/chats/workspace/${U_DEL}" "${HOME}/.cursor/chats/workspace/${U_KEEP}" \
+  "${HOME}/.cursor/chats/workspace/${U_RUN}" "${HOME}/.cursor/chats/other/${U_DEL}" \
+  "${HOME}/.cursor/projects/proj/agent-transcripts/${U_DEL}" \
+  "${HOME}/.cursor/projects/proj/agent-transcripts/${U_KEEP}"
+cursor_chat "$U_DEL"
+cursor_chat "$U_KEEP"
+cursor_chat "$U_RUN"
+echo keep >"${HOME}/.cursor/chats/other/${U_DEL}/store.db"
+echo transcript >"${HOME}/.cursor/projects/proj/agent-transcripts/${U_DEL}/${U_DEL}.jsonl"
+echo keep-transcript >"${HOME}/.cursor/projects/proj/agent-transcripts/${U_KEEP}/keep.jsonl"
+printf '#!/bin/sh\nsleep 300\n' >"${SANDBOX}/run/agent"
+chmod +x "${SANDBOX}/run/agent"
+tmux -L "$SOCK" new-session -d -s argv-cursor -- "${SANDBOX}/run/agent" --resume "$U_RUN"
+sleep 0.5
+if "$SESSIONS" delete cursor "$U_RUN" >/dev/null 2>&1; then
+  fail "delete removed a running cursor conversation"
+else
+  [[ $? -eq 65 ]] || fail "delete of a running cursor conversation should exit 65"
+fi
+[[ -f "${HOME}/.cursor/chats/workspace/${U_RUN}/store.db" ]] || fail "running cursor chat was removed"
+U_FRESH=abababab-abab-4aba-8aba-abababababab
+mkdir -p "${HOME}/.cursor/chats/workspace/${U_FRESH}"
+echo fresh >"${HOME}/.cursor/chats/workspace/${U_FRESH}/store.db"
+tmux -L "$SOCK" new-session -d -s argv-cursor-new -- "${SANDBOX}/run/agent" --new-session-id "$U_FRESH" --trust
+sleep 0.5
+if "$SESSIONS" delete cursor "$U_FRESH" >/dev/null 2>&1; then
+  fail "delete removed a cursor chat started with --new-session-id"
+else
+  [[ $? -eq 65 ]] || fail "delete of a fresh cursor conversation should exit 65"
+fi
+[[ -f "${HOME}/.cursor/chats/workspace/${U_FRESH}/store.db" ]] || fail "fresh cursor chat was removed"
+mkdir -p "${HOME}/.cursor/chats/workspace/${U_OPEN}"
+echo open >"${HOME}/.cursor/chats/workspace/${U_OPEN}/store.db"
+python3 -c 'import sys, time; f = open(sys.argv[1]); time.sleep(300)' "${HOME}/.cursor/chats/workspace/${U_OPEN}/store.db" &
+EXTRA_PIDS="$EXTRA_PIDS $!"
+sleep 0.5
+if "$SESSIONS" delete cursor "$U_OPEN" >/dev/null 2>&1; then
+  fail "delete removed a cursor chat whose store is open"
+else
+  [[ $? -eq 65 ]] || fail "open cursor store delete should exit 65"
+fi
+[[ -f "${HOME}/.cursor/chats/workspace/${U_OPEN}/store.db" ]] || fail "open cursor store was removed"
+"$SESSIONS" delete cursor "$U_DEL" >/dev/null || fail "cursor delete failed"
+[[ ! -e "${HOME}/.cursor/chats/workspace/${U_DEL}" && ! -e "${HOME}/.cursor/chats/other/${U_DEL}" ]] \
+  || fail "cursor delete left a chat directory"
+[[ ! -e "${HOME}/.cursor/projects/proj/agent-transcripts/${U_DEL}" ]] || fail "cursor delete left the transcript"
+[[ -f "${HOME}/.cursor/chats/workspace/${U_KEEP}/store.db" && -f "${HOME}/.cursor/projects/proj/agent-transcripts/${U_KEEP}/keep.jsonl" ]] \
+  || fail "cursor delete removed another conversation"
+if "$SESSIONS" delete cursor "$U_MISS" >/dev/null 2>&1; then fail "deleting a missing cursor conversation succeeded"; else [[ $? -eq 66 ]] || fail "missing cursor conversation should exit 66"; fi
+"$SESSIONS" delete cursor "$U_MISS" --missing-ok >/dev/null || fail "--missing-ok should exit 0 for a missing cursor conversation"
+CKILL="ai/cursor/todo-eeeeeeee"
+mkdir -p "${HOME}/.cursor/chats/workspace/${U_KILL}"
+echo kill >"${HOME}/.cursor/chats/workspace/${U_KILL}/store.db"
+tmux -L "$SOCK" new-session -d -s "$CKILL" -- "${SANDBOX}/run/agent" --resume "$U_KILL"
+sleep 0.5
+out="$("$SESSIONS" delete cursor "$U_KILL" --kill-tmux "$CKILL" --wait 5)" || fail "cursor delete --kill-tmux failed: $out"
+! tmux -L "$SOCK" has-session -t "=$CKILL" 2>/dev/null || fail "cursor delete --kill-tmux left the tmux session"
+[[ ! -e "${HOME}/.cursor/chats/workspace/${U_KILL}" ]] || fail "cursor delete --kill-tmux left the chat"
+if "$SESSIONS" delete cursor "$U_KILL" --kill-tmux "ai/claude/todo-eeeeeeee" >/dev/null 2>&1; then
+  fail "--kill-tmux accepted another tool's tmux name for cursor"
+else
+  [[ $? -eq 64 ]] || fail "bad cursor --kill-tmux should exit 64"
+fi
+pass "cursor delete removes every chat copy and its transcript; refuses while running; --kill-tmux ends the session first"
+
 # prune only passes valid ids to delete.
 printf '{"type":"user","cwd":"%s","message":{"content":"stray agent file"}}\n' "${HOME}/programming" >"${PROJ}/agent-foo.jsonl"
 touch -t "$OLD" "${PROJ}/agent-foo.jsonl"
