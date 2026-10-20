@@ -190,7 +190,7 @@ fn base_description() -> Value {
                 "description": "Assign a computer to a section",
                 "example_request": {"computer_id": "<uuid>"}
             },
-            {"method": "DELETE", "path": "/api/sections/{code}/computer", "description": "Remove a section's computer"},
+            {"method": "DELETE", "path": "/api/sections/{code}/computer", "description": "Remove a section's computer. 409 while the section still has projects"},
             {"method": "GET", "path": "/api/conversations", "description": "All conversations with their computer and status"},
             {"method": "GET", "path": "/api/todos/{id}/conversation", "description": "The todo's conversation; 404 if none"},
             {

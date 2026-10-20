@@ -1561,7 +1561,11 @@ def digest_shared(ctx, writer, projects, records):
 
 
 def refresh_digests(ctx, project_ids=None):
-    """Rewrite the digests of these projects (all of this computer's when None)."""
+    """Rewrite these projects' digests. None rewrites every project on this computer.
+
+    A folder shared by several projects is one AGENTS.md, so refreshing any of
+    them rewrites that file from all of their memories.
+    """
     if ctx.no_digest:
         return
     projects = ctx.load_projects()
@@ -1573,7 +1577,23 @@ def refresh_digests(ctx, project_ids=None):
     records.setdefault("projects", {})
     writer = DigestWriter(ctx)
     mine = projects.mine()
-    selected = [project for project in mine if project_ids is None or project.get("id") in project_ids]
+    if project_ids is None:
+        selected = list(mine)
+    else:
+        wanted = {project.get("id") for project in mine if project.get("id") in project_ids}
+        folders = set()
+        for project in mine:
+            if project.get("id") not in wanted:
+                continue
+            folder = expand_folder(project.get("folder"))
+            if folder:
+                folders.add(os.path.normpath(folder))
+        selected = []
+        for project in mine:
+            folder = expand_folder(project.get("folder"))
+            key = os.path.normpath(folder) if folder else None
+            if project.get("id") in wanted or (key is not None and key in folders):
+                selected.append(project)
     groups, by_folder = [], {}
     for project in selected:
         folder = expand_folder(project.get("folder"))

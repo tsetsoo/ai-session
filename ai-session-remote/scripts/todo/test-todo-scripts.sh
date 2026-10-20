@@ -407,6 +407,20 @@ else
 fi
 pass "ai-todo-open starts a new Codex or Cursor conversation and reports the id the tool assigns"
 
+# A failed fresh start can leave the tmux name behind. The next fresh open replaces it.
+STUCK="${SANDBOX}/bin/codex-stuck"
+cat >"$STUCK" <<EOF
+#!/bin/sh
+mkdir -p "\$HOME/.codex/sessions/2026/10/20"
+: > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-02-STUCKID.jsonl"
+exec sleep 300
+EOF
+chmod +x "$STUCK"
+tmux -L "$SOCK" new-session -d -s "ai/codex/todo-stuck" -c "$HOME" -- sleep 300
+out="$(AI_TODO_CODEX_BIN="$STUCK" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-stuck" '~/programming' - codex)"
+[[ "$out" == "created STUCKID" ]] || fail "a leftover fresh session printed '$out'"
+pass "a leftover tmux session is replaced when Codex or Cursor starts fresh"
+
 # --- review fixes: open rollouts, fail closed, hub answers, duplicates, kill+wait, ids, PATH ---
 
 # A Codex conversation whose rollout file a process holds open (no id in any argv).
@@ -1612,6 +1626,12 @@ grep -q "Alpha share note" "${D_SHARE}/AGENTS.md" || fail "first project's note 
 grep -q "Beta share note" "${D_SHARE}/AGENTS.md" || fail "second project's note missing from the shared AGENTS.md"
 [[ $(grep -c "BEGIN ai-todo-memory" "${D_SHARE}/AGENTS.md") -eq 1 ]] || fail "shared folder was written as more than one block"
 pass "one AGENTS.md for two projects at the same folder"
+
+dmem digest --project proj-share-a >/dev/null || fail "refreshing one project of a shared folder failed"
+grep -q "Alpha share note" "${D_SHARE}/AGENTS.md" || fail "refreshing one project dropped its own note"
+grep -q "Beta share note" "${D_SHARE}/AGENTS.md" || fail "refreshing one project dropped the other project's note"
+[[ $(grep -c "BEGIN ai-todo-memory" "${D_SHARE}/AGENTS.md") -eq 1 ]] || fail "refreshing one project split the shared block"
+pass "refreshing one project keeps both projects' notes in the shared AGENTS.md"
 
 hub_edit "s['projects'][0]['folder'] = '~/work/app/'"
 dmem digest >/dev/null || fail "digest with a trailing slash failed"

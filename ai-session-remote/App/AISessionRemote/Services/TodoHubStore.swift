@@ -358,7 +358,8 @@ final class TodoHubStore {
 
     /// Opens for `tool`. Codex and Cursor have no id yet: the computer starts one, and the id
     /// it prints is stored before the terminal attaches. A start that never produces an id
-    /// removes the hub conversation so the tool step shows again.
+    /// kills the tmux session it may have left and removes the hub conversation, so the tool
+    /// step shows again and the next start is a new one.
     func openConversation(for todo: Todo, tool: String, config: HostConnectionConfig?) async throws -> Conversation {
         guard let client = hubClient() else {
             throw TodoHubError.invalidBaseURL
@@ -385,6 +386,12 @@ final class TodoHubStore {
                 }
                 conversation = try await client.setConversationSession(todoId: todo.id, sessionId: created)
             } catch {
+                // The script may already have created the tmux session. Leaving it makes the
+                // next fresh open attach to a session that never printed an id.
+                _ = try? await NIOSSHClient().exec(
+                    config,
+                    command: TmuxCommandBuilder.killSessionExact(tmuxName: conversation.tmuxName)
+                )
                 try? await client.deleteConversation(todoId: todo.id)
                 conversations[todo.id] = nil
                 throw error

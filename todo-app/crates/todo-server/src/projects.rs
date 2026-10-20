@@ -879,6 +879,26 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn clear_section_with_projects_is_409() {
+        let (_db, pool) = pool("proj");
+        let conn = pool.get().unwrap();
+        seed_computers(&conn);
+        let id = create_ok(&pool, "Si", "~/x").await;
+
+        let (status, body) = delete(&pool, "/api/sections/Si/computer").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("project"), "{body}");
+        let mapping: i64 = conn
+            .query_row("SELECT COUNT(*) FROM section_computers WHERE section = 'Si'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mapping, 1, "the computer stays on the section");
+        let (list_status, list) = get(&pool, "/api/projects").await;
+        assert_eq!(list_status, StatusCode::OK, "{list}");
+        let listed = list.as_array().unwrap().iter().any(|p| p["id"].as_str() == Some(id.as_str()));
+        assert!(listed, "the project stays on the list: {list}");
+    }
+
+    #[actix_web::test]
     async fn delete_computer_with_project_is_409() {
         let (_db, pool) = pool("proj");
         let conn = pool.get().unwrap();

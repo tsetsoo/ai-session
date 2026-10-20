@@ -724,6 +724,17 @@ pub async fn clear_section_computer(
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
+    let projects: i64 = match conn.query_row(
+        "SELECT COUNT(*) FROM projects WHERE section = ?1",
+        params![section.as_str()],
+        |r| r.get(0),
+    ) {
+        Ok(n) => n,
+        Err(e) => return server_error(e),
+    };
+    if projects > 0 {
+        return conflict(format!("Section {section} still has projects"));
+    }
     match conn.execute("DELETE FROM section_computers WHERE section = ?1", params![section.as_str()]) {
         Ok(0) => not_found("Section has no computer"),
         Ok(_) => {

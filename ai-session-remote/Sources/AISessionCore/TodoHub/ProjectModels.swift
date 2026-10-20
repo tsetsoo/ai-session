@@ -53,8 +53,8 @@ public enum HubDates {
 
 // MARK: Projects
 
-/// A folder on one computer. Projects don't nest: on one computer no project folder lies
-/// inside another (the server answers `409` with the conflicting project's name).
+/// A folder on a section. Nested folders are their own projects: `~/programming` and
+/// `~/programming/sigma-revenue` each keep their own notes.
 public struct Project: Codable, Hashable, Identifiable, Sendable {
     public var id: String
     public var name: String

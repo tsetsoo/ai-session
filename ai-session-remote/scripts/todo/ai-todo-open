@@ -150,7 +150,13 @@ EOF
 }
 
 if tmux_cmd has-session -t "=$name" 2>/dev/null; then
-  attach attach
+  # A fresh start has no id yet. A session left by a failed start would only
+  # attach, and every later open would do the same. Replace it.
+  if [ "$fresh" = 1 ]; then
+    tmux_cmd kill-session -t "=$name" 2>/dev/null || true
+  else
+    attach attach
+  fi
 fi
 
 [ -d "$cwd" ] || { echo "cwd not found: $cwd" >&2; exit 93; }

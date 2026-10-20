@@ -480,7 +480,8 @@ fn migrate_v4_to_v5_in(conn: &Connection) -> rusqlite::Result<()> {
     let mut todo_project: Vec<(String, String)> = Vec::new();
 
     if has_computer {
-        let old: Vec<(String, String, String, String, Option<String>, i64, String, String)> = {
+        type OldProjectRow = (String, String, String, String, Option<String>, i64, String, String);
+        let old: Vec<OldProjectRow> = {
             let mut stmt = tx.prepare(
                 "SELECT id, name, computer_id, folder, repo_url, digest_enabled, created_at, updated_at FROM projects",
             )?;
