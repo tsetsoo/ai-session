@@ -53,8 +53,8 @@ final class MacShellTests: XCTestCase {
     /// The detail column keeps several frames mounted. Only the column may install toolbar
     /// items, and those identifiers stay put when another conversation is selected. Each
     /// frame installing its own set makes AppKit throw while inserting a duplicate.
-    /// The title and the actions are separate items so the title can sit on the leading
-    /// edge, and the controls keep a real gap between them.
+    /// The title and the actions are separate `ToolbarItem`s. A view `.id()` is not the
+    /// identifier AppKit checks, so the Mac column passes these ids to `ToolbarItem`.
     func testSharedColumnOwnsOneStableToolbar() {
         XCTAssertFalse(ConversationToolbar.framePublishesToolbar(sharesColumn: true))
         XCTAssertTrue(ConversationToolbar.framePublishesToolbar(sharesColumn: false))

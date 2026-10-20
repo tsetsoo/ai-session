@@ -559,10 +559,10 @@ private struct ConversationColumn: View {
         }
     }
 
-    /// One toolbar for every mounted frame. The title and the actions keep the same
-    /// identifiers when the selection changes, so AppKit updates them instead of inserting
-    /// a second set. On the Mac they are a group: the title takes the leading space and the
-    /// buttons stay at the trailing edge, the way a toolbar group lays out.
+    /// One toolbar for every mounted frame. Each item's identifier is its `ToolbarItem` id,
+    /// and those ids do not change with the selection, so AppKit updates the items. A view
+    /// `.id()` is not an `NSToolbar` identifier: the old Mac group used those, and a
+    /// selection change inserted a second copy of an item already in the bar.
     @ToolbarContentBuilder
     private var columnToolbar: some ToolbarContent {
         if showsConversation, let id = model.selectedTodoID,
@@ -587,7 +587,7 @@ private struct ConversationColumn: View {
                 )
             }
             #else
-            ToolbarItemGroup(placement: .primaryAction) {
+            ToolbarItem(id: ids[0], placement: .primaryAction) {
                 ConversationToolbarTitle(
                     title: todo.title,
                     subtitle: ConversationFrame.subtitle(
@@ -595,13 +595,13 @@ private struct ConversationColumn: View {
                     ),
                     style: .leading
                 )
-                .id(ids[0])
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            ToolbarItem(id: ids[1], placement: .primaryAction) {
                 columnActions(
                     todo: todo, hasConversation: hasConversation, state: state,
                     showsCopy: true, showsPopOut: true, copyInMenu: false
                 )
-                .id(ids[1])
             }
             #endif
         }
