@@ -61,6 +61,23 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(store.todos, DemoFixtures.todos)
     }
 
+    func testOpenTodoSelectsTheWaitingConversation() {
+        let cache = TodoHubCache(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("open-urgent-\(UUID().uuidString).json"))
+        let store = TodoHubStore(cache: cache)
+        func conv(_ id: String, _ status: ConversationStatus, updated: String) -> Conversation {
+            Conversation(
+                id: id, todoId: "t", computer: mac, cwd: "~/x", tool: "claude", tmuxName: "tmux-\(id)",
+                sessionId: id, status: status, statusUpdatedAt: updated, createdAt: "2026-10-16T09:00:00Z"
+            )
+        }
+        store.applyFetched(todos: [Todo(id: "t", section: .sp, title: "Keep going")], conversations: [
+            conv("idle", .idle, updated: "2026-10-20T12:00:00Z"),
+            conv("wait", .waiting, updated: "2026-10-20T08:00:00Z"),
+        ])
+        XCTAssertEqual(store.conversationToOpen(forTodo: "t"), "wait")
+    }
+
     func testBoardReflectsStoreChanges() {
         let model = makeModel()
         XCTAssertEqual(model.board.needsYou.count, 2)
@@ -736,7 +753,7 @@ final class TodoHubRefreshTests: XCTestCase {
             bodies.conversations = Self.encoded(conversations)
         }
         await store.refresh(trigger: .background)
-        XCTAssertEqual(store.conversations[conversations[0].todoId]?.status, conversations[0].status)
+        XCTAssertEqual(store.mostUrgent(forTodo: conversations[0].todoId)?.status, conversations[0].status)
         XCTAssertEqual(store.revision, revision, "a status heartbeat must not refetch project pages")
 
         conversations[0].statusMessage = "still working"
@@ -744,7 +761,7 @@ final class TodoHubRefreshTests: XCTestCase {
             bodies.conversations = Self.encoded(conversations)
         }
         await store.refresh(trigger: .background)
-        XCTAssertEqual(store.conversations[conversations[0].todoId]?.statusMessage, "still working")
+        XCTAssertEqual(store.mostUrgent(forTodo: conversations[0].todoId)?.statusMessage, "still working")
         XCTAssertEqual(store.revision, revision)
 
         var renamed = DemoFixtures.todos
@@ -793,7 +810,7 @@ final class TodoHubRefreshTests: XCTestCase {
             bodies.conversations = Self.encoded(conversations)
         }
         await store.refresh()
-        XCTAssertNil(store.conversations[removed.todoId])
+        XCTAssertNil(store.mostUrgent(forTodo: removed.todoId))
         XCTAssertGreaterThan(store.revision, revision)
         revision = store.revision
 

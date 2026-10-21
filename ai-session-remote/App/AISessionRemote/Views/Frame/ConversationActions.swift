@@ -70,10 +70,11 @@ enum ConversationToolbar {
     }
 
     @MainActor
-    static func displayStatus(todo: Todo, store: TodoHubStore) -> ConversationDisplayStatus? {
-        guard store.conversations[todo.id] != nil || todo.conversationStatus != nil else { return nil }
+    static func displayStatus(todo: Todo, store: TodoHubStore, selectedKey: String? = nil) -> ConversationDisplayStatus? {
+        let conversation = store.displayed(forTodo: todo.id, selectedKey: selectedKey)
+        guard conversation != nil || todo.conversationStatus != nil else { return nil }
         return ConversationDisplayStatus(
-            store.conversations[todo.id]?.status ?? todo.conversationStatus ?? .unknown,
+            conversation?.status ?? todo.conversationStatus ?? .unknown,
             tmuxAlive: nil
         )
     }

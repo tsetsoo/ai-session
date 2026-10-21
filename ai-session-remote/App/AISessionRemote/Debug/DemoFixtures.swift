@@ -62,7 +62,7 @@ enum DemoFixtures {
 
     private static func conversation(_ id: String, _ section: TodoSection, _ computer: Computer,
                                      tool: String, _ status: ConversationStatus, message: String? = nil) -> Conversation {
-        Conversation(todoId: id, computer: computer, cwd: cwd(for: section), tool: tool,
+        Conversation(id: "c-\(id)", todoId: id, computer: computer, cwd: cwd(for: section), tool: tool,
                      tmuxName: "todo-\(id)", sessionId: "demo-\(id)", status: status, statusMessage: message,
                      createdAt: now)
     }

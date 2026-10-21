@@ -98,7 +98,7 @@ final class ConversationLoader {
         static func live(store: TodoHubStore, hosts: @escaping () -> [HostEntity]) -> Dependencies {
             Dependencies(
                 openConversation: { try await store.openConversation(for: $0) },
-                cachedConversation: { store.conversations[$0] },
+                cachedConversation: { store.mostUrgent(forTodo: $0) },
                 isOffline: { store.isOffline },
                 resolveConfig: { computer in
                     guard let host = HostLookup.host(for: computer, in: hosts()) else {

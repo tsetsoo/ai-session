@@ -9,7 +9,8 @@ import Observation
 @Observable
 final class TodoHubStore {
     private(set) var todos: [Todo] = []
-    /// Keyed by todo id.
+    /// Keyed by conversation id. A conversation decoded without an id (an older hub) is keyed
+    /// `todo:<todo id>` so a one-conversation cache does not collapse onto `""`.
     private(set) var conversations: [String: Conversation] = [:]
     private(set) var sectionComputers: [TodoSection: SectionComputer] = [:]
     private(set) var computers: [Computer] = []
@@ -350,6 +351,27 @@ final class TodoHubStore {
 
     // MARK: Conversations
 
+    func conversations(forTodo id: String) -> [Conversation] {
+        conversations.values.filter { $0.todoId == id }
+    }
+
+    func mostUrgent(forTodo id: String) -> Conversation? {
+        ConversationIndex.mostUrgent(conversations(forTodo: id))
+    }
+
+    /// The conversation id to land in when opening this todo from a project, a section, or an alert.
+    func conversationToOpen(forTodo id: String) -> String? {
+        mostUrgent(forTodo: id)?.listKey
+    }
+
+    /// The conversation on screen: the selected row when it belongs to this todo, otherwise the most urgent.
+    func displayed(forTodo id: String, selectedKey: String?) -> Conversation? {
+        if let selectedKey, let match = conversations.values.first(where: { $0.listKey == selectedKey }), match.todoId == id {
+            return match
+        }
+        return mostUrgent(forTodo: id)
+    }
+
     /// Get-or-create the todo's conversation on the hub. An existing conversation is resumed
     /// with the tool it already has.
     func openConversation(for todo: Todo) async throws -> Conversation {
@@ -369,8 +391,8 @@ final class TodoHubStore {
             // An empty id is a start that has not finished. Keep it out of the store, and drop
             // the hub row unless this call is about to fill the id in.
             guard ConversationStart.startsFresh(tool), let config else {
-                try? await client.deleteConversation(todoId: todo.id)
-                conversations[todo.id] = nil
+                try? await forgetOnHub(client, conversation)
+                forget(conversation)
                 throw TodoHubError.conflict("No \(tool) conversation appeared")
             }
             do {
@@ -387,7 +409,7 @@ final class TodoHubStore {
                         detail.isEmpty ? "No new \(tool) conversation appeared" : detail
                     )
                 }
-                conversation = try await client.setConversationSession(todoId: todo.id, sessionId: created)
+                conversation = try await storeSession(client, conversation, created)
             } catch {
                 // The script may already have created the tmux session. Leaving it makes the
                 // next fresh open attach to a session that never printed an id.
@@ -395,13 +417,40 @@ final class TodoHubStore {
                     config,
                     command: TmuxCommandBuilder.killSessionExact(tmuxName: conversation.tmuxName)
                 )
-                try? await client.deleteConversation(todoId: todo.id)
-                conversations[todo.id] = nil
+                try? await forgetOnHub(client, conversation)
+                forget(conversation)
                 throw error
             }
         }
-        conversations[todo.id] = conversation
+        remember(conversation)
         return conversation
+    }
+
+    private func storeSession(_ client: TodoHubClient, _ conversation: Conversation, _ sessionId: String) async throws -> Conversation {
+        if conversation.id.isEmpty {
+            return try await client.setConversationSession(todoId: conversation.todoId, sessionId: sessionId)
+        }
+        return try await client.setConversationSession(id: conversation.id, sessionId: sessionId)
+    }
+
+    private func forgetOnHub(_ client: TodoHubClient, _ conversation: Conversation) async throws {
+        if conversation.id.isEmpty {
+            try await client.deleteConversation(todoId: conversation.todoId)
+        } else {
+            try await client.deleteConversation(id: conversation.id)
+        }
+    }
+
+    private func remember(_ conversation: Conversation) {
+        conversations[Self.storageKey(conversation)] = conversation
+    }
+
+    private func forget(_ conversation: Conversation) {
+        conversations[Self.storageKey(conversation)] = nil
+    }
+
+    private static func storageKey(_ conversation: Conversation) -> String {
+        conversation.id.isEmpty ? "todo:\(conversation.todoId)" : conversation.id
     }
 
     /// Kills the tmux session on the computer, then marks the conversation closed on the hub.
@@ -419,7 +468,10 @@ final class TodoHubStore {
             throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
         }
         guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
-        conversations[conversation.todoId] = try await client.closeConversation(todoId: conversation.todoId)
+        let closed = try await conversation.id.isEmpty
+            ? client.closeConversation(todoId: conversation.todoId)
+            : client.closeConversation(id: conversation.id)
+        remember(closed)
         await refresh(trigger: .background)
     }
 
@@ -434,7 +486,7 @@ final class TodoHubStore {
                 todoId: todo.id,
                 LinkConversationRequest(computerId: computer.id, tool: remote.tool, sessionId: remote.sessionId, cwd: remote.cwd)
             )
-            conversations[todo.id] = conversation
+            remember(conversation)
         }
     }
 
@@ -451,7 +503,7 @@ final class TodoHubStore {
                 section: section, title: title, projectId: projectId, computerId: computer.id,
                 tool: remote.tool, sessionId: remote.sessionId, cwd: remote.cwd
             ))
-            conversations[created.todo.id] = created.conversation
+            remember(created.conversation)
             if created.todo.projectId != projectId {
                 _ = try await client.updateTodo(id: created.todo.id, UpdateTodoRequest(projectId: .set(projectId)))
             }
@@ -473,8 +525,8 @@ final class TodoHubStore {
         guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
         guard !isOffline else { throw OfflineChangeError() }
         try await RemoteConversations.delete(conversation, config: config)
-        try await client.deleteConversation(todoId: conversation.todoId)
-        conversations[conversation.todoId] = nil
+        try await forgetOnHub(client, conversation)
+        forget(conversation)
         await refresh(trigger: .background)
     }
 
@@ -673,10 +725,11 @@ final class TodoHubStore {
     /// Todo id + session id. Status and status message are not part of the identity, so a
     /// heartbeat does not look like a new conversation.
     private static func conversationIdentities(_ conversations: [String: Conversation]) -> Set<ConversationIdentity> {
-        Set(conversations.values.map { ConversationIdentity(todoId: $0.todoId, sessionId: $0.sessionId) })
+        Set(conversations.values.map { ConversationIdentity(id: $0.id, todoId: $0.todoId, sessionId: $0.sessionId) })
     }
 
     private struct ConversationIdentity: Hashable {
+        var id: String
         var todoId: String
         var sessionId: String
     }
@@ -712,7 +765,7 @@ final class TodoHubStore {
 
     private func apply(todos: [Todo], conversations: [Conversation]) {
         if self.todos != todos { self.todos = todos }
-        let mapped = Dictionary(conversations.map { ($0.todoId, $0) }, uniquingKeysWith: { _, new in new })
+        let mapped = Dictionary(conversations.map { (Self.storageKey($0), $0) }, uniquingKeysWith: { _, new in new })
         if self.conversations != mapped { self.conversations = mapped }
     }
 

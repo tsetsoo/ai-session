@@ -296,6 +296,7 @@ struct PhoneShell: View {
     /// A notification tap shows the conversation on the Conversations tab, in place of what
     /// that tab had open. It attaches only if the conversation runs, never starts one.
     private func openFromNotification(_ todoID: String) {
+        model.selectedConversationID = store.conversationToOpen(forTodo: todoID)
         tab = .conversations
         conversationsPath = [.reopened(todoID)]
     }

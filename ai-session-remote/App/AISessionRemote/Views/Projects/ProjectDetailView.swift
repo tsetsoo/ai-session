@@ -145,7 +145,7 @@ struct ProjectDetailView: View {
             ForEach(todos) { todo in
                 TodoRow(
                     todo: todo,
-                    conversation: store.conversations[todo.id],
+                    conversation: store.mostUrgent(forTodo: todo.id),
                     status: model.board.status(forTodo: todo.id),
                     isBusy: false,
                     canToggle: !store.isOffline,

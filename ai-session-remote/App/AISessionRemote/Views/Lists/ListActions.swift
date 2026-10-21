@@ -16,7 +16,7 @@ final class ConversationRowActions {
 
     var deleteTarget: Conversation?
     var failure: Failure?
-    /// Todo ids whose conversation is being closed or deleted.
+    /// Conversation ids being closed or deleted.
     private(set) var inFlight: Set<String> = []
     private(set) var showingCopied = false
     private var copiedTask: Task<Void, Never>?
@@ -47,10 +47,10 @@ final class ConversationRowActions {
 
     private func run(_ failureTitle: String, _ conversation: Conversation, hosts: [HostEntity],
                      _ body: @escaping (HostConnectionConfig) async throws -> Void) {
-        let todoID = conversation.todoId
-        inFlight.insert(todoID)
+        let conversationID = conversation.listKey
+        inFlight.insert(conversationID)
         Task {
-            defer { inFlight.remove(todoID) }
+            defer { inFlight.remove(conversationID) }
             do {
                 try await body(HostLookup.config(for: conversation.computer, in: hosts))
             } catch {

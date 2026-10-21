@@ -88,27 +88,27 @@ public enum PaletteModel {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let todosByID = Dictionary(todos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let running = board.runningNow
-        let shortcuts = Dictionary(running.prefix(9).enumerated().map { ($1.todoId, $0 + 1) },
+        let shortcuts = Dictionary(running.prefix(9).enumerated().map { ($1.listKey, $0 + 1) },
                                    uniquingKeysWith: { first, _ in first })
-        let needsYou = Set(board.needsYou.map(\.todoId))
+        let needsYou = Set(board.needsYou.map(\.listKey))
 
-        let conversationItems: [PaletteItem] = (board.needsYou + running.filter { !needsYou.contains($0.todoId) })
+        let conversationItems: [PaletteItem] = (board.needsYou + running.filter { !needsYou.contains($0.listKey) })
             .compactMap { conversation in
                 guard let todo = todosByID[conversation.todoId] else { return nil }
-                return .conversation(todo, conversation, status: board.status(forTodo: todo.id) ?? .idle,
-                                     shortcut: shortcuts[todo.id])
+                return .conversation(todo, conversation, status: board.status(of: conversation),
+                                     shortcut: shortcuts[conversation.listKey])
             }
 
         var groups: [PaletteGroup] = []
         if query.isEmpty {
             groups.append(PaletteGroup(kind: .conversations, items: Array(conversationItems.prefix(maxPerGroup))))
         } else {
-            let conversations = Dictionary(board.all.map { ($0.todoId, $0) }, uniquingKeysWith: { first, _ in first })
+            let conversations = Dictionary(grouping: board.all, by: \.todoId)
             let runningIDs = Set(running.map(\.todoId))
             let todoItems: [PaletteItem] = todos
                 .filter { !$0.completed && !runningIDs.contains($0.id) }
                 .map { todo in
-                    let conversation = conversations[todo.id]
+                    let conversation = ConversationIndex.mostUrgent(conversations[todo.id] ?? [])
                     return .todo(todo, conversation: conversation,
                                  status: conversation == nil ? nil : board.status(forTodo: todo.id))
                 }

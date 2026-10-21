@@ -116,6 +116,9 @@ public struct Conversation: Codable, Equatable, Sendable {
     /// Name given when this conversation was duplicated. Absent on the original.
     public var label: String?
 
+    /// Row identity. A conversation from a hub that omits `id` is still the only one on its todo.
+    public var listKey: String { id.isEmpty ? todoId : id }
+
     /// Older servers only send `claude_session_id`.
     @available(*, deprecated, renamed: "sessionId")
     public var claudeSessionId: String { sessionId }
@@ -380,6 +383,18 @@ public struct OpenConversationRequest: Encodable, Sendable {
 
     public init(tool: String) {
         self.tool = tool
+    }
+}
+
+public struct DuplicateConversationRequest: Encodable, Sendable {
+    public var sourceId: String
+    public var tool: String
+    public var label: String
+
+    public init(sourceId: String, tool: String, label: String) {
+        self.sourceId = sourceId
+        self.tool = tool
+        self.label = label
     }
 }
 

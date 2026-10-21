@@ -240,7 +240,7 @@ struct ConversationFrame: View {
         switch loader.phase {
         case .idle:
             if ConversationStart.needsConfirm(
-                hasConversation: ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId)
+                hasConversation: ConversationStart.hasStartedSession(conversation?.sessionId)
             ) {
                 onTerminalBackground(toolStep)
             } else {
@@ -477,24 +477,24 @@ struct ConversationFrame: View {
 
     /// The hub's status for this todo's conversation, as last heard.
     private var liveStatus: ConversationStatus? {
-        store.conversations[todo.id]?.status ?? todo.conversationStatus
+        conversation?.status ?? todo.conversationStatus
     }
 
     /// Live status; nil (no pill) when the todo has never had a conversation.
     private var displayStatus: ConversationDisplayStatus? {
-        ConversationToolbar.displayStatus(todo: todo, store: store)
+        ConversationToolbar.displayStatus(todo: todo, store: store, selectedKey: appModel?.selectedConversationID)
     }
 
     private func meta(includeFolder: Bool) -> String {
-        Self.subtitle(todo: todo, store: store, includeFolder: includeFolder)
+        Self.subtitle(todo: todo, store: store, includeFolder: includeFolder, selectedKey: appModel?.selectedConversationID)
     }
 
     /// `section · computer · folder · tool`, from the conversation or else the section's
     /// computer. The folder is middle-truncated. The detail column uses the same line for the
     /// window subtitle while several frames stay mounted.
-    static func subtitle(todo: Todo, store: TodoHubStore, includeFolder: Bool) -> String {
+    static func subtitle(todo: Todo, store: TodoHubStore, includeFolder: Bool, selectedKey: String? = nil) -> String {
         let target: (computer: String, folder: String, tool: String)? = {
-            if let conversation = store.conversations[todo.id] {
+            if let conversation = store.displayed(forTodo: todo.id, selectedKey: selectedKey) {
                 return (conversation.computer.name, conversation.cwd, conversation.tool)
             }
             if let mapping = store.sectionComputers[todo.section] {
@@ -565,7 +565,7 @@ struct ConversationFrame: View {
     }
 
     private var conversation: Conversation? {
-        store.conversations[todo.id] ?? readyConversation?.conversation
+        store.displayed(forTodo: todo.id, selectedKey: appModel?.selectedConversationID) ?? readyConversation?.conversation
     }
 
     /// Warm frames stay mounted. Only the one on screen refreshes limits. A popped-out
@@ -631,7 +631,7 @@ struct ConversationFrame: View {
     /// A settings sheet closed while a problem shows: try again with what was just fixed.
     private func retryAfterSettings() {
         guard case .problem = loader.phase else { return }
-        if !ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId) {
+        if !ConversationStart.hasStartedSession(conversation?.sessionId) {
             loader.reset()
             return
         }

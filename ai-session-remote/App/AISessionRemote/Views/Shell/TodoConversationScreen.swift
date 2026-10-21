@@ -37,6 +37,11 @@ struct TodoConversationScreen: View {
     @Binding var request: FrameRequest?
     /// Drawn in the terminal area instead of the loader's state (see `FramePlaceholder`).
     let placeholder: FramePlaceholder?
+    @Environment(AppModel.self) private var appModel: AppModel?
+
+    private var shown: Conversation? {
+        store.displayed(forTodo: todo.id, selectedKey: appModel?.selectedConversationID)
+    }
     /// Popped out into its own window: this frame holds no terminal and ignores requests.
     let isSuspended: Bool
     /// Another mounted conversation is the one on screen. This one keeps its terminal.
@@ -92,7 +97,7 @@ struct TodoConversationScreen: View {
                 guard onAppear == .start, !didOpen, loader.phase == .idle else { return }
                 didOpen = true
                 // A first conversation waits on the tool step. One that exists resumes.
-                guard ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId) else { return }
+                guard ConversationStart.hasStartedSession(shown?.sessionId) else { return }
                 await loader.start()
             }
     }
@@ -105,7 +110,7 @@ struct TodoConversationScreen: View {
         case .attach:
             // Only into an idle frame: an explicit start or a problem card stays as it is.
             guard !isSuspended, loader.phase == .idle else { return }
-            loader.attachIfRunning(store.conversations[todo.id])
+            loader.attachIfRunning(shown)
         case .detach:
             guard loader.phase != .idle, loader.phase != .preparing else { return }
             loader.reset()
@@ -113,7 +118,7 @@ struct TodoConversationScreen: View {
             // An open terminal stays as it is; a problem retries. No conversation yet: the
             // tool step confirms before anything is created.
             guard !isSuspended, loader.phase == .idle || isProblem else { return }
-            guard ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId) || isProblem else { return }
+            guard ConversationStart.hasStartedSession(shown?.sessionId) || isProblem else { return }
             Task { await loader.start() }
         }
     }

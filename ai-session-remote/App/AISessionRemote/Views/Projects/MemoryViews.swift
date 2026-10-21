@@ -347,7 +347,7 @@ struct MemoriesPanel: View {
     @State private var showArchived = false
     @State private var actions = MemoryActions()
 
-    private var conversation: Conversation { store.conversations[todoId] ?? initialConversation }
+    private var conversation: Conversation { store.mostUrgent(forTodo: todoId) ?? initialConversation }
 
     private var projectId: String? {
         conversation.projectId ?? store.todos.first { $0.id == todoId }?.projectId

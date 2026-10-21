@@ -53,7 +53,7 @@ struct ConversationListView: View {
                                       conversation.statusMessage)
         }
         let shortcuts: [String: Int] = showsShortcuts
-            ? Dictionary(uniqueKeysWithValues: board.runningNow.prefix(9).enumerated().map { ($1.todoId, $0 + 1) })
+            ? Dictionary(uniqueKeysWithValues: board.runningNow.prefix(9).enumerated().map { ($1.listKey, $0 + 1) })
             : [:]
         SelectableList(selection: selection) {
             ListStatusBanner(store: store)
@@ -75,9 +75,9 @@ struct ConversationListView: View {
                 .listRowBackground(Color.clear)
             } else {
                 Section {
-                    ForEach(conversations, id: \.todoId) { conversation in
+                    ForEach(conversations, id: \.listKey) { conversation in
                         row(conversation, todo: todos[conversation.todoId], board: board,
-                            shortcut: shortcuts[conversation.todoId])
+                            shortcut: shortcuts[conversation.listKey])
                     }
                 } footer: {
                     #if os(iOS)
@@ -107,17 +107,22 @@ struct ConversationListView: View {
 
     private func row(_ conversation: Conversation, todo: Todo?, board: ConversationBoard,
                      shortcut: Int?) -> some View {
-        let status = board.status(forTodo: conversation.todoId) ?? .closed
-        let open: (() -> Void)? = todo.map { todo in { onOpen(todo) } }
+        let status = board.status(of: conversation)
+        let open: (() -> Void)? = todo.map { todo in
+            {
+                model.selectedConversationID = conversation.listKey
+                onOpen(todo)
+            }
+        }
         return ConversationRow(
-            title: todo?.title ?? "Conversation",
+            title: RowText.conversationTitle(todoTitle: todo?.title ?? "Conversation", label: conversation.label),
             section: todo?.section,
             conversation: conversation,
             status: status,
-            isBusy: actions.inFlight.contains(conversation.todoId),
+            isBusy: actions.inFlight.contains(conversation.listKey),
             shortcut: shortcut
         )
-        .tag(conversation.todoId)
+        .tag(conversation.listKey)
         .rowTap(selection == nil ? open : nil)
         .conversationRowMenu(conversation, isRunning: status != .closed, actions: actions,
                              store: store, hosts: hosts, open: open)
