@@ -166,15 +166,15 @@ struct SessionsListView: View {
             terminalDestination(for: session)
         } label: {
             HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(AppTheme.color(for: session.tool).opacity(0.16))
-                        .frame(width: 36, height: 36)
-                    Image(systemName: AppTheme.iconName(for: session.tool))
+                if let tool = session.tool {
+                    ToolIcon(tool: tool.rawValue, side: 36)
+                } else {
+                    Image(systemName: AppTheme.iconName(for: nil))
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(AppTheme.color(for: session.tool))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 36, height: 36)
+                        .accessibilityHidden(true)
                 }
-                .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(session.slug)

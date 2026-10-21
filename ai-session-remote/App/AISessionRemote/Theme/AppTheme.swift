@@ -22,13 +22,29 @@ enum AppTheme {
         }
     }
 
+    /// Asset catalog image for the tool's own app icon.
+    static func imageName(for tool: AITool) -> String {
+        switch tool {
+        case .claude: "ToolClaude"
+        case .codex: "ToolCodex"
+        case .cursor: "ToolCursor"
+        case .shell: "ToolShell"
+        }
+    }
+
+    /// Claude coral, Codex blue, Cursor silver, Shell gray. Darker in light mode so the name stays readable.
     static func color(for tool: AITool?) -> Color {
         switch tool {
-        case .claude: Color(red: 0.86, green: 0.45, blue: 0.22) // warm amber
-        case .codex: Color(red: 0.18, green: 0.62, blue: 0.45) // teal
-        case .cursor: Color(red: 0.22, green: 0.48, blue: 0.78) // steel blue
-        case .shell: Color(red: 0.45, green: 0.45, blue: 0.50) // neutral slate
-        case nil: .secondary
+        case .claude:
+            PlatformColor.dynamic(light: PlatformNativeColor(hex: 0xB04E38), dark: PlatformNativeColor(hex: 0xE07A5F))
+        case .codex:
+            PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x3A5FE0), dark: PlatformNativeColor(hex: 0x7AA2FF))
+        case .cursor:
+            PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x3A3A3C), dark: PlatformNativeColor(hex: 0xD4D4D8))
+        case .shell:
+            PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x636366), dark: PlatformNativeColor(hex: 0xAEAEB2))
+        case nil:
+            .secondary
         }
     }
 
@@ -70,6 +86,26 @@ enum AppTheme {
         case .idle: Color.secondary
         case .waiting: Color(red: 0.95, green: 0.55, blue: 0.15)
         case .unknown: Color.secondary.opacity(0.5)
+        }
+    }
+}
+
+/// The tool's own app icon. Hidden from VoiceOver; the colored name next to it is the label.
+struct ToolIcon: View {
+    let tool: String
+    var side: CGFloat = 28
+
+    var body: some View {
+        if let known = AITool(rawValue: tool) {
+            Image(AppTheme.imageName(for: known))
+                .resizable()
+                .frame(width: side, height: side)
+                .clipShape(RoundedRectangle(cornerRadius: side * 0.25, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: side * 0.25, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5)
+                }
+                .accessibilityHidden(true)
         }
     }
 }

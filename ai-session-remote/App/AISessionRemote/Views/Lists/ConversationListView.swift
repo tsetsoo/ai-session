@@ -49,7 +49,8 @@ struct ConversationListView: View {
         }
         let conversations = filtered.filter { conversation in
             let todo = todos[conversation.todoId]
-            return ListSearch.matches(query, todo?.title, RowText.conversationMeta(conversation, section: todo?.section),
+            return ListSearch.matches(query, todo?.title,
+                                      RowText.conversationSearchText(conversation, section: todo?.section),
                                       conversation.statusMessage)
         }
         let shortcuts: [String: Int] = showsShortcuts
@@ -115,7 +116,8 @@ struct ConversationListView: View {
             conversation: conversation,
             status: status,
             isBusy: actions.inFlight.contains(conversation.todoId),
-            shortcut: shortcut
+            shortcut: shortcut,
+            isSelected: selection?.wrappedValue == conversation.todoId
         )
         .tag(conversation.todoId)
         .rowTap(selection == nil ? open : nil)

@@ -19,9 +19,10 @@ extension EnvironmentValues {
     @Entry var frameOwnsWindow = false
 }
 
-/// A todo's conversation: a native header (title, section · computer · folder · tool, live
-/// status pill, actions) around the terminal area. The header renders from local data at once;
-/// the terminal area moves through the loader's phases on the terminal's own background.
+/// A todo's conversation: a native header (title, section · computer · folder, live
+/// status pill, actions) around the terminal area. The tool is a band on the terminal.
+/// The header renders from local data at once; the terminal area moves through the loader's
+/// phases on the terminal's own background.
 struct ConversationFrame: View {
     let todo: Todo
     let loader: ConversationLoader
@@ -123,7 +124,24 @@ struct ConversationFrame: View {
 
     private var frame: some View {
         terminalArea
-        .safeAreaInset(edge: .top, spacing: 0) { limitsBar }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                if let tool = chromeTool {
+                    ToolBand(tool: tool)
+                }
+                limitsBar
+            }
+        }
+        .overlay(alignment: .leading) {
+            if let tool = chromeTool {
+                Rectangle()
+                    .fill(AppTheme.color(for: AITool(rawValue: tool)))
+                    .frame(width: 4)
+                    .modifier(TerminalColorScheme())
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
         .onChange(of: liveStatus, initial: true) { _, status in
             if let status { approveGate.statusChanged(to: status) }
         }
@@ -489,29 +507,30 @@ struct ConversationFrame: View {
         Self.subtitle(todo: todo, store: store, includeFolder: includeFolder)
     }
 
-    /// `section · computer · folder · tool`, from the conversation or else the section's
-    /// computer. The folder is middle-truncated. The detail column uses the same line for the
-    /// window subtitle while several frames stay mounted.
+    /// `section · computer · folder`, from the conversation or else the section's
+    /// computer. The folder is middle-truncated. The tool is the band, not this line.
+    /// The detail column uses the same line for the window subtitle while several frames stay mounted.
     static func subtitle(todo: Todo, store: TodoHubStore, includeFolder: Bool) -> String {
-        let target: (computer: String, folder: String, tool: String)? = {
+        let target: (computer: String, folder: String)? = {
             if let conversation = store.conversations[todo.id] {
-                return (conversation.computer.name, conversation.cwd, conversation.tool)
+                return (conversation.computer.name, conversation.cwd)
             }
             if let mapping = store.sectionComputers[todo.section] {
                 let folder = store.project(id: todo.projectId)?.folder ?? ""
-                return (mapping.computer.name, folder, "")
+                return (mapping.computer.name, folder)
             }
             return nil
         }()
         guard let target else { return "\(todo.section.rawValue) · no computer" }
-        var parts = [todo.section.rawValue, target.computer]
-        if includeFolder, !target.folder.isEmpty {
-            parts.append(middleTruncated(target.folder))
-        }
-        if !target.tool.isEmpty {
-            parts.append(RemoteConversationPicker.toolName(target.tool))
-        }
-        return parts.joined(separator: " · ")
+        let folder = includeFolder && !target.folder.isEmpty ? middleTruncated(target.folder) : nil
+        return RowText.frameSubtitle(section: todo.section, computer: target.computer, folder: folder)
+    }
+
+    /// The tool this frame is for: the running conversation, else where a new one would start.
+    private var chromeTool: String? {
+        let tool = conversation?.tool ?? startTarget?.tool
+        guard let tool, !tool.isEmpty else { return nil }
+        return tool
     }
 
     private static func middleTruncated(_ path: String, limit: Int = 40) -> String {
@@ -709,6 +728,54 @@ struct ConversationFrame: View {
             // Create mode: the host and its key are saved together, and Cancel leaves nothing.
             HostEditorView(prefill: prefill)
         }
+    }
+}
+
+/// Resolves tool colors in the terminal's light or dark scheme, which can differ from the app.
+private struct TerminalColorScheme: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("terminal.theme") private var themeRaw = TerminalTheme.system.rawValue
+
+    func body(content: Content) -> some View {
+        let palette = TerminalAppearance.palette(
+            theme: TerminalTheme(rawValue: themeRaw) ?? .system,
+            colorScheme: colorScheme
+        )
+        content.environment(\.colorScheme, palette == .dark ? .dark : .light)
+    }
+}
+
+/// Icon and name across the top of the terminal, in the terminal's own light or dark scheme.
+private struct ToolBand: View {
+    let tool: String
+
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("terminal.theme") private var themeRaw = TerminalTheme.system.rawValue
+
+    var body: some View {
+        let palette = TerminalAppearance.palette(
+            theme: TerminalTheme(rawValue: themeRaw) ?? .system,
+            colorScheme: colorScheme
+        )
+        HStack(spacing: DS.spacing.s) {
+            ToolIcon(tool: tool, side: 26)
+            Text(RowText.toolName(tool))
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(AppTheme.color(for: AITool(rawValue: tool)))
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, DS.spacing.m)
+        .padding(.vertical, DS.spacing.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            ZStack {
+                Color(palette.background)
+                AppTheme.color(for: AITool(rawValue: tool)).opacity(0.08)
+            }
+        }
+        .modifier(TerminalColorScheme())
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 

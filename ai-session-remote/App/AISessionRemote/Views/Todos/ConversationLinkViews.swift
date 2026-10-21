@@ -148,12 +148,7 @@ struct RemoteConversationPicker: View {
     }
 
     static func toolName(_ tool: String) -> String {
-        switch tool {
-        case "claude": "Claude"
-        case "codex": "Codex"
-        case "cursor": "Cursor"
-        default: tool
-        }
+        RowText.toolName(tool)
     }
 }
 

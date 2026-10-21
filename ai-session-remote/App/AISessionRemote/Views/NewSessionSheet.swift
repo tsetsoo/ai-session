@@ -74,9 +74,7 @@ struct NewSessionSheet: View {
                     .pickerStyle(.segmented)
 
                     HStack(spacing: 10) {
-                        Image(systemName: AppTheme.iconName(for: tool))
-                            .foregroundStyle(AppTheme.color(for: tool))
-                            .frame(width: 22)
+                        ToolIcon(tool: tool.rawValue, side: 22)
                         Text(toolHint)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)

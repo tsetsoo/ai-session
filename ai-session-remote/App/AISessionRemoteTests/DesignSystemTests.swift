@@ -1,3 +1,4 @@
+import AISessionCore
 import SwiftUI
 import UIKit
 import XCTest
@@ -18,6 +19,13 @@ final class DesignSystemTests: XCTestCase {
             for (assetValue, accentValue) in zip(rgba(asset, style), rgba(accent, style)) {
                 XCTAssertEqual(assetValue, accentValue, accuracy: 0.002, "\(style == .dark ? "dark" : "light")")
             }
+        }
+    }
+
+    func testEachToolShipsItsOwnIcon() {
+        for tool in AITool.allCases {
+            let image = UIImage(named: AppTheme.imageName(for: tool), in: Bundle(for: AppModel.self), compatibleWith: nil)
+            XCTAssertNotNil(image, tool.rawValue)
         }
     }
 }

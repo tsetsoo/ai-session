@@ -1,8 +1,11 @@
 import AISessionCore
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
-/// A conversation: status dot, the todo's title and age, "Sp · mac-studio · Claude", and the
-/// status message (or how long it has been working), plus its ⌘n hint in the Mac's Running now.
+/// A conversation: the tool's icon and color, status dot, the todo's title and age,
+/// "Sp · mac-studio", and the status message, plus its ⌘n hint in the Mac's Running now.
 struct ConversationRow: View {
     let title: String
     let section: TodoSection?
@@ -12,26 +15,53 @@ struct ConversationRow: View {
     let isBusy: Bool
     /// Its ⌘n in Running now on the Mac.
     var shortcut: Int?
+    /// The Mac list paints the accent behind this row. The tool name then uses the selection label color.
+    var isSelected: Bool = false
 
     /// Width of the dot column; the lines under the title start after it.
     private static let dotColumn: CGFloat = 21
 
+    private var toolColor: Color {
+        AppTheme.color(for: AITool(rawValue: conversation.tool))
+    }
+
+    /// Text on the Mac list's selection fill. White is a poor fit on the light accent.
+    private var selectedLabel: Color {
+        #if os(macOS)
+        Color(nsColor: .alternateSelectedControlTextColor)
+        #else
+        Color.white
+        #endif
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: DS.spacing.m) {
-                StatusBadge(status, style: .dot)
-                    .frame(width: Self.dotColumn)
-                Text(title)
-                    .font(.body.weight(.semibold))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if isBusy {
-                    ProgressView().controlSize(.small)
-                } else {
-                    ConversationAgeLabel(conversation: conversation)
+        HStack(alignment: .center, spacing: DS.spacing.s) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(toolColor)
+                .frame(width: 4)
+                .frame(maxHeight: .infinity)
+                .padding(.vertical, 2)
+                .accessibilityHidden(true)
+            ToolIcon(tool: conversation.tool)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: DS.spacing.s) {
+                    StatusBadge(status, style: .dot)
+                        .frame(width: Self.dotColumn)
+                    Text(title)
+                        .font(.body.weight(.semibold))
+                        .lineLimit(1)
+                    Text(RowText.toolName(conversation.tool))
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(isSelected ? selectedLabel : toolColor)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                    Spacer(minLength: DS.spacing.s)
+                    if isBusy {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        ConversationAgeLabel(conversation: conversation)
+                    }
                 }
-            }
-            Group {
                 HStack(spacing: DS.spacing.s) {
                     Text(RowText.conversationMeta(conversation, section: section))
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -41,12 +71,15 @@ struct ConversationRow: View {
                             .accessibilityLabel("Command \(shortcut)")
                     }
                 }
+                .font(.footnote)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.leading, Self.dotColumn + DS.spacing.s)
                 ConversationMessageLabel(conversation: conversation, status: status)
+                    .font(.footnote)
+                    .lineLimit(1)
+                    .padding(.leading, Self.dotColumn + DS.spacing.s)
             }
-            .font(.footnote)
-            .lineLimit(1)
-            .padding(.leading, Self.dotColumn + DS.spacing.m)
         }
         .padding(.vertical, DS.spacing.xs)
         .frame(minHeight: DS.rowMinHeight)

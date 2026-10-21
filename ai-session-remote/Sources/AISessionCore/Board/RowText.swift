@@ -16,14 +16,26 @@ public enum RowText {
         case "claude": return "Claude"
         case "codex": return "Codex"
         case "cursor": return "Cursor"
+        case "shell": return "Shell"
         default: return tool
         }
     }
 
-    /// "Sp · mac-studio · Claude".
+    /// "Sp · mac-studio". The tool is the row's icon, not this line.
     public static func conversationMeta(_ conversation: Conversation, section: TodoSection?) -> String {
-        let parts = [section?.rawValue, conversation.computer.name, toolName(conversation.tool)]
-        return parts.compactMap { $0 }.joined(separator: " · ")
+        [section?.rawValue, conversation.computer.name].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// "Sp · mac-studio · ~/repo". The tool is the terminal band, not this line.
+    public static func frameSubtitle(section: TodoSection, computer: String, folder: String?) -> String {
+        var parts = [section.rawValue, computer]
+        if let folder { parts.append(folder) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The gray line plus the tool name, so a search for "Claude" still hits the row.
+    public static func conversationSearchText(_ conversation: Conversation, section: TodoSection?) -> String {
+        [conversationMeta(conversation, section: section), toolName(conversation.tool)].joined(separator: " ")
     }
 
     /// Time since the conversation last changed status (or started): "now", "4m", "1h", "3d".

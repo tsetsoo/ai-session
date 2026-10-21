@@ -71,8 +71,11 @@ struct ComputerDetailView: View {
         let host = HostLookup.host(for: computer, in: hosts)
         let todos = Dictionary(store.todos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let running = board.runningNow.filter { conversation in
-            conversation.computer.id == computer.id
-                && ListSearch.matches(query, todos[conversation.todoId]?.title, conversation.statusMessage)
+            let todo = todos[conversation.todoId]
+            return conversation.computer.id == computer.id
+                && ListSearch.matches(query, todo?.title,
+                                      RowText.conversationSearchText(conversation, section: todo?.section),
+                                      conversation.statusMessage)
         }
         SelectableList(selection: selection) {
             ListStatusBanner(store: store)
@@ -167,7 +170,8 @@ struct ComputerDetailView: View {
             section: todo?.section,
             conversation: conversation,
             status: status,
-            isBusy: actions.inFlight.contains(conversation.todoId)
+            isBusy: actions.inFlight.contains(conversation.todoId),
+            isSelected: selection?.wrappedValue == conversation.todoId
         )
         .tag(conversation.todoId)
         .rowTap(selection == nil ? open : nil)
