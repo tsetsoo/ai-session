@@ -294,6 +294,14 @@ pub struct OpenConversationRequest {
     pub tool: String,
 }
 
+/// Copy one conversation of a todo into another (or the same) tool.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DuplicateConversationRequest {
+    pub source_id: String,
+    pub tool: String,
+    pub label: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SetConversationSessionRequest {
     pub session_id: String,

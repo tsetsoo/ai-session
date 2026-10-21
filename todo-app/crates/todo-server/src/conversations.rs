@@ -12,7 +12,7 @@ use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
     Computer, Conversation, ConversationStatus, ConversationStatusRequest, CreateComputerRequest, DeleteResponse,
-    Importance, LinkConversationRequest, OpenConversationRequest, Section, SectionComputer,
+    DuplicateConversationRequest, Importance, LinkConversationRequest, OpenConversationRequest, Section, SectionComputer,
     SetConversationSessionRequest, SetSectionComputerRequest,
     TodoFromConversationRequest, TodoWithConversation, UpdateComputerRequest,
 };
@@ -160,6 +160,7 @@ pub(crate) enum OpenError {
     NoProject,
     BadRequest(&'static str),
     NoTmuxName,
+    Conflict(&'static str),
     Db(rusqlite::Error),
 }
 
@@ -203,13 +204,16 @@ fn open_conversation_in(conn: &Connection, todo_id: &str, tool: &str) -> Result<
         .optional()?
         .ok_or(OpenError::TodoNotFound)?;
 
-    if load_conversation(conn, todo_id)?.is_some() {
-        conn.execute(
-            "UPDATE conversations SET status = 'unknown', status_message = NULL, status_updated_at = datetime('now')
-             WHERE todo_id = ?1 AND status = 'closed'",
-            params![todo_id],
-        )?;
-        return load_conversation(conn, todo_id)?.ok_or(OpenError::Db(rusqlite::Error::QueryReturnedNoRows));
+    if let Some(existing) = load_conversation(conn, todo_id)? {
+        if existing.status == ConversationStatus::Closed {
+            conn.execute(
+                "UPDATE conversations SET status = 'unknown', status_message = NULL, status_updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![existing.id],
+            )?;
+            return load_conversation(conn, todo_id)?.ok_or(OpenError::Db(rusqlite::Error::QueryReturnedNoRows));
+        }
+        return Ok(existing);
     }
 
     let computer_id: Option<String> = conn
@@ -227,10 +231,55 @@ fn open_conversation_in(conn: &Connection, todo_id: &str, tool: &str) -> Result<
         .optional()?
         .ok_or(OpenError::NoProject)?;
     let session_id = (tool == "claude").then(|| Uuid::new_v4().to_string());
-    if !insert_conversation(conn, todo_id, &computer_id, &cwd, tool, session_id.as_deref(), false)? {
+    if insert_conversation(conn, todo_id, &computer_id, &cwd, tool, session_id.as_deref(), false, None)?.is_none() {
         return Err(OpenError::NoTmuxName);
     }
     load_conversation(conn, todo_id)?.ok_or(OpenError::TodoNotFound)
+}
+
+pub(crate) fn duplicate_conversation_db(
+    conn: &Connection,
+    todo_id: &str,
+    source_id: &str,
+    tool: &str,
+    label: &str,
+) -> Result<Conversation, OpenError> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let created = duplicate_in(&tx, todo_id, source_id, tool, label)?;
+    tx.commit()?;
+    Ok(created)
+}
+
+fn duplicate_in(conn: &Connection, todo_id: &str, source_id: &str, tool: &str, label: &str) -> Result<Conversation, OpenError> {
+    let label = label.trim();
+    if label.is_empty() {
+        return Err(OpenError::BadRequest("label is required"));
+    }
+    let tool = tool.trim();
+    if !SUPPORTED_TOOLS.contains(&tool) {
+        return Err(OpenError::UnsupportedTool);
+    }
+    let Some(source) = load_conversation_by_id(conn, source_id)? else {
+        return Err(OpenError::TodoNotFound);
+    };
+    if source.todo_id != todo_id {
+        return Err(OpenError::TodoNotFound);
+    }
+    let session_id = (tool == "claude").then(|| Uuid::new_v4().to_string());
+    let Some(id) = insert_conversation(
+        conn,
+        todo_id,
+        &source.computer.id,
+        &source.cwd,
+        tool,
+        session_id.as_deref(),
+        true,
+        Some(label),
+    )?
+    else {
+        return Err(OpenError::NoTmuxName);
+    };
+    load_conversation_by_id(conn, &id)?.ok_or(OpenError::TodoNotFound)
 }
 
 pub(crate) fn set_conversation_session_db(
@@ -238,18 +287,42 @@ pub(crate) fn set_conversation_session_db(
     todo_id: &str,
     session_id: &str,
 ) -> Result<Conversation, OpenError> {
+    let id = require_single(conn, todo_id)?;
+    set_session_on(conn, &id, session_id)
+}
+
+fn set_session_on(conn: &Connection, conversation_id: &str, session_id: &str) -> Result<Conversation, OpenError> {
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return Err(OpenError::BadRequest("session_id is required"));
     }
     let updated = conn.execute(
-        "UPDATE conversations SET session_id = ?1 WHERE todo_id = ?2",
-        params![session_id, todo_id],
+        "UPDATE conversations SET session_id = ?1 WHERE id = ?2",
+        params![session_id, conversation_id],
     )?;
     if updated == 0 {
         return Err(OpenError::TodoNotFound);
     }
-    load_conversation(conn, todo_id)?.ok_or(OpenError::TodoNotFound)
+    load_conversation_by_id(conn, conversation_id)?.ok_or(OpenError::TodoNotFound)
+}
+
+/// The conversation id when the todo has exactly one. More than one is a conflict:
+/// the caller has to name which conversation.
+fn require_single(conn: &Connection, todo_id: &str) -> Result<String, OpenError> {
+    let mut stmt = conn.prepare("SELECT id FROM conversations WHERE todo_id = ?1")?;
+    let ids = stmt.query_map(params![todo_id], |row| row.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+    match ids.len() {
+        0 => Err(OpenError::TodoNotFound),
+        1 => Ok(ids.into_iter().next().expect("len is 1")),
+        _ => Err(OpenError::Conflict("conversation_id required")),
+    }
+}
+
+pub(crate) fn load_conversation_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<Conversation>> {
+    let mut stmt = conn.prepare(&format!("{CONVERSATION_SELECT} WHERE c.id = ?1"))?;
+    let row = stmt.query_row(params![id], row_to_conversation).optional()?;
+    drop(stmt);
+    row.map(|row| with_project(conn, row)).transpose()
 }
 
 fn tmux_name_taken(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
@@ -301,16 +374,18 @@ fn insert_conversation(
     tool: &str,
     session_id: Option<&str>,
     replacing: bool,
-) -> rusqlite::Result<bool> {
+    label: Option<&str>,
+) -> rusqlite::Result<Option<String>> {
     let Some(name) = pick_tmux_name(conn, tool, todo_id, session_id.unwrap_or(""), replacing)? else {
-        return Ok(false);
+        return Ok(None);
     };
+    let id = Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![Uuid::new_v4().to_string(), todo_id, computer_id, cwd, tool, name, session_id],
+        "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, label)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![id, todo_id, computer_id, cwd, tool, name, session_id, label],
     )?;
-    Ok(true)
+    Ok(Some(id))
 }
 
 #[derive(Debug)]
@@ -322,6 +397,8 @@ pub(crate) enum LinkError {
     /// That conversation is already linked to another todo (its id).
     SessionTaken(String),
     NoTmuxName,
+    /// The todo has more than one conversation, so a todo-scoped replace cannot pick one.
+    Ambiguous,
     ProjectRequired,
     ProjectNotFound,
     SectionMismatch,
@@ -425,12 +502,16 @@ pub(crate) fn link_conversation_db(
         if !replace {
             return Err(LinkError::TodoHasConversation);
         }
-        tx.execute("DELETE FROM conversations WHERE todo_id = ?1", params![todo_id])?;
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM conversations WHERE todo_id = ?1", params![todo_id], |r| r.get(0))?;
+        if count > 1 {
+            return Err(LinkError::Ambiguous);
+        }
+        tx.execute("DELETE FROM conversations WHERE id = ?1", params![existing.id])?;
         replacing = true;
     }
-    match insert_conversation(&tx, todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), replacing) {
-        Ok(true) => {}
-        Ok(false) => return Err(LinkError::NoTmuxName),
+    match insert_conversation(&tx, todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), replacing, None) {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(LinkError::NoTmuxName),
         Err(e) => return Err(link_insert_error(&tx, e, todo_id, target)),
     }
     let conversation = load_conversation(&tx, todo_id)?.ok_or(LinkError::TodoNotFound)?;
@@ -474,9 +555,9 @@ pub(crate) fn todo_from_conversation_db(
         return Err(LinkError::SectionMismatch);
     }
     let todo_id = insert_todo(&tx, new.section, new.title, new.importance, new.due_date, Some(project_id))?;
-    match insert_conversation(&tx, &todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), false) {
-        Ok(true) => {}
-        Ok(false) => return Err(LinkError::NoTmuxName),
+    match insert_conversation(&tx, &todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), false, None) {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(LinkError::NoTmuxName),
         Err(e) => return Err(link_insert_error(&tx, e, &todo_id, target)),
     }
     let todo = tx.query_row(&format!("SELECT {SELECT_COLS} FROM todos WHERE id = ?1"), params![todo_id], row_to_todo)?;
@@ -494,6 +575,7 @@ fn link_error_response(e: LinkError) -> HttpResponse {
         }
         LinkError::SessionTaken(other) => conflict(format!("That conversation is already linked to todo {other}")),
         LinkError::NoTmuxName => conflict("No free tmux session name for this todo"),
+        LinkError::Ambiguous => conflict("conversation_id required"),
         LinkError::ProjectRequired => bad_request("project_id is required"),
         LinkError::ProjectNotFound => not_found("Project not found"),
         LinkError::SectionMismatch => bad_request("section does not match project"),
@@ -852,7 +934,28 @@ pub async fn open_conversation(
         Err(OpenError::NoProject) => bad_request("project_id is required"),
         Err(OpenError::BadRequest(msg)) => bad_request(msg),
         Err(OpenError::NoTmuxName) => conflict("No free tmux session name for this todo"),
+        Err(OpenError::Conflict(msg)) => conflict(msg),
         Err(OpenError::Db(e)) => server_error(e),
+    }
+}
+
+pub async fn duplicate_conversation(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<DuplicateConversationRequest>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match duplicate_conversation_db(&conn, &path.into_inner(), &body.source_id, &body.tool, &body.label) {
+        Ok(c) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(c)
+        }
+        Err(OpenError::TodoNotFound) => not_found("Conversation not found"),
+        Err(e) => open_error(e),
     }
 }
 
@@ -885,6 +988,7 @@ fn open_error(e: OpenError) -> HttpResponse {
         OpenError::NoProject => bad_request("project_id is required"),
         OpenError::BadRequest(msg) => bad_request(msg),
         OpenError::NoTmuxName => conflict("No free tmux session name for this todo"),
+        OpenError::Conflict(msg) => conflict(msg),
         OpenError::Db(e) => server_error(e),
     }
 }
@@ -956,30 +1060,58 @@ pub async fn todo_from_conversation(
     }
 }
 
+fn close_conversation_id(conn: &Connection, id: &str) -> Result<Conversation, OpenError> {
+    let updated = conn.execute(
+        "UPDATE conversations SET status = 'closed', status_message = NULL, status_updated_at = datetime('now')
+         WHERE id = ?1",
+        params![id],
+    )?;
+    if updated == 0 {
+        return Err(OpenError::TodoNotFound);
+    }
+    load_conversation_by_id(conn, id)?.ok_or(OpenError::TodoNotFound)
+}
+
 pub async fn close_conversation(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
     broadcaster: web::Data<Broadcaster>,
 ) -> HttpResponse {
-    let todo_id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match conn.execute(
-        "UPDATE conversations SET status = 'closed', status_message = NULL, status_updated_at = datetime('now')
-         WHERE todo_id = ?1",
-        params![todo_id],
-    ) {
-        Ok(0) => return not_found("Todo has no conversation"),
-        Ok(_) => {}
-        Err(e) => return server_error(e),
+    let id = match require_single(&conn, &path.into_inner()) {
+        Ok(id) => id,
+        Err(OpenError::TodoNotFound) => return not_found("Todo has no conversation"),
+        Err(e) => return open_error(e),
+    };
+    match close_conversation_id(&conn, &id) {
+        Ok(c) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(c)
+        }
+        Err(OpenError::TodoNotFound) => not_found("Todo has no conversation"),
+        Err(e) => open_error(e),
     }
-    broadcaster.send();
-    match load_conversation(&conn, &todo_id) {
-        Ok(Some(c)) => HttpResponse::Ok().json(c),
-        Ok(None) => not_found("Todo has no conversation"),
-        Err(e) => server_error(e),
+}
+
+pub async fn close_conversation_by_id(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match close_conversation_id(&conn, &path.into_inner()) {
+        Ok(c) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(c)
+        }
+        Err(OpenError::TodoNotFound) => not_found("Conversation not found"),
+        Err(e) => open_error(e),
     }
 }
 
@@ -993,13 +1125,59 @@ pub async fn delete_conversation(
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match conn.execute("DELETE FROM conversations WHERE todo_id = ?1", params![todo_id]) {
+    let id = match require_single(&conn, &todo_id) {
+        Ok(id) => id,
+        Err(OpenError::TodoNotFound) => return not_found("Todo has no conversation"),
+        Err(e) => return open_error(e),
+    };
+    match conn.execute("DELETE FROM conversations WHERE id = ?1", params![id]) {
         Ok(0) => not_found("Todo has no conversation"),
         Ok(_) => {
             broadcaster.send();
             HttpResponse::Ok().json(DeleteResponse { deleted: todo_id })
         }
         Err(e) => server_error(e),
+    }
+}
+
+pub async fn delete_conversation_by_id(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let id = path.into_inner();
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match conn.execute("DELETE FROM conversations WHERE id = ?1", params![id]) {
+        Ok(0) => not_found("Conversation not found"),
+        Ok(_) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(DeleteResponse { deleted: id })
+        }
+        Err(e) => server_error(e),
+    }
+}
+
+pub async fn set_conversation_session_by_id(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<SetConversationSessionRequest>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match set_session_on(&conn, &path.into_inner(), &body.session_id) {
+        Ok(c) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(c)
+        }
+        Err(OpenError::TodoNotFound) => not_found("Conversation not found"),
+        Err(OpenError::Db(e)) if is_constraint_violation(&e) => conflict("That conversation is already linked to another todo"),
+        Err(e) => open_error(e),
     }
 }
 
@@ -1143,6 +1321,97 @@ mod tests {
             )
             .unwrap();
         assert_eq!(todo.conversation_status, Some(ConversationStatus::Waiting));
+    }
+
+    async fn claude_on_mac(pool: &DbPool) -> serde_json::Value {
+        let conn = pool.get().unwrap();
+        crate::test_support::seed_computers(&conn);
+        conn.execute(
+            "INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'programming', 'P', '~/programming')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'P', 'keep going', 'p1')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let (status, source) =
+            crate::test_support::post(pool, "/api/todos/t1/conversation", serde_json::json!({"tool": "claude"})).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{source}");
+        source
+    }
+
+    #[actix_web::test]
+    async fn duplicate_copies_computer_and_folder() {
+        let (_db, pool) = crate::test_support::pool("dup");
+        let source = claude_on_mac(&pool).await;
+        let source_id = source["id"].as_str().unwrap();
+        let (status, created) = crate::test_support::post(
+            &pool,
+            "/api/todos/t1/conversations",
+            serde_json::json!({"source_id": source_id, "tool": "codex", "label": "duplicate"}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{created}");
+        assert_ne!(created["id"], source["id"]);
+        assert_ne!(created["tmux_name"], source["tmux_name"]);
+        assert_eq!(created["tool"], "codex");
+        assert_eq!(created["label"], "duplicate");
+        assert_eq!(created["computer"]["id"], "mac");
+        assert_eq!(created["cwd"], "~/programming");
+        assert_eq!(created["session_id"], "");
+
+        let (status, rows) = crate::test_support::get(&pool, "/api/todos/t1/conversations").await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{rows}");
+        let kept = rows.as_array().unwrap().iter().find(|row| row["id"] == source["id"]).unwrap();
+        assert_eq!(kept["tool"], "claude");
+        assert_eq!(kept["tmux_name"], source["tmux_name"]);
+        assert_eq!(kept["cwd"], "~/programming");
+        assert_eq!(kept["computer"]["id"], "mac");
+        assert!(kept.get("label").is_none() || kept["label"].is_null());
+    }
+
+    #[actix_web::test]
+    async fn delete_one_leaves_the_other() {
+        let (_db, pool) = crate::test_support::pool("dup-del");
+        let source = claude_on_mac(&pool).await;
+        let (status, created) = crate::test_support::post(
+            &pool,
+            "/api/todos/t1/conversations",
+            serde_json::json!({"source_id": source["id"], "tool": "codex", "label": "duplicate"}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{created}");
+        let (status, body) =
+            crate::test_support::delete(&pool, &format!("/api/conversations/{}", created["id"].as_str().unwrap())).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{body}");
+        let (status, rows) = crate::test_support::get(&pool, "/api/todos/t1/conversations").await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{rows}");
+        let rows = rows.as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], source["id"]);
+        let (status, todo) = crate::test_support::get(&pool, "/api/todos/t1").await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{todo}");
+    }
+
+    #[actix_web::test]
+    async fn todo_scoped_delete_conflicts_when_two_exist() {
+        let (_db, pool) = crate::test_support::pool("dup-409");
+        let source = claude_on_mac(&pool).await;
+        let (status, created) = crate::test_support::post(
+            &pool,
+            "/api/todos/t1/conversations",
+            serde_json::json!({"source_id": source["id"], "tool": "codex", "label": "duplicate"}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{created}");
+        let (status, body) = crate::test_support::delete(&pool, "/api/todos/t1/conversation").await;
+        assert_eq!(status, actix_web::http::StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "conversation_id required");
+        let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
     }
 
     #[test]
@@ -1363,12 +1632,12 @@ mod tests {
         link_conversation_db(&conn, TODO, &target("claude", "taken"), false).unwrap();
 
         // Insert the same (tool, session) for another todo, bypassing the pre-checks.
-        let err = insert_conversation(&conn, "t-2", "m1", "~", "claude", Some("taken"), false).unwrap_err();
+        let err = insert_conversation(&conn, "t-2", "m1", "~", "claude", Some("taken"), false, None).unwrap_err();
         assert!(matches!(
             link_insert_error(&conn, err, "t-2", &target("claude", "taken")),
             LinkError::SessionTaken(t) if t == TODO
         ));
-        let err = insert_conversation(&conn, "t-2", "missing-computer", "~", "codex", Some("x"), false).unwrap_err();
+        let err = insert_conversation(&conn, "t-2", "missing-computer", "~", "codex", Some("x"), false, None).unwrap_err();
         let nowhere = link_target("missing-computer", "codex", "x", "~").unwrap();
         assert!(matches!(link_insert_error(&conn, err, "t-2", &nowhere), LinkError::ComputerNotFound));
     }
