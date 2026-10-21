@@ -426,6 +426,41 @@ final class TodoHubStore {
         return conversation
     }
 
+    /// A second conversation on the same computer and folder. The caller has already decided
+    /// to create it: a cancelled summary never reaches here.
+    func duplicateConversation(source: Conversation, tool: String, label: String) async throws -> Conversation {
+        guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
+        let created = try await client.duplicateConversation(
+            todoId: source.todoId, sourceId: source.id, tool: tool, label: label
+        )
+        remember(created)
+        return created
+    }
+
+    /// The source conversation's user and assistant text, from the computer that has it.
+    func captureTranscript(of conversation: Conversation, config: HostConnectionConfig) async throws -> String {
+        try await remoteStdout(
+            TmuxCommandBuilder.conversationTranscript(tool: conversation.tool, sessionId: conversation.sessionId),
+            config: config
+        )
+    }
+
+    /// A one-shot summary. The model is a new `claude -p`, not the conversation being duplicated.
+    func summarizeConversation(_ conversation: Conversation, config: HostConnectionConfig) async throws -> String {
+        try await remoteStdout(
+            TmuxCommandBuilder.summarizeConversation(tool: conversation.tool, sessionId: conversation.sessionId),
+            config: config
+        )
+    }
+
+    private func remoteStdout(_ command: String, config: HostConnectionConfig) async throws -> String {
+        let result = try await NIOSSHClient().exec(config, command: command)
+        guard result.exitCode == 0 else {
+            throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
+        }
+        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func storeSession(_ client: TodoHubClient, _ conversation: Conversation, _ sessionId: String) async throws -> Conversation {
         if conversation.id.isEmpty {
             return try await client.setConversationSession(todoId: conversation.todoId, sessionId: sessionId)

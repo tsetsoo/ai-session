@@ -58,6 +58,41 @@ public enum TmuxCommandBuilder {
         return wrap(command)
     }
 
+    /// Prints one conversation's user and assistant text. Exit 94 when it has no transcript.
+    public static func conversationTranscript(tool: String, sessionId: String) -> String {
+        wrap("\"$HOME/.ai-remote/bin/ai-todo-transcript\" \(shellQuote(tool)) \(shellQuote(sessionId))")
+    }
+
+    /// A new `claude -p` over that transcript. It is not the source session.
+    public static func summarizeConversation(tool: String, sessionId: String) -> String {
+        let transcript = "\"$HOME/.ai-remote/bin/ai-todo-transcript\" \(shellQuote(tool)) \(shellQuote(sessionId))"
+        let instruction = shellQuote(
+            "Summarize this conversation so another tool can continue it. Keep decisions, file paths, and the current task."
+        )
+        return wrap(
+            "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
+                + "{ printf '%s\\n\\n' \(instruction); \(transcript); } | "
+                + "claude -p --no-session-persistence --tools \"\" --strict-mcp-config --setting-sources \"\""
+        )
+    }
+
+    /// Starts tmux with the tool's own fork, then attaches. A session already at `tmuxName` is attached.
+    public static func forkConversation(tmuxName: String, cwd: String, arguments: [String]) -> String {
+        let argv = arguments.map(shellQuote).joined(separator: " ")
+        let name = shellQuote(tmuxName)
+        let exact = shellQuote("=" + tmuxName)
+        let folder = shellQuotePath(cwd)
+        return wrap(
+            """
+            if tmux has-session -t \(exact) 2>/dev/null; then
+              exec tmux -u attach-session -t \(exact)
+            fi
+            tmux new-session -d -s \(name) -c \(folder) -- env PATH="$PATH" LANG="${LANG:-en_US.UTF-8}" LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}" LC_ALL="${LC_ALL:-en_US.UTF-8}" \(argv)
+            exec tmux -u attach-session -t \(exact)
+            """
+        )
+    }
+
     /// Starts a new Codex or Cursor conversation and prints `created <id>`. `-` tells the
     /// script the id does not exist yet. Detach returns as soon as the id appears.
     public static func freshTodoConversation(tmuxName: String, cwd: String, tool: String) -> String {

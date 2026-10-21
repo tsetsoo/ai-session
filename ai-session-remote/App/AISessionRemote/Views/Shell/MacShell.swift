@@ -641,7 +641,14 @@ private struct ConversationColumn: View {
             onDelete: { send(.delete, for: todo.id) },
             onReconnect: { send(.reconnect, for: todo.id) },
             onCopyScreen: { send(.copyScreen, for: todo.id) },
-            onPaste: { send(.paste, for: todo.id) }
+            onPaste: { send(.paste, for: todo.id) },
+            showsDuplicate: hasConversation,
+            duplicateName: DuplicateIn.proposedName(
+                existingLabels: model.store.conversations(forTodo: todo.id).compactMap(\.label)
+            ),
+            onDuplicate: { tool, name in
+                send(.duplicate(tool: tool, name: name), for: todo.id)
+            }
         )
     }
 

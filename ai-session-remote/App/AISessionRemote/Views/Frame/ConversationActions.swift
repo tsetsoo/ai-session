@@ -90,6 +90,7 @@ enum ConversationToolbarCommand: Equatable {
     case reconnect
     case copyScreen
     case paste
+    case duplicate(tool: String, name: String)
 }
 
 struct ConversationToolbarRequest: Equatable {
@@ -229,6 +230,10 @@ struct ConversationToolbarActions: View {
     var onReconnect: () -> Void
     var onCopyScreen: () -> Void
     var onPaste: () -> Void
+    /// Offered only while this frame is showing a conversation.
+    var showsDuplicate: Bool
+    var duplicateName: String
+    var onDuplicate: (String, String) -> Void
 
     var body: some View {
         HStack(spacing: ConversationToolbar.controlSpacing) {
@@ -254,6 +259,9 @@ struct ConversationToolbarActions: View {
                 .help("Open in New Window (⇧⌘O)")
                 #endif
                 .accessibilityLabel("Open in New Window")
+            }
+            if showsDuplicate {
+                DuplicateInMenu(proposedName: duplicateName, onConfirm: onDuplicate)
             }
             ConversationMenu(
                 hasConversation: hasConversation,

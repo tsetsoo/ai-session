@@ -60,6 +60,11 @@ struct ConversationFrame: View {
     @State private var toolChoice = ""
     @State private var isStarting = false
     @State private var toolError: String?
+    /// How the conversation just created should attach, and the text to type once it connects.
+    @State private var duplicateLaunch: DuplicateLaunch?
+    @State private var summaryText = ""
+    @State private var summaryContext: DuplicateSummaryContext?
+    @State private var isDuplicating = false
 
     init(
         todo: Todo,
@@ -134,6 +139,7 @@ struct ConversationFrame: View {
             waitingFocus.readyChanged(isReady: id != nil, status: liveStatus)
         }
         .onChange(of: terminal.connectionState) { _, state in
+            if state == .connected { deliverDuplicateText() }
             guard state == .connected, waitingFocus.connected() else { return }
             focusTerminalWhenWaiting()
         }
@@ -180,6 +186,16 @@ struct ConversationFrame: View {
             onDismiss: retryAfterSettings
         ) { sheet in
             sheetContent(sheet)
+        }
+        .sheet(isPresented: Binding(
+            get: { isFrontmost && summaryContext != nil },
+            set: { if !$0 { summaryContext = nil } }
+        )) {
+            DuplicateSummarySheet(
+                text: $summaryText,
+                onStart: confirmSummary,
+                onCancel: { summaryContext = nil }
+            )
         }
         .modifier(MemoriesPresenter(
             isPresented: Binding(get: { isFrontmost && showingMemories }, set: { showingMemories = $0 }),
@@ -252,12 +268,7 @@ struct ConversationFrame: View {
             let conversation = open.conversation
             TerminalSurface(
                 config: open.config,
-                mode: .attach(TmuxCommandBuilder.openTodoConversation(
-                    tmuxName: conversation.tmuxName,
-                    cwd: conversation.cwd,
-                    sessionId: conversation.sessionId,
-                    tool: conversation.tool
-                )),
+                mode: .attach(attachCommand(for: conversation)),
                 hostName: conversation.computer.name,
                 handle: terminal,
                 onConnectionFailed: { error in
@@ -459,7 +470,12 @@ struct ConversationFrame: View {
             onDelete: { showingDeleteConfirmation = true },
             onReconnect: { terminal.reconnect() },
             onCopyScreen: { terminal.copyScreen() },
-            onPaste: { terminal.paste() }
+            onPaste: { terminal.paste() },
+            showsDuplicate: conversation != nil,
+            duplicateName: DuplicateIn.proposedName(
+                existingLabels: store.conversations(forTodo: todo.id).compactMap(\.label)
+            ),
+            onDuplicate: { tool, name in beginDuplicate(tool: tool, name: name) }
         )
     }
 
@@ -472,6 +488,7 @@ struct ConversationFrame: View {
         case .reconnect: terminal.reconnect()
         case .copyScreen: terminal.copyScreen()
         case .paste: terminal.paste()
+        case let .duplicate(tool, name): beginDuplicate(tool: tool, name: name)
         }
     }
 
@@ -710,6 +727,139 @@ struct ConversationFrame: View {
             HostEditorView(prefill: prefill)
         }
     }
+
+    // MARK: Duplicate
+
+    /// The PTY command for this conversation: a native fork when this duplicate asked for one,
+    /// otherwise the usual `ai-todo-open` resume.
+    private func attachCommand(for conversation: Conversation) -> String {
+        if let launch = duplicateLaunch, launch.conversationID == conversation.id, let command = launch.attachCommand {
+            return command
+        }
+        return TmuxCommandBuilder.openTodoConversation(
+            tmuxName: conversation.tmuxName,
+            cwd: conversation.cwd,
+            sessionId: conversation.sessionId,
+            tool: conversation.tool
+        )
+    }
+
+    private func beginDuplicate(tool: String, name: String) {
+        guard !isDuplicating, let source = conversation else { return }
+        isDuplicating = true
+        let openConfig = readyConversation?.config
+        Task {
+            defer { isDuplicating = false }
+            do {
+                let config = try openConfig ?? HostLookup.config(for: source.computer, in: hosts)
+                let transcript = try await transcriptForDuplicate(source: source, tool: tool, config: config)
+                switch DuplicateHandoff.decide(sourceTool: source.tool, destinationTool: tool, transcript: transcript) {
+                case .askForSummary:
+                    summaryText = try await store.summarizeConversation(source, config: config)
+                    summaryContext = DuplicateSummaryContext(
+                        source: source, tool: tool, name: name, transcript: transcript
+                    )
+                case .fork, .sendTranscript:
+                    let plan = DuplicateHandoff.plan(
+                        source: source, destinationTool: tool, label: name,
+                        transcript: transcript, confirmedSummary: nil
+                    )
+                    try await startDuplicate(plan, source: source, tool: tool)
+                }
+            } catch {
+                failure = ActionFailure(
+                    title: "Couldn't Duplicate Conversation",
+                    message: ConversationRowActions.message(for: error, computer: source.computer)
+                )
+            }
+        }
+    }
+
+    private func confirmSummary() {
+        guard let context = summaryContext else { return }
+        let text = summaryText
+        summaryContext = nil
+        Task {
+            do {
+                let plan = DuplicateHandoff.plan(
+                    source: context.source, destinationTool: context.tool, label: context.name,
+                    transcript: context.transcript, confirmedSummary: text
+                )
+                try await startDuplicate(plan, source: context.source, tool: context.tool)
+            } catch {
+                failure = ActionFailure(
+                    title: "Couldn't Duplicate Conversation",
+                    message: ConversationRowActions.message(for: error, computer: context.source.computer)
+                )
+            }
+        }
+    }
+
+    /// Same tool with a native fork does not need the transcript. Anything else does.
+    private func transcriptForDuplicate(
+        source: Conversation, tool: String, config: HostConnectionConfig
+    ) async throws -> String {
+        if source.tool == tool, ForkCommand.arguments(tool: tool, sessionId: source.sessionId) != nil {
+            return ""
+        }
+        return try await store.captureTranscript(of: source, config: config)
+    }
+
+    /// Creates the row only when the plan is a fork or a start, then attaches and lands on it.
+    private func startDuplicate(_ plan: DuplicateHandoff.Plan, source: Conversation, tool: String) async throws {
+        var created: Conversation?
+        try await DuplicateIn.perform(plan) {
+            created = try await store.duplicateConversation(source: source, tool: tool, label: label(of: plan))
+        }
+        guard let created else { return }
+        appModel?.selectedConversationID = created.listKey
+        switch plan {
+        case let .fork(sourceSessionId, _):
+            let arguments = ForkCommand.arguments(tool: tool, sessionId: sourceSessionId) ?? []
+            duplicateLaunch = DuplicateLaunch(
+                conversationID: created.id,
+                attachCommand: TmuxCommandBuilder.forkConversation(
+                    tmuxName: created.tmuxName, cwd: created.cwd, arguments: arguments
+                ),
+                paste: nil
+            )
+        case let .start(text, _):
+            duplicateLaunch = DuplicateLaunch(conversationID: created.id, attachCommand: nil, paste: text)
+        case .cancelled:
+            return
+        }
+        loader.attachOpened(created)
+    }
+
+    private func label(of plan: DuplicateHandoff.Plan) -> String {
+        switch plan {
+        case let .fork(_, label), let .start(_, label): return label
+        case .cancelled: return ""
+        }
+    }
+
+    /// The new tool is connected: type the transcript or the edited summary, then Enter.
+    private func deliverDuplicateText() {
+        guard let launch = duplicateLaunch,
+              launch.conversationID == readyConversation?.conversation.id,
+              let paste = launch.paste else { return }
+        let text = paste.hasSuffix("\n") ? paste : paste + "\n"
+        terminal.send(Array(text.utf8))
+        duplicateLaunch?.paste = nil
+    }
+}
+
+private struct DuplicateLaunch {
+    var conversationID: String
+    var attachCommand: String?
+    var paste: String?
+}
+
+private struct DuplicateSummaryContext {
+    var source: Conversation
+    var tool: String
+    var name: String
+    var transcript: String
 }
 
 private struct ActionFailure {
