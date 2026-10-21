@@ -76,19 +76,34 @@ public enum TmuxCommandBuilder {
         )
     }
 
-    /// Starts tmux with the tool's own fork, then attaches. A session already at `tmuxName` is attached.
-    public static func forkConversation(tmuxName: String, cwd: String, arguments: [String]) -> String {
+    /// Starts the fork in tmux and prints `created <id>` for the new transcript, without attaching.
+    /// The id is the new file under `~/.claude/projects`, not the source and not a minted placeholder.
+    public static func forkDetached(tmuxName: String, cwd: String, arguments: [String]) -> String {
         let argv = arguments.map(shellQuote).joined(separator: " ")
         let name = shellQuote(tmuxName)
         let exact = shellQuote("=" + tmuxName)
         let folder = shellQuotePath(cwd)
         return wrap(
             """
-            if tmux has-session -t \(exact) 2>/dev/null; then
-              exec tmux -u attach-session -t \(exact)
-            fi
-            tmux new-session -d -s \(name) -c \(folder) -- env PATH="$PATH" LANG="${LANG:-en_US.UTF-8}" LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}" LC_ALL="${LC_ALL:-en_US.UTF-8}" \(argv)
-            exec tmux -u attach-session -t \(exact)
+            list_sessions() { find "$HOME/.claude/projects" -maxdepth 2 -name '*.jsonl' -print 2>/dev/null | LC_ALL=C sort; }
+            before=$(list_sessions)
+            tmux new-session -d -s \(name) -c \(folder) -- env PATH="$PATH" LANG="${LANG:-en_US.UTF-8}" LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}" LC_ALL="${LC_ALL:-en_US.UTF-8}" \(argv) || exit $?
+            deadline=$(( $(date +%s) + 30 ))
+            while [ "$(date +%s)" -le "$deadline" ]; do
+              now=$(list_sessions)
+              path=$(printf '%s\\n%s\\n' "$before" "$now" | LC_ALL=C sort | LC_ALL=C uniq -u | while IFS= read -r candidate; do
+                [ -n "$candidate" ] || continue
+                printf '%s\\n' "$now" | grep -F -x -q "$candidate" && printf '%s\\n' "$candidate"
+              done | head -n 1)
+              if [ -n "$path" ]; then
+                echo "created $(basename "$path" .jsonl)"
+                exit 0
+              fi
+              sleep 0.2
+            done
+            tmux kill-session -t \(exact) 2>/dev/null || true
+            echo "no forked conversation appeared" >&2
+            exit 94
             """
         )
     }

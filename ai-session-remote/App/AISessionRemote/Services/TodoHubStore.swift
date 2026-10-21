@@ -437,6 +437,59 @@ final class TodoHubStore {
         return created
     }
 
+    /// Gives the new row the session id the tool is actually using, then the terminal can attach.
+    /// A fork's minted id is replaced with the transcript the fork created. A Codex or Cursor row
+    /// has none until the fresh start prints one. A failure removes the row and the tmux session.
+    func prepareDuplicate(
+        _ created: Conversation, plan: DuplicateHandoff.Plan, config: HostConnectionConfig
+    ) async throws -> Conversation {
+        switch DuplicateIn.followUp(plan: plan, created: created) {
+        case .resume:
+            return created
+        case .captureFresh:
+            return try await captureNewSession(
+                created, config: config,
+                command: TmuxCommandBuilder.freshTodoConversation(
+                    tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool
+                )
+            )
+        case let .captureFork(sourceSessionId):
+            let arguments = ForkCommand.arguments(tool: created.tool, sessionId: sourceSessionId) ?? []
+            return try await captureNewSession(
+                created, config: config,
+                command: TmuxCommandBuilder.forkDetached(
+                    tmuxName: created.tmuxName, cwd: created.cwd, arguments: arguments
+                )
+            )
+        }
+    }
+
+    private func captureNewSession(
+        _ conversation: Conversation, config: HostConnectionConfig, command: String
+    ) async throws -> Conversation {
+        guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
+        do {
+            let result = try await NIOSSHClient().exec(config, command: command)
+            let createdId = ConversationStart.createdSessionId(from: result.stdout)
+            guard result.exitCode != 94, let createdId else {
+                let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw TodoHubError.conflict(
+                    detail.isEmpty ? "No new \(conversation.tool) conversation appeared" : detail
+                )
+            }
+            let stored = try await storeSession(client, conversation, createdId)
+            remember(stored)
+            return stored
+        } catch {
+            _ = try? await NIOSSHClient().exec(
+                config, command: TmuxCommandBuilder.killSessionExact(tmuxName: conversation.tmuxName)
+            )
+            try? await forgetOnHub(client, conversation)
+            forget(conversation)
+            throw error
+        }
+    }
+
     /// The source conversation's user and assistant text, from the computer that has it.
     func captureTranscript(of conversation: Conversation, config: HostConnectionConfig) async throws -> String {
         try await remoteStdout(

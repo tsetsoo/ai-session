@@ -764,7 +764,7 @@ struct ConversationFrame: View {
                         source: source, destinationTool: tool, label: name,
                         transcript: transcript, confirmedSummary: nil
                     )
-                    try await startDuplicate(plan, source: source, tool: tool)
+                    try await startDuplicate(plan, source: source, tool: tool, config: config)
                 }
             } catch {
                 failure = ActionFailure(
@@ -785,7 +785,8 @@ struct ConversationFrame: View {
                     source: context.source, destinationTool: context.tool, label: context.name,
                     transcript: context.transcript, confirmedSummary: text
                 )
-                try await startDuplicate(plan, source: context.source, tool: context.tool)
+                let config = try readyConversation?.config ?? HostLookup.config(for: context.source.computer, in: hosts)
+                try await startDuplicate(plan, source: context.source, tool: context.tool, config: config)
             } catch {
                 failure = ActionFailure(
                     title: "Couldn't Duplicate Conversation",
@@ -805,30 +806,24 @@ struct ConversationFrame: View {
         return try await store.captureTranscript(of: source, config: config)
     }
 
-    /// Creates the row only when the plan is a fork or a start, then attaches and lands on it.
-    private func startDuplicate(_ plan: DuplicateHandoff.Plan, source: Conversation, tool: String) async throws {
+    /// Creates the row only when the plan is a fork or a start, records the session the tool
+    /// is using, then attaches that conversation. The source terminal is a different one.
+    private func startDuplicate(
+        _ plan: DuplicateHandoff.Plan, source: Conversation, tool: String, config: HostConnectionConfig
+    ) async throws {
         var created: Conversation?
         try await DuplicateIn.perform(plan) {
             created = try await store.duplicateConversation(source: source, tool: tool, label: label(of: plan))
         }
         guard let created else { return }
-        appModel?.selectedConversationID = created.listKey
-        switch plan {
-        case let .fork(sourceSessionId, _):
-            let arguments = ForkCommand.arguments(tool: tool, sessionId: sourceSessionId) ?? []
-            duplicateLaunch = DuplicateLaunch(
-                conversationID: created.id,
-                attachCommand: TmuxCommandBuilder.forkConversation(
-                    tmuxName: created.tmuxName, cwd: created.cwd, arguments: arguments
-                ),
-                paste: nil
-            )
-        case let .start(text, _):
-            duplicateLaunch = DuplicateLaunch(conversationID: created.id, attachCommand: nil, paste: text)
-        case .cancelled:
-            return
+        let ready = try await store.prepareDuplicate(created, plan: plan, config: config)
+        if case let .start(text, _) = plan {
+            duplicateLaunch = DuplicateLaunch(conversationID: ready.id, attachCommand: nil, paste: text)
+        } else {
+            duplicateLaunch = nil
         }
-        loader.attachOpened(created)
+        appModel?.selectedConversationID = ready.listKey
+        loader.show(ready)
     }
 
     private func label(of plan: DuplicateHandoff.Plan) -> String {

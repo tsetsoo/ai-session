@@ -13,6 +13,27 @@ enum DuplicateIn {
         return trimmed.isEmpty ? proposal : trimmed
     }
 
+    /// What has to happen after the hub row exists, before the terminal attaches.
+    enum FollowUp: Equatable {
+        /// Claude forked the source. The row's minted id is not the fork's; store the one it creates.
+        case captureFork(sourceSessionId: String)
+        /// Codex and Cursor have no id yet. Start one and store the id the tool prints.
+        case captureFresh
+        /// The row already has the id the terminal should resume.
+        case resume
+    }
+
+    static func followUp(plan: DuplicateHandoff.Plan, created: Conversation) -> FollowUp {
+        switch plan {
+        case let .fork(sourceSessionId, _):
+            return .captureFork(sourceSessionId: sourceSessionId)
+        case .start:
+            return created.sessionId.isEmpty ? .captureFresh : .resume
+        case .cancelled:
+            return .resume
+        }
+    }
+
     /// `cancelled` returns without calling `create`. A fork or a start does.
     static func perform(_ plan: DuplicateHandoff.Plan, create: () async throws -> Void) async rethrows {
         switch plan {
