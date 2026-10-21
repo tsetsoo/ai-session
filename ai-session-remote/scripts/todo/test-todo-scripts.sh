@@ -2218,6 +2218,26 @@ pass "limits_rejects_bad_arguments"
 
 unset AI_TODO_LIMITS_OFFLINE AI_TODO_LIMITS_HTTP_BODY AI_TODO_LIMITS_HTTP_STATUS
 
+TRANSCRIPT="${SCRIPT_DIR}/ai-todo-transcript"
+T_DIR="${HOME}/.claude/projects/-home-programming"
+mkdir -p "$T_DIR"
+SID_A=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+SID_B=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+printf '%s\n' \
+  '{"type":"user","message":{"content":"hello from the source"}}' \
+  '{"type":"assistant","message":{"content":[{"type":"text","text":"hello back"}]}}' \
+  >"${T_DIR}/${SID_A}.jsonl"
+printf '%s\n' '{"type":"user","message":{"content":"secret from the other session"}}' \
+  >"${T_DIR}/${SID_B}.jsonl"
+"$TRANSCRIPT" claude "$SID_A" >"${SANDBOX}/transcript.out"
+grep -q "hello from the source" "${SANDBOX}/transcript.out" || fail "transcript missed the user turn: $(cat "${SANDBOX}/transcript.out")"
+grep -q "hello back" "${SANDBOX}/transcript.out" || fail "transcript missed the assistant turn: $(cat "${SANDBOX}/transcript.out")"
+! grep -q "secret from the other session" "${SANDBOX}/transcript.out" || fail "transcript included another session"
+status=0
+"$TRANSCRIPT" claude "00000000-0000-4000-8000-000000000099" >/dev/null 2>"${SANDBOX}/transcript.err" || status=$?
+[[ $status -eq 94 ]] || fail "missing transcript exit was $status: $(cat "${SANDBOX}/transcript.err")"
+pass "transcript_prints_one_session"
+
 [[ ! -e "${SANDBOX}/guard.log" ]] || fail "a test reached a real binary: $(cat "${SANDBOX}/guard.log")"
 echo "All ${passes} todo script tests passed."
 SUITE_COMPLETE=1
