@@ -20,6 +20,12 @@ public enum RowText {
         }
     }
 
+    /// "{todo title} · {name}" when the conversation was named, otherwise the todo title.
+    public static func conversationTitle(todoTitle: String, label: String?) -> String {
+        guard let label else { return todoTitle }
+        return "\(todoTitle) · \(label)"
+    }
+
     /// "Sp · mac-studio · Claude".
     public static func conversationMeta(_ conversation: Conversation, section: TodoSection?) -> String {
         let parts = [section?.rawValue, conversation.computer.name, toolName(conversation.tool)]

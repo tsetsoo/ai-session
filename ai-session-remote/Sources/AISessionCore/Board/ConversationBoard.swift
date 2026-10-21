@@ -15,16 +15,15 @@ public final class ConversationBoard: Sendable {
     private let needsYouCounts: [String: Int]
 
     /// - Parameters:
-    ///   - conversations: keyed by todo id.
+    ///   - conversations: keyed by conversation id.
     ///   - liveTmux: computer id to its tmux session names; a computer that is absent is unknown.
     ///   - listedAt: computer id to when its `liveTmux` entry was listed. A conversation missing
     ///     from a listing older than its own last change (started or reported after it) is
     ///     unknown rather than closed. Without a date the listing counts as current.
     public init(todos: [Todo], conversations: [String: Conversation], liveTmux: [String: Set<String>],
                 listedAt: [String: Date] = [:]) {
-        var statuses: [String: ConversationDisplayStatus] = [:]
-        statuses.reserveCapacity(conversations.count)
-        var open: [Conversation] = []
+        var byTodo: [String: [(Conversation, ConversationDisplayStatus)]] = [:]
+        var open: [(Conversation, ConversationDisplayStatus)] = []
         open.reserveCapacity(conversations.count)
         var closedConversations: [Conversation] = []
         var newer: [Conversation] = []
@@ -33,25 +32,31 @@ public final class ConversationBoard: Sendable {
             let changed = Self.changeDate(conversation)
             let alive = Self.tmuxAlive(conversation, changed: changed, liveTmux: liveTmux, listedAt: listedAt)
             let status = ConversationDisplayStatus(conversation.status, tmuxAlive: alive)
-            statuses[conversation.todoId] = status
+            byTodo[conversation.todoId, default: []].append((conversation, status))
             if status == .closed {
                 closedConversations.append(conversation)
             } else {
-                open.append(conversation)
+                open.append((conversation, status))
             }
             if Self.isNewerThanListing(conversation, changed: changed, liveTmux: liveTmux, listedAt: listedAt) {
                 newer.append(conversation)
             }
         }
-        open.sort(by: Self.newestFirst)
+        open.sort { Self.newestFirst($0.0, $1.0) }
         closedConversations.sort(by: Self.newestFirst)
+
+        var statuses: [String: ConversationDisplayStatus] = [:]
+        for (todoId, rows) in byTodo {
+            guard let winner = ConversationIndex.mostUrgent(rows.map(\.0)) else { continue }
+            statuses[todoId] = rows.first { $0.0 == winner }?.1
+        }
 
         var needing: [Conversation] = []
         var runningByComputer: [String: Int] = [:]
         var needsByComputer: [String: Int] = [:]
-        for conversation in open {
+        for (conversation, status) in open {
             runningByComputer[conversation.computer.id, default: 0] += 1
-            if statuses[conversation.todoId] == .needsYou {
+            if status == .needsYou {
                 needing.append(conversation)
                 needsByComputer[conversation.computer.id, default: 0] += 1
             }
@@ -64,7 +69,7 @@ public final class ConversationBoard: Sendable {
             if statuses[todo.id] == .needsYou { needsSection[todo.section] = true }
         }
 
-        self.running = open
+        self.running = open.map(\.0)
         self.closed = closedConversations
         self.needsYou = needing
         self.newerThanListing = newer

@@ -97,6 +97,8 @@ public struct SectionComputer: Codable, Equatable, Sendable {
 }
 
 public struct Conversation: Codable, Equatable, Sendable {
+    /// Stable id. Empty when decoded from a server that still keys a conversation by todo id.
+    public var id: String
     public var todoId: String
     public var computer: Computer
     public var cwd: String
@@ -111,12 +113,15 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var createdAt: String
     /// The project of the conversation's session (absent when none, and from older servers).
     public var projectId: String?
+    /// Name given when this conversation was duplicated. Absent on the original.
+    public var label: String?
 
     /// Older servers only send `claude_session_id`.
     @available(*, deprecated, renamed: "sessionId")
     public var claudeSessionId: String { sessionId }
 
     public init(
+        id: String = "",
         todoId: String,
         computer: Computer,
         cwd: String,
@@ -127,8 +132,10 @@ public struct Conversation: Codable, Equatable, Sendable {
         statusMessage: String? = nil,
         statusUpdatedAt: String? = nil,
         createdAt: String = "",
-        projectId: String? = nil
+        projectId: String? = nil,
+        label: String? = nil
     ) {
+        self.id = id
         self.todoId = todoId
         self.computer = computer
         self.cwd = cwd
@@ -140,16 +147,18 @@ public struct Conversation: Codable, Equatable, Sendable {
         self.statusUpdatedAt = statusUpdatedAt
         self.createdAt = createdAt
         self.projectId = projectId
+        self.label = label
     }
 
     // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
     private enum CodingKeys: String, CodingKey {
-        case todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
-        case status, statusMessage, statusUpdatedAt, createdAt, projectId
+        case id, todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
+        case status, statusMessage, statusUpdatedAt, createdAt, projectId, label
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
         todoId = try c.decode(String.self, forKey: .todoId)
         computer = try c.decode(Computer.self, forKey: .computer)
         cwd = try c.decode(String.self, forKey: .cwd)
@@ -167,10 +176,12 @@ public struct Conversation: Codable, Equatable, Sendable {
         statusUpdatedAt = try c.decodeIfPresent(String.self, forKey: .statusUpdatedAt)
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
         projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
+        label = try c.decodeIfPresent(String.self, forKey: .label)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
         try c.encode(todoId, forKey: .todoId)
         try c.encode(computer, forKey: .computer)
         try c.encode(cwd, forKey: .cwd)
@@ -182,6 +193,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         try c.encodeIfPresent(statusUpdatedAt, forKey: .statusUpdatedAt)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encodeIfPresent(projectId, forKey: .projectId)
+        try c.encodeIfPresent(label, forKey: .label)
     }
 }
 
