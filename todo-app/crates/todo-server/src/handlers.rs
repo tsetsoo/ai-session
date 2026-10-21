@@ -8,7 +8,11 @@ use crate::db::DbPool;
 use crate::models::row_to_todo;
 
 pub(crate) const SELECT_COLS: &str = "id, section, title, completed, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, project_id, \
-    (SELECT status FROM conversations WHERE conversations.todo_id = todos.id) AS conversation_status";
+    (SELECT status FROM conversations WHERE conversations.todo_id = todos.id \
+        ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'busy' THEN 1 \
+            WHEN 'idle' THEN 2 WHEN 'unknown' THEN 2 WHEN 'closed' THEN 3 ELSE 4 END, \
+            status_updated_at IS NULL, status_updated_at DESC, created_at DESC, id ASC \
+        LIMIT 1) AS conversation_status";
 
 pub async fn get_sections(pool: web::Data<DbPool>) -> HttpResponse {
     let conn = match pool.get() {

@@ -192,7 +192,8 @@ fn base_description() -> Value {
             },
             {"method": "DELETE", "path": "/api/sections/{code}/computer", "description": "Remove a section's computer. 409 while the section still has projects"},
             {"method": "GET", "path": "/api/conversations", "description": "All conversations with their computer and status"},
-            {"method": "GET", "path": "/api/todos/{id}/conversation", "description": "The todo's conversation; 404 if none"},
+            {"method": "GET", "path": "/api/todos/{id}/conversation", "description": "The todo's most urgent conversation; 404 if none"},
+            {"method": "GET", "path": "/api/todos/{id}/conversations", "description": "Every conversation of the todo, oldest first"},
             {
                 "method": "POST",
                 "path": "/api/todos/{id}/conversation",

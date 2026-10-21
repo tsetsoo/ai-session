@@ -124,11 +124,32 @@ pub(crate) fn get_computer(conn: &Connection, id: &str) -> rusqlite::Result<Opti
         .optional()
 }
 
+pub(crate) fn most_urgent(conversations: &[Conversation]) -> Option<&Conversation> {
+    conversations.iter().min_by(|left, right| {
+        urgency(left.status).cmp(&urgency(right.status)).then_with(|| {
+            let left_at = left.status_updated_at.as_deref().unwrap_or("");
+            let right_at = right.status_updated_at.as_deref().unwrap_or("");
+            right_at.cmp(left_at)
+        }).then(right.created_at.cmp(&left.created_at))
+        .then(left.id.cmp(&right.id))
+    })
+}
+
+fn urgency(status: ConversationStatus) -> u8 {
+    match status {
+        ConversationStatus::Waiting => 0,
+        ConversationStatus::Busy => 1,
+        ConversationStatus::Idle | ConversationStatus::Unknown => 2,
+        ConversationStatus::Closed => 3,
+    }
+}
+
 pub(crate) fn load_conversation(conn: &Connection, todo_id: &str) -> rusqlite::Result<Option<Conversation>> {
-    conn.query_row(&format!("{CONVERSATION_SELECT} WHERE c.todo_id = ?1"), params![todo_id], row_to_conversation)
-        .optional()?
-        .map(|row| with_project(conn, row))
-        .transpose()
+    let mut stmt = conn.prepare(&format!("{CONVERSATION_SELECT} WHERE c.todo_id = ?1"))?;
+    let rows = stmt.query_map(params![todo_id], row_to_conversation)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    let loaded = rows.into_iter().map(|row| with_project(conn, row)).collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(most_urgent(&loaded).cloned())
 }
 
 #[derive(Debug)]
@@ -774,6 +795,30 @@ pub async fn list_conversations(pool: web::Data<DbPool>) -> HttpResponse {
     HttpResponse::Ok().json(conversations)
 }
 
+pub async fn list_todo_conversations(pool: web::Data<DbPool>, path: web::Path<String>) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    let todo_id = path.into_inner();
+    let mut stmt = match conn.prepare(&format!("{CONVERSATION_SELECT} WHERE c.todo_id = ?1 ORDER BY c.created_at")) {
+        Ok(s) => s,
+        Err(e) => return server_error(e),
+    };
+    let rows: Vec<(Conversation, bool)> = match stmt.query_map(params![todo_id], row_to_conversation) {
+        Ok(rows) => match rows.collect::<rusqlite::Result<_>>() {
+            Ok(v) => v,
+            Err(e) => return server_error(e),
+        },
+        Err(e) => return server_error(e),
+    };
+    let conversations: Vec<Conversation> = match rows.into_iter().map(|row| with_project(&conn, row)).collect() {
+        Ok(v) => v,
+        Err(e) => return server_error(e),
+    };
+    HttpResponse::Ok().json(conversations)
+}
+
 pub async fn get_conversation(pool: web::Data<DbPool>, path: web::Path<String>) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
@@ -1039,6 +1084,66 @@ mod tests {
     }
 
     const TODO: &str = "0f3a9c21-aaaa-4bbb-8ccc-123456789abc";
+
+    fn sample(id: &str, status: ConversationStatus, updated: Option<&str>, created: &str) -> Conversation {
+        Conversation {
+            id: id.into(),
+            todo_id: TODO.into(),
+            computer: Computer {
+                id: "m1".into(),
+                name: "Mac".into(),
+                hostname: "mac".into(),
+                port: 22,
+                username: "me".into(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            cwd: "~/programming".into(),
+            tool: "claude".into(),
+            tmux_name: format!("ai/claude/{id}"),
+            session_id: id.into(),
+            claude_session_id: Some(id.into()),
+            status,
+            status_message: None,
+            status_updated_at: updated.map(str::to_string),
+            created_at: created.into(),
+            project_id: None,
+            label: None,
+        }
+    }
+
+    #[test]
+    fn most_urgent_picks_waiting_over_newer_idle() {
+        let idle = sample("idle", ConversationStatus::Idle, Some("2026-10-20T12:00:00Z"), "2026-10-16T10:00:00Z");
+        let waiting = sample("wait", ConversationStatus::Waiting, Some("2026-10-20T08:00:00Z"), "2026-10-16T09:00:00Z");
+        assert_eq!(most_urgent(&[idle, waiting]).map(|c| c.id.as_str()), Some("wait"));
+
+        let earlier = sample("a", ConversationStatus::Waiting, Some("2026-10-20T08:00:00Z"), "2026-10-16T09:00:00Z");
+        let later = sample("b", ConversationStatus::Waiting, Some("2026-10-20T09:00:00Z"), "2026-10-16T08:00:00Z");
+        assert_eq!(most_urgent(&[earlier, later]).map(|c| c.id.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn todo_status_follows_most_urgent() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute(
+            "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, status, status_updated_at, created_at)
+             VALUES ('idle', ?1, 'm1', '~/programming', 'claude', 'ai/claude/idle', 'sess-idle', 'idle', '2026-10-20 12:00:00', '2026-10-16 10:00:00'),
+                    ('wait', ?1, 'm1', '~/programming', 'codex', 'ai/codex/wait', 'sess-wait', 'waiting', '2026-10-20 08:00:00', '2026-10-16 09:00:00')",
+            params![TODO],
+        )
+        .unwrap();
+        let todo = conn
+            .query_row(
+                &format!("SELECT {} FROM todos WHERE id = ?1", crate::handlers::SELECT_COLS),
+                params![TODO],
+                crate::models::row_to_todo,
+            )
+            .unwrap();
+        assert_eq!(todo.conversation_status, Some(ConversationStatus::Waiting));
+    }
 
     #[test]
     fn open_creates_once_and_snapshots_mapping() {
