@@ -11,10 +11,14 @@ struct OpenTodoConversation: Identifiable, Hashable {
     let config: HostConnectionConfig
     let title: String
 
-    var id: String { conversation.todoId }
+    /// The conversation, not the todo: two conversations on one todo are two terminals.
+    var id: String { conversation.listKey }
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id && lhs.hostID == rhs.hostID }
-    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(hostID)
+    }
 }
 
 /// Why the conversation frame can't show a terminal; each case maps to one problem card.
@@ -98,7 +102,7 @@ final class ConversationLoader {
         static func live(store: TodoHubStore, hosts: @escaping () -> [HostEntity]) -> Dependencies {
             Dependencies(
                 openConversation: { try await store.openConversation(for: $0) },
-                cachedConversation: { store.conversations[$0] },
+                cachedConversation: { store.mostUrgent(forTodo: $0) },
                 isOffline: { store.isOffline },
                 resolveConfig: { computer in
                     guard let host = HostLookup.host(for: computer, in: hosts()) else {
@@ -151,6 +155,16 @@ final class ConversationLoader {
                 return
             }
         }
+        resolve(conversation)
+    }
+
+    /// Attach this conversation even when another one of the same todo is already on screen.
+    /// A closed conversation stays put: opening that one goes through the hub, which resets it.
+    func show(_ conversation: Conversation) {
+        guard phase != .preparing else { return }
+        guard conversation.status != .closed else { return }
+        guard ConversationStart.hasStartedSession(conversation.sessionId) else { return }
+        if case let .ready(open) = phase, open.conversation.listKey == conversation.listKey { return }
         resolve(conversation)
     }
 

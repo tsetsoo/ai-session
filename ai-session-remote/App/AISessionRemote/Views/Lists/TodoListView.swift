@@ -79,7 +79,7 @@ struct TodoListView: View {
     }
 
     private func row(_ todo: Todo, board: ConversationBoard) -> some View {
-        let conversation = store.conversations[todo.id]
+        let conversation = store.mostUrgent(forTodo: todo.id)
         let status = board.status(forTodo: todo.id)
         let isRunning = status.map { $0 != .closed } ?? false
         let canChange = !store.isOffline

@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Print one conversation's user and assistant text. Does not call a model.
+
+Usage: ai-todo-transcript <claude|codex|cursor> <session_id>
+Exit 94 when that conversation has no transcript on this machine.
+"""
+import glob
+import json
+import os
+import sys
+
+HOME = os.path.expanduser("~")
+CLAUDE_PROJECTS = os.path.join(HOME, ".claude", "projects")
+CODEX_SESSIONS = os.path.join(HOME, ".codex", "sessions")
+CURSOR_PROJECTS = os.path.join(HOME, ".cursor", "projects")
+
+
+def read_jsonl(path):
+    try:
+        with open(path, errors="replace") as handle:
+            for line in handle:
+                try:
+                    yield json.loads(line)
+                except ValueError:
+                    continue
+    except OSError:
+        return
+
+
+def text_of(content):
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") in ("text", "input_text", "output_text"):
+                value = part.get("text", "")
+                if isinstance(value, str) and value.strip():
+                    parts.append(value.strip())
+        return "\n".join(parts)
+    return ""
+
+
+def claude_lines(path):
+    for entry in read_jsonl(path):
+        if not isinstance(entry, dict) or entry.get("type") not in ("user", "assistant"):
+            continue
+        message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        text = text_of(message.get("content"))
+        if text:
+            yield text
+
+
+def codex_lines(path):
+    for entry in read_jsonl(path):
+        if not isinstance(entry, dict):
+            continue
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        if entry.get("type") != "response_item" or payload.get("type") != "message":
+            continue
+        if payload.get("role") not in ("user", "assistant"):
+            continue
+        text = text_of(payload.get("content"))
+        if text:
+            yield text
+
+
+def cursor_lines(path):
+    # Cursor stores a directory of jsonl files, or one jsonl. Read every jsonl under the path.
+    files = []
+    if os.path.isdir(path):
+        files = sorted(glob.glob(os.path.join(path, "**", "*.jsonl"), recursive=True))
+    elif path.endswith(".jsonl"):
+        files = [path]
+    for file in files:
+        for entry in read_jsonl(file):
+            if not isinstance(entry, dict):
+                continue
+            role = entry.get("role") or entry.get("type")
+            if role not in ("user", "assistant"):
+                continue
+            text = text_of(entry.get("content") or entry.get("text") or "")
+            if not text and isinstance(entry.get("message"), dict):
+                text = text_of(entry["message"].get("content"))
+            if text:
+                yield text
+
+
+def find_paths(tool, session_id):
+    escaped = glob.escape(session_id)
+    if tool == "claude":
+        return glob.glob(os.path.join(CLAUDE_PROJECTS, "*", escaped + ".jsonl"))
+    if tool == "codex":
+        return glob.glob(
+            os.path.join(CODEX_SESSIONS, "**", "rollout-*-" + escaped + ".jsonl"),
+            recursive=True,
+        )
+    if tool == "cursor":
+        return glob.glob(os.path.join(CURSOR_PROJECTS, "*", "agent-transcripts", escaped))
+    return []
+
+
+def main(argv):
+    if len(argv) != 2 or argv[0] not in ("claude", "codex", "cursor"):
+        print("usage: ai-todo-transcript <claude|codex|cursor> <session_id>", file=sys.stderr)
+        return 64
+    tool, session_id = argv
+    paths = find_paths(tool, session_id)
+    if not paths:
+        print("no transcript for %s %s" % (tool, session_id), file=sys.stderr)
+        return 94
+    path = max(paths, key=os.path.getmtime)
+    reader = {"claude": claude_lines, "codex": codex_lines, "cursor": cursor_lines}[tool]
+    for line in reader(path):
+        print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

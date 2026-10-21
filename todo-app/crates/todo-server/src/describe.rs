@@ -192,7 +192,12 @@ fn base_description() -> Value {
             },
             {"method": "DELETE", "path": "/api/sections/{code}/computer", "description": "Remove a section's computer. 409 while the section still has projects"},
             {"method": "GET", "path": "/api/conversations", "description": "All conversations with their computer and status"},
-            {"method": "GET", "path": "/api/todos/{id}/conversation", "description": "The todo's conversation; 404 if none"},
+            {"method": "GET", "path": "/api/todos/{id}/conversation", "description": "The todo's most urgent conversation; 404 if none"},
+            {"method": "GET", "path": "/api/todos/{id}/conversations", "description": "Every conversation of the todo, oldest first"},
+            {"method": "POST", "path": "/api/todos/{id}/conversations", "description": "Copy one conversation of this todo onto the same computer and folder. Body is {source_id, tool, label}. Claude stores a new session id. 400 for an empty label or unknown tool. 404 when source_id is not a conversation of this todo"},
+            {"method": "POST", "path": "/api/conversations/{id}/close", "description": "Mark one conversation closed; it stays resumable"},
+            {"method": "PUT", "path": "/api/conversations/{id}/session", "description": "Store the tool session id on one conversation"},
+            {"method": "DELETE", "path": "/api/conversations/{id}", "description": "Forget one conversation link. The conversation itself stays on the computer"},
             {
                 "method": "POST",
                 "path": "/api/todos/{id}/conversation",
@@ -203,7 +208,7 @@ fn base_description() -> Value {
                 "path": "/api/todos/{id}/conversation/link",
                 "description": "Link an existing conversation (made outside the todo app) to the todo. 200 with the Conversation. Linking the conversation the todo already has is a no-op; a different one gets 409 unless ?replace=true. 409 if that (tool, session_id) is linked to another todo. 404 if the todo or computer is missing. 400 for an unknown tool or empty session_id/cwd",
                 "parameters": [
-                    {"name": "replace", "in": "query", "required": false, "type": "boolean", "description": "Replace the todo's current conversation. The replacement gets its own tmux name (ai/<tool>/todo-<8>-<first 8 of session_id>), so it never attaches to the old conversation's still-running tmux session"}
+                    {"name": "replace", "in": "query", "required": false, "type": "boolean", "description": "Replace the todo's current conversation when it has exactly one. More than one is 409 conversation_id required. The replacement gets its own tmux name (ai/<tool>/todo-<8>-<first 8 of session_id>), so it never attaches to the old conversation's still-running tmux session"}
                 ],
                 "example_request": {"computer_id": "<uuid>", "tool": "codex", "session_id": "019f8b4e-ff53-7201-8585-162b40a93fb3", "cwd": "~/programming/sigma-revenue"}
             },

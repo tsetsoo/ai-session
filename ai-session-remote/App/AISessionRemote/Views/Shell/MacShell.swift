@@ -97,6 +97,7 @@ struct MacShell: View {
             default: model.sidebarSelection = .needsYou
             }
             computerPage = nil
+            model.selectedConversationID = store.conversationToOpen(forTodo: todo.id)
             model.selectedTodoID = todo.id
             #if os(macOS)
             if model.poppedOut.contains(todo.id) { model.popOut(todo.id, openWindow: openWindow) }
@@ -323,8 +324,13 @@ struct MacShell: View {
             if let page = ComputerPage(tag: tag) {
                 computerPage = page
                 model.selectedTodoID = nil
+            } else if let conversation = store.conversations.values.first(where: { $0.listKey == tag }) {
+                computerPage = nil
+                model.selectedConversationID = conversation.listKey
+                model.selectedTodoID = conversation.todoId
             } else {
                 computerPage = nil
+                model.selectedConversationID = tag.flatMap { store.conversationToOpen(forTodo: $0) }
                 model.selectedTodoID = tag
             }
         })
@@ -333,6 +339,7 @@ struct MacShell: View {
     /// "Open" from a row's context menu: select it and start (or resume) it.
     private func open(_ todo: Todo) {
         computerPage = nil
+        model.selectedConversationID = store.conversationToOpen(forTodo: todo.id)
         model.selectedTodoID = todo.id
         start(todo.id)
     }
@@ -553,7 +560,9 @@ private struct ConversationColumn: View {
                 .frame(width: 0, height: 0)
                 .navigationTitle(todo.title)
                 #if os(macOS)
-                .navigationSubtitle(ConversationFrame.subtitle(todo: todo, store: model.store, includeFolder: true))
+                .navigationSubtitle(ConversationFrame.subtitle(
+                    todo: todo, store: model.store, includeFolder: true, selectedKey: model.selectedConversationID
+                ))
                 #endif
                 .navigationBarTitleDisplayMode(.inline)
         }
@@ -569,7 +578,7 @@ private struct ConversationColumn: View {
            let todo = model.store.todos.first(where: { $0.id == id }) {
             let ids = ConversationToolbar.columnItemIDs(todoID: id)
             let state = terminalState?.todoID == id ? terminalState : nil
-            let hasConversation = model.store.conversations[todo.id] != nil
+            let hasConversation = model.store.mostUrgent(forTodo: todo.id) != nil
             #if os(iOS)
             ToolbarItem(id: ids[0], placement: .principal) {
                 ConversationToolbarTitle(
@@ -616,7 +625,7 @@ private struct ConversationColumn: View {
         copyInMenu: Bool
     ) -> some View {
         ConversationToolbarActions(
-            status: ConversationToolbar.displayStatus(todo: todo, store: model.store),
+            status: ConversationToolbar.displayStatus(todo: todo, store: model.store, selectedKey: model.selectedConversationID),
             showsCopy: showsCopy,
             canCopy: hasConversation,
             showsPopOut: showsPopOut,
@@ -632,7 +641,14 @@ private struct ConversationColumn: View {
             onDelete: { send(.delete, for: todo.id) },
             onReconnect: { send(.reconnect, for: todo.id) },
             onCopyScreen: { send(.copyScreen, for: todo.id) },
-            onPaste: { send(.paste, for: todo.id) }
+            onPaste: { send(.paste, for: todo.id) },
+            showsDuplicate: hasConversation,
+            duplicateName: DuplicateIn.proposedName(
+                existingLabels: model.store.conversations(forTodo: todo.id).compactMap(\.label)
+            ),
+            onDuplicate: { tool, name in
+                send(.duplicate(tool: tool, name: name), for: todo.id)
+            }
         )
     }
 
@@ -935,7 +951,7 @@ struct ConversationDetail: View {
         case .running:
             return attacher.isSettling ? .settling : nil
         case .awaitingLiveness:
-            let computer = model.store.conversations[todo.id]?.computer.name ?? "the computer"
+            let computer = model.store.mostUrgent(forTodo: todo.id)?.computer.name ?? "the computer"
             return attacher.isSettling ? .settling : .checking(computer: computer)
         case .closed, .unknown:
             return nil

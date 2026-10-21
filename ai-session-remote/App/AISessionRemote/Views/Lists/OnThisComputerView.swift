@@ -105,7 +105,7 @@ private struct LinkToTodoList: View {
     }
 
     private func candidates(in section: TodoSection) -> [Todo] {
-        store.todos(in: section).filter { !$0.completed && store.conversations[$0.id] == nil }
+        store.todos(in: section).filter { !$0.completed && store.mostUrgent(forTodo: $0.id) == nil }
     }
 
     private func link(_ todo: Todo) {

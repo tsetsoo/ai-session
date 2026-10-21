@@ -37,6 +37,11 @@ struct TodoConversationScreen: View {
     @Binding var request: FrameRequest?
     /// Drawn in the terminal area instead of the loader's state (see `FramePlaceholder`).
     let placeholder: FramePlaceholder?
+    @Environment(AppModel.self) private var appModel: AppModel?
+
+    private var shown: Conversation? {
+        store.displayed(forTodo: todo.id, selectedKey: appModel?.selectedConversationID)
+    }
     /// Popped out into its own window: this frame holds no terminal and ignores requests.
     let isSuspended: Bool
     /// Another mounted conversation is the one on screen. This one keeps its terminal.
@@ -83,6 +88,12 @@ struct TodoConversationScreen: View {
         frame
             .onChange(of: hosts) { _, hosts in hostList.hosts = hosts }
             .onChange(of: request, initial: true) { _, request in handle(request) }
+            .onChange(of: shown?.listKey) { _, _ in
+                // Switching conversations of the todo already on screen. An idle frame waits
+                // for an explicit start, so selecting a row does not attach by itself.
+                guard let shown, !isSuspended, case .ready = loader.phase else { return }
+                loader.show(shown)
+            }
             .onChange(of: isSuspended) { _, suspended in
                 // The pop-out window attaches on its own; don't stay attached here too.
                 if suspended { loader.reset() }
@@ -92,8 +103,11 @@ struct TodoConversationScreen: View {
                 guard onAppear == .start, !didOpen, loader.phase == .idle else { return }
                 didOpen = true
                 // A first conversation waits on the tool step. One that exists resumes.
-                guard ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId) else { return }
-                await loader.start()
+                if let shown, shown.status != .closed, ConversationStart.hasStartedSession(shown.sessionId) {
+                    loader.show(shown)
+                } else {
+                    await loader.start()
+                }
             }
     }
 
@@ -105,15 +119,20 @@ struct TodoConversationScreen: View {
         case .attach:
             // Only into an idle frame: an explicit start or a problem card stays as it is.
             guard !isSuspended, loader.phase == .idle else { return }
-            loader.attachIfRunning(store.conversations[todo.id])
+            loader.attachIfRunning(shown)
         case .detach:
             guard loader.phase != .idle, loader.phase != .preparing else { return }
             loader.reset()
         case .start:
-            // An open terminal stays as it is; a problem retries. No conversation yet: the
-            // tool step confirms before anything is created.
-            guard !isSuspended, loader.phase == .idle || isProblem else { return }
-            guard ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId) || isProblem else { return }
+            // Another conversation of this todo replaces the one on screen. A problem retries.
+            // No conversation yet: the tool step confirms before anything is created.
+            guard !isSuspended else { return }
+            if let shown, shown.status != .closed {
+                loader.show(shown)
+                if case .ready = loader.phase { return }
+            }
+            guard loader.phase == .idle || isProblem else { return }
+            guard ConversationStart.hasStartedSession(shown?.sessionId) || isProblem else { return }
             Task { await loader.start() }
         }
     }

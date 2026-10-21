@@ -61,6 +61,11 @@ struct ConversationFrame: View {
     @State private var toolChoice = ""
     @State private var isStarting = false
     @State private var toolError: String?
+    /// How the conversation just created should attach, and the text to type once it connects.
+    @State private var duplicateLaunch: DuplicateLaunch?
+    @State private var summaryText = ""
+    @State private var summaryContext: DuplicateSummaryContext?
+    @State private var isDuplicating = false
 
     init(
         todo: Todo,
@@ -152,6 +157,7 @@ struct ConversationFrame: View {
             waitingFocus.readyChanged(isReady: id != nil, status: liveStatus)
         }
         .onChange(of: terminal.connectionState) { _, state in
+            if state == .connected { deliverDuplicateText() }
             guard state == .connected, waitingFocus.connected() else { return }
             focusTerminalWhenWaiting()
         }
@@ -198,6 +204,16 @@ struct ConversationFrame: View {
             onDismiss: retryAfterSettings
         ) { sheet in
             sheetContent(sheet)
+        }
+        .sheet(isPresented: Binding(
+            get: { isFrontmost && summaryContext != nil },
+            set: { if !$0 { summaryContext = nil } }
+        )) {
+            DuplicateSummarySheet(
+                text: $summaryText,
+                onStart: confirmSummary,
+                onCancel: { summaryContext = nil }
+            )
         }
         .modifier(MemoriesPresenter(
             isPresented: Binding(get: { isFrontmost && showingMemories }, set: { showingMemories = $0 }),
@@ -258,7 +274,7 @@ struct ConversationFrame: View {
         switch loader.phase {
         case .idle:
             if ConversationStart.needsConfirm(
-                hasConversation: ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId)
+                hasConversation: ConversationStart.hasStartedSession(conversation?.sessionId)
             ) {
                 onTerminalBackground(toolStep)
             } else {
@@ -270,12 +286,7 @@ struct ConversationFrame: View {
             let conversation = open.conversation
             TerminalSurface(
                 config: open.config,
-                mode: .attach(TmuxCommandBuilder.openTodoConversation(
-                    tmuxName: conversation.tmuxName,
-                    cwd: conversation.cwd,
-                    sessionId: conversation.sessionId,
-                    tool: conversation.tool
-                )),
+                mode: .attach(attachCommand(for: conversation)),
                 hostName: conversation.computer.name,
                 handle: terminal,
                 onConnectionFailed: { error in
@@ -477,7 +488,12 @@ struct ConversationFrame: View {
             onDelete: { showingDeleteConfirmation = true },
             onReconnect: { terminal.reconnect() },
             onCopyScreen: { terminal.copyScreen() },
-            onPaste: { terminal.paste() }
+            onPaste: { terminal.paste() },
+            showsDuplicate: conversation != nil,
+            duplicateName: DuplicateIn.proposedName(
+                existingLabels: store.conversations(forTodo: todo.id).compactMap(\.label)
+            ),
+            onDuplicate: { tool, name in beginDuplicate(tool: tool, name: name) }
         )
     }
 
@@ -490,29 +506,30 @@ struct ConversationFrame: View {
         case .reconnect: terminal.reconnect()
         case .copyScreen: terminal.copyScreen()
         case .paste: terminal.paste()
+        case let .duplicate(tool, name): beginDuplicate(tool: tool, name: name)
         }
     }
 
     /// The hub's status for this todo's conversation, as last heard.
     private var liveStatus: ConversationStatus? {
-        store.conversations[todo.id]?.status ?? todo.conversationStatus
+        conversation?.status ?? todo.conversationStatus
     }
 
     /// Live status; nil (no pill) when the todo has never had a conversation.
     private var displayStatus: ConversationDisplayStatus? {
-        ConversationToolbar.displayStatus(todo: todo, store: store)
+        ConversationToolbar.displayStatus(todo: todo, store: store, selectedKey: appModel?.selectedConversationID)
     }
 
     private func meta(includeFolder: Bool) -> String {
-        Self.subtitle(todo: todo, store: store, includeFolder: includeFolder)
+        Self.subtitle(todo: todo, store: store, includeFolder: includeFolder, selectedKey: appModel?.selectedConversationID)
     }
 
-    /// `section · computer · folder`, from the conversation or else the section's
+    /// `section · computer · folder`, from the conversation on screen or else the section's
     /// computer. The folder is middle-truncated. The tool is the band, not this line.
     /// The detail column uses the same line for the window subtitle while several frames stay mounted.
-    static func subtitle(todo: Todo, store: TodoHubStore, includeFolder: Bool) -> String {
+    static func subtitle(todo: Todo, store: TodoHubStore, includeFolder: Bool, selectedKey: String? = nil) -> String {
         let target: (computer: String, folder: String)? = {
-            if let conversation = store.conversations[todo.id] {
+            if let conversation = store.displayed(forTodo: todo.id, selectedKey: selectedKey) {
                 return (conversation.computer.name, conversation.cwd)
             }
             if let mapping = store.sectionComputers[todo.section] {
@@ -584,7 +601,7 @@ struct ConversationFrame: View {
     }
 
     private var conversation: Conversation? {
-        store.conversations[todo.id] ?? readyConversation?.conversation
+        store.displayed(forTodo: todo.id, selectedKey: appModel?.selectedConversationID) ?? readyConversation?.conversation
     }
 
     /// Warm frames stay mounted. Only the one on screen refreshes limits. A popped-out
@@ -650,7 +667,7 @@ struct ConversationFrame: View {
     /// A settings sheet closed while a problem shows: try again with what was just fixed.
     private func retryAfterSettings() {
         guard case .problem = loader.phase else { return }
-        if !ConversationStart.hasStartedSession(store.conversations[todo.id]?.sessionId) {
+        if !ConversationStart.hasStartedSession(conversation?.sessionId) {
             loader.reset()
             return
         }
@@ -729,6 +746,134 @@ struct ConversationFrame: View {
             HostEditorView(prefill: prefill)
         }
     }
+
+    // MARK: Duplicate
+
+    /// The PTY command for this conversation: a native fork when this duplicate asked for one,
+    /// otherwise the usual `ai-todo-open` resume.
+    private func attachCommand(for conversation: Conversation) -> String {
+        if let launch = duplicateLaunch, launch.conversationID == conversation.id, let command = launch.attachCommand {
+            return command
+        }
+        return TmuxCommandBuilder.openTodoConversation(
+            tmuxName: conversation.tmuxName,
+            cwd: conversation.cwd,
+            sessionId: conversation.sessionId,
+            tool: conversation.tool
+        )
+    }
+
+    private func beginDuplicate(tool: String, name: String) {
+        guard !isDuplicating, let source = conversation else { return }
+        isDuplicating = true
+        let openConfig = readyConversation?.config
+        Task {
+            defer { isDuplicating = false }
+            do {
+                let config = try openConfig ?? HostLookup.config(for: source.computer, in: hosts)
+                let transcript = try await transcriptForDuplicate(source: source, tool: tool, config: config)
+                switch DuplicateHandoff.decide(sourceTool: source.tool, destinationTool: tool, transcript: transcript) {
+                case .askForSummary:
+                    summaryText = try await store.summarizeConversation(source, config: config)
+                    summaryContext = DuplicateSummaryContext(
+                        source: source, tool: tool, name: name, transcript: transcript
+                    )
+                case .fork, .sendTranscript:
+                    let plan = DuplicateHandoff.plan(
+                        source: source, destinationTool: tool, label: name,
+                        transcript: transcript, confirmedSummary: nil
+                    )
+                    try await startDuplicate(plan, source: source, tool: tool, config: config)
+                }
+            } catch {
+                failure = ActionFailure(
+                    title: "Couldn't Duplicate Conversation",
+                    message: ConversationRowActions.message(for: error, computer: source.computer)
+                )
+            }
+        }
+    }
+
+    private func confirmSummary() {
+        guard let context = summaryContext else { return }
+        let text = summaryText
+        summaryContext = nil
+        Task {
+            do {
+                let plan = DuplicateHandoff.plan(
+                    source: context.source, destinationTool: context.tool, label: context.name,
+                    transcript: context.transcript, confirmedSummary: text
+                )
+                let config = try readyConversation?.config ?? HostLookup.config(for: context.source.computer, in: hosts)
+                try await startDuplicate(plan, source: context.source, tool: context.tool, config: config)
+            } catch {
+                failure = ActionFailure(
+                    title: "Couldn't Duplicate Conversation",
+                    message: ConversationRowActions.message(for: error, computer: context.source.computer)
+                )
+            }
+        }
+    }
+
+    /// Same tool with a native fork does not need the transcript. Anything else does.
+    private func transcriptForDuplicate(
+        source: Conversation, tool: String, config: HostConnectionConfig
+    ) async throws -> String {
+        if source.tool == tool, ForkCommand.arguments(tool: tool, sessionId: source.sessionId) != nil {
+            return ""
+        }
+        return try await store.captureTranscript(of: source, config: config)
+    }
+
+    /// Creates the row only when the plan is a fork or a start, records the session the tool
+    /// is using, then attaches that conversation. The source terminal is a different one.
+    private func startDuplicate(
+        _ plan: DuplicateHandoff.Plan, source: Conversation, tool: String, config: HostConnectionConfig
+    ) async throws {
+        var created: Conversation?
+        try await DuplicateIn.perform(plan) {
+            created = try await store.duplicateConversation(source: source, tool: tool, label: label(of: plan))
+        }
+        guard let created else { return }
+        let ready = try await store.prepareDuplicate(created, plan: plan, config: config)
+        if case let .start(text, _) = plan {
+            duplicateLaunch = DuplicateLaunch(conversationID: ready.id, attachCommand: nil, paste: text)
+        } else {
+            duplicateLaunch = nil
+        }
+        appModel?.selectedConversationID = ready.listKey
+        loader.show(ready)
+    }
+
+    private func label(of plan: DuplicateHandoff.Plan) -> String {
+        switch plan {
+        case let .fork(_, label), let .start(_, label): return label
+        case .cancelled: return ""
+        }
+    }
+
+    /// The new tool is connected: type the transcript or the edited summary, then Enter.
+    private func deliverDuplicateText() {
+        guard let launch = duplicateLaunch,
+              launch.conversationID == readyConversation?.conversation.id,
+              let paste = launch.paste else { return }
+        let text = paste.hasSuffix("\n") ? paste : paste + "\n"
+        terminal.send(Array(text.utf8))
+        duplicateLaunch?.paste = nil
+    }
+}
+
+private struct DuplicateLaunch {
+    var conversationID: String
+    var attachCommand: String?
+    var paste: String?
+}
+
+private struct DuplicateSummaryContext {
+    var source: Conversation
+    var tool: String
+    var name: String
+    var transcript: String
 }
 
 /// Resolves tool colors in the terminal's light or dark scheme, which can differ from the app.

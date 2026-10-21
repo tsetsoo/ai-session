@@ -6,13 +6,22 @@ final class BoardTests: XCTestCase {
     private let box = Computer(id: "m2", name: "Box", hostname: "box", username: "me")
 
     private func conv(_ todo: String, _ status: ConversationStatus, tmux: String? = nil,
-                      created: String = "2026-10-16T10:00:00Z", computer: Computer? = nil) -> Conversation {
-        Conversation(todoId: todo, computer: computer ?? mac, cwd: "~/x", tool: "claude",
+                      created: String = "2026-10-16T10:00:00Z", computer: Computer? = nil,
+                      id: String? = nil) -> Conversation {
+        Conversation(id: id ?? "c-\(todo)", todoId: todo, computer: computer ?? mac, cwd: "~/x", tool: "claude",
                      tmuxName: tmux ?? "t-\(todo)", sessionId: "s-\(todo)", status: status, createdAt: created)
     }
 
     private func board(_ convs: [Conversation], todos: [Todo] = [], live: [String: Set<String>] = [:]) -> ConversationBoard {
-        ConversationBoard(todos: todos, conversations: Dictionary(uniqueKeysWithValues: convs.map { ($0.todoId, $0) }), liveTmux: live)
+        ConversationBoard(todos: todos, conversations: Dictionary(uniqueKeysWithValues: convs.map { ($0.id, $0) }), liveTmux: live)
+    }
+
+    func testBoardListsBothConversations() {
+        let idle = conv("t", .idle, created: "2026-10-16T12:00:00Z", id: "idle")
+        let waiting = conv("t", .waiting, created: "2026-10-16T09:00:00Z", id: "wait")
+        let b = board([idle, waiting])
+        XCTAssertEqual(Set(b.runningNow.map(\.id)), ["idle", "wait"])
+        XCTAssertEqual(b.status(forTodo: "t"), .needsYou)
     }
 
     func testDisplayStatusMapping() {

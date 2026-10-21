@@ -294,6 +294,14 @@ pub struct OpenConversationRequest {
     pub tool: String,
 }
 
+/// Copy one conversation of a todo into another (or the same) tool.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DuplicateConversationRequest {
+    pub source_id: String,
+    pub tool: String,
+    pub label: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SetConversationSessionRequest {
     pub session_id: String,
@@ -301,6 +309,10 @@ pub struct SetConversationSessionRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
+    /// Stable id of this conversation. Empty when decoded from a server that still
+    /// keys a conversation by todo id.
+    #[serde(default)]
+    pub id: String,
     pub todo_id: String,
     pub computer: Computer,
     pub cwd: String,
@@ -320,6 +332,9 @@ pub struct Conversation {
     /// The conversation's project: its session's project, or matched from computer + cwd
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// Name given when this conversation was duplicated. Absent on the original.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// Sent by the status hooks on the computer. Either key identifies the conversation;

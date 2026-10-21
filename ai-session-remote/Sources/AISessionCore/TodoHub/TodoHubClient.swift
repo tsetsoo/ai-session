@@ -129,6 +129,20 @@ public struct TodoHubClient: Sendable {
         try await decode([Conversation].self, send("GET", "/api/conversations"))
     }
 
+    public func conversations(forTodo id: String) async throws -> [Conversation] {
+        try await decode([Conversation].self, send("GET", "/api/todos/\(escape(id))/conversations"))
+    }
+
+    public func duplicateConversation(todoId: String, sourceId: String, tool: String, label: String) async throws -> Conversation {
+        try await decode(
+            Conversation.self,
+            send(
+                "POST", "/api/todos/\(escape(todoId))/conversations",
+                body: DuplicateConversationRequest(sourceId: sourceId, tool: tool, label: label)
+            )
+        )
+    }
+
     /// Returns `nil` when the todo has no conversation yet.
     public func conversation(todoId: String) async throws -> Conversation? {
         do {
@@ -154,15 +168,30 @@ public struct TodoHubClient: Sendable {
         )
     }
 
+    public func setConversationSession(id: String, sessionId: String) async throws -> Conversation {
+        try await decode(
+            Conversation.self,
+            send("PUT", "/api/conversations/\(escape(id))/session", body: SetConversationSessionRequest(sessionId: sessionId))
+        )
+    }
+
     /// Marks the conversation closed. Kill the tmux session on the computer first.
     public func closeConversation(todoId: String) async throws -> Conversation {
         try await decode(Conversation.self, send("POST", "/api/todos/\(escape(todoId))/conversation/close"))
+    }
+
+    public func closeConversation(id: String) async throws -> Conversation {
+        try await decode(Conversation.self, send("POST", "/api/conversations/\(escape(id))/close"))
     }
 
     /// Forgets the todo's conversation on the hub (the next open starts a new one). Delete the
     /// conversation on the computer first if it should go away there too.
     public func deleteConversation(todoId: String) async throws {
         _ = try await send("DELETE", "/api/todos/\(escape(todoId))/conversation")
+    }
+
+    public func deleteConversation(id: String) async throws {
+        _ = try await send("DELETE", "/api/conversations/\(escape(id))")
     }
 
     /// Links an existing conversation to a todo. Throws `.conflict` when the todo already has

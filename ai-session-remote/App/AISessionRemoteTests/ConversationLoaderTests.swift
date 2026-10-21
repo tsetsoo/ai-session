@@ -70,6 +70,39 @@ final class ConversationLoaderTests: XCTestCase {
         return l
     }
 
+    func testAnotherConversationIsADifferentTerminal() {
+        let config = HostConnectionConfig(host: "studio", port: 22, username: "me", privateKeyPEM: Data())
+        let quiet = Conversation(
+            id: "quiet", todoId: "t1", computer: computer, cwd: "~/proj", tool: "claude",
+            tmuxName: "ai/claude/todo-t1", sessionId: "s-quiet", status: .idle
+        )
+        let waiting = Conversation(
+            id: "wait", todoId: "t1", computer: computer, cwd: "~/proj", tool: "claude",
+            tmuxName: "ai/claude/todo-t1-wait", sessionId: "s-wait", status: .waiting
+        )
+        let attached = OpenTodoConversation(conversation: quiet, hostID: hostID, config: config, title: "Fix it")
+        let needed = OpenTodoConversation(conversation: waiting, hostID: hostID, config: config, title: "Fix it")
+        XCTAssertNotEqual(attached.id, needed.id)
+        XCTAssertNotEqual(attached, needed)
+    }
+
+    func testShowAttachesTheSelectedConversation() async {
+        let quiet = Conversation(
+            id: "quiet", todoId: "t1", computer: computer, cwd: "~/proj", tool: "claude",
+            tmuxName: "ai/claude/todo-t1", sessionId: "s-quiet", status: .idle
+        )
+        let waiting = Conversation(
+            id: "wait", todoId: "t1", computer: computer, cwd: "~/proj", tool: "claude",
+            tmuxName: "ai/claude/todo-t1-wait", sessionId: "s-wait", status: .waiting
+        )
+        let (l, _) = loader(open: { quiet })
+        await l.start()
+        l.show(waiting)
+        guard case let .ready(open) = l.phase else { return XCTFail("\(l.phase)") }
+        XCTAssertEqual(open.conversation.tmuxName, "ai/claude/todo-t1-wait")
+        XCTAssertEqual(open.id, "wait")
+    }
+
     func testStartSuccessIsReady() async {
         let conv = conversation()
         let (l, calls) = loader(open: { conv })

@@ -92,6 +92,8 @@ final class AppModel {
 
     var sidebarSelection: SidebarItem?
     var selectedTodoID: String?
+    /// The conversation row that is selected. Opening a todo sets this to its most urgent conversation.
+    var selectedConversationID: String?
     /// The project shown in the detail column while the sidebar is on Projects.
     var selectedProjectID: String?
     var poppedOut: Set<String> = []
@@ -477,7 +479,7 @@ final class AppModel {
     /// Whether the Mac's selection may attach to this todo's conversation. Attaching runs
     /// `ai-todo-open`, which recreates a dead tmux session, so it needs the session seen alive.
     func attachReadiness(forTodo id: String) -> AttachReadiness {
-        guard let conversation = store.conversations[id],
+        guard let conversation = store.displayed(forTodo: id, selectedKey: selectedConversationID),
               let status = board.status(forTodo: id), status != .closed else { return .closed }
         let computerID = conversation.computer.id
         let refreshable = store.computers.contains { $0.id == computerID }

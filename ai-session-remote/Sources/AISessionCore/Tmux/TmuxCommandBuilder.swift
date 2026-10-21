@@ -58,6 +58,56 @@ public enum TmuxCommandBuilder {
         return wrap(command)
     }
 
+    /// Prints one conversation's user and assistant text. Exit 94 when it has no transcript.
+    public static func conversationTranscript(tool: String, sessionId: String) -> String {
+        wrap("\"$HOME/.ai-remote/bin/ai-todo-transcript\" \(shellQuote(tool)) \(shellQuote(sessionId))")
+    }
+
+    /// A new `claude -p` over that transcript. It is not the source session.
+    public static func summarizeConversation(tool: String, sessionId: String) -> String {
+        let transcript = "\"$HOME/.ai-remote/bin/ai-todo-transcript\" \(shellQuote(tool)) \(shellQuote(sessionId))"
+        let instruction = shellQuote(
+            "Summarize this conversation so another tool can continue it. Keep decisions, file paths, and the current task."
+        )
+        return wrap(
+            "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
+                + "{ printf '%s\\n\\n' \(instruction); \(transcript); } | "
+                + "claude -p --no-session-persistence --tools \"\" --strict-mcp-config --setting-sources \"\""
+        )
+    }
+
+    /// Starts the fork in tmux and prints `created <id>` for the new transcript, without attaching.
+    /// The id is the new file under `~/.claude/projects`, not the source and not a minted placeholder.
+    public static func forkDetached(tmuxName: String, cwd: String, arguments: [String]) -> String {
+        let argv = arguments.map(shellQuote).joined(separator: " ")
+        let name = shellQuote(tmuxName)
+        let exact = shellQuote("=" + tmuxName)
+        let folder = shellQuotePath(cwd)
+        return wrap(
+            """
+            list_sessions() { find "$HOME/.claude/projects" -maxdepth 2 -name '*.jsonl' -print 2>/dev/null | LC_ALL=C sort; }
+            before=$(list_sessions)
+            tmux new-session -d -s \(name) -c \(folder) -- env PATH="$PATH" LANG="${LANG:-en_US.UTF-8}" LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}" LC_ALL="${LC_ALL:-en_US.UTF-8}" \(argv) || exit $?
+            deadline=$(( $(date +%s) + 30 ))
+            while [ "$(date +%s)" -le "$deadline" ]; do
+              now=$(list_sessions)
+              path=$(printf '%s\\n%s\\n' "$before" "$now" | LC_ALL=C sort | LC_ALL=C uniq -u | while IFS= read -r candidate; do
+                [ -n "$candidate" ] || continue
+                printf '%s\\n' "$now" | grep -F -x -q "$candidate" && printf '%s\\n' "$candidate"
+              done | head -n 1)
+              if [ -n "$path" ]; then
+                echo "created $(basename "$path" .jsonl)"
+                exit 0
+              fi
+              sleep 0.2
+            done
+            tmux kill-session -t \(exact) 2>/dev/null || true
+            echo "no forked conversation appeared" >&2
+            exit 94
+            """
+        )
+    }
+
     /// Starts a new Codex or Cursor conversation and prints `created <id>`. `-` tells the
     /// script the id does not exist yet. Detach returns as soon as the id appears.
     public static func freshTodoConversation(tmuxName: String, cwd: String, tool: String) -> String {

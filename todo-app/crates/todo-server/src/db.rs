@@ -99,9 +99,10 @@ pub fn init_pool(db_path: &str) -> DbPool {
     migrate(&conn, db_path).expect("Failed to migrate the database schema");
 
     conn.execute_batch(&format!(
-        "{};\n{};\n{};\n{};",
+        "{};\n{};\n{};\n{};\n{};",
         section_computers_ddl("section_computers"),
         conversations_ddl("conversations"),
+        "CREATE INDEX IF NOT EXISTS conversations_todo ON conversations(todo_id)",
         "CREATE INDEX IF NOT EXISTS conversations_session_id ON conversations(session_id)",
         "CREATE UNIQUE INDEX IF NOT EXISTS conversations_tool_session ON conversations(tool, session_id) WHERE session_id IS NOT NULL"
     ))
@@ -147,9 +148,11 @@ fn section_computers_v2_ddl(table: &str) -> String {
     )
 }
 
-fn conversations_ddl(table: &str) -> String {
+/// The conversation table before v6: one row per todo, no `id` or `label`.
+/// v1→v2 and the v5 session-id rebuild insert into this shape. v6 is `conversations_ddl`.
+fn conversations_pre_v6_ddl(table: &str) -> String {
     format!(
-        "CREATE TABLE IF NOT EXISTS {table} (
+        "CREATE TABLE {table} (
             todo_id           TEXT PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE,
             computer_id       TEXT NOT NULL REFERENCES computers(id) ON DELETE RESTRICT,
             cwd               TEXT NOT NULL,
@@ -161,6 +164,26 @@ fn conversations_ddl(table: &str) -> String {
             status_message    TEXT,
             status_updated_at TEXT,
             created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+        )"
+    )
+}
+
+fn conversations_ddl(table: &str) -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {table} (
+            id                TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(16)))),
+            todo_id           TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+            computer_id       TEXT NOT NULL REFERENCES computers(id) ON DELETE RESTRICT,
+            cwd               TEXT NOT NULL,
+            tool              TEXT NOT NULL CHECK(tool IN {TOOLS_SQL}),
+            tmux_name         TEXT NOT NULL UNIQUE,
+            session_id        TEXT,
+            status            TEXT NOT NULL DEFAULT 'unknown'
+                              CHECK(status IN ('busy','waiting','idle','unknown','closed')),
+            status_message    TEXT,
+            status_updated_at TEXT,
+            created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+            label             TEXT
         )"
     )
 }
@@ -299,9 +322,11 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v4: `push_devices`, `push_settings`, `push_muted_sections`, `push_muted_todos` (additive)
 /// - v5: a project belongs to a section; section folder and tool are dropped; conversation
 ///   session ids may be null until Codex or Cursor reports one; every todo has a project
+/// - v6: a conversation has its own `id`; `todo_id` is no longer the primary key; `label`
+///   is an optional name for a duplicate
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -314,6 +339,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if conversations.as_deref().is_some_and(|sql| sql.contains("label")) {
+        return Ok(6);
     }
     if table_sql(conn, "projects")?.is_some_and(|sql| sql.contains("section") && !sql.contains("computer_id")) {
         return Ok(5);
@@ -364,10 +392,100 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 4 {
         if !backed_up {
             backup_before_migration(conn, db_path, 5)?;
+            backed_up = true;
         }
         migrate_v4_to_v5(conn)?;
+        version = 5;
+    }
+    if version == 5 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 6)?;
+        }
+        migrate_v5_to_v6(conn)?;
     }
     Ok(())
+}
+
+/// v5 → v6. A todo can have many conversations. Each row gets its own id. Existing
+/// rows have no label.
+fn migrate_v5_to_v6(conn: &Connection) -> rusqlite::Result<()> {
+    if column_exists(conn, "conversations", "id")? {
+        return Ok(());
+    }
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+    let result = migrate_v5_to_v6_in(conn);
+    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+    result
+}
+
+fn migrate_v5_to_v6_in(conn: &Connection) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    type Row = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+    );
+    let rows: Vec<Row> = {
+        let mut stmt = tx.prepare(
+            "SELECT todo_id, computer_id, cwd, tool, tmux_name, session_id, status,
+                    status_message, status_updated_at, created_at FROM conversations",
+        )?;
+        let mapped = stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+            ))
+        })?;
+        mapped.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    tx.execute_batch(&format!(
+        "{};
+         DROP TABLE conversations;
+         ALTER TABLE conversations_new RENAME TO conversations;
+         CREATE INDEX IF NOT EXISTS conversations_todo ON conversations(todo_id);
+         CREATE INDEX IF NOT EXISTS conversations_session_id ON conversations(session_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS conversations_tool_session
+             ON conversations(tool, session_id) WHERE session_id IS NOT NULL;",
+        conversations_ddl("conversations_new").replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE")
+    ))?;
+    for (todo_id, computer_id, cwd, tool, tmux_name, session_id, status, status_message, status_updated_at, created_at) in
+        rows
+    {
+        tx.execute(
+            "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id,
+                                         status, status_message, status_updated_at, created_at, label)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                todo_id,
+                computer_id,
+                cwd,
+                tool,
+                tmux_name,
+                session_id,
+                status,
+                status_message,
+                status_updated_at,
+                created_at
+            ],
+        )?;
+    }
+    tx.commit()
 }
 
 /// Everything v4 adds: the push notification tables (see push/store.rs). Only creates,
@@ -652,7 +770,7 @@ fn migrate_v4_to_v5_in(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE conversations_new RENAME TO conversations;
              CREATE UNIQUE INDEX IF NOT EXISTS conversations_tool_session
                  ON conversations(tool, session_id) WHERE session_id IS NOT NULL;",
-            conversations_ddl("conversations_new").replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE")
+            conversations_pre_v6_ddl("conversations_new")
         ))?;
     }
     // Every todo now has a project. Rebuild so the column cannot go back to null.
@@ -899,7 +1017,7 @@ fn migrate_v1_to_v2(conn: &Connection) -> rusqlite::Result<()> {
                             status, status_message, status_updated_at, created_at FROM conversations;
                  DROP TABLE conversations;
                  ALTER TABLE conversations_new RENAME TO conversations;",
-                conversations_ddl("conversations_new")
+                conversations_pre_v6_ddl("conversations_new")
             ))?;
         }
         let violations: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
@@ -1185,7 +1303,7 @@ mod tests {
 
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         let project_cols = column_names(&conn, "projects");
         assert!(!project_cols.iter().any(|c| c == "computer_id"));
         assert!(project_cols.iter().any(|c| c == "section"));
@@ -1327,6 +1445,84 @@ mod tests {
         for table in V3_TABLES.iter().chain(V4_TABLES.iter()) {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
         }
+    }
+
+    #[test]
+    fn migrates_v5_to_v6_allows_a_second_conversation() {
+        let db = TestDb::new("migrate-v6");
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(V2_SCHEMA).unwrap();
+        create_v4_objects(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE todos ADD COLUMN project_id TEXT;
+             CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                computer_id TEXT NOT NULL,
+                folder TEXT NOT NULL,
+                repo_url TEXT,
+                digest_enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE TABLE memories (
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                todo_id TEXT,
+                computer_id TEXT,
+                tool TEXT,
+                session_id TEXT,
+                kind TEXT NOT NULL,
+                text TEXT NOT NULL,
+                text_key TEXT NOT NULL,
+                files TEXT NOT NULL DEFAULT '[]',
+                confidence REAL,
+                source TEXT NOT NULL DEFAULT 'extracted',
+                pinned INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             DELETE FROM section_computers WHERE section = 'I';
+             INSERT INTO section_computers (section, computer_id, cwd, tool)
+                 VALUES ('P', 'mac', '~/programming', 'claude');
+             INSERT INTO projects (id, name, computer_id, folder)
+                 VALUES ('p1', 'sigma', 'mac', '~/programming/sigma-revenue');
+             UPDATE todos SET project_id = 'p1' WHERE id = 't1';
+             UPDATE todos SET section = 'P', project_id = 'p1' WHERE id = 't3';
+             INSERT INTO todos (id, section, title) VALUES ('t-loose', 'Si', 'loose');
+             INSERT INTO memories (id, project_id, todo_id, kind, text, text_key)
+                 VALUES ('m1', 'p1', 't1', 'decision', 'Keep', 'keep');
+             PRAGMA user_version = 4;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 6);
+        let row: (String, String, String, Option<String>, String) = conn
+            .query_row(
+                "SELECT todo_id, tool, tmux_name, label, id FROM conversations WHERE session_id = 'sess-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "t1");
+        assert_eq!(row.1, "claude");
+        assert_eq!(row.2, "ai/claude/todo-t1");
+        assert_eq!(row.3, None);
+        assert!(!row.4.is_empty());
+        conn.execute(
+            "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, label)
+             VALUES ('c2', 't1', 'mac', '~/programming', 'codex', 'ai/codex/todo-t1-b', 'sess-9', 'duplicate')",
+            [],
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM conversations WHERE todo_id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
     }
 
     #[test]

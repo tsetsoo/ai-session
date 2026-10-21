@@ -82,6 +82,16 @@ final class PushTests: XCTestCase {
         XCTAssertFalse(shouldPost(.localOnly("x"), visible: "t1", mac: true))
     }
 
+    func testSecondConversationDoesNotAlertWhileTodoIsVisible() {
+        XCTAssertFalse(
+            NotificationPolicy.shouldPostLocal(
+                pushState: .localOnly("x"), visibleTodoId: "t1", todoId: "t1",
+                isMac: false, iPhoneRegisteredOnServer: false, macAlertsToo: false
+            ),
+            "a second conversation of the todo on screen stays quiet"
+        )
+    }
+
     func testPolicyMacDefersToRegisteredIPhone() {
         XCTAssertTrue(shouldPost(.off, mac: true, iPhoneRegistered: false))
         XCTAssertFalse(shouldPost(.off, mac: true, iPhoneRegistered: true))
