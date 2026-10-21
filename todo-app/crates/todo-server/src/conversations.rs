@@ -30,10 +30,10 @@ pub(crate) const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
 
 pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at";
 
-/// Conversation columns (0..=8), its computer (9..=15), then whether its session is known
-/// and that session's project (16, 17).
-const CONVERSATION_SELECT: &str = "SELECT c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
-        c.status_message, c.status_updated_at, c.created_at,
+/// Conversation columns (0..=10), its computer (11..=17), then whether its session is known
+/// and that session's project (18, 19).
+const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
+        c.status_message, c.status_updated_at, c.created_at, c.label,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at,
         s.session_id IS NOT NULL, s.project_id
      FROM conversations c JOIN computers m ON m.id = c.computer_id
@@ -78,27 +78,29 @@ pub(crate) fn computer_at(row: &Row, start: usize) -> rusqlite::Result<Computer>
 
 /// A conversation row and whether its session is known (`project_id` is then the session's).
 fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
-    let status: String = row.get(5)?;
-    let tool: String = row.get(2)?;
-    let session_id: Option<String> = row.get(4)?;
+    let status: String = row.get(6)?;
+    let tool: String = row.get(3)?;
+    let session_id: Option<String> = row.get(5)?;
     let session_id = session_id.unwrap_or_default();
     let conversation = Conversation {
-        todo_id: row.get(0)?,
-        cwd: row.get(1)?,
-        tmux_name: row.get(3)?,
+        id: row.get(0)?,
+        todo_id: row.get(1)?,
+        cwd: row.get(2)?,
+        tmux_name: row.get(4)?,
         // Older apps and the 3-argument ai-todo-open treat this as a Claude id, so it is
         // only set for Claude conversations.
         claude_session_id: (tool == "claude").then(|| session_id.clone()),
         tool,
         session_id,
         status: ConversationStatus::parse(&status).unwrap_or(ConversationStatus::Unknown),
-        status_message: row.get(6)?,
-        status_updated_at: row.get(7)?,
-        created_at: row.get(8)?,
-        computer: computer_at(row, 9)?,
-        project_id: row.get(17)?,
+        status_message: row.get(7)?,
+        status_updated_at: row.get(8)?,
+        created_at: row.get(9)?,
+        label: row.get(10)?,
+        computer: computer_at(row, 11)?,
+        project_id: row.get(19)?,
     };
-    Ok((conversation, row.get(16)?))
+    Ok((conversation, row.get(18)?))
 }
 
 /// A conversation whose session isn't known yet gets its project matched on the fly.
@@ -283,9 +285,9 @@ fn insert_conversation(
         return Ok(false);
     };
     conn.execute(
-        "INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![todo_id, computer_id, cwd, tool, name, session_id],
+        "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![Uuid::new_v4().to_string(), todo_id, computer_id, cwd, tool, name, session_id],
     )?;
     Ok(true)
 }
