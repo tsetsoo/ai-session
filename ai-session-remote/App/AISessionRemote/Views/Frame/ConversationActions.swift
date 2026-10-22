@@ -14,6 +14,9 @@ enum SettingsDestination: Hashable {
 struct FrameActions {
     var openSettings: (SettingsDestination) -> Void
     var setUpAccess: (Computer) -> Void
+    /// This device's access to the named computer: its own editor when the frame can find it,
+    /// else Access & keys.
+    var editAccess: (String) -> Void
     var retry: () -> Void
     var copy: (String) -> Void
     var unlink: () -> Void
@@ -106,6 +109,8 @@ struct ConversationTerminalState: Equatable {
     var todoID: String
     var isReady: Bool
     var isConnected: Bool
+    /// A duplicate is being made; Duplicate in is off until it is done.
+    var isDuplicating = false
 }
 
 struct ConversationTerminalStateKey: PreferenceKey {
@@ -234,6 +239,8 @@ struct ConversationToolbarActions: View {
     var showsDuplicate: Bool
     var duplicateName: String
     var onDuplicate: (String, String) -> Void
+    /// A duplicate is being made. The frame shows its progress; a second one waits.
+    var isDuplicating = false
 
     var body: some View {
         HStack(spacing: ConversationToolbar.controlSpacing) {
@@ -262,6 +269,7 @@ struct ConversationToolbarActions: View {
             }
             if showsDuplicate {
                 DuplicateInMenu(proposedName: duplicateName, onConfirm: onDuplicate)
+                    .disabled(isDuplicating)
             }
             ConversationMenu(
                 hasConversation: hasConversation,
@@ -290,5 +298,23 @@ struct CopiedToast: View {
             .background(.regularMaterial, in: Capsule())
             .padding(.top, DS.spacing.m)
             .accessibilityAddTraits(.isStaticText)
+    }
+}
+
+/// Shown over the top of the terminal area while a duplicate is read, summarised and started.
+struct DuplicatingToast: View {
+    var body: some View {
+        HStack(spacing: DS.spacing.s) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Duplicating…")
+                .font(.callout.weight(.semibold))
+        }
+        .padding(.horizontal, DS.spacing.l)
+        .padding(.vertical, DS.spacing.s)
+        .background(.regularMaterial, in: Capsule())
+        .padding(.top, DS.spacing.m)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Duplicating the conversation")
     }
 }

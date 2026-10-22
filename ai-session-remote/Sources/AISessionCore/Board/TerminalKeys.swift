@@ -1,6 +1,6 @@
 /// Keys on the terminal accessory bar, with the bytes each tool expects.
 public enum TerminalKey: CaseIterable, Sendable {
-    case esc, tab, left, up, down, right, shiftEnter, approve
+    case esc, tab, left, up, down, right, enter, shiftEnter, approve
 
     public func bytes(tool: String) -> [UInt8] {
         let codex = tool == "codex"
@@ -11,6 +11,7 @@ public enum TerminalKey: CaseIterable, Sendable {
         case .up: return [0x1B, 0x5B, 0x41]
         case .down: return [0x1B, 0x5B, 0x42]
         case .right: return [0x1B, 0x5B, 0x43]
+        case .enter: return [0x0D]
         case .shiftEnter: return codex ? [0x0A] : [0x1B, 0x0D]
         case .approve: return codex ? [0x79] : [0x31]   // "y" / "1"
         }

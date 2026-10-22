@@ -89,10 +89,10 @@ struct RemoteConversationPicker: View {
                         .foregroundStyle(linked ? .secondary : .primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if conversation.running {
-                        Tag(text: "Running", color: .blue)
+                        Tag(text: "Running", color: DS.accentOnTint, fill: DS.accentTint)
                     }
                     if linked {
-                        Tag(text: "Linked", color: .gray)
+                        Tag(text: "Linked", color: .secondary)
                     }
                 }
                 HStack(spacing: 6) {
@@ -155,13 +155,15 @@ struct RemoteConversationPicker: View {
 private struct Tag: View {
     let text: String
     let color: Color
+    /// The capsule; a pale `color` unless given.
+    var fill: Color?
 
     var body: some View {
         Text(text)
             .font(.caption2.weight(.semibold))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(color.opacity(0.18), in: Capsule())
+            .background(fill ?? color.opacity(0.18), in: Capsule())
             .foregroundStyle(color)
     }
 }
@@ -245,6 +247,8 @@ struct LinkConversationSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var actionError: String?
     @State private var isWorking = false
+    /// Choose Computer: Settings, on this section, over this sheet.
+    @State private var choosingComputer: TodoSection?
 
     var body: some View {
         NavigationStack {
@@ -260,6 +264,9 @@ struct LinkConversationSheet: View {
         #if os(macOS)
         .frame(minWidth: 560, minHeight: 480)
         #endif
+        .sheet(item: $choosingComputer) { section in
+            SettingsView(initial: .sections(section))
+        }
     }
 
     @ViewBuilder
@@ -273,11 +280,14 @@ struct LinkConversationSheet: View {
                 onPick: { link($0, on: computer) }
             )
         } else {
-            ContentUnavailableView(
-                "Section \(todo.section.rawValue) has no computer",
-                systemImage: "desktopcomputer",
-                description: Text("Assign one under Settings → Computers.")
-            )
+            ContentUnavailableView {
+                Label("No computer runs \(todo.section.rawValue) conversations yet", systemImage: "desktopcomputer")
+            } description: {
+                Text("Choose which computer \(todo.section.rawValue) conversations run on, then link one from it.")
+            } actions: {
+                Button("Choose Computer") { choosingComputer = todo.section }
+                    .buttonStyle(AccentButtonStyle())
+            }
         }
     }
 
@@ -302,6 +312,7 @@ struct NewTodoFromConversationSheet: View {
     let store: TodoHubStore
     @Environment(\.dismiss) private var dismiss
     @State private var path: [Step] = []
+    @State private var showingComputers = false
 
     enum Step: Hashable {
         case conversations(Computer)
@@ -317,6 +328,9 @@ struct NewTodoFromConversationSheet: View {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { dismiss() }
                     }
+                }
+                .sheet(isPresented: $showingComputers) {
+                    SettingsView(initial: .sections(nil))
                 }
                 .navigationDestination(for: Step.self) { step in
                     switch step {
@@ -344,7 +358,11 @@ struct NewTodoFromConversationSheet: View {
     private var computerList: some View {
         List {
             if store.computers.isEmpty {
-                Text("No computers yet. Add one under Settings → Computers.").foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: DS.spacing.s) {
+                    Text("No computers yet. Add one under Settings → Sections & computers.")
+                        .foregroundStyle(.secondary)
+                    Button("Open Sections & Computers") { showingComputers = true }
+                }
             }
             ForEach(store.computers) { computer in
                 NavigationLink(value: Step.conversations(computer)) {
@@ -385,6 +403,8 @@ struct NewTodoDetailsForm: View {
     @State private var newFolder = ""
     @State private var error: String?
     @State private var isWorking = false
+    /// Choose Computer: Settings, on the chosen section, over this form.
+    @State private var choosingComputer: TodoSection?
 
     private var chosenSection: TodoSection? { lockedProject?.section ?? section }
 
@@ -423,8 +443,15 @@ struct NewTodoDetailsForm: View {
                 }
                 if let chosenSection, let mapping = store.sectionComputers[chosenSection] {
                     LabeledContent("Computer", value: mapping.computer.name)
-                } else if chosenSection != nil {
-                    Text("No computer").foregroundStyle(.secondary)
+                } else if let chosenSection {
+                    // Create stays off until the section has a computer: say why and offer the fix.
+                    VStack(alignment: .leading, spacing: DS.spacing.xs) {
+                        Text("No computer runs \(chosenSection.rawValue) conversations yet")
+                        Text("Choose one to create this todo in \(chosenSection.rawValue).")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Choose Computer") { choosingComputer = chosenSection }
                 }
                 if let lockedProject {
                     LabeledContent("Project", value: lockedProject.name)
@@ -457,6 +484,9 @@ struct NewTodoDetailsForm: View {
             }
         }
         .navigationTitle("New Todo")
+        .sheet(item: $choosingComputer) { section in
+            SettingsView(initial: .sections(section))
+        }
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Create") { create() }
@@ -482,6 +512,8 @@ struct NewTodoDetailsForm: View {
             makingNew = false
             pickDefaultProject()
         }
+        // Choose Computer just gave the section one: offer its projects.
+        .onChange(of: hasComputer) { _, _ in pickDefaultProject() }
     }
 
     private var projectChoice: Binding<String> {

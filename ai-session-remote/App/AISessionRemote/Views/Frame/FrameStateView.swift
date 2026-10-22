@@ -134,6 +134,7 @@ struct FrameStateView: View {
             FrameStateBlock(
                 systemImage: "key",
                 title: "The key for \(name) is missing on this device",
+                message: "The key this device signs in to \(name) with is gone or can't be read. Add it again in Settings.",
                 primary: FrameStateButton(title: "Fix in Settings") { actions.openSettings(.access) }
             )
         case let .unreachable(name):
@@ -156,8 +157,8 @@ struct FrameStateView: View {
                 systemImage: "exclamationmark.shield",
                 iconTint: DS.accent,
                 title: "\(name)'s identity changed since this device last connected.",
-                message: "If \(name) was reinstalled or replaced, reset it in Settings. If not, don't connect.",
-                primary: FrameStateButton(title: "Fix in Settings") { actions.openSettings(.access) }
+                message: "If \(name) was reinstalled or replaced, choose Forget Host Key on the next screen, then try again. If not, don't connect.",
+                primary: FrameStateButton(title: "Review \(name)") { actions.editAccess(name) }
             )
         case let .terminalFailed(name):
             FrameStateBlock(
@@ -190,7 +191,9 @@ struct FrameStateView: View {
             FrameStateBlock(
                 systemImage: "folder.badge.questionmark",
                 title: "The folder \(folder) doesn't exist on \(name)",
-                primary: FrameStateButton(title: "Change Folder") { actions.openSettings(.sections(nil)) }
+                message: "Conversations for this todo start in that folder. Pick another one, or create it on \(name) and try again.",
+                primary: FrameStateButton(title: "Change Folder") { actions.openSettings(.sections(nil)) },
+                secondary: FrameStateButton(title: "Try Again", action: actions.retry)
             )
         case let .conversationNotFound(name):
             FrameStateBlock(

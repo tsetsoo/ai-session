@@ -255,12 +255,21 @@ final class TerminalCoordinator: TerminalViewDelegate {
         session?.send(bytes[...])
     }
 
+    /// Pastes the clipboard the way SwiftTerm's own paste does: bracketed when the program
+    /// asked for bracketed paste, so a multi-line paste isn't taken as several Returns.
     func pasteFromClipboard() {
-        guard let text = PlatformSupport.pasteboardString,
-              let bytes = text.data(using: .utf8)?.map({ $0 }),
-              !bytes.isEmpty
-        else { return }
-        send(bytes)
+        guard let text = PlatformSupport.pasteboardString, !text.isEmpty else { return }
+        send(TerminalPaste.bytes(for: text, bracketed: isBracketedPasteMode))
+    }
+
+    /// Types `text` as a paste, then Return.
+    func submit(_ text: String) {
+        send(TerminalPaste.submission(text, bracketed: isBracketedPasteMode))
+    }
+
+    /// The program in the terminal turned bracketed paste on (`ESC[?2004h`).
+    private var isBracketedPasteMode: Bool {
+        terminalView?.getTerminal().bracketedPasteMode ?? false
     }
 
     /// Runs `disconnect()` on this turn, before the first await, so a close already queued
@@ -315,9 +324,11 @@ final class TerminalCoordinator: TerminalViewDelegate {
     #endif
 
     /// Best-effort clipboard copy: copies the active selection if there is one, otherwise
-    /// briefly selects the whole visible buffer to grab its text.
-    func copySelection() {
-        guard let terminalView else { return }
+    /// briefly selects the whole visible buffer to grab its text. True when something was
+    /// copied, so the caller can say so.
+    @discardableResult
+    func copySelection() -> Bool {
+        guard let terminalView else { return false }
         let text: String?
         if terminalView.selectionActive {
             text = terminalView.getSelection()
@@ -326,9 +337,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
             text = terminalView.getSelection()
             terminalView.selectNone()
         }
-        if let text, !text.isEmpty {
-            PlatformSupport.pasteboardString = text
-        }
+        guard let text, !text.isEmpty else { return false }
+        PlatformSupport.pasteboardString = text
+        return true
     }
 
     // MARK: TerminalViewDelegate
@@ -417,6 +428,8 @@ struct TerminalScreen: View {
     @State private var errorMessage: String?
     @State private var killErrorMessage: String?
     @State private var showingKillConfirmation = false
+    @State private var showingCopied = false
+    @State private var copiedTask: Task<Void, Never>?
 
     init(
         hostConfig: HostConnectionConfig,
@@ -448,23 +461,18 @@ struct TerminalScreen: View {
             onConnectionFailed: { error in errorMessage = TerminalCoordinator.message(for: error) },
             makeTransport: makeTransport
         )
+        .overlay(alignment: .top) {
+            if showingCopied {
+                CopiedToast().transition(.opacity)
+            }
+        }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbarBackground(Color(palette.background).opacity(0.85), for: .navigationBar)
         .toolbarColorScheme(palette == .dark ? .dark : .light, for: .navigationBar)
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    terminal.focus()
-                } label: {
-                    Image(systemName: "keyboard")
-                }
-                .accessibilityLabel("Show Keyboard")
-                .disabled(!terminal.isConnected)
-            }
-            #endif
+            // No ⌨ here on iOS: the key bar's ⌨ shows and hides the keyboard.
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button {
@@ -484,7 +492,7 @@ struct TerminalScreen: View {
                         Label("Reconnect", systemImage: "arrow.clockwise")
                     }
                     Button {
-                        terminal.copyScreen()
+                        copyScreen()
                     } label: {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
@@ -543,6 +551,18 @@ struct TerminalScreen: View {
             Button("OK", role: .cancel) { dismiss() }
         } message: {
             Text(errorMessage ?? "")
+        }
+    }
+
+    /// Copies the selection, or else the screen, and says so like the conversation frame does.
+    private func copyScreen() {
+        guard terminal.copyScreen() else { return }
+        copiedTask?.cancel()
+        withAnimation { showingCopied = true }
+        copiedTask = Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation { showingCopied = false }
         }
     }
 

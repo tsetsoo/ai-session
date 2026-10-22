@@ -184,7 +184,8 @@ final class ConversationLoader {
     }
 
     /// The terminal session ended with the helper script's exit status. Known failures become a
-    /// problem; anything else stays `.ready` (the terminal shows Disconnected).
+    /// problem; anything else stays `.ready`, and the terminal shows its own card: Disconnected
+    /// for a lost connection (no status), Conversation ended with Resume when the tool quit.
     func ended(exitStatus: Int?) {
         guard case let .ready(open) = phase, let failure = OpenFailure(exitStatus: exitStatus) else { return }
         let name = open.conversation.computer.name

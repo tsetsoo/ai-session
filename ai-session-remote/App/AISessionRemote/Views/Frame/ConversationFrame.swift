@@ -49,6 +49,7 @@ struct ConversationFrame: View {
     @State private var showingCopied = false
     @State private var copiedTask: Task<Void, Never>?
     @State private var showingDeleteConfirmation = false
+    @State private var showingCloseConfirmation = false
     @State private var failure: ActionFailure?
     @State private var sheet: FrameSheet?
     @State private var showingMemories = false
@@ -123,7 +124,8 @@ struct ConversationFrame: View {
         return ConversationTerminalState(
             todoID: todo.id,
             isReady: readyConversation != nil,
-            isConnected: isConnected
+            isConnected: isConnected,
+            isDuplicating: isDuplicating
         )
     }
 
@@ -171,7 +173,9 @@ struct ConversationFrame: View {
         }
         .onChange(of: appModel?.terminalFocusRequest) { _, request in focusRequested(request) }
         .overlay(alignment: .top) {
-            if isFrontmost && showingCopied {
+            if isFrontmost && isDuplicating {
+                DuplicatingToast().transition(.opacity)
+            } else if isFrontmost && showingCopied {
                 CopiedToast().transition(.opacity)
             }
         }
@@ -189,6 +193,19 @@ struct ConversationFrame: View {
             if let conversation {
                 Text(conversation.deleteConfirmationMessage)
             }
+        }
+        .confirmationDialog(
+            "\(RowText.toolName(conversation?.tool ?? "claude")) is still working. Close anyway?",
+            isPresented: Binding(
+                get: { isFrontmost && showingCloseConfirmation },
+                set: { if !$0 { showingCloseConfirmation = false } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Close Conversation", role: .destructive) { closeConversationNow() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Closing stops it where it is. You can resume the conversation later.")
         }
         .alert(
             failure?.title ?? "",
@@ -324,9 +341,10 @@ struct ConversationFrame: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
-                Text("No computer")
+                Text("No computer runs \(todo.section.rawValue) conversations yet")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
             if let folder, !folder.isEmpty {
                 Text(folder)
@@ -353,10 +371,17 @@ struct ConversationFrame: View {
                 Button("Cancel", action: onDeleted)
                     .buttonStyle(.bordered)
                     .disabled(isStarting)
-                Button(isStarting ? "Starting…" : "Start") { confirmTool() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(DS.accent)
-                    .disabled(isStarting || store.sectionComputers[todo.section] == nil)
+                if computer == nil {
+                    // Start has nowhere to run until the section has a computer.
+                    Button("Choose Computer") { openSettings(.sections(todo.section)) }
+                        .buttonStyle(.borderedProminent)
+                        .tint(DS.accent)
+                } else {
+                    Button(isStarting ? "Starting…" : "Start") { confirmTool() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(DS.accent)
+                        .disabled(isStarting)
+                }
             }
         }
         .frame(maxWidth: 440)
@@ -487,13 +512,14 @@ struct ConversationFrame: View {
             onClose: closeConversation,
             onDelete: { showingDeleteConfirmation = true },
             onReconnect: { terminal.reconnect() },
-            onCopyScreen: { terminal.copyScreen() },
+            onCopyScreen: { copyScreen() },
             onPaste: { terminal.paste() },
             showsDuplicate: conversation != nil,
             duplicateName: DuplicateIn.proposedName(
                 existingLabels: store.conversations(forTodo: todo.id).compactMap(\.label)
             ),
-            onDuplicate: { tool, name in beginDuplicate(tool: tool, name: name) }
+            onDuplicate: { tool, name in beginDuplicate(tool: tool, name: name) },
+            isDuplicating: isDuplicating
         )
     }
 
@@ -504,7 +530,7 @@ struct ConversationFrame: View {
         case .close: closeConversation()
         case .delete: showingDeleteConfirmation = true
         case .reconnect: terminal.reconnect()
-        case .copyScreen: terminal.copyScreen()
+        case .copyScreen: copyScreen()
         case .paste: terminal.paste()
         case let .duplicate(tool, name): beginDuplicate(tool: tool, name: name)
         }
@@ -653,6 +679,15 @@ struct ConversationFrame: View {
                     username: computer.username
                 ))
             },
+            editAccess: { name in
+                // The problem names the computer; the conversation on screen is the one it is about.
+                if let computer = conversation?.computer, computer.name == name,
+                   let host = HostLookup.host(for: computer, in: hosts) {
+                    sheet = .editHost(host)
+                } else {
+                    openSettings(.access)
+                }
+            },
             retry: { Task { await loader.start() } },
             copy: copy,
             unlink: unlinkConversation
@@ -681,6 +716,15 @@ struct ConversationFrame: View {
 
     private func copy(_ text: String) {
         PlatformSupport.pasteboardString = text
+        showCopied()
+    }
+
+    /// The selection, or else the screen; the same toast as the resume command.
+    private func copyScreen() {
+        if terminal.copyScreen() { showCopied() }
+    }
+
+    private func showCopied() {
         copiedTask?.cancel()
         withAnimation { showingCopied = true }
         copiedTask = Task {
@@ -690,8 +734,18 @@ struct ConversationFrame: View {
         }
     }
 
-    /// Ends tmux and keeps the conversation resumable (the old "Kill Session").
+    /// Close from the menu or the column toolbar: asks first while the tool is still working,
+    /// since closing stops it mid-task.
     private func closeConversation() {
+        if conversation?.status == .busy {
+            showingCloseConfirmation = true
+        } else {
+            closeConversationNow()
+        }
+    }
+
+    /// Ends tmux and keeps the conversation resumable (the old "Kill Session").
+    private func closeConversationNow() {
         perform("Couldn't Close Conversation") { conversation, config in
             try await store.closeConversation(conversation, config: config)
             loader.reset()
@@ -744,6 +798,9 @@ struct ConversationFrame: View {
         case let .hostEditor(prefill):
             // Create mode: the host and its key are saved together, and Cancel leaves nothing.
             HostEditorView(prefill: prefill)
+        case let .editHost(host):
+            // Its Forget Host Key clears the identity this device trusted.
+            HostEditorView(host: host)
         }
     }
 
@@ -765,10 +822,11 @@ struct ConversationFrame: View {
 
     private func beginDuplicate(tool: String, name: String) {
         guard !isDuplicating, let source = conversation else { return }
-        isDuplicating = true
+        withAnimation { isDuplicating = true }
         let openConfig = readyConversation?.config
         Task {
-            defer { isDuplicating = false }
+            // Off while the summary sheet is up; Start turns it back on.
+            defer { withAnimation { isDuplicating = false } }
             do {
                 let config = try openConfig ?? HostLookup.config(for: source.computer, in: hosts)
                 let transcript = try await transcriptForDuplicate(source: source, tool: tool, config: config)
@@ -795,10 +853,12 @@ struct ConversationFrame: View {
     }
 
     private func confirmSummary() {
-        guard let context = summaryContext else { return }
+        guard let context = summaryContext, !isDuplicating else { return }
         let text = summaryText
         summaryContext = nil
+        withAnimation { isDuplicating = true }
         Task {
+            defer { withAnimation { isDuplicating = false } }
             do {
                 let plan = DuplicateHandoff.plan(
                     source: context.source, destinationTool: context.tool, label: context.name,
@@ -857,8 +917,7 @@ struct ConversationFrame: View {
         guard let launch = duplicateLaunch,
               launch.conversationID == readyConversation?.conversation.id,
               let paste = launch.paste else { return }
-        let text = paste.hasSuffix("\n") ? paste : paste + "\n"
-        terminal.send(Array(text.utf8))
+        terminal.submit(paste)
         duplicateLaunch?.paste = nil
     }
 }
@@ -932,11 +991,13 @@ private struct ActionFailure {
 private enum FrameSheet: Identifiable {
     case settings(SettingsDestination)
     case hostEditor(HostEditorPrefill)
+    case editHost(HostEntity)
 
     var id: String {
         switch self {
         case let .settings(destination): "settings-\(destination)"
         case let .hostEditor(prefill): "host-\(prefill.id)"
+        case let .editHost(host): "edit-host-\(host.id)"
         }
     }
 }
