@@ -175,19 +175,18 @@ struct AddTodoSheet: View {
                         name: newName, section: chosenSection, folder: newFolder
                     )) else { return }
                     projectId = created.id
+                    // Kept even if the todo fails, so trying again doesn't make a second project.
+                    self.makingNew = false
+                    self.newName = ""
+                    self.newFolder = ""
+                    self.projectID = projectId
                 } else if let existing {
                     projectId = existing
                 } else {
                     return
                 }
-                guard await store.createTodo(title: text, projectId: projectId) else { return }
+                try await store.addTodo(title: text, projectId: projectId)
                 title = ""
-                if makingNew {
-                    self.makingNew = false
-                    self.newName = ""
-                    self.newFolder = ""
-                    self.projectID = projectId
-                }
                 localError = nil
                 titleFocused = true
             } catch {
