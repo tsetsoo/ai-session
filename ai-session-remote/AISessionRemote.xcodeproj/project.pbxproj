@@ -128,6 +128,7 @@
 		98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */; };
 		98E8F675B83628ACA76E96E2 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 933D60662FF1D5CFC33458A1 /* NIOSSH */; };
 		99D85BE4B3A86446B9E2C27A /* Dictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E67B76EDE9FE683169680363 /* Dictation.swift */; };
+		9A9A1C513848F018C43DDFBA /* LocalConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0E92D9DEB7C4816EBDB4B77 /* LocalConnection.swift */; };
 		9AC6F15718E4541263BB3B76 /* NewSessionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FD7158DD9EEFF2C436D5B5D /* NewSessionSheet.swift */; };
 		9CD0C05A23D6CB68416A536A /* TodoConversationScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D950090C7A69096F9F3FF813 /* TodoConversationScreen.swift */; };
 		9D1FCB805CE27464A8D970EA /* PromoteSessionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3241ADE6D78A7C9BB02EC3 /* PromoteSessionSheet.swift */; };
@@ -201,6 +202,7 @@
 		EC0EC66AF6A143704EC053CD /* FrameStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6DF7A48AF9E2D3EED9528A2 /* FrameStateView.swift */; };
 		EC8DE2B3AD15449D17F823F3 /* ConversationRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E36AD351C0A22DEC339CAE5 /* ConversationRow.swift */; };
 		EE04800E43A3B5A9887D4281 /* TOFUHostKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */; };
+		EEE34ECE95236577DE543771 /* LocalConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0E92D9DEB7C4816EBDB4B77 /* LocalConnection.swift */; };
 		EF09596E78D56E59634CB61F /* TodoHubStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ABB2CBA22446496FCC5434A /* TodoHubStore.swift */; };
 		EF6087053C1B3C66DF8EDFEC /* ProjectEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97B7A594C8A26491ACD55735 /* ProjectEditorSheet.swift */; };
 		EF99E3E1BD354E591326BD49 /* SidebarModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77812A59712865DEA10BA4B1 /* SidebarModel.swift */; };
@@ -338,6 +340,7 @@
 		EF1398BED37E8B138CFC5C42 /* ConversationRowActionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationRowActionsTests.swift; sourceTree = "<group>"; };
 		EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReachabilityProbe.swift; sourceTree = "<group>"; };
 		F06755DADA1B0CE90BE0D801 /* ai-session-remote */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ai-session-remote"; path = .; sourceTree = SOURCE_ROOT; };
+		F0E92D9DEB7C4816EBDB4B77 /* LocalConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalConnection.swift; sourceTree = "<group>"; };
 		F4325A2838E2861F98B34246 /* PooledSSHConnectionCloseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PooledSSHConnectionCloseTests.swift; sourceTree = "<group>"; };
 		F6DF7A48AF9E2D3EED9528A2 /* FrameStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameStateView.swift; sourceTree = "<group>"; };
 		F7B4DE59A842C29732755FED /* TerminalOutputCoalescer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalOutputCoalescer.swift; sourceTree = "<group>"; };
@@ -506,6 +509,7 @@
 		71425925AFE31383B86D6F48 /* SSH */ = {
 			isa = PBXGroup;
 			children = (
+				F0E92D9DEB7C4816EBDB4B77 /* LocalConnection.swift */,
 				9CC825CDD2BB9FFA73CAFDE4 /* PooledConnecting.swift */,
 				DFFA46BBF4C8FFC2CCE6EE1B /* PooledSSHConnection.swift */,
 				CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */,
@@ -851,6 +855,7 @@
 				62BF5DE110162E7CAB151ADD /* InlineTodoAdd.swift in Sources */,
 				EB6822F143F473431F7E86B7 /* ListActions.swift in Sources */,
 				3C20726A071B705FCC2F9714 /* ListSelection.swift in Sources */,
+				9A9A1C513848F018C43DDFBA /* LocalConnection.swift in Sources */,
 				F20B4E30CA2C51E9A3F6C76A /* MacCompatibility.swift in Sources */,
 				DDC9B48D3E5C1D75C5A42285 /* MacShell.swift in Sources */,
 				C02C522D95113D7D02F16C02 /* MemoriesPresenter.swift in Sources */,
@@ -944,6 +949,7 @@
 				E2A339E52CAD6A60C4906591 /* KeyBar.swift in Sources */,
 				4E3846485AA10B3B7344F5E0 /* ListActions.swift in Sources */,
 				B06BE65B10FD125FE3054794 /* ListSelection.swift in Sources */,
+				EEE34ECE95236577DE543771 /* LocalConnection.swift in Sources */,
 				A4969E70C98FC8113339AE7A /* MacCompatibility.swift in Sources */,
 				07BD53647E58789FDD83FF03 /* MacShell.swift in Sources */,
 				C61894B166CF872961980837 /* MemoriesPresenter.swift in Sources */,

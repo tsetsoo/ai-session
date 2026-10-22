@@ -324,8 +324,14 @@ public struct NIOSSHClient: SSHExecuting {
     /// `SSHTerminalSession`, so attaching a terminal to a host reuses the same authenticated
     /// connection as any `exec` (reachability probe, list/create/kill) against that host,
     /// instead of dialing its own.
+    ///
+    /// On the Mac, a host that is this Mac (`ThisMac`) gets a `LocalConnection`: its commands
+    /// and terminals run locally, with no SSH at all.
     static let shared = SSHConnectionPool { config in
-        try await PooledSSHConnection.dial(
+        #if os(macOS)
+        if ThisMac.matches(config) { return LocalConnection() }
+        #endif
+        return try await PooledSSHConnection.dial(
             config,
             hostKeyStore: TOFUHostKeyStore(),
             connectTimeoutSeconds: connectTimeoutSeconds,

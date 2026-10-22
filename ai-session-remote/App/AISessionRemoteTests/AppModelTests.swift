@@ -725,6 +725,29 @@ final class TodoHubRefreshTests: XCTestCase {
         XCTAssertEqual(store.todos.count, DemoFixtures.todos.count)
     }
 
+    func testCreatingATodoShowsItWithoutWaitingForTheRefresh() async throws {
+        HubRefreshStub.reset()
+        let clock = ManualRefreshClock()
+        let store = try makeStore(sleep: { try await clock.sleep($0) })
+        let created = Todo(id: "new", section: .sp, title: "Quick add", projectId: "p1")
+        HubRefreshStub.set { bodies in
+            bodies.createdTodo = Self.encoded(created)
+            bodies.todos = Self.encoded([created])
+        }
+
+        // The refresh window never elapses here: a create that waited for it would hang.
+        let ok = await store.createTodo(title: "Quick add", projectId: "p1")
+        XCTAssertTrue(ok)
+        XCTAssertNil(store.errorMessage)
+        XCTAssertEqual(store.todos.map(\.id), ["new"])
+        XCTAssertEqual(HubRefreshStub.hits, 1, "only the create; the refresh is still waiting")
+
+        await waitUntil { clock.pending >= 1 }
+        clock.advance()
+        await waitUntil { HubRefreshStub.hits >= 7 }
+        XCTAssertEqual(store.todos.map(\.id), ["new"])
+    }
+
     func testStoreUserRefreshFetchesImmediately() async throws {
         HubRefreshStub.reset()
         let clock = ManualRefreshClock()
@@ -1014,6 +1037,8 @@ private final class HubRefreshStub: URLProtocol, @unchecked Sendable {
         var computers = Data("[]".utf8)
         var projects = Data("[]".utf8)
         var suggestions = Data("[]".utf8)
+        /// The answer to `POST /api/todos`.
+        var createdTodo = Data("{}".utf8)
     }
 
     private static let lock = NSLock()
@@ -1042,6 +1067,7 @@ private final class HubRefreshStub: URLProtocol, @unchecked Sendable {
         Self.hits += 1
         let body: Data
         switch path {
+        case "/api/todos" where request.httpMethod == "POST": body = Self.bodies.createdTodo
         case "/api/todos": body = Self.bodies.todos
         case "/api/conversations": body = Self.bodies.conversations
         case "/api/sections/computers": body = Self.bodies.sectionComputers
