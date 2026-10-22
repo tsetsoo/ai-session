@@ -74,8 +74,9 @@ struct TerminalWheelAnchor: Equatable {
 ///
 /// With tmux mouse mode on, SwiftTerm turns a drag into a held mouse button, so tmux starts a
 /// selection and nothing scrolls. Here a vertical finger drag sends wheel events instead, one
-/// line per line of travel, and keeps gliding after a flick. They carry the Meta bit, which the
-/// host's `tmux.conf` binds to scroll one line at a time (the plain wheel moves five).
+/// line per line of travel, and keeps gliding after a flick. Claude Code runs full screen and
+/// takes the mouse, so tmux passes each event to it and it scrolls one line. (A plain shell
+/// pane scrolls in tmux's copy mode instead, five lines an event.)
 /// A trackpad or mouse on iPad keeps SwiftTerm's drag, so it still selects in tmux.
 /// Without mouse reporting the view scrolls its own buffer as usual.
 final class TouchScrollTerminalView: TerminalView {
@@ -156,7 +157,7 @@ final class TouchScrollTerminalView: TerminalView {
             let location = pan.location(in: self)
             let start = CGPoint(x: location.x - translation.x, y: location.y - translation.y - bounds.minY)
             anchor = TerminalWheelAnchor(point: start, size: bounds.size, cols: terminal.cols, rows: terminal.rows)
-            scroll = TerminalTouchScroll(lineHeight: lineHeight * CGFloat(linesPerEvent))
+            scroll = TerminalTouchScroll(lineHeight: lineHeight)
         case .changed:
             let dy = pan.translation(in: self).y
             pan.setTranslation(.zero, in: self)
@@ -171,12 +172,6 @@ final class TouchScrollTerminalView: TerminalView {
     private var lineHeight: CGFloat {
         let rows = getTerminal().rows
         return rows > 0 ? bounds.height / CGFloat(rows) : 0
-    }
-
-    /// Lines one event scrolls: one with Meta, five for the plain wheel when the mouse mode
-    /// can't carry Meta.
-    private var linesPerEvent: Int {
-        getTerminal().mouseMode.sendsModifiers() ? 1 : 5
     }
 
     private func startMomentum(velocity: CGFloat) {
@@ -212,7 +207,7 @@ final class TouchScrollTerminalView: TerminalView {
         guard steps != 0, let anchor else { return }
         let terminal = getTerminal()
         guard terminal.mouseMode != .off else { return }
-        let flags = terminal.encodeButton(button: steps > 0 ? 4 : 5, release: false, shift: false, meta: true, control: false)
+        let flags = terminal.encodeButton(button: steps > 0 ? 4 : 5, release: false, shift: false, meta: false, control: false)
         for _ in 0..<abs(steps) {
             terminal.sendEvent(buttonFlags: flags, x: anchor.col, y: anchor.row)
         }
