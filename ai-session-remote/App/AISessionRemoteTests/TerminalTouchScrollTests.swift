@@ -76,3 +76,32 @@ final class TerminalTouchScrollTests: XCTestCase {
         XCTAssertNil(momentum.advance(by: 1.0 / 60))
     }
 }
+
+final class TerminalWheelAnchorTests: XCTestCase {
+    private let size = CGSize(width: 400, height: 200)
+
+    func testAnchorIsTheCellUnderThePoint() {
+        let anchor = TerminalWheelAnchor(point: CGPoint(x: 105, y: 55), size: size, cols: 40, rows: 20)
+        XCTAssertEqual(anchor, TerminalWheelAnchor(point: CGPoint(x: 109, y: 59), size: size, cols: 40, rows: 20))
+        XCTAssertEqual(anchor.col, 10)
+        XCTAssertEqual(anchor.row, 5)
+    }
+
+    func testAnchorStaysOffTheStatusRows() {
+        XCTAssertEqual(TerminalWheelAnchor(point: CGPoint(x: 0, y: 199), size: size, cols: 40, rows: 20).row, 18)
+        XCTAssertEqual(TerminalWheelAnchor(point: CGPoint(x: 0, y: 1), size: size, cols: 40, rows: 20).row, 1)
+    }
+
+    func testAnchorClampsOutsidePoints() {
+        let anchor = TerminalWheelAnchor(point: CGPoint(x: 900, y: -50), size: size, cols: 40, rows: 20)
+        XCTAssertEqual(anchor.col, 39)
+        XCTAssertEqual(anchor.row, 1)
+    }
+
+    func testTinyGridUsesWhatRowsItHas() {
+        XCTAssertEqual(TerminalWheelAnchor(point: CGPoint(x: 0, y: 199), size: size, cols: 40, rows: 2).row, 1)
+        let empty = TerminalWheelAnchor(point: CGPoint(x: 50, y: 50), size: .zero, cols: 0, rows: 0)
+        XCTAssertEqual(empty.col, 0)
+        XCTAssertEqual(empty.row, 0)
+    }
+}

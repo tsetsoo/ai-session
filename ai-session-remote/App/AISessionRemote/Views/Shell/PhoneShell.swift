@@ -51,8 +51,9 @@ struct PhoneShell: View {
     @State private var settings: SettingsRequest?
     @State private var showingAdd = false
     @State private var showingNewFromConversation = false
-    /// `.attach` / `.detach` for the open conversation's frame.
-    @State private var frameRequest: FrameRequest?
+    /// `.attach` / `.detach` for each tab's open conversation, so one tab's request can't be
+    /// taken or cleared by a frame in another.
+    @State private var frameRequests: [Tab: FrameRequest] = [:]
 
     init() {
         #if DEBUG
@@ -96,7 +97,7 @@ struct PhoneShell: View {
                 todosRoot
                     .phoneTab("Todos", openSettings: openSettings)
                     .toolbar { addMenu }
-                    .navigationDestination(for: Route.self) { destination($0, path: $todosPath) }
+                    .navigationDestination(for: Route.self) { destination($0, path: $todosPath, in: .todos) }
             }
             .tabItem { Label("Todos", systemImage: "checklist") }
             .tag(Tab.todos)
@@ -104,7 +105,7 @@ struct PhoneShell: View {
             NavigationStack(path: $conversationsPath) {
                 conversationsRoot
                     .phoneTab("Conversations", openSettings: openSettings)
-                    .navigationDestination(for: Route.self) { destination($0, path: $conversationsPath) }
+                    .navigationDestination(for: Route.self) { destination($0, path: $conversationsPath, in: .conversations) }
             }
             .tabItem { Label("Conversations", systemImage: "bubble.left.and.bubble.right") }
             .badge(model.board.needsYou.count)
@@ -113,7 +114,7 @@ struct PhoneShell: View {
             NavigationStack(path: $projectsPath) {
                 projectsRoot
                     .phoneTab("Projects", openSettings: openSettings)
-                    .navigationDestination(for: Route.self) { destination($0, path: $projectsPath) }
+                    .navigationDestination(for: Route.self) { destination($0, path: $projectsPath, in: .projects) }
             }
             .tabItem { Label("Projects", systemImage: "folder") }
             .tag(Tab.projects)
@@ -121,7 +122,7 @@ struct PhoneShell: View {
             NavigationStack(path: $computersPath) {
                 computersRoot
                     .phoneTab("Computers", openSettings: openSettings)
-                    .navigationDestination(for: Route.self) { destination($0, path: $computersPath) }
+                    .navigationDestination(for: Route.self) { destination($0, path: $computersPath, in: .computers) }
             }
             .tabItem { Label("Computers", systemImage: "desktopcomputer") }
             .tag(Tab.computers)
@@ -254,11 +255,15 @@ struct PhoneShell: View {
     // MARK: Navigation
 
     @ViewBuilder
-    private func destination(_ route: Route, path: Binding<[Route]>) -> some View {
+    private func destination(_ route: Route, path: Binding<[Route]>, in routeTab: Tab) -> some View {
         switch route {
         case let .todo(id):
             if let todo = store.todos.first(where: { $0.id == id }) {
-                ConversationDetail(todo: todo, request: $frameRequest) {
+                // A tap is deliberate, so a running conversation attaches without the Mac's
+                // browsing delay. A frame left open in another tab isn't frontmost, so the same
+                // todo open in two tabs attaches only where it is shown.
+                ConversationDetail(todo: todo, request: frameRequest(for: routeTab),
+                                   isFrontmost: tab == routeTab, attachImmediately: true) {
                     if path.wrappedValue.last == route { path.wrappedValue.removeLast() }
                 }
                 .toolbar(.hidden, for: .tabBar)
@@ -282,6 +287,10 @@ struct PhoneShell: View {
         model.selectedConversationID = store.conversationToOpen(forTodo: todoID)
         tab = .conversations
         conversationsPath = [.todo(todoID)]
+    }
+
+    private func frameRequest(for tab: Tab) -> Binding<FrameRequest?> {
+        Binding(get: { frameRequests[tab] }, set: { frameRequests[tab] = $0 })
     }
 
     private var currentPath: Binding<[Route]> {
