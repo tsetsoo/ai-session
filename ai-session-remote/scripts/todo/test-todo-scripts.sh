@@ -371,18 +371,96 @@ fi
 pass "ai-todo-open cursor: resumes with agent --resume, attaches when running, exits 94 for unknown ids, exits 90 without agent"
 
 # A fresh Codex or Cursor conversation has no id until the tool creates one.
+# Codex before 0.163 writes the rollout at startup.
+META_CLI='{"type":"session_meta","payload":{"source":"cli"}}'
+META_SUB='{"type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}}}}'
 FRESH_CODEX="${SANDBOX}/bin/codex-fresh"
 cat >"$FRESH_CODEX" <<EOF
 #!/bin/sh
 mkdir -p "\$HOME/.codex/sessions/2026/10/20"
-: > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-NEWCODX.jsonl"
+echo '$META_CLI' > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-NEWCODX.jsonl"
 exec sleep 300
 EOF
 chmod +x "$FRESH_CODEX"
 out="$(AI_TODO_CODEX_BIN="$FRESH_CODEX" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-new1" '~/programming' - codex)"
 [[ "$out" == "created NEWCODX" ]] || fail "fresh codex printed '$out'"
 
+# Codex 0.163 writes the rollout only after the first message. At startup its TUI marks
+# the thread under tui-thread-reference-capabilities.
+MARKS="${HOME}/.codex/tui-thread-reference-capabilities"
+LOCKS="${HOME}/.codex/thread-writer-locks"
+mkdir -p "$MARKS" "$LOCKS"
+MARK_CODEX="${SANDBOX}/bin/codex-mark"
+cat >"$MARK_CODEX" <<EOF
+#!/bin/sh
+: > "$MARKS/01a16548-895c-7ff3-bbf0-a83014fc8ef9"
+: > "$LOCKS/01a16548-895c-7ff3-bbf0-a83014fc8ef9.lock"
+exec sleep 300
+EOF
+chmod +x "$MARK_CODEX"
+out="$(AI_TODO_CODEX_BIN="$MARK_CODEX" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-new2" '~/programming' - codex)"
+[[ "$out" == "created 01a16548-895c-7ff3-bbf0-a83014fc8ef9" ]] || fail "fresh codex with a TUI mark printed '$out'"
+
+# A Codex that writes both for one thread is still one new conversation.
+BOTH_CODEX="${SANDBOX}/bin/codex-both"
+cat >"$BOTH_CODEX" <<EOF
+#!/bin/sh
+mkdir -p "\$HOME/.codex/sessions/2026/10/22"
+: > "$MARKS/01a16549-0000-7000-8000-000000000001"
+echo '$META_CLI' > "\$HOME/.codex/sessions/2026/10/22/rollout-2026-10-22T00-00-00-01a16549-0000-7000-8000-000000000001.jsonl"
+exec sleep 300
+EOF
+chmod +x "$BOTH_CODEX"
+out="$(AI_TODO_CODEX_BIN="$BOTH_CODEX" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-new3" '~/programming' - codex)"
+[[ "$out" == "created 01a16549-0000-7000-8000-000000000001" ]] || fail "fresh codex with mark and rollout printed '$out'"
+
+# Other Codex activity during the wait is not the new conversation: an older TUI thread
+# sending its first message, a sub-agent or guardian thread of another Codex (a lock and a
+# rollout, no TUI mark), and names that are not thread ids.
+OLD_MARK_ONLY=01a16540-0000-7000-8000-000000000002
+: >"$MARKS/$OLD_MARK_ONLY"
+BUSY_CODEX="${SANDBOX}/bin/codex-busy"
+cat >"$BUSY_CODEX" <<EOF
+#!/bin/sh
+mkdir -p "\$HOME/.codex/sessions/2026/10/22" "$MARKS/sub"
+echo '$META_CLI' > "\$HOME/.codex/sessions/2026/10/22/rollout-2026-10-22T00-00-01-${OLD_MARK_ONLY}.jsonl"
+: > "$LOCKS/01a16541-0000-7000-8000-000000000003.lock"
+echo '$META_SUB' > "\$HOME/.codex/sessions/2026/10/22/rollout-2026-10-22T00-00-02-01a16541-0000-7000-8000-000000000003.jsonl"
+: > "$MARKS/not-a-thread"
+: > "$MARKS/sub/01a16542-0000-7000-8000-000000000006"
+sleep 0.5
+: > "$MARKS/01a1654a-0000-7000-8000-000000000004"
+exec sleep 300
+EOF
+chmod +x "$BUSY_CODEX"
+out="$(AI_TODO_CODEX_BIN="$BUSY_CODEX" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-new4" '~/programming' - codex)"
+[[ "$out" == "created 01a1654a-0000-7000-8000-000000000004" ]] || fail "fresh codex beside other codex activity printed '$out'"
+
+# A conversation that was started and never sent a message can't be resumed. Say why.
+EMPTY_CODEX=01a1654b-0000-7000-8000-000000000005
+: >"$MARKS/$EMPTY_CODEX"
+if err="$(AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-empty1" '~/programming' "$EMPTY_CODEX" codex 2>&1 >/dev/null)"; then
+  fail "codex open resumed a conversation with no messages"
+else
+  [[ $? -eq 94 ]] || fail "codex conversation with no messages should exit 94"
+  [[ "$err" == *"has no messages"* ]] || fail "codex conversation with no messages said '$err'"
+fi
+
+# An archived one is not called empty, even with its mark still there.
+ARCHIVED_CODEX=01a1654c-0000-7000-8000-000000000007
+: >"$MARKS/$ARCHIVED_CODEX"
+mkdir -p "${HOME}/.codex/archived_sessions"
+echo "$META_CLI" >"${HOME}/.codex/archived_sessions/rollout-2026-10-22T00-00-03-${ARCHIVED_CODEX}.jsonl"
+if err="$(AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-archived1" '~/programming' "$ARCHIVED_CODEX" codex 2>&1 >/dev/null)"; then
+  fail "codex open resumed an archived conversation"
+else
+  [[ $? -eq 94 ]] || fail "archived codex conversation should exit 94"
+  [[ "$err" == *"is archived"* ]] || fail "archived codex conversation said '$err'"
+fi
+
+# Cursor: the id is the one passed to --new-session-id, whatever other chat appears.
 FRESH_AGENT="${SANDBOX}/bin/agent-fresh"
+AGENT_ID_FILE="${SANDBOX}/agent-fresh.id"
 cat >"$FRESH_AGENT" <<EOF
 #!/bin/sh
 if [ "\$1" = status ]; then
@@ -398,12 +476,15 @@ case " \$* " in
   *" --new-session-id "*) ;;
   *) echo "expected --new-session-id, got: \$*" >&2; exit 1 ;;
 esac
-mkdir -p "\$HOME/.cursor/chats/abc/NEWCURS"
+echo "\$2" > "$AGENT_ID_FILE"
+mkdir -p "\$HOME/.cursor/chats/abc/OTHERCHAT"
+sleep 0.5
+mkdir -p "\$HOME/.cursor/chats/abc/\$2"
 exec sleep 300
 EOF
 chmod +x "$FRESH_AGENT"
 out="$(AI_TODO_AGENT_BIN="$FRESH_AGENT" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/cursor/todo-new1" '~/programming' - cursor)"
-[[ "$out" == "created NEWCURS" ]] || fail "fresh cursor printed '$out'"
+[[ -s "$AGENT_ID_FILE" && "$out" == "created $(cat "$AGENT_ID_FILE")" ]] || fail "fresh cursor printed '$out'"
 
 LOGGED_OUT="${SANDBOX}/bin/agent-logged-out"
 LOGGED_OUT_LOG="${SANDBOX}/agent-logged-out.log"
@@ -447,8 +528,8 @@ TWO="${SANDBOX}/bin/codex-two"
 cat >"$TWO" <<EOF
 #!/bin/sh
 mkdir -p "\$HOME/.codex/sessions/2026/10/20"
-: > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-ONE.jsonl"
-: > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-01-TWO.jsonl"
+echo '$META_CLI' > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-ONE.jsonl"
+echo '$META_CLI' > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-01-TWO.jsonl"
 exec sleep 300
 EOF
 chmod +x "$TWO"
@@ -464,7 +545,7 @@ STUCK="${SANDBOX}/bin/codex-stuck"
 cat >"$STUCK" <<EOF
 #!/bin/sh
 mkdir -p "\$HOME/.codex/sessions/2026/10/20"
-: > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-02-STUCKID.jsonl"
+echo '$META_CLI' > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-02-STUCKID.jsonl"
 exec sleep 300
 EOF
 chmod +x "$STUCK"

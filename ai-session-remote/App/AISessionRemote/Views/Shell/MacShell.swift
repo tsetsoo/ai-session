@@ -383,7 +383,25 @@ struct MacShell: View {
                 model.selectedConversationID = tag.flatMap { store.conversationToOpen(forTodo: $0) }
                 model.selectedTodoID = tag
             }
+            // A click lands keyboard focus in the terminal; arrowing through the list keeps it
+            // in the list. A terminal still connecting focuses itself when it connects.
+            if Self.selectionIsClick, let todoID = model.selectedTodoID {
+                model.requestTerminalFocus(todoID: todoID)
+            }
         })
+    }
+
+    /// The list sets its selection while it handles the event that changed it, so the
+    /// current event is that click or key.
+    private static var selectionIsClick: Bool {
+        #if os(macOS)
+        switch NSApp.currentEvent?.type {
+        case .leftMouseDown?, .leftMouseUp?: return true
+        default: return false
+        }
+        #else
+        false
+        #endif
     }
 
     /// "Open" from a row's context menu: select it and start (or resume) `conversation`, or the

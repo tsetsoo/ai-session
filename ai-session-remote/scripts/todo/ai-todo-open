@@ -111,47 +111,68 @@ esac
 
 command -v tmux >/dev/null 2>&1 || { echo "tmux not found" >&2; exit 90; }
 
-# Paths of conversation files that already exist, one per line.
+uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+codex_tui_marks="$HOME/.codex/tui-thread-reference-capabilities"
+
+# Ids of conversations that already exist, one per line, each once.
+# Codex 0.163+ writes the rollout only after the first message, but the TUI marks its
+# thread under tui-thread-reference-capabilities/<id> at startup. Older versions write
+# the rollout at once. A thread with both is one id. (Writer locks are no use: sub-agent
+# and guardian threads of any running Codex take them too.)
 fresh_ids() {
   if [ "$1" = codex ]; then
-    find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -print 2>/dev/null | LC_ALL=C sort || true
+    {
+      find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -print 2>/dev/null \
+        | sed -n 's|^.*/rollout-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-\([^/]*\)\.jsonl$|\1|p' || true
+      find "$codex_tui_marks" -mindepth 1 -maxdepth 1 -print 2>/dev/null \
+        | sed 's|^.*/||' | LC_ALL=C grep -Ex "$uuid_re" || true
+    } | LC_ALL=C sort -u
   else
-    find "$HOME/.cursor/chats" -mindepth 2 -maxdepth 2 -type d -print 2>/dev/null | LC_ALL=C sort || true
+    find "$HOME/.cursor/chats" -mindepth 2 -maxdepth 2 -type d -print 2>/dev/null \
+      | sed 's|^.*/||' | LC_ALL=C sort -u || true
   fi
 }
 
-fresh_id_of() {
+# Whether a new id can be the conversation this script started. Codex: a TUI thread, or
+# a rollout that is not a sub-agent's (a rollout with no first line yet is not decided).
+# Cursor: the id passed to --new-session-id.
+fresh_is_ours() {
   if [ "$1" = codex ]; then
-    basename "$2" .jsonl | sed -n 's/^rollout-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-//p'
-  else
-    basename "$2"
+    [ -e "$codex_tui_marks/$2" ] && return 0
+    first=$(find "$HOME/.codex/sessions" -name "rollout-*-$2.jsonl" -print 2>/dev/null | head -n 1)
+    first=${first:+$(head -n 1 "$first" 2>/dev/null)}
+    [ -n "$first" ] || return 1
+    case "$first" in
+      *'"subagent"'*) return 1 ;;
+    esac
+    return 0
   fi
+  [ "$2" = "$cursor_id" ]
 }
 
-# The id of a conversation file that was not in $fresh_before. Empty until one appears.
+# The id that was not in $fresh_before. Empty until one appears.
 wait_for_fresh_id() {
   deadline=$(( $(date +%s) + 30 ))
   while [ "$(date +%s)" -le "$deadline" ]; do
     now=$(fresh_ids "$1")
     ids=
     count=0
-    while IFS= read -r candidate; do
-      [ -n "$candidate" ] || continue
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
       case "
 $fresh_before
 " in
         *"
-$candidate
+$id
 "*) ;;
         *)
-          id=$(fresh_id_of "$1" "$candidate")
-          if [ -n "$id" ]; then
-            count=$((count + 1))
-            ids=$id
-            if [ "$count" -gt 1 ]; then
-              echo "more than one new $1 conversation appeared" >&2
-              return 1
-            fi
+          fresh_is_ours "$1" "$id" || continue
+          count=$((count + 1))
+          ids=$id
+          if [ "$count" -gt 1 ]; then
+            echo "more than one new $1 conversation appeared" >&2
+            return 1
           fi
           ;;
       esac
@@ -191,7 +212,16 @@ if [ "$tool" = codex ]; then
     mode=created
     set -- "$codex_bin"
   elif [ -z "$(find "$HOME/.codex/sessions" -name "rollout-*-$sid.jsonl" -print 2>/dev/null | head -n 1)" ]; then
-    echo "no Codex conversation $sid on this computer" >&2
+    # Started but never sent a message: Codex 0.163+ keeps no rollout for it and
+    # `codex resume` refuses it. Nothing was said in it, so a new one loses nothing.
+    # An archived one keeps its rollout under archived_sessions.
+    if [ -n "$(find "$HOME/.codex/archived_sessions" -name "rollout-*-$sid.jsonl" -print 2>/dev/null | head -n 1)" ]; then
+      echo "Codex conversation $sid is archived. Unarchive it with \`codex unarchive $sid\`, then open it again." >&2
+    elif [ -e "$codex_tui_marks/$sid" ] || [ -e "$HOME/.codex/thread-writer-locks/$sid.lock" ]; then
+      echo "Codex conversation $sid has no messages, so Codex can't resume it. Unlink it and start a new one." >&2
+    else
+      echo "no Codex conversation $sid on this computer" >&2
+    fi
     exit 94
   else
     mode=resumed
