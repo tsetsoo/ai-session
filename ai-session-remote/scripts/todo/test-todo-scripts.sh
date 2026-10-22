@@ -1951,7 +1951,7 @@ assert s["model"] == "opus"
 PY
 }
 check_installed || fail "settings.json after install is wrong: $(cat "$SETTINGS")"
-[[ -x "${HOME}/.ai-remote/bin/ai-todo-open" && -x "${HOME}/.ai-remote/bin/ai-todo-hook" && -x "${HOME}/.ai-remote/bin/ai-todo-sessions" && -x "${HOME}/.ai-remote/bin/ai-todo-limits" ]] || fail "scripts not installed"
+[[ -x "${HOME}/.ai-remote/bin/ai-todo-open" && -x "${HOME}/.ai-remote/bin/ai-todo-hook" && -x "${HOME}/.ai-remote/bin/ai-todo-sessions" && -x "${HOME}/.ai-remote/bin/ai-todo-limits" && -x "${HOME}/.ai-remote/bin/ai-todo-transcript" ]] || fail "scripts not installed"
 [[ "$(grep -c 'source-file -q ~/.ai-remote/tmux.conf' "${HOME}/.tmux.conf")" -eq 1 ]] || fail "tmux source line not added exactly once"
 grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "existing ~/.tmux.conf content lost"
 [[ "$(stat -f '%Lp' "${HOME}/.ai-remote/todo-hub.conf" 2>/dev/null || stat -c '%a' "${HOME}/.ai-remote/todo-hub.conf")" == 600 ]] \
@@ -2071,7 +2071,7 @@ assert hooks["PreToolUse"][0]["matcher"] == "Bash"
 assert s["model"] == "opus"
 assert "projectInstructions" not in s, s.get("projectInstructions")
 PY
-[[ ! -e "${HOME}/.ai-remote/bin/ai-todo-open" && ! -e "${HOME}/.ai-remote/bin/ai-todo-sessions" && ! -e "${HOME}/.ai-remote/bin/ai-todo-limits" && ! -e "${HOME}/.ai-remote/tmux.conf" ]] || fail "uninstall left scripts behind"
+[[ ! -e "${HOME}/.ai-remote/bin/ai-todo-open" && ! -e "${HOME}/.ai-remote/bin/ai-todo-sessions" && ! -e "${HOME}/.ai-remote/bin/ai-todo-limits" && ! -e "${HOME}/.ai-remote/bin/ai-todo-transcript" && ! -e "${HOME}/.ai-remote/tmux.conf" ]] || fail "uninstall left scripts behind"
 ! grep -q 'ai-remote/tmux.conf' "${HOME}/.tmux.conf" || fail "uninstall left the tmux source line"
 grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "uninstall removed other ~/.tmux.conf lines"
 pass "uninstall removes only our hooks, scripts, tmux line, codex notify and hook state"

@@ -418,6 +418,7 @@ do_install() {
   run install -m 755 "${SRC_DIR}/ai-todo-limits" "${BIN_DIR}/ai-todo-limits"
   run install -m 755 "${SRC_DIR}/ai-todo-codex-notify" "${BIN_DIR}/ai-todo-codex-notify"
   run install -m 755 "${SRC_DIR}/ai-todo-memory" "${BIN_DIR}/ai-todo-memory"
+  run install -m 755 "${SRC_DIR}/ai-todo-transcript" "${BIN_DIR}/ai-todo-transcript"
   run install -m 644 "${SRC_DIR}/ai_todo_redact.py" "${BIN_DIR}/ai_todo_redact.py"
   run install -m 644 "${SRC_DIR}/tmux.conf" "$TMUX_SNIPPET"
   say "scripts: installed to ${BIN_DIR}"
@@ -464,6 +465,7 @@ do_uninstall() {
 
   run rm -f "${BIN_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-sessions" \
     "${BIN_DIR}/ai-todo-limits" "${BIN_DIR}/ai-todo-codex-notify" "${BIN_DIR}/ai-todo-memory" \
+    "${BIN_DIR}/ai-todo-transcript" \
     "${BIN_DIR}/ai_todo_redact.py" "$TMUX_SNIPPET"
   say "scripts: removed"
   # Per-session state kept by the hooks.

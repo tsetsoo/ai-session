@@ -494,7 +494,7 @@ final class TodoHubStore {
     func captureTranscript(of conversation: Conversation, config: HostConnectionConfig) async throws -> String {
         try await remoteStdout(
             TmuxCommandBuilder.conversationTranscript(tool: conversation.tool, sessionId: conversation.sessionId),
-            config: config
+            config: config, computerName: conversation.computer.name
         )
     }
 
@@ -502,12 +502,16 @@ final class TodoHubStore {
     func summarizeConversation(_ conversation: Conversation, config: HostConnectionConfig) async throws -> String {
         try await remoteStdout(
             TmuxCommandBuilder.summarizeConversation(tool: conversation.tool, sessionId: conversation.sessionId),
-            config: config
+            config: config, computerName: conversation.computer.name
         )
     }
 
-    private func remoteStdout(_ command: String, config: HostConnectionConfig) async throws -> String {
+    /// A helper missing on the computer (exit 127) is reported as that, not as a retryable failure.
+    private func remoteStdout(_ command: String, config: HostConnectionConfig, computerName: String) async throws -> String {
         let result = try await NIOSSHClient().exec(config, command: command)
+        if result.exitCode == TmuxCommandBuilder.scriptMissingExitCode {
+            throw RemoteConversations.ScriptMissing(computer: computerName)
+        }
         guard result.exitCode == 0 else {
             throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
         }
