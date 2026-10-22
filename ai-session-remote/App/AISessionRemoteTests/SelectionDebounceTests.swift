@@ -91,6 +91,16 @@ final class SelectionDebounceTests: XCTestCase {
         XCTAssertEqual(sent, ["attach a"])
     }
 
+    func testTheLivenessAnswerAttachesWithoutASecondWait() {
+        readiness = ["a": .awaitingLiveness]
+        attacher.select("a", immediate: true)
+        XCTAssertEqual(attacher.livenessRequests, 1)
+        readiness["a"] = .running
+        attacher.inputsChanged()
+        XCTAssertEqual(sent, ["attach a"])
+        XCTAssertFalse(attacher.isSettling)
+    }
+
     func testAsksForLivenessOncePerSelection() {
         readiness = ["a": .awaitingLiveness]
         attacher.select("a")

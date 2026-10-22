@@ -747,8 +747,8 @@ private struct ConversationColumn: View {
 ///   so the wait is not paid twice.
 /// - It attaches only once the conversation's tmux session was listed alive: attaching runs
 ///   `ai-todo-open`, which would quietly recreate a dead session. If the computer hasn't been
-///   listed yet it asks for a liveness refresh and waits; if that gets no answer it stays on
-///   Start / Resume.
+///   listed yet it asks for a liveness refresh of that computer and waits; the answer acts at
+///   once, since the selection already settled. If it gets no answer it stays on Start / Resume.
 /// - It re-evaluates when the selected conversation's running state changes: starting to run
 ///   elsewhere attaches (debounced), closing drops to Start / Resume.
 /// - A frame kept mounted behind the one on screen does not open a terminal. One that is
@@ -850,6 +850,11 @@ final class SelectionAttacher {
                 perform(FrameRequest(kind: .detach, todoID: todoID))
                 lastKnown = .closed
             }
+            return
+        }
+        // The answer to this selection's own liveness request: it settled before asking.
+        if askedForLiveness, lastKnown == nil, readiness(todoID) != .awaitingLiveness {
+            evaluate()
             return
         }
         schedule()
@@ -971,7 +976,7 @@ struct ConversationDetail: View {
         }
         .task(id: attacher.livenessRequests) {
             guard attacher.livenessRequests > 0 else { return }
-            await model.refreshLiveness(hosts: hosts)
+            await model.refreshLiveness(forTodo: todo.id, hosts: hosts)
         }
         .onChange(of: model.livenessAbandoned) { _, _ in attacher.livenessAbandoned() }
     }
