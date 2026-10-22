@@ -243,7 +243,21 @@ private final class LocalPTY: LocalProcessDelegate, @unchecked Sendable {
             defer { finished = true }
             return !finished
         }
-        if first { process.terminate() }
+        guard first else { return }
+        let pid = process.shellPid
+        process.terminate()
+        Self.reap(pid)
+    }
+
+    /// `terminate()` stops SwiftTerm watching for the exit, and that watch was its only
+    /// `waitpid`: without this every closed terminal stays a zombie.
+    private static func reap(_ pid: pid_t) {
+        guard pid > 0 else { return }
+        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global(qos: .utility))
+        source.setEventHandler { if waitpid(pid, nil, WNOHANG) != 0 { source.cancel() } }
+        source.activate()
+        // It may have exited before the source was armed.
+        if waitpid(pid, nil, WNOHANG) != 0 { source.cancel() }
     }
 
     // MARK: LocalProcessDelegate
