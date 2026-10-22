@@ -36,4 +36,43 @@ final class TodoAddFormTests: XCTestCase {
         XCTAssertEqual(TodoProjectMenuTitle.row(section: .sp, name: "sigma"), "Sp · sigma")
         XCTAssertEqual(TodoProjectMenuTitle.row(section: .i, name: "notes"), "I · notes")
     }
+
+    func testTheDefaultProjectIsTheFirstOrNewWhenThereAreNone() {
+        var choice = TodoAddProjectChoice()
+        choice.pickDefault(among: ["a", "b"])
+        XCTAssertEqual(choice.projectID, "a")
+        XCTAssertFalse(choice.makingNew)
+
+        var empty = TodoAddProjectChoice()
+        empty.pickDefault(among: [])
+        XCTAssertNil(empty.projectID)
+        XCTAssertTrue(empty.makingNew)
+    }
+
+    func testAChoiceThatIsStillListedIsKept() {
+        var choice = TodoAddProjectChoice()
+        choice.choose("b")
+        choice.pickDefault(among: ["a", "b"])
+        XCTAssertEqual(choice.projectID, "b")
+
+        choice.chooseNew()
+        choice.pickDefault(among: ["a", "b"])
+        XCTAssertTrue(choice.makingNew)
+    }
+
+    func testAChoiceThatIsNoLongerListedFallsBackToTheFirst() {
+        var choice = TodoAddProjectChoice()
+        choice.choose("gone")
+        choice.pickDefault(among: ["a"])
+        XCTAssertEqual(choice.projectID, "a")
+    }
+
+    func testClearingLeavesNothingChosenUntilTheNextDefault() {
+        var choice = TodoAddProjectChoice()
+        choice.chooseNew()
+        choice.clear()
+        XCTAssertFalse(choice.isChosen)
+        choice.pickDefault(among: ["a"])
+        XCTAssertEqual(choice.projectID, "a")
+    }
 }

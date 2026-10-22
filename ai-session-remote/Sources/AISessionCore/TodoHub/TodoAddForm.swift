@@ -42,3 +42,43 @@ public enum TodoAddForm {
         return true
     }
 }
+
+/// Which project a new todo goes into: one of the section's projects, or a new one typed in
+/// the form. Shared by the New Todo sheet and the inline add rows.
+public struct TodoAddProjectChoice: Equatable, Sendable {
+    public private(set) var projectID: String?
+    public private(set) var makingNew = false
+
+    public init() {}
+
+    public mutating func choose(_ projectID: String) {
+        self.projectID = projectID
+        makingNew = false
+    }
+
+    public mutating func chooseNew() {
+        projectID = nil
+        makingNew = true
+    }
+
+    /// Nothing chosen, as when the section changes.
+    public mutating func clear() {
+        projectID = nil
+        makingNew = false
+    }
+
+    /// Keeps New project or a project that is still listed; otherwise the first project, or New
+    /// project when the section has none.
+    public mutating func pickDefault(among projectIDs: [String]) {
+        if makingNew { return }
+        if let projectID, projectIDs.contains(projectID) { return }
+        if let first = projectIDs.first {
+            choose(first)
+        } else {
+            chooseNew()
+        }
+    }
+
+    /// True once an existing project or New project is chosen.
+    public var isChosen: Bool { makingNew || projectID != nil }
+}

@@ -43,10 +43,15 @@ enum DemoFixtures {
         }
     }()
 
-    static let projects: [Project] = [
-        Project(id: "demo-rms", name: "rms-backend", computer: macStudio, folder: "~/code/rms-backend", section: .sp),
-        Project(id: "demo-rates", name: "rate-importer", computer: macStudio, folder: "~/code/rate-importer", section: .sp),
-    ]
+    /// Sp's projects, for screenshots of the New Todo sheet (`-uiDemoAdd`) only: other `-uiDemo`
+    /// screens keep showing no projects. (`-demoProjects` has its own, in `TodoHubDemo`.)
+    static var addSheetProjects: [Project] {
+        guard ProcessInfo.processInfo.arguments.contains("-uiDemoAdd") else { return [] }
+        return [
+            Project(id: "demo-rms", name: "rms-backend", computer: macStudio, folder: "~/code/rms-backend", section: .sp),
+            Project(id: "demo-rates", name: "rate-importer", computer: macStudio, folder: "~/code/rate-importer", section: .sp),
+        ]
+    }
 
     private static let now = "2026-10-17T09:00:00Z"
 

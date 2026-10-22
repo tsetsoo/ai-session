@@ -16,12 +16,7 @@ struct InlineTodoAdd: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.openAppSettings) private var openAppSettings
-    @State private var title = ""
-    @State private var projectID: String?
-    @State private var makingNew = false
-    @State private var newName = ""
-    @State private var newFolder = ""
-    @State private var localError: String?
+    @State private var draft = TodoAddDraft()
     @FocusState private var focused: Bool
     @State private var isShown = false
     @State private var isExpanded = false
@@ -61,16 +56,13 @@ struct InlineTodoAdd: View {
         store.projects.filter { $0.section == section }
     }
 
-    private var newProject: TodoAddNewProject? {
-        guard fields != .titleOnly, makingNew else { return nil }
-        return TodoAddNewProject(name: newName, folder: newFolder)
+    /// A project page's row adds to that project and asks only for a title.
+    private var lockedProjectID: String? {
+        if case let .project(project) = place { project.id } else { nil }
     }
 
     private var canSubmit: Bool {
-        guard TodoAddForm.canSubmit(title: title, newProject: newProject, hasComputer: hasComputer) else { return false }
-        if fields == .titleOnly { return true }
-        if makingNew { return true }
-        return projectID != nil
+        draft.canSubmit(hasComputer: hasComputer, lockedProjectID: lockedProjectID)
     }
 
     var body: some View {
@@ -90,7 +82,7 @@ struct InlineTodoAdd: View {
                     projectControls
                 }
                 HStack(alignment: .firstTextBaseline, spacing: DS.spacing.s) {
-                    TodoTitleField(title: $title, focused: $focused, onSubmit: submit)
+                    TodoTitleField(title: $draft.title, focused: $focused, onSubmit: submit)
                     // Borderless: in a list row a plain button would take the whole row's taps.
                     Button("Add", action: submit)
                         .buttonStyle(.borderless)
@@ -103,7 +95,7 @@ struct InlineTodoAdd: View {
                     Task { @MainActor in focused = true }
                 }
             }
-            if let localError {
+            if let localError = draft.localError {
                 Text(localError)
                     .font(.footnote)
                     .foregroundStyle(DS.error)
@@ -153,7 +145,7 @@ struct InlineTodoAdd: View {
     }
 
     private func expand() {
-        localError = nil
+        draft.localError = nil
         if isExpanded {
             focused = true
         } else {
@@ -165,55 +157,32 @@ struct InlineTodoAdd: View {
     /// Cancel, or after a successful add: the typed title goes with it.
     private func collapse() {
         focused = false
-        title = ""
-        localError = nil
+        draft.title = ""
+        draft.localError = nil
         withAnimation { isExpanded = false }
     }
 
     @ViewBuilder
     private var projectControls: some View {
-        Picker("Project", selection: projectChoice) {
+        Picker("Project", selection: $draft.pickerTag) {
             ForEach(sectionProjects) { project in
                 Text(project.name).tag(project.id)
             }
             Text("New project").tag("new")
         }
         .pickerStyle(.menu)
-        if makingNew {
-            TextField("Project name", text: $newName)
-            TextField("Folder, e.g. ~/programming/app", text: $newFolder)
+        if draft.choice.makingNew {
+            TextField("Project name", text: $draft.newName)
+            TextField("Folder, e.g. ~/programming/app", text: $draft.newFolder)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .font(.body.monospaced())
         }
     }
 
-    private var projectChoice: Binding<String> {
-        Binding(
-            get: { makingNew ? "new" : (projectID ?? "new") },
-            set: { value in
-                if value == "new" {
-                    makingNew = true
-                    projectID = nil
-                } else {
-                    makingNew = false
-                    projectID = value
-                }
-            }
-        )
-    }
-
     private func pickDefaultProject() {
         guard fields != .titleOnly else { return }
-        if makingNew { return }
-        if let projectID, sectionProjects.contains(where: { $0.id == projectID }) { return }
-        if let first = sectionProjects.first {
-            self.projectID = first.id
-            makingNew = false
-        } else {
-            projectID = nil
-            makingNew = true
-        }
+        draft.choice.pickDefault(among: sectionProjects.map(\.id))
     }
 
     private func takeQuickActionFocus() {
@@ -227,38 +196,11 @@ struct InlineTodoAdd: View {
     }
 
     private func submit() {
-        guard canSubmit, !store.isOffline else { return }
-        let text = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let section = section
-        let makingNew = makingNew && fields != .titleOnly
-        let newName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let newFolder = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
-        let existing = projectID
-        let locked = if case let .project(project) = place { project.id } else { nil as String? }
         Task {
-            do {
-                let projectId: String
-                if let locked {
-                    projectId = locked
-                } else if makingNew {
-                    guard let created = try await store.createProject(CreateProjectRequest(
-                        name: newName, section: section, folder: newFolder
-                    )) else { return }
-                    projectId = created.id
-                    // Kept even if the todo fails, so trying again doesn't make a second project.
-                    self.makingNew = false
-                    self.newName = ""
-                    self.newFolder = ""
-                    self.projectID = projectId
-                } else if let existing {
-                    projectId = existing
-                } else {
-                    return
-                }
-                try await store.addTodo(title: text, projectId: projectId)
+            if await draft.submit(store: store, section: section, hasComputer: hasComputer,
+                                  lockedProjectID: lockedProjectID) {
                 collapse()
-            } catch {
-                localError = TodoHubStore.message(for: error)
             }
         }
     }
