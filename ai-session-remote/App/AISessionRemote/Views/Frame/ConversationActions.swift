@@ -14,6 +14,9 @@ enum SettingsDestination: Hashable {
 struct FrameActions {
     var openSettings: (SettingsDestination) -> Void
     var setUpAccess: (Computer) -> Void
+    /// This device's access to the named computer: its own editor when the frame can find it,
+    /// else Access & keys.
+    var editAccess: (String) -> Void
     var retry: () -> Void
     var copy: (String) -> Void
     var unlink: () -> Void

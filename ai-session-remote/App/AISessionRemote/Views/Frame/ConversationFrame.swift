@@ -665,6 +665,15 @@ struct ConversationFrame: View {
                     username: computer.username
                 ))
             },
+            editAccess: { name in
+                // The problem names the computer; the conversation on screen is the one it is about.
+                if let computer = conversation?.computer, computer.name == name,
+                   let host = HostLookup.host(for: computer, in: hosts) {
+                    sheet = .editHost(host)
+                } else {
+                    openSettings(.access)
+                }
+            },
             retry: { Task { await loader.start() } },
             copy: copy,
             unlink: unlinkConversation
@@ -756,6 +765,9 @@ struct ConversationFrame: View {
         case let .hostEditor(prefill):
             // Create mode: the host and its key are saved together, and Cancel leaves nothing.
             HostEditorView(prefill: prefill)
+        case let .editHost(host):
+            // Its Forget Host Key clears the identity this device trusted.
+            HostEditorView(host: host)
         }
     }
 
@@ -946,11 +958,13 @@ private struct ActionFailure {
 private enum FrameSheet: Identifiable {
     case settings(SettingsDestination)
     case hostEditor(HostEditorPrefill)
+    case editHost(HostEntity)
 
     var id: String {
         switch self {
         case let .settings(destination): "settings-\(destination)"
         case let .hostEditor(prefill): "host-\(prefill.id)"
+        case let .editHost(host): "edit-host-\(host.id)"
         }
     }
 }
