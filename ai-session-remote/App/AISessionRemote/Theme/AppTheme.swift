@@ -70,24 +70,6 @@ enum AppTheme {
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: now)
     }
-
-    static func statusLabel(_ status: SessionActivityStatus) -> String {
-        switch status {
-        case .busy: "Busy"
-        case .idle: "Idle"
-        case .waiting: "Needs attention"
-        case .unknown: "Unknown"
-        }
-    }
-
-    static func statusColor(_ status: SessionActivityStatus) -> Color {
-        switch status {
-        case .busy: Color(red: 0.20, green: 0.72, blue: 0.40)
-        case .idle: Color.secondary
-        case .waiting: Color(red: 0.95, green: 0.55, blue: 0.15)
-        case .unknown: Color.secondary.opacity(0.5)
-        }
-    }
 }
 
 /// The tool's own app icon. Hidden from VoiceOver; the colored name next to it is the label.
