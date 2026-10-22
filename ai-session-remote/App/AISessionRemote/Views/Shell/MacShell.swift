@@ -538,6 +538,9 @@ private struct ConversationColumn: View {
     @Environment(\.openWindow) private var openWindow
     #endif
     @State private var shown: [String] = []
+    /// Whether each mounted conversation runs on this Mac, decided once when it is mounted,
+    /// so a frame never changes pool (and pushes out another) while it stays.
+    @State private var mountedLocally: [String: Bool] = [:]
     /// A running conversation selected, not mounted yet: the settle window.
     @State private var pendingID: String?
     /// Commands from this column's single toolbar to the frontmost frame.
@@ -589,7 +592,7 @@ private struct ConversationColumn: View {
             guard let pendingID else { return }
             try? await Task.sleep(for: .seconds(SelectionAttacher.delay))
             guard !Task.isCancelled, self.pendingID == pendingID else { return }
-            shown = WarmConversationMount.select(pendingID, in: shown, protects: protectsTerminal, isLocal: isLocal)
+            mount(pendingID)
             self.pendingID = nil
         }
     }
@@ -716,7 +719,7 @@ private struct ConversationColumn: View {
         case .running, .awaitingLiveness:
             if shown.contains(id) {
                 pendingID = nil
-                shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal, isLocal: isLocal)
+                mount(id)
             } else {
                 pendingID = id
             }
@@ -724,8 +727,18 @@ private struct ConversationColumn: View {
             // In front of the warm terminals, not in one of their slots. Arrowing through
             // closed rows must not disconnect a live session.
             pendingID = nil
-            shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal, isLocal: isLocal)
+            mount(id)
         }
+    }
+
+    private func mount(_ id: String) {
+        // Ids dropped elsewhere (deleted, gone from the hub) are decided afresh if they come back.
+        var local = mountedLocally.filter { shown.contains($0.key) }
+        if local[id] == nil { local[id] = isLocal(id) }
+        shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal,
+                                             isLocal: { local[$0] ?? false })
+        let kept = local.filter { shown.contains($0.key) }
+        if kept != mountedLocally { mountedLocally = kept }
     }
 
     /// The conversation runs on this Mac: its terminal is a local PTY, cheap to keep attached.
@@ -791,6 +804,9 @@ final class SelectionAttacher {
     /// The selection's last definite state (`.running` or `.closed`): only a change acts.
     @ObservationIgnored private var lastKnown: AttachReadiness?
     @ObservationIgnored private var askedForLiveness = false
+    /// The liveness answer this selection asked for has not arrived yet. Only that answer
+    /// acts at once; later changes settle as usual.
+    @ObservationIgnored private var awaitingAnswer = false
     /// Popped out into its own window: that window's attacher asks for liveness, not this one.
     @ObservationIgnored var isSuspended = false
     @ObservationIgnored private var generation = 0
@@ -808,6 +824,7 @@ final class SelectionAttacher {
         selection = todoID
         lastKnown = nil
         askedForLiveness = false
+        awaitingAnswer = false
         hasEvaluated = false
         if todoID == nil {
             generation += 1
@@ -826,6 +843,7 @@ final class SelectionAttacher {
     func reselect() {
         lastKnown = nil
         askedForLiveness = false
+        awaitingAnswer = false
         if selection != nil { schedule() }
     }
 
@@ -865,7 +883,8 @@ final class SelectionAttacher {
             return
         }
         // The answer to this selection's own liveness request: it settled before asking.
-        if askedForLiveness, lastKnown == nil, readiness(todoID) != .awaitingLiveness {
+        if awaitingAnswer, readiness(todoID) != .awaitingLiveness {
+            awaitingAnswer = false
             evaluate()
             return
         }
@@ -899,6 +918,7 @@ final class SelectionAttacher {
             guard isFrontmost else { return }
             if !askedForLiveness, !isSuspended {
                 askedForLiveness = true
+                awaitingAnswer = true
                 livenessRequests += 1
             }
         case .unknown:
