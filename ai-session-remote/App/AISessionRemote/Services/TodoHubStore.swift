@@ -81,6 +81,9 @@ final class TodoHubStore {
     /// Incremented per refresh; only the most recently started refresh may apply its result,
     /// so an older, slower response can't overwrite newer state or the offline cache.
     private var refreshGeneration = 0
+    /// Bumped whenever a change's own response is applied locally. A fetch that started before
+    /// it would put the old state back, so it is dropped; the change already queued a newer one.
+    private var localChanges = 0
 
     init(cache: TodoHubCache = TodoHubStore.defaultCache(),
          makeClient: @escaping () -> TodoHubClient? = TodoHubSettings.makeClient,
@@ -166,6 +169,7 @@ final class TodoHubStore {
     private func performRefresh(trigger: RefreshTrigger) async {
         guard let client = hubClient() else { return }
         let startedAtEpoch = baselineEpoch
+        let changesAtStart = localChanges
         refreshGeneration += 1
         let generation = refreshGeneration
         isLoading = true
@@ -186,6 +190,7 @@ final class TodoHubStore {
             let (p, sugg) = await (projects, suggestions)
             // A refresh that started later has newer data; don't overwrite it.
             guard generation == refreshGeneration else { return }
+            guard changesAtStart == localChanges else { return }
             await acceptFetch(
                 todos: t, conversations: c, sectionComputers: m, computers: comps,
                 projects: p, suggestions: sugg, startedAtEpoch: startedAtEpoch,
@@ -294,7 +299,8 @@ final class TodoHubStore {
     func createTodo(title: String, projectId: String) async -> Bool {
         do {
             try await perform { client in
-                _ = try await client.createTodo(CreateTodoRequest(title: title, projectId: projectId))
+                let created = try await client.createTodo(CreateTodoRequest(title: title, projectId: projectId))
+                upsert(created)
             }
             return true
         } catch {
@@ -307,19 +313,22 @@ final class TodoHubStore {
     func setProject(_ projectId: String?, for todo: Todo) async {
         guard projectId != todo.projectId else { return }
         await mutate { client in
-            _ = try await client.updateTodo(
+            upsert(try await client.updateTodo(
                 id: todo.id,
                 UpdateTodoRequest(projectId: projectId.map(ProjectChange.set) ?? .clear)
-            )
+            ))
         }
     }
 
     func toggle(_ todo: Todo) async {
-        await mutate { client in _ = try await client.toggleTodo(id: todo.id) }
+        await mutate { client in upsert(try await client.toggleTodo(id: todo.id)) }
     }
 
     func delete(_ todo: Todo) async {
-        await mutate { client in try await client.deleteTodo(id: todo.id) }
+        await mutate { client in
+            try await client.deleteTodo(id: todo.id)
+            removeTodo(id: todo.id)
+        }
     }
 
     // MARK: Computers
@@ -559,7 +568,7 @@ final class TodoHubStore {
             ? client.closeConversation(todoId: conversation.todoId)
             : client.closeConversation(id: conversation.id)
         remember(closed)
-        await refresh(trigger: .background)
+        refreshSoon()
     }
 
     // MARK: Linking existing conversations
@@ -614,7 +623,7 @@ final class TodoHubStore {
         try await RemoteConversations.delete(conversation, config: config)
         try await forgetOnHub(client, conversation)
         forget(conversation)
-        await refresh(trigger: .background)
+        refreshSoon()
     }
 
     /// Session ids already linked to a todo, as `tool/id` (matches `RemoteConversation.id`).
@@ -656,16 +665,26 @@ final class TodoHubStore {
     @discardableResult
     func createProject(_ request: CreateProjectRequest) async throws -> Project? {
         var created: Project?
-        try await perform { client in created = try await client.createProject(request) }
+        try await perform { client in
+            let project = try await client.createProject(request)
+            upsert(project)
+            created = project
+        }
         return created
     }
 
     func updateProject(_ project: Project, _ request: UpdateProjectRequest) async throws {
-        try await perform { client in _ = try await client.updateProject(id: project.id, request) }
+        try await perform { client in upsert(try await client.updateProject(id: project.id, request)) }
     }
 
     func deleteProject(_ project: Project) async throws {
-        try await perform { client in try await client.deleteProject(id: project.id) }
+        try await perform { client in
+            try await client.deleteProject(id: project.id)
+            if projects.contains(where: { $0.id == project.id }) {
+                localChanges += 1
+                projects.removeAll { $0.id == project.id }
+            }
+        }
     }
 
     // MARK: Sessions, stats and memories (fetched per screen, not cached)
@@ -746,7 +765,8 @@ final class TodoHubStore {
         return client
     }
 
-    /// Runs a hub mutation, then refreshes. Throws the mutation's error.
+    /// Runs a hub mutation, then starts a refresh without waiting for it: the caller (a sheet
+    /// closing, a field clearing) only needs the mutation itself. Throws the mutation's error.
     private func perform(_ body: (TodoHubClient) async throws -> Void) async throws {
         #if DEBUG
         if demo != nil { return } // screenshots only: nothing to change
@@ -754,7 +774,37 @@ final class TodoHubStore {
         guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
         guard !isOffline else { throw OfflineChangeError() }
         try await body(client)
-        await refresh(trigger: .background)
+        refreshSoon()
+    }
+
+    /// The background refresh after a change. It joins the coalescer like a live-update echo,
+    /// so the change and its websocket event still cost one fetch.
+    private func refreshSoon() {
+        Task { await refresh(trigger: .background) }
+    }
+
+    /// Shows a todo the hub just returned, before the refresh confirms it.
+    private func upsert(_ todo: Todo) {
+        localChanges += 1
+        if let index = todos.firstIndex(where: { $0.id == todo.id }) {
+            todos[index] = todo
+        } else {
+            todos.append(todo)
+        }
+    }
+
+    private func removeTodo(id: String) {
+        guard todos.contains(where: { $0.id == id }) else { return }
+        localChanges += 1
+        todos.removeAll { $0.id == id }
+    }
+
+    /// Shows a project the hub just returned, in the hub's order (name ignoring case, then id).
+    private func upsert(_ project: Project) {
+        localChanges += 1
+        projects.removeAll { $0.id == project.id }
+        projects.append(project)
+        projects.sort { ($0.name.lowercased(), $0.id) < ($1.name.lowercased(), $1.id) }
     }
 
     /// `perform` for todo changes: failures go to the shell's Todos alert.

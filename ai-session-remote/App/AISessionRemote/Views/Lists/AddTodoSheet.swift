@@ -2,7 +2,7 @@ import AISessionCore
 import SwiftUI
 
 /// Toolbar new-todo. A selected section asks for a project and a title. With no section
-/// selected it asks for the section first. The title stays after a successful add.
+/// selected it asks for the section first. A successful add closes the sheet.
 struct AddTodoSheet: View {
     var fixedSection: TodoSection?
     let store: TodoHubStore
@@ -181,15 +181,7 @@ struct AddTodoSheet: View {
                     return
                 }
                 guard await store.createTodo(title: text, projectId: projectId) else { return }
-                title = ""
-                if makingNew {
-                    self.makingNew = false
-                    self.newName = ""
-                    self.newFolder = ""
-                    self.projectID = projectId
-                }
-                localError = nil
-                titleFocused = true
+                dismiss()
             } catch {
                 localError = TodoHubStore.message(for: error)
             }
