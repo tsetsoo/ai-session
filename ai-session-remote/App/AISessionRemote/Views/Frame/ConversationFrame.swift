@@ -327,9 +327,10 @@ struct ConversationFrame: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
-                Text("No computer")
+                Text("No computer runs \(todo.section.rawValue) conversations yet")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
             if let folder, !folder.isEmpty {
                 Text(folder)
@@ -356,10 +357,17 @@ struct ConversationFrame: View {
                 Button("Cancel", action: onDeleted)
                     .buttonStyle(.bordered)
                     .disabled(isStarting)
-                Button(isStarting ? "Starting…" : "Start") { confirmTool() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(DS.accent)
-                    .disabled(isStarting || store.sectionComputers[todo.section] == nil)
+                if computer == nil {
+                    // Start has nowhere to run until the section has a computer.
+                    Button("Choose Computer") { openSettings(.sections(todo.section)) }
+                        .buttonStyle(.borderedProminent)
+                        .tint(DS.accent)
+                } else {
+                    Button(isStarting ? "Starting…" : "Start") { confirmTool() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(DS.accent)
+                        .disabled(isStarting)
+                }
             }
         }
         .frame(maxWidth: 440)
