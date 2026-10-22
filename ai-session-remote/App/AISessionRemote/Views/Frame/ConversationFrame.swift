@@ -498,7 +498,7 @@ struct ConversationFrame: View {
             onClose: closeConversation,
             onDelete: { showingDeleteConfirmation = true },
             onReconnect: { terminal.reconnect() },
-            onCopyScreen: { terminal.copyScreen() },
+            onCopyScreen: { copyScreen() },
             onPaste: { terminal.paste() },
             showsDuplicate: conversation != nil,
             duplicateName: DuplicateIn.proposedName(
@@ -516,7 +516,7 @@ struct ConversationFrame: View {
         case .close: closeConversation()
         case .delete: showingDeleteConfirmation = true
         case .reconnect: terminal.reconnect()
-        case .copyScreen: terminal.copyScreen()
+        case .copyScreen: copyScreen()
         case .paste: terminal.paste()
         case let .duplicate(tool, name): beginDuplicate(tool: tool, name: name)
         }
@@ -702,6 +702,15 @@ struct ConversationFrame: View {
 
     private func copy(_ text: String) {
         PlatformSupport.pasteboardString = text
+        showCopied()
+    }
+
+    /// The selection, or else the screen; the same toast as the resume command.
+    private func copyScreen() {
+        if terminal.copyScreen() { showCopied() }
+    }
+
+    private func showCopied() {
         copiedTask?.cancel()
         withAnimation { showingCopied = true }
         copiedTask = Task {

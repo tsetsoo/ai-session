@@ -184,8 +184,10 @@ final class TerminalHandle {
     func focus() { coordinator?.focusTerminal() }
     func resignFocus() { coordinator?.resignFocus() }
     func paste() { coordinator?.pasteFromClipboard() }
-    /// The selection if there is one, otherwise the whole visible screen.
-    func copyScreen() { coordinator?.copySelection() }
+    /// The selection if there is one, otherwise the whole visible screen. True when something
+    /// was copied.
+    @discardableResult
+    func copyScreen() -> Bool { coordinator?.copySelection() ?? false }
     func send(_ bytes: [UInt8]) { coordinator?.send(bytes) }
     /// Types `text` as a paste (bracketed when the program asked for it), then Return.
     func submit(_ text: String) { coordinator?.submit(text) }
