@@ -60,9 +60,9 @@ final class PaletteModelTests: XCTestCase {
         XCTAssertEqual(ids(result, .actions), ["a:newTodo", "a:newTodoFromConversation", "a:openSettings"])
     }
 
-    func testConversationsCarryStatusAndTheirRunningNowShortcut() {
+    func testConversationsCarryStatusAndTheirOpenListShortcut() {
         let items = groups("").first { $0.kind == .conversations }!.items
-        // t3 is listed second (needs you) but is third in Running now: ⌘3.
+        // t3 is listed second (needs you) but is third among the open conversations: ⌘3.
         guard case let .conversation(todo, _, status, shortcut) = items[1] else { return XCTFail("\(items[1])") }
         XCTAssertEqual(todo.id, "t3")
         XCTAssertEqual(status, .needsYou)
@@ -73,7 +73,7 @@ final class PaletteModelTests: XCTestCase {
     }
 
     func testShortcutsStopAtNine() {
-        // Zero-padded ids: Running now orders equal start times by id.
+        // Zero-padded ids: the open list orders equal start times by id.
         let many = (1...12).map { Todo(id: String(format: "n%02d", $0), section: .sp, title: "Task \($0)") }
         let board = ConversationBoard(
             todos: many,

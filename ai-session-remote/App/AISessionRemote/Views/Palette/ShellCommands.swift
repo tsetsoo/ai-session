@@ -8,7 +8,7 @@ import SwiftUI
 struct ShellCommands {
     /// ⌘K.
     let goTo: () -> Void
-    /// How many of ⌘1–⌘9 have a Running-now conversation.
+    /// How many of ⌘1–⌘9 have a conversation in the list on screen.
     let conversationCount: Int
     /// ⌘n (1-based).
     let openConversation: (Int) -> Void

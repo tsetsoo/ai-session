@@ -5,7 +5,7 @@ import AppKit
 #endif
 
 /// A conversation: the tool's icon and color, status dot, the todo's title and age,
-/// "Sp · mac-studio", and the status message, plus its ⌘n hint in the Mac's Running now.
+/// "Sp · mac-studio", and the status message, plus its ⌘n hint in the Mac's conversation lists.
 struct ConversationRow: View {
     let title: String
     let section: TodoSection?
@@ -13,7 +13,7 @@ struct ConversationRow: View {
     let status: ConversationDisplayStatus
     /// Closing or deleting it.
     let isBusy: Bool
-    /// Its ⌘n in Running now on the Mac.
+    /// Its ⌘n in the Mac's conversation lists.
     var shortcut: Int?
     /// The Mac list paints the accent behind this row. The tool name then uses the selection label color.
     var isSelected: Bool = false

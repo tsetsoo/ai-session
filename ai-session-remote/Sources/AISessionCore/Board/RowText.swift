@@ -2,14 +2,14 @@ import Foundation
 
 /// Secondary-line copy for the Todos, Conversations and Computers list rows.
 public enum RowText {
-    /// "1 needs you · 2 to review · 3 working", any part left out at zero, or "Nothing running".
+    /// "1 needs you · 2 to review · 3 working", any part left out at zero, or "No open conversations".
     public static func computerLine(working: Int, review: Int, needsYou: Int) -> String {
         let parts = [
             needsYou > 0 ? "\(needsYou) needs you" : nil,
             review > 0 ? "\(review) to review" : nil,
             working > 0 ? "\(working) working" : nil,
         ].compactMap { $0 }
-        return parts.isEmpty ? "Nothing running" : parts.joined(separator: " · ")
+        return parts.isEmpty ? "No open conversations" : parts.joined(separator: " · ")
     }
 
     public static func toolName(_ tool: String) -> String {

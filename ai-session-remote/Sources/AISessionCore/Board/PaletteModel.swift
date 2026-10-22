@@ -20,7 +20,7 @@ public enum PaletteAction: Equatable, Sendable {
 
 /// One palette row.
 public enum PaletteItem: Equatable, Sendable, Identifiable {
-    /// A Running-now conversation with its ⌘n (the first nine only).
+    /// An open conversation with its ⌘n (the first nine of the list on screen only).
     case conversation(Todo, Conversation, status: ConversationDisplayStatus, shortcut: Int?)
     /// A todo with no running conversation (none, or a closed one).
     case todo(Todo, conversation: Conversation?, status: ConversationDisplayStatus?)
@@ -73,7 +73,7 @@ public struct PaletteGroup: Equatable, Sendable, Identifiable {
 public enum PaletteModel {
     public static let maxPerGroup = 5
 
-    /// Conversations (Running now, Needs you first), Todos (open ones without a running
+    /// Conversations (the open ones, Needs you first), Todos (open ones without a running
     /// conversation), Projects, then the Actions. A query ranks each group by the best
     /// `PaletteMatch` over title, section code and computer name (projects: name and folder):
     /// contiguous matches first, then scattered ones, which a query of three or more characters

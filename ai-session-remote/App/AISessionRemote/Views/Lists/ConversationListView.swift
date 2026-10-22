@@ -104,7 +104,7 @@ struct ConversationListView: View {
     private func filterPicker(needsYouCount: Int) -> some View {
         Picker("Show", selection: $filter) {
             Text(needsYouCount > 0 ? "Needs you \(needsYouCount)" : "Needs you").tag(Filter.needsYou)
-            Text("Review").tag(Filter.review)
+            Text("Ready for review").tag(Filter.review)
             Text("Working").tag(Filter.working)
             Text("All").tag(Filter.all)
         }
