@@ -5,27 +5,41 @@ final class SessionServiceTests: XCTestCase {
     func testRemoteErrorMessagesAreActionableAndConsistent() {
         XCTAssertEqual(
             SSHRemoteError.unreachable.userMessage,
-            "Could not reach the host. Check Tailscale and network, then try again."
+            "Couldn't reach the computer. Check that it's on and connected to Tailscale, then try again."
         )
         XCTAssertEqual(
-            SSHRemoteError.authenticationFailed.userMessage,
-            "SSH authentication failed. Verify the username and private key, or the host's key may have changed — check with \"Forget Host Key\" in the host editor."
+            ComputerErrorText.message(for: SSHRemoteError.authenticationFailed, computer: "mac-studio"),
+            "The key on this device wasn't accepted by mac-studio. Check the user name and key in Access & keys."
         )
         XCTAssertEqual(
-            SSHRemoteError.tmuxMissing.userMessage,
-            "tmux was not found on this host's SSH PATH. Install it (`brew install tmux` / `apt install tmux`) or ensure it is available at /opt/homebrew/bin or /usr/local/bin."
-        )
-        XCTAssertEqual(
-            SSHRemoteError.binaryMissing("codex").userMessage,
-            "The required binary 'codex' was not found on this host. Install it and ensure it is on PATH."
+            ComputerErrorText.message(for: SSHRemoteError.binaryMissing("codex"), computer: "mac-studio"),
+            "codex isn't installed on mac-studio. Install it there, then try again."
         )
         XCTAssertEqual(
             SSHRemoteError.commandFailed(exitCode: 23, stderr: "").userMessage,
-            "The remote command failed (exit code 23)."
+            "Something went wrong on the computer (exit code 23). Try again in a moment."
         )
         XCTAssertEqual(
-            SSHRemoteError.commandFailed(exitCode: 1, stderr: "permission denied\n").userMessage,
-            "permission denied"
+            ComputerErrorText.message(for: SSHRemoteError.commandFailed(exitCode: 1, stderr: "duplicate session: ai-x\n"),
+                                      computer: "mac-studio"),
+            "Something went wrong on mac-studio: duplicate session: ai-x"
+        )
+    }
+
+    func testAMissingKeyInTheKeychainIsAnAccessProblem() {
+        for error: Error in [KeychainPrivateKeyStoreError.itemNotFound, KeychainPrivateKeyStoreError.loadFailed(-25300)] {
+            XCTAssertEqual(ComputerErrorText.message(for: error, computer: "mac-studio"),
+                           "This device has no key for mac-studio. Add it in Access & keys.")
+            XCTAssertTrue(ComputerErrorText.isAccessProblem(error))
+        }
+        XCTAssertTrue(ComputerErrorText.isAccessProblem(SSHRemoteError.authenticationFailed))
+        XCTAssertFalse(ComputerErrorText.isAccessProblem(SSHRemoteError.unreachable))
+    }
+
+    func testAWordedErrorKeepsItsOwnText() {
+        XCTAssertEqual(
+            ComputerErrorText.message(for: SessionServiceError.invalidSlug("Bad Name"), computer: "mac-studio"),
+            SessionServiceError.invalidSlug("Bad Name").errorDescription
         )
     }
 

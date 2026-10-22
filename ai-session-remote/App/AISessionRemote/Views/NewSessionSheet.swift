@@ -121,7 +121,7 @@ struct NewSessionSheet: View {
                     if slugIsInvalid {
                         Label("Use lowercase letters, numbers, and hyphens only.", systemImage: "exclamationmark.circle")
                             .font(.caption)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(DS.error)
                     }
                 } header: {
                     Text("Name")

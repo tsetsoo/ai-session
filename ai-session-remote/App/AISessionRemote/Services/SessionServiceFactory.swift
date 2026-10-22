@@ -1,17 +1,6 @@
 import AISessionCore
 import Foundation
 
-enum SessionServiceFactoryError: LocalizedError {
-    case missingPrivateKey
-
-    var errorDescription: String? {
-        switch self {
-        case .missingPrivateKey:
-            "The private key for this host is unavailable. Edit the host and save its key again."
-        }
-    }
-}
-
 struct SessionServiceFactory {
     private let keychain: KeychainPrivateKeyStore
 
@@ -21,8 +10,9 @@ struct SessionServiceFactory {
 
     func make(for host: HostEntity) throws -> (service: SessionService, config: HostConnectionConfig) {
         let pem = try keychain.load(account: host.privateKeyKeychainRef)
+        // An empty item is as good as none; ComputerErrorText words both as a missing key.
         guard !pem.isEmpty else {
-            throw SessionServiceFactoryError.missingPrivateKey
+            throw KeychainPrivateKeyStoreError.itemNotFound
         }
 
         let config = HostConnectionConfig(

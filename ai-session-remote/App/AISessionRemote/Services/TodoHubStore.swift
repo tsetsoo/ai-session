@@ -914,6 +914,7 @@ final class TodoHubStore {
     static func message(for error: Error) -> String {
         if let error = error as? TodoHubError { return error.userMessage }
         if let error = error as? SSHRemoteError { return error.userMessage }
+        if error is KeychainPrivateKeyStoreError { return ComputerErrorText.message(for: error, computer: "the computer") }
         return error.localizedDescription
     }
 }

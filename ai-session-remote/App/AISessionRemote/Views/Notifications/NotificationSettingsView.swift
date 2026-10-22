@@ -58,7 +58,7 @@ struct NotificationSettingsView: View {
             }
 
             if let loadError {
-                Section { Text(loadError).foregroundStyle(DS.accent) }
+                Section { Text(loadError).foregroundStyle(DS.error) }
             }
 
             if let binding = Binding($settings) {

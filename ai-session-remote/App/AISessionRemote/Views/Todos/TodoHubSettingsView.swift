@@ -40,9 +40,9 @@ struct TodoHubSettingsView: View {
                     }
                     .disabled(parsedURL == nil || isTesting)
                     if let testResult {
-                        // DS has one accent and greys: a failure takes the accent, success stays quiet.
+                        // A failure takes the error colour; success stays quiet.
                         Label(testResult, systemImage: testSucceeded ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                            .foregroundStyle(testSucceeded ? Color.secondary : DS.accent)
+                            .foregroundStyle(testSucceeded ? Color.secondary : DS.error)
                     }
                 }
             }
