@@ -389,8 +389,12 @@ enum ComputerErrorText {
                 return "\(computer) can't keep sessions running yet. Install tmux on it (brew install tmux), then try again."
             case let .binaryMissing(binary):
                 return "\(binary) isn't installed on \(computer). Install it there, then try again."
-            case .commandFailed:
-                return "Something went wrong on \(computer). Try again in a moment."
+            case let .commandFailed(_, stderr):
+                // The computer's own words name the cause, e.g. a session name already in use.
+                let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                return detail.isEmpty
+                    ? "Something went wrong on \(computer). Try again in a moment."
+                    : "\(computer) said: \(detail)"
             }
         default:
             return "Something went wrong talking to \(computer). Try again in a moment."
