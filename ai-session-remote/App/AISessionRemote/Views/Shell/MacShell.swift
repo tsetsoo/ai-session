@@ -533,6 +533,7 @@ private struct ConversationColumn: View {
     let showsConversation: Bool
 
     @Environment(AppModel.self) private var model
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     #endif
@@ -588,7 +589,7 @@ private struct ConversationColumn: View {
             guard let pendingID else { return }
             try? await Task.sleep(for: .seconds(SelectionAttacher.delay))
             guard !Task.isCancelled, self.pendingID == pendingID else { return }
-            shown = WarmConversationMount.select(pendingID, in: shown, protects: protectsTerminal)
+            shown = WarmConversationMount.select(pendingID, in: shown, protects: protectsTerminal, isLocal: isLocal)
             self.pendingID = nil
         }
     }
@@ -715,7 +716,7 @@ private struct ConversationColumn: View {
         case .running, .awaitingLiveness:
             if shown.contains(id) {
                 pendingID = nil
-                shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal)
+                shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal, isLocal: isLocal)
             } else {
                 pendingID = id
             }
@@ -723,8 +724,19 @@ private struct ConversationColumn: View {
             // In front of the warm terminals, not in one of their slots. Arrowing through
             // closed rows must not disconnect a live session.
             pendingID = nil
-            shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal)
+            shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal, isLocal: isLocal)
         }
+    }
+
+    /// The conversation runs on this Mac: its terminal is a local PTY, cheap to keep attached.
+    private func isLocal(_ id: String) -> Bool {
+        #if os(macOS)
+        guard let computer = model.store.displayed(forTodo: id, selectedKey: model.selectedConversationID)?.computer,
+              let host = HostLookup.host(for: computer, in: hosts) else { return false }
+        return ThisMac.matches(hostname: host.hostname, username: host.username)
+        #else
+        return false
+        #endif
     }
 
     /// Running, and a conversation still waiting on its first listing. Closed and unknown
@@ -901,23 +913,38 @@ final class SelectionAttacher {
 /// is already attached. A closed conversation is one extra card in front of those; it does
 /// not take a slot, and the next closed conversation replaces it.
 enum WarmConversationMount {
-    /// Three live terminals: the one on screen and the two you just left. Older ones disconnect.
+    /// Three live terminals over SSH: the one on screen and the two you just left. Older ones
+    /// disconnect.
     static let capacity = 3
+    /// Terminals on this Mac are a local PTY each, with no network to hold, so more stay.
+    /// They count apart from `capacity`.
+    static let localCapacity = 6
 
     /// Mounts `id`. `protects` is true for a conversation whose terminal must stay (running,
     /// or still waiting on a listing). A closed or unknown id is shown in addition and
-    /// replaces the previous one. The default treats every id as a live terminal.
-    static func select(_ id: String, in ids: [String], protects: (String) -> Bool = { _ in true }) -> [String] {
+    /// replaces the previous one. The default treats every id as a live terminal over SSH.
+    static func select(
+        _ id: String,
+        in ids: [String],
+        protects: (String) -> Bool = { _ in true },
+        isLocal: (String) -> Bool = { _ in false }
+    ) -> [String] {
         var warm = ids.filter(protects)
         guard protects(id) else { return warm + [id] }
-        if let index = warm.firstIndex(of: id) {
-            warm.remove(at: index)
-        }
+        warm.removeAll { $0 == id }
         warm.append(id)
-        if warm.count > capacity {
-            warm.removeFirst(warm.count - capacity)
+        // Newest first, so the oldest of each kind is the one that goes.
+        var remote = 0
+        var local = 0
+        let kept = warm.reversed().filter { id in
+            if isLocal(id) {
+                local += 1
+                return local <= localCapacity
+            }
+            remote += 1
+            return remote <= capacity
         }
-        return warm
+        return kept.reversed()
     }
 }
 
