@@ -63,7 +63,7 @@ final class AppModel {
     typealias TmuxListing = @Sendable (Computer) async throws -> Set<String>
 
     enum SidebarItem: Hashable {
-        case needsYou, runningNow, section(TodoSection), projects, computer(String)
+        case needsYou, review, working, section(TodoSection), projects, computer(String)
     }
 
     let store: TodoHubStore

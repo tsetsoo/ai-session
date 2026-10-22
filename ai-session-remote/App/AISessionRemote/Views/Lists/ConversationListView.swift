@@ -2,23 +2,32 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// Conversations across all computers, filtered to Needs you, Running or All. Tapping one calls
+/// Conversations across all computers, filtered to Needs you, Ready for review, Working or All. Tapping one calls
 /// `onOpen` with its todo; the caller owns navigation. Given a `selection` (the Mac list column)
 /// rows select by todo id instead, and the sidebar picks the filter.
 struct ConversationListView: View {
     enum Filter: Hashable, CaseIterable {
-        case needsYou, running, all
+        case needsYou, review, working, all
 
-        /// Needs you when something does, else Running.
+        /// Needs you when something does, else Ready for review.
         static func initial(needsYouCount: Int) -> Filter {
-            needsYouCount > 0 ? .needsYou : .running
+            needsYouCount > 0 ? .needsYou : .review
+        }
+
+        func conversations(_ board: ConversationBoard) -> [Conversation] {
+            switch self {
+            case .needsYou: board.needsYou
+            case .review: board.review
+            case .working: board.working
+            case .all: board.all
+            }
         }
     }
 
     @Binding var filter: Filter
     let onOpen: (Todo) -> Void
     private let showsFilterPicker: Bool
-    /// ⌘1–⌘9 next to the first nine running conversations.
+    /// ⌘1–⌘9 next to the first nine conversations of the filter.
     private let showsShortcuts: Bool
     private let query: String
     private let selection: Binding<String?>?
@@ -42,11 +51,7 @@ struct ConversationListView: View {
     var body: some View {
         let board = model.board
         let todos = Dictionary(store.todos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let filtered = switch filter {
-        case .needsYou: board.needsYou
-        case .running: board.runningNow
-        case .all: board.all
-        }
+        let filtered = filter.conversations(board)
         let conversations = filtered.filter { conversation in
             let todo = todos[conversation.todoId]
             return ListSearch.matches(query, todo?.title,
@@ -54,7 +59,7 @@ struct ConversationListView: View {
                                       conversation.statusMessage)
         }
         let shortcuts: [String: Int] = showsShortcuts
-            ? Dictionary(uniqueKeysWithValues: board.runningNow.prefix(9).enumerated().map { ($1.listKey, $0 + 1) })
+            ? Dictionary(uniqueKeysWithValues: filtered.prefix(9).enumerated().map { ($1.listKey, $0 + 1) })
             : [:]
         SelectableList(selection: selection) {
             ListStatusBanner(store: store)
@@ -99,7 +104,8 @@ struct ConversationListView: View {
     private func filterPicker(needsYouCount: Int) -> some View {
         Picker("Show", selection: $filter) {
             Text(needsYouCount > 0 ? "Needs you \(needsYouCount)" : "Needs you").tag(Filter.needsYou)
-            Text("Running").tag(Filter.running)
+            Text("Review").tag(Filter.review)
+            Text("Working").tag(Filter.working)
             Text("All").tag(Filter.all)
         }
         .pickerStyle(.segmented)
@@ -135,11 +141,13 @@ struct ConversationListView: View {
         switch filter {
         case .needsYou:
             ContentUnavailableView("Nothing needs you", systemImage: "checkmark.circle")
-        case .running:
+        case .review:
+            ContentUnavailableView("Nothing to review", systemImage: "checkmark.circle")
+        case .working:
             ContentUnavailableView {
-                Label("No conversations running", systemImage: "bubble.left.and.bubble.right")
+                Label("Nothing working", systemImage: "bolt")
             } description: {
-                Text("Open a todo to start one.")
+                Text("Open a todo to start a conversation.")
             }
         case .all:
             ContentUnavailableView {

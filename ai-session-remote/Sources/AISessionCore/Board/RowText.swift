@@ -2,13 +2,14 @@ import Foundation
 
 /// Secondary-line copy for the Todos, Conversations and Computers list rows.
 public enum RowText {
-    /// "3 running · 1 needs you", "2 running", or "Nothing running".
-    public static func computerLine(running: Int, needsYou: Int) -> String {
-        switch (running, needsYou) {
-        case (0, 0): return "Nothing running"
-        case (_, 0): return "\(running) running"
-        default: return "\(running) running · \(needsYou) needs you"
-        }
+    /// "1 needs you · 2 to review · 3 working", any part left out at zero, or "Nothing running".
+    public static func computerLine(working: Int, review: Int, needsYou: Int) -> String {
+        let parts = [
+            needsYou > 0 ? "\(needsYou) needs you" : nil,
+            review > 0 ? "\(review) to review" : nil,
+            working > 0 ? "\(working) working" : nil,
+        ].compactMap { $0 }
+        return parts.isEmpty ? "Nothing running" : parts.joined(separator: " · ")
     }
 
     public static func toolName(_ tool: String) -> String {
@@ -51,7 +52,7 @@ public enum RowText {
     }
 
     /// The conversation row's last line: the status message when it needs you, else how long it
-    /// has been working, or the status.
+    /// has been working or since its turn finished, or the status.
     public static func conversationMessage(_ conversation: Conversation, status: ConversationDisplayStatus,
                                            now: Date) -> String {
         switch status {
@@ -61,7 +62,11 @@ public enum RowText {
             guard let since = date(conversation.statusUpdatedAt) else { return "Working" }
             let elapsed = now.timeIntervalSince(since)
             return elapsed < 60 ? "Working" : "Working for \(shortInterval(elapsed))"
-        case .idle, .closed:
+        case .idle:
+            guard let since = date(conversation.statusUpdatedAt) else { return status.label }
+            let elapsed = now.timeIntervalSince(since)
+            return elapsed < 60 ? "Finished just now" : "Finished \(shortInterval(elapsed)) ago"
+        case .closed:
             return status.label
         }
     }

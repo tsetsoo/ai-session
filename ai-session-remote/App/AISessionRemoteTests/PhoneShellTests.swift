@@ -8,7 +8,7 @@ final class PhoneShellTests: XCTestCase {
 
     func testConversationsDefaultToNeedsYouOnlyWhenSomethingNeedsYou() {
         XCTAssertEqual(ConversationListView.Filter.initial(needsYouCount: 2), .needsYou)
-        XCTAssertEqual(ConversationListView.Filter.initial(needsYouCount: 0), .running)
+        XCTAssertEqual(ConversationListView.Filter.initial(needsYouCount: 0), .review)
     }
 
     // MARK: Quick-add

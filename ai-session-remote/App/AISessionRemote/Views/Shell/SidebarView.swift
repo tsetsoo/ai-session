@@ -1,7 +1,7 @@
 import AISessionCore
 import SwiftUI
 
-/// The Mac (and regular-width iPad) sidebar: Needs you and Running now, the todo sections,
+/// The Mac (and regular-width iPad) sidebar: Needs you, Ready for review and Working, the todo sections,
 /// Projects, then the computers, with the sync line and Settings at the bottom.
 struct SidebarView: View {
     @Binding var selection: AppModel.SidebarItem?
@@ -19,8 +19,10 @@ struct SidebarView: View {
                 SidebarRow(title: "Needs you", systemImage: "exclamationmark.circle", iconTint: DS.accent,
                            count: counts.needsYou, countTint: DS.accent)
                     .tag(AppModel.SidebarItem.needsYou)
-                SidebarRow(title: "Running now", systemImage: "bolt", count: counts.runningNow)
-                    .tag(AppModel.SidebarItem.runningNow)
+                SidebarRow(title: "Ready for review", systemImage: "checkmark.circle", count: counts.review)
+                    .tag(AppModel.SidebarItem.review)
+                SidebarRow(title: "Working", systemImage: "bolt", count: counts.working)
+                    .tag(AppModel.SidebarItem.working)
             }
             Section("Todos") {
                 ForEach(counts.sections, id: \.section) { row in
@@ -36,7 +38,7 @@ struct SidebarView: View {
             if !counts.computers.isEmpty {
                 Section("Computers") {
                     ForEach(counts.computers, id: \.id) { row in
-                        SidebarRow(title: row.name, systemImage: "desktopcomputer", count: row.running)
+                        SidebarRow(title: row.name, systemImage: "desktopcomputer", count: row.open)
                             .tag(AppModel.SidebarItem.computer(row.id))
                     }
                 }

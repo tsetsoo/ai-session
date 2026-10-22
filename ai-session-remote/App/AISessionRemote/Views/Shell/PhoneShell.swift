@@ -46,7 +46,7 @@ struct PhoneShell: View {
     @State private var conversationsPath: [Route] = []
     @State private var projectsPath: [Route] = []
     @State private var computersPath: [Route] = []
-    @State private var filter = ConversationListView.Filter.running
+    @State private var filter = ConversationListView.Filter.review
     /// Once the filter is picked by hand it stays; until then it follows the default rule.
     @State private var filterChosen = false
     @State private var settings: SettingsRequest?
@@ -328,7 +328,7 @@ struct PhoneShell: View {
         settings = SettingsRequest(initial: destination)
     }
 
-    /// Needs you when something needs you, else Running, until the filter is picked by hand.
+    /// Needs you when something needs you, else Ready for review, until the filter is picked by hand.
     private func applyDefaultFilter() {
         guard tab == .conversations, !filterChosen else { return }
         filter = .initial(needsYouCount: model.board.needsYou.count)

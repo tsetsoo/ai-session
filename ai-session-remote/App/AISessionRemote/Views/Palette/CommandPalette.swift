@@ -14,6 +14,8 @@ struct CommandPalette: View {
     @Binding var isPresented: Bool
     /// The shell's selected todo, for "Link a conversation to …".
     let selectedTodoID: String?
+    /// The list ⌘1–⌘9 number, for the rows' hints; the open conversations when nil.
+    let shortcutList: [Conversation]?
     /// A row was chosen; `newWindow` is ⌘⏎. The palette has already closed.
     let onActivate: (_ item: PaletteItem, _ newWindow: Bool) -> Void
     /// Closed with esc or a click outside, choosing nothing.
@@ -34,11 +36,13 @@ struct CommandPalette: View {
     private static let maxResultsHeight: CGFloat = 460
     private static let searchPrompt = "Search conversations, todos and actions"
 
-    init(isPresented: Binding<Bool>, selectedTodoID: String? = nil, initialQuery: String = "",
+    init(isPresented: Binding<Bool>, selectedTodoID: String? = nil, shortcutList: [Conversation]? = nil,
+         initialQuery: String = "",
          onActivate: @escaping (_ item: PaletteItem, _ newWindow: Bool) -> Void,
          onDismiss: @escaping () -> Void = {}) {
         _isPresented = isPresented
         self.selectedTodoID = selectedTodoID
+        self.shortcutList = shortcutList
         self.onActivate = onActivate
         self.onDismiss = onDismiss
         _query = State(initialValue: initialQuery)
@@ -48,7 +52,8 @@ struct CommandPalette: View {
         let store = model.store
         let groups = PaletteModel.groups(
             query: query, board: model.board, todos: store.todos, projects: store.projects,
-            selectedTodoID: selectedTodoID, canEdit: model.isConfigured && !store.isOffline
+            selectedTodoID: selectedTodoID, canEdit: model.isConfigured && !store.isOffline,
+            shortcutList: shortcutList
         )
         let items = groups.flatMap(\.items)
         let current = items.first { $0.id == highlighted }?.id ?? items.first?.id

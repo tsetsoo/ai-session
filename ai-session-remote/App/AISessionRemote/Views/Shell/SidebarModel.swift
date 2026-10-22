@@ -13,22 +13,25 @@ struct SidebarCounts: Equatable {
     struct ComputerRow: Equatable {
         let id: String
         let name: String
-        let running: Int
+        /// Open conversations on it, whatever their status.
+        let open: Int
     }
 
     let needsYou: Int
-    let runningNow: Int
+    let review: Int
+    let working: Int
     let sections: [SectionRow]
     let computers: [ComputerRow]
 
     init(board: ConversationBoard, computers: [Computer]) {
         needsYou = board.needsYou.count
-        runningNow = board.runningNow.count
+        review = board.review.count
+        working = board.working.count
         sections = TodoSection.allCases.map {
             SectionRow(section: $0, openTodos: board.openTodoCount($0), needsYou: board.sectionNeedsYou($0))
         }
         self.computers = computers.map {
-            ComputerRow(id: $0.id, name: $0.name, running: board.runningCount(computerID: $0.id))
+            ComputerRow(id: $0.id, name: $0.name, open: board.openCount(computerID: $0.id))
         }
     }
 
@@ -88,30 +91,32 @@ enum ContentHeader {
     static func title(for item: AppModel.SidebarItem, computers: [Computer]) -> String {
         switch item {
         case .needsYou: "Needs you"
-        case .runningNow: "Running now"
+        case .review: "Ready for review"
+        case .working: "Working"
         case let .section(section): section.rawValue
         case .projects: "Projects"
         case let .computer(id): computers.first { $0.id == id }?.name ?? "Computer"
         }
     }
 
-    /// "5 conversations · 2 need you", "12 open · mac-studio", "3 running · 1 needs you".
+    /// "5 conversations", "12 open · mac-studio", "1 needs you · 3 working".
     static func subtitle(for item: AppModel.SidebarItem, board: ConversationBoard,
                          sectionComputer: (TodoSection) -> String?) -> String {
         switch item {
         case .needsYou:
             return conversations(board.needsYou.count)
-        case .runningNow:
-            let needsYou = board.needsYou.count
-            let running = conversations(board.runningNow.count)
-            return needsYou > 0 ? "\(running) · \(needsYou) need\(needsYou == 1 ? "s" : "") you" : running
+        case .review:
+            return conversations(board.review.count)
+        case .working:
+            return conversations(board.working.count)
         case let .section(section):
             let open = "\(board.openTodoCount(section)) open"
             return sectionComputer(section).map { "\(open) · \($0)" } ?? open
         case .projects:
             return ""
         case let .computer(id):
-            return RowText.computerLine(running: board.runningCount(computerID: id),
+            return RowText.computerLine(working: board.workingCount(computerID: id),
+                                        review: board.reviewCount(computerID: id),
                                         needsYou: board.needsYouCount(computerID: id))
         }
     }

@@ -12,9 +12,10 @@ final class RowTextTests: XCTestCase {
     }
 
     func testComputerLine() {
-        XCTAssertEqual(RowText.computerLine(running: 3, needsYou: 1), "3 running · 1 needs you")
-        XCTAssertEqual(RowText.computerLine(running: 2, needsYou: 0), "2 running")
-        XCTAssertEqual(RowText.computerLine(running: 0, needsYou: 0), "Nothing running")
+        XCTAssertEqual(RowText.computerLine(working: 3, review: 2, needsYou: 1), "1 needs you · 2 to review · 3 working")
+        XCTAssertEqual(RowText.computerLine(working: 2, review: 0, needsYou: 0), "2 working")
+        XCTAssertEqual(RowText.computerLine(working: 0, review: 4, needsYou: 0), "4 to review")
+        XCTAssertEqual(RowText.computerLine(working: 0, review: 0, needsYou: 0), "Nothing running")
     }
 
     func testMetaKeepsSectionAndComputerAndLeavesTheToolOff() {
@@ -58,7 +59,11 @@ final class RowTextTests: XCTestCase {
         XCTAssertEqual(RowText.conversationMessage(conv(updated: "2026-10-17T08:59:40Z"), status: .working, now: now),
                        "Working")
         XCTAssertEqual(RowText.conversationMessage(conv(), status: .working, now: now), "Working")
-        XCTAssertEqual(RowText.conversationMessage(conv(status: .idle), status: .idle, now: now), "Idle")
+        XCTAssertEqual(RowText.conversationMessage(conv(status: .idle), status: .idle, now: now), "Ready for review")
+        XCTAssertEqual(RowText.conversationMessage(conv(status: .idle, updated: "2026-10-17T08:46:00Z"), status: .idle,
+                                                   now: now), "Finished 14m ago")
+        XCTAssertEqual(RowText.conversationMessage(conv(status: .idle, updated: "2026-10-17T08:59:30Z"), status: .idle,
+                                                   now: now), "Finished just now")
     }
 
     func testTodoSubtitle() {

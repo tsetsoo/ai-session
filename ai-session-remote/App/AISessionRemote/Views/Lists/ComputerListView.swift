@@ -32,7 +32,8 @@ struct ComputerListView: View {
                     ComputerRow(
                         computer: computer,
                         sections: TodoSection.allCases.filter { store.sectionComputers[$0]?.computer.id == computer.id },
-                        running: board.runningCount(computerID: computer.id),
+                        working: board.workingCount(computerID: computer.id),
+                        review: board.reviewCount(computerID: computer.id),
                         needsYou: board.needsYouCount(computerID: computer.id),
                         hasAccess: HostLookup.host(for: computer, in: hosts) != nil,
                         onSetUp: { setUpPrefill = HostEditorPrefill(computer: computer) }
@@ -93,7 +94,8 @@ struct ComputerIcon: View {
 private struct ComputerRow: View {
     let computer: Computer
     let sections: [TodoSection]
-    let running: Int
+    let working: Int
+    let review: Int
     let needsYou: Int
     let hasAccess: Bool
     let onSetUp: () -> Void
@@ -105,7 +107,7 @@ private struct ComputerRow: View {
                 Text(computer.name)
                     .font(.body.weight(.semibold))
                 if hasAccess {
-                    Text(RowText.computerLine(running: running, needsYou: needsYou))
+                    Text(RowText.computerLine(working: working, review: review, needsYou: needsYou))
                         .foregroundStyle(needsYou > 0 ? DS.accent : Color.secondary)
                 } else {
                     Text("This device can't open conversations here yet")
