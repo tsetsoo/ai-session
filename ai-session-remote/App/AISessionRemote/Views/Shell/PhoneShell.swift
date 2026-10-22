@@ -224,14 +224,7 @@ struct PhoneShell: View {
     }
 
     private var notConfigured: some View {
-        ContentUnavailableView {
-            Label("Connect to your todo server", systemImage: "checklist")
-        } description: {
-            Text("Enter the server address and API token to see your todos.")
-        } actions: {
-            Button("Open Settings") { openSettings(.server) }
-                .buttonStyle(AccentButtonStyle())
-        }
+        ServerNotConfiguredView()
     }
 
     @ToolbarContentBuilder

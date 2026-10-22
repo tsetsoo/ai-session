@@ -54,11 +54,8 @@ struct ProjectsList<Route: Hashable>: View {
     @ViewBuilder
     private var content: some View {
         if !store.isConfigured {
-            ContentUnavailableView {
-                Label("Connect to your todo server", systemImage: "folder")
-            } description: {
-                Text("Set up the server address and API token in Settings to see your projects.")
-            }
+            ServerNotConfiguredView(systemImage: "folder",
+                                    description: "Enter the server address and API token to see your projects.")
         } else if store.projects.isEmpty && !store.hasLoadedOnce {
             ProgressView()
         } else {
@@ -74,11 +71,8 @@ struct ProjectsList<Route: Hashable>: View {
 
     @ViewBuilder
     private var rows: some View {
-        if store.isOffline {
-            Label("Offline — read only", systemImage: "wifi.slash")
-                .font(.subheadline)
-                .foregroundStyle(.orange)
-        }
+        // Offline (with Retry) or a rejected token, like the other lists.
+        ListStatusBanner(store: store)
         if !store.suggestions.isEmpty && !store.isOffline {
             suggestionsSection
         }

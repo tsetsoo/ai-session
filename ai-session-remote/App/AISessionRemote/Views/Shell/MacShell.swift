@@ -220,14 +220,7 @@ struct MacShell: View {
     }
 
     private var notConfigured: some View {
-        ContentUnavailableView {
-            Label("Connect to your todo server", systemImage: "checklist")
-        } description: {
-            Text("Enter the server address and API token to see your todos.")
-        } actions: {
-            Button("Open Settings") { settings = SettingsRequest(initial: .server) }
-                .buttonStyle(AccentButtonStyle())
-        }
+        ServerNotConfiguredView()
     }
 
     /// The section list, when one is selected. The toolbar sheet asks for a section otherwise.
