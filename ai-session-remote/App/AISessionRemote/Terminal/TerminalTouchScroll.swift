@@ -31,15 +31,19 @@ struct TerminalTouchScroll {
 /// The glide after a flick, in points: each frame returns how far the text moves, slowing like
 /// a `UIScrollView` at its normal deceleration, and nil once it has stopped.
 struct TerminalScrollMomentum {
-    /// Below this speed (points per second) the glide ends.
-    static let stopSpeed: CGFloat = 60
+    /// Below this speed (points per second) the glide ends. Low, so it eases out a line at a
+    /// time rather than stopping short.
+    static let stopSpeed: CGFloat = 40
+    /// The fastest glide (points per second). A harder flick would flood the agent with steps
+    /// faster than it redraws.
+    static let maxSpeed: CGFloat = 5000
     /// Speed kept per millisecond, as `UIScrollView.DecelerationRate.normal`.
     static let decelerationRate: CGFloat = 0.998
 
     private(set) var velocity: CGFloat
 
     init(velocity: CGFloat) {
-        self.velocity = velocity
+        self.velocity = min(max(velocity, -Self.maxSpeed), Self.maxSpeed)
     }
 
     mutating func advance(by seconds: CGFloat) -> CGFloat? {
@@ -47,6 +51,35 @@ struct TerminalScrollMomentum {
         let distance = velocity * seconds
         velocity *= pow(Self.decelerationRate, seconds * 1000)
         return distance
+    }
+}
+
+/// Spreads wheel steps over display frames. A fast drag or flick yields several lines in one
+/// frame; sent together they arrive as one jump. Each frame sends about a third of what is
+/// queued (at least one), so a steady scroll moves a line or two per frame and a backlog
+/// still drains within a few frames. Steps the other way cancel what is still queued.
+struct TerminalStepPacer {
+    static let share = 0.35
+
+    private(set) var pending = 0
+
+    var isIdle: Bool { pending == 0 }
+
+    mutating func add(_ steps: Int) {
+        pending += steps
+    }
+
+    /// The steps to send this frame: positive up, negative down, zero when nothing is queued.
+    mutating func next() -> Int {
+        guard pending != 0 else { return 0 }
+        let count = min(abs(pending), max(1, Int((Double(abs(pending)) * Self.share).rounded(.up))))
+        let step = pending > 0 ? count : -count
+        pending -= step
+        return step
+    }
+
+    mutating func clear() {
+        pending = 0
     }
 }
 
@@ -74,8 +107,9 @@ struct TerminalWheelAnchor: Equatable {
 ///
 /// With tmux mouse mode on, SwiftTerm turns a drag into a held mouse button, so tmux starts a
 /// selection and nothing scrolls. Here a vertical finger drag sends wheel events instead, one
-/// line per line of travel, and keeps gliding after a flick. They carry the Meta bit, which the
-/// host's `tmux.conf` binds to scroll one line at a time (the plain wheel moves five).
+/// line per line of travel, and keeps gliding after a flick. Claude Code runs full screen and
+/// takes the mouse, so tmux passes each event to it and it scrolls one line. (A plain shell
+/// pane scrolls in tmux's copy mode instead, five lines an event.)
 /// A trackpad or mouse on iPad keeps SwiftTerm's drag, so it still selects in tmux.
 /// Without mouse reporting the view scrolls its own buffer as usual.
 final class TouchScrollTerminalView: TerminalView {
@@ -88,6 +122,7 @@ final class TouchScrollTerminalView: TerminalView {
     private var scroll = TerminalTouchScroll(lineHeight: 0)
     private var anchor: TerminalWheelAnchor?
     private var momentum: TerminalScrollMomentum?
+    private var pacer = TerminalStepPacer()
     private var displayLink: CADisplayLink?
     private var lastFrame: CFTimeInterval = 0
     /// The touch that caught a glide only stops it, as in any scroll view: no click.
@@ -120,8 +155,8 @@ final class TouchScrollTerminalView: TerminalView {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        touchStoppedGlide = displayLink != nil
-        stopMomentum()
+        touchStoppedGlide = momentum != nil
+        stopScrolling()
         super.touchesBegan(touches, with: event)
     }
 
@@ -129,11 +164,11 @@ final class TouchScrollTerminalView: TerminalView {
     /// scroll a session this view no longer shows.
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { stopMomentum() }
+        if window == nil { stopScrolling() }
     }
 
     override var isUserInteractionEnabled: Bool {
-        didSet { if !isUserInteractionEnabled { stopMomentum() } }
+        didSet { if !isUserInteractionEnabled { stopScrolling() } }
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -149,22 +184,24 @@ final class TouchScrollTerminalView: TerminalView {
     @objc private func handleScrollPan(_ pan: UIPanGestureRecognizer) {
         switch pan.state {
         case .began:
-            stopMomentum()
+            stopScrolling()
             let terminal = getTerminal()
             // The touch point less the translation is where the finger first came down.
             let translation = pan.translation(in: self)
             let location = pan.location(in: self)
             let start = CGPoint(x: location.x - translation.x, y: location.y - translation.y - bounds.minY)
             anchor = TerminalWheelAnchor(point: start, size: bounds.size, cols: terminal.cols, rows: terminal.rows)
-            scroll = TerminalTouchScroll(lineHeight: lineHeight * CGFloat(linesPerEvent))
+            scroll = TerminalTouchScroll(lineHeight: lineHeight)
         case .changed:
             let dy = pan.translation(in: self).y
             pan.setTranslation(.zero, in: self)
-            sendWheel(steps: scroll.steps(forDrag: dy))
+            pacer.add(scroll.steps(forDrag: dy))
+            runFrames()
         case .ended:
-            startMomentum(velocity: pan.velocity(in: self).y)
+            momentum = TerminalScrollMomentum(velocity: pan.velocity(in: self).y)
+            runFrames()
         default:
-            scroll.reset()
+            stopScrolling()
         }
     }
 
@@ -173,15 +210,9 @@ final class TouchScrollTerminalView: TerminalView {
         return rows > 0 ? bounds.height / CGFloat(rows) : 0
     }
 
-    /// Lines one event scrolls: one with Meta, five for the plain wheel when the mouse mode
-    /// can't carry Meta.
-    private var linesPerEvent: Int {
-        getTerminal().mouseMode.sendsModifiers() ? 1 : 5
-    }
-
-    private func startMomentum(velocity: CGFloat) {
-        displayLink?.invalidate()
-        momentum = TerminalScrollMomentum(velocity: velocity)
+    /// Starts the frame loop that sends queued steps and drives the glide, if it isn't running.
+    private func runFrames() {
+        guard displayLink == nil else { return }
         lastFrame = CACurrentMediaTime()
         // The link holds its target; the proxy keeps it from holding this view.
         let link = CADisplayLink(target: WeakDisplayLinkTarget(self), selector: #selector(WeakDisplayLinkTarget.tick))
@@ -189,21 +220,32 @@ final class TouchScrollTerminalView: TerminalView {
         displayLink = link
     }
 
-    fileprivate func glide(_ link: CADisplayLink) {
+    fileprivate func advanceFrame(_ link: CADisplayLink) {
         let now = link.timestamp
         let seconds = CGFloat(max(0, now - lastFrame))
         lastFrame = now
-        guard let distance = momentum?.advance(by: seconds) else {
-            stopMomentum()
-            return
+        if momentum != nil {
+            if let distance = momentum?.advance(by: seconds) {
+                pacer.add(scroll.steps(forDrag: distance))
+            } else {
+                momentum = nil
+            }
         }
-        sendWheel(steps: scroll.steps(forDrag: distance))
+        sendWheel(steps: pacer.next())
+        // The drag keeps the loop until it ends; then it runs until the queue and glide are done.
+        let dragging = scrollPan.state == .began || scrollPan.state == .changed
+        if !dragging, momentum == nil, pacer.isIdle {
+            displayLink?.invalidate()
+            displayLink = nil
+        }
     }
 
-    private func stopMomentum() {
+    /// Ends the glide and drops steps not sent yet.
+    private func stopScrolling() {
         displayLink?.invalidate()
         displayLink = nil
         momentum = nil
+        pacer.clear()
         scroll.reset()
     }
 
@@ -212,7 +254,7 @@ final class TouchScrollTerminalView: TerminalView {
         guard steps != 0, let anchor else { return }
         let terminal = getTerminal()
         guard terminal.mouseMode != .off else { return }
-        let flags = terminal.encodeButton(button: steps > 0 ? 4 : 5, release: false, shift: false, meta: true, control: false)
+        let flags = terminal.encodeButton(button: steps > 0 ? 4 : 5, release: false, shift: false, meta: false, control: false)
         for _ in 0..<abs(steps) {
             terminal.sendEvent(buttonFlags: flags, x: anchor.col, y: anchor.row)
         }
@@ -232,7 +274,7 @@ private final class WeakDisplayLinkTarget {
             link.invalidate()
             return
         }
-        view.glide(link)
+        view.advanceFrame(link)
     }
 }
 #endif
