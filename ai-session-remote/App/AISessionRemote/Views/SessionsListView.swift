@@ -13,7 +13,12 @@ struct SessionsListView: View {
     @State private var loadGeneration = 0
     @State private var showingNewSession = false
     @State private var showingHostEditor = false
+    /// A warning that stays until the next successful load (the computer is unreachable).
     @State private var bannerMessage: String?
+    /// A short success note ("Added to Managed"). Separate from `bannerMessage` so the reload
+    /// that follows the success doesn't clear it; it fades on its own.
+    @State private var confirmationMessage: String?
+    @State private var alertTitle = "Could not load sessions"
     @State private var alertMessage: String?
     @State private var canEditHost = false
     /// Set by `NewSessionSheet`'s `onCreated` right before it dismisses itself, so this view can
@@ -96,16 +101,34 @@ struct SessionsListView: View {
         }) {
             if let promotingSession {
                 PromoteSessionSheet(host: host, session: promotingSession) {
-                    bannerMessage = "Session added to Managed"
+                    confirmationMessage = "Added to Managed"
                 }
             }
         }
-        .alert("Could not load sessions", isPresented: Binding(
+        .overlay(alignment: .bottom) {
+            if let confirmationMessage {
+                Label(confirmationMessage, systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.medium))
+                    .padding(.horizontal, DS.spacing.l)
+                    .padding(.vertical, DS.spacing.s)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.bottom, DS.spacing.l)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.default, value: confirmationMessage)
+        .task(id: confirmationMessage) {
+            guard confirmationMessage != nil else { return }
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            confirmationMessage = nil
+        }
+        .alert(alertTitle, isPresented: Binding(
             get: { alertMessage != nil },
             set: { if !$0 { alertMessage = nil } }
         )) {
             if canEditHost {
-                Button("Edit Host") { showingHostEditor = true }
+                Button("Edit Access…") { showingHostEditor = true }
             }
             Button("OK", role: .cancel) { canEditHost = false }
         } message: {
@@ -117,7 +140,7 @@ struct SessionsListView: View {
         ContentUnavailableView {
             Label("No Sessions", systemImage: "terminal")
         } description: {
-            Text("Start a Claude, Codex, Cursor, or Shell session on \(hostTitle). It keeps running in tmux after you detach.")
+            Text("Start Claude, Codex, Cursor, or a shell on \(hostTitle). It keeps running after you leave.")
         } actions: {
             Button {
                 showingNewSession = true
@@ -133,7 +156,7 @@ struct SessionsListView: View {
             if let bannerMessage {
                 Section {
                     Label(bannerMessage, systemImage: "wifi.exclamationmark")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(DS.accent)
                         .font(.subheadline)
                 }
             }
@@ -150,7 +173,7 @@ struct SessionsListView: View {
 
             if !filteredOther.isEmpty {
                 Section {
-                    DisclosureGroup("Other tmux (\(filteredOther.count))") {
+                    DisclosureGroup("Other sessions (\(filteredOther.count))") {
                         ForEach(filteredOther, id: \.tmuxName) { session in
                             sessionRow(session)
                         }
@@ -185,11 +208,14 @@ struct SessionsListView: View {
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(AppTheme.color(for: tool))
                         } else {
-                            Text("tmux")
+                            Text("Other session")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                         }
-                        statusPill(session.status)
+                        // Only AI sessions report a status; a plain shell would always read Idle.
+                        if session.tool != nil {
+                            StatusBadge(displayStatus(session.status))
+                        }
                         if let cwd = session.cwd {
                             Text("·")
                                 .font(.caption)
@@ -226,7 +252,7 @@ struct SessionsListView: View {
                 Button { duplicate(session) } label: {
                     Label("Duplicate", systemImage: "plus.square.on.square")
                 }
-                .tint(.blue)
+                .tint(DS.accentSolid)
             } else {
                 Button {
                     promotingSession = session
@@ -234,18 +260,14 @@ struct SessionsListView: View {
                 } label: {
                     Label("Manage", systemImage: "tray.and.arrow.down")
                 }
-                .tint(.orange)
+                .tint(.gray)
             }
         }
     }
 
-    private func statusPill(_ status: SessionActivityStatus) -> some View {
-        Text(AppTheme.statusLabel(status))
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(AppTheme.statusColor(status))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(AppTheme.statusColor(status).opacity(0.14), in: Capsule())
+    /// The session's hook status in the shared badge vocabulary. A listed session is alive.
+    private func displayStatus(_ status: SessionActivityStatus) -> ConversationDisplayStatus {
+        ConversationDisplayStatus(ConversationStatus(rawValue: status.rawValue) ?? .unknown, tmuxAlive: true)
     }
 
     private func filter(_ sessions: [RemoteSession]) -> [RemoteSession] {
@@ -272,13 +294,13 @@ struct SessionsListView: View {
                 pendingSession = created
                 await loadSessions()
             } catch {
-                alertMessage = error.localizedDescription
+                show(error, title: "Could not duplicate session")
             }
         }
     }
 
     private func sessionAccessibilityLabel(_ session: RemoteSession) -> String {
-        let tool = session.tool.map(AppTheme.displayName(for:)) ?? "tmux"
+        let tool = session.tool.map(AppTheme.displayName(for:)) ?? "Other session"
         if let cwd = session.cwd {
             return "\(session.slug), \(tool), \(cwd)"
         }
@@ -305,7 +327,7 @@ struct SessionsListView: View {
             ContentUnavailableView(
                 "Terminal Unavailable",
                 systemImage: "exclamationmark.triangle",
-                description: Text("The private key for this host is unavailable. Edit the host and save its key again.")
+                description: Text("This device has no key for \(hostTitle). Add it under Settings → Access & keys.")
             )
         }
     }
@@ -334,27 +356,52 @@ struct SessionsListView: View {
                 hostName: hostTitle,
                 sessions: result.ai + result.other
             )
-        } catch let error as SSHRemoteError {
+        } catch SSHRemoteError.unreachable {
             guard generation == loadGeneration else { return }
-            handle(error)
+            bannerMessage = ComputerErrorText.message(for: SSHRemoteError.unreachable, computer: hostTitle)
         } catch {
             guard generation == loadGeneration else { return }
-            canEditHost = false
-            alertMessage = error.localizedDescription
+            show(error, title: "Could not load sessions")
         }
     }
 
-    private func handle(_ error: SSHRemoteError) {
-        canEditHost = error == .authenticationFailed
+    private func show(_ error: Error, title: String) {
+        alertTitle = title
+        canEditHost = ComputerErrorText.isAccessProblem(error)
+        alertMessage = ComputerErrorText.message(for: error, computer: hostTitle)
+    }
+}
+
+/// Plain sentences, each with a next step, for what can go wrong reaching a computer. The SSH
+/// and tmux detail stays out of these screens (see "Vocabulary on screen" in the redesign spec).
+enum ComputerErrorText {
+    static func message(for error: Error, computer: String) -> String {
         switch error {
-        case .tmuxMissing:
-            alertMessage = error.userMessage
-        case .binaryMissing, .authenticationFailed:
-            alertMessage = error.userMessage
-        case .unreachable:
-            bannerMessage = error.userMessage
-        case .commandFailed:
-            alertMessage = error.userMessage
+        case SessionServiceFactoryError.missingPrivateKey:
+            return "This device has no key for \(computer). Add it with Edit Access."
+        case let error as SSHRemoteError:
+            switch error {
+            case .unreachable:
+                return "Couldn't reach \(computer). Check that it's on and connected to Tailscale, then pull to refresh."
+            case .authenticationFailed:
+                return "\(computer) didn't accept this device's key. Check the user name and key with Edit Access."
+            case .tmuxMissing:
+                return "\(computer) can't keep sessions running yet. Install tmux on it (brew install tmux), then try again."
+            case let .binaryMissing(binary):
+                return "\(binary) isn't installed on \(computer). Install it there, then try again."
+            case .commandFailed:
+                return "Something went wrong on \(computer). Try again in a moment."
+            }
+        default:
+            return "Something went wrong talking to \(computer). Try again in a moment."
+        }
+    }
+
+    /// Whether Edit Access is the fix: the key is missing or was refused.
+    static func isAccessProblem(_ error: Error) -> Bool {
+        switch error {
+        case SessionServiceFactoryError.missingPrivateKey, SSHRemoteError.authenticationFailed: true
+        default: false
         }
     }
 }

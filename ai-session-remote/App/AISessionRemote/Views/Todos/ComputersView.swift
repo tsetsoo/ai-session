@@ -9,6 +9,7 @@ struct ComputersView: View {
     @State private var editingSection: TodoSection?
     /// Shown inside this sheet: the Todos screen's alert can't present over it.
     @State private var errorMessage: String?
+    @State private var computerToDelete: Computer?
 
     /// `editing` opens that section's computer at once (a fix from the frame).
     init(store: TodoHubStore, editing section: TodoSection? = nil) {
@@ -40,7 +41,7 @@ struct ComputersView: View {
                 } header: {
                     Text("Sections")
                 } footer: {
-                    Text("New conversations for a section's todos start on its computer, in this folder.")
+                    Text("New conversations for a section's todos start on its computer.")
                 }
 
                 Section("Computers") {
@@ -51,14 +52,23 @@ struct ComputersView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(computer.name)
                             Text("\(computer.username)@\(computer.hostname):\(computer.port)")
-                                .font(.caption.monospaced())
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                         }
                         .swipeActions {
                             Button(role: .destructive) {
-                                run { try await store.deleteComputer(computer) }
+                                computerToDelete = computer
                             } label: {
                                 Label("Delete", systemImage: "trash")
+                            }
+                        }
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                computerToDelete = computer
+                            } label: {
+                                Label("Delete…", systemImage: "trash")
                             }
                         }
                     }
@@ -90,6 +100,19 @@ struct ComputersView: View {
                 ) { computerID in
                     run { try await store.assign(section, computerID: computerID) }
                 }
+            }
+            .confirmationDialog(
+                "Delete \(computerToDelete?.name ?? "computer")?",
+                isPresented: Binding(get: { computerToDelete != nil }, set: { if !$0 { computerToDelete = nil } }),
+                titleVisibility: .visible,
+                presenting: computerToDelete
+            ) { computer in
+                Button("Delete Computer", role: .destructive) {
+                    run { try await store.deleteComputer(computer) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("It's removed from the todo server for all your devices. A computer that a section, conversation or project still uses can't be deleted.")
             }
             .alert(
                 "Computers",

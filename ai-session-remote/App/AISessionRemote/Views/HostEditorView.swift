@@ -26,7 +26,11 @@ struct HostEditorView: View {
     @State private var pem: String
     @State private var defaultPaths: String
     @State private var cliBinaries: [AITool: String]
-    @State private var errorMessage: String?
+    /// The key already in the Keychain for `host`. Never shown: saving without Replace Key
+    /// writes it back unchanged.
+    @State private var storedPEM: String?
+    @State private var replacingKey = false
+    @State private var alert: EditorAlert?
     @State private var isLoadingKey = false
     @State private var showingForgetHostKeyConfirmation = false
     @State private var forgetHostKeyMessage: String?
@@ -47,11 +51,26 @@ struct HostEditorView: View {
         _showAdvanced = State(initialValue: hasAdvanced)
     }
 
+    private struct EditorAlert {
+        var title: String
+        var message: String
+    }
+
+    /// A key is stored and the user hasn't asked to replace it.
+    private var keepsStoredKey: Bool {
+        storedPEM != nil && !replacingKey
+    }
+
+    /// What Save writes to the Keychain: the stored key, or the one entered here.
+    private var keyToSave: String {
+        keepsStoredKey ? storedPEM ?? "" : pem
+    }
+
     private var canSave: Bool {
         !isLoadingKey
             && !hostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !pem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !keyToSave.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && Int(port.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
     }
 
@@ -83,6 +102,12 @@ struct HostEditorView: View {
                             Text("Loading key from Keychain…")
                                 .foregroundStyle(.secondary)
                         }
+                    } else if keepsStoredKey {
+                        Label("Key saved", systemImage: "checkmark.seal.fill")
+                        Button("Replace Key…") {
+                            pem = ""
+                            replacingKey = true
+                        }
                     } else {
                         TextEditor(text: $pem)
                             .font(.system(.body, design: .monospaced))
@@ -100,7 +125,7 @@ struct HostEditorView: View {
                         if !pem.isEmpty {
                             Label("Key ready (\(pemLineCount) lines)", systemImage: "checkmark.seal.fill")
                                 .font(.caption)
-                                .foregroundStyle(.green)
+                                .foregroundStyle(.secondary)
                         }
 
                         Button {
@@ -129,11 +154,18 @@ struct HostEditorView: View {
                             }
                         }
                         #endif
+
+                        if storedPEM != nil {
+                            Button("Keep Saved Key") {
+                                pem = ""
+                                replacingKey = false
+                            }
+                        }
                     }
                 } header: {
                     Text("Private key")
                 } footer: {
-                    Text("Stored in the Keychain on this device. Never leave this field empty when saving.")
+                    Text("Stored in the Keychain on this device.")
                 }
 
                 Section {
@@ -183,13 +215,16 @@ struct HostEditorView: View {
                 }
             }
             .task {
-                guard let host, pem.isEmpty else { return }
+                guard let host, storedPEM == nil else { return }
                 isLoadingKey = true
                 defer { isLoadingKey = false }
                 do {
-                    pem = try HostRepository(modelContext: modelContext).privateKey(for: host)
+                    storedPEM = try HostRepository(modelContext: modelContext).privateKey(for: host)
                 } catch {
-                    errorMessage = "Could not load the private key: \(error.localizedDescription)"
+                    alert = EditorAlert(
+                        title: "Could not load the saved key",
+                        message: "This device couldn't read the key saved for this host. Paste or choose the key again, then save."
+                    )
                 }
             }
             .fileImporter(
@@ -198,16 +233,17 @@ struct HostEditorView: View {
             ) { result in
                 switch result {
                 case .success(let url): loadKey(from: url)
-                case .failure(let error): errorMessage = "Could not open the key file: \(error.localizedDescription)"
+                case .failure(let error):
+                    alert = EditorAlert(title: "Could not open the key file", message: error.localizedDescription)
                 }
             }
-            .alert("Could not save host", isPresented: Binding(
-                get: { errorMessage != nil },
-                set: { if !$0 { errorMessage = nil } }
+            .alert(alert?.title ?? "", isPresented: Binding(
+                get: { alert != nil },
+                set: { if !$0 { alert = nil } }
             )) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text(errorMessage ?? "")
+                Text(alert?.message ?? "")
             }
             .confirmationDialog(
                 "Forget the trusted SSH host key for this host? The next connection will trust whatever key the host presents.",
@@ -239,12 +275,18 @@ struct HostEditorView: View {
         do {
             let text = try String(contentsOf: url, encoding: .utf8)
             guard text.contains("PRIVATE KEY") else {
-                errorMessage = "\(url.lastPathComponent) does not look like a private key."
+                alert = EditorAlert(
+                    title: "Not a private key",
+                    message: "\(url.lastPathComponent) does not look like a private key. Choose the file that starts with BEGIN … PRIVATE KEY."
+                )
                 return
             }
             pem = text
         } catch {
-            errorMessage = "Could not read \(url.lastPathComponent): \(error.localizedDescription)"
+            alert = EditorAlert(
+                title: "Could not read the key file",
+                message: "\(url.lastPathComponent) couldn't be read. Check it's a text key file, or paste the key instead."
+            )
         }
     }
 
@@ -285,7 +327,7 @@ struct HostEditorView: View {
                     hostname: hostname,
                     port: port,
                     username: username,
-                    pem: pem,
+                    pem: keyToSave,
                     defaultPaths: paths,
                     cliBinaries: binaries
                 )
@@ -302,7 +344,7 @@ struct HostEditorView: View {
             }
             dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            alert = EditorAlert(title: "Could not save host", message: error.localizedDescription)
         }
     }
 }
