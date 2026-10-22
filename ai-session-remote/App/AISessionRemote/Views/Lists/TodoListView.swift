@@ -123,7 +123,7 @@ struct TodoListView: View {
                 .tint(.red)
                 if let conversation, isRunning {
                     Button {
-                        actions.close(conversation, store: store, hosts: hosts)
+                        actions.requestClose(conversation, store: store, hosts: hosts)
                     } label: {
                         Label("Close", systemImage: "xmark.circle")
                     }
@@ -157,7 +157,7 @@ struct TodoListView: View {
                 }
                 if let conversation {
                     Button {
-                        actions.close(conversation, store: store, hosts: hosts)
+                        actions.requestClose(conversation, store: store, hosts: hosts)
                     } label: {
                         Label("Close Conversation", systemImage: "xmark.circle")
                     }

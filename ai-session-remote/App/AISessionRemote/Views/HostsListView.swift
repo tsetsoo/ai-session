@@ -124,6 +124,14 @@ struct HostsListView: View {
                     .tint(DS.accentSolid)
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    // Not the destructive role (or onDelete): either slides the row away before
+                    // the confirmation, and back again on Cancel.
+                    Button {
+                        hostsToDelete = [host]
+                    } label: {
+                        Label("Delete…", systemImage: "trash")
+                    }
+                    .tint(.red)
                     Button {
                         plainShellHost = host
                     } label: {
@@ -149,9 +157,6 @@ struct HostsListView: View {
                         Label("Delete…", systemImage: "trash")
                     }
                 }
-            }
-            .onDelete { offsets in
-                hostsToDelete = offsets.map { hosts[$0] }
             }
         }
         .overlay(alignment: .top) {

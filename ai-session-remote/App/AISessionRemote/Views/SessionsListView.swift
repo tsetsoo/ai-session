@@ -17,7 +17,7 @@ struct SessionsListView: View {
     @State private var bannerMessage: String?
     /// A short success note ("Added to Managed"). Separate from `bannerMessage` so the reload
     /// that follows the success doesn't clear it; it fades on its own.
-    @State private var confirmationMessage: String?
+    @State private var confirmation = TransientValue<String>(for: .toast)
     @State private var alertTitle = "Could not load sessions"
     @State private var alertMessage: String?
     @State private var canEditHost = false
@@ -101,13 +101,13 @@ struct SessionsListView: View {
         }) {
             if let promotingSession {
                 PromoteSessionSheet(host: host, session: promotingSession) {
-                    confirmationMessage = "Added to Managed"
+                    confirmation.show("Added to Managed")
                 }
             }
         }
         .overlay(alignment: .bottom) {
-            if let confirmationMessage {
-                Label(confirmationMessage, systemImage: "checkmark.circle.fill")
+            if let message = confirmation.value {
+                Label(message, systemImage: "checkmark.circle.fill")
                     .font(.subheadline.weight(.medium))
                     .padding(.horizontal, DS.spacing.l)
                     .padding(.vertical, DS.spacing.s)
@@ -115,13 +115,6 @@ struct SessionsListView: View {
                     .padding(.bottom, DS.spacing.l)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-        }
-        .animation(.default, value: confirmationMessage)
-        .task(id: confirmationMessage) {
-            guard confirmationMessage != nil else { return }
-            try? await Task.sleep(for: .seconds(3))
-            guard !Task.isCancelled else { return }
-            confirmationMessage = nil
         }
         .alert(alertTitle, isPresented: Binding(
             get: { alertMessage != nil },
@@ -156,7 +149,7 @@ struct SessionsListView: View {
             if let bannerMessage {
                 Section {
                     Label(bannerMessage, systemImage: "wifi.exclamationmark")
-                        .foregroundStyle(DS.accent)
+                        .foregroundStyle(DS.warning)
                         .font(.subheadline)
                 }
             }
@@ -369,43 +362,5 @@ struct SessionsListView: View {
         alertTitle = title
         canEditHost = ComputerErrorText.isAccessProblem(error)
         alertMessage = ComputerErrorText.message(for: error, computer: hostTitle)
-    }
-}
-
-/// Plain sentences, each with a next step, for what can go wrong reaching a computer. The SSH
-/// and tmux detail stays out of these screens (see "Vocabulary on screen" in the redesign spec).
-enum ComputerErrorText {
-    static func message(for error: Error, computer: String) -> String {
-        switch error {
-        case SessionServiceFactoryError.missingPrivateKey:
-            return "This device has no key for \(computer). Add it with Edit Access."
-        case let error as SSHRemoteError:
-            switch error {
-            case .unreachable:
-                return "Couldn't reach \(computer). Check that it's on and connected to Tailscale, then pull to refresh."
-            case .authenticationFailed:
-                return "\(computer) didn't accept this device's key. Check the user name and key with Edit Access."
-            case .tmuxMissing:
-                return "\(computer) can't keep sessions running yet. Install tmux on it (brew install tmux), then try again."
-            case let .binaryMissing(binary):
-                return "\(binary) isn't installed on \(computer). Install it there, then try again."
-            case let .commandFailed(_, stderr):
-                // The computer's own words name the cause, e.g. a session name already in use.
-                let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                return detail.isEmpty
-                    ? "Something went wrong on \(computer). Try again in a moment."
-                    : "\(computer) said: \(detail)"
-            }
-        default:
-            return "Something went wrong talking to \(computer). Try again in a moment."
-        }
-    }
-
-    /// Whether Edit Access is the fix: the key is missing or was refused.
-    static func isAccessProblem(_ error: Error) -> Bool {
-        switch error {
-        case SessionServiceFactoryError.missingPrivateKey, SSHRemoteError.authenticationFailed: true
-        default: false
-        }
     }
 }

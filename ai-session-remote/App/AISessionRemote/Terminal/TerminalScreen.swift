@@ -269,14 +269,17 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
     /// `submit` once the program has turned bracketed paste on, which a tool that is still
     /// starting hasn't done yet. Gives up waiting after `timeout` and types it as before.
+    /// False when nothing was typed: the wait was cancelled or the connection went.
     @MainActor
-    func submitWhenPasteReady(_ text: String, timeout: Duration = .seconds(8)) async {
+    func submitWhenPasteReady(_ text: String, timeout: Duration = .seconds(8)) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while !isBracketedPasteMode, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(100))
-            guard !Task.isCancelled, state == .connected else { return }
+            guard !Task.isCancelled, state == .connected else { return false }
         }
+        guard !Task.isCancelled, state == .connected else { return false }
         submit(text)
+        return true
     }
 
     /// The program in the terminal turned bracketed paste on (`ESC[?2004h`).
@@ -440,8 +443,7 @@ struct TerminalScreen: View {
     @State private var errorMessage: String?
     @State private var killErrorMessage: String?
     @State private var showingKillConfirmation = false
-    @State private var showingCopied = false
-    @State private var copiedTask: Task<Void, Never>?
+    @State private var copied = TransientValue<Bool>(for: .toast)
 
     init(
         hostConfig: HostConnectionConfig,
@@ -474,7 +476,7 @@ struct TerminalScreen: View {
             makeTransport: makeTransport
         )
         .overlay(alignment: .top) {
-            if showingCopied {
+            if copied.value == true {
                 CopiedToast().transition(.opacity)
             }
         }
@@ -569,13 +571,7 @@ struct TerminalScreen: View {
     /// Copies the selection, or else the screen, and says so like the conversation frame does.
     private func copyScreen() {
         guard terminal.copyScreen() else { return }
-        copiedTask?.cancel()
-        withAnimation { showingCopied = true }
-        copiedTask = Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation { showingCopied = false }
-        }
+        copied.show(true)
     }
 
     private static func killMessage(for error: Error) -> String {

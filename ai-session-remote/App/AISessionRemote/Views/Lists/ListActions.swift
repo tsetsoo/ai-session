@@ -15,14 +15,32 @@ final class ConversationRowActions {
     }
 
     var deleteTarget: Conversation?
+    /// A working conversation whose Close waits for the user to confirm.
+    var closeTarget: Conversation?
     var failure: Failure?
     /// Conversation ids being closed or deleted.
     private(set) var inFlight: Set<String> = []
-    private(set) var showingCopied = false
-    private var copiedTask: Task<Void, Never>?
+    private let copied = TransientValue<Bool>(for: .toast)
+    var showingCopied: Bool { copied.value == true }
     /// Just muted: the toast with Undo shows for this todo.
-    private(set) var mutedTodoID: String?
-    private var mutedTask: Task<Void, Never>?
+    private let muted = TransientValue<String>(for: .toastWithUndo)
+    var mutedTodoID: String? { muted.value }
+
+    /// Close from a row: asks first while the tool is still working, since closing stops it
+    /// mid-task. The conversation frame asks the same way.
+    func requestClose(_ conversation: Conversation, store: TodoHubStore, hosts: [HostEntity]) {
+        if conversation.status == .busy {
+            closeTarget = conversation
+        } else {
+            close(conversation, store: store, hosts: hosts)
+        }
+    }
+
+    static func closeWhileWorkingTitle(tool: String) -> String {
+        "\(RowText.toolName(tool)) is still working. Close anyway?"
+    }
+
+    static let closeWhileWorkingMessage = "Closing stops it where it is. You can resume the conversation later."
 
     /// Ends the conversation on its computer; it stays resumable.
     func close(_ conversation: Conversation, store: TodoHubStore, hosts: [HostEntity]) {
@@ -39,20 +57,13 @@ final class ConversationRowActions {
 
     func copyResumeCommand(_ conversation: Conversation) {
         PlatformSupport.pasteboardString = ResumeCommand.string(for: conversation)
-        copiedTask?.cancel()
-        withAnimation { showingCopied = true }
-        copiedTask = Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation { showingCopied = false }
-        }
+        copied.show(true)
     }
 
     /// Mutes (or, from the toast's Undo, unmutes) a todo's notifications on the hub. Success
     /// shows the Muted toast; a failure the alert.
     func setMuted(todoID: String, _ muted: Bool) {
-        mutedTask?.cancel()
-        withAnimation { mutedTodoID = nil }
+        self.muted.clear()
         Task {
             do {
                 try await NotificationCenterCoordinator.shared.setMuted(todoId: todoID, muted)
@@ -62,13 +73,7 @@ final class ConversationRowActions {
                 return
             }
             guard muted else { return }
-            withAnimation { mutedTodoID = todoID }
-            mutedTask?.cancel()
-            mutedTask = Task {
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                guard !Task.isCancelled else { return }
-                withAnimation { mutedTodoID = nil }
-            }
+            self.muted.show(todoID)
         }
     }
 
@@ -216,6 +221,19 @@ private struct ConversationActionsPresenter: ViewModifier {
             } message: { conversation in
                 Text(conversation.deleteConfirmationMessage)
             }
+            .confirmationDialog(
+                ConversationRowActions.closeWhileWorkingTitle(tool: actions.closeTarget?.tool ?? "claude"),
+                isPresented: Binding(get: { actions.closeTarget != nil }, set: { if !$0 { actions.closeTarget = nil } }),
+                titleVisibility: .visible,
+                presenting: actions.closeTarget
+            ) { conversation in
+                Button("Close Conversation", role: .destructive) {
+                    actions.close(conversation, store: store, hosts: hosts)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text(ConversationRowActions.closeWhileWorkingMessage)
+            }
             .alert(
                 actions.failure?.title ?? "",
                 isPresented: Binding(get: { actions.failure != nil }, set: { if !$0 { actions.failure = nil } }),
@@ -284,7 +302,7 @@ private struct ConversationRowMenu: ViewModifier {
                     .tint(.red)
                     if isRunning {
                         Button {
-                            actions.close(conversation, store: store, hosts: hosts)
+                            actions.requestClose(conversation, store: store, hosts: hosts)
                         } label: {
                             Label("Close", systemImage: "xmark.circle")
                         }
@@ -316,7 +334,7 @@ private struct ConversationRowMenu: ViewModifier {
                         Divider()
                     }
                     Button {
-                        actions.close(conversation, store: store, hosts: hosts)
+                        actions.requestClose(conversation, store: store, hosts: hosts)
                     } label: {
                         Label("Close Conversation", systemImage: "xmark.circle")
                     }

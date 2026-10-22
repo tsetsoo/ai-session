@@ -46,8 +46,7 @@ struct ConversationFrame: View {
     /// Absent in previews.
     @Environment(AppModel.self) private var appModel: AppModel?
     @State private var terminal = TerminalHandle()
-    @State private var showingCopied = false
-    @State private var copiedTask: Task<Void, Never>?
+    @State private var copied = TransientValue<Bool>(for: .toast)
     @State private var showingDeleteConfirmation = false
     @State private var showingCloseConfirmation = false
     @State private var failure: ActionFailure?
@@ -67,6 +66,8 @@ struct ConversationFrame: View {
     @State private var summaryText = ""
     @State private var summaryContext: DuplicateSummaryContext?
     @State private var isDuplicating = false
+    /// Typing a duplicate's hand-off once the new tool takes pastes. Cancelled when the frame goes.
+    @State private var handoffTask: Task<Void, Never>?
 
     init(
         todo: Todo,
@@ -158,6 +159,7 @@ struct ConversationFrame: View {
         .onChange(of: readyTerminalID, initial: true) { _, id in
             waitingFocus.readyChanged(isReady: id != nil, status: liveStatus)
         }
+        .onDisappear { handoffTask?.cancel() }
         .onChange(of: terminal.connectionState) { _, state in
             if state == .connected { deliverDuplicateText() }
             guard state == .connected, waitingFocus.connected() else { return }
@@ -175,7 +177,7 @@ struct ConversationFrame: View {
         .overlay(alignment: .top) {
             if isFrontmost && isDuplicating {
                 DuplicatingToast().transition(.opacity)
-            } else if isFrontmost && showingCopied {
+            } else if isFrontmost && copied.value == true {
                 CopiedToast().transition(.opacity)
             }
         }
@@ -195,7 +197,7 @@ struct ConversationFrame: View {
             }
         }
         .confirmationDialog(
-            "\(RowText.toolName(conversation?.tool ?? "claude")) is still working. Close anyway?",
+            ConversationRowActions.closeWhileWorkingTitle(tool: conversation?.tool ?? "claude"),
             isPresented: Binding(
                 get: { isFrontmost && showingCloseConfirmation },
                 set: { if !$0 { showingCloseConfirmation = false } }
@@ -205,7 +207,7 @@ struct ConversationFrame: View {
             Button("Close Conversation", role: .destructive) { closeConversationNow() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Closing stops it where it is. You can resume the conversation later.")
+            Text(ConversationRowActions.closeWhileWorkingMessage)
         }
         .alert(
             failure?.title ?? "",
@@ -725,13 +727,7 @@ struct ConversationFrame: View {
     }
 
     private func showCopied() {
-        copiedTask?.cancel()
-        withAnimation { showingCopied = true }
-        copiedTask = Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation { showingCopied = false }
-        }
+        copied.show(true)
     }
 
     /// Close from the menu or the column toolbar: asks first while the tool is still working,
@@ -919,8 +915,12 @@ struct ConversationFrame: View {
         guard let launch = duplicateLaunch,
               launch.conversationID == readyConversation?.conversation.id,
               let paste = launch.paste else { return }
-        duplicateLaunch?.paste = nil
-        Task { await terminal.submitWhenPasteReady(paste) }
+        // Kept until it is typed: a reconnect during the wait delivers it on the next connect.
+        handoffTask?.cancel()
+        handoffTask = Task {
+            guard await terminal.submitWhenPasteReady(paste) else { return }
+            duplicateLaunch?.paste = nil
+        }
     }
 }
 

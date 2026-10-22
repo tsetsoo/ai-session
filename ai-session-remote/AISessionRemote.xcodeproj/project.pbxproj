@@ -66,6 +66,7 @@
 		459745DF108E3518C8BB10E3 /* NIOSSHClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */; };
 		46D9BAF045E1DB923CD0174A /* SidebarModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77812A59712865DEA10BA4B1 /* SidebarModel.swift */; };
 		4798B1536086B407EB854423 /* DemoFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA54D98ADC3ACCD267883621 /* DemoFixtures.swift */; };
+		47BA8BDD90F1E015257BC3BE /* TransientValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7E9EA050869E8EB945D576 /* TransientValue.swift */; };
 		47C0DBE7DC069BCC5F022E48 /* HostsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1B02295F04DE55821A1C7F /* HostsListView.swift */; };
 		47F0510DF9398E9C5F02009C /* SSHConnectionPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */; };
 		488BB9A4589B9291994709C2 /* TodoHubSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B17876012779CEAC4C80A8 /* TodoHubSettingsView.swift */; };
@@ -211,6 +212,7 @@
 		EFD1D9AE413BB9E5324D3E4B /* DemoFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8A54758D4FED49A531F0BDC /* DemoFrame.swift */; };
 		F1988BA76AB221169EB92640 /* DemoTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30E2A2B651F1B7DA51A3FF0B /* DemoTransport.swift */; };
 		F20B4E30CA2C51E9A3F6C76A /* MacCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 244B79FA4458DBBC91C4A9BA /* MacCompatibility.swift */; };
+		F2E7CD434C69783BD0D1B0EF /* TransientValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7E9EA050869E8EB945D576 /* TransientValue.swift */; };
 		F30EFD6029FB33BB5973773B /* InlineTodoAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D77F4B71B24E6F3E37B3E21 /* InlineTodoAdd.swift */; };
 		F3946147933D7BCEEED6F7EA /* ConversationLoaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D327A6203F795192D55393F /* ConversationLoaderTests.swift */; };
 		F3A22A2B4D3FE60B89136B56 /* TodoHubStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ABB2CBA22446496FCC5434A /* TodoHubStore.swift */; };
@@ -276,6 +278,7 @@
 		6D77F4B71B24E6F3E37B3E21 /* InlineTodoAdd.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineTodoAdd.swift; sourceTree = "<group>"; };
 		6E4A53D3BFF6584E29811BD0 /* CommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPalette.swift; sourceTree = "<group>"; };
 		6F1B1C90764CF03BCFD9E812 /* ShellCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellCommands.swift; sourceTree = "<group>"; };
+		6F7E9EA050869E8EB945D576 /* TransientValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransientValue.swift; sourceTree = "<group>"; };
 		6FD185A20B04E7AD8AE4F055 /* ProjectDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDetailView.swift; sourceTree = "<group>"; };
 		72E273782071736284D2563C /* TerminalSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSurface.swift; sourceTree = "<group>"; };
 		739BB066C50D554FBFA92B3C /* ComputerListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerListView.swift; sourceTree = "<group>"; };
@@ -474,6 +477,7 @@
 				953A88DC4DA95609F6AA1F02 /* AccentButtonStyle.swift */,
 				E866E5BC5F0042AF39A45482 /* ServerNotConfiguredView.swift */,
 				EDE7FB9B8AA8D5C5877AE90E /* StatusBadge.swift */,
+				6F7E9EA050869E8EB945D576 /* TransientValue.swift */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -910,6 +914,7 @@
 				EF09596E78D56E59634CB61F /* TodoHubStore.swift in Sources */,
 				68A3E02B06E4A0FB06B56C19 /* TodoListView.swift in Sources */,
 				43742E0FFAA3656D1B6E80B8 /* TodoRow.swift in Sources */,
+				F2E7CD434C69783BD0D1B0EF /* TransientValue.swift in Sources */,
 				62EE3364D3A7193767345B7E /* UsageLimitsBar.swift in Sources */,
 				737E82EA63D17DED7D7A1E5E /* VisiblePresence.swift in Sources */,
 				7676E04E635A23C1677E618F /* WeeklyStatsCard.swift in Sources */,
@@ -1005,6 +1010,7 @@
 				F3A22A2B4D3FE60B89136B56 /* TodoHubStore.swift in Sources */,
 				93BB67AB83C83B09CE1C55B2 /* TodoListView.swift in Sources */,
 				2C88335BD42E331992BF6C04 /* TodoRow.swift in Sources */,
+				47BA8BDD90F1E015257BC3BE /* TransientValue.swift in Sources */,
 				962ADDED4007BC69B8EB2B10 /* UsageLimitsBar.swift in Sources */,
 				80A8F55A26E2FCA12D648A3E /* VisiblePresence.swift in Sources */,
 				5BA3E1B8237FDA5412EAC38D /* WeeklyStatsCard.swift in Sources */,

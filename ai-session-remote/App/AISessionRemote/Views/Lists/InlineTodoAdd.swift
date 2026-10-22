@@ -25,6 +25,8 @@ struct InlineTodoAdd: View {
     @FocusState private var focused: Bool
     @State private var isShown = false
     @State private var isExpanded = false
+    /// Set by `expand()`: the title field takes focus once it is in the list.
+    @State private var focusWhenShown = false
 
     private var store: TodoHubStore { model.store }
 
@@ -94,6 +96,12 @@ struct InlineTodoAdd: View {
                         .buttonStyle(.borderless)
                         .disabled(!canSubmit)
                 }
+                .onAppear {
+                    guard focusWhenShown else { return }
+                    focusWhenShown = false
+                    // A list row's field can't take focus in the pass that inserts it.
+                    Task { @MainActor in focused = true }
+                }
             }
             if let localError {
                 Text(localError)
@@ -146,9 +154,12 @@ struct InlineTodoAdd: View {
 
     private func expand() {
         localError = nil
-        withAnimation { isExpanded = true }
-        // After the field exists.
-        Task { @MainActor in focused = true }
+        if isExpanded {
+            focused = true
+        } else {
+            focusWhenShown = true
+            withAnimation { isExpanded = true }
+        }
     }
 
     /// Cancel, or after a successful add: the typed title goes with it.
