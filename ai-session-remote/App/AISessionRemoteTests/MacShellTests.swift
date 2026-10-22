@@ -159,7 +159,7 @@ final class MacShellTests: XCTestCase {
     func testHeaderTitles() {
         let computers = DemoFixtures.computers
         XCTAssertEqual(ContentHeader.title(for: .needsYou, computers: computers), "Needs you")
-        XCTAssertEqual(ContentHeader.title(for: .review, computers: computers), "Ready for review")
+        XCTAssertEqual(ContentHeader.title(for: .review, computers: computers), "To review")
         XCTAssertEqual(ContentHeader.title(for: .working, computers: computers), "Working")
         XCTAssertEqual(ContentHeader.title(for: .section(.si), computers: computers), "Si")
         XCTAssertEqual(ContentHeader.title(for: .projects, computers: computers), "Projects")
