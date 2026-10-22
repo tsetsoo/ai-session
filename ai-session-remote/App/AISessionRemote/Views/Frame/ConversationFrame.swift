@@ -912,13 +912,15 @@ struct ConversationFrame: View {
         }
     }
 
-    /// The new tool is connected: type the transcript or the edited summary, then Enter.
+    /// The new tool is connected: type the transcript or the edited summary, then Enter. The
+    /// tool has usually not turned bracketed paste on yet, so this waits for it; otherwise each
+    /// newline in the text would submit a piece of it.
     private func deliverDuplicateText() {
         guard let launch = duplicateLaunch,
               launch.conversationID == readyConversation?.conversation.id,
               let paste = launch.paste else { return }
-        terminal.submit(paste)
         duplicateLaunch?.paste = nil
+        Task { await terminal.submitWhenPasteReady(paste) }
     }
 }
 

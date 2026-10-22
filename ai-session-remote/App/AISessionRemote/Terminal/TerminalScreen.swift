@@ -267,6 +267,18 @@ final class TerminalCoordinator: TerminalViewDelegate {
         send(TerminalPaste.submission(text, bracketed: isBracketedPasteMode))
     }
 
+    /// `submit` once the program has turned bracketed paste on, which a tool that is still
+    /// starting hasn't done yet. Gives up waiting after `timeout` and types it as before.
+    @MainActor
+    func submitWhenPasteReady(_ text: String, timeout: Duration = .seconds(8)) async {
+        let deadline = ContinuousClock.now + timeout
+        while !isBracketedPasteMode, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled, state == .connected else { return }
+        }
+        submit(text)
+    }
+
     /// The program in the terminal turned bracketed paste on (`ESC[?2004h`).
     private var isBracketedPasteMode: Bool {
         terminalView?.getTerminal().bracketedPasteMode ?? false

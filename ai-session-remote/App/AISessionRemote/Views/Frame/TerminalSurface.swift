@@ -228,6 +228,8 @@ final class TerminalHandle {
     func send(_ bytes: [UInt8]) { coordinator?.send(bytes) }
     /// Types `text` as a paste (bracketed when the program asked for it), then Return.
     func submit(_ text: String) { coordinator?.submit(text) }
+    /// `submit`, after waiting for a tool that is still starting to turn bracketed paste on.
+    func submitWhenPasteReady(_ text: String) async { await coordinator?.submitWhenPasteReady(text) }
 }
 
 /// One live terminal on a host: connects when it appears, focuses after connecting, shows the
