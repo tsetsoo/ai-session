@@ -6,6 +6,7 @@
 #
 # Usage (Claude passes the hook JSON on stdin):
 #   ai-todo-hook <busy|waiting|idle|tool>
+#   ai-todo-hook seed <session_id>
 #
 # - The idle notification ("Claude is waiting for your input", notification_type
 #   idle_prompt) is reported as idle, not waiting.
@@ -20,8 +21,16 @@
 #   after the approved tool finishes, which can take minutes.
 #
 # Never blocks or fails Claude: always exits 0, and the HTTP call runs in the
-# background with a 3s limit. Only sessions running in a tmux session named
-# ai/claude/todo-* are reported; todo-server answers 404 for unknown ids anyway.
+# background with a 3s limit. Every conversation is reported, matched by session id;
+# todo-server answers 404 for ids that aren't a todo's. A todo's turns don't always run in
+# its tmux session: one imported from a background job (`claude attach`, ~/.claude/jobs)
+# runs its hooks in the job's own process. The tmux session is only used for "attended":
+# the session this hook runs in when it is an ai/claude/todo-* one, else the todo session
+# whose pane runs this conversation (`claude --resume <id>` or `claude attach <id[:8]>`).
+#
+# `seed <session_id>` (ai-todo-open runs it when it opens a todo) posts the state of the
+# background job behind the conversation, if there is one: busy while the job works, idle
+# otherwise. Hooks a job fired before it was a todo never reached the hub.
 #
 # On `idle` (the Stop hook) it also starts `ai-todo-memory trigger claude <session_id>
 # --transcript <transcript_path>`, fully detached, for every conversation (not only todo
@@ -40,14 +49,42 @@
 #   AI_TODO_CLIENT_ACTIVITY_FILE  file with client activity epochs instead of asking tmux
 #   AI_TODO_RECHECK_DELAY seconds before the waiting re-check (default 12)
 #   AI_TODO_MEMORY_BIN    ai-todo-memory path instead of ~/.ai-remote/bin/ai-todo-memory
+#   AI_TODO_CLAUDE_JOBS   background job directory instead of ~/.claude/jobs
 status=${1:-}
 case "$status" in
   busy | waiting | idle | tool) ;;
+  seed) [ -n "${2:-}" ] || exit 0 ;;
   *) exit 0 ;;
 esac
 [ -n "${AI_TODO_MEMORY_RUN:-}" ] && exit 0
 
-input=$(cat 2>/dev/null) || exit 0
+if [ "$status" = seed ]; then
+  command -v python3 >/dev/null 2>&1 || exit 0
+  # The job directory is named by the id's first 8 characters (sometimes the whole id);
+  # its linkScanPath names the conversation's transcript, which must be this one.
+  status=$(python3 -c '
+import json, os, sys
+sid, jobs = sys.argv[1], sys.argv[2]
+if not sid or not all(c.isalnum() or c == "-" for c in sid):
+    sys.exit(1)
+for d in (sid[:8], sid):
+    try:
+        with open(os.path.join(jobs, d, "state.json")) as f:
+            data = json.load(f)
+    except Exception:
+        continue
+    if not isinstance(data, dict) or os.path.basename(str(data.get("linkScanPath") or "")) != sid + ".jsonl":
+        continue
+    print("busy" if data.get("tempo") == "active" or data.get("state") == "working" else "idle")
+    sys.exit(0)
+sys.exit(1)
+' "$2" "${AI_TODO_CLAUDE_JOBS:-$HOME/.claude/jobs}" 2>/dev/null) || exit 0
+  # Whoever runs seed is opening the conversation, so it is attended.
+  input=$(printf '{"session_id":"%s","hook_event_name":"Seed"}' "$2")
+  AI_TODO_SEED_ATTENDED=1
+else
+  input=$(cat 2>/dev/null) || exit 0
+fi
 
 export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
 
@@ -79,15 +116,6 @@ print(path if isinstance(path, str) and "\n" not in path else "")
   fi
 fi
 
-session=${AI_TODO_TMUX_SESSION:-}
-if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
-  session=$(tmux display-message -p '#S' 2>/dev/null) || exit 0
-fi
-case "$session" in
-  ai/claude/todo-*) ;;
-  *) exit 0 ;;
-esac
-
 conf=${AI_TODO_HUB_CONF:-$HOME/.ai-remote/todo-hub.conf}
 [ -r "$conf" ] || exit 0
 TODO_HUB_URL=
@@ -107,12 +135,33 @@ latest_activity() {
   fi | sort -n | tail -n 1
 }
 
-attended=false
-latest=$(latest_activity)
-case "$latest" in
-  '' | *[!0-9]*) ;;
-  *) [ "$latest" -ge $((prompt_time - 60)) ] && attended=true ;;
-esac
+# The ai/claude/todo-* tmux session showing this conversation, or nothing.
+todo_session() {
+  case "${AI_TODO_TMUX_SESSION:-}" in
+    '') ;;
+    ai/claude/todo-*) printf '%s\n' "$AI_TODO_TMUX_SESSION"; return ;;
+    *) return ;;
+  esac
+  if [ -n "${TMUX:-}" ]; then
+    current=$(tmux display-message -p '#S' 2>/dev/null)
+    case "$current" in
+      ai/claude/todo-*) printf '%s\n' "$current"; return ;;
+    esac
+  fi
+  # A pane's process is claude itself: ai-todo-open starts it through `env`, which execs.
+  panes=$(tmux ${AI_TODO_TMUX_SOCKET:+-L "$AI_TODO_TMUX_SOCKET"} list-panes -a -F '#{pane_pid} #{session_name}' 2>/dev/null \
+    | awk '$2 ~ /^ai\/claude\/todo-/') || return
+  [ -n "$panes" ] || return
+  pids=$(printf '%s\n' "$panes" | awk '{print $1}' | paste -sd, -)
+  ps -o pid= -o args= -p "$pids" 2>/dev/null | while read -r pid args; do
+    case " $args " in
+      *" $sid "* | *" attach $(printf '%s' "$sid" | cut -c1-8) "*)
+        printf '%s\n' "$panes" | awk -v p="$pid" '$1 == p {print $2; exit}'
+        break
+        ;;
+    esac
+  done
+}
 
 only_if_changed=
 if [ "$status" = tool ]; then
@@ -138,13 +187,13 @@ if status == "waiting" and (
     data.get("notification_type") == "idle_prompt" or "waiting for your input" in msg.lower()
 ):
     status = "idle"
-out = {"claude_session_id": sid, "status": status, "attended": sys.argv[2] == "true"}
+out = {"claude_session_id": sid, "status": status, "attended": False}
 if status == "waiting" and msg:
     out["message"] = msg[:500]
 print(sid)
 print(status)
 print(json.dumps(out))
-' "$status" "$attended" 2>/dev/null) || exit 0
+' "$status" 2>/dev/null) || exit 0
   sid=$(printf '%s\n' "$parsed" | sed -n 1p)
   status=$(printf '%s\n' "$parsed" | sed -n 2p)
   body=$(printf '%s\n' "$parsed" | sed -n 3p)
@@ -155,7 +204,7 @@ else
   if [ "$status" = waiting ] && printf '%s' "$input" | grep -qi 'idle_prompt\|waiting for your input'; then
     status=idle
   fi
-  body=$(printf '{"claude_session_id":"%s","status":"%s","attended":%s}' "$sid" "$status" "$attended")
+  body=$(printf '{"claude_session_id":"%s","status":"%s","attended":false}' "$sid" "$status")
 fi
 
 state_dir="$HOME/.ai-remote/hook-state"
@@ -163,6 +212,22 @@ state_file="$state_dir/$sid"
 if [ -n "$only_if_changed" ] && [ "$(cat "$state_file" 2>/dev/null)" = "$status" ]; then
   exit 0
 fi
+
+attended=false
+session=
+if [ -n "${AI_TODO_SEED_ATTENDED:-}" ]; then
+  attended=true
+else
+  session=$(todo_session)
+  if [ -n "$session" ]; then
+    latest=$(latest_activity)
+    case "$latest" in
+      '' | *[!0-9]*) ;;
+      *) [ "$latest" -ge $((prompt_time - 60)) ] && attended=true ;;
+    esac
+  fi
+fi
+[ "$attended" = true ] && body=$(printf '%s' "$body" | sed 's/"attended": *false/"attended": true/')
 # A waiting entry names its prompt (time + pid), so a late re-check can tell whether the
 # conversation is still waiting on the same prompt.
 state=$status
@@ -185,7 +250,7 @@ post() {
 # waiting only: if a client typed after the prompt appeared, the prompt was answered at the
 # terminal; tell the server so it drops the push it is holding.
 recheck() {
-  [ "$status" = waiting ] && [ "$attended" = false ] || return 0
+  [ "$status" = waiting ] && [ "$attended" = false ] && [ -n "$session" ] || return 0
   sleep "${AI_TODO_RECHECK_DELAY:-12}"
   # Moved on (a later hook posted busy/idle, or another prompt is waiting now): re-posting
   # waiting would undo that, or answer the other prompt.

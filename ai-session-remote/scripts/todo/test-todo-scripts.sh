@@ -844,31 +844,40 @@ python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[
   || fail "idle hook body wrong"
 pass "hook posts idle without a message"
 
-printf '{"session_id":"%s"}' "$SID" | AI_TODO_TMUX_SESSION="ai/claude/sigma-revenue" "$HOOK" busy
-printf '{"session_id":"%s"}' "$SID" | env -u TMUX "$HOOK" busy
 printf 'not json' | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" busy
 printf '{"session_id":"%s"}' "$SID" | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" bogus
-[[ $(wc -l <"$HUB_LOG") -eq 2 ]] || fail "hook posted for a non-todo session, bad input or bad status"
-pass "hook ignores non-todo sessions, sessions outside tmux, invalid JSON and unknown statuses"
+printf '{"session_id":"%s"}' "$SID" | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" seed
+[[ $(wc -l <"$HUB_LOG") -eq 2 ]] || fail "hook posted for bad input or a bad status"
+pass "hook ignores invalid JSON, unknown statuses and seed without an id"
+
+# Turns of a background job (`claude attach`) run their hooks outside the todo's tmux
+# session: report them by id anyway, unattended unless a todo pane shows the conversation.
+OUTSIDE_SID="4bb0448b-c814-41b3-a216-32cc0d398499"
+printf '{"session_id":"%s","hook_event_name":"Stop"}' "$OUTSIDE_SID" | env -u TMUX -u AI_TODO_TMUX_SESSION "$HOOK" idle
+printf '{"session_id":"%s","hook_event_name":"Stop"}' "$OUTSIDE_SID" | AI_TODO_TMUX_SESSION="ai/claude/sigma-revenue" "$HOOK" idle
+[[ $(wc -l <"$HUB_LOG") -eq 4 ]] || fail "hook did not post outside a todo session"
+python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert b=={"claude_session_id":sys.argv[2],"status":"idle","attended":False}, b' "$HUB_LOG" "$OUTSIDE_SID" \
+  || fail "outside-tmux body wrong: $(tail -1 "$HUB_LOG")"
+pass "hook reports conversations outside a todo tmux session by id, unattended"
 
 last_status() {
   python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]["status"])' "$HUB_LOG"
 }
 printf '{"session_id":"%s","hook_event_name":"Notification","notification_type":"idle_prompt","message":"Claude is waiting for your input"}' "$SID" \
   | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" waiting
-[[ $(wc -l <"$HUB_LOG") -eq 3 && "$(last_status)" == idle ]] || fail "idle notification was not reported as idle: $(tail -1 "$HUB_LOG")"
+[[ $(wc -l <"$HUB_LOG") -eq 5 && "$(last_status)" == idle ]] || fail "idle notification was not reported as idle: $(tail -1 "$HUB_LOG")"
 pass "the idle notification is reported as idle, not waiting"
 
 tool() { printf '{"session_id":"%s","hook_event_name":"PostToolUse"}' "$SID" | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" tool; }
 tool
-[[ $(wc -l <"$HUB_LOG") -eq 4 && "$(last_status)" == busy ]] || fail "first tool call after idle did not post busy"
+[[ $(wc -l <"$HUB_LOG") -eq 6 && "$(last_status)" == busy ]] || fail "first tool call after idle did not post busy"
 tool
 tool
-[[ $(wc -l <"$HUB_LOG") -eq 4 ]] || fail "repeated tool calls posted busy again"
+[[ $(wc -l <"$HUB_LOG") -eq 6 ]] || fail "repeated tool calls posted busy again"
 printf '{"session_id":"%s","hook_event_name":"Notification","message":"Claude needs your permission"}' "$SID" \
   | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" waiting
 tool
-[[ $(wc -l <"$HUB_LOG") -eq 6 && "$(last_status)" == busy ]] || fail "tool call after a permission prompt did not post busy"
+[[ $(wc -l <"$HUB_LOG") -eq 8 && "$(last_status)" == busy ]] || fail "tool call after a permission prompt did not post busy"
 pass "tool calls post busy once after waiting/idle and stay quiet while busy"
 
 # attended: a tmux client attached to the conversation had keyboard activity recently.
@@ -942,6 +951,60 @@ printf '{"session_id":"%s","hook_event_name":"Stop"}' "$SID" \
 [[ $(wc -l <"$HUB_LOG") -eq $((before + 1)) ]] || fail "idle must not re-check"
 pass "no re-check for busy/idle"
 
+# A todo pane running `claude attach <id[:8]>` (or `--resume <id>`) is the session for
+# "attended", even though the job's hook runs outside it.
+ATTACH_NAME="ai/claude/todo-a77ac4ed"
+tmux -L "$SOCK" new-session -d -s "$ATTACH_NAME" -- /bin/sh -c "exec -a 'claude attach ${OUTSIDE_SID:0:8}' sleep 60" \
+  || fail "could not start the attach pane"
+sleep 0.3
+ps -o args= -p "$(tmux -L "$SOCK" list-panes -t "=$ATTACH_NAME" -F '#{pane_pid}')" | grep -q "attach ${OUTSIDE_SID:0:8}" \
+  || fail "the attach pane does not show its argv: $(ps -o args= -p "$(tmux -L "$SOCK" list-panes -t "=$ATTACH_NAME" -F '#{pane_pid}')")"
+date +%s >"$ACTIVITY"
+printf '{"session_id":"%s","hook_event_name":"Stop"}' "$OUTSIDE_SID" \
+  | env -u TMUX -u AI_TODO_TMUX_SESSION AI_TODO_CLIENT_ACTIVITY_FILE="$ACTIVITY" "$HOOK" idle
+[[ "$(last_attended)" == True ]] || fail "attended was not found through the attach pane: $(tail -1 "$HUB_LOG")"
+printf '{"session_id":"%s","hook_event_name":"Stop"}' "$SID" \
+  | env -u TMUX -u AI_TODO_TMUX_SESSION AI_TODO_CLIENT_ACTIVITY_FILE="$ACTIVITY" "$HOOK" idle
+[[ "$(last_attended)" == False ]] || fail "another conversation counted as attended through the attach pane"
+tmux -L "$SOCK" kill-session -t "=$ATTACH_NAME"
+pass "hook finds the todo tmux session whose pane attaches the job, for attended"
+
+# seed: the background job's state, attended (whoever seeds is opening it).
+JOBS="${SANDBOX}/claude-jobs"
+mkdir -p "${JOBS}/${OUTSIDE_SID:0:8}"
+job_state() { # <state> <tempo> [transcript name]
+  printf '{"state":"%s","tempo":"%s","linkScanPath":"/p/%s"}' "$1" "$2" "${3:-${OUTSIDE_SID}.jsonl}" >"${JOBS}/${OUTSIDE_SID:0:8}/state.json"
+}
+seed() { AI_TODO_CLAUDE_JOBS="$JOBS" "$HOOK" seed "$OUTSIDE_SID" </dev/null; }
+before=$(wc -l <"$HUB_LOG")
+job_state working active; seed
+[[ "$(last_status)" == busy && "$(last_attended)" == True ]] || fail "working job not seeded busy: $(tail -1 "$HUB_LOG")"
+job_state blocked active; seed
+[[ "$(last_status)" == busy ]] || fail "an active job not seeded busy"
+job_state blocked blocked; seed
+[[ "$(last_status)" == idle ]] || fail "a blocked job not seeded idle"
+job_state done idle; seed
+[[ "$(last_status)" == idle && $(wc -l <"$HUB_LOG") -eq $((before + 4)) ]] || fail "done job not seeded idle"
+job_state working active "someone-else.jsonl"; seed
+AI_TODO_CLAUDE_JOBS="$JOBS" "$HOOK" seed "11111111-0000-4000-8000-000000000000" </dev/null
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 4)) ]] || fail "seed posted for another conversation's job or no job"
+pass "seed posts a background job's state (busy while active or working, else idle), attended, only for its own job"
+
+# ai-todo-open seeds a Claude todo's job state when it opens it, in the background.
+SEED_LOG="${SANDBOX}/seed.log"
+printf '#!/bin/sh\necho "$*" >>"%s"\n' "$SEED_LOG" >"${SANDBOX}/fake-seed-hook"
+chmod +x "${SANDBOX}/fake-seed-hook"
+seed_open() { # <sid>: open $NAME (already running, so it attaches) with that id
+  AI_TODO_OPEN_DETACH=1 AI_TODO_CLAUDE_JOBS="$JOBS" AI_TODO_HOOK_BIN="${SANDBOX}/fake-seed-hook" "$OPEN" "$NAME" '~/programming' "$1" >/dev/null
+}
+tmux -L "$SOCK" has-session -t "=$NAME" || fail "$NAME should still be running here"
+seed_open "$OUTSIDE_SID"
+seed_open "$SID"
+for _ in $(seq 1 20); do [[ -s "$SEED_LOG" ]] && break; sleep 0.1; done
+sleep 0.2
+[[ "$(cat "$SEED_LOG")" == "seed ${OUTSIDE_SID}" ]] || fail "ai-todo-open seeded wrong: $(cat "$SEED_LOG" 2>/dev/null)"
+pass "ai-todo-open seeds the status of a Claude todo that is a background job, and only that"
+
 # --- ai-todo-codex-notify ---------------------------------------------------------
 
 NOTIFY="${SCRIPT_DIR}/ai-todo-codex-notify"
@@ -980,13 +1043,30 @@ pass "codex notify posts idle on agent-turn-complete (waiting on approval-reques
 
 before=$(wc -l <"$HUB_LOG")
 AI_TODO_TMUX_SESSION="ai/claude/todo-0f3a9c21" "$NOTIFY" "$TURN"
-env -u TMUX "$NOTIFY" "$TURN"
+env -u TMUX -u AI_TODO_TMUX_SESSION "$NOTIFY" "$TURN"
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 2)) && "$(last_attended)" == False ]] \
+  || fail "codex notify did not report a thread outside a todo session: $(tail -1 "$HUB_LOG")"
+pass "codex notify reports threads outside a todo tmux session (desktop app, shared app-server) by id"
+
+# The shared app-server's tmux environment is another todo's: the pane running
+# `codex resume <thread-id>` decides attended, not $TMUX.
+RESUME_NAME="ai/codex/todo-5e5e5e5e"
+tmux -L "$SOCK" new-session -d -s "$RESUME_NAME" -- /bin/sh -c "exec -a 'codex resume ${X_LINKED}' sleep 60" \
+  || fail "could not start the resume pane"
+sleep 0.3
+date +%s >"$ACTIVITY"
+env -u TMUX -u AI_TODO_TMUX_SESSION AI_TODO_CLIENT_ACTIVITY_FILE="$ACTIVITY" "$NOTIFY" "$TURN"
+[[ "$(last_attended)" == True ]] || fail "codex attended was not found through the resume pane: $(tail -1 "$HUB_LOG")"
+tmux -L "$SOCK" kill-session -t "=$RESUME_NAME"
+pass "codex notify finds the todo tmux session whose pane resumes the thread, for attended"
+
+before=$(wc -l <"$HUB_LOG")
 AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" '{"type":"something-else","thread-id":"x"}'
 AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" 'not json'
 AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" '{"type":"agent-turn-complete","thread-id":"../../etc"}'
 AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY"
 [[ $(wc -l <"$HUB_LOG") -eq $before ]] || fail "codex notify posted for a non-todo session or bad payload"
-pass "codex notify ignores non-codex/non-tmux sessions, other events, bad JSON and bad ids"
+pass "codex notify ignores other events, bad JSON and bad ids"
 
 CHAIN_LOG="${SANDBOX}/chain.log"
 printf '#!/bin/sh\nprintf "%%s|" "$@" >>"%s"\n' "$CHAIN_LOG" >"${SANDBOX}/orig-notify"
@@ -1028,7 +1108,7 @@ printf '{"session_id":"%s","transcript_path":"/x/p q/%s.jsonl","hook_event_name"
 python3 -c 'import sys, time; sys.exit(0 if time.time() - float(sys.argv[1]) < 4 else 1)' "$start" || fail "the hook waited for ai-todo-memory"
 for _ in $(seq 1 30); do [[ -s "$MEMORY_TRIGGERS" ]] && break; sleep 0.1; done
 [[ "$(cat "$MEMORY_TRIGGERS")" == "trigger claude ${SID} --transcript /x/p q/${SID}.jsonl" ]] || fail "trigger argv wrong: $(cat "$MEMORY_TRIGGERS" 2>/dev/null)"
-[[ $(wc -l <"$HUB_LOG") -eq $posts ]] || fail "a non-todo session posted status"
+[[ $(wc -l <"$HUB_LOG") -eq $((posts + 1)) ]] || fail "a non-todo session did not post status"
 for st in waiting busy tool; do
   printf '{"session_id":"%s","transcript_path":"/x/y.jsonl"}' "$SID" | AI_TODO_MEMORY_BIN="$FAKE_MEMORY" AI_TODO_TMUX_SESSION="$NAME" "$HOOK" "$st"
 done

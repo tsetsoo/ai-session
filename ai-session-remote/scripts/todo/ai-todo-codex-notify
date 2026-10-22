@@ -20,7 +20,11 @@
 # session), and waiting is re-checked ~12s later to report an answer typed at the terminal.
 #
 # Never blocks or fails Codex: always exits 0, and the HTTP call runs in the background with
-# a 3s limit. Only conversations running in a tmux session named ai/codex/todo-* are reported.
+# a 3s limit. Every thread is reported, matched by id; todo-server answers 404 for ids that
+# aren't a todo's. Codex 0.163+ runs turns in an app-server, not in the TUI: the TUI's own
+# daemon (whose tmux environment is that of whichever TUI started it) or the desktop app's
+# (no tmux at all). So the tmux session, used only for "attended", is the ai/codex/todo-*
+# session whose pane runs `codex resume <thread-id>`, else the one this runs in.
 #
 # Config: ~/.ai-remote/todo-hub.conf (shell syntax), as for ai-todo-hook.
 # Test hooks (not for normal use):
@@ -50,15 +54,6 @@ fi
 
 export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
 
-session=${AI_TODO_TMUX_SESSION:-}
-if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
-  session=$(tmux display-message -p '#S' 2>/dev/null) || exit 0
-fi
-case "$session" in
-  ai/codex/todo-*) ;;
-  *) exit 0 ;;
-esac
-
 conf=${AI_TODO_HUB_CONF:-$HOME/.ai-remote/todo-hub.conf}
 [ -r "$conf" ] || exit 0
 TODO_HUB_URL=
@@ -78,12 +73,39 @@ latest_activity() {
   fi | sort -n | tail -n 1
 }
 
-attended=false
-latest=$(latest_activity)
-case "$latest" in
-  '' | *[!0-9]*) ;;
-  *) [ "$latest" -ge $((prompt_time - 60)) ] && attended=true ;;
-esac
+# The ai/codex/todo-* tmux session showing this thread, or nothing.
+todo_session() {
+  case "${AI_TODO_TMUX_SESSION:-}" in
+    '') ;;
+    ai/codex/todo-*) printf '%s\n' "$AI_TODO_TMUX_SESSION"; return ;;
+    *) return ;;
+  esac
+  # A pane's process is codex itself: ai-todo-open starts it through `env`, which execs.
+  panes=$(tmux ${AI_TODO_TMUX_SOCKET:+-L "$AI_TODO_TMUX_SOCKET"} list-panes -a -F '#{pane_pid} #{session_name}' 2>/dev/null \
+    | awk '$2 ~ /^ai\/codex\/todo-/')
+  if [ -n "$panes" ]; then
+    pids=$(printf '%s\n' "$panes" | awk '{print $1}' | paste -sd, -)
+    found=$(ps -o pid= -o args= -p "$pids" 2>/dev/null | while read -r pid args; do
+      case " $args " in
+        (*" $sid "*)
+          printf '%s\n' "$panes" | awk -v p="$pid" '$1 == p {print $2; exit}'
+          break
+          ;;
+      esac
+    done)
+    if [ -n "$found" ]; then
+      printf '%s\n' "$found"
+      return
+    fi
+  fi
+  # A new thread started as plain `codex` has no id on its command line.
+  if [ -n "${TMUX:-}" ]; then
+    current=$(tmux display-message -p '#S' 2>/dev/null)
+    case "$current" in
+      ai/codex/todo-*) printf '%s\n' "$current" ;;
+    esac
+  fi
+}
 
 command -v python3 >/dev/null 2>&1 || exit 0
 body=$(python3 -c '
@@ -100,11 +122,22 @@ if status is None or not isinstance(sid, str) or not sid or not all(c.isalnum() 
     sys.exit(1)
 print(sid)
 print(status)
-print(json.dumps({"session_id": sid, "tool": "codex", "status": status, "attended": sys.argv[2] == "true"}))
-' "$json" "$attended" 2>/dev/null) || exit 0
+print(json.dumps({"session_id": sid, "tool": "codex", "status": status, "attended": False}))
+' "$json" 2>/dev/null) || exit 0
 sid=$(printf '%s\n' "$body" | sed -n 1p)
 status=$(printf '%s\n' "$body" | sed -n 2p)
 body=$(printf '%s\n' "$body" | sed -n 3p)
+
+attended=false
+session=$(todo_session)
+if [ -n "$session" ]; then
+  latest=$(latest_activity)
+  case "$latest" in
+    '' | *[!0-9]*) ;;
+    *) [ "$latest" -ge $((prompt_time - 60)) ] && attended=true ;;
+  esac
+fi
+[ "$attended" = true ] && body=$(printf '%s' "$body" | sed 's/"attended": *false/"attended": true/')
 
 # The last status sent per thread, so a delayed re-check can tell the turn moved on.
 state_dir="$HOME/.ai-remote/hook-state"
@@ -126,7 +159,7 @@ post() {
 
 # waiting only: a keystroke after the prompt means it was answered at the terminal.
 recheck() {
-  [ "$status" = waiting ] && [ "$attended" = false ] || return 0
+  [ "$status" = waiting ] && [ "$attended" = false ] && [ -n "$session" ] || return 0
   sleep "${AI_TODO_RECHECK_DELAY:-12}"
   # Moved on (the turn completed, or another prompt is waiting now).
   [ "$(cat "$state_file" 2>/dev/null)" = "$state" ] || return 0

@@ -31,6 +31,8 @@
 #   AI_TODO_CLAUDE_BIN   claude binary to start instead of `command -v claude`
 #   AI_TODO_CODEX_BIN    codex binary to start instead of looking it up
 #   AI_TODO_AGENT_BIN    cursor agent binary to start instead of `command -v agent`
+#   AI_TODO_CLAUDE_JOBS  background job directory instead of ~/.claude/jobs
+#   AI_TODO_HOOK_BIN     ai-todo-hook path instead of the one next to this script
 set -eu
 
 # Non-interactive SSH sessions often lack Homebrew paths; match TmuxCommandBuilder.
@@ -51,7 +53,20 @@ else
   tmux_exec() { exec tmux -u "$@"; }
 fi
 
+# A Claude conversation that is a background job (~/.claude/jobs) runs its hooks outside
+# this tmux session, and the ones it fired before it became a todo never reached the hub.
+# Report the job's state now, in the background.
+seed_job_status() {
+  [ "${open_tool}" = claude ] || return 0
+  jobs=${AI_TODO_CLAUDE_JOBS:-$HOME/.claude/jobs}
+  [ -e "$jobs/$(printf '%s' "$open_sid" | cut -c1-8)/state.json" ] || [ -e "$jobs/$open_sid/state.json" ] || return 0
+  hook=${AI_TODO_HOOK_BIN:-$(dirname "$0")/ai-todo-hook}
+  [ -x "$hook" ] || return 0
+  AI_TODO_CLAUDE_JOBS=$jobs "$hook" seed "$open_sid" </dev/null >/dev/null 2>&1 &
+}
+
 attach() {
+  seed_job_status
   if [ "${AI_TODO_OPEN_DETACH:-}" = 1 ]; then
     echo "$1"
     exit 0
@@ -64,6 +79,8 @@ attach() {
 }
 
 [ "$#" -eq 3 ] || [ "$#" -eq 4 ] || usage
+open_sid=$3
+open_tool=${4:-claude}
 
 # A running session attaches at once, before the checks only a new one needs
 # (they cost about 150 ms). The name is only a quoted tmux target here, but it
