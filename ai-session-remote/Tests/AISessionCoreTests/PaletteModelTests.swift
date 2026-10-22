@@ -92,6 +92,26 @@ final class PaletteModelTests: XCTestCase {
         XCTAssertEqual(shortcuts.compactMap { $0 }, [1])
     }
 
+    func testADuplicatedConversationGetsItsOwnRowTitledWithItsName() {
+        let todo = Todo(id: "t1", section: .sp, title: "Fix the rate import")
+        let original = Conversation(id: "c1", todoId: "t1", computer: studio, cwd: "~/x", tool: "claude",
+                                    tmuxName: "todo-c1", sessionId: "s1", status: .busy,
+                                    createdAt: "2026-10-17T09:00:00Z")
+        let copy = Conversation(id: "c2", todoId: "t1", computer: studio, cwd: "~/x", tool: "codex",
+                                tmuxName: "todo-c2", sessionId: "s2", status: .busy,
+                                createdAt: "2026-10-17T09:05:00Z", label: "duplicate")
+        let board = ConversationBoard(todos: [todo], conversations: ["c1": original, "c2": copy], liveTmux: [:])
+        let items = PaletteModel.groups(query: "", board: board, todos: [todo], projects: [],
+                                        selectedTodoID: nil, canEdit: true)
+            .first { $0.kind == .conversations }!.items
+        XCTAssertEqual(Set(items.map(\.id)), ["c:c1", "c:c2"])
+        XCTAssertEqual(Set(items.map(\.title)), ["Fix the rate import", "Fix the rate import · duplicate"])
+        // The tool is searchable: only the Codex copy matches "codex".
+        let codex = PaletteModel.groups(query: "codex", board: board, todos: [todo], projects: [],
+                                        selectedTodoID: nil, canEdit: true)
+        XCTAssertEqual(ids(codex, .conversations), ["c:c2"])
+    }
+
     // MARK: Query
 
     func testQueryRanksByScoreAndGroupsTodosAndProjects() {
