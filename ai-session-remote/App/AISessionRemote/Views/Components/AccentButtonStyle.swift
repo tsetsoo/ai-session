@@ -3,13 +3,12 @@ import SwiftUI
 /// Accent-filled capsule button. The label is dark on the lighter dark-mode accent (like the
 /// Needs-you pill) so it keeps its contrast.
 struct AccentButtonStyle: ButtonStyle {
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(colorScheme == .dark ? Color(PlatformNativeColor(hex: 0x1C1C1E)) : .white)
+            .foregroundStyle(DS.onAccent)
             .padding(.horizontal, DS.spacing.l - 2)
             .padding(.vertical, DS.spacing.xs + 2)
             .background(DS.accent, in: Capsule())

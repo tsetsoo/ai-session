@@ -2,14 +2,14 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// Conversations across all computers, filtered to Needs you, Ready for review, Working or All. Tapping one calls
+/// Conversations across all computers, filtered to Needs you, To review, Working or All. Tapping one calls
 /// `onOpen` with its todo; the caller owns navigation. Given a `selection` (the Mac list column)
 /// rows select by todo id instead, and the sidebar picks the filter.
 struct ConversationListView: View {
     enum Filter: Hashable, CaseIterable {
         case needsYou, review, working, all
 
-        /// Needs you when something does, else Ready for review.
+        /// Needs you when something does, else To review.
         static func initial(needsYouCount: Int) -> Filter {
             needsYouCount > 0 ? .needsYou : .review
         }
@@ -72,7 +72,11 @@ struct ConversationListView: View {
             }
             if conversations.isEmpty {
                 Section {
-                    if filtered.isEmpty {
+                    if filtered.isEmpty && !store.hasLoadedOnce {
+                        // Before the first sync "Nothing needs you" would be a guess.
+                        ProgressView()
+                            .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight)
+                    } else if filtered.isEmpty {
                         emptyState
                     } else {
                         ContentUnavailableView.search(text: query)
@@ -104,7 +108,7 @@ struct ConversationListView: View {
     private func filterPicker(needsYouCount: Int) -> some View {
         Picker("Show", selection: $filter) {
             Text(needsYouCount > 0 ? "Needs you \(needsYouCount)" : "Needs you").tag(Filter.needsYou)
-            Text("Review").tag(Filter.review)
+            Text("To review").tag(Filter.review)
             Text("Working").tag(Filter.working)
             Text("All").tag(Filter.all)
         }
@@ -127,9 +131,7 @@ struct ConversationListView: View {
             conversation: conversation,
             status: status,
             isBusy: actions.inFlight.contains(conversation.listKey),
-            shortcut: shortcut,
-            isSelected: selection?.wrappedValue == conversation.listKey
-                || selection?.wrappedValue == conversation.todoId
+            shortcut: shortcut
         )
         .tag(conversation.listKey)
         .rowTap(selection == nil ? open : nil)

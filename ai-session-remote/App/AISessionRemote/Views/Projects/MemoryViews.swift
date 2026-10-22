@@ -102,7 +102,7 @@ struct MemoryRow: View {
                 if memory.pinned {
                     Image(systemName: "pin.fill")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(DS.accent)
                         .accessibilityLabel("Pinned")
                 }
                 if showsKind {
@@ -159,7 +159,7 @@ struct MemoryActionRow: View {
                 Button { actions.togglePin(memory, store: store) } label: {
                     Label(memory.pinned ? "Unpin" : "Pin", systemImage: memory.pinned ? "pin.slash" : "pin")
                 }
-                .tint(.orange)
+                .tint(DS.accentSolid)
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) { actions.deleting = memory } label: {
@@ -235,7 +235,7 @@ struct MemoryEditorSheet: View {
                         .lineLimit(3...8)
                 } footer: {
                     Text("\(trimmedText.count)/\(Self.maxLength)")
-                        .foregroundStyle(trimmedText.count > Self.maxLength ? .red : .secondary)
+                        .foregroundStyle(trimmedText.count > Self.maxLength ? DS.error : Color.secondary)
                 }
                 Section {
                     TextField("path/relative/to/project", text: $filesText, axis: .vertical)
@@ -253,7 +253,7 @@ struct MemoryEditorSheet: View {
                 }
                 if let error {
                     Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
+                        .foregroundStyle(DS.error)
                         .font(.subheadline)
                 }
             }
@@ -373,7 +373,7 @@ struct MemoriesPanel: View {
                 if let loadError {
                     Label(loadError, systemImage: "exclamationmark.triangle")
                         .font(.footnote)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(DS.warning)
                 }
             }
             content

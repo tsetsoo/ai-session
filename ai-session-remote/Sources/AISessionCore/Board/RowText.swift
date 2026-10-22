@@ -2,14 +2,28 @@ import Foundation
 
 /// Secondary-line copy for the Todos, Conversations and Computers list rows.
 public enum RowText {
-    /// "1 needs you · 2 to review · 3 working", any part left out at zero, or "Nothing running".
+    /// "1 needs you · 2 to review · 3 working", any part left out at zero, or "No open conversations".
     public static func computerLine(working: Int, review: Int, needsYou: Int) -> String {
         let parts = [
             needsYou > 0 ? "\(needsYou) needs you" : nil,
             review > 0 ? "\(review) to review" : nil,
             working > 0 ? "\(working) working" : nil,
         ].compactMap { $0 }
-        return parts.isEmpty ? "Nothing running" : parts.joined(separator: " · ")
+        return parts.isEmpty ? "No open conversations" : parts.joined(separator: " · ")
+    }
+
+    /// The todo delete confirmation's message. The hub deletes a todo's conversations with it,
+    /// but nothing on the computers: a session still open there keeps running.
+    public static func todoDeleteMessage(conversations: [Conversation]) -> String {
+        guard !conversations.isEmpty else { return "This can't be undone." }
+        let removed = conversations.count == 1 ? "Its conversation is removed with it." : "Its \(conversations.count) conversations are removed with it."
+        var computers: [String] = []
+        for conversation in conversations where conversation.status != .closed
+            && !computers.contains(conversation.computer.name) {
+            computers.append(conversation.computer.name)
+        }
+        guard !computers.isEmpty else { return "\(removed) This can't be undone." }
+        return "\(removed) A session still open on \(computers.joined(separator: " or ")) keeps running there. This can't be undone."
     }
 
     public static func toolName(_ tool: String) -> String {

@@ -1,8 +1,9 @@
 import AISessionCore
 import SwiftUI
 
-/// The add row at the top of a section, or on a project page. The title is multiline and
-/// stays on screen. After a successful add the title clears and focus stays in the field.
+/// The add row at the top of a section, or on a project page: one "Add Todo" row that opens
+/// the form in place. The title is multiline and stays on screen. A successful add or Cancel
+/// folds the form back into the row.
 struct InlineTodoAdd: View {
     enum Place {
         case section(TodoSection)
@@ -23,6 +24,7 @@ struct InlineTodoAdd: View {
     @State private var localError: String?
     @FocusState private var focused: Bool
     @State private var isShown = false
+    @State private var isExpanded = false
 
     private var store: TodoHubStore { model.store }
 
@@ -71,21 +73,32 @@ struct InlineTodoAdd: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.spacing.xs) {
-            computerLine
-            if hasComputer, fields != .titleOnly {
-                projectControls
-            }
-            if hasComputer {
+            if !hasComputer {
+                noComputerLine
+            } else if !isExpanded {
+                Button(action: expand) {
+                    Label("Add Todo", systemImage: "plus")
+                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+            } else {
+                formHeader
+                if fields != .titleOnly {
+                    projectControls
+                }
                 HStack(alignment: .firstTextBaseline, spacing: DS.spacing.s) {
                     TodoTitleField(title: $title, focused: $focused, onSubmit: submit)
+                    // Borderless: in a list row a plain button would take the whole row's taps.
                     Button("Add", action: submit)
+                        .buttonStyle(.borderless)
                         .disabled(!canSubmit)
                 }
             }
             if let localError {
                 Text(localError)
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(DS.error)
             }
         }
         .disabled(store.isOffline)
@@ -99,22 +112,50 @@ struct InlineTodoAdd: View {
         .onChange(of: sectionProjects.map(\.id)) { _, _ in pickDefaultProject() }
     }
 
-    @ViewBuilder
-    private var computerLine: some View {
-        if let computerName {
-            Text(computerName)
+    /// "New todo", or on a project page the computer it runs on (a section's header already
+    /// names it), with Cancel.
+    private var formHeader: some View {
+        HStack(spacing: DS.spacing.s) {
+            Group {
+                if case .project = place, let computerName {
+                    Text("New todo on \(computerName)")
+                } else {
+                    Text("New todo")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            Spacer(minLength: DS.spacing.s)
+            Button("Cancel", action: collapse)
+                .buttonStyle(.borderless)
+                .font(.caption)
+        }
+    }
+
+    private var noComputerLine: some View {
+        HStack(spacing: DS.spacing.s) {
+            Text("No computer")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-        } else {
-            HStack(spacing: DS.spacing.s) {
-                Text("No computer")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Choose Computer") { openAppSettings?(.sections(section)) }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
-            }
+            Button("Choose Computer") { openAppSettings?(.sections(section)) }
+                .buttonStyle(.borderless)
+                .font(.caption)
         }
+    }
+
+    private func expand() {
+        localError = nil
+        withAnimation { isExpanded = true }
+        // After the field exists.
+        Task { @MainActor in focused = true }
+    }
+
+    /// Cancel, or after a successful add: the typed title goes with it.
+    private func collapse() {
+        focused = false
+        title = ""
+        localError = nil
+        withAnimation { isExpanded = false }
     }
 
     @ViewBuilder
@@ -169,7 +210,7 @@ struct InlineTodoAdd: View {
             try? await Task.sleep(for: .milliseconds(350))
             guard acceptsQuickAddFocus, isShown, model.quickAddFocusRequested else { return }
             model.quickAddFocusRequested = false
-            focused = true
+            expand()
         }
     }
 
@@ -192,21 +233,18 @@ struct InlineTodoAdd: View {
                         name: newName, section: section, folder: newFolder
                     )) else { return }
                     projectId = created.id
+                    // Kept even if the todo fails, so trying again doesn't make a second project.
+                    self.makingNew = false
+                    self.newName = ""
+                    self.newFolder = ""
+                    self.projectID = projectId
                 } else if let existing {
                     projectId = existing
                 } else {
                     return
                 }
-                guard await store.createTodo(title: text, projectId: projectId) else { return }
-                title = ""
-                if makingNew {
-                    self.makingNew = false
-                    self.newName = ""
-                    self.newFolder = ""
-                    self.projectID = projectId
-                }
-                localError = nil
-                focused = true
+                try await store.addTodo(title: text, projectId: projectId)
+                collapse()
             } catch {
                 localError = TodoHubStore.message(for: error)
             }
@@ -291,12 +329,11 @@ struct TodoTitleField: View {
 private struct DictateButtonStyle: ButtonStyle {
     let isRunning: Bool
 
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(colorScheme == .dark ? Color(PlatformNativeColor(hex: 0x1C1C1E)) : .white)
+            .foregroundStyle(DS.onAccent)
             .background(DS.accent, in: Circle())
             .overlay {
                 if isRunning {

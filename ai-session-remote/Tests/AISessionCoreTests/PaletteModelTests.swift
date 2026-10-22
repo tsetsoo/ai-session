@@ -60,9 +60,9 @@ final class PaletteModelTests: XCTestCase {
         XCTAssertEqual(ids(result, .actions), ["a:newTodo", "a:newTodoFromConversation", "a:openSettings"])
     }
 
-    func testConversationsCarryStatusAndTheirRunningNowShortcut() {
+    func testConversationsCarryStatusAndTheirOpenListShortcut() {
         let items = groups("").first { $0.kind == .conversations }!.items
-        // t3 is listed second (needs you) but is third in Running now: ⌘3.
+        // t3 is listed second (needs you) but is third among the open conversations: ⌘3.
         guard case let .conversation(todo, _, status, shortcut) = items[1] else { return XCTFail("\(items[1])") }
         XCTAssertEqual(todo.id, "t3")
         XCTAssertEqual(status, .needsYou)
@@ -73,7 +73,7 @@ final class PaletteModelTests: XCTestCase {
     }
 
     func testShortcutsStopAtNine() {
-        // Zero-padded ids: Running now orders equal start times by id.
+        // Zero-padded ids: the open list orders equal start times by id.
         let many = (1...12).map { Todo(id: String(format: "n%02d", $0), section: .sp, title: "Task \($0)") }
         let board = ConversationBoard(
             todos: many,
@@ -90,6 +90,26 @@ final class PaletteModelTests: XCTestCase {
         // "Task 1", "Task 10"…"Task 12": only Task 1 (⌘1) is within the first nine.
         XCTAssertEqual(shortcuts.count, 4)
         XCTAssertEqual(shortcuts.compactMap { $0 }, [1])
+    }
+
+    func testADuplicatedConversationGetsItsOwnRowTitledWithItsName() {
+        let todo = Todo(id: "t1", section: .sp, title: "Fix the rate import")
+        let original = Conversation(id: "c1", todoId: "t1", computer: studio, cwd: "~/x", tool: "claude",
+                                    tmuxName: "todo-c1", sessionId: "s1", status: .busy,
+                                    createdAt: "2026-10-17T09:00:00Z")
+        let copy = Conversation(id: "c2", todoId: "t1", computer: studio, cwd: "~/x", tool: "codex",
+                                tmuxName: "todo-c2", sessionId: "s2", status: .busy,
+                                createdAt: "2026-10-17T09:05:00Z", label: "duplicate")
+        let board = ConversationBoard(todos: [todo], conversations: ["c1": original, "c2": copy], liveTmux: [:])
+        let items = PaletteModel.groups(query: "", board: board, todos: [todo], projects: [],
+                                        selectedTodoID: nil, canEdit: true)
+            .first { $0.kind == .conversations }!.items
+        XCTAssertEqual(Set(items.map(\.id)), ["c:c1", "c:c2"])
+        XCTAssertEqual(Set(items.map(\.title)), ["Fix the rate import", "Fix the rate import · duplicate"])
+        // The tool is searchable: only the Codex copy matches "codex".
+        let codex = PaletteModel.groups(query: "codex", board: board, todos: [todo], projects: [],
+                                        selectedTodoID: nil, canEdit: true)
+        XCTAssertEqual(ids(codex, .conversations), ["c:c2"])
     }
 
     // MARK: Query

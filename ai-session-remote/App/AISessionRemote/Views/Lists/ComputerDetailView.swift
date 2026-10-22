@@ -89,14 +89,14 @@ struct ComputerDetailView: View {
                     Text("No results for “\(query)”")
                         .foregroundStyle(.secondary)
                 } else if running.isEmpty {
-                    Text("No conversations running. Open a todo to start one.")
+                    Text("No open conversations. Open a todo to start one.")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(running, id: \.listKey) { conversation in
                     row(conversation, todo: todos[conversation.todoId], board: board)
                 }
             } header: {
-                Text("Running").textCase(nil)
+                Text("Open").textCase(nil)
             }
             if let host {
                 Section {
@@ -177,9 +177,7 @@ struct ComputerDetailView: View {
             section: todo?.section,
             conversation: conversation,
             status: status,
-            isBusy: actions.inFlight.contains(conversation.listKey),
-            isSelected: selection?.wrappedValue == conversation.listKey
-                || selection?.wrappedValue == conversation.todoId
+            isBusy: actions.inFlight.contains(conversation.listKey)
         )
         .tag(conversation.listKey)
         .rowTap(selection == nil ? open : nil)

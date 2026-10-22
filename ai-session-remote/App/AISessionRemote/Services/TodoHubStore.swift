@@ -295,13 +295,18 @@ final class TodoHubStore {
 
     // MARK: Todos
 
+    /// `createTodo` for forms that show the failure themselves: the New Todo sheet (the shell's
+    /// alert can't present over it) and the inline add rows.
+    func addTodo(title: String, projectId: String) async throws {
+        try await perform { client in
+            upsert(try await client.createTodo(CreateTodoRequest(title: title, projectId: projectId)))
+        }
+    }
+
     @discardableResult
     func createTodo(title: String, projectId: String) async -> Bool {
         do {
-            try await perform { client in
-                let created = try await client.createTodo(CreateTodoRequest(title: title, projectId: projectId))
-                upsert(created)
-            }
+            try await addTodo(title: title, projectId: projectId)
             return true
         } catch {
             errorMessage = Self.message(for: error)

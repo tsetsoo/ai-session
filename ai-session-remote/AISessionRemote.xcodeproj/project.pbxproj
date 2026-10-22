@@ -23,6 +23,7 @@
 		10BE5487C7B5DE001354E7ED /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B5CF5ADABEA184DD911533 /* SessionsListView.swift */; };
 		1257CFF715CF5669E68422AC /* ComputerDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0593DCB097C923A73341EB68 /* ComputerDetailView.swift */; };
 		1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */; };
+		1634A66E6454D4F19AF8EBC4 /* ServerNotConfiguredView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E866E5BC5F0042AF39A45482 /* ServerNotConfiguredView.swift */; };
 		168F160DFF449AD93446985A /* ComputerDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0593DCB097C923A73341EB68 /* ComputerDetailView.swift */; };
 		179CFAD30F54E92A25FE71AA /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 05BD2283E26F32148478AD0E /* Crypto */; };
 		1826D7E4A49A784C721EA193 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = DC38767DC17E0C380BF3BE4F /* NIOSSH */; };
@@ -167,6 +168,7 @@
 		BF9A18AF476748AE63B0CF5E /* OnThisComputerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24947A77BA8C57130367110F /* OnThisComputerView.swift */; };
 		C0151AA649300EAE1F217F82 /* TerminalTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D417529F6E6B990D79BF81 /* TerminalTransport.swift */; };
 		C02C522D95113D7D02F16C02 /* MemoriesPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2036F3717F8C775B947A95B7 /* MemoriesPresenter.swift */; };
+		C309A65A9D1C5AEB7DBB5E3C /* ServerNotConfiguredView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E866E5BC5F0042AF39A45482 /* ServerNotConfiguredView.swift */; };
 		C3862529F62ECE24818A8973 /* SelectionDebounceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6853D306579AF19D0E50F568 /* SelectionDebounceTests.swift */; };
 		C449746AA3C87B38E0DCAF93 /* PooledConnecting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC825CDD2BB9FFA73CAFDE4 /* PooledConnecting.swift */; };
 		C4B27C132B9DD7F5F9BF942B /* ConversationLinkViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */; };
@@ -333,6 +335,7 @@
 		DFFA46BBF4C8FFC2CCE6EE1B /* PooledSSHConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PooledSSHConnection.swift; sourceTree = "<group>"; };
 		E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TOFUHostKeyStoreTests.swift; sourceTree = "<group>"; };
 		E67B76EDE9FE683169680363 /* Dictation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Dictation.swift; sourceTree = "<group>"; };
+		E866E5BC5F0042AF39A45482 /* ServerNotConfiguredView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerNotConfiguredView.swift; sourceTree = "<group>"; };
 		EB3E3B07720B67742A9A99D8 /* TextSizeShortcutsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextSizeShortcutsTests.swift; sourceTree = "<group>"; };
 		EDE7FB9B8AA8D5C5877AE90E /* StatusBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBadge.swift; sourceTree = "<group>"; };
 		EE3B756FF0192985AADAFF36 /* HostRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostRepository.swift; sourceTree = "<group>"; };
@@ -469,6 +472,7 @@
 			isa = PBXGroup;
 			children = (
 				953A88DC4DA95609F6AA1F02 /* AccentButtonStyle.swift */,
+				E866E5BC5F0042AF39A45482 /* ServerNotConfiguredView.swift */,
 				EDE7FB9B8AA8D5C5877AE90E /* StatusBadge.swift */,
 			);
 			path = Components;
@@ -882,6 +886,7 @@
 				3ECEE70113B596539FC80047 /* RootView.swift in Sources */,
 				47F0510DF9398E9C5F02009C /* SSHConnectionPool.swift in Sources */,
 				81A45DE56228508ADE056591 /* SSHTerminalSession.swift in Sources */,
+				1634A66E6454D4F19AF8EBC4 /* ServerNotConfiguredView.swift in Sources */,
 				CA54C9C224AB49CC3FFF02BD /* SessionServiceFactory.swift in Sources */,
 				10BE5487C7B5DE001354E7ED /* SessionsListView.swift in Sources */,
 				B85C5AFBA308F01C6DE79787 /* SettingsPages.swift in Sources */,
@@ -976,6 +981,7 @@
 				356AA5D493C40F589E915D9A /* RootView.swift in Sources */,
 				DEC7BB251D56E61ACCB79C2D /* SSHConnectionPool.swift in Sources */,
 				38388D5CFD2F84A54431E65F /* SSHTerminalSession.swift in Sources */,
+				C309A65A9D1C5AEB7DBB5E3C /* ServerNotConfiguredView.swift in Sources */,
 				3F324CB622DB3E280E202EA1 /* SessionServiceFactory.swift in Sources */,
 				8ECA01A0F0552BA43253E119 /* SessionsListView.swift in Sources */,
 				37D6E479443AA6F8E769F46B /* SettingsPages.swift in Sources */,

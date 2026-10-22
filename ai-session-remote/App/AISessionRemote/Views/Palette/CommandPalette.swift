@@ -95,12 +95,12 @@ struct CommandPalette: View {
     private func searchField(items: [PaletteItem], current: String?) -> some View {
         HStack(spacing: DS.spacing.s + 2) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 16, weight: .medium))
+                .font(.title3.weight(.medium))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
             TextField(Self.searchPrompt, text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 17))
+                .font(.title3)
                 .focused($fieldFocused)
                 .accessibilityLabel(Self.searchPrompt)
                 .onChange(of: query) { _, _ in highlighted = nil }
@@ -132,7 +132,8 @@ struct CommandPalette: View {
                 .accessibilityHidden(true)
         }
         .padding(.horizontal, DS.spacing.l)
-        .frame(height: 52)
+        .padding(.vertical, DS.spacing.s)
+        .frame(minHeight: 52)
         .onAppear(perform: focusField)
         #if os(macOS)
         // Coming back to the window (or the window settling at launch) can leave focus
@@ -221,7 +222,8 @@ struct CommandPalette: View {
         } label: {
             PaletteRow(item: item, bold: bold)
                 .padding(.horizontal, 10)
-                .frame(height: item.isAction ? 36 : 40)
+                .padding(.vertical, DS.spacing.xs)
+                .frame(minHeight: item.isAction ? 36 : 40)
                 .background(isHighlighted ? DS.accentTint : Color.clear,
                             in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .contentShape(Rectangle())
@@ -259,7 +261,7 @@ private struct ResultsHeightKey: PreferenceKey {
 // MARK: - Rows
 
 /// One palette row, after the MacPalette board: a status dot or icon, the title with the
-/// characters that ranked it in bold, "Sp · mac-studio", then the status and ⌘n hint
+/// characters that ranked it in bold, "Sp · mac-studio · Claude", then the status and ⌘n hint
 /// (conversations) or the shortcut (actions).
 private struct PaletteRow: View {
     let item: PaletteItem
@@ -337,19 +339,13 @@ private struct PaletteRow: View {
         }
     }
 
-    private var title: String {
-        switch item {
-        case let .conversation(todo, _, _, _), let .todo(todo, _, _): return todo.title
-        case let .project(project): return project.name
-        case let .action(action): return action.title
-        }
-    }
+    private var title: String { item.title }
 
-    /// "Sp · mac-studio", "P · no conversation yet", or a project's "mac-studio · ~/code/x".
+    /// "Sp · mac-studio · Claude", "P · no conversation yet", or a project's "mac-studio · ~/code/x".
     private var meta: String? {
         switch item {
         case let .conversation(todo, conversation, _, _):
-            return "\(todo.section.rawValue) · \(conversation.computer.name)"
+            return "\(todo.section.rawValue) · \(conversation.computer.name) · \(RowText.toolName(conversation.tool))"
         case let .todo(todo, conversation, _):
             return "\(todo.section.rawValue) · \(conversation?.computer.name ?? "no conversation yet")"
         case let .project(project):

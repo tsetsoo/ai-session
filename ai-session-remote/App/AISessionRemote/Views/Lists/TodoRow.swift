@@ -20,6 +20,11 @@ struct TodoRow: View {
                 Image(systemName: todo.completed ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
                     .foregroundStyle(todo.completed ? .secondary : .tertiary)
+                    #if os(iOS)
+                    // A finger-sized target; the rest of the row opens the todo.
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                    #endif
             }
             .buttonStyle(.plain)
             .disabled(!canToggle)
@@ -39,7 +44,9 @@ struct TodoRow: View {
             if isBusy {
                 ProgressView().controlSize(.small)
             } else if let status {
-                StatusBadge(status)
+                // Only Needs you gets the pill; the dots leave the title room in the Mac's
+                // narrow list column.
+                StatusBadge(status, style: status == .needsYou ? .pill : .dot)
             }
         }
         .frame(minHeight: DS.rowMinHeight)

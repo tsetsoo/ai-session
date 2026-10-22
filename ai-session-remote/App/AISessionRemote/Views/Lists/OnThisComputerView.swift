@@ -76,7 +76,7 @@ private struct LinkToTodoList: View {
         List {
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(DS.error)
                     .font(.subheadline)
             }
             if !TodoSection.allCases.contains(where: { !candidates(in: $0).isEmpty }) {

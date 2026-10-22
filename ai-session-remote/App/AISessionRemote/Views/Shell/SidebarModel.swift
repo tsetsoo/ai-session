@@ -91,7 +91,7 @@ enum ContentHeader {
     static func title(for item: AppModel.SidebarItem, computers: [Computer]) -> String {
         switch item {
         case .needsYou: "Needs you"
-        case .review: "Ready for review"
+        case .review: "To review"
         case .working: "Working"
         case let .section(section): section.rawValue
         case .projects: "Projects"

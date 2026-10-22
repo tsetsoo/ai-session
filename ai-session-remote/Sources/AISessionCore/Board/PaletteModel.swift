@@ -20,7 +20,7 @@ public enum PaletteAction: Equatable, Sendable {
 
 /// One palette row.
 public enum PaletteItem: Equatable, Sendable, Identifiable {
-    /// A Running-now conversation with its ⌘n (the first nine only).
+    /// An open conversation with its ⌘n (the first nine of the list on screen only).
     case conversation(Todo, Conversation, status: ConversationDisplayStatus, shortcut: Int?)
     /// A todo with no running conversation (none, or a closed one).
     case todo(Todo, conversation: Conversation?, status: ConversationDisplayStatus?)
@@ -29,13 +29,25 @@ public enum PaletteItem: Equatable, Sendable, Identifiable {
 
     public var id: String {
         switch self {
-        case let .conversation(todo, _, _, _): return "c:\(todo.id)"
+        // One row per conversation: a duplicated one shares its todo with the original.
+        case let .conversation(_, conversation, _, _): return "c:\(conversation.listKey)"
         case let .todo(todo, _, _): return "t:\(todo.id)"
         case let .project(project): return "p:\(project.id)"
         case .action(.newTodo): return "a:newTodo"
         case let .action(.linkConversation(todoID, _)): return "a:link:\(todoID)"
         case .action(.newTodoFromConversation): return "a:newTodoFromConversation"
         case .action(.openSettings): return "a:openSettings"
+        }
+    }
+
+    /// The row's title: a conversation's carries its name ("Fix the import · duplicate").
+    public var title: String {
+        switch self {
+        case let .conversation(todo, conversation, _, _):
+            return RowText.conversationTitle(todoTitle: todo.title, label: conversation.label)
+        case let .todo(todo, _, _): return todo.title
+        case let .project(project): return project.name
+        case let .action(action): return action.title
         }
     }
 }
@@ -73,9 +85,10 @@ public struct PaletteGroup: Equatable, Sendable, Identifiable {
 public enum PaletteModel {
     public static let maxPerGroup = 5
 
-    /// Conversations (Running now, Needs you first), Todos (open ones without a running
+    /// Conversations (the open ones, Needs you first), Todos (open ones without a running
     /// conversation), Projects, then the Actions. A query ranks each group by the best
-    /// `PaletteMatch` over title, section code and computer name (projects: name and folder):
+    /// `PaletteMatch` over title, section code and computer name (conversations: also the tool;
+    /// projects: name and folder):
     /// contiguous matches first, then scattered ones, which a query of three or more characters
     /// drops whenever something in the group matches contiguously. Ties keep the empty-query
     /// order. An empty query lists only the conversations and the actions. Each group shows at
@@ -161,7 +174,8 @@ public enum PaletteModel {
     private static func fields(of item: PaletteItem) -> [String] {
         switch item {
         case let .conversation(todo, conversation, _, _):
-            return [todo.title, todo.section.rawValue, conversation.computer.name]
+            return [item.title, todo.section.rawValue, conversation.computer.name,
+                    RowText.toolName(conversation.tool)]
         case let .todo(todo, conversation, _):
             return [todo.title, todo.section.rawValue] + (conversation.map { [$0.computer.name] } ?? [])
         case let .project(project):

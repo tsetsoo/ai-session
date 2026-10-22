@@ -70,6 +70,10 @@ struct SettingsView: View {
                         sheet = .sections
                     }
                     .disabled(!model.store.isConfigured)
+                } footer: {
+                    if !model.store.isConfigured {
+                        Text("Sections and computers live on the todo server. Connect to it first.")
+                    }
                 }
                 Section {
                     SettingsSheetRow(title: "Access & keys", systemImage: "key") {

@@ -15,7 +15,20 @@ final class RowTextTests: XCTestCase {
         XCTAssertEqual(RowText.computerLine(working: 3, review: 2, needsYou: 1), "1 needs you · 2 to review · 3 working")
         XCTAssertEqual(RowText.computerLine(working: 2, review: 0, needsYou: 0), "2 working")
         XCTAssertEqual(RowText.computerLine(working: 0, review: 4, needsYou: 0), "4 to review")
-        XCTAssertEqual(RowText.computerLine(working: 0, review: 0, needsYou: 0), "Nothing running")
+        XCTAssertEqual(RowText.computerLine(working: 0, review: 0, needsYou: 0), "No open conversations")
+    }
+
+    func testTodoDeleteMessageSaysWhatGoesAndWhatKeepsRunning() {
+        XCTAssertEqual(RowText.todoDeleteMessage(conversations: []), "This can't be undone.")
+        XCTAssertEqual(RowText.todoDeleteMessage(conversations: [conv(status: .closed)]),
+                       "Its conversation is removed with it. This can't be undone.")
+        let box = Computer(id: "m2", name: "linux-box", hostname: "box", username: "me")
+        var other = conv(status: .waiting)
+        other.computer = box
+        XCTAssertEqual(
+            RowText.todoDeleteMessage(conversations: [conv(), conv(status: .idle), other]),
+            "Its 3 conversations are removed with it. A session still open on mac-studio or linux-box keeps running there. This can't be undone."
+        )
     }
 
     func testMetaKeepsSectionAndComputerAndLeavesTheToolOff() {

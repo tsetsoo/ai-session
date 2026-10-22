@@ -1,11 +1,8 @@
 import AISessionCore
 import SwiftUI
-#if os(macOS)
-import AppKit
-#endif
 
-/// A conversation: the tool's icon and color, status dot, the todo's title and age,
-/// "Sp · mac-studio", and the status message, plus its ⌘n hint in the Mac's Running now.
+/// A conversation: the tool's icon and name, status dot, the todo's title and age,
+/// "Sp · mac-studio", and the status message, plus its ⌘n hint in the Mac's conversation lists.
 struct ConversationRow: View {
     let title: String
     let section: TodoSection?
@@ -13,35 +10,14 @@ struct ConversationRow: View {
     let status: ConversationDisplayStatus
     /// Closing or deleting it.
     let isBusy: Bool
-    /// Its ⌘n in Running now on the Mac.
+    /// Its ⌘n in the Mac's conversation lists.
     var shortcut: Int?
-    /// The Mac list paints the accent behind this row. The tool name then uses the selection label color.
-    var isSelected: Bool = false
 
     /// Width of the dot column; the lines under the title start after it.
     private static let dotColumn: CGFloat = 21
 
-    private var toolColor: Color {
-        AppTheme.color(for: AITool(rawValue: conversation.tool))
-    }
-
-    /// Text on the Mac list's selection fill. White is a poor fit on the light accent.
-    private var selectedLabel: Color {
-        #if os(macOS)
-        Color(nsColor: .alternateSelectedControlTextColor)
-        #else
-        Color.white
-        #endif
-    }
-
     var body: some View {
         HStack(alignment: .center, spacing: DS.spacing.s) {
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(toolColor)
-                .frame(width: 4)
-                .frame(maxHeight: .infinity)
-                .padding(.vertical, 2)
-                .accessibilityHidden(true)
             ToolIcon(tool: conversation.tool)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: DS.spacing.s) {
@@ -50,9 +26,10 @@ struct ConversationRow: View {
                     Text(title)
                         .font(.body.weight(.semibold))
                         .lineLimit(1)
+                    // Secondary, so the Mac list's selection fill restyles it like the other grey text.
                     Text(RowText.toolName(conversation.tool))
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(isSelected ? selectedLabel : toolColor)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .layoutPriority(1)
                     Spacer(minLength: DS.spacing.s)
