@@ -6,11 +6,15 @@ public enum TerminalPaste {
     public static let start: [UInt8] = Array("\u{1B}[200~".utf8)
     public static let end: [UInt8] = Array("\u{1B}[201~".utf8)
 
-    /// `text` as pasted. An end marker inside the text is dropped, so it can't end the paste
-    /// early and have the rest read as typed keys.
+    /// `text` as pasted. End markers inside the text are dropped until none is left (removing
+    /// one can join the pieces around it into another), so the text can't end the paste early
+    /// and have the rest read as typed keys.
     public static func bytes(for text: String, bracketed: Bool) -> [UInt8] {
         guard bracketed else { return Array(text.utf8) }
-        let body = text.replacingOccurrences(of: "\u{1B}[201~", with: "")
+        var body = text
+        while body.contains("\u{1B}[201~") {
+            body = body.replacingOccurrences(of: "\u{1B}[201~", with: "")
+        }
         return start + Array(body.utf8) + end
     }
 

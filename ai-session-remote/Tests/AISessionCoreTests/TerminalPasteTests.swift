@@ -20,6 +20,13 @@ final class TerminalPasteTests: XCTestCase {
         )
     }
 
+    func testBracketedDropsAnEndMarkerHiddenInsideAnother() {
+        XCTAssertEqual(
+            TerminalPaste.bytes(for: "x\u{1B}[201\u{1B}[201~~rm -rf\n", bracketed: true),
+            Array("\u{1B}[200~xrm -rf\n\u{1B}[201~".utf8)
+        )
+    }
+
     func testUnbracketedSubmissionEndsWithOneNewline() {
         XCTAssertEqual(TerminalPaste.submission("hi", bracketed: false), Array("hi\n".utf8))
         XCTAssertEqual(TerminalPaste.submission("hi\n", bracketed: false), Array("hi\n".utf8))

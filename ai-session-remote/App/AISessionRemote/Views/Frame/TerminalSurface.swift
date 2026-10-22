@@ -229,7 +229,10 @@ final class TerminalHandle {
     /// Types `text` as a paste (bracketed when the program asked for it), then Return.
     func submit(_ text: String) { coordinator?.submit(text) }
     /// `submit`, after waiting for a tool that is still starting to turn bracketed paste on.
-    func submitWhenPasteReady(_ text: String) async { await coordinator?.submitWhenPasteReady(text) }
+    /// False when nothing was typed: the wait was cancelled or the connection went.
+    func submitWhenPasteReady(_ text: String) async -> Bool {
+        await coordinator?.submitWhenPasteReady(text) ?? false
+    }
 }
 
 /// One live terminal on a host: connects when it appears, focuses after connecting, shows the
@@ -538,8 +541,9 @@ struct TerminalSurface: View {
         #endif
     }
 
-    /// The card after the session ended. A lost connection says so; a tool that quit (exit
-    /// status, no network problem) says the conversation ended and offers to resume it.
+    /// The card after the session ended. A lost connection says so. A clean exit is either the
+    /// tool quitting or a tmux detach (which leaves it running), and the app can't tell which,
+    /// so it says both; Resume reattaches a running one and resumes one that quit.
     private var endedCard: (symbol: String, title: String, message: String, action: String) {
         let host = hostName ?? config.host
         let what = tool.map(RowText.toolName) ?? "The session"
@@ -547,8 +551,9 @@ struct TerminalSurface: View {
         case .connectionLost:
             return ("wifi.slash", "Disconnected", disconnectedMessage, "Reconnect")
         case .finished:
-            return ("stop.circle", tool == nil ? "Session ended" : "Conversation ended",
-                    "\(what) finished on \(host).", tool == nil ? "Reconnect" : "Resume")
+            return ("stop.circle", tool == nil ? "Session closed" : "Conversation closed",
+                    "\(what) quit on \(host), or this view was detached from it.",
+                    tool == nil ? "Reconnect" : "Resume")
         case .stopped:
             return ("stop.circle", tool == nil ? "Session ended" : "Conversation ended",
                     "\(what) stopped on \(host).", tool == nil ? "Reconnect" : "Resume")
