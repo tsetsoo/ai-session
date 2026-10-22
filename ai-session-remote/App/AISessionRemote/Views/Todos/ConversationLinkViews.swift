@@ -89,10 +89,10 @@ struct RemoteConversationPicker: View {
                         .foregroundStyle(linked ? .secondary : .primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if conversation.running {
-                        Tag(text: "Running", color: .blue)
+                        Tag(text: "Running", color: DS.accentOnTint, fill: DS.accentTint)
                     }
                     if linked {
-                        Tag(text: "Linked", color: .gray)
+                        Tag(text: "Linked", color: .secondary)
                     }
                 }
                 HStack(spacing: 6) {
@@ -155,13 +155,15 @@ struct RemoteConversationPicker: View {
 private struct Tag: View {
     let text: String
     let color: Color
+    /// The capsule; a pale `color` unless given.
+    var fill: Color?
 
     var body: some View {
         Text(text)
             .font(.caption2.weight(.semibold))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(color.opacity(0.18), in: Capsule())
+            .background(fill ?? color.opacity(0.18), in: Capsule())
             .foregroundStyle(color)
     }
 }
