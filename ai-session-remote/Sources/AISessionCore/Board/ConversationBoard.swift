@@ -59,6 +59,8 @@ public final class ConversationBoard: Sendable {
             statuses[todoId] = rows.first { $0.0 == winner }?.1
         }
 
+        // A done todo's finished conversation has nothing left to review.
+        let doneTodoIDs = Set(todos.lazy.filter(\.completed).map(\.id))
         var needing: [Conversation] = []
         var working: [Conversation] = []
         var review: [Conversation] = []
@@ -77,6 +79,7 @@ public final class ConversationBoard: Sendable {
                 working.append(conversation)
                 workingByComputer[computer, default: 0] += 1
             case .idle:
+                guard !doneTodoIDs.contains(conversation.todoId) else { break }
                 review.append(conversation)
                 reviewByComputer[computer, default: 0] += 1
             case .closed:
@@ -159,7 +162,8 @@ public final class ConversationBoard: Sendable {
     /// The agent is busy, newest first.
     public let working: [Conversation]
 
-    /// The turn ended (or no status yet): waiting for you to read it. Most recently changed first.
+    /// The turn ended (or no status yet): waiting for you to read it, unless its todo is done.
+    /// Most recently changed first.
     public let review: [Conversation]
 
     /// Conversations missing from their computer's listing that changed after it was taken:

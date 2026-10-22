@@ -31,9 +31,35 @@ enum TerminalHitTarget: Equatable {
 /// Cmd+C reaches this view when it is first responder. A drag under tmux mouse tracking is
 /// not a local selection, and SwiftTerm's `copy` still clears the pasteboard in that case.
 private final class LocalClipboardTerminalView: TerminalView {
+    /// The conversation's tool, for the bytes Shift+Return sends.
+    var tool: String?
+    private var keyMonitor: Any?
+
     override func copy(_ sender: Any) {
         guard selectionActive else { return }
         super.copy(sender)
+    }
+
+    /// SwiftTerm sends a plain carriage return for Shift+Return, so the agent submits instead of
+    /// starting a new line. Its `keyDown` can't be overridden from here; a local monitor catches
+    /// the key while this view has focus and sends the key bar's ⇧⏎ bytes instead.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+        guard window != nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.window, self.window?.firstResponder === self,
+                  Self.isShiftReturn(event) else { return event }
+            self.send(TerminalKey.shiftEnter.bytes(tool: self.tool ?? "claude"))
+            return nil
+        }
+    }
+
+    /// Return or keypad Enter with Shift and no Command, Control or Option.
+    private static func isShiftReturn(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection([.shift, .command, .control, .option])
+        return flags == .shift && (event.keyCode == 36 || event.keyCode == 76)
     }
 }
 
@@ -109,6 +135,7 @@ private struct TerminalContainerView: NSViewRepresentable {
     let fontSize: Double
     let hitTarget: TerminalHitTarget
     let cover: AnyView?
+    let tool: String?
 
     func makeCoordinator() -> CoverHost { CoverHost() }
 
@@ -120,6 +147,7 @@ private struct TerminalContainerView: NSViewRepresentable {
         let view = LocalClipboardTerminalView(frame: .zero)
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         view.optionAsMetaKey = true
+        view.tool = tool
         coordinator.attach(to: view)
         let gate = TerminalClickGate(terminalView: view)
         updateCover(gate, context: context)
@@ -128,6 +156,7 @@ private struct TerminalContainerView: NSViewRepresentable {
 
     func updateNSView(_ gate: TerminalClickGate, context: Context) {
         TerminalAppearance.apply(to: gate.terminalView, palette: palette, fontSize: fontSize)
+        (gate.terminalView as? LocalClipboardTerminalView)?.tool = tool
         coordinator.attach(to: gate.terminalView)
         updateCover(gate, context: context)
     }
@@ -246,7 +275,8 @@ struct TerminalSurface: View {
     ///   - onEnded: the session ended, with the PTY's exit status (nil = connection dropped).
     ///   - onUserInput: the user typed into the terminal or used the key bar (not the terminal's
     ///     own replies, see `TerminalInputClassifier`).
-    ///   - tool: the conversation's tool; shows Approve on the key bar (iOS). Nil hides it.
+    ///   - tool: the conversation's tool; shows Approve on the key bar (iOS) and picks the bytes for
+    ///     Shift+Return. Nil hides Approve.
     ///   - approveEnabled: whether Approve can be pressed now.
     init(
         config: HostConnectionConfig,
@@ -470,7 +500,8 @@ struct TerminalSurface: View {
             palette: palette,
             fontSize: fontSize,
             hitTarget: hitTarget,
-            cover: hitTarget == .cover ? AnyView(disconnectedOverlay) : nil
+            cover: hitTarget == .cover ? AnyView(disconnectedOverlay) : nil,
+            tool: tool
         )
         .padding(Self.inset)
         .background(Color(palette.background))

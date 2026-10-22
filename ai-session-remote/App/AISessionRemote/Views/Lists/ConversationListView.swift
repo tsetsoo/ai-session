@@ -127,13 +127,16 @@ struct ConversationListView: View {
             conversation: conversation,
             status: status,
             isBusy: actions.inFlight.contains(conversation.listKey),
+            onDone: todo.flatMap { todo in
+                todo.completed || store.isOffline ? nil : { Task { await store.toggle(todo) } }
+            },
             shortcut: shortcut,
             isSelected: selection?.wrappedValue == conversation.listKey
                 || selection?.wrappedValue == conversation.todoId
         )
         .tag(conversation.listKey)
         .rowTap(selection == nil ? open : nil)
-        .conversationRowMenu(conversation, isRunning: status != .closed, actions: actions,
+        .conversationRowMenu(conversation, todo: todo, isRunning: status != .closed, actions: actions,
                              store: store, hosts: hosts, open: open)
     }
 
