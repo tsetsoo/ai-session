@@ -41,7 +41,43 @@ usage() {
   exit 64
 }
 
+# `-u` forces the tmux client into UTF-8. Without it, a non-login SSH session
+# (no LANG) makes tmux replace Cyrillic and other non-ASCII with underscores.
+if [ -n "${AI_TODO_TMUX_SOCKET:-}" ]; then
+  tmux_cmd() { tmux -L "$AI_TODO_TMUX_SOCKET" "$@"; }
+  tmux_exec() { exec tmux -L "$AI_TODO_TMUX_SOCKET" -u "$@"; }
+else
+  tmux_cmd() { tmux "$@"; }
+  tmux_exec() { exec tmux -u "$@"; }
+fi
+
+attach() {
+  if [ "${AI_TODO_OPEN_DETACH:-}" = 1 ]; then
+    echo "$1"
+    exit 0
+  fi
+  # Inside tmux already (e.g. a Mac terminal), switch instead of nesting.
+  if [ -n "${TMUX:-}" ]; then
+    tmux_exec switch-client -t "=$name"
+  fi
+  tmux_exec attach-session -t "=$name"
+}
+
 [ "$#" -eq 3 ] || [ "$#" -eq 4 ] || usage
+
+# A running session attaches at once, before the checks only a new one needs
+# (they cost about 150 ms). The name is only a quoted tmux target here, but it
+# must still be this tool's. A fresh start (`-`) never does: it replaces a
+# session left by a failed start.
+case "$1" in
+  "ai/${4:-claude}/todo-"*)
+    if [ "$3" != - ] && tmux_cmd has-session -t "=$1" 2>/dev/null; then
+      name=$1
+      attach attach
+    fi
+    ;;
+esac
+
 name=$1
 cwd=$2
 sid=$3
@@ -74,27 +110,6 @@ case "$cwd" in
 esac
 
 command -v tmux >/dev/null 2>&1 || { echo "tmux not found" >&2; exit 90; }
-# `-u` forces the tmux client into UTF-8. Without it, a non-login SSH session
-# (no LANG) makes tmux replace Cyrillic and other non-ASCII with underscores.
-if [ -n "${AI_TODO_TMUX_SOCKET:-}" ]; then
-  tmux_cmd() { tmux -L "$AI_TODO_TMUX_SOCKET" "$@"; }
-  tmux_exec() { exec tmux -L "$AI_TODO_TMUX_SOCKET" -u "$@"; }
-else
-  tmux_cmd() { tmux "$@"; }
-  tmux_exec() { exec tmux -u "$@"; }
-fi
-
-attach() {
-  if [ "${AI_TODO_OPEN_DETACH:-}" = 1 ]; then
-    echo "$1"
-    exit 0
-  fi
-  # Inside tmux already (e.g. a Mac terminal), switch instead of nesting.
-  if [ -n "${TMUX:-}" ]; then
-    tmux_exec switch-client -t "=$name"
-  fi
-  tmux_exec attach-session -t "=$name"
-}
 
 # Paths of conversation files that already exist, one per line.
 fresh_ids() {
