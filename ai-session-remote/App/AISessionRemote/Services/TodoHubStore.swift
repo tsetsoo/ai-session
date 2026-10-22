@@ -281,12 +281,13 @@ final class TodoHubStore {
     /// Fills the store without touching the hub or the cache (demo launches and tests), and
     /// makes it a demo store: refreshes and changes then never reach a hub.
     func seedForDemo(todos: [Todo], conversations: [Conversation],
-                     sectionComputers: [SectionComputer], computers: [Computer]) {
-        demo = TodoHubDemo(computers: computers, projects: [], suggestions: [], todos: todos,
+                     sectionComputers: [SectionComputer], computers: [Computer], projects: [Project] = []) {
+        demo = TodoHubDemo(computers: computers, projects: projects, suggestions: [], todos: todos,
                            conversations: conversations, sessions: [], memories: [])
         apply(todos: todos, conversations: conversations)
         self.sectionComputers = Dictionary(sectionComputers.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new })
         self.computers = computers
+        self.projects = projects
         hasLoadedOnce = true
         // As if just fetched: the sync line reads "Synced · just now", not the real cache's age.
         cachedAt = .now

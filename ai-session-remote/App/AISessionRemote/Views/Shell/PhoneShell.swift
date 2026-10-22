@@ -147,6 +147,10 @@ struct PhoneShell: View {
             applyDefaultFilter()
             reopenSelection()
             #if DEBUG
+            // `-uiDemoAdd` opens the New Todo sheet.
+            if DemoFixtures.isEnabled, ProcessInfo.processInfo.arguments.contains("-uiDemoAdd") {
+                showingAdd = true
+            }
             if projectsPath.isEmpty, let id = ProjectsDemo.projectPage(store) {
                 projectsPath = [.project(id)]
             }

@@ -22,6 +22,12 @@ struct AddTodoSheet: View {
         self.fixedSection = fixedSection
         self.store = store
         _section = State(initialValue: fixedSection)
+        #if DEBUG
+        // `-uiDemoAddSection Sp`: screenshots of the form with a section chosen.
+        if DemoFixtures.isEnabled, let raw = DemoFixtures.value(after: "-uiDemoAddSection") {
+            _section = State(initialValue: TodoSection(rawValue: raw))
+        }
+        #endif
     }
 
     private var chosenSection: TodoSection? { fixedSection ?? section }
@@ -56,39 +62,59 @@ struct AddTodoSheet: View {
         return projectID != nil
     }
 
+    /// The project the todo goes into, if it already exists.
+    private var chosenProject: Project? {
+        guard !makingNew, let projectID else { return nil }
+        return sectionProjects.first { $0.id == projectID }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
-                if fixedSection == nil {
-                    Picker("Section", selection: $section) {
-                        Text("Choose").tag(TodoSection?.none)
-                        ForEach(TodoSection.allCases) { Text($0.rawValue).tag(Optional($0)) }
-                    }
-                    .pickerStyle(.segmented)
+                Section {
+                    TodoTitleField(title: $title, focused: $titleFocused, onSubmit: submit,
+                                   placeholder: "What needs doing?", minLines: 3)
+                        .font(.title3)
+                        .padding(.vertical, DS.spacing.xs)
                 }
-                computerRow
-                if hasComputer {
-                    Picker("Project", selection: projectChoice) {
-                        ForEach(sectionProjects) { project in
-                            Text(project.name).tag(project.id)
+                Section {
+                    // One row, so no separator runs between sections and projects.
+                    VStack(alignment: .leading, spacing: DS.spacing.m) {
+                        if fixedSection == nil {
+                            sectionChips
+                                .padding(.horizontal, DS.spacing.l + 2)
                         }
-                        Text("New project").tag("new")
+                        if hasComputer {
+                            projectChips
+                        }
                     }
-                    if makingNew {
-                        TextField("Project name", text: $newName)
-                        TextField("Folder, e.g. ~/programming/app", text: $newFolder)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .font(.body.monospaced())
+                    .padding(.vertical, DS.spacing.s)
+                    // Edge to edge, so the project row scrolls under the card's edges.
+                    .listRowInsets(EdgeInsets())
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in DS.spacing.l + 2 }
+                    if hasComputer {
+                        if makingNew {
+                            TextField("Project name", text: $newName)
+                            TextField("Folder, e.g. ~/programming/app", text: $newFolder)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .font(.body.monospaced())
+                        }
                     }
-                    TodoTitleField(title: $title, focused: $titleFocused, onSubmit: submit)
+                } header: {
+                    Text("Where it runs").textCase(nil)
+                } footer: {
+                    destination
                 }
                 if let localError {
-                    Label(localError, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(DS.error)
-                        .font(.subheadline)
+                    Section {
+                        Label(localError, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(DS.error)
+                            .font(.subheadline)
+                    }
                 }
             }
+            .formStyle(.grouped)
             .navigationTitle("New Todo")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -97,6 +123,7 @@ struct AddTodoSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add", action: submit)
+                        .fontWeight(.semibold)
                         .disabled(!canSubmit)
                 }
             }
@@ -117,18 +144,69 @@ struct AddTodoSheet: View {
         #endif
     }
 
-    @ViewBuilder
-    private var computerRow: some View {
-        if let chosenSection, let mapping = store.sectionComputers[chosenSection] {
-            LabeledContent("Computer", value: mapping.computer.name)
-        } else if chosenSection != nil {
-            HStack {
-                Text("No computer").foregroundStyle(.secondary)
-                Spacer()
-                Button("Choose Computer") {
-                    if let chosenSection { openAppSettings?(.sections(chosenSection)) }
+    private var sectionChips: some View {
+        HStack(spacing: DS.spacing.s) {
+            ForEach(TodoSection.allCases) { option in
+                Chip(isSelected: section == option, fillsWidth: true) {
+                    section = option
+                } label: {
+                    Text(option.rawValue)
+                }
+                .accessibilityLabel("Section \(option.rawValue)")
+            }
+        }
+    }
+
+    /// Every project of the section and New project, one tap each.
+    private var projectChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: DS.spacing.s) {
+                ForEach(sectionProjects) { project in
+                    Chip(isSelected: !makingNew && projectID == project.id) {
+                        projectChoice.wrappedValue = project.id
+                    } label: {
+                        Text(project.name)
+                    }
+                }
+                Chip(isSelected: makingNew) {
+                    projectChoice.wrappedValue = "new"
+                } label: {
+                    HStack(spacing: DS.spacing.xs) {
+                        Image(systemName: "plus")
+                        Text("New project")
+                    }
                 }
             }
+            .padding(.horizontal, DS.spacing.l + 2)
+            .padding(.vertical, 1)
+        }
+    }
+
+    /// Where the todo's conversation will start, as `computer:folder`; or what's missing.
+    @ViewBuilder
+    private var destination: some View {
+        if let chosenSection, let mapping = store.sectionComputers[chosenSection] {
+            let folder = chosenProject?.folder ?? newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+            Label {
+                Text(folder.isEmpty ? mapping.computer.name : "\(mapping.computer.name):\(folder)")
+                    .font(.footnote.monospaced())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } icon: {
+                Image(systemName: "desktopcomputer")
+            }
+            .foregroundStyle(.secondary)
+            .accessibilityLabel(folder.isEmpty ? "Runs on \(mapping.computer.name)"
+                                               : "Runs on \(mapping.computer.name) in \(folder)")
+        } else if let chosenSection {
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(chosenSection.rawValue) has no computer yet.")
+                Spacer()
+                Button("Choose Computer") { openAppSettings?(.sections(chosenSection)) }
+                    .font(.footnote.weight(.semibold))
+            }
+        } else {
+            Text("Pick a section to see its projects.")
         }
     }
 
@@ -191,5 +269,32 @@ struct AddTodoSheet: View {
                 localError = TodoHubStore.message(for: error)
             }
         }
+    }
+}
+
+/// A capsule choice in the New Todo sheet: pale accent when chosen, grey otherwise.
+private struct Chip<Label: View>: View {
+    let isSelected: Bool
+    var fillsWidth = false
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+
+    var body: some View {
+        Button(action: action) {
+            label()
+                .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                .lineLimit(1)
+                .padding(.horizontal, DS.spacing.m)
+                .frame(maxWidth: fillsWidth ? .infinity : nil, minHeight: 34)
+                .foregroundStyle(isSelected ? DS.accentOnTint : Color.primary)
+                .background(isSelected ? DS.accentTint : Color.secondary.opacity(0.12), in: Capsule())
+                .overlay {
+                    if isSelected { Capsule().strokeBorder(DS.accent.opacity(0.5), lineWidth: 1) }
+                }
+                .contentShape(Capsule())
+        }
+        // Borderless: in a form row a plain button would take the whole row's taps.
+        .buttonStyle(.borderless)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

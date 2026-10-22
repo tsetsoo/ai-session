@@ -43,6 +43,11 @@ enum DemoFixtures {
         }
     }()
 
+    static let projects: [Project] = [
+        Project(id: "demo-rms", name: "rms-backend", computer: macStudio, folder: "~/code/rms-backend", section: .sp),
+        Project(id: "demo-rates", name: "rate-importer", computer: macStudio, folder: "~/code/rate-importer", section: .sp),
+    ]
+
     private static let now = "2026-10-17T09:00:00Z"
 
     private static func cwd(for section: TodoSection) -> String {

@@ -187,7 +187,8 @@ final class AppModel {
         if demo {
             store.seedForDemo(
                 todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
-                sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+                sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers,
+                projects: DemoFixtures.projects
             )
             // Demo data never lists tmux: its running conversations count as alive.
             for computer in DemoFixtures.computers {

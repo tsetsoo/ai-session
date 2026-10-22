@@ -270,6 +270,9 @@ struct TodoTitleField: View {
     @Binding var title: String
     var focused: FocusState<Bool>.Binding
     var onSubmit: () -> Void
+    var placeholder = "Title"
+    /// Lines the field keeps open while empty (the New Todo sheet asks for more than a row).
+    var minLines = 1
 
     @State private var note: String?
     #if os(iOS)
@@ -280,8 +283,8 @@ struct TodoTitleField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.spacing.xs) {
             HStack(alignment: .top, spacing: DS.spacing.xs) {
-                TextField("Title", text: $title, axis: .vertical)
-                    .lineLimit(1...8)
+                TextField(placeholder, text: $title, axis: .vertical)
+                    .lineLimit(minLines...max(minLines, 8))
                     .focused(focused)
                     .onSubmit(onSubmit)
                 #if os(iOS)
