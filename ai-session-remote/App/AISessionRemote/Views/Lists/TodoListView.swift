@@ -4,7 +4,8 @@ import SwiftUI
 
 /// Todos in inset-grouped sections, each headed by its code and computer. Tapping a todo calls
 /// `onOpen`; the caller owns navigation to its conversation. Given a `selection` (the Mac list
-/// column) rows select by todo id instead.
+/// column) rows select by todo id instead. Given a `grouping` (the phone) a picker on top
+/// switches to open todos by project or by their conversation's status.
 struct TodoListView: View {
     let sections: [TodoSection]
     let onOpen: (Todo) -> Void
@@ -12,6 +13,7 @@ struct TodoListView: View {
     private let selection: Binding<String?>?
     /// The section whose add field takes the phone Home-screen focus.
     private let quickAddSection: TodoSection?
+    private let grouping: Binding<TodoGrouping>?
 
     @Environment(AppModel.self) private var model
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
@@ -21,11 +23,13 @@ struct TodoListView: View {
     @State private var deleteTarget: Todo?
 
     init(sections: [TodoSection], query: String = "", selection: Binding<String?>? = nil,
-         quickAddSection: TodoSection? = nil, onOpen: @escaping (Todo) -> Void) {
+         quickAddSection: TodoSection? = nil, grouping: Binding<TodoGrouping>? = nil,
+         onOpen: @escaping (Todo) -> Void) {
         self.sections = sections
         self.query = query
         self.selection = selection
         self.quickAddSection = quickAddSection
+        self.grouping = grouping
         self.onOpen = onOpen
     }
 
@@ -35,8 +39,35 @@ struct TodoListView: View {
         let board = model.board
         SelectableList(selection: selection) {
             ListStatusBanner(store: store)
-            ForEach(sections) { section in
-                sectionView(section, board: board)
+            if let grouping {
+                Section {
+                    Picker("Group by", selection: grouping) {
+                        ForEach(TodoGrouping.allCases, id: \.self) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+            }
+            switch grouping?.wrappedValue ?? .section {
+            case .section:
+                ForEach(sections) { section in
+                    sectionView(section, board: board)
+                }
+            case .project:
+                let groups = TodoGrouping.byProject(searched, projects: store.projects)
+                if groups.isEmpty { emptyGroups }
+                ForEach(groups) { group in
+                    groupView(group.title, detail: group.project?.computer.name, todos: group.todos,
+                              addTo: group.project, board: board)
+                }
+            case .status:
+                let groups = TodoGrouping.byStatus(searched) { board.status(forTodo: $0) }
+                if groups.isEmpty { emptyGroups }
+                ForEach(groups) { group in
+                    groupView(group.status.label, detail: nil, todos: group.todos, addTo: nil, board: board)
+                }
             }
         }
         .listStyle(.insetGrouped)
@@ -46,6 +77,50 @@ struct TodoListView: View {
             LinkConversationSheet(todo: todo, store: store)
         }
         .todoDeleteConfirmation($deleteTarget, store: store)
+    }
+
+    /// Every todo matching the search, for the project and status groupings.
+    private var searched: [Todo] {
+        store.todos.filter { ListSearch.matches(query, $0.title) }
+    }
+
+    @ViewBuilder
+    private var emptyGroups: some View {
+        Section {
+            if !store.hasLoadedOnce {
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight)
+            } else if !query.isEmpty {
+                ContentUnavailableView.search(text: query)
+            } else {
+                Text("No open todos")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight, alignment: .leading)
+            }
+        }
+    }
+
+    /// A project or status group: just its todos, with an add row when it is a project.
+    private func groupView(_ title: String, detail: String?, todos: [Todo], addTo project: Project?,
+                           board: ConversationBoard) -> some View {
+        Section {
+            if let project {
+                InlineTodoAdd(place: .project(project))
+            }
+            ForEach(todos) { todo in
+                row(todo, board: board)
+            }
+        } header: {
+            HStack {
+                Text(title).fontWeight(.semibold)
+                Spacer()
+                if let detail {
+                    Text(detail).foregroundStyle(.secondary)
+                }
+            }
+            .font(.footnote)
+            .textCase(nil)
+        }
     }
 
     private func sectionView(_ section: TodoSection, board: ConversationBoard) -> some View {

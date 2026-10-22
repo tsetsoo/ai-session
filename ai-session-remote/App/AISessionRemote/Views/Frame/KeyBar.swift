@@ -54,6 +54,9 @@ struct KeyBar: View {
                     }
                     .accessibilityLabel("Control")
                     .accessibilityValue(ctrlArmed ? "On" : "Off")
+                    // Early in the row, so it shows without scrolling on a narrow phone.
+                    KeyCap(cap: "paste", symbol: "doc.on.clipboard", action: pasteClipboard)
+                        .accessibilityLabel("Paste")
                     key("←", "Left arrow", .left, repeats: true)
                     key("↑", "Up arrow", .up, repeats: true)
                     key("↓", "Down arrow", .down, repeats: true)
@@ -64,14 +67,14 @@ struct KeyBar: View {
                     KeyCap(
                         cap: "⌨",
                         symbol: keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard",
-                        hold: .longPress(longPressPaste)
+                        hold: .longPress(pasteClipboard)
                     ) {
                         PlatformSupport.keyTapFeedback()
                         toggleKeyboard()
                     }
                     .accessibilityLabel(keyboardVisible ? "Hide keyboard" : "Show keyboard")
                     .accessibilityHint("Touch and hold to paste.")
-                    .accessibilityAction(named: "Paste", longPressPaste)
+                    .accessibilityAction(named: "Paste", pasteClipboard)
                 }
                 .padding(.leading, DS.spacing.s)
                 .padding(.trailing, tool == nil ? DS.spacing.s : DS.spacing.m)
@@ -145,7 +148,7 @@ struct KeyBar: View {
         send(key.bytes(tool: tool ?? "claude"))
     }
 
-    private func longPressPaste() {
+    private func pasteClipboard() {
         PlatformSupport.keyTapFeedback()
         paste()
     }

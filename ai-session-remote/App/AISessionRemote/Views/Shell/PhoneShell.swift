@@ -48,6 +48,8 @@ struct PhoneShell: View {
     @State private var filter = ConversationListView.Filter.review
     /// Once the filter is picked by hand it stays; until then it follows the default rule.
     @State private var filterChosen = false
+    /// The Todos tab's grouping, kept across launches.
+    @AppStorage("todos.grouping") private var todoGrouping = TodoGrouping.section
     @State private var settings: SettingsRequest?
     @State private var showingAdd = false
     @State private var showingNewFromConversation = false
@@ -168,6 +170,8 @@ struct PhoneShell: View {
             }
             tab = .todos
             todosPath = []
+            // Only the Section grouping has the I section's add field.
+            todoGrouping = .section
         }
         .task { await model.startSync() }
         // One listing for this shell. The first pass (still 0) lists every computer; a later
@@ -187,7 +191,7 @@ struct PhoneShell: View {
         } else if store.todos.isEmpty && !store.hasLoadedOnce {
             ProgressView()
         } else {
-            TodoListView(sections: TodoSection.allCases, quickAddSection: .i) {
+            TodoListView(sections: TodoSection.allCases, quickAddSection: .i, grouping: $todoGrouping) {
                 todosPath.append(.todo($0.id))
             }
         }
