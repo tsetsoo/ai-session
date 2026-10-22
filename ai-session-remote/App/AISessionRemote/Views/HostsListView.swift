@@ -12,8 +12,13 @@ struct HostsListView: View {
     @State private var reachability: [UUID: Bool] = [:]
     @State private var isProbing = false
     @State private var plainShellHost: HostEntity?
+    /// Hosts waiting on the delete confirmation: deleting also removes the private key.
+    @State private var hostsToDelete: [HostEntity] = []
 
     var body: some View {
+        // The only stack in the Access & keys sheet (`AccessSettings` draws just a Done row
+        // above it); host rows push into that host's sessions. The bar stays hidden so the
+        // title below sits under Done instead of in a second bar.
         NavigationStack {
             VStack(spacing: 0) {
                 header
@@ -41,6 +46,23 @@ struct HostsListView: View {
                     plainShellDestination(for: host)
                 }
             }
+            .confirmationDialog(
+                deleteConfirmationTitle,
+                isPresented: Binding(
+                    get: { !hostsToDelete.isEmpty },
+                    set: { if !$0 { hostsToDelete = [] } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button(hostsToDelete.count == 1 ? "Delete Host and Key" : "Delete Hosts and Keys", role: .destructive) {
+                    delete(hostsToDelete)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(hostsToDelete.count == 1
+                    ? "Its connection details and private key are removed from this device. To add it again you'll need the key file."
+                    : "Their connection details and private keys are removed from this device. To add them again you'll need the key files.")
+            }
             .alert("Could not delete host", isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
@@ -58,8 +80,9 @@ struct HostsListView: View {
 
     private var header: some View {
         HStack(alignment: .center) {
-            Text("Hosts")
+            Text("Access & keys")
                 .font(.largeTitle.bold())
+                .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 12)
             Button {
                 showingHostEditor = true
@@ -98,7 +121,7 @@ struct HostsListView: View {
                     } label: {
                         Label("Edit", systemImage: "pencil")
                     }
-                    .tint(.blue)
+                    .tint(DS.accentSolid)
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     Button {
@@ -106,7 +129,7 @@ struct HostsListView: View {
                     } label: {
                         Label("SSH", systemImage: "terminal")
                     }
-                    .tint(.indigo)
+                    .tint(.gray)
                 }
                 .contextMenu {
                     Button {
@@ -119,9 +142,17 @@ struct HostsListView: View {
                     } label: {
                         Label("Plain SSH", systemImage: "terminal")
                     }
+                    Divider()
+                    Button(role: .destructive) {
+                        hostsToDelete = [host]
+                    } label: {
+                        Label("Delete…", systemImage: "trash")
+                    }
                 }
             }
-            .onDelete(perform: deleteHosts)
+            .onDelete { offsets in
+                hostsToDelete = offsets.map { hosts[$0] }
+            }
         }
         .overlay(alignment: .top) {
             if isProbing {
@@ -215,11 +246,18 @@ struct HostsListView: View {
         }
     }
 
-    private func deleteHosts(at offsets: IndexSet) {
+    private var deleteConfirmationTitle: String {
+        guard hostsToDelete.count == 1, let host = hostsToDelete.first else {
+            return "Delete \(hostsToDelete.count) hosts?"
+        }
+        return "Delete \(host.displayName.isEmpty ? host.hostname : host.displayName)?"
+    }
+
+    private func delete(_ hostsToRemove: [HostEntity]) {
         let repository = HostRepository(modelContext: modelContext)
-        for index in offsets {
+        for host in hostsToRemove {
             do {
-                try repository.delete(hosts[index])
+                try repository.delete(host)
             } catch {
                 errorMessage = error.localizedDescription
             }
