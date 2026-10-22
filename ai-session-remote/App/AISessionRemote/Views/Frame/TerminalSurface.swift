@@ -228,6 +228,8 @@ struct TerminalSurface: View {
     @State private var coordinator: TerminalCoordinator
     @State private var connectionState: TerminalConnectionState = .idle
     @State private var isDisconnected = false
+    /// Why the session ended, for the card: a lost connection, or the tool quitting.
+    @State private var ending: TerminalEnding = .connectionLost
     /// Gates `connectingOverlay`. With a warm connection pool, attach (and reconnect) are
     /// usually fast enough that showing this immediately would just be a flash; it's only
     /// raised once `.connecting`/`.idle` has held for ~250ms. Applies to every connect/reconnect,
@@ -243,7 +245,7 @@ struct TerminalSurface: View {
     ///   - hostName: shown while connecting; defaults to the config's host.
     ///   - handle: filled in so the caller's menus can reconnect, copy, paste and focus.
     ///   - onDetach: when set, the disconnected state offers Detach next to Reconnect.
-    ///   - disconnectedMessage: the line under "Disconnected".
+    ///   - disconnectedMessage: the line under "Disconnected" when the connection was lost.
     ///   - onConnectionFailed: the connect failed, with why.
     ///   - onEnded: the session ended, with the PTY's exit status (nil = connection dropped).
     ///   - onUserInput: the user typed into the terminal or used the key bar (not the terminal's
@@ -379,6 +381,7 @@ struct TerminalSurface: View {
             handle?.connectionState = coordinator.state
             coordinator.onError = { error in onConnectionFailed(error) }
             coordinator.onDisconnected = { exitStatus in
+                ending = TerminalEnding(exitStatus: exitStatus)
                 isDisconnected = true
                 if coordinator.isShown { PlatformSupport.disconnectedFeedback() }
                 onEnded(exitStatus)
@@ -492,32 +495,48 @@ struct TerminalSurface: View {
         #endif
     }
 
-    private var disconnectedCardLabel: String {
-        onDetach == nil ? "Disconnected. Reconnect." : "Disconnected. Reconnect or detach."
+    /// The card after the session ended. A lost connection says so; a tool that quit (exit
+    /// status, no network problem) says the conversation ended and offers to resume it.
+    private var endedCard: (symbol: String, title: String, message: String, action: String) {
+        let host = hostName ?? config.host
+        let what = tool.map(RowText.toolName) ?? "The session"
+        switch ending {
+        case .connectionLost:
+            return ("wifi.slash", "Disconnected", disconnectedMessage, "Reconnect")
+        case .finished:
+            return ("stop.circle", tool == nil ? "Session ended" : "Conversation ended",
+                    "\(what) finished on \(host).", tool == nil ? "Reconnect" : "Resume")
+        case .stopped:
+            return ("stop.circle", tool == nil ? "Session ended" : "Conversation ended",
+                    "\(what) stopped on \(host).", tool == nil ? "Reconnect" : "Resume")
+        }
     }
 
     private var disconnectedOverlay: some View {
-        onTerminalBackground(
+        let card = endedCard
+        return onTerminalBackground(
             VStack(spacing: DS.spacing.m) {
                 VStack(spacing: DS.spacing.m) {
-                    Image(systemName: "wifi.slash")
+                    Image(systemName: card.symbol)
                         .font(.system(size: 28))
                         .foregroundStyle(.secondary)
-                    Text("Disconnected")
+                    Text(card.title)
                         .font(.title3.weight(.semibold))
-                    Text(disconnectedMessage)
+                    Text(card.message)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel(disconnectedCardLabel)
+                .accessibilityLabel(onDetach == nil
+                    ? "\(card.title). \(card.action)."
+                    : "\(card.title). \(card.action) or detach.")
                 HStack(spacing: DS.spacing.m) {
-                    Button("Reconnect") {
+                    Button(card.action) {
                         Task { await reconnect() }
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(DS.accent)
-                    .accessibilityLabel("Reconnect")
+                    .accessibilityLabel(card.action)
                     if let onDetach {
                         Button("Detach", action: onDetach)
                             .buttonStyle(.bordered)
