@@ -198,9 +198,15 @@ private final class LocalPTY: LocalProcessDelegate, @unchecked Sendable {
         process = LocalProcess(delegate: self, dispatchQueue: DispatchQueue(label: "LocalPTY"))
     }
 
+    /// Held from `forkpty` until the new master is close-on-exec, so no other terminal forks
+    /// in between and inherits it.
+    private static let forkLock = NSLock()
+
     func start(_ mode: TerminalMode) throws {
         let environment = LocalConnection.environment(term: "xterm-256color").map { "\($0.key)=\($0.value)" }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
+        Self.forkLock.lock()
+        defer { Self.forkLock.unlock() }
         switch mode {
         case let .attach(command):
             process.startProcess(executable: LocalConnection.shell, args: ["-c", command],
@@ -214,6 +220,10 @@ private final class LocalPTY: LocalProcessDelegate, @unchecked Sendable {
         guard process.running else {
             throw SSHChannelOpenFailure(underlying: SSHTerminalSessionError.channelSetupFailed)
         }
+        // SwiftTerm's forkpty leaves the master inheritable, so every later terminal's child
+        // would hold it open. Closing this terminal would then never hang up its tmux client,
+        // which stays attached for good (SIGTERM alone does not end it).
+        _ = fcntl(process.childfd, F_SETFD, FD_CLOEXEC)
     }
 
     func send(_ bytes: ArraySlice<UInt8>) {
