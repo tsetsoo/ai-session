@@ -123,7 +123,8 @@ struct ConversationFrame: View {
         return ConversationTerminalState(
             todoID: todo.id,
             isReady: readyConversation != nil,
-            isConnected: isConnected
+            isConnected: isConnected,
+            isDuplicating: isDuplicating
         )
     }
 
@@ -171,7 +172,9 @@ struct ConversationFrame: View {
         }
         .onChange(of: appModel?.terminalFocusRequest) { _, request in focusRequested(request) }
         .overlay(alignment: .top) {
-            if isFrontmost && showingCopied {
+            if isFrontmost && isDuplicating {
+                DuplicatingToast().transition(.opacity)
+            } else if isFrontmost && showingCopied {
                 CopiedToast().transition(.opacity)
             }
         }
@@ -493,7 +496,8 @@ struct ConversationFrame: View {
             duplicateName: DuplicateIn.proposedName(
                 existingLabels: store.conversations(forTodo: todo.id).compactMap(\.label)
             ),
-            onDuplicate: { tool, name in beginDuplicate(tool: tool, name: name) }
+            onDuplicate: { tool, name in beginDuplicate(tool: tool, name: name) },
+            isDuplicating: isDuplicating
         )
     }
 
@@ -765,10 +769,11 @@ struct ConversationFrame: View {
 
     private func beginDuplicate(tool: String, name: String) {
         guard !isDuplicating, let source = conversation else { return }
-        isDuplicating = true
+        withAnimation { isDuplicating = true }
         let openConfig = readyConversation?.config
         Task {
-            defer { isDuplicating = false }
+            // Off while the summary sheet is up; Start turns it back on.
+            defer { withAnimation { isDuplicating = false } }
             do {
                 let config = try openConfig ?? HostLookup.config(for: source.computer, in: hosts)
                 let transcript = try await transcriptForDuplicate(source: source, tool: tool, config: config)
@@ -795,10 +800,12 @@ struct ConversationFrame: View {
     }
 
     private func confirmSummary() {
-        guard let context = summaryContext else { return }
+        guard let context = summaryContext, !isDuplicating else { return }
         let text = summaryText
         summaryContext = nil
+        withAnimation { isDuplicating = true }
         Task {
+            defer { withAnimation { isDuplicating = false } }
             do {
                 let plan = DuplicateHandoff.plan(
                     source: context.source, destinationTool: context.tool, label: context.name,
