@@ -10,11 +10,15 @@ struct ConversationRow: View {
     let status: ConversationDisplayStatus
     /// Closing or deleting it.
     let isBusy: Bool
+    /// Marks the todo done. On the Mac a checkmark takes the age's place while the pointer is on the row.
+    var onDone: (() -> Void)?
     /// Its ⌘n in the Mac's conversation lists.
     var shortcut: Int?
 
     /// Width of the dot column; the lines under the title start after it.
     private static let dotColumn: CGFloat = 21
+
+    @State private var isHovering = false
 
     var body: some View {
         HStack(alignment: .center, spacing: DS.spacing.s) {
@@ -35,6 +39,15 @@ struct ConversationRow: View {
                     Spacer(minLength: DS.spacing.s)
                     if isBusy {
                         ProgressView().controlSize(.small)
+                    } else if isHovering, let onDone {
+                        Button(action: onDone) {
+                            Image(systemName: "checkmark.circle")
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Mark Todo Done")
+                        .accessibilityLabel("Mark Todo Done")
                     } else {
                         ConversationAgeLabel(conversation: conversation)
                     }
@@ -60,7 +73,13 @@ struct ConversationRow: View {
         }
         .padding(.vertical, DS.spacing.xs)
         .frame(minHeight: DS.rowMinHeight)
+        .onHover { isHovering = $0 }
         .accessibilityElement(children: .combine)
+        .accessibilityActions {
+            if let onDone {
+                Button("Mark Todo Done", action: onDone)
+            }
+        }
     }
 }
 

@@ -170,11 +170,12 @@ extension View {
         modifier(ConversationActionsPresenter(actions: actions, store: store, hosts: hosts))
     }
 
-    /// Swipes and context menu for a conversation row: leading Copy resume command; trailing
-    /// Delete… and, while it runs, Close.
-    func conversationRowMenu(_ conversation: Conversation, isRunning: Bool, actions: ConversationRowActions,
-                             store: TodoHubStore, hosts: [HostEntity], open: (() -> Void)?) -> some View {
-        modifier(ConversationRowMenu(conversation: conversation, isRunning: isRunning, actions: actions,
+    /// Swipes and context menu for a conversation row: leading Copy resume command and its
+    /// todo's Done; trailing Delete… and, while it runs, Close.
+    func conversationRowMenu(_ conversation: Conversation, todo: Todo?, isRunning: Bool,
+                             actions: ConversationRowActions, store: TodoHubStore, hosts: [HostEntity],
+                             open: (() -> Void)?) -> some View {
+        modifier(ConversationRowMenu(conversation: conversation, todo: todo, isRunning: isRunning, actions: actions,
                                      store: store, hosts: hosts, open: open))
     }
 
@@ -245,6 +246,7 @@ private struct ConversationActionsPresenter: ViewModifier {
 
 private struct ConversationRowMenu: ViewModifier {
     let conversation: Conversation
+    let todo: Todo?
     let isRunning: Bool
     let actions: ConversationRowActions
     let store: TodoHubStore
@@ -260,6 +262,15 @@ private struct ConversationRowMenu: ViewModifier {
                     Label("Copy Resume Command", systemImage: "doc.on.doc")
                 }
                 .tint(DS.accentSolid)
+                if let todo, !store.isOffline {
+                    Button {
+                        Task { await store.toggle(todo) }
+                    } label: {
+                        Label(todo.completed ? "Undo" : "Done",
+                              systemImage: todo.completed ? "arrow.uturn.backward" : "checkmark")
+                    }
+                    .tint(.green)
+                }
             }
             // Offline, the changing swipes are left out rather than disabled.
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -294,6 +305,15 @@ private struct ConversationRowMenu: ViewModifier {
                 MuteNotificationsButton(todoID: conversation.todoId, actions: actions)
                 // Offline, the changing items are left out, like the swipes.
                 if !store.isOffline {
+                    if let todo {
+                        Button {
+                            Task { await store.toggle(todo) }
+                        } label: {
+                            Label(todo.completed ? "Mark Todo Not Done" : "Mark Todo Done",
+                                  systemImage: todo.completed ? "arrow.uturn.backward" : "checkmark.circle")
+                        }
+                        Divider()
+                    }
                     Button {
                         actions.close(conversation, store: store, hosts: hosts)
                     } label: {
