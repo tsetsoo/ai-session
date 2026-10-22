@@ -52,17 +52,9 @@ public enum TmuxCommandBuilder {
     ///
     /// The tool is passed as a 4th argument only when it isn't `claude`: scripts installed
     /// before Codex support reject a 4th argument, and `claude` is their default anyway.
-    ///
-    /// A session that is already running attaches straight away, without the script's checks
-    /// (about 150 ms). A fresh start (`-`) always goes through the script, which replaces a
-    /// session left by a failed start.
     public static func openTodoConversation(tmuxName: String, cwd: String, sessionId: String, tool: String = "claude") -> String {
         var command = "exec \"$HOME/.ai-remote/bin/ai-todo-open\" \(shellQuote(tmuxName)) \(shellQuote(cwd)) \(shellQuote(sessionId))"
         if tool != "claude" { command += " \(shellQuote(tool))" }
-        if sessionId != "-" {
-            let target = shellQuote("=" + tmuxName)
-            command = "if tmux has-session -t \(target) 2>/dev/null; then exec tmux -u attach-session -t \(target); fi; " + command
-        }
         return wrap(command)
     }
 

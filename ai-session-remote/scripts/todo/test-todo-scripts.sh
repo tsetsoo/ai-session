@@ -121,6 +121,12 @@ sleep 0.3
 [[ $(wc -l <"$CLAUDE_LOG") -eq 1 ]] || fail "second open started claude again"
 pass "second open attaches to the running session without starting claude again"
 
+# The running-session fast path comes before the tool lookup: no claude binary needed.
+out="$(AI_TODO_CLAUDE_BIN=/nonexistent PATH=/usr/bin:/bin:"$(dirname "$(command -v tmux)")" \
+  AI_TODO_OPEN_DETACH=1 "$OPEN" "$NAME" '~/programming' "$SID")"
+[[ "$out" == attach ]] || fail "a running session should attach before the tool checks, printed '$out'"
+pass "a running session attaches before the checks a new one needs"
+
 tmux -L "$SOCK" kill-session -t "=$NAME"
 mkdir -p "${HOME}/.claude/projects/-home-programming"
 touch "${HOME}/.claude/projects/-home-programming/${SID}.jsonl"

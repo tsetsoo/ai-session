@@ -144,11 +144,13 @@ final class AppModel {
     @ObservationIgnored private var staleRetry: Task<Void, Never>?
     /// How long a failed stale listing waits before the shell asks again.
     var staleRetryDelay: Duration = .seconds(2)
-    /// Stale and single-computer results waiting to merge after the full listing that was
-    /// already in flight, oldest first.
-    @ObservationIgnored private var pendingStale: [StaleListing] = []
-    /// Full listings in flight. A stale pass does not count, so it cannot hide one.
-    @ObservationIgnored private var fullRefreshesRunning = 0
+    /// Numbers listings in the order they were asked for. Wall-clock times can tie.
+    @ObservationIgnored private var nextListingOrder = 0
+    /// computerID to the order of the listing its `liveTmux` entry came from. A listing asked
+    /// for earlier never replaces it, whichever finishes last.
+    @ObservationIgnored private var listingOrder: [String: Int] = [:]
+    /// A single-computer listing that got no answer, asked once more after `staleRetryDelay`.
+    @ObservationIgnored private var computerRetries: [String: Task<Void, Never>] = [:]
     /// One board for the current inputs. Reads in one turn return this instance.
     @ObservationIgnored private var cachedBoard: ConversationBoard?
     @ObservationIgnored private var cachedBoardInputs: BoardInputs?
@@ -319,83 +321,71 @@ final class AppModel {
         pendingOpenTodoID = todoId
     }
 
-    /// Which computers `refreshLiveness` lists. The default replaces every computer's listing.
+    /// Which computers `refreshLiveness` lists. Every scope applies its answers per computer,
+    /// and only over a listing asked for earlier (see `listingOrder`).
     enum LivenessScope: Sendable {
-        /// Every hub computer. The result replaces `liveTmux` and `listedAt`.
+        /// Every hub computer. Only the newest full pass applies; a computer that does not
+        /// answer is checked and absent.
         case full
-        /// Computers with a conversation in `board.newerThanListing`. Results merge into the
-        /// listings already held. Nothing stale: return without listing or a new generation.
-        /// A stale pass does not supersede a full pass already running; its result merges
-        /// after that full result lands.
+        /// Computers with a conversation in `board.newerThanListing`. Nothing stale: return
+        /// without listing or a new generation. A computer that does not answer keeps its
+        /// names, is not checked, and is asked again after `staleRetryDelay`.
         case stale
         /// One computer: what a selection waiting on liveness asks for, so it waits on that
-        /// computer alone, not the slowest one. The result applies at once, merges like a stale
-        /// pass, and is merged again after a full pass already in flight. A computer that does
-        /// not answer is checked and absent, as in a full pass.
+        /// computer alone, not the slowest one. One that does not answer is checked and absent,
+        /// as in a full pass, and asked once more after `staleRetryDelay`.
         case computer(String)
     }
 
-    /// One stale listing's answers, held when a full listing is still in flight.
-    private struct StaleListing {
+    /// One pass's answers. `failuresAreChecked`: a computer that did not answer counts as
+    /// listed with nothing (full, computer) rather than unchecked with its old names (stale).
+    private struct Listing {
         var result: [String: Set<String>]
         var targets: [Computer]
         var askedAt: Date
-        /// A computer that did not answer counts as checked and unlisted (`.computer`), rather
-        /// than keeping its previous listing unchecked (`.stale`).
-        var checksFailures = false
+        var order: Int
+        var failuresAreChecked: Bool
     }
 
-    /// Lists tmux sessions on hub computers, in parallel. A computer with no matching host, or
-    /// whose listing fails, is left out of a `.full` result. `.stale` writes only the computers
-    /// it listed successfully and leaves every other computer's listing in place.
+    /// Lists tmux sessions on hub computers, in parallel. A computer with no matching host
+    /// counts as one that did not answer.
     func refreshLiveness(hosts: [HostEntity], scope: LivenessScope = .full) async {
+        await refreshLiveness(hosts: hosts, scope: scope, isRetry: false)
+    }
+
+    private func refreshLiveness(hosts: [HostEntity], scope: LivenessScope, isRetry: Bool) async {
         #if DEBUG
         // Demo data never touches the network; keep the seeded statuses.
         if DemoFixtures.isEnabled && listTmuxOverride == nil { return }
         #endif
         let computers = store.computers
         let targets: [Computer]
-        let isFull: Bool
+        var isFull = false
+        var isStale = false
         switch scope {
         case .full:
             targets = computers
             isFull = true
-            // Nothing to list yet: the hub refresh has not filled computers, or no host is
-            // saved. Publishing would store an empty result and, with no hosts, stamp every
-            // computer checked. The shell task id includes both, so this runs again when they
-            // arrive. A test double may list with an empty host array.
-            if targets.isEmpty || (listTmuxOverride == nil && hosts.isEmpty) { return }
         case .stale:
             let staleIDs = Set(board.newerThanListing.map(\.computer.id))
             targets = computers.filter { staleIDs.contains($0.id) }
-            // Before any generation change: an empty stale pass must not supersede a refresh
-            // already running, and must not mark that refresh abandoned.
-            if targets.isEmpty { return }
-            isFull = false
+            isStale = true
         case let .computer(id):
             targets = computers.filter { $0.id == id }
-            // No hosts yet (SwiftData still loading): every listing would fail and count as
-            // checked. Like a full pass, wait for them; the shell lists again when they arrive.
-            if targets.isEmpty || (listTmuxOverride == nil && hosts.isEmpty) { return }
-            isFull = false
         }
-        // Only a full pass takes a generation. A stale pass must not discard one in flight.
-        if isFull {
-            livenessGeneration += 1
-            fullRefreshesRunning += 1
-        }
+        // Nothing to list, or no host saved yet (SwiftData still loading): every listing would
+        // fail and, for a full or computer pass, stamp the computers checked. The shell task id
+        // includes computers and hosts, so this runs again when they arrive. A test double may
+        // list with an empty host array. Before any generation change, so an empty pass never
+        // supersedes one in flight or marks it abandoned.
+        if targets.isEmpty { return }
+        if !isStale, listTmuxOverride == nil, hosts.isEmpty { return }
+
+        // Only a full pass takes a generation: the newest one supersedes older full passes.
+        if isFull { livenessGeneration += 1 }
         let generation = livenessGeneration
         livenessRefreshesRunning += 1
-        var wrote = false
         defer {
-            if isFull {
-                fullRefreshesRunning -= 1
-                if !wrote, fullRefreshesRunning == 0, !pendingStale.isEmpty {
-                    let pending = pendingStale
-                    pendingStale = []
-                    pending.forEach(mergeStale)
-                }
-            }
             livenessRefreshesRunning -= 1
             if livenessRefreshesRunning == 0, publishedLivenessGeneration != livenessGeneration {
                 livenessAbandoned += 1
@@ -403,81 +393,87 @@ final class AppModel {
         }
         // Anything that changed after this moment may be missing from the listing.
         let askedAt = now()
-        let listing = listTmuxOverride ?? Self.sshListing(hosts: hosts, computers: targets)
+        nextListingOrder += 1
+        let order = nextListingOrder
+        let listTmux = listTmuxOverride ?? Self.sshListing(hosts: hosts, computers: targets)
         var result: [String: Set<String>] = [:]
         await withTaskGroup(of: (String, Set<String>?).self) { group in
             for computer in targets {
-                group.addTask { (computer.id, try? await listing(computer)) }
+                group.addTask { (computer.id, try? await listTmux(computer)) }
             }
             for await (id, names) in group {
                 if let names { result[id] = names }
             }
         }
         guard !Task.isCancelled else { return }
+        if isFull {
+            guard generation == livenessGeneration else { return }
+            publishedLivenessGeneration = generation
+        }
+        apply(Listing(result: result, targets: targets, askedAt: askedAt, order: order,
+                      failuresAreChecked: !isStale))
+        if isFull {
+            // Computers the hub no longer has.
+            let ids = Set(computers.map(\.id))
+            liveTmux = liveTmux.filter { ids.contains($0.key) }
+            listedAt = listedAt.filter { ids.contains($0.key) }
+            livenessChecked = livenessChecked.filter { ids.contains($0.key) }
+            listingOrder = listingOrder.filter { ids.contains($0.key) }
+        }
+        let failed = Set(targets.lazy.filter { result[$0.id] == nil }.map(\.id))
         switch scope {
         case .full:
-            guard generation == livenessGeneration else { return }
-            liveTmux = result
-            // A computer that did not answer still has a stamp, so a conversation that
-            // starts afterwards is stale and the next pass can clear the check.
-            var listed = result.mapValues { _ in askedAt }
-            for computer in computers {
-                livenessChecked[computer.id] = askedAt
-                if listed[computer.id] == nil { listed[computer.id] = askedAt }
-            }
-            listedAt = listed
-            publishedLivenessGeneration = generation
-            wrote = true
-            let pending = pendingStale
-            pendingStale = []
-            pending.forEach(mergeStale)
+            break
         case .stale:
-            let stale = StaleListing(result: result, targets: targets, askedAt: askedAt)
-            if fullRefreshesRunning > 0 {
-                pendingStale.append(stale)
-            } else {
-                mergeStale(stale)
-            }
-            let failed = Set(targets.lazy.filter { result[$0.id] == nil }.map(\.id))
             if !failed.isEmpty { scheduleStaleRetry(failedComputers: failed) }
-        case .computer:
-            let listing = StaleListing(result: result, targets: targets, askedAt: askedAt, checksFailures: true)
-            // Now, so the selection does not wait on the full pass; and again after it, which
-            // would otherwise put its older listing back.
-            mergeStale(listing)
-            if fullRefreshesRunning > 0 { pendingStale.append(listing) }
+        case let .computer(id):
+            if failed.contains(id), !isRetry { scheduleComputerRetry(id, hosts: hosts) }
         }
     }
 
-    /// Merges a stale listing into the listings already held. A computer that did not answer
-    /// keeps its previous names.
-    private func mergeStale(_ listing: StaleListing) {
+    /// Applies a listing computer by computer, skipping any computer whose listing held was
+    /// asked for later (a pass that started after this one and finished first).
+    private func apply(_ listing: Listing) {
         var sessions = liveTmux
         var listed = listedAt
         var checked = livenessChecked
+        var orders = listingOrder
         for computer in listing.targets {
-            // Asked before the listing already held (a full pass that started later and
-            // landed first): the older answer must not put back a session that has ended.
-            if let current = listed[computer.id], current > listing.askedAt { continue }
-            guard let names = listing.result[computer.id] else {
-                if listing.checksFailures {
-                    sessions.removeValue(forKey: computer.id)
-                    listed[computer.id] = listing.askedAt
-                    checked[computer.id] = listing.askedAt
-                    continue
-                }
+            let id = computer.id
+            if let current = orders[id], current > listing.order { continue }
+            if let names = listing.result[id] {
+                sessions[id] = names
+            } else if listing.failuresAreChecked {
+                // Checked and unknown; the stamp lets a conversation that starts afterwards
+                // show as stale, so the next pass can clear it.
+                sessions.removeValue(forKey: id)
+            } else {
                 // A failed pass is not a check. Leaving the old stamp would make a conversation
                 // that started since then `.unknown` (Start) instead of waiting for the retry.
-                checked.removeValue(forKey: computer.id)
+                checked.removeValue(forKey: id)
                 continue
             }
-            sessions[computer.id] = names
-            listed[computer.id] = listing.askedAt
-            checked[computer.id] = listing.askedAt
+            listed[id] = listing.askedAt
+            checked[id] = listing.askedAt
+            orders[id] = listing.order
         }
+        listingOrder = orders
         if sessions != liveTmux { liveTmux = sessions }
         if listed != listedAt { listedAt = listed }
         if checked != livenessChecked { livenessChecked = checked }
+    }
+
+    /// A flaky link should not leave the selection on Start / Resume for `listingMaxAge`:
+    /// one more try, a moment later.
+    private func scheduleComputerRetry(_ id: String, hosts: [HostEntity]) {
+        computerRetries[id]?.cancel()
+        let delay = staleRetryDelay
+        computerRetries[id] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            self.computerRetries[id] = nil
+            await self.refreshLiveness(hosts: hosts, scope: .computer(id), isRetry: true)
+        }
     }
 
     /// Shell task identity. A pass that starts before computers or hosts exist changes this
