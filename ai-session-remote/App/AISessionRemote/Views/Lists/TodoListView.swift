@@ -144,7 +144,7 @@ struct TodoListView: View {
             } label: {
                 Label("Open", systemImage: "arrow.up.forward.app")
             }
-            MuteNotificationsButton(todoID: todo.id)
+            MuteNotificationsButton(todoID: todo.id, actions: actions)
             // Project ▸ (disabled offline or without projects).
             TodoProjectMenu(todo: todo, store: store)
             // Offline, the changing items are left out, like the swipes.

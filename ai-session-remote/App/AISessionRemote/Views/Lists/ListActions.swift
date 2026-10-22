@@ -20,6 +20,9 @@ final class ConversationRowActions {
     private(set) var inFlight: Set<String> = []
     private(set) var showingCopied = false
     private var copiedTask: Task<Void, Never>?
+    /// Just muted: the toast with Undo shows for this todo.
+    private(set) var mutedTodoID: String?
+    private var mutedTask: Task<Void, Never>?
 
     /// Ends the conversation on its computer; it stays resumable.
     func close(_ conversation: Conversation, store: TodoHubStore, hosts: [HostEntity]) {
@@ -42,6 +45,29 @@ final class ConversationRowActions {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard !Task.isCancelled else { return }
             withAnimation { showingCopied = false }
+        }
+    }
+
+    /// Mutes (or, from the toast's Undo, unmutes) a todo's notifications on the hub. Success
+    /// shows the Muted toast; a failure the alert.
+    func setMuted(todoID: String, _ muted: Bool) {
+        mutedTask?.cancel()
+        withAnimation { mutedTodoID = nil }
+        Task {
+            do {
+                try await NotificationCenterCoordinator.shared.setMuted(todoId: todoID, muted)
+            } catch {
+                failure = Failure(title: muted ? "Couldn't Mute Notifications" : "Couldn't Unmute Notifications",
+                                  message: TodoHubStore.message(for: error))
+                return
+            }
+            guard muted else { return }
+            withAnimation { mutedTodoID = todoID }
+            mutedTask = Task {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation { mutedTodoID = nil }
+            }
         }
     }
 
@@ -209,6 +235,9 @@ private struct ConversationActionsPresenter: ViewModifier {
             .overlay(alignment: .top) {
                 if actions.showingCopied {
                     CopiedToast().transition(.opacity)
+                } else if let todoID = actions.mutedTodoID {
+                    MutedToast { actions.setMuted(todoID: todoID, false) }
+                        .transition(.opacity)
                 }
             }
     }
@@ -262,7 +291,7 @@ private struct ConversationRowMenu: ViewModifier {
                 } label: {
                     Label("Copy Resume Command", systemImage: "doc.on.doc")
                 }
-                MuteNotificationsButton(todoID: conversation.todoId)
+                MuteNotificationsButton(todoID: conversation.todoId, actions: actions)
                 // Offline, the changing items are left out, like the swipes.
                 if !store.isOffline {
                     Button {
@@ -282,22 +311,44 @@ private struct ConversationRowMenu: ViewModifier {
 }
 
 /// "Mute Notifications" for a todo's alerts (stored on the todo server, so every device stays
-/// quiet). There is no Unmute here: the coordinator doesn't expose the muted state; mutes are
-/// listed and lifted in Settings → Notifications. Shown while notifications are on.
+/// quiet). There is no Unmute item: the coordinator doesn't expose the muted state. The
+/// "Muted" toast offers Undo, and mutes are listed and lifted in Settings → Notifications.
+/// Shown while notifications are on.
 struct MuteNotificationsButton: View {
     let todoID: String
+    /// Shows the Muted toast or the failure.
+    let actions: ConversationRowActions
 
     @AppStorage(NotificationCenterCoordinator.enabledKey) private var notificationsOn = false
 
     var body: some View {
         if notificationsOn {
             Button {
-                // The coordinator reports its own failures; there is nothing to show here.
-                Task { try? await NotificationCenterCoordinator.shared.setMuted(todoId: todoID, true) }
+                actions.setMuted(todoID: todoID, true)
             } label: {
                 Label("Mute Notifications", systemImage: "bell.slash")
             }
         }
+    }
+}
+
+/// "Notifications muted" with Undo, after Mute Notifications, styled like `CopiedToast`.
+private struct MutedToast: View {
+    let undo: () -> Void
+
+    var body: some View {
+        HStack(spacing: DS.spacing.m) {
+            Label("Notifications muted", systemImage: "bell.slash")
+                .font(.callout.weight(.semibold))
+            Button("Undo", action: undo)
+                .buttonStyle(.borderless)
+                .font(.callout.weight(.semibold))
+                .tint(DS.accent)
+        }
+        .padding(.horizontal, DS.spacing.l)
+        .padding(.vertical, DS.spacing.s)
+        .background(.regularMaterial, in: Capsule())
+        .padding(.top, DS.spacing.m)
     }
 }
 
