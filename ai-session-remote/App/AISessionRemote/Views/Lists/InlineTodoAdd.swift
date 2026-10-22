@@ -102,6 +102,7 @@ struct InlineTodoAdd: View {
             }
         }
         .disabled(store.isOffline)
+        .focusedValue(\.isEditingTodoText, isExpanded ? true : nil)
         .onAppear {
             isShown = true
             pickDefaultProject()

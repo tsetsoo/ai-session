@@ -30,6 +30,8 @@ struct SelectedTodoCommands {
 extension FocusedValues {
     @Entry var shellCommands: ShellCommands?
     @Entry var selectedTodoCommands: SelectedTodoCommands?
+    /// Set while an add-todo form inside the list has focus, so ⌘⏎ / ⌘⌫ edit its text.
+    @Entry var isEditingTodoText: Bool?
 }
 
 /// Conversation ▸ Go to… (⌘K), New Todo (⌘N), the selected todo's Mark as Done (⌘⏎) and
@@ -38,6 +40,7 @@ extension FocusedValues {
 struct ShellCommandItems: View {
     @FocusedValue(\.shellCommands) private var shell
     @FocusedValue(\.selectedTodoCommands) private var selectedTodo
+    @FocusedValue(\.isEditingTodoText) private var isEditingText
 
     var body: some View {
         Button("Go to…") { shell?.goTo() }
@@ -49,10 +52,10 @@ struct ShellCommandItems: View {
         Divider()
         Button(selectedTodo?.isDone == true ? "Mark as Not Done" : "Mark as Done") { selectedTodo?.toggleDone() }
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(selectedTodo == nil)
+            .disabled(selectedTodo == nil || isEditingText == true)
         Button("Delete Todo…") { selectedTodo?.delete() }
             .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(selectedTodo == nil)
+            .disabled(selectedTodo == nil || isEditingText == true)
         Divider()
         let titles = shell?.conversationTitles ?? []
         ForEach(1...9, id: \.self) { n in
