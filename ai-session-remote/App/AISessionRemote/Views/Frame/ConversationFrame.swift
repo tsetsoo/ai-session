@@ -49,6 +49,7 @@ struct ConversationFrame: View {
     @State private var showingCopied = false
     @State private var copiedTask: Task<Void, Never>?
     @State private var showingDeleteConfirmation = false
+    @State private var showingCloseConfirmation = false
     @State private var failure: ActionFailure?
     @State private var sheet: FrameSheet?
     @State private var showingMemories = false
@@ -192,6 +193,19 @@ struct ConversationFrame: View {
             if let conversation {
                 Text(conversation.deleteConfirmationMessage)
             }
+        }
+        .confirmationDialog(
+            "\(RowText.toolName(conversation?.tool ?? "claude")) is still working. Close anyway?",
+            isPresented: Binding(
+                get: { isFrontmost && showingCloseConfirmation },
+                set: { if !$0 { showingCloseConfirmation = false } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Close Conversation", role: .destructive) { closeConversationNow() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Closing stops it where it is. You can resume the conversation later.")
         }
         .alert(
             failure?.title ?? "",
@@ -720,8 +734,18 @@ struct ConversationFrame: View {
         }
     }
 
-    /// Ends tmux and keeps the conversation resumable (the old "Kill Session").
+    /// Close from the menu or the column toolbar: asks first while the tool is still working,
+    /// since closing stops it mid-task.
     private func closeConversation() {
+        if conversation?.status == .busy {
+            showingCloseConfirmation = true
+        } else {
+            closeConversationNow()
+        }
+    }
+
+    /// Ends tmux and keeps the conversation resumable (the old "Kill Session").
+    private func closeConversationNow() {
         perform("Couldn't Close Conversation") { conversation, config in
             try await store.closeConversation(conversation, config: config)
             loader.reset()
