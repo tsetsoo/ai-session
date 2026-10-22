@@ -1012,7 +1012,7 @@ struct ConversationDetail: View {
         let readiness = model.attachReadiness(forTodo: todo.id)
         let poppedOut = !isWindow && model.poppedOut.contains(todo.id)
         TodoConversationScreen(
-            todo: todo, store: model.store, onAppear: .onRequest, request: $request,
+            todo: todo, store: model.store, request: $request,
             placeholder: placeholder(readiness: readiness, poppedOut: poppedOut),
             isSuspended: poppedOut, isFrontmost: isFrontmost, sharesColumn: sharesColumn,
             toolbarRequest: toolbarRequest, onPopOut: popOutAction, onDeleted: onDeleted

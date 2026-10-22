@@ -19,21 +19,12 @@ struct FrameRequest: Equatable {
     let id = UUID()
 }
 
-/// The conversation frame for a todo.
-///
-/// - `.start`: a tap on iPhone is an explicit open, so the loader starts (or resumes) the
-///   conversation as soon as the frame appears.
-/// - `.onRequest`: a selection on the Mac never starts anything. The shell's
-///   `SelectionAttacher` sends `.attach` for a running conversation, and ⏎ or a double-click
-///   sends `.start`; until then the frame shows Start / Resume.
+/// The conversation frame for a todo. Showing it never starts anything. The shell's
+/// `SelectionAttacher` sends `.attach` for a running conversation, and ⏎, a double-click or the
+/// frame's own button starts one; until then the frame shows Start / Resume.
 struct TodoConversationScreen: View {
-    enum OnAppear {
-        case start, onRequest
-    }
-
     let todo: Todo
     let store: TodoHubStore
-    let onAppear: OnAppear
     @Binding var request: FrameRequest?
     /// Drawn in the terminal area instead of the loader's state (see `FramePlaceholder`).
     let placeholder: FramePlaceholder?
@@ -56,17 +47,13 @@ struct TodoConversationScreen: View {
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var hostList: HostList
     @State private var loader: ConversationLoader
-    /// The `.start` open happens once per screen: coming back to it (another tab and back)
-    /// after Close must not resume the conversation by itself.
-    @State private var didOpen = false
 
-    init(todo: Todo, store: TodoHubStore, onAppear: OnAppear = .start, request: Binding<FrameRequest?> = .constant(nil),
+    init(todo: Todo, store: TodoHubStore, request: Binding<FrameRequest?> = .constant(nil),
          placeholder: FramePlaceholder? = nil, isSuspended: Bool = false, isFrontmost: Bool = true,
          sharesColumn: Bool = false, toolbarRequest: Binding<ConversationToolbarRequest?> = .constant(nil),
          onPopOut: (() -> Void)? = nil, onDeleted: @escaping () -> Void) {
         self.todo = todo
         self.store = store
-        self.onAppear = onAppear
         _request = request
         self.placeholder = placeholder
         self.isSuspended = isSuspended
@@ -98,17 +85,7 @@ struct TodoConversationScreen: View {
                 // The pop-out window attaches on its own; don't stay attached here too.
                 if suspended { loader.reset() }
             }
-            .task {
-                hostList.hosts = hosts
-                guard onAppear == .start, !didOpen, loader.phase == .idle else { return }
-                didOpen = true
-                // A first conversation waits on the tool step. One that exists resumes.
-                if let shown, shown.status != .closed, ConversationStart.hasStartedSession(shown.sessionId) {
-                    loader.show(shown)
-                } else {
-                    await loader.start()
-                }
-            }
+            .task { hostList.hosts = hosts }
     }
 
     private func handle(_ request: FrameRequest?) {

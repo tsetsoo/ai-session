@@ -6,7 +6,8 @@ import SwiftUI
 /// The iPhone app: Todos, Conversations (badged with the Needs-you count), Projects and
 /// Computers tabs.
 /// Each tab is its own navigation stack with a large title and ⚙ for Settings; opening a todo
-/// pushes its conversation full screen, without the tab bar.
+/// pushes its conversation full screen, without the tab bar. Opening never starts the agent: a
+/// running conversation attaches, anything else shows Start / Resume.
 ///
 /// On iPad in compact width the open conversation is kept in `AppModel.selectedTodoID`, so it
 /// survives the swap to and from `MacShell` (see `reopenSelection`).
@@ -16,18 +17,16 @@ struct PhoneShell: View {
     }
 
     enum Route: Hashable {
-        /// Opened by a tap: starts (or resumes) the conversation.
+        /// A todo's conversation, from a tap, a notification, or the Mac layout's selection
+        /// pushed again after an iPad shell swap. It attaches only if the conversation runs,
+        /// like a selection on the Mac.
         case todo(String)
         case computer(String)
         case project(String)
-        /// Shown without starting anything: a notification tap, or the Mac layout's selection
-        /// pushed again after an iPad shell swap. It attaches only if the conversation runs,
-        /// like a selection on the Mac.
-        case reopened(String)
 
         var todoID: String? {
             switch self {
-            case let .todo(id), let .reopened(id): id
+            case let .todo(id): id
             case .computer, .project: nil
             }
         }
@@ -52,8 +51,8 @@ struct PhoneShell: View {
     @State private var settings: SettingsRequest?
     @State private var showingAdd = false
     @State private var showingNewFromConversation = false
-    /// `.attach` / `.detach` for a re-opened conversation's frame.
-    @State private var reopenRequest: FrameRequest?
+    /// `.attach` / `.detach` for the open conversation's frame.
+    @State private var frameRequest: FrameRequest?
 
     init() {
         #if DEBUG
@@ -259,16 +258,7 @@ struct PhoneShell: View {
         switch route {
         case let .todo(id):
             if let todo = store.todos.first(where: { $0.id == id }) {
-                TodoConversationScreen(todo: todo, store: store) {
-                    if path.wrappedValue.last == route { path.wrappedValue.removeLast() }
-                }
-                .toolbar(.hidden, for: .tabBar)
-            } else {
-                ContentUnavailableView("Todo Not Found", systemImage: "checklist")
-            }
-        case let .reopened(id):
-            if let todo = store.todos.first(where: { $0.id == id }) {
-                ConversationDetail(todo: todo, request: $reopenRequest) {
+                ConversationDetail(todo: todo, request: $frameRequest) {
                     if path.wrappedValue.last == route { path.wrappedValue.removeLast() }
                 }
                 .toolbar(.hidden, for: .tabBar)
@@ -291,7 +281,7 @@ struct PhoneShell: View {
     private func openFromNotification(_ todoID: String) {
         model.selectedConversationID = store.conversationToOpen(forTodo: todoID)
         tab = .conversations
-        conversationsPath = [.reopened(todoID)]
+        conversationsPath = [.todo(todoID)]
     }
 
     private var currentPath: Binding<[Route]> {
@@ -314,7 +304,7 @@ struct PhoneShell: View {
         guard let id = model.selectedTodoID, store.todos.contains(where: { $0.id == id }) else { return }
         let paths = todosPath + conversationsPath + projectsPath + computersPath
         guard !paths.contains(where: { $0.todoID == id }) else { return }
-        currentPath.wrappedValue.append(.reopened(id))
+        currentPath.wrappedValue.append(.todo(id))
     }
 
     private func openSettings(_ destination: SettingsDestination?) {

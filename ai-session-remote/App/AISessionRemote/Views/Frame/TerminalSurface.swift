@@ -186,7 +186,7 @@ private struct TerminalContainerView: UIViewRepresentable {
     let hitTarget: TerminalHitTarget
 
     func makeUIView(context: Context) -> TerminalView {
-        let view = TerminalView(frame: .zero)
+        let view = TouchScrollTerminalView(frame: .zero)
         // The surface docks `KeyBar` instead of SwiftTerm's `TerminalAccessory`.
         view.inputAccessoryView = UIView(frame: .zero)
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)

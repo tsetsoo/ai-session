@@ -155,6 +155,7 @@
 		AFF4FF50C69178BB03C5D2EF /* NotificationCenterCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0A9E0E59778D9C468219BE9 /* NotificationCenterCoordinator.swift */; };
 		B065DED24584AB689477A1B6 /* TerminalAppearanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C976B2DC40D400F315259C2 /* TerminalAppearanceTests.swift */; };
 		B06BE65B10FD125FE3054794 /* ListSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD8D8139CC242C8EF215944D /* ListSelection.swift */; };
+		B1B5A447412A719EDF8D2062 /* TerminalTouchScrollTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5450C6574280A263EC927973 /* TerminalTouchScrollTests.swift */; };
 		B237D24CFC72D28C46A01325 /* TodoHubDemo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18F3BE4EBA6E99E52AEE6296 /* TodoHubDemo.swift */; };
 		B40E160F6297F0A83546AA38 /* AddTodoSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FAAD07AAEDF8D67ADBBFBF4 /* AddTodoSheet.swift */; };
 		B45B06C6BEC4E0C3B674028A /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3869B11228A2EA6745FCCEF8 /* NIOCore */; };
@@ -169,6 +170,7 @@
 		BF9A18AF476748AE63B0CF5E /* OnThisComputerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24947A77BA8C57130367110F /* OnThisComputerView.swift */; };
 		C0151AA649300EAE1F217F82 /* TerminalTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D417529F6E6B990D79BF81 /* TerminalTransport.swift */; };
 		C02C522D95113D7D02F16C02 /* MemoriesPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2036F3717F8C775B947A95B7 /* MemoriesPresenter.swift */; };
+		C2817944F540E70FE9ED31DC /* TerminalTouchScroll.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8109AAC4A1B7917319AEF41 /* TerminalTouchScroll.swift */; };
 		C309A65A9D1C5AEB7DBB5E3C /* ServerNotConfiguredView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E866E5BC5F0042AF39A45482 /* ServerNotConfiguredView.swift */; };
 		C3862529F62ECE24818A8973 /* SelectionDebounceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6853D306579AF19D0E50F568 /* SelectionDebounceTests.swift */; };
 		C449746AA3C87B38E0DCAF93 /* PooledConnecting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC825CDD2BB9FFA73CAFDE4 /* PooledConnecting.swift */; };
@@ -195,6 +197,7 @@
 		DEC7BB251D56E61ACCB79C2D /* SSHConnectionPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */; };
 		E174CD3627AEC66039734C6F /* OnThisComputerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24947A77BA8C57130367110F /* OnThisComputerView.swift */; };
 		E2A339E52CAD6A60C4906591 /* KeyBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4968C45BBA0F9D47DF734624 /* KeyBar.swift */; };
+		E30135A31D76EA65403E80C2 /* TerminalTouchScroll.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8109AAC4A1B7917319AEF41 /* TerminalTouchScroll.swift */; };
 		E4427251E3B62EF3BC42901D /* TerminalResizeDebouncer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229A4FF6F8B0899EA6FEF4D9 /* TerminalResizeDebouncer.swift */; };
 		E51413F4AD580EB8F2245E62 /* TerminalOutputCoalescer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7B4DE59A842C29732755FED /* TerminalOutputCoalescer.swift */; };
 		E66F716710375D2CAED0DD14 /* PooledSSHConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFFA46BBF4C8FFC2CCE6EE1B /* PooledSSHConnection.swift */; };
@@ -268,6 +271,7 @@
 		45685B58CE2C40C0BCC9C856 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4968C45BBA0F9D47DF734624 /* KeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBar.swift; sourceTree = "<group>"; };
 		53D5D88DD06CE9F165F49EF2 /* TerminalClipboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalClipboard.swift; sourceTree = "<group>"; };
+		5450C6574280A263EC927973 /* TerminalTouchScrollTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTouchScrollTests.swift; sourceTree = "<group>"; };
 		555A99A04217936E4F1645AD /* ConversationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListView.swift; sourceTree = "<group>"; };
 		5AEEFD06D4BF1BB591C6A637 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationLinkViews.swift; sourceTree = "<group>"; };
@@ -316,6 +320,7 @@
 		B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostProvisioning.swift; sourceTree = "<group>"; };
 		B24103E63B65EE5783B9E334 /* RemoteConversations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteConversations.swift; sourceTree = "<group>"; };
 		B7904F574B3A5E7AE10B093F /* PhoneShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneShell.swift; sourceTree = "<group>"; };
+		B8109AAC4A1B7917319AEF41 /* TerminalTouchScroll.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTouchScroll.swift; sourceTree = "<group>"; };
 		BA54D98ADC3ACCD267883621 /* DemoFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoFixtures.swift; sourceTree = "<group>"; };
 		BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
 		BB775BB4D3645609923CB4D6 /* PlatformSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformSupport.swift; sourceTree = "<group>"; };
@@ -572,6 +577,7 @@
 				F7B4DE59A842C29732755FED /* TerminalOutputCoalescer.swift */,
 				229A4FF6F8B0899EA6FEF4D9 /* TerminalResizeDebouncer.swift */,
 				BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */,
+				B8109AAC4A1B7917319AEF41 /* TerminalTouchScroll.swift */,
 				97D417529F6E6B990D79BF81 /* TerminalTransport.swift */,
 			);
 			path = Terminal;
@@ -598,6 +604,7 @@
 				A96BCB7E12B43FC54FCD91FC /* TerminalOutputCoalescerTests.swift */,
 				CA8B20C587DEA3DCF7492AD7 /* TerminalReconnectTests.swift */,
 				45650CE5B948BA331E385B8B /* TerminalResizeDebouncerTests.swift */,
+				5450C6574280A263EC927973 /* TerminalTouchScrollTests.swift */,
 				EB3E3B07720B67742A9A99D8 /* TextSizeShortcutsTests.swift */,
 				E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */,
 				BDECEE903A5E03F5371FB37C /* VisiblePresenceTests.swift */,
@@ -905,6 +912,7 @@
 				E4427251E3B62EF3BC42901D /* TerminalResizeDebouncer.swift in Sources */,
 				6053A3AC11C84A1C10F6BEE5 /* TerminalScreen.swift in Sources */,
 				8F9C341A59A0AB1A941D3C38 /* TerminalSurface.swift in Sources */,
+				E30135A31D76EA65403E80C2 /* TerminalTouchScroll.swift in Sources */,
 				E7BD92818C64611AE62AA149 /* TerminalTransport.swift in Sources */,
 				AC785614765ABD46B73D4229 /* TextSizeShortcuts.swift in Sources */,
 				A698ABD1647F3AEBF7A07835 /* TodoConversationScreen.swift in Sources */,
@@ -1001,6 +1009,7 @@
 				3F7506AD3A89B8ED43E6DEBB /* TerminalResizeDebouncer.swift in Sources */,
 				8A20DDF3FA5A04B21689A987 /* TerminalScreen.swift in Sources */,
 				2E522C088AFAA44BA3CFE3CC /* TerminalSurface.swift in Sources */,
+				C2817944F540E70FE9ED31DC /* TerminalTouchScroll.swift in Sources */,
 				C0151AA649300EAE1F217F82 /* TerminalTransport.swift in Sources */,
 				9D79BDF6D1B42D68B1077EFD /* TextSizeShortcuts.swift in Sources */,
 				9CD0C05A23D6CB68416A536A /* TodoConversationScreen.swift in Sources */,
@@ -1040,6 +1049,7 @@
 				CE4FB9B633322B8B1FC642DB /* TerminalOutputCoalescerTests.swift in Sources */,
 				1A857ECC035AA702F05AE617 /* TerminalReconnectTests.swift in Sources */,
 				F3FBF7D8557E8B4852C6EF47 /* TerminalResizeDebouncerTests.swift in Sources */,
+				B1B5A447412A719EDF8D2062 /* TerminalTouchScrollTests.swift in Sources */,
 				011E0983CD76CF63F6989F28 /* TextSizeShortcutsTests.swift in Sources */,
 				7C3A539C3130EFED602DDF5E /* VisiblePresenceTests.swift in Sources */,
 			);
