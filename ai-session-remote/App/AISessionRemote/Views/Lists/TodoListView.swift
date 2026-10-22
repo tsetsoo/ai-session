@@ -17,6 +17,8 @@ struct TodoListView: View {
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var actions = ConversationRowActions()
     @State private var linkTarget: Todo?
+    /// Delete Todo… asks first.
+    @State private var deleteTarget: Todo?
 
     init(sections: [TodoSection], query: String = "", selection: Binding<String?>? = nil,
          quickAddSection: TodoSection? = nil, onOpen: @escaping (Todo) -> Void) {
@@ -43,6 +45,7 @@ struct TodoListView: View {
         .sheet(item: $linkTarget) { todo in
             LinkConversationSheet(todo: todo, store: store)
         }
+        .todoDeleteConfirmation($deleteTarget, store: store)
     }
 
     private func sectionView(_ section: TodoSection, board: ConversationBoard) -> some View {
@@ -108,11 +111,13 @@ struct TodoListView: View {
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if canChange {
-                Button(role: .destructive) {
-                    Task { await store.delete(todo) }
+                // Not `.destructive`: that role animates the row away before the confirmation.
+                Button {
+                    deleteTarget = todo
                 } label: {
-                    Label("Delete", systemImage: "trash")
+                    Label("Delete…", systemImage: "trash")
                 }
+                .tint(.red)
                 if let conversation, isRunning {
                     Button {
                         actions.close(conversation, store: store, hosts: hosts)
@@ -141,6 +146,12 @@ struct TodoListView: View {
             TodoProjectMenu(todo: todo, store: store)
             // Offline, the changing items are left out, like the swipes.
             if canChange {
+                Button {
+                    toggle(todo)
+                } label: {
+                    Label(todo.completed ? "Mark as Not Done" : "Mark as Done",
+                          systemImage: todo.completed ? "arrow.uturn.backward" : "checkmark")
+                }
                 if let conversation {
                     Button {
                         actions.close(conversation, store: store, hosts: hosts)
@@ -162,9 +173,9 @@ struct TodoListView: View {
                 }
                 Divider()
                 Button(role: .destructive) {
-                    Task { await store.delete(todo) }
+                    deleteTarget = todo
                 } label: {
-                    Label("Delete Todo", systemImage: "trash")
+                    Label("Delete Todo…", systemImage: "trash")
                 }
             }
         }

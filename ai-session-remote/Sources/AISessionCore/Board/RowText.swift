@@ -12,6 +12,20 @@ public enum RowText {
         return parts.isEmpty ? "No open conversations" : parts.joined(separator: " · ")
     }
 
+    /// The todo delete confirmation's message. The hub deletes a todo's conversations with it,
+    /// but nothing on the computers: a session still open there keeps running.
+    public static func todoDeleteMessage(conversations: [Conversation]) -> String {
+        guard !conversations.isEmpty else { return "This can't be undone." }
+        let removed = conversations.count == 1 ? "Its conversation is removed with it." : "Its \(conversations.count) conversations are removed with it."
+        var computers: [String] = []
+        for conversation in conversations where conversation.status != .closed
+            && !computers.contains(conversation.computer.name) {
+            computers.append(conversation.computer.name)
+        }
+        guard !computers.isEmpty else { return "\(removed) This can't be undone." }
+        return "\(removed) A session still open on \(computers.joined(separator: " or ")) keeps running there. This can't be undone."
+    }
+
     public static func toolName(_ tool: String) -> String {
         switch tool {
         case "claude": return "Claude"

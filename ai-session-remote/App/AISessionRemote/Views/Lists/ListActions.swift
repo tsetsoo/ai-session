@@ -121,6 +121,24 @@ extension View {
         }
     }
 
+    /// "Delete “title”?" before `target` goes. Set the binding to ask; failures go to the
+    /// store's Todos alert like other todo changes.
+    func todoDeleteConfirmation(_ target: Binding<Todo?>, store: TodoHubStore) -> some View {
+        confirmationDialog(
+            target.wrappedValue.map { "Delete “\($0.title)”?" } ?? "",
+            isPresented: Binding(get: { target.wrappedValue != nil }, set: { if !$0 { target.wrappedValue = nil } }),
+            titleVisibility: .visible,
+            presenting: target.wrappedValue
+        ) { todo in
+            Button("Delete Todo", role: .destructive) {
+                Task { await store.delete(todo) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { todo in
+            Text(RowText.todoDeleteMessage(conversations: store.conversations(forTodo: todo.id)))
+        }
+    }
+
     /// The delete confirmation, failure alert and Copied toast for `actions`.
     func conversationActions(_ actions: ConversationRowActions, store: TodoHubStore, hosts: [HostEntity]) -> some View {
         modifier(ConversationActionsPresenter(actions: actions, store: store, hosts: hosts))
