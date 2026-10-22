@@ -57,6 +57,9 @@ struct TodoListView: View {
                 Text("No results for “\(query)” in \(section.rawValue)")
                     .foregroundStyle(.secondary)
                     .frame(minHeight: DS.rowMinHeight)
+            } else if todos.isEmpty && !store.hasLoadedOnce {
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight)
             } else if todos.isEmpty {
                 Text("No todos in \(section.rawValue)")
                     .foregroundStyle(.secondary)

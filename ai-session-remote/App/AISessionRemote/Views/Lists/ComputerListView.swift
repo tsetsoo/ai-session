@@ -24,7 +24,10 @@ struct ComputerListView: View {
         List {
             ListStatusBanner(store: store)
             Section {
-                if store.computers.isEmpty {
+                if store.computers.isEmpty && !store.hasLoadedOnce {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight)
+                } else if store.computers.isEmpty {
                     Text("No computers yet. Add one in Settings.")
                         .foregroundStyle(.secondary)
                 }

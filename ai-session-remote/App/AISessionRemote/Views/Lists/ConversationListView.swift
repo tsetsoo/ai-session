@@ -72,7 +72,11 @@ struct ConversationListView: View {
             }
             if conversations.isEmpty {
                 Section {
-                    if filtered.isEmpty {
+                    if filtered.isEmpty && !store.hasLoadedOnce {
+                        // Before the first sync "Nothing needs you" would be a guess.
+                        ProgressView()
+                            .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight)
+                    } else if filtered.isEmpty {
                         emptyState
                     } else {
                         ContentUnavailableView.search(text: query)
