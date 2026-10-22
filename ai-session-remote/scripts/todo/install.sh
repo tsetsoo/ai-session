@@ -7,6 +7,7 @@
 #   ~/.ai-remote/bin/ai-todo-limits    5h / weekly / monthly usage for the chat's tool on this computer
 #   ~/.ai-remote/bin/ai-todo-codex-notify  Codex `notify` program reporting idle
 #   ~/.ai-remote/bin/ai-todo-memory  memory extraction, stats push and digests (+ ai_todo_redact.py)
+#   ~/.ai-remote/bin/ai-todo-transcript  one conversation's text, read when duplicating it into another tool
 #   ~/.ai-remote/memory-state/       ai-todo-memory's offsets, caches and log (mode 700)
 #   ~/.ai-remote/todo-hub.conf       todo-server URL, API token, computer id (mode 600)
 #   ~/.ai-remote/tmux.conf           tmux settings, sourced from ~/.tmux.conf
@@ -33,6 +34,9 @@ AI_DIR="${HOME}/.ai-remote"
 BIN_DIR="${AI_DIR}/bin"
 HUB_CONF="${AI_DIR}/todo-hub.conf"
 TMUX_SNIPPET="${AI_DIR}/tmux.conf"
+# Every helper copied to BIN_DIR, for install and uninstall alike. Programs are 755, modules 644.
+HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript)
+MODULES=(ai_todo_redact.py)
 TMUX_CONF="${HOME}/.tmux.conf"
 SETTINGS="${HOME}/.claude/settings.json"
 SOURCE_LINE='source-file -q ~/.ai-remote/tmux.conf'
@@ -412,14 +416,9 @@ remove_launch_agent() {
 
 do_install() {
   run mkdir -p "$BIN_DIR"
-  run install -m 755 "${SRC_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-open"
-  run install -m 755 "${SRC_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-hook"
-  run install -m 755 "${SRC_DIR}/ai-todo-sessions" "${BIN_DIR}/ai-todo-sessions"
-  run install -m 755 "${SRC_DIR}/ai-todo-limits" "${BIN_DIR}/ai-todo-limits"
-  run install -m 755 "${SRC_DIR}/ai-todo-codex-notify" "${BIN_DIR}/ai-todo-codex-notify"
-  run install -m 755 "${SRC_DIR}/ai-todo-memory" "${BIN_DIR}/ai-todo-memory"
-  run install -m 755 "${SRC_DIR}/ai-todo-transcript" "${BIN_DIR}/ai-todo-transcript"
-  run install -m 644 "${SRC_DIR}/ai_todo_redact.py" "${BIN_DIR}/ai_todo_redact.py"
+  local file
+  for file in "${HELPERS[@]}"; do run install -m 755 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
+  for file in "${MODULES[@]}"; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   run install -m 644 "${SRC_DIR}/tmux.conf" "$TMUX_SNIPPET"
   say "scripts: installed to ${BIN_DIR}"
   run mkdir -p "$STATE_DIR"
@@ -463,10 +462,9 @@ do_uninstall() {
   # Put Codex's own notify back before its program disappears.
   merge_codex_notify uninstall
 
-  run rm -f "${BIN_DIR}/ai-todo-open" "${BIN_DIR}/ai-todo-hook" "${BIN_DIR}/ai-todo-sessions" \
-    "${BIN_DIR}/ai-todo-limits" "${BIN_DIR}/ai-todo-codex-notify" "${BIN_DIR}/ai-todo-memory" \
-    "${BIN_DIR}/ai-todo-transcript" \
-    "${BIN_DIR}/ai_todo_redact.py" "$TMUX_SNIPPET"
+  local file installed=()
+  for file in "${HELPERS[@]}" "${MODULES[@]}"; do installed+=("${BIN_DIR}/${file}"); done
+  run rm -f "${installed[@]}" "$TMUX_SNIPPET"
   say "scripts: removed"
   # Per-session state kept by the hooks.
   run rm -rf "${AI_DIR}/hook-state"

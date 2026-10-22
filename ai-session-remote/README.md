@@ -114,6 +114,9 @@ The installer is safe to re-run. It sets up:
 - `~/.ai-remote/bin/ai-todo-limits --tool claude|codex|cursor [--session ID]`: the limits for that
   tool's login on this computer. The chat shows a 5-hour, weekly, or monthly figure only when
   that login has one. Tokens stay on the computer; the script prints percents and reset times.
+- `~/.ai-remote/bin/ai-todo-transcript <claude|codex|cursor> <id>`: one conversation's user and
+  assistant text, read when you duplicate it into another tool. It does not call a model. Exit 94
+  when the conversation has no transcript on this computer, or one with no text.
 - `~/.ai-remote/bin/ai-todo-hook`: Claude Code hooks merged into `~/.claude/settings.json`.
   `UserPromptSubmit` posts `busy`, `Notification` posts `waiting`, and `Stop` posts `idle` to
   `POST /api/conversations/status`. Only sessions named `ai/claude/todo-*` report.

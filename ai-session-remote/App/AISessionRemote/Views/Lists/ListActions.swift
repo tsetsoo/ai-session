@@ -72,6 +72,7 @@ final class ConversationRowActions {
         }
         if error is HostLookup.Failure { return setUp }
         if error is RemoteConversations.ScriptMissing { return "\(name) needs the AI Session helpers." }
+        if error is RemoteConversations.NoTranscript { return "This conversation has no transcript on \(name)." }
         if error is RemoteConversations.UnreadableList { return "Couldn't read the conversations on \(name)." }
         switch error as? SSHRemoteError {
         case .unreachable?:

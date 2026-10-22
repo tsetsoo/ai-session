@@ -58,23 +58,37 @@ public enum TmuxCommandBuilder {
         return wrap(command)
     }
 
-    /// Prints one conversation's user and assistant text. Exit 94 when it has no transcript.
+    /// Prints one conversation's user and assistant text. Exit 94 when it has no transcript or no
+    /// text, 127 when the helper isn't installed, 90 when `python3` isn't (stderr names it).
     public static func conversationTranscript(tool: String, sessionId: String) -> String {
-        wrap("\"$HOME/.ai-remote/bin/ai-todo-transcript\" \(shellQuote(tool)) \(shellQuote(sessionId))")
+        wrap(transcriptHelperCheck + "exec \"$helper\" \(shellQuote(tool)) \(shellQuote(sessionId))")
     }
 
-    /// A new `claude -p` over that transcript. It is not the source session.
+    /// A new `claude -p` over that transcript. It is not the source session. The transcript is
+    /// read first, so a missing or empty one stops here with its own exit code instead of
+    /// `claude` summarizing only the instruction. Exit 90 when `claude` isn't installed.
     public static func summarizeConversation(tool: String, sessionId: String) -> String {
-        let transcript = "\"$HOME/.ai-remote/bin/ai-todo-transcript\" \(shellQuote(tool)) \(shellQuote(sessionId))"
         let instruction = shellQuote(
             "Summarize this conversation so another tool can continue it. Keep decisions, file paths, and the current task."
         )
         return wrap(
-            "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
-                + "{ printf '%s\\n\\n' \(instruction); \(transcript); } | "
+            transcriptHelperCheck
+                + "command -v claude >/dev/null 2>&1 || { echo 'claude not found' >&2; exit 90; }\n"
+                + "transcript=$(\"$helper\" \(shellQuote(tool)) \(shellQuote(sessionId))) || exit $?\n"
+                + "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT\n"
+                + "printf '%s\\n\\n%s\\n' \(instruction) \"$transcript\" | "
                 + "claude -p --no-session-persistence --tools \"\" --strict-mcp-config --setting-sources \"\""
         )
     }
+
+    /// Sets `helper` to `ai-todo-transcript`, or exits 127 when it isn't installed and 90 when the
+    /// `python3` it runs on isn't, so neither reads as the other.
+    private static let transcriptHelperCheck = """
+        helper="$HOME/.ai-remote/bin/ai-todo-transcript"
+        [ -x "$helper" ] || { echo 'ai-todo-transcript not installed' >&2; exit 127; }
+        command -v python3 >/dev/null 2>&1 || { echo 'python3 not found' >&2; exit 90; }
+
+        """
 
     /// Starts the fork in tmux and prints `created <id>` for the new transcript, without attaching.
     /// The id is the new file under `~/.claude/projects`, not the source and not a minted placeholder.
@@ -118,6 +132,12 @@ public enum TmuxCommandBuilder {
 
     /// Exit status when the host-side scripts aren't installed (`command not found`).
     public static let scriptMissingExitCode: Int32 = 127
+
+    /// Exit status when a program a script needs isn't installed. stderr is `<name> not found`.
+    public static let binaryMissingExitCode: Int32 = 90
+
+    /// Exit status when a conversation has no transcript (or no text) on the computer.
+    public static let noTranscriptExitCode: Int32 = 94
 
     /// Lists the computer's Claude / Codex conversations as JSON (`[RemoteConversation]`).
     public static func listRemoteConversations(limit: Int = 200) -> String {

@@ -45,6 +45,28 @@ final class ConversationRowActionsTests: XCTestCase {
                        "mac-studio needs the AI Session helpers.")
     }
 
+    func testHostScriptExitCodesMapToTheirOwnErrors() {
+        func error(_ code: Int32, _ stderr: String = "") -> Error? {
+            do {
+                try RemoteConversations.check(SSHExecResult(exitCode: code, stdout: "", stderr: stderr), computerName: "mac-studio")
+                return nil
+            } catch { return error }
+        }
+        XCTAssertNil(error(0))
+        XCTAssertTrue(error(127) is RemoteConversations.ScriptMissing)
+        XCTAssertTrue(error(94) is RemoteConversations.NoTranscript)
+        XCTAssertEqual(error(90, "python3 not found") as? SSHRemoteError, .binaryMissing("python3"))
+        XCTAssertEqual(error(90, "warning: x\nclaude not found\n") as? SSHRemoteError, .binaryMissing("claude"))
+        // 90 without a name it can trust stays a plain failure.
+        XCTAssertEqual(error(90, "boom") as? SSHRemoteError, .commandFailed(exitCode: 90, stderr: "boom"))
+        XCTAssertEqual(error(1, "boom") as? SSHRemoteError, .commandFailed(exitCode: 1, stderr: "boom"))
+    }
+
+    func testNoTranscriptIsNotRetryable() {
+        XCTAssertEqual(ConversationRowActions.message(for: RemoteConversations.NoTranscript(computer: "mac-studio"), computer: mac),
+                       "This conversation has no transcript on mac-studio.")
+    }
+
     func testHubErrorsKeepTheStoreMessage() {
         let error = TodoHubError.invalidBaseURL
         XCTAssertEqual(ConversationRowActions.message(for: error, computer: mac), TodoHubStore.message(for: error))

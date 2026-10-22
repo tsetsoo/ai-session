@@ -2,7 +2,7 @@
 """Print one conversation's user and assistant text. Does not call a model.
 
 Usage: ai-todo-transcript <claude|codex|cursor> <session_id>
-Exit 94 when that conversation has no transcript on this machine.
+Exit 94 when that conversation has no transcript on this machine, or one with no text.
 """
 import glob
 import json
@@ -113,8 +113,14 @@ def main(argv):
         return 94
     path = max(paths, key=os.path.getmtime)
     reader = {"claude": claude_lines, "codex": codex_lines, "cursor": cursor_lines}[tool]
+    printed = False
     for line in reader(path):
         print(line)
+        printed = True
+    if not printed:
+        # A chat that only ended on an error has a file but nothing to hand over.
+        print("no text in %s %s" % (tool, session_id), file=sys.stderr)
+        return 94
     return 0
 
 

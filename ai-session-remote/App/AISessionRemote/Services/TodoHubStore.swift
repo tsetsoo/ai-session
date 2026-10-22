@@ -506,15 +506,10 @@ final class TodoHubStore {
         )
     }
 
-    /// A helper missing on the computer (exit 127) is reported as that, not as a retryable failure.
+    /// A missing helper, program or transcript is reported as that, not as a retryable failure.
     private func remoteStdout(_ command: String, config: HostConnectionConfig, computerName: String) async throws -> String {
         let result = try await NIOSSHClient().exec(config, command: command)
-        if result.exitCode == TmuxCommandBuilder.scriptMissingExitCode {
-            throw RemoteConversations.ScriptMissing(computer: computerName)
-        }
-        guard result.exitCode == 0 else {
-            throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
-        }
+        try RemoteConversations.check(result, computerName: computerName)
         return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

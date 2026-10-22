@@ -245,3 +245,111 @@ final class TmuxCommandBuilderTests: XCTestCase {
         XCTAssertTrue(command.contains("ai__claude__demo.json"))
     }
 }
+
+#if os(macOS)
+/// Runs the duplicate's transcript and summary commands in `/bin/sh` against stand-ins for
+/// the helper, `python3` and `claude` under a temporary HOME, so each failure has its own code.
+final class TranscriptCommandTests: XCTestCase {
+    private var home: URL!
+
+    override func setUpWithError() throws {
+        // The wrap PATH puts these first; a real python3 or claude there would shadow the stand-ins.
+        for dir in ["/opt/homebrew/bin", "/home/linuxbrew/.linuxbrew/bin", "/usr/local/bin"] {
+            for binary in ["python3", "claude"] where FileManager.default.fileExists(atPath: "\(dir)/\(binary)") {
+                throw XCTSkip("\(dir)/\(binary) would shadow the test's stand-in")
+            }
+        }
+        home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: helperDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let home { try? FileManager.default.removeItem(at: home) }
+    }
+
+    private var bin: URL { home.appendingPathComponent(".local/bin") }
+    private var helperDir: URL { home.appendingPathComponent(".ai-remote/bin") }
+
+    private func write(_ body: String, to url: URL) throws {
+        try ("#!/bin/sh\n" + body + "\n").write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private func helper(_ body: String) throws { try write(body, to: helperDir.appendingPathComponent("ai-todo-transcript")) }
+    private func python3() throws { try write("exit 0", to: bin.appendingPathComponent("python3")) }
+    private func claude() throws { try write("/bin/cat > \"$HOME/claude.in\"; echo summary", to: bin.appendingPathComponent("claude")) }
+
+    private func run(_ command: String) throws -> (status: Int32, stdout: String, stderr: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        // No /usr/bin: the system python3 stub would always be found.
+        process.environment = ["HOME": home.path, "PATH": bin.path]
+        let out = Pipe(), err = Pipe()
+        process.standardOutput = out
+        process.standardError = err
+        try process.run()
+        let stdout = out.fileHandleForReading.readDataToEndOfFile()
+        let stderr = err.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: stdout, as: UTF8.self), String(decoding: stderr, as: UTF8.self))
+    }
+
+    private let transcript = TmuxCommandBuilder.conversationTranscript(tool: "cursor", sessionId: "abc")
+    private let summary = TmuxCommandBuilder.summarizeConversation(tool: "cursor", sessionId: "abc")
+
+    func testMissingHelperIsScriptMissing() throws {
+        try python3()
+        try claude()
+        XCTAssertEqual(try run(transcript).status, TmuxCommandBuilder.scriptMissingExitCode)
+        XCTAssertEqual(try run(summary).status, TmuxCommandBuilder.scriptMissingExitCode)
+    }
+
+    func testMissingPython3IsNamed() throws {
+        try helper("echo text")
+        try claude()
+        for command in [transcript, summary] {
+            let result = try run(command)
+            XCTAssertEqual(result.status, TmuxCommandBuilder.binaryMissingExitCode)
+            XCTAssertTrue(result.stderr.contains("python3 not found"), result.stderr)
+        }
+    }
+
+    func testMissingClaudeIsNamedForTheSummary() throws {
+        try helper("echo text")
+        try python3()
+        let result = try run(summary)
+        XCTAssertEqual(result.status, TmuxCommandBuilder.binaryMissingExitCode)
+        XCTAssertTrue(result.stderr.contains("claude not found"), result.stderr)
+    }
+
+    func testNoTranscriptStopsTheSummaryBeforeClaude() throws {
+        try helper("echo 'no text' >&2; exit 94")
+        try python3()
+        try claude()
+        XCTAssertEqual(try run(summary).status, TmuxCommandBuilder.noTranscriptExitCode)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("claude.in").path))
+    }
+
+    func testSummaryHandsTheTranscriptToClaude() throws {
+        try helper("printf 'it'\"'\"'s $HOME\\n'; echo \"$1 $2\"")
+        try python3()
+        try claude()
+        let result = try run(summary)
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertEqual(result.stdout, "summary\n")
+        let input = try String(contentsOf: home.appendingPathComponent("claude.in"), encoding: .utf8)
+        XCTAssertTrue(input.hasPrefix("Summarize this conversation"), input)
+        XCTAssertTrue(input.contains("it's $HOME\ncursor abc\n"), input)
+    }
+
+    func testTranscriptPrintsTheHelperOutput() throws {
+        try helper("echo \"$1 $2\"")
+        try python3()
+        let result = try run(transcript)
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertEqual(result.stdout, "cursor abc\n")
+    }
+}
+#endif

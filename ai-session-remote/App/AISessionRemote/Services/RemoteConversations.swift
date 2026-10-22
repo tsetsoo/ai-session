@@ -7,8 +7,14 @@ enum RemoteConversations {
     struct ScriptMissing: LocalizedError {
         let computer: String
         var errorDescription: String? {
-            "The todo scripts aren't installed on \(computer) (or are too old to list conversations). Run scripts/todo/install.sh there."
+            "The todo scripts aren't installed on \(computer), or are too old for this. Run scripts/todo/install.sh there."
         }
+    }
+
+    /// The conversation has no transcript, or none with text, on that computer. Retrying won't help.
+    struct NoTranscript: LocalizedError {
+        let computer: String
+        var errorDescription: String? { "This conversation has no transcript on \(computer)." }
     }
 
     struct UnreadableList: LocalizedError {
@@ -43,13 +49,28 @@ enum RemoteConversations {
         try check(result, computerName: conversation.computer.name)
     }
 
-    private static func check(_ result: SSHExecResult, computerName: String) throws {
-        if result.exitCode == TmuxCommandBuilder.scriptMissingExitCode {
+    /// Maps the host scripts' exit codes: 127 the scripts are missing, 90 a program they need is
+    /// (stderr is `<name> not found`), 94 no transcript. Anything else non-zero is a failure.
+    static func check(_ result: SSHExecResult, computerName: String) throws {
+        switch result.exitCode {
+        case TmuxCommandBuilder.scriptMissingExitCode:
             throw ScriptMissing(computer: computerName)
+        case TmuxCommandBuilder.binaryMissingExitCode:
+            if let binary = missingBinary(in: result.stderr) { throw SSHRemoteError.binaryMissing(binary) }
+        case TmuxCommandBuilder.noTranscriptExitCode:
+            throw NoTranscript(computer: computerName)
+        default:
+            break
         }
         guard result.exitCode == 0 else {
             throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
         }
+    }
+
+    private static func missingBinary(in stderr: String) -> String? {
+        let line = stderr.split(separator: "\n").last { $0.hasSuffix(" not found") }
+        guard let name = line?.dropLast(" not found".count), !name.isEmpty, !name.contains(" ") else { return nil }
+        return String(name)
     }
 }
 

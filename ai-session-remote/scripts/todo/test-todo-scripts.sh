@@ -1951,7 +1951,13 @@ assert s["model"] == "opus"
 PY
 }
 check_installed || fail "settings.json after install is wrong: $(cat "$SETTINGS")"
-[[ -x "${HOME}/.ai-remote/bin/ai-todo-open" && -x "${HOME}/.ai-remote/bin/ai-todo-hook" && -x "${HOME}/.ai-remote/bin/ai-todo-sessions" && -x "${HOME}/.ai-remote/bin/ai-todo-limits" && -x "${HOME}/.ai-remote/bin/ai-todo-transcript" ]] || fail "scripts not installed"
+# Every helper in scripts/todo, not a hand-kept list: a new one must not be left out again.
+for helper in "${SCRIPT_DIR}"/ai-todo-* "${SCRIPT_DIR}"/ai_todo_*.py; do
+  [[ -f "${HOME}/.ai-remote/bin/$(basename "$helper")" ]] || fail "$(basename "$helper") not installed"
+  if [[ -x "$helper" ]]; then
+    [[ -x "${HOME}/.ai-remote/bin/$(basename "$helper")" ]] || fail "$(basename "$helper") installed without execute"
+  fi
+done
 [[ "$(grep -c 'source-file -q ~/.ai-remote/tmux.conf' "${HOME}/.tmux.conf")" -eq 1 ]] || fail "tmux source line not added exactly once"
 grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "existing ~/.tmux.conf content lost"
 [[ "$(stat -f '%Lp' "${HOME}/.ai-remote/todo-hub.conf" 2>/dev/null || stat -c '%a' "${HOME}/.ai-remote/todo-hub.conf")" == 600 ]] \
@@ -2071,7 +2077,10 @@ assert hooks["PreToolUse"][0]["matcher"] == "Bash"
 assert s["model"] == "opus"
 assert "projectInstructions" not in s, s.get("projectInstructions")
 PY
-[[ ! -e "${HOME}/.ai-remote/bin/ai-todo-open" && ! -e "${HOME}/.ai-remote/bin/ai-todo-sessions" && ! -e "${HOME}/.ai-remote/bin/ai-todo-limits" && ! -e "${HOME}/.ai-remote/bin/ai-todo-transcript" && ! -e "${HOME}/.ai-remote/tmux.conf" ]] || fail "uninstall left scripts behind"
+for helper in "${SCRIPT_DIR}"/ai-todo-* "${SCRIPT_DIR}"/ai_todo_*.py; do
+  [[ ! -e "${HOME}/.ai-remote/bin/$(basename "$helper")" ]] || fail "uninstall left $(basename "$helper") behind"
+done
+[[ ! -e "${HOME}/.ai-remote/tmux.conf" ]] || fail "uninstall left tmux.conf behind"
 ! grep -q 'ai-remote/tmux.conf' "${HOME}/.tmux.conf" || fail "uninstall left the tmux source line"
 grep -q 'set -g status off' "${HOME}/.tmux.conf" || fail "uninstall removed other ~/.tmux.conf lines"
 pass "uninstall removes only our hooks, scripts, tmux line, codex notify and hook state"
@@ -2237,6 +2246,16 @@ status=0
 "$TRANSCRIPT" claude "00000000-0000-4000-8000-000000000099" >/dev/null 2>"${SANDBOX}/transcript.err" || status=$?
 [[ $status -eq 94 ]] || fail "missing transcript exit was $status: $(cat "${SANDBOX}/transcript.err")"
 pass "transcript_prints_one_session"
+
+# A Cursor chat that only ended on an error has a file but no text to hand over.
+U_EMPTY=cccccccc-cccc-4ccc-8ccc-cccccccccccc
+mkdir -p "${HOME}/.cursor/projects/proj/agent-transcripts/${U_EMPTY}"
+printf '%s\n' '{"type":"turn_ended","status":"error","error":"Total usage limit reached"}' \
+  >"${HOME}/.cursor/projects/proj/agent-transcripts/${U_EMPTY}/${U_EMPTY}.jsonl"
+status=0
+"$TRANSCRIPT" cursor "$U_EMPTY" >"${SANDBOX}/transcript-empty.out" 2>"${SANDBOX}/transcript-empty.err" || status=$?
+[[ $status -eq 94 && ! -s "${SANDBOX}/transcript-empty.out" ]] || fail "textless transcript exit was $status: $(cat "${SANDBOX}/transcript-empty.err")"
+pass "transcript_without_text_is_missing"
 
 [[ ! -e "${SANDBOX}/guard.log" ]] || fail "a test reached a real binary: $(cat "${SANDBOX}/guard.log")"
 echo "All ${passes} todo script tests passed."
