@@ -13,6 +13,8 @@ struct ConversationRow: View {
     let status: ConversationDisplayStatus
     /// Closing or deleting it.
     let isBusy: Bool
+    /// Marks the todo done. On the Mac a checkmark takes the age's place while the pointer is on the row.
+    var onDone: (() -> Void)?
     /// Its ⌘n in Running now on the Mac.
     var shortcut: Int?
     /// The Mac list paints the accent behind this row. The tool name then uses the selection label color.
@@ -20,6 +22,8 @@ struct ConversationRow: View {
 
     /// Width of the dot column; the lines under the title start after it.
     private static let dotColumn: CGFloat = 21
+
+    @State private var isHovering = false
 
     private var toolColor: Color {
         AppTheme.color(for: AITool(rawValue: conversation.tool))
@@ -58,6 +62,15 @@ struct ConversationRow: View {
                     Spacer(minLength: DS.spacing.s)
                     if isBusy {
                         ProgressView().controlSize(.small)
+                    } else if isHovering, let onDone {
+                        Button(action: onDone) {
+                            Image(systemName: "checkmark.circle")
+                                .font(.body)
+                                .foregroundStyle(isSelected ? selectedLabel : Color.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Mark Todo Done")
+                        .accessibilityLabel("Mark Todo Done")
                     } else {
                         ConversationAgeLabel(conversation: conversation)
                     }
@@ -83,7 +96,13 @@ struct ConversationRow: View {
         }
         .padding(.vertical, DS.spacing.xs)
         .frame(minHeight: DS.rowMinHeight)
+        .onHover { isHovering = $0 }
         .accessibilityElement(children: .combine)
+        .accessibilityActions {
+            if let onDone {
+                Button("Mark Todo Done", action: onDone)
+            }
+        }
     }
 }
 

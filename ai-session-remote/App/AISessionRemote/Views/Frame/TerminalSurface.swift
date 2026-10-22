@@ -31,9 +31,43 @@ enum TerminalHitTarget: Equatable {
 /// Cmd+C reaches this view when it is first responder. A drag under tmux mouse tracking is
 /// not a local selection, and SwiftTerm's `copy` still clears the pasteboard in that case.
 private final class LocalClipboardTerminalView: TerminalView {
+    /// The conversation's tool, for the bytes Shift+Return sends.
+    var tool: String?
+    private var keyMonitor: Any?
+
     override func copy(_ sender: Any) {
         guard selectionActive else { return }
         super.copy(sender)
+    }
+
+    /// Keys SwiftTerm gets wrong on the Mac. Shift+Return sends a plain carriage return, so the
+    /// agent submits instead of starting a new line. ⌘← and ⌘→ become "move to left/right end of
+    /// line", which SwiftTerm ignores, and ⌘⌫ does nothing either. Its `keyDown` can't be
+    /// overridden from here; a local monitor catches these while this view has focus.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+        guard window != nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.window, self.window?.firstResponder === self,
+                  let bytes = Self.bytes(for: event, tool: self.tool ?? "claude") else { return event }
+            self.send(bytes)
+            return nil
+        }
+    }
+
+    /// Shift+Return (or keypad Enter) sends the key bar's ⇧⏎. With ⌘ alone: ← is Ctrl+A (start
+    /// of line), → is Ctrl+E (end of line), ⌫ is Ctrl+U (delete to the start of the line).
+    private static func bytes(for event: NSEvent, tool: String) -> [UInt8]? {
+        let flags = event.modifierFlags.intersection([.shift, .command, .control, .option])
+        switch (flags, event.keyCode) {
+        case (.shift, 36), (.shift, 76): return TerminalKey.shiftEnter.bytes(tool: tool)
+        case (.command, 123): return [0x01]
+        case (.command, 124): return [0x05]
+        case (.command, 51): return [0x15]
+        default: return nil
+        }
     }
 }
 
@@ -109,6 +143,7 @@ private struct TerminalContainerView: NSViewRepresentable {
     let fontSize: Double
     let hitTarget: TerminalHitTarget
     let cover: AnyView?
+    let tool: String?
 
     func makeCoordinator() -> CoverHost { CoverHost() }
 
@@ -120,6 +155,7 @@ private struct TerminalContainerView: NSViewRepresentable {
         let view = LocalClipboardTerminalView(frame: .zero)
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         view.optionAsMetaKey = true
+        view.tool = tool
         coordinator.attach(to: view)
         let gate = TerminalClickGate(terminalView: view)
         updateCover(gate, context: context)
@@ -128,6 +164,7 @@ private struct TerminalContainerView: NSViewRepresentable {
 
     func updateNSView(_ gate: TerminalClickGate, context: Context) {
         TerminalAppearance.apply(to: gate.terminalView, palette: palette, fontSize: fontSize)
+        (gate.terminalView as? LocalClipboardTerminalView)?.tool = tool
         coordinator.attach(to: gate.terminalView)
         updateCover(gate, context: context)
     }
@@ -246,7 +283,8 @@ struct TerminalSurface: View {
     ///   - onEnded: the session ended, with the PTY's exit status (nil = connection dropped).
     ///   - onUserInput: the user typed into the terminal or used the key bar (not the terminal's
     ///     own replies, see `TerminalInputClassifier`).
-    ///   - tool: the conversation's tool; shows Approve on the key bar (iOS). Nil hides it.
+    ///   - tool: the conversation's tool; shows Approve on the key bar (iOS) and picks the bytes for
+    ///     Shift+Return. Nil hides Approve.
     ///   - approveEnabled: whether Approve can be pressed now.
     init(
         config: HostConnectionConfig,
@@ -470,7 +508,8 @@ struct TerminalSurface: View {
             palette: palette,
             fontSize: fontSize,
             hitTarget: hitTarget,
-            cover: hitTarget == .cover ? AnyView(disconnectedOverlay) : nil
+            cover: hitTarget == .cover ? AnyView(disconnectedOverlay) : nil,
+            tool: tool
         )
         .padding(Self.inset)
         .background(Color(palette.background))

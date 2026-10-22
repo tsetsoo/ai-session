@@ -121,6 +121,19 @@ final class BoardTests: XCTestCase {
         assertAgrees(b)
     }
 
+    func testDoneTodosLeaveReviewButStayOpen() {
+        let todos = [Todo(id: "done", section: .sp, title: "Done", completed: true),
+                     Todo(id: "doneBusy", section: .sp, title: "Done busy", completed: true),
+                     Todo(id: "todo", section: .sp, title: "Open")]
+        let b = board([conv("done", .idle), conv("doneBusy", .busy), conv("todo", .idle)], todos: todos,
+                      live: ["m1": ["t-done", "t-doneBusy", "t-todo"]])
+        XCTAssertEqual(b.review.map(\.todoId), ["todo"])
+        XCTAssertEqual(b.reviewCount(computerID: "m1"), 1)
+        XCTAssertEqual(b.working.map(\.todoId), ["doneBusy"])
+        XCTAssertEqual(Set(b.open.map(\.todoId)), ["done", "doneBusy", "todo"])
+        assertAgrees(b, todos: todos)
+    }
+
     func testSectionCountsAndRunning() {
         let todos = [Todo(id: "a", section: .sp, title: "A"),
                      Todo(id: "b", section: .sp, title: "B", completed: true),
@@ -249,11 +262,16 @@ final class BoardTests: XCTestCase {
             XCTAssertNotEqual(board.status(forTodo: conversation.todoId), .closed, file: file, line: line)
             XCTAssertTrue(runningIDs.contains(conversation.todoId), file: file, line: line)
         }
+        let doneTodoIDs = Set(todos.filter(\.completed).map(\.id))
+        let reviewable = board.open.filter {
+            !(board.status(of: $0) == .idle && doneTodoIDs.contains($0.todoId))
+        }
         XCTAssertEqual(
-            Set((board.needsYou + board.working + board.review).map(\.listKey)), Set(board.open.map(\.listKey)),
-            "needs you, working and review must split the open conversations", file: file, line: line
+            Set((board.needsYou + board.working + board.review).map(\.listKey)), Set(reviewable.map(\.listKey)),
+            "needs you, working and review must split the open conversations, less done todos' finished ones",
+            file: file, line: line
         )
-        XCTAssertEqual(board.needsYou.count + board.working.count + board.review.count, board.open.count,
+        XCTAssertEqual(board.needsYou.count + board.working.count + board.review.count, reviewable.count,
                        file: file, line: line)
         var computerIDs = Set(board.open.map(\.computer.id))
         computerIDs.formUnion(board.needsYou.map(\.computer.id))
