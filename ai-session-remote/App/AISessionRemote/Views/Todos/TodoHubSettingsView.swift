@@ -15,7 +15,7 @@ struct TodoHubSettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("http://100.118.255.23:8080", text: $urlText)
+                    TextField("http://my-server:8080", text: $urlText)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -40,8 +40,9 @@ struct TodoHubSettingsView: View {
                     }
                     .disabled(parsedURL == nil || isTesting)
                     if let testResult {
+                        // DS has one accent and greys: a failure takes the accent, success stays quiet.
                         Label(testResult, systemImage: testSucceeded ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                            .foregroundStyle(testSucceeded ? .green : .red)
+                            .foregroundStyle(testSucceeded ? Color.secondary : DS.accent)
                     }
                 }
             }
