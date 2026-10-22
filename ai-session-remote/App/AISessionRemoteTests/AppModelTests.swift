@@ -475,6 +475,52 @@ final class AppModelTests: XCTestCase {
         XCTAssertGreaterThan(model.relistRequests, asked)
     }
 
+    /// A selection waiting on liveness lists its own computer only, not every computer.
+    func testTodoRefreshListsOnlyItsComputer() async {
+        let calls = ListingCalls()
+        let model = makeModel { computer in
+            await calls.record(computer.id)
+            return ["todo-t1"]
+        }
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .awaitingLiveness)
+        await model.refreshLiveness(forTodo: "t1", hosts: [])
+        let listed = await calls.take()
+        XCTAssertEqual(listed, [mac.id])
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .running)
+        XCTAssertEqual(model.attachReadiness(forTodo: "t3"), .awaitingLiveness, "linux-box was not listed")
+    }
+
+    /// No answer from the computer is a check, as in a full pass: Start, not another wait.
+    func testFailedComputerRefreshIsCheckedAndUnknown() async {
+        let model = makeModel { _ in throw ListingFailed() }
+        await model.refreshLiveness(forTodo: "t1", hosts: [])
+        XCTAssertNil(model.liveTmux[mac.id])
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .unknown)
+    }
+
+    /// A slow full listing already running must not hold up the selection's own computer, nor
+    /// put its older answer back when it lands.
+    func testComputerRefreshAppliesBeforeAnInFlightFullListing() async {
+        let gate = Gate()
+        let mode = Mode()
+        let mac = mac
+        let model = makeModel { computer in
+            if await mode.staleMac, computer.id == mac.id { return ["todo-t1"] }
+            await gate.wait()
+            return ["from-full"]
+        }
+        let full = Task { await model.refreshLiveness(hosts: []) }
+        while await gate.waiting < DemoFixtures.computers.count { await Task.yield() }
+        await mode.set(staleMac: true)
+        await model.refreshLiveness(forTodo: "t1", hosts: [])
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .running)
+        await gate.open()
+        await full.value
+        XCTAssertEqual(model.liveTmux[mac.id], ["todo-t1"])
+        XCTAssertEqual(model.liveTmux[linux.id], ["from-full"])
+        XCTAssertEqual(model.livenessAbandoned, 0)
+    }
+
     private actor ListingCalls {
         private var ids: [String] = []
         func record(_ id: String) { ids.append(id) }
