@@ -40,9 +40,8 @@ struct NewSessionSheet: View {
         !trimmedSlug.isEmpty && !SessionName.isValidSlug(trimmedSlug)
     }
 
-    private var previewName: String? {
-        guard SessionName.isValidSlug(trimmedSlug) else { return nil }
-        return "ai/\(tool.rawValue)/\(trimmedSlug)"
+    private var computerName: String {
+        host.displayName.isEmpty ? host.hostname : host.displayName
     }
 
     private var canStart: Bool {
@@ -53,12 +52,11 @@ struct NewSessionSheet: View {
     }
 
     private var toolHint: String {
-        let binary = host.cliBinaries[tool] ?? tool.defaultBinary
         switch tool {
         case .shell:
-            return "Interactive `\(binary)` in tmux — detach keeps it running (unlike Plain SSH)."
+            return "Starts a shell in a new session. It keeps running after you leave."
         case .claude, .codex, .cursor:
-            return "Runs `\(binary)` in tmux"
+            return "Starts \(AppTheme.displayName(for: tool)) in a new session."
         }
     }
 
@@ -110,13 +108,13 @@ struct NewSessionSheet: View {
                         }
                     }
                 } header: {
-                    Text("Working directory")
+                    Text("Folder")
                 } footer: {
-                    Text("Session starts in this directory on the remote host.")
+                    Text("Starts in this folder on \(computerName).")
                 }
 
                 Section {
-                    TextField("Slug", text: $slug)
+                    TextField("Name", text: $slug)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.body.monospaced())
@@ -124,16 +122,11 @@ struct NewSessionSheet: View {
                         Label("Use lowercase letters, numbers, and hyphens only.", systemImage: "exclamationmark.circle")
                             .font(.caption)
                             .foregroundStyle(.red)
-                    } else if let previewName {
-                        Text(previewName)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
                     }
                 } header: {
-                    Text("Session name")
+                    Text("Name")
                 } footer: {
-                    Text("Shown in the sessions list. Must be unique per tool on this host.")
+                    Text("Shown in the list. Each name can be used once per tool on \(computerName).")
                 }
             }
             .navigationTitle("New Session")
@@ -176,7 +169,7 @@ struct NewSessionSheet: View {
                 set: { if !$0 { errorMessage = nil } }
             )) {
                 if canEditHost {
-                    Button("Edit Host") { showingHostEditor = true }
+                    Button("Edit Access…") { showingHostEditor = true }
                 }
                 Button("OK", role: .cancel) { canEditHost = false }
             } message: {
@@ -223,20 +216,10 @@ struct NewSessionSheet: View {
                 try? modelContext.save()
                 onCreated(session)
                 dismiss()
-            } catch let error as SSHRemoteError {
-                handle(error)
             } catch {
-                canEditHost = false
-                errorMessage = error.localizedDescription
+                canEditHost = ComputerErrorText.isAccessProblem(error)
+                errorMessage = ComputerErrorText.message(for: error, computer: computerName)
             }
-        }
-    }
-
-    private func handle(_ error: SSHRemoteError) {
-        canEditHost = error == .authenticationFailed
-        switch error {
-        case .tmuxMissing, .binaryMissing, .authenticationFailed, .unreachable, .commandFailed:
-            errorMessage = error.userMessage
         }
     }
 
