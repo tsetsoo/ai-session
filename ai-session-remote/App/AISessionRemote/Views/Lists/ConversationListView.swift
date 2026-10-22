@@ -127,9 +127,7 @@ struct ConversationListView: View {
             conversation: conversation,
             status: status,
             isBusy: actions.inFlight.contains(conversation.listKey),
-            shortcut: shortcut,
-            isSelected: selection?.wrappedValue == conversation.listKey
-                || selection?.wrappedValue == conversation.todoId
+            shortcut: shortcut
         )
         .tag(conversation.listKey)
         .rowTap(selection == nil ? open : nil)

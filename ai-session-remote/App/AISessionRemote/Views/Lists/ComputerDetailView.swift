@@ -177,9 +177,7 @@ struct ComputerDetailView: View {
             section: todo?.section,
             conversation: conversation,
             status: status,
-            isBusy: actions.inFlight.contains(conversation.listKey),
-            isSelected: selection?.wrappedValue == conversation.listKey
-                || selection?.wrappedValue == conversation.todoId
+            isBusy: actions.inFlight.contains(conversation.listKey)
         )
         .tag(conversation.listKey)
         .rowTap(selection == nil ? open : nil)
