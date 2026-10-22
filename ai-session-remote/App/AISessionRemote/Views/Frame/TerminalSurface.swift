@@ -40,9 +40,10 @@ private final class LocalClipboardTerminalView: TerminalView {
         super.copy(sender)
     }
 
-    /// SwiftTerm sends a plain carriage return for Shift+Return, so the agent submits instead of
-    /// starting a new line. Its `keyDown` can't be overridden from here; a local monitor catches
-    /// the key while this view has focus and sends the key bar's ⇧⏎ bytes instead.
+    /// Keys SwiftTerm gets wrong on the Mac. Shift+Return sends a plain carriage return, so the
+    /// agent submits instead of starting a new line. ⌘← and ⌘→ become "move to left/right end of
+    /// line", which SwiftTerm ignores, and ⌘⌫ does nothing either. Its `keyDown` can't be
+    /// overridden from here; a local monitor catches these while this view has focus.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
@@ -50,16 +51,23 @@ private final class LocalClipboardTerminalView: TerminalView {
         guard window != nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.window, self.window?.firstResponder === self,
-                  Self.isShiftReturn(event) else { return event }
-            self.send(TerminalKey.shiftEnter.bytes(tool: self.tool ?? "claude"))
+                  let bytes = Self.bytes(for: event, tool: self.tool ?? "claude") else { return event }
+            self.send(bytes)
             return nil
         }
     }
 
-    /// Return or keypad Enter with Shift and no Command, Control or Option.
-    private static func isShiftReturn(_ event: NSEvent) -> Bool {
+    /// Shift+Return (or keypad Enter) sends the key bar's ⇧⏎. With ⌘ alone: ← is Ctrl+A (start
+    /// of line), → is Ctrl+E (end of line), ⌫ is Ctrl+U (delete to the start of the line).
+    private static func bytes(for event: NSEvent, tool: String) -> [UInt8]? {
         let flags = event.modifierFlags.intersection([.shift, .command, .control, .option])
-        return flags == .shift && (event.keyCode == 36 || event.keyCode == 76)
+        switch (flags, event.keyCode) {
+        case (.shift, 36), (.shift, 76): return TerminalKey.shiftEnter.bytes(tool: tool)
+        case (.command, 123): return [0x01]
+        case (.command, 124): return [0x05]
+        case (.command, 51): return [0x15]
+        default: return nil
+        }
     }
 }
 
