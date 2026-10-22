@@ -9,6 +9,7 @@ struct SidebarView: View {
     let openSettings: () -> Void
 
     @Environment(AppModel.self) private var model
+    @Environment(\.openAppSettings) private var openAppSettings
 
     private var store: TodoHubStore { model.store }
 
@@ -62,7 +63,7 @@ struct SidebarView: View {
                     lastSync: store.cachedAt,
                     now: context.date
                 )
-                Label {
+                let label = Label {
                     Text(line.text)
                         .fixedSize(horizontal: false, vertical: true)
                 } icon: {
@@ -70,7 +71,17 @@ struct SidebarView: View {
                         .foregroundStyle(line.kind == .tokenRejected ? DS.accent : Color.secondary)
                 }
                 .foregroundStyle(.secondary)
-                .accessibilityElement(children: .combine)
+                // A problem only Settings fixes: the line is the way there.
+                if line.kind == .tokenRejected || line.kind == .notConfigured, let openAppSettings {
+                    Button { openAppSettings(.server) } label: {
+                        label.contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open Settings → Server")
+                    .accessibilityHint("Opens the server settings")
+                } else {
+                    label.accessibilityElement(children: .combine)
+                }
             }
             .padding(.horizontal, DS.spacing.m)
             settingsButton
