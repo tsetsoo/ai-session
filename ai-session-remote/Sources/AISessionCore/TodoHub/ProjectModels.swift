@@ -44,10 +44,43 @@ public enum HubDates {
 
     public static func date(from string: String?) -> Date? {
         guard var text = string?.trimmingCharacters(in: .whitespaces), !text.isEmpty else { return nil }
+        if let date = hubDate(text) { return date }
         if text.count == 19, text.dropFirst(10).first == " " {
             text = text.replacingOccurrences(of: " ", with: "T") + "Z"
         }
         return plain.date(from: text) ?? fractional.date(from: text)
+    }
+
+    /// The hub's own `YYYY-MM-DD HH:MM:SS` (UTC), read by hand: the formatter takes ~40 µs a
+    /// date, and the sidebar and memories panel parse every date on each redraw. Anything
+    /// else returns nil and goes to the formatters.
+    private static func hubDate(_ text: String) -> Date? {
+        var text = text
+        return text.withUTF8 { b -> Date? in
+            guard b.count == 19, b[4] == UInt8(ascii: "-"), b[7] == UInt8(ascii: "-"), b[10] == UInt8(ascii: " "),
+                  b[13] == UInt8(ascii: ":"), b[16] == UInt8(ascii: ":") else { return nil }
+            func number(_ range: Range<Int>) -> Int? {
+                var value = 0
+                for i in range {
+                    let digit = b[i] &- UInt8(ascii: "0")
+                    guard digit < 10 else { return nil }
+                    value = value * 10 + Int(digit)
+                }
+                return value
+            }
+            guard let year = number(0..<4), let month = number(5..<7), let day = number(8..<10),
+                  let hour = number(11..<13), let minute = number(14..<16), let second = number(17..<19),
+                  (1...12).contains(month), (1...31).contains(day), hour < 24, minute < 60, second < 60
+            else { return nil }
+            // Days since 1970-01-01 in the proleptic Gregorian calendar (Hinnant's days_from_civil).
+            let y = month <= 2 ? year - 1 : year
+            let era = y / 400
+            let yearOfEra = y - era * 400
+            let dayOfYear = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + day - 1
+            let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+            let days = era * 146_097 + dayOfEra - 719_468
+            return Date(timeIntervalSince1970: TimeInterval(days * 86_400 + hour * 3_600 + minute * 60 + second))
+        }
     }
 }
 
