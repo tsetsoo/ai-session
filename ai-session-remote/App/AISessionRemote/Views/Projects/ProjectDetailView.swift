@@ -84,7 +84,7 @@ struct ProjectDetailView: View {
             if let loadError {
                 Label(loadError, systemImage: "exclamationmark.triangle")
                     .font(.subheadline)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(DS.warning)
             }
             todosSection(project)
             conversationsSection(project)

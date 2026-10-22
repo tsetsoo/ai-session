@@ -95,12 +95,12 @@ struct CommandPalette: View {
     private func searchField(items: [PaletteItem], current: String?) -> some View {
         HStack(spacing: DS.spacing.s + 2) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 16, weight: .medium))
+                .font(.title3.weight(.medium))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
             TextField(Self.searchPrompt, text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 17))
+                .font(.title3)
                 .focused($fieldFocused)
                 .accessibilityLabel(Self.searchPrompt)
                 .onChange(of: query) { _, _ in highlighted = nil }
@@ -132,7 +132,8 @@ struct CommandPalette: View {
                 .accessibilityHidden(true)
         }
         .padding(.horizontal, DS.spacing.l)
-        .frame(height: 52)
+        .padding(.vertical, DS.spacing.s)
+        .frame(minHeight: 52)
         .onAppear(perform: focusField)
         #if os(macOS)
         // Coming back to the window (or the window settling at launch) can leave focus
@@ -221,7 +222,8 @@ struct CommandPalette: View {
         } label: {
             PaletteRow(item: item, bold: bold)
                 .padding(.horizontal, 10)
-                .frame(height: item.isAction ? 36 : 40)
+                .padding(.vertical, DS.spacing.xs)
+                .frame(minHeight: item.isAction ? 36 : 40)
                 .background(isHighlighted ? DS.accentTint : Color.clear,
                             in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .contentShape(Rectangle())

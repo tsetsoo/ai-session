@@ -80,7 +80,7 @@ struct ProjectEditorSheet: View {
                 }
                 if let error {
                     Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
+                        .foregroundStyle(DS.error)
                         .font(.subheadline)
                 }
             }

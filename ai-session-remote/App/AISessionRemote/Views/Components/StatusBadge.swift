@@ -8,8 +8,6 @@ struct StatusBadge: View {
     private let status: ConversationDisplayStatus
     private let style: Style
 
-    @Environment(\.colorScheme) private var colorScheme
-
     init(_ status: ConversationDisplayStatus, style: Style = .pill) {
         self.status = status
         self.style = style
@@ -26,7 +24,7 @@ struct StatusBadge: View {
         case (.needsYou, .pill):
             Text(status.label)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(colorScheme == .dark ? Color(PlatformNativeColor(hex: 0x1C1C1E)) : .white)
+                .foregroundStyle(DS.onAccent)
                 .padding(.horizontal, DS.spacing.s)
                 .padding(.vertical, DS.spacing.xs)
                 .background(DS.accent, in: Capsule())

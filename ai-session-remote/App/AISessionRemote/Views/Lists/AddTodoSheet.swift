@@ -85,7 +85,7 @@ struct AddTodoSheet: View {
                 }
                 if let localError {
                     Label(localError, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
+                        .foregroundStyle(DS.error)
                         .font(.subheadline)
                 }
             }

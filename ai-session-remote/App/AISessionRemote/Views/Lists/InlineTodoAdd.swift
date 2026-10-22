@@ -85,7 +85,7 @@ struct InlineTodoAdd: View {
             if let localError {
                 Text(localError)
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(DS.error)
             }
         }
         .disabled(store.isOffline)
@@ -291,12 +291,11 @@ struct TodoTitleField: View {
 private struct DictateButtonStyle: ButtonStyle {
     let isRunning: Bool
 
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(colorScheme == .dark ? Color(PlatformNativeColor(hex: 0x1C1C1E)) : .white)
+            .foregroundStyle(DS.onAccent)
             .background(DS.accent, in: Circle())
             .overlay {
                 if isRunning {
