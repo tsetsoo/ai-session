@@ -13,6 +13,8 @@ struct NotificationSettingsView: View {
     @State private var loadError: String?
     @State private var saveTask: Task<Void, Never>?
     @State private var testResults: String?
+    /// Per-device results (token prefix and reason) behind a Details disclosure, for debugging.
+    @State private var testDetails: String?
     @State private var isTesting = false
     @AppStorage(NotificationCenterCoordinator.macAlertsTooKey) private var macAlertsToo = false
     private let coordinator = NotificationCenterCoordinator.shared
@@ -22,10 +24,12 @@ struct NotificationSettingsView: View {
             Section {
                 Label(stateText, systemImage: stateIcon)
                 if let serverStatus, !serverStatus.configured {
-                    Text("The todo server has no APNs key yet, so it can't send pushes.")
+                    Text("Notifications aren't set up on the todo server yet, so it can't send any.")
                         .foregroundStyle(.secondary)
                 } else if let lastError = serverStatus?.lastError {
-                    Text("Last push error: \(lastError)").foregroundStyle(.secondary)
+                    Text("The last notification couldn't be delivered. Try Send Test Notification.")
+                        .foregroundStyle(.secondary)
+                    details(lastError)
                 }
                 #if os(iOS)
                 Button {
@@ -41,6 +45,9 @@ struct NotificationSettingsView: View {
                 if let testResults {
                     Text(testResults).foregroundStyle(.secondary)
                 }
+                if let testDetails {
+                    details(testDetails)
+                }
                 #else
                 Toggle("Alert on this Mac too", isOn: $macAlertsToo)
                 #endif
@@ -51,7 +58,7 @@ struct NotificationSettingsView: View {
             }
 
             if let loadError {
-                Section { Text(loadError).foregroundStyle(.red) }
+                Section { Text(loadError).foregroundStyle(DS.accent) }
             }
 
             if let binding = Binding($settings) {
@@ -101,6 +108,16 @@ struct NotificationSettingsView: View {
         case .off: "Notifications are off"
         case let .localOnly(reason): reason
         case .registered: "Push notifications are on for this device"
+        }
+    }
+
+    /// Technical text kept out of sight unless asked for.
+    private func details(_ text: String) -> some View {
+        DisclosureGroup("Details") {
+            Text(text)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
         }
     }
 
@@ -208,13 +225,28 @@ struct NotificationSettingsView: View {
         guard let client = TodoHubSettings.makeClient() else { return }
         isTesting = true
         defer { isTesting = false }
+        testDetails = nil
         do {
             let results = try await client.sendTestPush()
-            testResults = results.isEmpty
-                ? "No registered devices."
-                : results.map { "\($0.tokenPrefix)…: \($0.ok ? "sent" : $0.reason ?? "failed")" }.joined(separator: "\n")
+            let sent = results.filter(\.ok).count
+            switch (sent, results.count) {
+            case (_, 0):
+                testResults = "No devices are signed up for notifications yet."
+            case let (sent, total) where sent == total:
+                testResults = total == 1 ? "Sent. Check this device." : "Sent to all \(total) devices."
+            case (0, _):
+                testResults = "Couldn't send the test. Check that notifications are allowed for this app, then try again."
+            case let (sent, total):
+                testResults = "Sent to \(sent) of \(total) devices. A device that stays silent may need notifications allowed again."
+            }
+            if results.contains(where: { !$0.ok }) {
+                testDetails = results
+                    .map { "\($0.tokenPrefix)…: \($0.ok ? "sent" : $0.reason ?? "failed")" }
+                    .joined(separator: "\n")
+            }
         } catch {
-            testResults = (error as? TodoHubError)?.userMessage ?? error.localizedDescription
+            testResults = "The todo server couldn't send the test. Try again in a moment."
+            testDetails = (error as? TodoHubError)?.userMessage ?? error.localizedDescription
         }
     }
 }
