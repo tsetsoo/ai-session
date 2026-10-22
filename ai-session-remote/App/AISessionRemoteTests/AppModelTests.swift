@@ -521,6 +521,42 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.livenessAbandoned, 0)
     }
 
+    private final class Clock: @unchecked Sendable {
+        var now = AppModelTests.listedAt
+    }
+
+    /// A single-computer answer asked before a full listing that landed first is older: it
+    /// must not put back a session the full listing no longer has.
+    func testAnOlderComputerAnswerDoesNotOverwriteANewerFullListing() async {
+        let gate = Gate()
+        let mode = Mode()
+        let clock = Clock()
+        let cache = TodoHubCache(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("appmodel-\(UUID().uuidString).json"))
+        let model = AppModel(store: TodoHubStore(cache: cache), demo: false, listTmux: { _ in
+            if await mode.slow {
+                await gate.wait()
+                return ["todo-t1"]
+            }
+            return []
+        }, now: { clock.now })
+        model.store.seedForDemo(
+            todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
+            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+        )
+        await mode.set(slow: true)
+        let old = Task { await model.refreshLiveness(forTodo: "t1", hosts: []) }
+        while await gate.waiting == 0 { await Task.yield() }
+        clock.now += 5
+        await mode.set(slow: false)
+        await model.refreshLiveness(hosts: [])
+        XCTAssertEqual(model.liveTmux[mac.id], [])
+        await gate.open()
+        await old.value
+        XCTAssertEqual(model.liveTmux[mac.id], [], "the session ended after the older answer was asked")
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .closed)
+    }
+
     private actor ListingCalls {
         private var ids: [String] = []
         func record(_ id: String) { ids.append(id) }

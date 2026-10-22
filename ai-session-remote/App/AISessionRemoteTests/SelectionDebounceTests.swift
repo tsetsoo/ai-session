@@ -101,6 +101,22 @@ final class SelectionDebounceTests: XCTestCase {
         XCTAssertFalse(attacher.isSettling)
     }
 
+    /// Only the answer asked for acts at once. A conversation that starts running later
+    /// (on the phone, say) settles first, like any other change.
+    func testALaterStartAfterTheLivenessAnswerIsDebounced() {
+        readiness = ["a": .awaitingLiveness]
+        attacher.select("a", immediate: true)
+        readiness["a"] = .unknown
+        attacher.inputsChanged()
+        XCTAssertEqual(sent, [])
+        readiness["a"] = .running
+        attacher.inputsChanged()
+        XCTAssertEqual(sent, [])
+        XCTAssertTrue(attacher.isSettling)
+        scheduler.run()
+        XCTAssertEqual(sent, ["attach a"])
+    }
+
     func testAsksForLivenessOncePerSelection() {
         readiness = ["a": .awaitingLiveness]
         attacher.select("a")

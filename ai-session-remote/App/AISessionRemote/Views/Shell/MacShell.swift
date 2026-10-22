@@ -546,10 +546,14 @@ private struct ConversationColumn: View {
     let showsConversation: Bool
 
     @Environment(AppModel.self) private var model
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     #endif
     @State private var shown: [String] = []
+    /// Whether each mounted conversation runs on this Mac, decided once when it is mounted,
+    /// so a frame never changes pool (and pushes out another) while it stays.
+    @State private var mountedLocally: [String: Bool] = [:]
     /// A running conversation selected, not mounted yet: the settle window.
     @State private var pendingID: String?
     /// Commands from this column's single toolbar to the frontmost frame.
@@ -601,7 +605,7 @@ private struct ConversationColumn: View {
             guard let pendingID else { return }
             try? await Task.sleep(for: .seconds(SelectionAttacher.delay))
             guard !Task.isCancelled, self.pendingID == pendingID else { return }
-            shown = WarmConversationMount.select(pendingID, in: shown, protects: protectsTerminal)
+            mount(pendingID)
             self.pendingID = nil
         }
     }
@@ -729,7 +733,7 @@ private struct ConversationColumn: View {
         case .running, .awaitingLiveness:
             if shown.contains(id) {
                 pendingID = nil
-                shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal)
+                mount(id)
             } else {
                 pendingID = id
             }
@@ -737,8 +741,29 @@ private struct ConversationColumn: View {
             // In front of the warm terminals, not in one of their slots. Arrowing through
             // closed rows must not disconnect a live session.
             pendingID = nil
-            shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal)
+            mount(id)
         }
+    }
+
+    private func mount(_ id: String) {
+        // Ids dropped elsewhere (deleted, gone from the hub) are decided afresh if they come back.
+        var local = mountedLocally.filter { shown.contains($0.key) }
+        if local[id] == nil { local[id] = isLocal(id) }
+        shown = WarmConversationMount.select(id, in: shown, protects: protectsTerminal,
+                                             isLocal: { local[$0] ?? false })
+        let kept = local.filter { shown.contains($0.key) }
+        if kept != mountedLocally { mountedLocally = kept }
+    }
+
+    /// The conversation runs on this Mac: its terminal is a local PTY, cheap to keep attached.
+    private func isLocal(_ id: String) -> Bool {
+        #if os(macOS)
+        guard let computer = model.store.displayed(forTodo: id, selectedKey: model.selectedConversationID)?.computer,
+              let host = HostLookup.host(for: computer, in: hosts) else { return false }
+        return ThisMac.matches(hostname: host.hostname, username: host.username)
+        #else
+        return false
+        #endif
     }
 
     /// Running, and a conversation still waiting on its first listing. Closed and unknown
@@ -793,6 +818,9 @@ final class SelectionAttacher {
     /// The selection's last definite state (`.running` or `.closed`): only a change acts.
     @ObservationIgnored private var lastKnown: AttachReadiness?
     @ObservationIgnored private var askedForLiveness = false
+    /// The liveness answer this selection asked for has not arrived yet. Only that answer
+    /// acts at once; later changes settle as usual.
+    @ObservationIgnored private var awaitingAnswer = false
     /// Popped out into its own window: that window's attacher asks for liveness, not this one.
     @ObservationIgnored var isSuspended = false
     @ObservationIgnored private var generation = 0
@@ -810,6 +838,7 @@ final class SelectionAttacher {
         selection = todoID
         lastKnown = nil
         askedForLiveness = false
+        awaitingAnswer = false
         hasEvaluated = false
         if todoID == nil {
             generation += 1
@@ -828,6 +857,7 @@ final class SelectionAttacher {
     func reselect() {
         lastKnown = nil
         askedForLiveness = false
+        awaitingAnswer = false
         if selection != nil { schedule() }
     }
 
@@ -867,7 +897,8 @@ final class SelectionAttacher {
             return
         }
         // The answer to this selection's own liveness request: it settled before asking.
-        if askedForLiveness, lastKnown == nil, readiness(todoID) != .awaitingLiveness {
+        if awaitingAnswer, readiness(todoID) != .awaitingLiveness {
+            awaitingAnswer = false
             evaluate()
             return
         }
@@ -901,6 +932,7 @@ final class SelectionAttacher {
             guard isFrontmost else { return }
             if !askedForLiveness, !isSuspended {
                 askedForLiveness = true
+                awaitingAnswer = true
                 livenessRequests += 1
             }
         case .unknown:
@@ -915,23 +947,38 @@ final class SelectionAttacher {
 /// is already attached. A closed conversation is one extra card in front of those; it does
 /// not take a slot, and the next closed conversation replaces it.
 enum WarmConversationMount {
-    /// Three live terminals: the one on screen and the two you just left. Older ones disconnect.
+    /// Three live terminals over SSH: the one on screen and the two you just left. Older ones
+    /// disconnect.
     static let capacity = 3
+    /// Terminals on this Mac are a local PTY each, with no network to hold, so more stay.
+    /// They count apart from `capacity`.
+    static let localCapacity = 6
 
     /// Mounts `id`. `protects` is true for a conversation whose terminal must stay (running,
     /// or still waiting on a listing). A closed or unknown id is shown in addition and
-    /// replaces the previous one. The default treats every id as a live terminal.
-    static func select(_ id: String, in ids: [String], protects: (String) -> Bool = { _ in true }) -> [String] {
+    /// replaces the previous one. The default treats every id as a live terminal over SSH.
+    static func select(
+        _ id: String,
+        in ids: [String],
+        protects: (String) -> Bool = { _ in true },
+        isLocal: (String) -> Bool = { _ in false }
+    ) -> [String] {
         var warm = ids.filter(protects)
         guard protects(id) else { return warm + [id] }
-        if let index = warm.firstIndex(of: id) {
-            warm.remove(at: index)
-        }
+        warm.removeAll { $0 == id }
         warm.append(id)
-        if warm.count > capacity {
-            warm.removeFirst(warm.count - capacity)
+        // Newest first, so the oldest of each kind is the one that goes.
+        var remote = 0
+        var local = 0
+        let kept = warm.reversed().filter { id in
+            if isLocal(id) {
+                local += 1
+                return local <= localCapacity
+            }
+            remote += 1
+            return remote <= capacity
         }
-        return warm
+        return kept.reversed()
     }
 }
 

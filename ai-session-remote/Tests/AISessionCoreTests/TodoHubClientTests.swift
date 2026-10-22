@@ -295,6 +295,13 @@ final class TodoHubClientTests: XCTestCase {
         XCTAssertTrue(open.hasSuffix(
             #"exec "$HOME/.ai-remote/bin/ai-todo-open" 'ai/claude/todo-4f3ff5fa' '~/it'"'"'s here' '20218a19'"#
         ))
+        // A running session attaches without the script; a fresh start always runs it.
+        XCTAssertTrue(open.contains(
+            "if tmux has-session -t '=ai/claude/todo-4f3ff5fa' 2>/dev/null; then exec tmux -u attach-session -t '=ai/claude/todo-4f3ff5fa'; fi; exec "
+        ))
+        XCTAssertFalse(TmuxCommandBuilder.openTodoConversation(
+            tmuxName: "ai/codex/todo-1", cwd: "~", sessionId: "-", tool: "codex"
+        ).contains("has-session"))
         XCTAssertTrue(TmuxCommandBuilder.killSessionExact(tmuxName: "ai/claude/todo-1").hasSuffix(
             "tmux kill-session -t '=ai/claude/todo-1'"
         ))

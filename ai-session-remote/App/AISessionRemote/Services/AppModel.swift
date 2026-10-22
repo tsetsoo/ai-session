@@ -374,7 +374,9 @@ final class AppModel {
             isFull = false
         case let .computer(id):
             targets = computers.filter { $0.id == id }
-            if targets.isEmpty { return }
+            // No hosts yet (SwiftData still loading): every listing would fail and count as
+            // checked. Like a full pass, wait for them; the shell lists again when they arrive.
+            if targets.isEmpty || (listTmuxOverride == nil && hosts.isEmpty) { return }
             isFull = false
         }
         // Only a full pass takes a generation. A stale pass must not discard one in flight.
@@ -454,6 +456,9 @@ final class AppModel {
         var listed = listedAt
         var checked = livenessChecked
         for computer in listing.targets {
+            // Asked before the listing already held (a full pass that started later and
+            // landed first): the older answer must not put back a session that has ended.
+            if let current = listed[computer.id], current > listing.askedAt { continue }
             guard let names = listing.result[computer.id] else {
                 if listing.checksFailures {
                     sessions.removeValue(forKey: computer.id)
