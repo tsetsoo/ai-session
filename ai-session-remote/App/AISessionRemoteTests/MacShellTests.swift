@@ -106,10 +106,22 @@ final class MacShellTests: XCTestCase {
     func testWarmMountKeepsRunningConversationsWhenClosedTodosAreSelected() {
         let running: Set = ["a", "b", "c"]
         var ids = ["a", "b", "c"]
-        ids = WarmConversationMount.select("x", in: ids) { running.contains($0) }
-        ids = WarmConversationMount.select("y", in: ids) { running.contains($0) }
-        ids = WarmConversationMount.select("z", in: ids) { running.contains($0) }
+        ids = WarmConversationMount.select("x", in: ids, protects: { running.contains($0) })
+        ids = WarmConversationMount.select("y", in: ids, protects: { running.contains($0) })
+        ids = WarmConversationMount.select("z", in: ids, protects: { running.contains($0) })
         XCTAssertEqual(ids, ["a", "b", "c", "z"])
+    }
+
+    /// Conversations on this Mac have their own, larger pool: opening them never pushes out a
+    /// remote terminal, and up to six stay attached.
+    func testWarmMountKeepsMoreLocalConversations() {
+        XCTAssertEqual(WarmConversationMount.localCapacity, 6)
+        let local: Set = ["l1", "l2", "l3", "l4", "l5", "l6", "l7"]
+        var ids: [String] = []
+        for id in ["r1", "r2", "r3", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "r4"] {
+            ids = WarmConversationMount.select(id, in: ids, isLocal: { local.contains($0) })
+        }
+        XCTAssertEqual(ids, ["r2", "r3", "l2", "l3", "l4", "l5", "l6", "l7", "r4"])
     }
 
     // MARK: Sync line

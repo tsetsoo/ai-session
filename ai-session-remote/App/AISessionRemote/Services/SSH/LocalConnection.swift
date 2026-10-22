@@ -12,8 +12,12 @@ import SwiftTerm
 /// (`tsvetelins-macbook-pro.tail0fa5cc.ts.net`). The port is ignored: nothing listens on it.
 enum ThisMac {
     static func matches(_ config: HostConnectionConfig) -> Bool {
-        guard config.username == NSUserName() else { return false }
-        var host = config.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        matches(hostname: config.host, username: config.username)
+    }
+
+    static func matches(hostname: String, username: String) -> Bool {
+        guard username == NSUserName() else { return false }
+        var host = hostname.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if host.hasSuffix(".") { host.removeLast() }
         if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
         guard !host.isEmpty else { return false }
