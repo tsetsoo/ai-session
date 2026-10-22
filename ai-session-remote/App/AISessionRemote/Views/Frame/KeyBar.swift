@@ -7,6 +7,8 @@ import SwiftUI
 /// own palette's. iOS only (excluded from the Mac target).
 struct KeyBar: View {
     static let height: CGFloat = 50
+    /// Every cap is at least this wide, the smallest comfortable touch target. The row scrolls.
+    static let minCapWidth: CGFloat = 44
 
     /// The conversation's tool; nil (a plain terminal) hides Approve.
     let tool: String?
@@ -19,6 +21,7 @@ struct KeyBar: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
+    @ScaledMetric(relativeTo: .caption) private var checkmarkSize: CGFloat = 12
 
     init(
         tool: String?,
@@ -55,6 +58,7 @@ struct KeyBar: View {
                     key("↑", "Up arrow", .up, repeats: true)
                     key("↓", "Down arrow", .down, repeats: true)
                     key("→", "Right arrow", .right, repeats: true)
+                    key("⏎", "Return", .enter)
                     key("⇧⏎", "New line", .shiftEnter)
                     // The ⌨ glyph draws tiny in the monospaced font, so this cap is a symbol.
                     KeyCap(
@@ -102,6 +106,8 @@ struct KeyBar: View {
                 .fill(colors.separator)
                 .frame(height: 1 / displayScale)
         }
+        // Labels grow with the text size, up to what still fits a cap in the fixed-height bar.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Terminal keys")
     }
@@ -121,7 +127,7 @@ struct KeyBar: View {
         } label: {
             HStack(spacing: DS.spacing.xs) {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: checkmarkSize, weight: .bold))
                 Text("Approve")
             }
         }
@@ -153,8 +159,8 @@ private struct KeyBarColors {
     let keyPressed: Color
     let keyLabel: Color
     let keyShadow: Color
-    /// `DS.accent` for this scheme, and the label that keeps its contrast on it (like
-    /// `AccentButtonStyle`).
+    /// `DS.accent` (it resolves in the terminal's scheme, which the bar's environment carries),
+    /// and the label that keeps its contrast on it (like `AccentButtonStyle`).
     let accent: Color
     let accentLabel: Color
 
@@ -167,7 +173,7 @@ private struct KeyBarColors {
             keyPressed = hex(0x4C4C50)
             keyLabel = hex(0xF2F2F4)
             keyShadow = hex(0x0E0E0F)
-            accent = hex(0xE8916F)
+            accent = DS.accent
             accentLabel = hex(0x1C1C1E)
         } else {
             bar = hex(0xF7F6F3)
@@ -176,7 +182,7 @@ private struct KeyBarColors {
             keyPressed = hex(0xDEDCD7)
             keyLabel = hex(0x1D1D1F)
             keyShadow = hex(0xC9C7C2)
-            accent = hex(0xB4532E)
+            accent = DS.accent
             accentLabel = .white
         }
     }
@@ -202,6 +208,7 @@ private struct KeyCap: View {
     @State private var holdTask: Task<Void, Never>?
     /// The hold already acted, so the release must not also tap.
     @State private var held = false
+    @ScaledMetric(relativeTo: .caption) private var symbolSize: CGFloat = 14
 
     var body: some View {
         Button {
@@ -213,7 +220,7 @@ private struct KeyCap: View {
         } label: {
             if let symbol {
                 Image(systemName: symbol)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: symbolSize, weight: .medium))
             } else {
                 Text(cap)
             }
@@ -269,17 +276,18 @@ private struct KeyCapBody: View {
     let onPressChange: (Bool) -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: .caption) private var labelSize: CGFloat = 12
 
     var body: some View {
         let colors = KeyBarColors(colorScheme)
         let fill = armed ? colors.accent : (configuration.isPressed ? colors.keyPressed : colors.key)
         configuration.label
-            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            .font(.system(size: labelSize, weight: .semibold, design: .monospaced))
             .foregroundStyle(armed ? colors.accentLabel : colors.keyLabel)
             .lineLimit(1)
             .fixedSize()
             .padding(.horizontal, 6)
-            .frame(minWidth: 30, minHeight: 34)
+            .frame(minWidth: KeyBar.minCapWidth, minHeight: 34)
             .background {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(fill)
@@ -298,12 +306,13 @@ private struct ApproveKeyStyle: ButtonStyle {
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var isEnabled
+    @ScaledMetric(relativeTo: .callout) private var labelSize: CGFloat = 14
 
     func makeBody(configuration: Configuration) -> some View {
         let colors = KeyBarColors(colorScheme)
         let fill = filled ? colors.accent : (configuration.isPressed ? colors.keyPressed : colors.key)
         configuration.label
-            .font(.system(size: 14, weight: .semibold))
+            .font(.system(size: labelSize, weight: .semibold))
             .foregroundStyle(filled ? colors.accentLabel : colors.keyLabel)
             .lineLimit(1)
             .fixedSize()

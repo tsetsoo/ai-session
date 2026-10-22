@@ -472,17 +472,7 @@ struct TerminalScreen: View {
         .toolbarBackground(Color(palette.background).opacity(0.85), for: .navigationBar)
         .toolbarColorScheme(palette == .dark ? .dark : .light, for: .navigationBar)
         .toolbar {
-            #if os(iOS)
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    terminal.focus()
-                } label: {
-                    Image(systemName: "keyboard")
-                }
-                .accessibilityLabel("Show Keyboard")
-                .disabled(!terminal.isConnected)
-            }
-            #endif
+            // No ⌨ here on iOS: the key bar's ⌨ shows and hides the keyboard.
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button {

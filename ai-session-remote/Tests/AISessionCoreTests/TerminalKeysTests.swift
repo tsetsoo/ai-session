@@ -9,6 +9,8 @@ final class TerminalKeysTests: XCTestCase {
         XCTAssertEqual(TerminalKey.up.bytes(tool: "claude"), [0x1B, 0x5B, 0x41])
         XCTAssertEqual(TerminalKey.down.bytes(tool: "claude"), [0x1B, 0x5B, 0x42])
         XCTAssertEqual(TerminalKey.right.bytes(tool: "claude"), [0x1B, 0x5B, 0x43])
+        XCTAssertEqual(TerminalKey.enter.bytes(tool: "claude"), [0x0D])
+        XCTAssertEqual(TerminalKey.enter.bytes(tool: "codex"), [0x0D])
         XCTAssertEqual(TerminalKey.shiftEnter.bytes(tool: "claude"), [0x1B, 0x0D])
         XCTAssertEqual(TerminalKey.shiftEnter.bytes(tool: "codex"), [0x0A])
         XCTAssertEqual(TerminalKey.approve.bytes(tool: "claude"), [0x31])
