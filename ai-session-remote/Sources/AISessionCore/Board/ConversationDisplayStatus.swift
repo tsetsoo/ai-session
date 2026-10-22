@@ -21,7 +21,7 @@ public enum ConversationDisplayStatus: Equatable, Sendable {
         switch self {
         case .working: return "Working"
         case .needsYou: return "Needs you"
-        case .idle: return "Idle"
+        case .idle: return "Ready for review"
         case .closed: return "Closed"
         }
     }

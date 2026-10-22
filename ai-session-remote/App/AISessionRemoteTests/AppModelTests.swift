@@ -127,7 +127,7 @@ final class AppModelTests: XCTestCase {
         let model = makeModel { _ in [] }   // both computers reachable, no live sessions
         await model.refreshLiveness(hosts: [])
         XCTAssertTrue(model.board.needsYou.isEmpty)
-        XCTAssertTrue(model.board.runningNow.isEmpty)
+        XCTAssertTrue(model.board.open.isEmpty)
     }
 
     /// Lets the model's observation of the board catch up.
@@ -144,7 +144,7 @@ final class AppModelTests: XCTestCase {
         let listing = Listing()
         let model = makeModel { _ in await listing.names }
         await model.refreshLiveness(hosts: [])
-        XCTAssertTrue(model.board.runningNow.isEmpty)   // the fixtures' sessions aren't listed
+        XCTAssertTrue(model.board.open.isEmpty)   // the fixtures' sessions aren't listed
         let requestsBefore = model.relistRequests
 
         // Started after that listing: the hub says busy, the listing can't know it yet.
@@ -158,7 +158,7 @@ final class AppModelTests: XCTestCase {
             sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
         )
         XCTAssertEqual(model.board.status(forTodo: "t7"), .working)
-        XCTAssertEqual(model.board.runningNow.map(\.todoId), ["t7"])
+        XCTAssertEqual(model.board.open.map(\.todoId), ["t7"])
         XCTAssertEqual(model.board.conversation(atShortcut: 1)?.todoId, "t7")
         await settle(model) { model.relistRequests != requestsBefore }
         XCTAssertEqual(model.relistRequests, requestsBefore + 1)

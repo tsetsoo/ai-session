@@ -20,7 +20,7 @@ final class BoardTests: XCTestCase {
         let idle = conv("t", .idle, created: "2026-10-16T12:00:00Z", id: "idle")
         let waiting = conv("t", .waiting, created: "2026-10-16T09:00:00Z", id: "wait")
         let b = board([idle, waiting])
-        XCTAssertEqual(Set(b.runningNow.map(\.id)), ["idle", "wait"])
+        XCTAssertEqual(Set(b.open.map(\.id)), ["idle", "wait"])
         XCTAssertEqual(b.status(forTodo: "t"), .needsYou)
     }
 
@@ -36,16 +36,16 @@ final class BoardTests: XCTestCase {
         }
         XCTAssertEqual(ConversationDisplayStatus.needsYou.label, "Needs you")
         XCTAssertEqual(ConversationDisplayStatus.working.label, "Working")
-        XCTAssertEqual(ConversationDisplayStatus.idle.label, "Idle")
+        XCTAssertEqual(ConversationDisplayStatus.idle.label, "Ready for review")
         XCTAssertEqual(ConversationDisplayStatus.closed.label, "Closed")
     }
 
-    func testRunningNowExcludesClosedAndDeadTmux() {
+    func testOpenExcludesClosedAndDeadTmux() {
         let b = board([
             conv("a", .busy), conv("b", .closed), conv("c", .idle, tmux: "gone"),
             conv("d", .idle, tmux: "other", computer: box),   // box not in liveTmux: unknown, kept
         ], live: ["m1": ["t-a"]])
-        XCTAssertEqual(b.runningNow.map(\.todoId), ["a", "d"])
+        XCTAssertEqual(b.open.map(\.todoId), ["a", "d"])
         XCTAssertEqual(b.status(forTodo: "c"), .closed)
         XCTAssertNil(b.status(forTodo: "zzz"))
     }
@@ -63,7 +63,7 @@ final class BoardTests: XCTestCase {
         // Started or reported after the listing: trust the hub until listed again.
         XCTAssertEqual(b.status(forTodo: "new"), .working)
         XCTAssertEqual(b.status(forTodo: "rep"), .needsYou)
-        XCTAssertEqual(Set(b.runningNow.map(\.todoId)), ["new", "rep"])
+        XCTAssertEqual(Set(b.open.map(\.todoId)), ["new", "rep"])
         XCTAssertEqual(b.needsYou.map(\.todoId), ["rep"])
         XCTAssertEqual(b.conversation(atShortcut: 1)?.todoId, "new")
         // Older than the listing and missing from it: closed.
@@ -86,7 +86,7 @@ final class BoardTests: XCTestCase {
                    conv("a", .busy, created: "2026-10-16T10:00:00Z"),
                    conv("c", .busy, created: "2026-10-16T11:00:00Z")]
         let b = board(all)
-        XCTAssertEqual(b.runningNow.map(\.todoId), ["c", "a", "b"])
+        XCTAssertEqual(b.open.map(\.todoId), ["c", "a", "b"])
         XCTAssertEqual(b.conversation(atShortcut: 1)?.todoId, "c")
         XCTAssertNil(b.conversation(atShortcut: 0))
         XCTAssertNil(b.conversation(atShortcut: 4))
@@ -102,6 +102,25 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(b.needsYou.map(\.todoId), ["c", "a"])
     }
 
+    func testWorkingAndReviewSplitTheOpenConversations() {
+        var early = conv("early", .idle, created: "2026-10-16T08:00:00Z")
+        early.statusUpdatedAt = "2026-10-16 12:00:00"   // started first, finished last
+        let late = conv("late", .idle, created: "2026-10-16T11:00:00Z")
+        let unknown = conv("unk", .unknown, created: "2026-10-16T09:00:00Z")
+        let b = board([early, late, unknown, conv("busy", .busy), conv("wait", .waiting),
+                       conv("gone", .idle, tmux: "gone"), conv("busy2", .busy, computer: box)],
+                      live: ["m1": ["t-early", "t-late", "t-unk", "t-busy", "t-wait"]])
+        XCTAssertEqual(b.review.map(\.todoId), ["early", "late", "unk"])
+        XCTAssertEqual(Set(b.working.map(\.todoId)), ["busy", "busy2"])
+        XCTAssertEqual(b.needsYou.map(\.todoId), ["wait"])
+        XCTAssertEqual(b.reviewCount(computerID: "m1"), 3)
+        XCTAssertEqual(b.workingCount(computerID: "m1"), 1)
+        XCTAssertEqual(b.workingCount(computerID: "m2"), 1)
+        XCTAssertEqual(b.conversation(atShortcut: 1, in: b.review)?.todoId, "early")
+        XCTAssertNil(b.conversation(atShortcut: 4, in: b.review))
+        assertAgrees(b)
+    }
+
     func testSectionCountsAndRunning() {
         let todos = [Todo(id: "a", section: .sp, title: "A"),
                      Todo(id: "b", section: .sp, title: "B", completed: true),
@@ -112,8 +131,8 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(b.openTodoCount(.p), 0)
         XCTAssertTrue(b.sectionNeedsYou(.sp))
         XCTAssertFalse(b.sectionNeedsYou(.i))
-        XCTAssertEqual(b.runningCount(computerID: "m1"), 2)
-        XCTAssertEqual(b.runningCount(computerID: "m2"), 1)
+        XCTAssertEqual(b.openCount(computerID: "m1"), 2)
+        XCTAssertEqual(b.openCount(computerID: "m2"), 1)
         XCTAssertEqual(b.needsYouCount(computerID: "m1"), 1)
         XCTAssertEqual(b.needsYouCount(computerID: "m2"), 0)
     }
@@ -136,7 +155,7 @@ final class BoardTests: XCTestCase {
         ], live: ["m1": ["t-a"]])
         assertAgrees(dead)
         XCTAssertEqual(dead.status(forTodo: "c"), .closed)
-        XCTAssertEqual(dead.needsYou.map(\.todoId), dead.runningNow.filter { dead.status(forTodo: $0.todoId) == .needsYou }.map(\.todoId))
+        XCTAssertEqual(dead.needsYou.map(\.todoId), dead.open.filter { dead.status(forTodo: $0.todoId) == .needsYou }.map(\.todoId))
         XCTAssertEqual(dead.all.map(\.todoId), ["a", "d", "b", "c"])
 
         let listed = HubDates.date(from: "2026-10-16T10:30:00Z")!
@@ -178,7 +197,7 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(counted.openTodoCount(.sp), 1)
         XCTAssertTrue(counted.sectionNeedsYou(.sp))
         XCTAssertFalse(counted.sectionNeedsYou(.i))
-        XCTAssertEqual(counted.runningCount(computerID: "m1"), 2)
+        XCTAssertEqual(counted.openCount(computerID: "m1"), 2)
         XCTAssertEqual(counted.needsYouCount(computerID: "m1"), 1)
         XCTAssertEqual(counted.needsYouCount(computerID: "m2"), 0)
     }
@@ -203,7 +222,7 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(b.status(forTodo: "x"), .closed)
         XCTAssertEqual(Set(b.newerThanListing.map(\.todoId)), ["u", "c"])
         XCTAssertEqual(b.needsYou.map(\.todoId), ["u"])
-        XCTAssertEqual(b.needsYou.map(\.todoId), b.runningNow.filter { b.status(forTodo: $0.todoId) == .needsYou }.map(\.todoId))
+        XCTAssertEqual(b.needsYou.map(\.todoId), b.open.filter { b.status(forTodo: $0.todoId) == .needsYou }.map(\.todoId))
         XCTAssertEqual(b.status(forTodo: "u"), b.status(forTodo: "u"))
         assertAgrees(b)
     }
@@ -212,11 +231,11 @@ final class BoardTests: XCTestCase {
                               file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(
             board.needsYou.map(\.todoId),
-            board.runningNow.filter { board.status(forTodo: $0.todoId) == .needsYou }.map(\.todoId),
+            board.open.filter { board.status(forTodo: $0.todoId) == .needsYou }.map(\.todoId),
             "needsYou must be the running conversations whose stored status is needs you",
             file: file, line: line
         )
-        let runningIDs = Set(board.runningNow.map(\.todoId))
+        let runningIDs = Set(board.open.map(\.todoId))
         for conversation in board.all {
             let status = board.status(forTodo: conversation.todoId)
             XCTAssertNotNil(status, file: file, line: line)
@@ -230,13 +249,23 @@ final class BoardTests: XCTestCase {
             XCTAssertNotEqual(board.status(forTodo: conversation.todoId), .closed, file: file, line: line)
             XCTAssertTrue(runningIDs.contains(conversation.todoId), file: file, line: line)
         }
-        var computerIDs = Set(board.runningNow.map(\.computer.id))
+        XCTAssertEqual(
+            Set((board.needsYou + board.working + board.review).map(\.listKey)), Set(board.open.map(\.listKey)),
+            "needs you, working and review must split the open conversations", file: file, line: line
+        )
+        XCTAssertEqual(board.needsYou.count + board.working.count + board.review.count, board.open.count,
+                       file: file, line: line)
+        var computerIDs = Set(board.open.map(\.computer.id))
         computerIDs.formUnion(board.needsYou.map(\.computer.id))
         computerIDs.insert("missing")
         for id in computerIDs {
-            XCTAssertEqual(board.runningCount(computerID: id), board.runningNow.filter { $0.computer.id == id }.count,
+            XCTAssertEqual(board.openCount(computerID: id), board.open.filter { $0.computer.id == id }.count,
                            file: file, line: line)
             XCTAssertEqual(board.needsYouCount(computerID: id), board.needsYou.filter { $0.computer.id == id }.count,
+                           file: file, line: line)
+            XCTAssertEqual(board.workingCount(computerID: id), board.working.filter { $0.computer.id == id }.count,
+                           file: file, line: line)
+            XCTAssertEqual(board.reviewCount(computerID: id), board.review.filter { $0.computer.id == id }.count,
                            file: file, line: line)
         }
         for section in TodoSection.allCases {
@@ -249,7 +278,7 @@ final class BoardTests: XCTestCase {
             )
         }
         for n in 1...9 {
-            let expected = n <= board.runningNow.count ? board.runningNow[n - 1].todoId : nil
+            let expected = n <= board.open.count ? board.open[n - 1].todoId : nil
             XCTAssertEqual(board.conversation(atShortcut: n)?.todoId, expected, file: file, line: line)
         }
     }

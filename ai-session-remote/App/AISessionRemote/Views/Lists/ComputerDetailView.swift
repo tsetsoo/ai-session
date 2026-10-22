@@ -70,7 +70,7 @@ struct ComputerDetailView: View {
         let board = model.board
         let host = HostLookup.host(for: computer, in: hosts)
         let todos = Dictionary(store.todos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let running = board.runningNow.filter { conversation in
+        let running = board.open.filter { conversation in
             let todo = todos[conversation.todoId]
             return conversation.computer.id == computer.id
                 && ListSearch.matches(query, todo?.title,

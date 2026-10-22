@@ -18,7 +18,8 @@ final class MacShellTests: XCTestCase {
     func testSidebarCountsFollowTheBoard() {
         let counts = SidebarCounts(board: board, computers: DemoFixtures.computers)
         XCTAssertEqual(counts.needsYou, 2)
-        XCTAssertEqual(counts.runningNow, 5)
+        XCTAssertEqual(counts.review, 1)
+        XCTAssertEqual(counts.working, 2)
         XCTAssertEqual(counts.sections, [
             .init(section: .sp, openTodos: 3, needsYou: true),
             .init(section: .i, openTodos: 2, needsYou: true),
@@ -26,8 +27,8 @@ final class MacShellTests: XCTestCase {
             .init(section: .p, openTodos: 2, needsYou: false),
         ])
         XCTAssertEqual(counts.computers, [
-            .init(id: "mac-studio", name: "mac-studio", running: 3),
-            .init(id: "linux-box", name: "linux-box", running: 2),
+            .init(id: "mac-studio", name: "mac-studio", open: 3),
+            .init(id: "linux-box", name: "linux-box", open: 2),
         ])
     }
 
@@ -40,8 +41,9 @@ final class MacShellTests: XCTestCase {
         )
         let counts = SidebarCounts(board: board, computers: DemoFixtures.computers)
         XCTAssertEqual(counts.needsYou, 1)
-        XCTAssertEqual(counts.runningNow, 2)
-        XCTAssertEqual(counts.computers.map(\.running), [0, 2])
+        XCTAssertEqual(counts.review, 0)
+        XCTAssertEqual(counts.working, 1)
+        XCTAssertEqual(counts.computers.map(\.open), [0, 2])
         XCTAssertFalse(counts.sections[0].needsYou)
     }
 
@@ -157,7 +159,8 @@ final class MacShellTests: XCTestCase {
     func testHeaderTitles() {
         let computers = DemoFixtures.computers
         XCTAssertEqual(ContentHeader.title(for: .needsYou, computers: computers), "Needs you")
-        XCTAssertEqual(ContentHeader.title(for: .runningNow, computers: computers), "Running now")
+        XCTAssertEqual(ContentHeader.title(for: .review, computers: computers), "Ready for review")
+        XCTAssertEqual(ContentHeader.title(for: .working, computers: computers), "Working")
         XCTAssertEqual(ContentHeader.title(for: .section(.si), computers: computers), "Si")
         XCTAssertEqual(ContentHeader.title(for: .projects, computers: computers), "Projects")
         XCTAssertEqual(ContentHeader.title(for: .computer("linux-box"), computers: computers), "linux-box")
@@ -165,25 +168,17 @@ final class MacShellTests: XCTestCase {
 
     func testHeaderSubtitles() {
         let computer: (TodoSection) -> String? = { $0 == .sp ? "mac-studio" : nil }
-        XCTAssertEqual(ContentHeader.subtitle(for: .runningNow, board: board, sectionComputer: computer),
-                       "5 conversations · 2 need you")
+        XCTAssertEqual(ContentHeader.subtitle(for: .review, board: board, sectionComputer: computer),
+                       "1 conversation")
+        XCTAssertEqual(ContentHeader.subtitle(for: .working, board: board, sectionComputer: computer),
+                       "2 conversations")
         XCTAssertEqual(ContentHeader.subtitle(for: .needsYou, board: board, sectionComputer: computer),
                        "2 conversations")
         XCTAssertEqual(ContentHeader.subtitle(for: .section(.sp), board: board, sectionComputer: computer),
                        "3 open · mac-studio")
         XCTAssertEqual(ContentHeader.subtitle(for: .section(.p), board: board, sectionComputer: computer), "2 open")
         XCTAssertEqual(ContentHeader.subtitle(for: .computer("mac-studio"), board: board, sectionComputer: computer),
-                       "3 running · 1 needs you")
-    }
-
-    func testRunningNowWithOneNeedingYou() {
-        let board = ConversationBoard(
-            todos: DemoFixtures.todos,
-            conversations: Dictionary(uniqueKeysWithValues: DemoFixtures.conversations.map { ($0.todoId, $0) }),
-            liveTmux: ["linux-box": []]
-        )
-        XCTAssertEqual(ContentHeader.subtitle(for: .runningNow, board: board) { _ in nil },
-                       "3 conversations · 1 needs you")
+                       "1 needs you · 1 to review · 1 working")
     }
 
     // MARK: Search
@@ -201,12 +196,22 @@ final class MacShellTests: XCTestCase {
 
     private func todo(_ id: String) -> Todo { DemoFixtures.todos.first { $0.id == id }! }
 
-    func testShortcutTargetsFollowRunningNow() {
-        // Running now: t1…t5 (same start time, by id); ⌘6 and beyond have no target.
+    func testShortcutTargetsFollowTheOpenConversations() {
+        // Open: t1…t5 (same start time, by id); ⌘6 and beyond have no target.
         XCTAssertEqual(PaletteModel.shortcutTarget(1, board: board, todos: DemoFixtures.todos)?.id, "t1")
         XCTAssertEqual(PaletteModel.shortcutTarget(5, board: board, todos: DemoFixtures.todos)?.title,
                        "Santé party-size rates")
         XCTAssertNil(PaletteModel.shortcutTarget(6, board: board, todos: DemoFixtures.todos))
+    }
+
+    func testShortcutsNumberTheConversationListOnScreen() {
+        let working = MacShell.shortcutList(for: .working, board: board)
+        XCTAssertEqual(working.map(\.todoId), ["t2", "t4"])
+        XCTAssertEqual(PaletteModel.shortcutTarget(1, board: board, todos: DemoFixtures.todos, in: working)?.id, "t2")
+        XCTAssertNil(PaletteModel.shortcutTarget(3, board: board, todos: DemoFixtures.todos, in: working))
+        XCTAssertEqual(MacShell.shortcutList(for: .review, board: board).map(\.todoId), ["t5"])
+        XCTAssertEqual(MacShell.shortcutList(for: .needsYou, board: board).map(\.todoId), ["t1", "t3"])
+        XCTAssertEqual(MacShell.shortcutList(for: .section(.sp), board: board).count, 5)
     }
 
     func testRateOnTheDemoBoardListsOnlyWholeMatches() {
@@ -222,21 +227,48 @@ final class MacShellTests: XCTestCase {
     }
 
     func testGoingToATodoKeepsAListThatHasIt() {
-        // Needs you and Running now keep what they list; a section keeps its own todos.
+        // Needs you, Ready for review and Working keep what they list; a section keeps its own todos.
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t1"), from: .needsYou, board: board), .needsYou)
-        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .runningNow, board: board), .runningNow)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .review, board: board), .review)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t2"), from: .working, board: board), .working)
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .section(.sp), board: board), .section(.sp))
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t7"), from: .section(.i), board: board), .section(.i))
     }
 
     func testGoingToATodoElsewhereSwitchesList() {
-        // t2 works (not in Needs you); t7 has no conversation; Projects and computers never list todos.
-        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t2"), from: .needsYou, board: board), .runningNow)
-        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t3"), from: .section(.sp), board: board), .runningNow)
-        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t7"), from: .runningNow, board: board), .section(.i))
+        // Each goes to the list for its status; t7 has no conversation; Projects and computers
+        // never list todos.
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t2"), from: .needsYou, board: board), .working)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .working, board: board), .review)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t3"), from: .section(.sp), board: board), .needsYou)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t7"), from: .review, board: board), .section(.i))
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t8"), from: .projects, board: board), .section(.p))
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t1"), from: .computer("mac-studio"), board: board),
-                       .runningNow)
+                       .needsYou)
+    }
+
+    func testGoingToOneOfATodosConversationsUsesThatConversationsList() {
+        // t5 idles; a second, busy conversation makes the todo's most urgent status Working.
+        let busy = Conversation(id: "c-t5b", todoId: "t5", computer: DemoFixtures.computers[0], cwd: "~/x",
+                                tool: "claude", tmuxName: "todo-t5b", sessionId: "demo-t5b", status: .busy,
+                                createdAt: "2026-10-16T10:00:00Z")
+        var conversations = Dictionary(uniqueKeysWithValues: DemoFixtures.conversations.map { ($0.id, $0) })
+        conversations[busy.id] = busy
+        let board = ConversationBoard(todos: DemoFixtures.todos, conversations: conversations, liveTmux: [:])
+        let idle = board.review.first { $0.todoId == "t5" }!
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), conversation: idle, from: .review, board: board),
+                       .review)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .review, board: board), .working)
+    }
+
+    func testShortcutListsMatchTheListsOnScreen() {
+        for item in [AppModel.SidebarItem.needsYou, .review, .working] {
+            let filter = MacShell.conversationFilter(for: item)
+            XCTAssertNotNil(filter)
+            XCTAssertEqual(MacShell.shortcutList(for: item, board: board).map(\.listKey),
+                           filter?.conversations(board).map(\.listKey))
+        }
+        XCTAssertNil(MacShell.conversationFilter(for: .projects))
     }
 
     func testDismissingThePaletteReturnsFocusToTheVisibleTerminal() {
@@ -250,7 +282,9 @@ final class MacShellTests: XCTestCase {
 
     func testDemoSidebarArgument() {
         XCTAssertEqual(AppModel.SidebarItem(demoArgument: "needsyou"), .needsYou)
-        XCTAssertEqual(AppModel.SidebarItem(demoArgument: "running"), .runningNow)
+        XCTAssertEqual(AppModel.SidebarItem(demoArgument: "review"), .review)
+        XCTAssertEqual(AppModel.SidebarItem(demoArgument: "working"), .working)
+        XCTAssertEqual(AppModel.SidebarItem(demoArgument: "running"), .working)
         XCTAssertEqual(AppModel.SidebarItem(demoArgument: "Si"), .section(.si))
         XCTAssertEqual(AppModel.SidebarItem(demoArgument: "computer:mac-studio"), .computer("mac-studio"))
         XCTAssertNil(AppModel.SidebarItem(demoArgument: "sp"))

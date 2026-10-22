@@ -35,6 +35,8 @@ struct MacShell: View {
     @State private var frameRequest: FrameRequest?
     /// A computer's Other Sessions, On This Computer or Open Shell, shown in the detail column.
     @State private var computerPage: ComputerPage?
+    /// The sidebar row picked for the user at launch, until they pick one or it moves to Needs you.
+    @State private var defaultSidebar: AppModel.SidebarItem?
 
     private var store: TodoHubStore { model.store }
 
@@ -48,7 +50,7 @@ struct MacShell: View {
                 .navigationSplitViewColumnWidth(min: 300, ideal: 352, max: 520)
         } detail: {
             // Its own view, so choosing a conversation does not rebuild the list column.
-            ShellDetail(frameRequest: $frameRequest, computerPage: computerPage, onOpen: open)
+            ShellDetail(frameRequest: $frameRequest, computerPage: computerPage, onOpen: { open($0) })
         }
         .tint(DS.accent)
         .environment(\.openAppSettings) { settings = SettingsRequest(initial: $0) }
@@ -71,6 +73,7 @@ struct MacShell: View {
         .overlay {
             if showingPalette {
                 CommandPalette(isPresented: $showingPalette, selectedTodoID: visibleTodoID,
+                               shortcutList: Self.shortcutList(for: sidebarItem, board: model.board),
                                initialQuery: initialPaletteQuery, onActivate: activate,
                                onDismiss: returnFocusToTerminal)
             }
@@ -81,6 +84,17 @@ struct MacShell: View {
         // ⌘K, ⌘1–⌘9 and ⌘N in the Conversation menu act on this window's shell.
         .focusedSceneValue(\.shellCommands, shellCommands)
         .todoStoreErrorAlert(store)
+        // Launched before sync filled the board: move to Needs you once something does, unless
+        // the user has picked a row since.
+        .onChange(of: model.board.needsYou.isEmpty) { _, empty in
+            guard let chosen = defaultSidebar, model.sidebarSelection == chosen else {
+                defaultSidebar = nil
+                return
+            }
+            guard !empty else { return }
+            model.sidebarSelection = .needsYou
+            defaultSidebar = nil
+        }
         .onChange(of: model.sidebarSelection) { _, _ in
             query = ""
             computerPage = nil
@@ -91,11 +105,7 @@ struct MacShell: View {
         .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
             guard let todoID, let todo = store.todos.first(where: { $0.id == todoID }) else { return }
             model.pendingOpenTodoID = nil
-            switch sidebarItem {
-            case .needsYou, .runningNow: break
-            case .section(todo.section): break
-            default: model.sidebarSelection = .needsYou
-            }
+            model.sidebarSelection = Self.sidebarTarget(showing: todo, from: sidebarItem, board: model.board)
             computerPage = nil
             model.selectedConversationID = store.conversationToOpen(forTodo: todo.id)
             model.selectedTodoID = todo.id
@@ -121,7 +131,7 @@ struct MacShell: View {
 
     // MARK: List column
 
-    private var sidebarItem: AppModel.SidebarItem { model.sidebarSelection ?? .runningNow }
+    private var sidebarItem: AppModel.SidebarItem { model.sidebarSelection ?? .review }
 
     @ViewBuilder
     private var contentColumn: some View {
@@ -172,15 +182,12 @@ struct MacShell: View {
     @ViewBuilder
     private func list(for item: AppModel.SidebarItem) -> some View {
         switch item {
-        case .needsYou:
-            ConversationListView(filter: .constant(.needsYou), showsFilterPicker: false,
-                                 query: query, selection: selection, onOpen: open)
-        case .runningNow:
-            ConversationListView(filter: .constant(.running), showsFilterPicker: false,
+        case .needsYou, .review, .working:
+            ConversationListView(filter: .constant(Self.conversationFilter(for: item) ?? .all), showsFilterPicker: false,
                                  showsShortcuts: Self.showsShortcuts, query: query, selection: selection,
-                                 onOpen: open)
+                                 onOpen: { open($0) })
         case let .section(section):
-            TodoListView(sections: [section], query: query, selection: selection, onOpen: open)
+            TodoListView(sections: [section], query: query, selection: selection, onOpen: { open($0) })
         case .projects:
             ProjectsList(store: store, selection: Binding(
                 get: { model.selectedProjectID },
@@ -190,7 +197,7 @@ struct MacShell: View {
             if let computer = store.computers.first(where: { $0.id == id }) {
                 // Other Sessions, On This Computer and Open Shell select like conversations and
                 // open in the detail column: the list column is too narrow for them.
-                ComputerDetailView(computer: computer, query: query, selection: selection, onOpen: open)
+                ComputerDetailView(computer: computer, query: query, selection: selection, onOpen: { open($0) })
                     .id(id)
             } else {
                 ContentUnavailableView("Computer Not Found", systemImage: "desktopcomputer")
@@ -198,7 +205,7 @@ struct MacShell: View {
         }
     }
 
-    /// ⌘1–⌘9 hints in Running now: a keyboard is a given on the Mac only.
+    /// ⌘1–⌘9 hints in the conversation lists: a keyboard is a given on the Mac only.
     private static var showsShortcuts: Bool {
         #if os(macOS)
         true
@@ -232,11 +239,13 @@ struct MacShell: View {
         let canAdd = model.isConfigured && !store.isOffline
         return ShellCommands(
             goTo: { showingPalette = true },
-            conversationCount: min(model.board.runningNow.count, 9),
+            conversationCount: min(Self.shortcutList(for: sidebarItem, board: model.board).count, 9),
             openConversation: { n in
-                guard let todo = PaletteModel.shortcutTarget(n, board: model.board, todos: store.todos) else { return }
+                let list = Self.shortcutList(for: sidebarItem, board: model.board)
+                guard let conversation = model.board.conversation(atShortcut: n, in: list),
+                      let todo = store.todos.first(where: { $0.id == conversation.todoId }) else { return }
                 showingPalette = false
-                go(to: todo)
+                go(to: todo, conversation: conversation)
             },
             newTodo: canAdd ? {
                 showingPalette = false
@@ -254,7 +263,15 @@ struct MacShell: View {
     /// A palette row: ⏎ opens it here, ⌘⏎ a conversation or todo in its own window.
     private func activate(_ item: PaletteItem, newWindow: Bool) {
         switch item {
-        case let .conversation(todo, _, _, _), let .todo(todo, _, _):
+        case let .conversation(todo, conversation, _, _):
+            #if os(macOS)
+            if newWindow {
+                model.popOut(todo.id, openWindow: openWindow)
+                return
+            }
+            #endif
+            go(to: todo, conversation: conversation)
+        case let .todo(todo, _, _):
             #if os(macOS)
             if newWindow {
                 model.popOut(todo.id, openWindow: openWindow)
@@ -280,11 +297,12 @@ struct MacShell: View {
         }
     }
 
-    /// ⌘K and ⌘1–⌘9: show the todo in a list that has it, select it and start (or resume) its
-    /// conversation, like ⏎. A popped-out one comes forward instead.
-    private func go(to todo: Todo) {
-        model.sidebarSelection = Self.sidebarTarget(showing: todo, from: sidebarItem, board: model.board)
-        open(todo)
+    /// ⌘K and ⌘1–⌘9: show the todo in a list that has it, select it and start (or resume)
+    /// `conversation`, or its most urgent one, like ⏎. A popped-out one comes forward instead.
+    private func go(to todo: Todo, conversation: Conversation? = nil) {
+        model.sidebarSelection = Self.sidebarTarget(showing: todo, conversation: conversation, from: sidebarItem,
+                                                    board: model.board)
+        open(todo, conversation: conversation)
         // Already attached, nothing reconnects to take focus: type into it straight away.
         model.requestTerminalFocus(todoID: todo.id)
     }
@@ -302,17 +320,36 @@ struct MacShell: View {
         return visibleTodoID
     }
 
-    /// The current list when it has the todo, else Running now for a running conversation, else
-    /// the todo's section.
-    static func sidebarTarget(showing todo: Todo, from current: AppModel.SidebarItem,
+    /// The conversation list a sidebar row shows, if it shows one.
+    static func conversationFilter(for item: AppModel.SidebarItem) -> ConversationListView.Filter? {
+        switch item {
+        case .needsYou: .needsYou
+        case .review: .review
+        case .working: .working
+        default: nil
+        }
+    }
+
+    /// ⌘1–⌘9 number the conversation list on screen; elsewhere, every open conversation.
+    static func shortcutList(for item: AppModel.SidebarItem, board: ConversationBoard) -> [Conversation] {
+        conversationFilter(for: item)?.conversations(board) ?? board.open
+    }
+
+    /// The current list when it has the todo (or `conversation`), else the conversation list for
+    /// its status, else the todo's section.
+    static func sidebarTarget(showing todo: Todo, conversation: Conversation? = nil, from current: AppModel.SidebarItem,
                               board: ConversationBoard) -> AppModel.SidebarItem {
-        let status = board.status(forTodo: todo.id)
-        let isRunning = status.map { $0 != .closed } ?? false
+        let status = conversation.map(board.status(of:)) ?? board.status(forTodo: todo.id)
+        let list: AppModel.SidebarItem? = switch status {
+        case .needsYou: .needsYou
+        case .idle: .review
+        case .working: .working
+        case .closed, nil: nil
+        }
         switch current {
-        case .needsYou where status == .needsYou: return current
-        case .runningNow where isRunning: return current
         case .section(todo.section): return current
-        default: return isRunning ? .runningNow : .section(todo.section)
+        case _ where current == list: return current
+        default: return list ?? .section(todo.section)
         }
     }
 
@@ -336,10 +373,11 @@ struct MacShell: View {
         })
     }
 
-    /// "Open" from a row's context menu: select it and start (or resume) it.
-    private func open(_ todo: Todo) {
+    /// "Open" from a row's context menu: select it and start (or resume) `conversation`, or the
+    /// todo's most urgent one.
+    private func open(_ todo: Todo, conversation: Conversation? = nil) {
         computerPage = nil
-        model.selectedConversationID = store.conversationToOpen(forTodo: todo.id)
+        model.selectedConversationID = conversation?.listKey ?? store.conversationToOpen(forTodo: todo.id)
         model.selectedTodoID = todo.id
         start(todo.id)
     }
@@ -359,14 +397,14 @@ struct MacShell: View {
     private func applyInitialSelection() {
         #if DEBUG
         if DemoFixtures.isEnabled {
-            // `-uiDemoSidebar needsyou|running|Sp|I|Si|P|computer:<id>` and `-uiDemoOpen <todo id>`.
+            // `-uiDemoSidebar needsyou|review|working|Sp|I|Si|P|computer:<id>` and `-uiDemoOpen <todo id>`.
             // Only on first appearance: an iPad shell swap keeps what was selected.
             if model.sidebarSelection == nil {
                 model.sidebarSelection = DemoFixtures.value(after: "-uiDemoSidebar")
-                    .flatMap(AppModel.SidebarItem.init(demoArgument:)) ?? .runningNow
+                    .flatMap(AppModel.SidebarItem.init(demoArgument:)) ?? .review
             }
             if model.selectedTodoID == nil {
-                model.selectedTodoID = DemoFixtures.value(after: "-uiDemoOpen") ?? model.board.runningNow.first?.todoId
+                model.selectedTodoID = DemoFixtures.value(after: "-uiDemoOpen") ?? model.board.open.first?.todoId
             }
             // `-uiDemoPalette <query>`: the ⌘K palette open with that query ("" for none).
             if let query = DemoFixtures.value(after: "-uiDemoPalette") {
@@ -402,7 +440,11 @@ struct MacShell: View {
             model.selectedProjectID = ProjectsDemo.projectPage(store) ?? demo.projects.first?.id
         }
         #endif
-        if model.sidebarSelection == nil { model.sidebarSelection = .runningNow }
+        if model.sidebarSelection == nil {
+            let item: AppModel.SidebarItem = model.board.needsYou.isEmpty ? .review : .needsYou
+            model.sidebarSelection = item
+            defaultSidebar = item
+        }
     }
 
     #if DEBUG && os(macOS)
@@ -1021,11 +1063,12 @@ extension AppModel {
 
 #if DEBUG
 extension AppModel.SidebarItem {
-    /// `-uiDemoSidebar` values: needsyou, running, a section code, projects, or computer:<id>.
+    /// `-uiDemoSidebar` values: needsyou, review, working, a section code, projects, or computer:<id>.
     init?(demoArgument: String) {
         switch demoArgument {
         case "needsyou": self = .needsYou
-        case "running": self = .runningNow
+        case "review": self = .review
+        case "working", "running": self = .working
         case "projects": self = .projects
         default:
             if let section = TodoSection(rawValue: demoArgument) {

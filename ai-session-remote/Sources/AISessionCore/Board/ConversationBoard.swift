@@ -1,18 +1,20 @@
 import Foundation
 
-/// Derived view of todos and their conversations: what is running, what needs attention, counts.
+/// Derived view of todos and their conversations: what is open, working, waiting for review or
+/// needs attention, and counts.
 ///
 /// Immutable. Each conversation's change date is parsed once here; the lists and counts are stored
 /// so later reads do not scan or parse again. `AppModel` keeps one instance and replaces it only
 /// when the inputs change.
 public final class ConversationBoard: Sendable {
-    private let running: [Conversation]
     private let closed: [Conversation]
     private let statusByTodoID: [String: ConversationDisplayStatus]
     private let statusByListKey: [String: ConversationDisplayStatus]
     private let openTodoCounts: [TodoSection: Int]
     private let sectionNeedsYouFlags: [TodoSection: Bool]
-    private let runningCounts: [String: Int]
+    private let openCounts: [String: Int]
+    private let workingCounts: [String: Int]
+    private let reviewCounts: [String: Int]
     private let needsYouCounts: [String: Int]
 
     /// - Parameters:
@@ -30,9 +32,11 @@ public final class ConversationBoard: Sendable {
         open.reserveCapacity(conversations.count)
         var closedConversations: [Conversation] = []
         var newer: [Conversation] = []
+        var changedByListKey: [String: Date] = [:]
 
         for conversation in conversations.values {
             let changed = Self.changeDate(conversation)
+            changedByListKey[conversation.listKey] = changed
             let alive = Self.tmuxAlive(conversation, changed: changed, liveTmux: liveTmux, listedAt: listedAt)
             let status = ConversationDisplayStatus(conversation.status, tmuxAlive: alive)
             statusByListKey[conversation.listKey] = status
@@ -56,32 +60,56 @@ public final class ConversationBoard: Sendable {
         }
 
         var needing: [Conversation] = []
-        var runningByComputer: [String: Int] = [:]
+        var working: [Conversation] = []
+        var review: [Conversation] = []
+        var openByComputer: [String: Int] = [:]
+        var workingByComputer: [String: Int] = [:]
+        var reviewByComputer: [String: Int] = [:]
         var needsByComputer: [String: Int] = [:]
         for (conversation, status) in open {
-            runningByComputer[conversation.computer.id, default: 0] += 1
-            if status == .needsYou {
+            let computer = conversation.computer.id
+            openByComputer[computer, default: 0] += 1
+            switch status {
+            case .needsYou:
                 needing.append(conversation)
-                needsByComputer[conversation.computer.id, default: 0] += 1
+                needsByComputer[computer, default: 0] += 1
+            case .working:
+                working.append(conversation)
+                workingByComputer[computer, default: 0] += 1
+            case .idle:
+                review.append(conversation)
+                reviewByComputer[computer, default: 0] += 1
+            case .closed:
+                break
             }
         }
+        // Most recently finished first; `open`'s newest-first order breaks ties.
+        review = review.enumerated().sorted { lhs, rhs in
+            let l = changedByListKey[lhs.element.listKey] ?? .distantPast
+            let r = changedByListKey[rhs.element.listKey] ?? .distantPast
+            return l != r ? l > r : lhs.offset < rhs.offset
+        }.map(\.element)
 
-        var openCounts = Dictionary(uniqueKeysWithValues: TodoSection.allCases.map { ($0, 0) })
+        var openTodos = Dictionary(uniqueKeysWithValues: TodoSection.allCases.map { ($0, 0) })
         var needsSection = Dictionary(uniqueKeysWithValues: TodoSection.allCases.map { ($0, false) })
         for todo in todos {
-            if !todo.completed { openCounts[todo.section, default: 0] += 1 }
+            if !todo.completed { openTodos[todo.section, default: 0] += 1 }
             if statuses[todo.id] == .needsYou { needsSection[todo.section] = true }
         }
 
-        self.running = open.map(\.0)
+        self.open = open.map(\.0)
         self.closed = closedConversations
         self.needsYou = needing
+        self.working = working
+        self.review = review
         self.newerThanListing = newer
         self.statusByTodoID = statuses
         self.statusByListKey = statusByListKey
-        self.openTodoCounts = openCounts
+        self.openTodoCounts = openTodos
         self.sectionNeedsYouFlags = needsSection
-        self.runningCounts = runningByComputer
+        self.openCounts = openByComputer
+        self.workingCounts = workingByComputer
+        self.reviewCounts = reviewByComputer
         self.needsYouCounts = needsByComputer
     }
 
@@ -122,23 +150,32 @@ public final class ConversationBoard: Sendable {
         statusByListKey[conversation.listKey] ?? .idle
     }
 
-    /// `createdAt` is sortable UTC ISO-8601, so strings compare in time order.
-    public var runningNow: [Conversation] { running }
+    /// Every conversation whose session is open, whatever its status, newest first.
+    public let open: [Conversation]
 
+    /// Stopped on a permission prompt, newest first.
     public let needsYou: [Conversation]
+
+    /// The agent is busy, newest first.
+    public let working: [Conversation]
+
+    /// The turn ended (or no status yet): waiting for you to read it. Most recently changed first.
+    public let review: [Conversation]
 
     /// Conversations missing from their computer's listing that changed after it was taken:
     /// that computer needs listing again before they can count as closed.
     public let newerThanListing: [Conversation]
 
-    /// Running now, then the closed conversations, newest first. Both lists are stored
+    /// The open conversations, then the closed ones, newest first. Both lists are stored
     /// with the snapshot, so a list refresh does not sort the closed rows again.
-    public var all: [Conversation] { running + closed }
+    public var all: [Conversation] { open + closed }
 
-    /// 1-based; only the first nine get a keyboard shortcut.
-    public func conversation(atShortcut n: Int) -> Conversation? {
-        guard (1...9).contains(n), n <= running.count else { return nil }
-        return running[n - 1]
+    /// 1-based into `list` (the open conversations by default); only the first nine get a
+    /// keyboard shortcut.
+    public func conversation(atShortcut n: Int, in list: [Conversation]? = nil) -> Conversation? {
+        let list = list ?? open
+        guard (1...9).contains(n), n <= list.count else { return nil }
+        return list[n - 1]
     }
 
     public func openTodoCount(_ section: TodoSection) -> Int {
@@ -149,8 +186,16 @@ public final class ConversationBoard: Sendable {
         sectionNeedsYouFlags[section] ?? false
     }
 
-    public func runningCount(computerID: String) -> Int {
-        runningCounts[computerID] ?? 0
+    public func openCount(computerID: String) -> Int {
+        openCounts[computerID] ?? 0
+    }
+
+    public func workingCount(computerID: String) -> Int {
+        workingCounts[computerID] ?? 0
+    }
+
+    public func reviewCount(computerID: String) -> Int {
+        reviewCounts[computerID] ?? 0
     }
 
     public func needsYouCount(computerID: String) -> Int {

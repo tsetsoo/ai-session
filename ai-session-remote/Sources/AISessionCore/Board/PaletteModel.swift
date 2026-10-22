@@ -83,12 +83,15 @@ public enum PaletteModel {
     ///
     /// The actions are a short fixed list, so they stay whatever the query. `canEdit` false
     /// (offline, or no server) leaves only Open Settings.
+    /// - Parameter shortcutList: the list ⌘1–⌘9 number (the one on screen); the open
+    ///   conversations by default.
     public static func groups(query: String, board: ConversationBoard, todos: [Todo], projects: [Project],
-                              selectedTodoID: String?, canEdit: Bool) -> [PaletteGroup] {
+                              selectedTodoID: String?, canEdit: Bool,
+                              shortcutList: [Conversation]? = nil) -> [PaletteGroup] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let todosByID = Dictionary(todos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let running = board.runningNow
-        let shortcuts = Dictionary(running.prefix(9).enumerated().map { ($1.listKey, $0 + 1) },
+        let running = board.open
+        let shortcuts = Dictionary((shortcutList ?? running).prefix(9).enumerated().map { ($1.listKey, $0 + 1) },
                                    uniquingKeysWith: { first, _ in first })
         let needsYou = Set(board.needsYou.map(\.listKey))
 
@@ -122,9 +125,11 @@ public enum PaletteModel {
         return groups.filter { !$0.items.isEmpty }
     }
 
-    /// ⌘n: the n-th Running-now conversation's todo (1-based); nothing past the end.
-    public static func shortcutTarget(_ n: Int, board: ConversationBoard, todos: [Todo]) -> Todo? {
-        guard let conversation = board.conversation(atShortcut: n) else { return nil }
+    /// ⌘n: the todo of the n-th conversation in `list` (1-based; the open conversations by
+    /// default); nothing past the end.
+    public static func shortcutTarget(_ n: Int, board: ConversationBoard, todos: [Todo],
+                                      in list: [Conversation]? = nil) -> Todo? {
+        guard let conversation = board.conversation(atShortcut: n, in: list) else { return nil }
         return todos.first { $0.id == conversation.todoId }
     }
 
