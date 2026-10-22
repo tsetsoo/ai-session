@@ -703,7 +703,8 @@ private struct ConversationColumn: View {
             ),
             onDuplicate: { tool, name in
                 send(.duplicate(tool: tool, name: name), for: todo.id)
-            }
+            },
+            isDuplicating: state?.isDuplicating ?? false
         )
     }
 
