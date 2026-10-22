@@ -498,6 +498,26 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .unknown)
     }
 
+    /// One failed check of the selection's computer is asked once more, a moment later.
+    func testFailedComputerRefreshIsAskedOnceMore() async {
+        let calls = ListingCalls()
+        let mode = Mode()
+        let model = makeModel { computer in
+            await calls.record(computer.id)
+            if await mode.failMac { throw ListingFailed() }
+            return ["todo-t1"]
+        }
+        model.staleRetryDelay = .zero
+        await mode.set(failMac: true)
+        await model.refreshLiveness(forTodo: "t1", hosts: [])
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .unknown)
+        await mode.set(failMac: false)
+        await settle(model) { model.attachReadiness(forTodo: "t1") == .running }
+        XCTAssertEqual(model.attachReadiness(forTodo: "t1"), .running)
+        let listed = await calls.take()
+        XCTAssertEqual(listed, [mac.id, mac.id])
+    }
+
     /// A slow full listing already running must not hold up the selection's own computer, nor
     /// put its older answer back when it lands.
     func testComputerRefreshAppliesBeforeAnInFlightFullListing() async {
