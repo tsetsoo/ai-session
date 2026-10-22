@@ -71,9 +71,67 @@ final class TerminalTouchScrollTests: XCTestCase {
         XCTAssertNil(momentum.advance(by: 1.0 / 60))
     }
 
+    func testAHardFlickIsCapped() {
+        var hard = TerminalScrollMomentum(velocity: 20000)
+        var capped = TerminalScrollMomentum(velocity: TerminalScrollMomentum.maxSpeed)
+        XCTAssertEqual(hard.advance(by: 1.0 / 60), capped.advance(by: 1.0 / 60))
+    }
+
     func testSlowReleaseHasNoMomentum() {
         var momentum = TerminalScrollMomentum(velocity: 20)
         XCTAssertNil(momentum.advance(by: 1.0 / 60))
+    }
+}
+
+final class TerminalStepPacerTests: XCTestCase {
+    func testOneStepGoesOutAtOnce() {
+        var pacer = TerminalStepPacer()
+        pacer.add(1)
+        XCTAssertEqual(pacer.next(), 1)
+        XCTAssertEqual(pacer.next(), 0)
+    }
+
+    func testABurstIsSpreadOverFrames() {
+        var pacer = TerminalStepPacer()
+        pacer.add(6)
+        var frames: [Int] = []
+        while true {
+            let step = pacer.next()
+            if step == 0 { break }
+            frames.append(step)
+        }
+        XCTAssertEqual(frames.reduce(0, +), 6, "every step is sent")
+        XCTAssertGreaterThan(frames.count, 1, "a burst is not sent in one frame")
+        XCTAssertLessThan(frames.max()!, 6)
+    }
+
+    func testABigBacklogDrainsWithinAFewFrames() {
+        var pacer = TerminalStepPacer()
+        pacer.add(60)
+        var frames = 0
+        while pacer.next() != 0 { frames += 1 }
+        XCTAssertLessThanOrEqual(frames, 12, "a fast flick must not lag far behind")
+    }
+
+    func testStepsKeepTheirDirection() {
+        var pacer = TerminalStepPacer()
+        pacer.add(-3)
+        XCTAssertLessThan(pacer.next(), 0)
+    }
+
+    func testReversingCancelsWhatIsStillQueued() {
+        var pacer = TerminalStepPacer()
+        pacer.add(4)
+        pacer.add(-4)
+        XCTAssertEqual(pacer.next(), 0)
+        XCTAssertTrue(pacer.isIdle)
+    }
+
+    func testClearDropsTheQueue() {
+        var pacer = TerminalStepPacer()
+        pacer.add(5)
+        pacer.clear()
+        XCTAssertEqual(pacer.next(), 0)
     }
 }
 
