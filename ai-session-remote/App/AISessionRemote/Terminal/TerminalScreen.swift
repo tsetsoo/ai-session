@@ -255,12 +255,21 @@ final class TerminalCoordinator: TerminalViewDelegate {
         session?.send(bytes[...])
     }
 
+    /// Pastes the clipboard the way SwiftTerm's own paste does: bracketed when the program
+    /// asked for bracketed paste, so a multi-line paste isn't taken as several Returns.
     func pasteFromClipboard() {
-        guard let text = PlatformSupport.pasteboardString,
-              let bytes = text.data(using: .utf8)?.map({ $0 }),
-              !bytes.isEmpty
-        else { return }
-        send(bytes)
+        guard let text = PlatformSupport.pasteboardString, !text.isEmpty else { return }
+        send(TerminalPaste.bytes(for: text, bracketed: isBracketedPasteMode))
+    }
+
+    /// Types `text` as a paste, then Return.
+    func submit(_ text: String) {
+        send(TerminalPaste.submission(text, bracketed: isBracketedPasteMode))
+    }
+
+    /// The program in the terminal turned bracketed paste on (`ESC[?2004h`).
+    private var isBracketedPasteMode: Bool {
+        terminalView?.getTerminal().bracketedPasteMode ?? false
     }
 
     /// Runs `disconnect()` on this turn, before the first await, so a close already queued

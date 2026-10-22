@@ -857,8 +857,7 @@ struct ConversationFrame: View {
         guard let launch = duplicateLaunch,
               launch.conversationID == readyConversation?.conversation.id,
               let paste = launch.paste else { return }
-        let text = paste.hasSuffix("\n") ? paste : paste + "\n"
-        terminal.send(Array(text.utf8))
+        terminal.submit(paste)
         duplicateLaunch?.paste = nil
     }
 }
