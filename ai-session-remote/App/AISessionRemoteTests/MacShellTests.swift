@@ -211,7 +211,8 @@ final class MacShellTests: XCTestCase {
         XCTAssertNil(PaletteModel.shortcutTarget(3, board: board, todos: DemoFixtures.todos, in: working))
         XCTAssertEqual(MacShell.shortcutList(for: .review, board: board).map(\.todoId), ["t5"])
         XCTAssertEqual(MacShell.shortcutList(for: .needsYou, board: board).map(\.todoId), ["t1", "t3"])
-        XCTAssertEqual(MacShell.shortcutList(for: .section(.sp), board: board).count, 5)
+        XCTAssertEqual(MacShell.shortcutList(for: .section(.sp), board: board), [])
+        XCTAssertEqual(MacShell.shortcutList(for: .projects, board: board), [])
     }
 
     func testRateOnTheDemoBoardListsOnlyWholeMatches() {

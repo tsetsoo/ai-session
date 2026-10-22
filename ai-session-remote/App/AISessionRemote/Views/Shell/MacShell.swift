@@ -37,6 +37,8 @@ struct MacShell: View {
     @State private var computerPage: ComputerPage?
     /// The sidebar row picked for the user at launch, until they pick one or it moves to Needs you.
     @State private var defaultSidebar: AppModel.SidebarItem?
+    /// ⌘⌫ on the selected todo: asks before it goes.
+    @State private var todoToDelete: Todo?
 
     private var store: TodoHubStore { model.store }
 
@@ -83,6 +85,7 @@ struct MacShell: View {
         .onDisappear { model.isPaletteOpen = false }
         // ⌘K, ⌘1–⌘9 and ⌘N in the Conversation menu act on this window's shell.
         .focusedSceneValue(\.shellCommands, shellCommands)
+        .todoDeleteConfirmation($todoToDelete, store: store)
         .todoStoreErrorAlert(store)
         // Launched before sync filled the board: move to Needs you once something does, unless
         // the user has picked a row since.
@@ -139,6 +142,8 @@ struct MacShell: View {
         Group {
             if model.isConfigured {
                 list(for: item)
+                    // ⌘⏎ / ⌘⌫ while the list has focus, not the search field.
+                    .focusedValue(\.selectedTodoCommands, selectedTodoCommands)
             } else {
                 notConfigured
             }
@@ -237,9 +242,12 @@ struct MacShell: View {
     private var shellCommands: ShellCommands? {
         guard settings == nil, !showingAdd, !showingNewFromConversation, linkTarget == nil else { return nil }
         let canAdd = model.isConfigured && !store.isOffline
+        let todos = Dictionary(store.todos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return ShellCommands(
             goTo: { showingPalette = true },
-            conversationCount: min(Self.shortcutList(for: sidebarItem, board: model.board).count, 9),
+            conversationTitles: Self.shortcutList(for: sidebarItem, board: model.board).prefix(9).map {
+                RowText.conversationTitle(todoTitle: todos[$0.todoId]?.title ?? "Conversation", label: $0.label)
+            },
             openConversation: { n in
                 let list = Self.shortcutList(for: sidebarItem, board: model.board)
                 guard let conversation = model.board.conversation(atShortcut: n, in: list),
@@ -251,6 +259,17 @@ struct MacShell: View {
                 showingPalette = false
                 showingAdd = true
             } : nil
+        )
+    }
+
+    /// The todo the list column has selected, for Mark as Done and Delete Todo…; none offline.
+    private var selectedTodoCommands: SelectedTodoCommands? {
+        guard model.isConfigured, !store.isOffline, let id = visibleTodoID,
+              let todo = store.todos.first(where: { $0.id == id }) else { return nil }
+        return SelectedTodoCommands(
+            isDone: todo.completed,
+            toggleDone: { Task { await store.toggle(todo) } },
+            delete: { todoToDelete = todo }
         )
     }
 
@@ -330,9 +349,10 @@ struct MacShell: View {
         }
     }
 
-    /// ⌘1–⌘9 number the conversation list on screen; elsewhere, every open conversation.
+    /// ⌘1–⌘9 number the conversation list on screen. Other lists draw no numbers, so there
+    /// the shortcuts are off.
     static func shortcutList(for item: AppModel.SidebarItem, board: ConversationBoard) -> [Conversation] {
-        conversationFilter(for: item)?.conversations(board) ?? board.open
+        conversationFilter(for: item)?.conversations(board) ?? []
     }
 
     /// The current list when it has the todo (or `conversation`), else the conversation list for
