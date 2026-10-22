@@ -157,7 +157,7 @@ struct FrameStateView: View {
                 systemImage: "exclamationmark.shield",
                 iconTint: DS.accent,
                 title: "\(name)'s identity changed since this device last connected.",
-                message: "If \(name) was reinstalled or replaced, choose Forget Host Key on the next screen, then try again. If not, don't connect.",
+                message: "If \(name) was reinstalled or replaced, review its access and choose Forget Host Key, then try again. If not, don't connect.",
                 primary: FrameStateButton(title: "Review \(name)") { actions.editAccess(name) }
             )
         case let .terminalFailed(name):

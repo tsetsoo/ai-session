@@ -63,6 +63,7 @@ final class ConversationRowActions {
             }
             guard muted else { return }
             withAnimation { mutedTodoID = todoID }
+            mutedTask?.cancel()
             mutedTask = Task {
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
                 guard !Task.isCancelled else { return }

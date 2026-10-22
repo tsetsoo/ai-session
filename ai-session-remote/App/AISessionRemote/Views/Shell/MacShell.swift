@@ -235,11 +235,11 @@ struct MacShell: View {
     private var shellCommands: ShellCommands? {
         guard settings == nil, !showingAdd, !showingNewFromConversation, linkTarget == nil else { return nil }
         let canAdd = model.isConfigured && !store.isOffline
-        let todos = Dictionary(store.todos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return ShellCommands(
             goTo: { showingPalette = true },
-            conversationTitles: Self.shortcutList(for: sidebarItem, board: model.board).prefix(9).map {
-                RowText.conversationTitle(todoTitle: todos[$0.todoId]?.title ?? "Conversation", label: $0.label)
+            conversationTitles: Self.shortcutList(for: sidebarItem, board: model.board).prefix(9).map { c in
+                let title = store.todos.first { $0.id == c.todoId }?.title ?? "Conversation"
+                return RowText.conversationTitle(todoTitle: title, label: c.label)
             },
             openConversation: { n in
                 let list = Self.shortcutList(for: sidebarItem, board: model.board)

@@ -58,11 +58,14 @@ struct ComputersView: View {
                                 .truncationMode(.middle)
                         }
                         .swipeActions {
-                            Button(role: .destructive) {
+                            // Not the destructive role: it would slide the row away before the
+                            // confirmation, and back again on Cancel.
+                            Button {
                                 computerToDelete = computer
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                Label("Delete…", systemImage: "trash")
                             }
+                            .tint(.red)
                         }
                         .contextMenu {
                             Button(role: .destructive) {
