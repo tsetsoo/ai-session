@@ -154,6 +154,7 @@ private struct TerminalContainerView: NSViewRepresentable {
     func makeNSView(context: Context) -> TerminalClickGate {
         let view = LocalClipboardTerminalView(frame: .zero)
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
+        coordinator.setPalette(palette)
         view.optionAsMetaKey = true
         view.tool = tool
         coordinator.attach(to: view)
@@ -164,6 +165,7 @@ private struct TerminalContainerView: NSViewRepresentable {
 
     func updateNSView(_ gate: TerminalClickGate, context: Context) {
         TerminalAppearance.apply(to: gate.terminalView, palette: palette, fontSize: fontSize)
+        coordinator.setPalette(palette)
         (gate.terminalView as? LocalClipboardTerminalView)?.tool = tool
         coordinator.attach(to: gate.terminalView)
         updateCover(gate, context: context)
@@ -190,6 +192,7 @@ private struct TerminalContainerView: UIViewRepresentable {
         // The surface docks `KeyBar` instead of SwiftTerm's `TerminalAccessory`.
         view.inputAccessoryView = UIView(frame: .zero)
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
+        coordinator.setPalette(palette)
         view.isUserInteractionEnabled = hitTarget == .grid
         coordinator.attach(to: view)
         return view
@@ -197,6 +200,7 @@ private struct TerminalContainerView: UIViewRepresentable {
 
     func updateUIView(_ uiView: TerminalView, context: Context) {
         TerminalAppearance.apply(to: uiView, palette: palette, fontSize: fontSize)
+        coordinator.setPalette(palette)
         coordinator.attach(to: uiView)
         let interactive = hitTarget == .grid
         if uiView.isUserInteractionEnabled != interactive {

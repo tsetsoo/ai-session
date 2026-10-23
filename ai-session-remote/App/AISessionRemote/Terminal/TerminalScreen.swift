@@ -107,6 +107,11 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// `reconnect()` calls first, so the next session is not replayed.
     private var hiddenOutput = HiddenTerminalOutput()
 
+    /// Keeps default-coloured text readable on a background a program chose for the other
+    /// palette (see `TerminalContrastGuard`). Main thread only, like the flush that uses it.
+    private var contrastGuard = TerminalContrastGuard(palette: TerminalPalette.light.contrastPalette)
+    private var guardedPalette: TerminalPalette = .light
+
     /// Debounces `sizeChanged` reports (see `TerminalResizeDebouncer`). Only ever touched from
     /// the main thread.
     private let resizeDebouncer: TerminalResizeDebouncer
@@ -148,6 +153,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// retired are ignored, including a drain that was queued before the disconnect.
     private func deliverFlushed(_ token: Int, _ bytes: [UInt8]) {
         guard token == sessionGeneration else { return }
+        let bytes = contrastGuard.process(bytes)
         switch hiddenOutput.receive(bytes, isShown: isShown) {
         case .feed(let pending):
             guard !pending.isEmpty else { return }
@@ -169,6 +175,13 @@ final class TerminalCoordinator: TerminalViewDelegate {
         guard let terminalView else { return }
         guard let pending = hiddenOutput.flushHeld(isShown: true) else { return }
         terminalView.feed(byteArray: pending[...])
+    }
+
+    /// The palette the surface draws with. Output from here on is checked against it.
+    func setPalette(_ palette: TerminalPalette) {
+        guard palette != guardedPalette else { return }
+        guardedPalette = palette
+        contrastGuard.palette = palette.contrastPalette
     }
 
     func attach(to terminalView: TerminalView) {
@@ -247,6 +260,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
         // calls this before opening the next session, so that session is not replayed.
         hiddenOutput.clear()
         coalescer.discard()
+        contrastGuard = TerminalContrastGuard(palette: guardedPalette.contrastPalette)
         session?.disconnect()
         session = nil
     }

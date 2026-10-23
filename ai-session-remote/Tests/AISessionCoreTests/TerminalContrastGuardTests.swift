@@ -1,0 +1,75 @@
+import XCTest
+@testable import AISessionCore
+
+final class TerminalContrastGuardTests: XCTestCase {
+    /// The app's light palette.
+    private let light = TerminalContrastGuard.Palette(
+        foreground: (0x1F, 0x1E, 0x1C),
+        background: (0xFB, 0xFA, 0xF7),
+        ansi: Array(repeating: (0x1F, 0x1E, 0x1C), count: 8) + Array(repeating: (0x5C, 0x5B, 0x57), count: 8)
+    )
+
+    private let fix = "\u{1B}[38;2;251;250;247m"
+
+    private func run(_ chunks: [String], palette: TerminalContrastGuard.Palette? = nil) -> String {
+        var guardian = TerminalContrastGuard(palette: palette ?? light)
+        let out = chunks.flatMap { guardian.process(Array($0.utf8)) }
+        return String(decoding: out, as: UTF8.self)
+    }
+
+    /// A Codex message block tinted for a dark terminal, drawn under the light palette.
+    func testDefaultTextOnADarkTruecolorBackgroundGetsTheLightColour() {
+        XCTAssertEqual(
+            run(["\u{1B}[48;2;58;58;58mremove the null check\u{1B}[49m done"]),
+            "\u{1B}[48;2;58;58;58m\(fix)remove the null check\u{1B}[49m\u{1B}[39m done"
+        )
+    }
+
+    func testIndexedDarkBackgroundIsGuardedToo() {
+        // 237 is a dark grey in the xterm ramp; 40 is ANSI black from the palette.
+        XCTAssertEqual(run(["\u{1B}[48;5;237mx"]), "\u{1B}[48;5;237m\(fix)x")
+        XCTAssertEqual(run(["\u{1B}[40mx\u{1B}[0my"]), "\u{1B}[40m\(fix)x\u{1B}[0my")
+    }
+
+    func testReadableBackgroundsAndExplicitForegroundsAreLeftAlone() {
+        for text in [
+            "\u{1B}[48;2;240;239;236mlight block\u{1B}[0m",  // Codex's tint for a light terminal
+            "\u{1B}[37;48;2;58;58;58mprogram chose the text colour\u{1B}[0m",
+            "\u{1B}[7m\u{1B}[48;2;58;58;58minverse\u{1B}[0m",
+            "\u{1B}[?2004h\u{1B}]11;rgb:0000/0000/0000\u{07}plain",
+        ] {
+            XCTAssertEqual(run([text]), text, text.debugDescription)
+        }
+    }
+
+    func testAnExplicitForegroundAfterTheFixReplacesItWithoutAReset() {
+        XCTAssertEqual(
+            run(["\u{1B}[48;2;58;58;58ma\u{1B}[31mb\u{1B}[39mc"]),
+            "\u{1B}[48;2;58;58;58m\(fix)a\u{1B}[31mb\u{1B}[39m\(fix)c"
+        )
+    }
+
+    func testSequencesSplitAcrossChunks() {
+        XCTAssertEqual(
+            run(["\u{1B}[48;2;5", "8;58;58", "mx\u{1B}", "[0my"]),
+            "\u{1B}[48;2;58;58;58m\(fix)x\u{1B}[0my"
+        )
+    }
+
+    func testColonFormIsRead() {
+        XCTAssertEqual(run(["\u{1B}[48:2::58:58:58mx"]), "\u{1B}[48:2::58:58:58m\(fix)x")
+    }
+
+    func testDarkPaletteLeavesTheDarkTintAlone() {
+        let dark = TerminalContrastGuard.Palette(
+            foreground: (0xE9, 0xE7, 0xE2), background: (0x1A, 0x1A, 0x19), ansi: []
+        )
+        let text = "\u{1B}[48;2;58;58;58mreadable\u{1B}[0m"
+        XCTAssertEqual(run([text], palette: dark), text)
+        // A block tinted for a light terminal, drawn under the dark palette, gets the dark colour.
+        XCTAssertEqual(
+            run(["\u{1B}[48;2;240;239;236mx"], palette: dark),
+            "\u{1B}[48;2;240;239;236m\u{1B}[38;2;26;26;25mx"
+        )
+    }
+}

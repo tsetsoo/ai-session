@@ -1,3 +1,4 @@
+import AISessionCore
 import SwiftTerm
 import SwiftUI
 #if os(iOS)
@@ -43,6 +44,25 @@ struct TerminalPalette: Equatable {
             0x6B6A66, 0xFF9C92, 0xA3E0A6, 0xF2D084, 0x9CC5F7, 0xDDB4F2, 0x8EDDE8, 0xF5F3EE,
         ])
     )
+
+    var contrastPalette: TerminalContrastGuard.Palette {
+        TerminalContrastGuard.Palette(
+            foreground: Self.rgb(foreground),
+            background: Self.rgb(background),
+            ansi: ansi.map(Self.rgb)
+        )
+    }
+
+    private static func rgb(_ color: PlatformNativeColor) -> TerminalContrastGuard.RGB {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        #if os(iOS)
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        #else
+        (color.usingColorSpace(.sRGB) ?? color).getRed(&r, green: &g, blue: &b, alpha: &a)
+        #endif
+        func channel(_ value: CGFloat) -> UInt8 { UInt8((min(max(value, 0), 1) * 255).rounded()) }
+        return (channel(r), channel(g), channel(b))
+    }
 }
 
 enum TerminalAppearance {
