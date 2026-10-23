@@ -38,16 +38,7 @@ public struct TerminalContrastGuard {
         case rgb(UInt8, UInt8, UInt8)
     }
 
-    private enum State {
-        case ground, escape, csi, string
-    }
-
-    private var state = State.ground
-    private var params: [UInt8] = []
-    private var csiIgnored = false
-    private var csiPrivate = false
-    private var csiIntermediate: UInt8?
-    private var stringIsOSC = false
+    private var scanner = TerminalEscapeScanner()
 
     private struct Attributes {
         // What the program has asked for.
@@ -101,93 +92,37 @@ public struct TerminalContrastGuard {
     // MARK: - Parsing
 
     private mutating func step(_ byte: UInt8) -> [UInt8]? {
-        switch state {
-        case .ground:
-            if byte == 0x1B { state = .escape }
-        case .escape:
-            switch byte {
-            case 0x5B: // [
-                state = .csi
-                params.removeAll(keepingCapacity: true)
-                csiIgnored = false
-                csiPrivate = false
-                csiIntermediate = nil
-            case 0x5D, 0x50, 0x5F, 0x5E, 0x58: // ] P _ ^ X
-                state = .string
-                stringIsOSC = byte == 0x5D
-            case 0x1B:
-                break
-            case 0x63: // c: RIS resets the attributes
-                state = .ground
+        switch scanner.step(byte) {
+        case .escape(0x63): // c: RIS resets the attributes
+            attributes = Attributes()
+            saved = Attributes()
+        case .escape(0x37): // 7: DECSC
+            saved = attributes
+        case .escape(0x38): // 8: DECRC
+            attributes = saved
+        case .csi(let csi):
+            switch (csi.final, csi.marker, csi.intermediate) {
+            case (0x6D, nil, nil): // m
+                return applySGR(csi.params)
+            case (0x70, nil, 0x21): // ! p: DECSTR resets the attributes
                 attributes = Attributes()
-                saved = Attributes()
-            case 0x37: // 7: DECSC
-                state = .ground
+            case (0x68, 0x3F, nil) where csi.numbers.contains(1049): // ? 1049 h saves the cursor
                 saved = attributes
-            case 0x38: // 8: DECRC
-                state = .ground
+            case (0x6C, 0x3F, nil) where csi.numbers.contains(1049): // ? 1049 l restores it
                 attributes = saved
             default:
-                state = .ground
-            }
-        case .csi:
-            switch byte {
-            case 0x30...0x3F:
-                // A private marker (`?`, `>`, `<`, `=`) makes this something other than SGR.
-                if (0x3C...0x3F).contains(byte), params.isEmpty {
-                    csiPrivate = true
-                } else if params.count < 128 {
-                    params.append(byte)
-                } else {
-                    csiIgnored = true
-                }
-            case 0x20...0x2F:
-                if csiIntermediate == nil { csiIntermediate = byte } else { csiIgnored = true }
-            case 0x40...0x7E:
-                state = .ground
-                return finishCSI(byte)
-            case 0x1B:
-                state = .escape
-            case 0x18, 0x1A: // CAN, SUB
-                state = .ground
-            default:
                 break
             }
-        case .string:
-            if byte == 0x1B {
-                state = .escape
-            } else if byte == 0x07, stringIsOSC {
-                state = .ground
-            }
-        }
-        return nil
-    }
-
-    private mutating func finishCSI(_ final: UInt8) -> [UInt8]? {
-        guard !csiIgnored else { return nil }
-        switch (final, csiPrivate, csiIntermediate) {
-        case (0x6D, false, nil): // m
-            return applySGR()
-        case (0x70, false, 0x21): // ! p: DECSTR resets the attributes
-            attributes = Attributes()
-        case (0x68, true, nil) where hasMode1049: // ? 1049 h saves the cursor
-            saved = attributes
-        case (0x6C, true, nil) where hasMode1049: // ? 1049 l restores it
-            attributes = saved
         default:
             break
         }
         return nil
     }
 
-    private var hasMode1049: Bool {
-        params.split(separator: 0x3B).contains { number($0) == 1049 }
-    }
-
-    private mutating func applySGR() -> [UInt8]? {
+    private mutating func applySGR(_ params: [UInt8]) -> [UInt8]? {
         // Split on `;`; a group may carry `:` sub-parameters (`38:2::r:g:b`).
         let groups = params.split(separator: 0x3B, omittingEmptySubsequences: false).map { group in
-            group.split(separator: 0x3A, omittingEmptySubsequences: false).map { number($0) }
+            group.split(separator: 0x3A, omittingEmptySubsequences: false).map(TerminalEscapeScanner.CSI.number)
         }
         var touchedForeground = false
         var index = 0
@@ -327,14 +262,6 @@ public struct TerminalContrastGuard {
     }
 
     // MARK: - Helpers
-
-    private func number(_ digits: ArraySlice<UInt8>) -> Int {
-        var value = 0
-        for digit in digits where (0x30...0x39).contains(digit) {
-            value = min(value * 10 + Int(digit - 0x30), 100_000)
-        }
-        return value
-    }
 
     private func clamp(_ value: Int) -> UInt8 {
         UInt8(max(0, min(255, value)))

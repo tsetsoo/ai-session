@@ -111,6 +111,8 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// palette (see `TerminalContrastGuard`). Main thread only, like the flush that uses it.
     private var contrastGuard = TerminalContrastGuard(palette: TerminalPalette.light.contrastPalette)
     private var guardedPalette: TerminalPalette = .light
+    /// Tells tmux whether the palette is light or dark (see `TerminalThemeReporter`).
+    private var themeReporter = TerminalThemeReporter(theme: .light)
 
     /// Debounces `sizeChanged` reports (see `TerminalResizeDebouncer`). Only ever touched from
     /// the main thread.
@@ -153,6 +155,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// retired are ignored, including a drain that was queued before the disconnect.
     private func deliverFlushed(_ token: Int, _ bytes: [UInt8]) {
         guard token == sessionGeneration else { return }
+        // Answered on arrival, even while hidden, so tmux isn't left waiting.
+        let replies = themeReporter.scan(bytes)
+        if !replies.isEmpty { session?.send(replies[...]) }
         deliver(contrastGuard.process(bytes))
     }
 
@@ -187,6 +192,11 @@ final class TerminalCoordinator: TerminalViewDelegate {
         // Goes through the same path as output, so it lands after any bytes still held.
         if let fix = contrastGuard.setPalette(palette.contrastPalette) {
             deliver(fix)
+        }
+        // Sent after `TerminalAppearance.apply`, so SwiftTerm already reports the new colours
+        // when tmux asks for them again.
+        if let notice = themeReporter.setTheme(palette == .dark ? .dark : .light) {
+            session?.send(notice[...])
         }
     }
 
@@ -266,6 +276,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
         // calls this before opening the next session, so that session is not replayed.
         hiddenOutput.clear()
         coalescer.discard()
+        themeReporter.reset()
         if let fix = contrastGuard.reset() {
             terminalView?.feed(byteArray: fix[...])
         }
