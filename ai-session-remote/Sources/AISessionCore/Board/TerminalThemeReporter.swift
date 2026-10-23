@@ -9,6 +9,8 @@
 /// SwiftTerm answers from the palette.
 ///
 /// Feed every output chunk through `scan(_:)` in order and send what it returns to the host.
+/// Send `pendingNotice()` only while SwiftTerm is being fed, because tmux follows the notice
+/// with colour queries that SwiftTerm has to answer.
 public struct TerminalThemeReporter {
     public enum Theme: Equatable {
         case light, dark
@@ -16,6 +18,8 @@ public struct TerminalThemeReporter {
 
     public private(set) var theme: Theme
     private var subscribed = false
+    /// The theme the host last heard, by reply or notice.
+    private var reported: Theme?
     private var scanner = TerminalEscapeScanner()
 
     public init(theme: Theme) {
@@ -26,15 +30,11 @@ public struct TerminalThemeReporter {
     public mutating func scan(_ bytes: [UInt8]) -> [UInt8] {
         var replies: [UInt8] = []
         for byte in bytes {
-            guard case .csi(let csi)? = scanner.step(byte), csi.marker == 0x3F,
-                  csi.intermediate == nil else { continue }
-            switch csi.final {
-            case 0x6E where csi.numbers == [996]: // n
-                replies += report
-            case 0x68 where csi.numbers.contains(2031): // h
-                subscribed = true
-            case 0x6C where csi.numbers.contains(2031): // l
+            switch scanner.step(byte) {
+            case .escape(0x63)?: // c: RIS clears modes, the subscription with them
                 subscribed = false
+            case .csi(let csi)?:
+                handle(csi, replies: &replies)
             default:
                 break
             }
@@ -42,12 +42,32 @@ public struct TerminalThemeReporter {
         return replies
     }
 
-    /// Records the theme. Returns the change notice for the host if the theme changed and the
-    /// host subscribed.
-    public mutating func setTheme(_ theme: Theme) -> [UInt8]? {
-        guard theme != self.theme else { return nil }
+    private mutating func handle(_ csi: TerminalEscapeScanner.CSI, replies: inout [UInt8]) {
+        switch (csi.final, csi.marker, csi.intermediate) {
+        case (0x6E, 0x3F, nil): // ? … n
+            guard csi.numbers == [996] else { return }
+            replies += report
+            reported = theme
+        case (0x68, 0x3F, nil), (0x6C, 0x3F, nil): // ? … h, ? … l
+            guard csi.numbers.contains(2031) else { return }
+            subscribed = csi.final == 0x68
+        case (0x70, nil, 0x21): // ! p: DECSTR
+            subscribed = false
+        default:
+            break
+        }
+    }
+
+    /// Records the palette's theme. Send the change with `pendingNotice()`.
+    public mutating func setTheme(_ theme: Theme) {
         self.theme = theme
-        return subscribed ? report : nil
+    }
+
+    /// The change notice, if the host subscribed and last heard a different theme.
+    public mutating func pendingNotice() -> [UInt8]? {
+        guard subscribed, reported != theme else { return nil }
+        reported = theme
+        return report
     }
 
     /// Forgets the subscription, for a new session on the same terminal.

@@ -181,8 +181,17 @@ final class TerminalCoordinator: TerminalViewDelegate {
             return
         }
         guard let terminalView else { return }
-        guard let pending = hiddenOutput.flushHeld(isShown: true) else { return }
-        terminalView.feed(byteArray: pending[...])
+        if let pending = hiddenOutput.flushHeld(isShown: true) {
+            terminalView.feed(byteArray: pending[...])
+        }
+        sendThemeNotice()
+    }
+
+    /// Tells tmux the palette's theme if it changed since tmux last heard. Only while shown:
+    /// tmux follows up with colour queries, and a hidden surface holds them unanswered.
+    private func sendThemeNotice() {
+        guard isShown, let notice = themeReporter.pendingNotice() else { return }
+        session?.send(notice[...])
     }
 
     /// The palette the surface draws with. Output from here on is checked against it.
@@ -195,9 +204,8 @@ final class TerminalCoordinator: TerminalViewDelegate {
         }
         // Sent after `TerminalAppearance.apply`, so SwiftTerm already reports the new colours
         // when tmux asks for them again.
-        if let notice = themeReporter.setTheme(palette == .dark ? .dark : .light) {
-            session?.send(notice[...])
-        }
+        themeReporter.setTheme(palette == .dark ? .dark : .light)
+        sendThemeNotice()
     }
 
     func attach(to terminalView: TerminalView) {

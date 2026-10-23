@@ -19,20 +19,37 @@ final class TerminalThemeReporterTests: XCTestCase {
     func testNotifiesASubscribedHostOfAChange() {
         var reporter = TerminalThemeReporter(theme: .dark)
         _ = reporter.scan(attach)
-        XCTAssertEqual(text(reporter.setTheme(.light)), "\u{1B}[?997;2n")
-        XCTAssertNil(reporter.setTheme(.light))
-        XCTAssertEqual(text(reporter.setTheme(.dark)), "\u{1B}[?997;1n")
+        XCTAssertNil(reporter.pendingNotice())
+        reporter.setTheme(.light)
+        XCTAssertEqual(text(reporter.pendingNotice()), "\u{1B}[?997;2n")
+        XCTAssertNil(reporter.pendingNotice())
+        reporter.setTheme(.dark)
+        XCTAssertEqual(text(reporter.pendingNotice()), "\u{1B}[?997;1n")
+    }
+
+    /// A surface that was hidden through two flips has nothing to tell the host.
+    func testFlipsThatCancelOutSendNothing() {
+        var reporter = TerminalThemeReporter(theme: .dark)
+        _ = reporter.scan(attach)
+        reporter.setTheme(.light)
+        reporter.setTheme(.dark)
+        XCTAssertNil(reporter.pendingNotice())
     }
 
     func testStaysQuietWithoutASubscription() {
         var reporter = TerminalThemeReporter(theme: .dark)
-        XCTAssertNil(reporter.setTheme(.light))
-        _ = reporter.scan(attach)
-        _ = reporter.scan(Array("\u{1B}[?2031l".utf8))
-        XCTAssertNil(reporter.setTheme(.dark))
+        reporter.setTheme(.light)
+        XCTAssertNil(reporter.pendingNotice())
+        for unsubscribe in ["\u{1B}[?2031l", "\u{1B}c", "\u{1B}[!p"] {
+            _ = reporter.scan(attach)
+            _ = reporter.scan(Array(unsubscribe.utf8))
+            reporter.setTheme(reporter.theme == .dark ? .light : .dark)
+            XCTAssertNil(reporter.pendingNotice(), unsubscribe.debugDescription)
+        }
         _ = reporter.scan(attach)
         reporter.reset()
-        XCTAssertNil(reporter.setTheme(.light))
+        reporter.setTheme(.light)
+        XCTAssertNil(reporter.pendingNotice())
     }
 
     func testIgnoresOtherStatusReportsAndStrings() {
