@@ -1,8 +1,8 @@
 import AISessionCore
 import SwiftUI
 
-/// A todo: checkbox, title, its conversation's status, and a second line with the computer and
-/// age, or the status message when it needs you.
+/// A todo: checkbox, its conversation's tool icon, title and status, and a second line with the
+/// computer and age, or the status message when it needs you.
 struct TodoRow: View {
     let todo: Todo
     let conversation: Conversation?
@@ -13,6 +13,8 @@ struct TodoRow: View {
     /// The todo's project, in lists not already filtered by project.
     var projectName: String?
     let onToggle: () -> Void
+
+    private static let toolIconSide: CGFloat = 20
 
     var body: some View {
         HStack(spacing: DS.spacing.m) {
@@ -29,6 +31,16 @@ struct TodoRow: View {
             .buttonStyle(.plain)
             .disabled(!canToggle)
             .accessibilityHidden(true)
+
+            // The slot stays without a conversation so titles line up down the list.
+            Group {
+                if let conversation {
+                    ToolIcon(tool: conversation.tool, side: Self.toolIconSide)
+                        .accessibilityElement()
+                        .accessibilityLabel(RowText.toolName(conversation.tool))
+                }
+            }
+            .frame(width: Self.toolIconSide)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(todo.title)

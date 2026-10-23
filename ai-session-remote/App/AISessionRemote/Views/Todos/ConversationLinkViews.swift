@@ -42,9 +42,15 @@ struct RemoteConversationPicker: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(groups(filtered(conversations)), id: \.tool) { group in
-                    Section(Self.toolName(group.tool)) {
+                    Section {
                         ForEach(group.items) { conversation in
                             row(conversation)
+                        }
+                    } header: {
+                        Label {
+                            Text(Self.toolName(group.tool))
+                        } icon: {
+                            ToolIcon(tool: group.tool, side: 16)
                         }
                     }
                 }

@@ -72,7 +72,8 @@ enum AppTheme {
     }
 }
 
-/// The tool's own app icon. Hidden from VoiceOver; the colored name next to it is the label.
+/// The tool's own app icon, or a terminal symbol in the same square for a tool the app doesn't
+/// know, so rows keep their alignment. Hidden from VoiceOver; the name next to it is the label.
 struct ToolIcon: View {
     let tool: String
     var side: CGFloat = 28
@@ -87,6 +88,12 @@ struct ToolIcon: View {
                     RoundedRectangle(cornerRadius: side * 0.25, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5)
                 }
+                .accessibilityHidden(true)
+        } else {
+            Image(systemName: AppTheme.iconName(for: nil))
+                .font(.system(size: side * 0.45, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: side, height: side)
                 .accessibilityHidden(true)
         }
     }

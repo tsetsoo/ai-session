@@ -302,6 +302,14 @@ private struct SessionRow: View {
     let projectFolder: String
 
     var body: some View {
+        HStack(alignment: .center, spacing: DS.spacing.s) {
+            ToolIcon(tool: session.tool)
+            details
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var details: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
                 Text(session.title?.isEmpty == false ? session.title! : "Untitled")
@@ -334,7 +342,6 @@ private struct SessionRow: View {
                     .truncationMode(.head)
             }
         }
-        .accessibilityElement(children: .combine)
     }
 }
 
