@@ -153,7 +153,10 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// retired are ignored, including a drain that was queued before the disconnect.
     private func deliverFlushed(_ token: Int, _ bytes: [UInt8]) {
         guard token == sessionGeneration else { return }
-        let bytes = contrastGuard.process(bytes)
+        deliver(contrastGuard.process(bytes))
+    }
+
+    private func deliver(_ bytes: [UInt8]) {
         switch hiddenOutput.receive(bytes, isShown: isShown) {
         case .feed(let pending):
             guard !pending.isEmpty else { return }
@@ -181,7 +184,10 @@ final class TerminalCoordinator: TerminalViewDelegate {
     func setPalette(_ palette: TerminalPalette) {
         guard palette != guardedPalette else { return }
         guardedPalette = palette
-        contrastGuard.palette = palette.contrastPalette
+        // Goes through the same path as output, so it lands after any bytes still held.
+        if let fix = contrastGuard.setPalette(palette.contrastPalette) {
+            deliver(fix)
+        }
     }
 
     func attach(to terminalView: TerminalView) {
@@ -260,7 +266,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
         // calls this before opening the next session, so that session is not replayed.
         hiddenOutput.clear()
         coalescer.discard()
-        contrastGuard = TerminalContrastGuard(palette: guardedPalette.contrastPalette)
+        if let fix = contrastGuard.reset() {
+            terminalView?.feed(byteArray: fix[...])
+        }
         session?.disconnect()
         session = nil
     }

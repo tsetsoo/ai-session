@@ -72,4 +72,53 @@ final class TerminalContrastGuardTests: XCTestCase {
             "\u{1B}[48;2;240;239;236m\u{1B}[38;2;26;26;25mx"
         )
     }
+
+    func testUnderlineColourArgumentsAreNotReadAsCodes() {
+        // Read as codes, `0` would reset the dark background and `40` would set ANSI black.
+        XCTAssertEqual(
+            run(["\u{1B}[48;2;58;58;58ma\u{1B}[58;2;0;0;255mb"]),
+            "\u{1B}[48;2;58;58;58m\(fix)a\u{1B}[58;2;0;0;255mb"
+        )
+        let text = "\u{1B}[58;2;40;40;40mplain\u{1B}[39m"
+        XCTAssertEqual(run([text]), text)
+    }
+
+    func testResetsAndCursorRestoreAreFollowed() {
+        // After RIS or DECSTR the terminal is back to defaults, so a later `39m` needs no fix.
+        for reset in ["\u{1B}c", "\u{1B}[!p"] {
+            XCTAssertEqual(
+                run(["\u{1B}[48;2;58;58;58m", reset, "\u{1B}[39mx"]),
+                "\u{1B}[48;2;58;58;58m\(fix)\(reset)\u{1B}[39mx",
+                reset.debugDescription
+            )
+        }
+        // DECRC brings back the dark background saved with DECSC, substitute and all.
+        XCTAssertEqual(
+            run(["\u{1B}[48;2;58;58;58m\u{1B}7\u{1B}[0m\u{1B}8\u{1B}[1mx"]),
+            "\u{1B}[48;2;58;58;58m\(fix)\u{1B}7\u{1B}[0m\u{1B}8\u{1B}[1mx"
+        )
+        XCTAssertEqual(
+            run(["\u{1B}[?1049h\u{1B}[48;2;58;58;58mx\u{1B}[?1049l\u{1B}[1my"]),
+            "\u{1B}[?1049h\u{1B}[48;2;58;58;58m\(fix)x\u{1B}[?1049l\u{1B}[1my"
+        )
+    }
+
+    func testPaletteSwitchFixesTheCurrentForegroundRightAway() {
+        let dark = TerminalContrastGuard.Palette(
+            foreground: (0xE9, 0xE7, 0xE2), background: (0x1A, 0x1A, 0x19), ansi: []
+        )
+        var guardian = TerminalContrastGuard(palette: dark)
+        _ = guardian.process(Array("\u{1B}[48;2;58;58;58m".utf8))
+        XCTAssertEqual(guardian.setPalette(light).map { String(decoding: $0, as: UTF8.self) }, fix)
+        XCTAssertEqual(guardian.setPalette(dark).map { String(decoding: $0, as: UTF8.self) }, "\u{1B}[39m")
+        XCTAssertNil(guardian.setPalette(dark))
+    }
+
+    func testResetClearsASubstituteTheTerminalStillHas() {
+        var guardian = TerminalContrastGuard(palette: light)
+        XCTAssertNil(guardian.reset())
+        _ = guardian.process(Array("\u{1B}[48;2;58;58;58m".utf8))
+        XCTAssertEqual(guardian.reset().map { String(decoding: $0, as: UTF8.self) }, "\u{1B}[39m")
+        XCTAssertEqual(guardian.process(Array("\u{1B}[39mx".utf8)), Array("\u{1B}[39mx".utf8))
+    }
 }

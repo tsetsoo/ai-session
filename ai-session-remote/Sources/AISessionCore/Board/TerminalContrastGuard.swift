@@ -30,7 +30,7 @@ public struct TerminalContrastGuard {
     /// Below this WCAG contrast ratio the default foreground counts as unreadable.
     static let minimumContrast = 3.0
 
-    public var palette: Palette
+    public private(set) var palette: Palette
 
     private enum Background: Equatable {
         case none
@@ -45,17 +45,41 @@ public struct TerminalContrastGuard {
     private var state = State.ground
     private var params: [UInt8] = []
     private var csiIgnored = false
+    private var csiPrivate = false
+    private var csiIntermediate: UInt8?
     private var stringIsOSC = false
 
-    // What the program has asked for.
-    private var foregroundIsDefault = true
-    private var background = Background.none
-    private var inverse = false
-    /// The foreground this guard set and the terminal still has, if any.
-    private var substitute: RGB?
+    private struct Attributes {
+        // What the program has asked for.
+        var foregroundIsDefault = true
+        var background = Background.none
+        var inverse = false
+        /// The foreground this guard set and the terminal still has, if any.
+        var substitute: RGB?
+    }
+
+    private var attributes = Attributes()
+    /// What `ESC 7` or `CSI ? 1049 h` saved with the cursor. The terminal restores it with
+    /// `ESC 8` or `CSI ? 1049 l`, substitute included.
+    private var saved = Attributes()
 
     public init(palette: Palette) {
         self.palette = palette
+    }
+
+    /// Switches palettes. Returns the SGR that brings the current foreground in line with the
+    /// new palette, if it needs to change, to feed after everything already processed.
+    public mutating func setPalette(_ palette: Palette) -> [UInt8]? {
+        self.palette = palette
+        return reconcile(touchedForeground: false)
+    }
+
+    /// Forgets the stream, for a new session on the same terminal. Returns `CSI 39 m` if the
+    /// terminal still has a substitute foreground, so the new session doesn't inherit it.
+    public mutating func reset() -> [UInt8]? {
+        let hadSubstitute = attributes.substitute != nil
+        self = TerminalContrastGuard(palette: palette)
+        return hadSubstitute ? Array("\u{1B}[39m".utf8) : nil
     }
 
     /// Returns `bytes` with a foreground SGR added after each SGR that leaves default text
@@ -86,11 +110,23 @@ public struct TerminalContrastGuard {
                 state = .csi
                 params.removeAll(keepingCapacity: true)
                 csiIgnored = false
+                csiPrivate = false
+                csiIntermediate = nil
             case 0x5D, 0x50, 0x5F, 0x5E, 0x58: // ] P _ ^ X
                 state = .string
                 stringIsOSC = byte == 0x5D
             case 0x1B:
                 break
+            case 0x63: // c: RIS resets the attributes
+                state = .ground
+                attributes = Attributes()
+                saved = Attributes()
+            case 0x37: // 7: DECSC
+                state = .ground
+                saved = attributes
+            case 0x38: // 8: DECRC
+                state = .ground
+                attributes = saved
             default:
                 state = .ground
             }
@@ -98,13 +134,18 @@ public struct TerminalContrastGuard {
             switch byte {
             case 0x30...0x3F:
                 // A private marker (`?`, `>`, `<`, `=`) makes this something other than SGR.
-                if (0x3C...0x3F).contains(byte), params.isEmpty { csiIgnored = true }
-                if params.count < 128 { params.append(byte) } else { csiIgnored = true }
+                if (0x3C...0x3F).contains(byte), params.isEmpty {
+                    csiPrivate = true
+                } else if params.count < 128 {
+                    params.append(byte)
+                } else {
+                    csiIgnored = true
+                }
             case 0x20...0x2F:
-                csiIgnored = true
+                if csiIntermediate == nil { csiIntermediate = byte } else { csiIgnored = true }
             case 0x40...0x7E:
                 state = .ground
-                if byte == 0x6D, !csiIgnored { return applySGR() } // m
+                return finishCSI(byte)
             case 0x1B:
                 state = .escape
             case 0x18, 0x1A: // CAN, SUB
@@ -122,6 +163,27 @@ public struct TerminalContrastGuard {
         return nil
     }
 
+    private mutating func finishCSI(_ final: UInt8) -> [UInt8]? {
+        guard !csiIgnored else { return nil }
+        switch (final, csiPrivate, csiIntermediate) {
+        case (0x6D, false, nil): // m
+            return applySGR()
+        case (0x70, false, 0x21): // ! p: DECSTR resets the attributes
+            attributes = Attributes()
+        case (0x68, true, nil) where hasMode1049: // ? 1049 h saves the cursor
+            saved = attributes
+        case (0x6C, true, nil) where hasMode1049: // ? 1049 l restores it
+            attributes = saved
+        default:
+            break
+        }
+        return nil
+    }
+
+    private var hasMode1049: Bool {
+        params.split(separator: 0x3B).contains { number($0) == 1049 }
+    }
+
     private mutating func applySGR() -> [UInt8]? {
         // Split on `;`; a group may carry `:` sub-parameters (`38:2::r:g:b`).
         let groups = params.split(separator: 0x3B, omittingEmptySubsequences: false).map { group in
@@ -134,34 +196,34 @@ public struct TerminalContrastGuard {
             let code = group.first ?? 0
             switch code {
             case 0:
-                foregroundIsDefault = true
-                background = .none
-                inverse = false
+                attributes.foregroundIsDefault = true
+                attributes.background = .none
+                attributes.inverse = false
                 touchedForeground = true
             case 7:
-                inverse = true
+                attributes.inverse = true
             case 27:
-                inverse = false
+                attributes.inverse = false
             case 30...37, 90...97:
-                foregroundIsDefault = false
+                attributes.foregroundIsDefault = false
                 touchedForeground = true
             case 39:
-                foregroundIsDefault = true
+                attributes.foregroundIsDefault = true
                 touchedForeground = true
             case 40...47:
-                background = .indexed(UInt8(code - 40))
+                attributes.background = .indexed(UInt8(code - 40))
             case 100...107:
-                background = .indexed(UInt8(code - 100 + 8))
+                attributes.background = .indexed(UInt8(code - 100 + 8))
             case 49:
-                background = .none
-            case 38, 48:
+                attributes.background = .none
+            case 38, 48, 58: // 58 is the underline colour; its arguments are skipped
                 let (color, used) = extendedColor(groups, at: index)
                 index += used
                 if code == 38 {
-                    foregroundIsDefault = false
+                    attributes.foregroundIsDefault = false
                     touchedForeground = true
-                } else if let color {
-                    background = color
+                } else if code == 48, let color {
+                    attributes.background = color
                 }
             default:
                 break
@@ -207,24 +269,25 @@ public struct TerminalContrastGuard {
 
     private mutating func reconcile(touchedForeground: Bool) -> [UInt8]? {
         // An SGR that sets or resets the foreground replaced whatever the guard had put there.
-        if touchedForeground { substitute = nil }
+        if touchedForeground { attributes.substitute = nil }
         let wanted = wantedForeground()
-        switch (substitute, wanted) {
+        switch (attributes.substitute, wanted) {
         case (nil, nil):
             return nil
         case let (current?, wanted?) where current == wanted:
             return nil
         case (_, let wanted?):
-            substitute = wanted
+            attributes.substitute = wanted
             return Array("\u{1B}[38;2;\(wanted.r);\(wanted.g);\(wanted.b)m".utf8)
         case (.some, nil):
-            substitute = nil
+            attributes.substitute = nil
             return Array("\u{1B}[39m".utf8)
         }
     }
 
     private func wantedForeground() -> RGB? {
-        guard foregroundIsDefault, !inverse, let background = rgb(of: background) else { return nil }
+        guard attributes.foregroundIsDefault, !attributes.inverse,
+              let background = rgb(of: attributes.background) else { return nil }
         let current = Self.contrast(palette.foreground, background)
         guard current < Self.minimumContrast else { return nil }
         let alternative = palette.background
