@@ -2,7 +2,7 @@
 # Install the todo-conversation helpers on a computer that hosts Claude sessions.
 #
 #   ~/.ai-remote/bin/ai-todo-open    started by the iPhone / Mac app over SSH
-#   ~/.ai-remote/bin/ai-todo-hook    Claude Code hook reporting busy/waiting/idle
+#   ~/.ai-remote/bin/ai-todo-hook    Claude Code and Codex hook reporting busy/waiting/idle
 #   ~/.ai-remote/bin/ai-todo-sessions  list / delete / prune / stats of Claude and Codex; delete also removes Cursor chats
 #   ~/.ai-remote/bin/ai-todo-limits    5h / weekly / monthly usage for the chat's tool on this computer
 #   ~/.ai-remote/bin/ai-todo-codex-notify  Codex `notify` program reporting idle
@@ -13,12 +13,19 @@
 #   ~/.ai-remote/tmux.conf           tmux settings, sourced from ~/.tmux.conf
 #   ~/.claude/settings.json          hooks merged in; other settings untouched
 #   ~/.codex/config.toml             `notify` added only if none is set (see below)
+#   ~/.codex/hooks.json              hooks merged in (Codex 0.163+), then trusted through
+#                                    `codex app-server`, which writes hooks.state in config.toml
 #   ~/Library/LaunchAgents/com.ai-remote.todo-memory.plist  `ai-todo-memory nightly` at 03:30 (macOS)
 #
 # Usage:
 #   install.sh [--hub-url URL] [--token TOKEN] [--computer-id ID] [--chain-codex-notify]
 #              [--no-nightly] [--dry-run]
 #   install.sh --uninstall [--remove-digests] [--dry-run]
+#
+# Codex runs hooks only once they are trusted (a hash in config.toml). install.sh trusts its
+# own hooks and no others; if that fails (Codex too old, not on PATH), Codex asks in the TUI.
+# A running Codex app-server picks new hooks up only when it restarts. Codex's `notify` only
+# fires when a turn ends, so the hooks are what report a Codex todo as working.
 #
 # Codex allows a single `notify` program. If one is already configured, install.sh leaves it
 # alone and says so; --chain-codex-notify instead wraps it so both run (the original line is
@@ -43,6 +50,9 @@ SOURCE_LINE='source-file -q ~/.ai-remote/tmux.conf'
 HOOK_MARKER='/.ai-remote/bin/ai-todo-hook'
 CODEX_DIR="${CODEX_HOME:-${HOME}/.codex}"
 CODEX_CONFIG="${CODEX_DIR}/config.toml"
+CODEX_HOOKS="${CODEX_DIR}/hooks.json"
+# Test hook: the codex binary that trusts the hooks (default: codex on PATH).
+CODEX_BIN="${AI_TODO_CODEX_BIN:-codex}"
 CODEX_NOTIFY_SAVED="${AI_DIR}/codex-notify-original"
 STATE_DIR="${AI_DIR}/memory-state"
 LAUNCH_LABEL='com.ai-remote.todo-memory'
@@ -94,11 +104,20 @@ run() {
   fi
 }
 
-# Merge (or remove) our hooks in settings.json. Prints what changed.
-# Exit 2 = settings.json is not valid JSON (left untouched).
+# Merge (or remove) our hooks in settings.json, or with kind=codex in ~/.codex/hooks.json
+# (same format). Prints what changed. Exit 2 = the file is not valid JSON (left untouched).
 merge_settings() {
-  local mode="$1"
+  local mode="$1" kind="${2:-claude}" path="$SETTINGS"
+  [[ "$kind" == codex ]] && path="$CODEX_HOOKS"
   if ! command -v python3 >/dev/null 2>&1; then
+    if [[ "$kind" == codex ]]; then
+      echo "python3 not found: add these hooks to ${path} by hand:" >&2
+      echo "  UserPromptSubmit  -> ${BIN_DIR}/ai-todo-hook --codex busy" >&2
+      echo "  PermissionRequest -> ${BIN_DIR}/ai-todo-hook --codex waiting" >&2
+      echo "  Stop              -> ${BIN_DIR}/ai-todo-hook --codex idle" >&2
+      echo "  PostToolUse       -> ${BIN_DIR}/ai-todo-hook --codex tool" >&2
+      return 0
+    fi
     echo "python3 not found: add these hooks to ${SETTINGS} by hand:" >&2
     echo "  UserPromptSubmit -> ${BIN_DIR}/ai-todo-hook busy" >&2
     echo "  Notification     -> ${BIN_DIR}/ai-todo-hook waiting" >&2
@@ -106,11 +125,19 @@ merge_settings() {
     echo "  PostToolUse      -> ${BIN_DIR}/ai-todo-hook tool" >&2
     return 1
   fi
-  python3 - "$mode" "$SETTINGS" "$BIN_DIR" "$HOOK_MARKER" "$dry_run" <<'PY'
+  python3 - "$mode" "$path" "$BIN_DIR" "$HOOK_MARKER" "$dry_run" "$kind" <<'PY'
 import json, os, shutil, sys, time
 
 mode, path, bin_dir, marker, dry_run = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5] == "1"
-ours = {"UserPromptSubmit": "busy", "Notification": "waiting", "Stop": "idle", "PostToolUse": "tool"}
+kind = sys.argv[6]
+name = os.path.basename(path)
+if kind == "codex":
+    # Codex has no Notification event; PermissionRequest fires when it asks for approval.
+    ours = {"UserPromptSubmit": "busy", "PermissionRequest": "waiting", "Stop": "idle", "PostToolUse": "tool"}
+    prefix = f"{bin_dir}/ai-todo-hook --codex"
+else:
+    ours = {"UserPromptSubmit": "busy", "Notification": "waiting", "Stop": "idle", "PostToolUse": "tool"}
+    prefix = f"{bin_dir}/ai-todo-hook"
 
 data = {}
 if os.path.exists(path):
@@ -155,17 +182,18 @@ for event in list(hooks):
 if mode == "install":
     for event, status in ours.items():
         hooks.setdefault(event, []).append(
-            {"hooks": [{"type": "command", "command": f"{bin_dir}/ai-todo-hook {status}"}]}
+            {"hooks": [{"type": "command", "command": f"{prefix} {status}"}]}
         )
     # Claude skips AGENTS.md when a CLAUDE.md is present unless this is set. Other keys stay.
-    data["projectInstructions"] = "claude-md-and-agents-md"
-elif data.get("projectInstructions") == "claude-md-and-agents-md":
+    if kind == "claude":
+        data["projectInstructions"] = "claude-md-and-agents-md"
+elif kind == "claude" and data.get("projectInstructions") == "claude-md-and-agents-md":
     del data["projectInstructions"]
 if not hooks:
     del data["hooks"]
 
 if json.dumps(data, sort_keys=True) == before:
-    print("settings.json: already up to date")
+    print(f"{name}: already up to date")
     sys.exit(0)
 if dry_run:
     print(f"would update {path} ({mode} hooks)")
@@ -175,13 +203,89 @@ os.makedirs(os.path.dirname(path), exist_ok=True)
 if os.path.exists(path):
     backup = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
     shutil.copy2(path, backup)
-    print(f"settings.json: backed up to {backup}")
+    print(f"{name}: backed up to {backup}")
 tmp = path + ".tmp"
 with open(tmp, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
 os.replace(tmp, path)
-print(f"settings.json: {mode}ed todo hooks")
+print(f"{name}: {mode}ed todo hooks")
+PY
+}
+
+# Our hooks in ~/.codex/hooks.json, trusted on install. Skipped when Codex isn't here, or when
+# hooks.json can't be merged safely (Codex status then still comes from notify, idle only).
+merge_codex_hooks() {
+  local mode="$1"
+  if [[ ! -d "$CODEX_DIR" ]] && ! command -v codex >/dev/null 2>&1; then
+    [[ "$mode" == install ]] && say "codex: not installed, skipping hooks"
+    return 0
+  fi
+  merge_settings "$mode" codex || return 0
+  if [[ "$mode" == install && $dry_run -eq 0 ]]; then
+    trust_codex_hooks
+  fi
+}
+
+# Ask `codex app-server` which hooks it sees and record ours as trusted, the way the TUI's
+# hook review does (config/batchWrite of hooks.state."<key>".trusted_hash). Never fails.
+trust_codex_hooks() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$CODEX_BIN" "$HOOK_MARKER" "$CODEX_HOOKS" <<'PY' || true
+import json, os, subprocess, sys, threading
+
+codex, marker, hooks_path = sys.argv[1:4]
+manual = "codex hooks: not trusted automatically; Codex asks you to review them when it next starts"
+try:
+    p = subprocess.Popen([codex, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, text=True)
+except OSError:
+    print(manual)
+    sys.exit(0)
+timer = threading.Timer(30, p.kill)
+timer.start()
+
+def send(msg):
+    p.stdin.write(json.dumps(msg) + "\n")
+    p.stdin.flush()
+
+def call(rid, method, params):
+    send({"id": rid, "method": method, "params": params})
+    for line in p.stdout:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(msg, dict) and msg.get("id") == rid:
+            if "error" in msg:
+                raise RuntimeError(f"{method}: {msg['error']}")
+            return msg.get("result") or {}
+    raise RuntimeError(f"{method}: codex app-server exited")
+
+try:
+    call(1, "initialize", {"clientInfo": {"name": "ai-remote-install", "version": "1"}})
+    send({"method": "initialized"})
+    listed = call(2, "hooks/list", {"cwds": [os.path.expanduser("~")]})
+    real = os.path.realpath(hooks_path)
+    ours = [h for entry in listed.get("data", []) for h in entry.get("hooks", [])
+            if marker in str(h.get("command", ""))
+            and os.path.realpath(str(h.get("sourcePath", ""))) == real]
+    todo = {h["key"]: {"trusted_hash": h["currentHash"]} for h in ours if h.get("trustStatus") != "trusted"}
+    if not ours:
+        print(manual)
+    elif not todo:
+        print("codex hooks: already trusted")
+    else:
+        call(3, "config/batchWrite", {
+            "edits": [{"keyPath": "hooks.state", "value": todo, "mergeStrategy": "upsert"}],
+            "filePath": None, "expectedVersion": None, "reloadUserConfig": True,
+        })
+        print(f"codex hooks: trusted {len(todo)} (a running Codex picks them up when it restarts)")
+except Exception as e:
+    print(f"{manual} ({e})")
+finally:
+    timer.cancel()
+    p.kill()
 PY
 }
 
@@ -437,6 +541,7 @@ do_install() {
 
   merge_settings install
   merge_codex_notify install
+  merge_codex_hooks install
   install_launch_agent
 
   if [[ $dry_run -eq 0 ]]; then
@@ -461,6 +566,7 @@ do_uninstall() {
 
   # Put Codex's own notify back before its program disappears.
   merge_codex_notify uninstall
+  merge_codex_hooks uninstall
 
   local file installed=()
   for file in "${HELPERS[@]}" "${MODULES[@]}"; do installed+=("${BIN_DIR}/${file}"); done

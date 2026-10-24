@@ -1123,6 +1123,53 @@ printf '{"session_id":"%s"}' "$SID" | AI_TODO_MEMORY_BIN="${SANDBOX}/nonexistent
   || fail "hook failed without ai-todo-memory"
 [[ $(wc -l <"$HUB_LOG") -eq $((posts + 1)) && "$(last_status)" == idle ]] || fail "hook without ai-todo-memory did not post idle"
 pass "hook_without_memory_binary_still_posts_status (and a todo-hub.conf without TODO_COMPUTER_ID)"
+
+# --- ai-todo-hook --codex (Codex 0.163+ hooks: same JSON as Claude's) -------------------
+
+codex_hook() { # <status> <event> [extra json fields]: one Codex hook call for X_LINKED
+  printf '{"session_id":"%s","turn_id":"t1","hook_event_name":"%s"%s}' "$X_LINKED" "$2" "${3:-}" \
+    | AI_TODO_MEMORY_BIN="$FAKE_MEMORY" AI_TODO_TMUX_SESSION="$XTMUX" "$HOOK" --codex "$1"
+}
+last_body() { python3 -c 'import json,sys; print(json.dumps(json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"], sort_keys=True))' "$HUB_LOG"; }
+: >"$MEMORY_TRIGGERS"
+before=$(wc -l <"$HUB_LOG")
+codex_hook busy UserPromptSubmit ',"prompt":"go"'
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 1)) ]] || fail "codex busy hook did not post"
+[[ "$(last_body)" == "{\"attended\": false, \"session_id\": \"${X_LINKED}\", \"status\": \"busy\", \"tool\": \"codex\"}" ]] \
+  || fail "codex busy body wrong: $(last_body)"
+codex_hook waiting PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"rm -rf x"}'
+python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert b=={"session_id":sys.argv[2],"tool":"codex","status":"waiting","attended":False,"message":"Codex needs your permission to use Bash"}, b' "$HUB_LOG" "$X_LINKED" \
+  || fail "codex waiting body wrong: $(last_body)"
+codex_hook idle Stop ',"last_assistant_message":"done","stop_hook_active":false'
+[[ "$(last_status)" == idle ]] || fail "codex Stop did not post idle"
+sleep 0.3
+[[ ! -s "$MEMORY_TRIGGERS" ]] || fail "a codex Stop started ai-todo-memory: $(cat "$MEMORY_TRIGGERS")"
+pass "hook --codex posts busy / waiting (naming the tool) / idle as session_id + tool=codex, without a memory run"
+
+# notify's idle and the hook's tool share one state file: a PostToolUse after notify's idle
+# posts busy again, and a second one doesn't.
+AI_TODO_TMUX_SESSION="$XTMUX" "$NOTIFY" "$TURN"
+before=$(wc -l <"$HUB_LOG")
+codex_hook tool PostToolUse ',"tool_name":"Bash"'
+codex_hook tool PostToolUse ',"tool_name":"Bash"'
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 1)) && "$(last_status)" == busy ]] || fail "codex tool posts wrong: $(tail -2 "$HUB_LOG")"
+pass "hook --codex tool posts busy once after notify's idle (shared hook-state/codex-<id>)"
+
+before=$(wc -l <"$HUB_LOG")
+printf '{"session_id":"%s"}' "$X_LINKED" | AI_TODO_TMUX_SESSION="ai/claude/todo-0f3a9c21" "$HOOK" --codex idle
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 1)) && "$(last_attended)" == False ]] || fail "codex hook in a claude todo session: $(tail -1 "$HUB_LOG")"
+tmux -L "$SOCK" new-session -d -s "$RESUME_NAME" -- /bin/sh -c "exec -a 'codex resume ${X_LINKED}' sleep 60" \
+  || fail "could not start the resume pane"
+sleep 0.3
+date +%s >"$ACTIVITY"
+printf '{"session_id":"%s"}' "$X_LINKED" | env -u TMUX -u AI_TODO_TMUX_SESSION AI_TODO_CLIENT_ACTIVITY_FILE="$ACTIVITY" "$HOOK" --codex busy
+[[ "$(last_status)" == busy && "$(last_attended)" == True ]] || fail "codex hook attended not found through the resume pane: $(tail -1 "$HUB_LOG")"
+tmux -L "$SOCK" kill-session -t "=$RESUME_NAME"
+before=$(wc -l <"$HUB_LOG")
+printf '{"session_id":"%s"}' "$X_LINKED" | "$HOOK" --codex seed "$X_LINKED"
+printf '{"session_id":"%s"}' "$X_LINKED" | "$HOOK" --codex bogus
+[[ $(wc -l <"$HUB_LOG") -eq $before ]] || fail "hook --codex posted for seed or a bad status"
+pass "hook --codex finds attended through the codex resume pane only, and ignores seed and bad statuses"
 unset AI_TODO_HUB_CONF AI_TODO_HOOK_SYNC
 # The hook keeps per-session state under ~/.ai-remote; start the install tests clean.
 rm -rf "${HOME}/.ai-remote"
@@ -2075,6 +2122,52 @@ printf '#!/bin/sh\necho "$*" >>"%s"\nexit 0\n' "$LAUNCHCTL_LOG" >"${GUARD_BIN}/l
 [[ "$(command -v launchctl)" == "${GUARD_BIN}/launchctl" ]] || fail "the fake launchctl is not first on PATH"
 PLIST="${HOME}/Library/LaunchAgents/com.ai-remote.todo-memory.plist"
 GUI="gui/$(id -u)"
+# A fake `codex app-server` for trusting hooks: lists every command hook in hooks.json
+# (untrusted unless already in trusted.json) and records config/batchWrite edits there.
+FAKE_CODEX="${SANDBOX}/bin/fake-codex-app-server"
+CODEX_TRUST_LOG="${SANDBOX}/codex-trust.log"
+cat >"$FAKE_CODEX" <<EOF
+#!/usr/bin/env python3
+import hashlib, json, os, sys
+assert sys.argv[1:] == ["app-server"], sys.argv
+home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+hooks_path = os.path.join(home, "hooks.json")
+trusted_path = os.path.join(home, "trusted.json")
+trusted = json.load(open(trusted_path)) if os.path.exists(trusted_path) else {}
+for line in sys.stdin:
+    msg = json.loads(line)
+    method, rid = msg.get("method"), msg.get("id")
+    if rid is None:
+        continue
+    if method == "initialize":
+        result = {"userAgent": "fake"}
+    elif method == "hooks/list":
+        hooks = []
+        data = json.load(open(hooks_path)).get("hooks", {}) if os.path.exists(hooks_path) else {}
+        for event, groups in data.items():
+            for gi, group in enumerate(groups):
+                for hi, h in enumerate(group.get("hooks", [])):
+                    key = f"{hooks_path}:{event}:{gi}:{hi}"
+                    current = "sha256:" + hashlib.sha256(h["command"].encode()).hexdigest()
+                    hooks.append({"key": key, "command": h["command"], "sourcePath": hooks_path,
+                                  "currentHash": current,
+                                  "trustStatus": "trusted" if trusted.get(key) == current else "untrusted"})
+        result = {"data": [{"cwd": msg["params"]["cwds"][0], "hooks": hooks}]}
+    elif method == "config/batchWrite":
+        with open("${CODEX_TRUST_LOG}", "a") as f:
+            f.write(json.dumps(msg["params"]) + "\n")
+        for edit in msg["params"]["edits"]:
+            for key, value in edit["value"].items():
+                trusted[key] = value["trusted_hash"]
+        json.dump(trusted, open(trusted_path, "w"))
+        result = {"status": "ok"}
+    else:
+        print(json.dumps({"id": rid, "error": {"message": "unknown"}}), flush=True)
+        continue
+    print(json.dumps({"id": rid, "result": result}), flush=True)
+EOF
+chmod +x "$FAKE_CODEX"
+export AI_TODO_CODEX_BIN="$FAKE_CODEX"
 on_mac() { [[ "$(uname -s)" == Darwin ]]; }
 mkdir -p "${HOME}/.claude"
 cat >"$SETTINGS" <<'EOF'
@@ -2166,6 +2259,42 @@ OUR_NOTIFY="notify = [\"${HOME}/.ai-remote/bin/ai-todo-codex-notify\"]"
 [[ "$(grep -c '^notify' "${HOME}/.codex/config.toml")" -eq 1 ]] && grep -qxF "$OUR_NOTIFY" "${HOME}/.codex/config.toml" \
   || fail "codex notify not added exactly once: $(cat "${HOME}/.codex/config.toml")"
 pass "install adds our notify to a codex config without one, once"
+
+CX="${SANDBOX}/codex-hooks"
+mkdir -p "$CX"
+cat >"${CX}/hooks.json" <<'EOF'
+{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]}}
+EOF
+: >"$CODEX_TRUST_LOG"
+out="$(CODEX_HOME="$CX" "$INSTALL")"
+CODEX_HOME="$CX" "$INSTALL" >/dev/null
+python3 - "${CX}/hooks.json" "${HOME}/.ai-remote/bin/ai-todo-hook" <<'PY' || fail "codex hooks.json wrong: $(cat "${CX}/hooks.json")"
+import json, sys
+hooks = json.load(open(sys.argv[1]))["hooks"]
+cmds = {e: [h["command"] for g in groups for h in g["hooks"]] for e, groups in hooks.items()}
+b = sys.argv[2]
+assert cmds == {"Stop": ["say done", f"{b} --codex idle"], "UserPromptSubmit": [f"{b} --codex busy"],
+                "PermissionRequest": [f"{b} --codex waiting"], "PostToolUse": [f"{b} --codex tool"]}, cmds
+PY
+grep -q "codex hooks: trusted 4" <<<"$out" || fail "install did not report trusting the codex hooks: $out"
+python3 - "$CODEX_TRUST_LOG" "${CX}/hooks.json" <<'PY' || fail "codex trust writes wrong: $(cat "$CODEX_TRUST_LOG")"
+import json, sys
+writes = [json.loads(l) for l in open(sys.argv[1])]
+assert len(writes) == 1, writes  # the re-run found them trusted already
+edit = writes[0]["edits"][0]
+assert edit["keyPath"] == "hooks.state" and edit["mergeStrategy"] == "upsert", edit
+keys = sorted(edit["value"])
+assert keys == sorted(f"{sys.argv[2]}:{e}" for e in ["PermissionRequest:0:0", "PostToolUse:0:0", "Stop:1:0", "UserPromptSubmit:0:0"]), keys
+assert all(v["trusted_hash"].startswith("sha256:") for v in edit["value"].values())
+PY
+CODEX_HOME="$CX" "$INSTALL" --uninstall >/dev/null
+[[ "$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))))' "${CX}/hooks.json")" \
+  == '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]}}' ]] \
+  || fail "uninstall did not leave only the foreign codex hook: $(cat "${CX}/hooks.json")"
+printf '{ broken' >"${CX}/hooks.json"
+out="$(CODEX_HOME="$CX" "$INSTALL" 2>&1)" || fail "install failed on an invalid codex hooks.json: $out"
+[[ "$(cat "${CX}/hooks.json")" == "{ broken" ]] || fail "install modified an invalid codex hooks.json"
+pass "install merges the codex hooks into hooks.json, trusts only ours through codex app-server, uninstall keeps foreign hooks"
 
 CX="${SANDBOX}/codex2"
 mkdir -p "$CX"

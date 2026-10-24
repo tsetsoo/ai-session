@@ -1,11 +1,16 @@
 #!/bin/sh
-# Claude Code hook: report a todo conversation's status to todo-server.
+# Claude Code and Codex hook: report a todo conversation's status to todo-server.
 # Installed into ~/.claude/settings.json by install.sh:
 #   UserPromptSubmit -> busy, Notification -> waiting, Stop -> idle,
 #   PostToolUse -> tool (busy again after an answered permission prompt)
+# and, with --codex, into ~/.codex/hooks.json (Codex 0.163+ hooks take the same JSON):
+#   UserPromptSubmit -> busy, PermissionRequest -> waiting, Stop -> idle,
+#   PostToolUse -> tool
+# Codex's `notify` (ai-todo-codex-notify) only fires when a turn ends, so without these a
+# Codex todo never shows as working.
 #
-# Usage (Claude passes the hook JSON on stdin):
-#   ai-todo-hook <busy|waiting|idle|tool>
+# Usage (Claude or Codex passes the hook JSON on stdin):
+#   ai-todo-hook [--codex] <busy|waiting|idle|tool>
 #   ai-todo-hook seed <session_id>
 #
 # - The idle notification ("Claude is waiting for your input", notification_type
@@ -32,9 +37,14 @@
 # background job behind the conversation, if there is one: busy while the job works, idle
 # otherwise. Hooks a job fired before it was a todo never reached the hub.
 #
+# --codex posts {"session_id", "tool": "codex"} instead of claude_session_id, looks for an
+# ai/codex/todo-* session (the pane running `codex resume <id>` first: Codex runs turns in a
+# shared app-server whose $TMUX is whichever TUI started it), and shares its per-thread
+# state file (hook-state/codex-<id>) with ai-todo-codex-notify.
+#
 # On `idle` (the Stop hook) it also starts `ai-todo-memory trigger claude <session_id>
 # --transcript <transcript_path>`, fully detached, for every conversation (not only todo
-# ones), if ~/.ai-remote/bin/ai-todo-memory is installed. It does nothing at all inside
+# ones), if ~/.ai-remote/bin/ai-todo-memory is installed (Claude only). It does nothing at all inside
 # ai-todo-memory's own `claude -p` run (AI_TODO_MEMORY_RUN set).
 #
 # Config: ~/.ai-remote/todo-hub.conf (shell syntax)
@@ -50,10 +60,15 @@
 #   AI_TODO_RECHECK_DELAY seconds before the waiting re-check (default 12)
 #   AI_TODO_MEMORY_BIN    ai-todo-memory path instead of ~/.ai-remote/bin/ai-todo-memory
 #   AI_TODO_CLAUDE_JOBS   background job directory instead of ~/.claude/jobs
+tool=claude
+if [ "${1:-}" = --codex ]; then
+  tool=codex
+  shift
+fi
 status=${1:-}
 case "$status" in
   busy | waiting | idle | tool) ;;
-  seed) [ -n "${2:-}" ] || exit 0 ;;
+  seed) [ "$tool" = claude ] && [ -n "${2:-}" ] || exit 0 ;;
   *) exit 0 ;;
 esac
 [ -n "${AI_TODO_MEMORY_RUN:-}" ] && exit 0
@@ -90,7 +105,7 @@ export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HO
 
 # Stop -> memory extraction for this conversation, before the todo-only filter below.
 memory_bin=${AI_TODO_MEMORY_BIN:-$HOME/.ai-remote/bin/ai-todo-memory}
-if [ "$status" = idle ] && [ -x "$memory_bin" ]; then
+if [ "$tool" = claude ] && [ "$status" = idle ] && [ -x "$memory_bin" ]; then
   if command -v python3 >/dev/null 2>&1; then
     memory_args=$(printf '%s' "$input" | python3 -c '
 import json, sys
@@ -135,22 +150,20 @@ latest_activity() {
   fi | sort -n | tail -n 1
 }
 
-# The ai/claude/todo-* tmux session showing this conversation, or nothing.
-todo_session() {
-  case "${AI_TODO_TMUX_SESSION:-}" in
-    '') ;;
-    ai/claude/todo-*) printf '%s\n' "$AI_TODO_TMUX_SESSION"; return ;;
-    *) return ;;
+# The ai/<tool>/todo-* session this hook runs in, or nothing.
+current_todo_session() {
+  [ -n "${TMUX:-}" ] || return
+  current=$(tmux display-message -p '#S' 2>/dev/null)
+  case "$current" in
+    "ai/$tool/todo-"*) printf '%s\n' "$current" ;;
   esac
-  if [ -n "${TMUX:-}" ]; then
-    current=$(tmux display-message -p '#S' 2>/dev/null)
-    case "$current" in
-      ai/claude/todo-*) printf '%s\n' "$current"; return ;;
-    esac
-  fi
-  # A pane's process is claude itself: ai-todo-open starts it through `env`, which execs.
+}
+
+# The ai/<tool>/todo-* session whose pane runs this conversation, or nothing.
+# A pane's process is the tool itself: ai-todo-open starts it through `env`, which execs.
+pane_todo_session() {
   panes=$(tmux ${AI_TODO_TMUX_SOCKET:+-L "$AI_TODO_TMUX_SOCKET"} list-panes -a -F '#{pane_pid} #{session_name}' 2>/dev/null \
-    | awk '$2 ~ /^ai\/claude\/todo-/') || return
+    | awk -v prefix="ai/$tool/todo-" 'index($2, prefix) == 1') || return
   [ -n "$panes" ] || return
   pids=$(printf '%s\n' "$panes" | awk '{print $1}' | paste -sd, -)
   ps -o pid= -o args= -p "$pids" 2>/dev/null | while read -r pid args; do
@@ -161,6 +174,22 @@ todo_session() {
         ;;
     esac
   done
+}
+
+# The ai/<tool>/todo-* tmux session showing this conversation, or nothing.
+todo_session() {
+  case "${AI_TODO_TMUX_SESSION:-}" in
+    '') ;;
+    "ai/$tool/todo-"*) printf '%s\n' "$AI_TODO_TMUX_SESSION"; return ;;
+    *) return ;;
+  esac
+  if [ "$tool" = codex ]; then
+    found=$(pane_todo_session)
+    [ -n "$found" ] && printf '%s\n' "$found" || current_todo_session
+  else
+    found=$(current_todo_session)
+    [ -n "$found" ] && printf '%s\n' "$found" || pane_todo_session
+  fi
 }
 
 only_if_changed=
@@ -180,20 +209,27 @@ except Exception:
 sid = data.get("session_id") if isinstance(data, dict) else None
 if not isinstance(sid, str) or not sid or not all(c.isalnum() or c == "-" for c in sid):
     sys.exit(1)
-status = sys.argv[1]
+status, tool = sys.argv[1], sys.argv[2]
 msg = data.get("message")
 msg = msg if isinstance(msg, str) else ""
 if status == "waiting" and (
     data.get("notification_type") == "idle_prompt" or "waiting for your input" in msg.lower()
 ):
     status = "idle"
-out = {"claude_session_id": sid, "status": status, "attended": False}
+if tool == "codex":
+    # PermissionRequest carries the tool, not a message.
+    name = data.get("tool_name")
+    if status == "waiting" and not msg and isinstance(name, str) and name:
+        msg = f"Codex needs your permission to use {name}"
+    out = {"session_id": sid, "tool": "codex", "status": status, "attended": False}
+else:
+    out = {"claude_session_id": sid, "status": status, "attended": False}
 if status == "waiting" and msg:
     out["message"] = msg[:500]
 print(sid)
 print(status)
 print(json.dumps(out))
-' "$status" 2>/dev/null) || exit 0
+' "$status" "$tool" 2>/dev/null) || exit 0
   sid=$(printf '%s\n' "$parsed" | sed -n 1p)
   status=$(printf '%s\n' "$parsed" | sed -n 2p)
   body=$(printf '%s\n' "$parsed" | sed -n 3p)
@@ -204,11 +240,20 @@ else
   if [ "$status" = waiting ] && printf '%s' "$input" | grep -qi 'idle_prompt\|waiting for your input'; then
     status=idle
   fi
-  body=$(printf '{"claude_session_id":"%s","status":"%s","attended":false}' "$sid" "$status")
+  if [ "$tool" = codex ]; then
+    body=$(printf '{"session_id":"%s","tool":"codex","status":"%s","attended":false}' "$sid" "$status")
+  else
+    body=$(printf '{"claude_session_id":"%s","status":"%s","attended":false}' "$sid" "$status")
+  fi
 fi
 
 state_dir="$HOME/.ai-remote/hook-state"
-state_file="$state_dir/$sid"
+# Codex threads share ai-todo-codex-notify's file, so its idle counts as the last status sent.
+if [ "$tool" = codex ]; then
+  state_file="$state_dir/codex-$sid"
+else
+  state_file="$state_dir/$sid"
+fi
 if [ -n "$only_if_changed" ] && [ "$(cat "$state_file" 2>/dev/null)" = "$status" ]; then
   exit 0
 fi
