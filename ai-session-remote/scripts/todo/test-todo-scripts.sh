@@ -2142,6 +2142,8 @@ for line in sys.stdin:
     if method == "initialize":
         result = {"userAgent": "fake"}
     elif method == "hooks/list":
+        # A server request reusing the client's id comes first; it is not the answer.
+        print(json.dumps({"id": rid, "method": "item/tool/requestUserInput", "params": {}}), flush=True)
         hooks = []
         data = json.load(open(hooks_path)).get("hooks", {}) if os.path.exists(hooks_path) else {}
         for event, groups in data.items():
@@ -2152,6 +2154,9 @@ for line in sys.stdin:
                     hooks.append({"key": key, "command": h["command"], "sourcePath": hooks_path,
                                   "currentHash": current,
                                   "trustStatus": "trusted" if trusted.get(key) == current else "untrusted"})
+        # A lookalike that turned up in hooks.json after install.sh merged it: never ours.
+        hooks.append({"key": f"{hooks_path}:Stop:9:0", "command": "echo /.ai-remote/bin/ai-todo-hook",
+                      "sourcePath": hooks_path, "currentHash": "sha256:0", "trustStatus": "untrusted"})
         result = {"data": [{"cwd": msg["params"]["cwds"][0], "hooks": hooks}]}
     elif method == "config/batchWrite":
         with open("${CODEX_TRUST_LOG}", "a") as f:
@@ -2294,7 +2299,11 @@ CODEX_HOME="$CX" "$INSTALL" --uninstall >/dev/null
 printf '{ broken' >"${CX}/hooks.json"
 out="$(CODEX_HOME="$CX" "$INSTALL" 2>&1)" || fail "install failed on an invalid codex hooks.json: $out"
 [[ "$(cat "${CX}/hooks.json")" == "{ broken" ]] || fail "install modified an invalid codex hooks.json"
-pass "install merges the codex hooks into hooks.json, trusts only ours through codex app-server, uninstall keeps foreign hooks"
+out="$(CODEX_HOME="$CX" "$INSTALL" --uninstall 2>&1)"
+grep -qF "WARNING: our hooks are still in ${CX}/hooks.json" <<<"$out" || fail "uninstall did not warn about an invalid codex hooks.json: $out"
+[[ "$(cat "${CX}/hooks.json")" == "{ broken" ]] || fail "uninstall modified an invalid codex hooks.json"
+"$INSTALL" >/dev/null
+pass "install merges the codex hooks into hooks.json and trusts exactly ours (not a lookalike, past a server request reusing the id); uninstall keeps foreign hooks and warns when it can't remove ours"
 
 CX="${SANDBOX}/codex2"
 mkdir -p "$CX"

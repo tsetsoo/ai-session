@@ -111,6 +111,10 @@ merge_settings() {
   [[ "$kind" == codex ]] && path="$CODEX_HOOKS"
   if ! command -v python3 >/dev/null 2>&1; then
     if [[ "$kind" == codex ]]; then
+      if [[ "$mode" == uninstall ]]; then
+        echo "python3 not found: remove the ${BIN_DIR}/ai-todo-hook --codex hooks from ${path} by hand" >&2
+        return 0
+      fi
       echo "python3 not found: add these hooks to ${path} by hand:" >&2
       echo "  UserPromptSubmit  -> ${BIN_DIR}/ai-todo-hook --codex busy" >&2
       echo "  PermissionRequest -> ${BIN_DIR}/ai-todo-hook --codex waiting" >&2
@@ -221,7 +225,13 @@ merge_codex_hooks() {
     [[ "$mode" == install ]] && say "codex: not installed, skipping hooks"
     return 0
   fi
-  merge_settings "$mode" codex || return 0
+  if ! merge_settings "$mode" codex; then
+    # Uninstall goes on to delete ai-todo-hook, so hooks left here would fail on every turn.
+    if [[ "$mode" == uninstall ]]; then
+      echo "WARNING: our hooks are still in ${CODEX_HOOKS}; remove the ${BIN_DIR}/ai-todo-hook --codex entries by hand" >&2
+    fi
+    return 0
+  fi
   if [[ "$mode" == install && $dry_run -eq 0 ]]; then
     trust_codex_hooks
   fi
@@ -231,10 +241,12 @@ merge_codex_hooks() {
 # hook review does (config/batchWrite of hooks.state."<key>".trusted_hash). Never fails.
 trust_codex_hooks() {
   command -v python3 >/dev/null 2>&1 || return 0
-  python3 - "$CODEX_BIN" "$HOOK_MARKER" "$CODEX_HOOKS" <<'PY' || true
+  python3 - "$CODEX_BIN" "$BIN_DIR" "$CODEX_HOOKS" <<'PY' || true
 import json, os, subprocess, sys, threading
 
-codex, marker, hooks_path = sys.argv[1:4]
+codex, bin_dir, hooks_path = sys.argv[1:4]
+# Exactly the commands merge_settings writes: never vouch for anything else in hooks.json.
+expected = {f"{bin_dir}/ai-todo-hook --codex {s}" for s in ("busy", "waiting", "idle", "tool")}
 manual = "codex hooks: not trusted automatically; Codex asks you to review them when it next starts"
 try:
     p = subprocess.Popen([codex, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -256,7 +268,8 @@ def call(rid, method, params):
             msg = json.loads(line)
         except ValueError:
             continue
-        if isinstance(msg, dict) and msg.get("id") == rid:
+        # A request from the server can reuse our id; only a response has no method.
+        if isinstance(msg, dict) and msg.get("id") == rid and "method" not in msg:
             if "error" in msg:
                 raise RuntimeError(f"{method}: {msg['error']}")
             return msg.get("result") or {}
@@ -268,7 +281,7 @@ try:
     listed = call(2, "hooks/list", {"cwds": [os.path.expanduser("~")]})
     real = os.path.realpath(hooks_path)
     ours = [h for entry in listed.get("data", []) for h in entry.get("hooks", [])
-            if marker in str(h.get("command", ""))
+            if h.get("command") in expected
             and os.path.realpath(str(h.get("sourcePath", ""))) == real]
     todo = {h["key"]: {"trusted_hash": h["currentHash"]} for h in ours if h.get("trustStatus") != "trusted"}
     if not ours:
