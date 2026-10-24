@@ -1,12 +1,13 @@
 #!/bin/sh
 # List, delete and prune the Claude Code and Codex conversations on this computer.
 # The iPhone / Mac app runs `list --json` over SSH to link existing conversations to
-# todos, and `delete` when a todo's conversation is deleted.
+# todos, `delete` when a todo's conversation is deleted, and `rename` when a todo is renamed.
 #
 # Usage:
 #   ai-todo-sessions list [--json] [--tool claude|codex] [--limit N]
 #   ai-todo-sessions delete <claude|codex|cursor> <session_id> [--permanent]
 #                    [--kill-tmux <tmux_name>] [--wait SECONDS] [--missing-ok]
+#   ai-todo-sessions rename <claude|codex> <session_id> <name>
 #   ai-todo-sessions prune --older-than DAYS [--tool claude|codex] [--yes]
 #   ai-todo-sessions stats --json [--since DAYS] [--session <claude|codex>:<id>]...
 #                    [--tool claude|codex]
@@ -24,6 +25,10 @@
 #         (default 10) for the conversation to stop. Refuses while it still runs.
 #         --missing-ok (implied by --kill-tmux): a conversation that doesn't exist is
 #         reported as already gone and exits 0.
+# rename  The conversation's own name, for the todo it belongs to (whitespace collapsed,
+#         <= 200 chars). Claude: appends a custom-title line to every copy of the transcript,
+#         as /rename does; a running Claude picks it up later. Codex: thread/name/set through
+#         `codex app-server`. Cursor chats have no name to set (64).
 # prune   Conversations not used for DAYS, not running and not linked to any todo.
 #         Linked ids come from todo-server (~/.ai-remote/todo-hub.conf); if it can't be
 #         reached or answers with anything but a list, nothing is pruned. Without --yes it
@@ -66,6 +71,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -590,6 +596,78 @@ def cmd_delete(args):
             die(f"{tool} conversation {sid} is running; close it first", 65)
         time.sleep(0.5)
     print(delete_session(session, permanent))
+
+
+NAME_MAX = 200
+
+
+def codex_set_name(sid, name):
+    """thread/name/set through `codex app-server`, the call the Codex TUI's /rename makes."""
+    codex = find_codex()
+    if not codex:
+        die("codex not found", 90)
+    try:
+        proc = subprocess.Popen([codex, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
+    except OSError as e:
+        die(f"codex app-server failed to start: {e}", 1)
+    timer = threading.Timer(30, proc.kill)
+    timer.start()
+
+    def call(rid, method, params):
+        proc.stdin.write(json.dumps({"id": rid, "method": method, "params": params}) + "\n")
+        proc.stdin.flush()
+        for line in proc.stdout:
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            # A request from the server can reuse our id; only a response has no method.
+            if isinstance(msg, dict) and msg.get("id") == rid and "method" not in msg:
+                if "error" in msg:
+                    error = msg["error"]
+                    raise RuntimeError(error.get("message") if isinstance(error, dict) else str(error))
+                return msg.get("result")
+        raise RuntimeError("codex app-server exited")
+
+    try:
+        call(1, "initialize", {"clientInfo": {"name": "ai-todo-sessions", "version": "1"}})
+        proc.stdin.write(json.dumps({"method": "initialized"}) + "\n")
+        proc.stdin.flush()
+        call(2, "thread/name/set", {"threadId": sid, "name": name})
+    except (RuntimeError, OSError) as e:
+        die(f"codex couldn't rename {sid}: {e}", 1)
+    finally:
+        timer.cancel()
+        proc.kill()
+
+
+def cmd_rename(args):
+    usage = "usage: ai-todo-sessions rename <claude|codex> <session_id> <name>"
+    if len(args) != 3 or args[0] not in ("claude", "codex") or not ID_RE.match(args[1]):
+        die(usage, 64)
+    tool, sid = args[0], args[1]
+    name = " ".join(args[2].split())[:NAME_MAX]
+    if not name:
+        die(usage, 64)
+    session = find_one(tool, sid)
+    if not session:
+        die(f"no {tool} conversation {sid}", 66)
+    if tool == "claude":
+        # The last custom-title line wins, the one /rename writes. A running Claude reads a
+        # line another process appended the next time it reads the end of its transcript.
+        line = json.dumps({"type": "custom-title", "customTitle": name, "sessionId": sid}, ensure_ascii=False)
+        for path in session["paths"]:
+            with open(path, "rb+") as f:
+                f.seek(0, os.SEEK_END)
+                ends_with_newline = f.tell() == 0
+                if not ends_with_newline:
+                    f.seek(-1, os.SEEK_END)
+                    ends_with_newline = f.read(1) == b"\n"
+                f.write(("" if ends_with_newline else "\n").encode() + (line + "\n").encode("utf-8"))
+    else:
+        codex_set_name(sid, name)
+    print(f"renamed {tool} conversation {sid}")
 
 
 def linked_session_ids():
@@ -1152,12 +1230,14 @@ def cmd_stats(args):
 
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
-        die("usage: ai-todo-sessions list|delete|prune|stats ... (see the header of this script)", 64)
+        die("usage: ai-todo-sessions list|delete|rename|prune|stats ... (see the header of this script)", 64)
     command, rest = argv[0], list(argv[1:])
     if command == "list":
         cmd_list(rest)
     elif command == "delete":
         cmd_delete(rest)
+    elif command == "rename":
+        cmd_rename(rest)
     elif command == "prune":
         cmd_prune(rest)
     elif command == "stats":

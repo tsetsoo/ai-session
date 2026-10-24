@@ -1,4 +1,5 @@
 import AISessionCore
+import SwiftData
 import SwiftUI
 
 /// A project page: header (computer, folder, repo, digest toggle), this week's stats, the
@@ -21,6 +22,8 @@ struct ProjectDetailView: View {
     @State private var confirmingDelete = false
     @State private var errorMessage: String?
     @State private var newTodoSession: HubSession?
+    @State private var renameTarget: Todo?
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
 
     private var project: Project? { store.project(id: projectId) }
 
@@ -51,6 +54,7 @@ struct ProjectDetailView: View {
             errorMessage: $errorMessage,
             onDelete: deleteProject
         ))
+        .todoRename($renameTarget, store: store, hosts: hosts)
     }
 
     @ToolbarContentBuilder
@@ -153,6 +157,7 @@ struct ProjectDetailView: View {
                 )
                 .rowTap { open(todo) }
                 .contextMenu {
+                    RenameTodoButton(todo: todo, store: store) { renameTarget = $0 }
                     TodoProjectMenu(todo: todo, store: store)
                 }
             }

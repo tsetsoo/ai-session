@@ -172,6 +172,15 @@ public enum TmuxCommandBuilder {
         )
     }
 
+    /// Gives a Claude or Codex conversation on the computer a new name (Claude: a custom-title
+    /// line in its transcript; Codex: `thread/name/set`). 66 = no such conversation there;
+    /// 64 also comes from scripts too old to know `rename`.
+    public static func renameRemoteConversation(tool: String, sessionId: String, name: String) -> String {
+        wrap(
+            "\"$HOME/.ai-remote/bin/ai-todo-sessions\" rename \(shellQuote(tool)) \(shellQuote(sessionId)) \(shellQuote(name))"
+        )
+    }
+
     public static func probeBinaries() -> String {
         wrap(
             """

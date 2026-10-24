@@ -15,6 +15,8 @@ final class ConversationRowActions {
     }
 
     var deleteTarget: Conversation?
+    /// The todo whose Rename dialog is up.
+    var renameTarget: Todo?
     /// A working conversation whose Close waits for the user to confirm.
     var closeTarget: Conversation?
     var failure: Failure?
@@ -252,6 +254,7 @@ private struct ConversationActionsPresenter: ViewModifier {
                 // Create mode: the host and its key are saved together, and Cancel leaves nothing.
                 HostEditorView(prefill: prefill)
             }
+            .todoRename($actions.renameTarget, store: store, hosts: hosts)
             .overlay(alignment: .top) {
                 if actions.showingCopied {
                     CopiedToast().transition(.opacity)
@@ -322,6 +325,9 @@ private struct ConversationRowMenu: ViewModifier {
                     Label("Copy Resume Command", systemImage: "doc.on.doc")
                 }
                 MuteNotificationsButton(todoID: conversation.todoId, actions: actions)
+                if let todo {
+                    RenameTodoButton(todo: todo, store: store) { actions.renameTarget = $0 }
+                }
                 // Offline, the changing items are left out, like the swipes.
                 if !store.isOffline {
                     if let todo {

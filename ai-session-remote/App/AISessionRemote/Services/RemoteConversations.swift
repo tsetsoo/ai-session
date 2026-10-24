@@ -49,6 +49,32 @@ enum RemoteConversations {
         try check(result, computerName: conversation.computer.name)
     }
 
+    /// Gives the conversation on its computer the todo's new name. One that isn't there (66)
+    /// has nothing to rename; 64 means scripts too old to know `rename`.
+    static func rename(_ conversation: Conversation, to name: String, config: HostConnectionConfig) async throws {
+        let result = try await NIOSSHClient().exec(
+            config,
+            command: TmuxCommandBuilder.renameRemoteConversation(
+                tool: conversation.tool, sessionId: conversation.sessionId, name: name
+            )
+        )
+        try checkRename(result, computerName: conversation.computer.name)
+    }
+
+    static func checkRename(_ result: SSHExecResult, computerName: String) throws {
+        switch result.exitCode {
+        case 66: return
+        case 64: throw ScriptMissing(computer: computerName)
+        default: try check(result, computerName: computerName)
+        }
+    }
+
+    /// The conversations that carry their own name on the computer: Claude and Codex ones
+    /// that have started (Cursor chats have no name to set).
+    static func renamable(_ conversations: [Conversation]) -> [Conversation] {
+        conversations.filter { ["claude", "codex"].contains($0.tool) && !$0.sessionId.isEmpty }
+    }
+
     /// Maps the host scripts' exit codes: 127 the scripts are missing, 90 a program they need is
     /// (stderr is `<name> not found`), 94 no transcript. Anything else non-zero is a failure.
     static func check(_ result: SSHExecResult, computerName: String) throws {

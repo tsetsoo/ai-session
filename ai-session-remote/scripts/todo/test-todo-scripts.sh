@@ -266,6 +266,60 @@ pass "delete removes only that Claude conversation's transcript, sub-agent dir, 
 : >"$CODEX_LOG"
 pass "codex delete archives by default and deletes with --permanent"
 
+# rename: Claude reads the last custom-title line of the transcript, even one another
+# process appended while it runs; Codex names threads through its app-server.
+"$SESSIONS" rename claude "$C_NEW" $'  Fix the "parser"\n  again ✓  ' >/dev/null || fail "claude rename failed"
+python3 - "${PROJ}/${C_NEW}.jsonl" "$C_NEW" <<'PY' || fail "claude rename line wrong: $(tail -1 "${PROJ}/${C_NEW}.jsonl")"
+import json, sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+assert json.loads(lines[-1]) == {"type": "custom-title", "customTitle": 'Fix the "parser" again ✓', "sessionId": sys.argv[2]}, lines[-1]
+assert json.loads(lines[-2])["type"] == "assistant", "rename must append, not rewrite"
+PY
+before=$(cat "${PROJ}/${C_NEW}.jsonl")
+for bad in "claude ../../etc name" "claude ${C_NEW}" "cursor ${C_NEW} name" "bogus ${C_NEW} name"; do
+  # shellcheck disable=SC2086
+  if "$SESSIONS" rename $bad >/dev/null 2>&1; then fail "rename accepted: $bad"; else [[ $? -eq 64 ]] || fail "rename $bad should exit 64"; fi
+done
+if "$SESSIONS" rename claude "$C_NEW" $' \n ' >/dev/null 2>&1; then fail "rename accepted a blank name"; else [[ $? -eq 64 ]] || fail "blank name should exit 64"; fi
+if "$SESSIONS" rename claude "$C_DEL" "gone" >/dev/null 2>&1; then fail "rename of a missing conversation succeeded"; else [[ $? -eq 66 ]] || fail "missing conversation should exit 66"; fi
+[[ "$(cat "${PROJ}/${C_NEW}.jsonl")" == "$before" ]] || fail "a refused rename changed the transcript"
+pass "rename claude appends a custom-title line (whitespace collapsed); bad args 64, missing 66"
+
+FAKE_APP_SERVER="${SANDBOX}/bin/fake-codex-rename"
+RENAME_LOG="${SANDBOX}/codex-rename.log"
+cat >"$FAKE_APP_SERVER" <<EOF
+#!/usr/bin/env python3
+import json, sys
+assert sys.argv[1:] == ["app-server"], sys.argv
+for line in sys.stdin:
+    msg = json.loads(line)
+    rid = msg.get("id")
+    if rid is None:
+        continue
+    if msg["method"] == "thread/name/set":
+        # A server request reusing the client's id comes first; it is not the answer.
+        print(json.dumps({"id": rid, "method": "item/tool/requestUserInput", "params": {}}), flush=True)
+        with open("${RENAME_LOG}", "a") as f:
+            f.write(json.dumps(msg["params"], ensure_ascii=False) + "\n")
+        if msg["params"]["name"] == "refuse":
+            print(json.dumps({"id": rid, "error": {"code": -32600, "message": "no rollout found"}}), flush=True)
+            continue
+    print(json.dumps({"id": rid, "result": {}}), flush=True)
+EOF
+chmod +x "$FAKE_APP_SERVER"
+AI_TODO_CODEX_BIN="$FAKE_APP_SERVER" "$SESSIONS" rename codex "$X_LINKED" "Codex ✓ name" >/dev/null || fail "codex rename failed"
+[[ "$(cat "$RENAME_LOG")" == "{\"threadId\": \"${X_LINKED}\", \"name\": \"Codex ✓ name\"}" ]] || fail "codex rename call wrong: $(cat "$RENAME_LOG")"
+if AI_TODO_CODEX_BIN="$FAKE_APP_SERVER" "$SESSIONS" rename codex "$X_LINKED" "refuse" >/dev/null 2>"${SANDBOX}/rename.err"; then
+  fail "codex rename ignored an app-server error"
+fi
+grep -q "no rollout found" "${SANDBOX}/rename.err" || fail "codex rename error not reported: $(cat "${SANDBOX}/rename.err")"
+if AI_TODO_CODEX_BIN="$FAKE_APP_SERVER" "$SESSIONS" rename codex "019f0000-0000-7000-8000-00000000dead" "x" >/dev/null 2>&1; then
+  fail "rename of a codex thread without a rollout succeeded"
+else
+  [[ $? -eq 66 ]] || fail "codex thread without a rollout should exit 66"
+fi
+pass "rename codex calls thread/name/set through codex app-server, reports its errors; no rollout 66"
+
 # Fake todo-server listing the linked conversations (one per key name).
 LHUB_PORT_FILE="${SANDBOX}/lhub.port"
 python3 - "$LHUB_PORT_FILE" "$C_LINKED" "$X_LINKED" <<'PY' &

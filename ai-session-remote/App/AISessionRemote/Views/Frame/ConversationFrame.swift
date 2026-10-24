@@ -48,6 +48,7 @@ struct ConversationFrame: View {
     @State private var terminal = TerminalHandle()
     @State private var copied = TransientValue<Bool>(for: .toast)
     @State private var showingDeleteConfirmation = false
+    @State private var renameTarget: Todo?
     @State private var showingCloseConfirmation = false
     @State private var failure: ActionFailure?
     @State private var sheet: FrameSheet?
@@ -181,6 +182,7 @@ struct ConversationFrame: View {
                 CopiedToast().transition(.opacity)
             }
         }
+        .todoRename($renameTarget, store: store, hosts: hosts)
         .confirmationDialog(
             "Delete this conversation?",
             isPresented: Binding(
@@ -478,7 +480,8 @@ struct ConversationFrame: View {
         #if os(iOS)
         if ids.contains(ConversationToolbar.titleID) {
             ToolbarItem(id: ConversationToolbar.titleID, placement: .principal) {
-                ConversationToolbarTitle(title: todo.title, subtitle: meta(includeFolder: false), style: .centered)
+                ConversationToolbarTitle(title: todo.title, subtitle: meta(includeFolder: false), style: .centered,
+                                         onRename: store.isOffline ? nil : { renameTarget = todo })
             }
         }
         ToolbarItem(id: ConversationToolbar.actionsID, placement: .topBarTrailing) {
@@ -487,7 +490,8 @@ struct ConversationFrame: View {
         #else
         if ids.contains(ConversationToolbar.titleID) {
             ToolbarItem(id: ConversationToolbar.titleID, placement: .primaryAction) {
-                ConversationToolbarTitle(title: todo.title, subtitle: meta(includeFolder: true), style: .leading)
+                ConversationToolbarTitle(title: todo.title, subtitle: meta(includeFolder: true), style: .leading,
+                                         onRename: store.isOffline ? nil : { renameTarget = todo })
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -505,9 +509,11 @@ struct ConversationFrame: View {
             showsPopOut: showsPopOut,
             hasConversation: conversation != nil,
             canChange: conversation != nil && !store.isOffline,
+            canRename: !store.isOffline,
             isReady: readyConversation != nil,
             isConnected: isConnected,
             copyInMenu: copyInMenu,
+            onRename: { renameTarget = todo },
             onCopy: copyResumeCommand,
             onPopOut: { onPopOut?() },
             onMemories: { showingMemories = true },
@@ -527,6 +533,7 @@ struct ConversationFrame: View {
 
     private func performToolbar(_ command: ConversationToolbarCommand) {
         switch command {
+        case .rename: if !store.isOffline { renameTarget = todo }
         case .copyResume: copyResumeCommand()
         case .memories: showingMemories = true
         case .close: closeConversation()

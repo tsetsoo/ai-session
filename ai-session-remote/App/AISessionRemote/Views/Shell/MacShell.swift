@@ -663,7 +663,8 @@ private struct ConversationColumn: View {
                     subtitle: ConversationFrame.subtitle(
                         todo: todo, store: model.store, includeFolder: false
                     ),
-                    style: .centered
+                    style: .centered,
+                    onRename: model.store.isOffline ? nil : { send(.rename, for: todo.id) }
                 )
             }
             ToolbarItem(id: ids[1], placement: .topBarTrailing) {
@@ -679,7 +680,8 @@ private struct ConversationColumn: View {
                     subtitle: ConversationFrame.subtitle(
                         todo: todo, store: model.store, includeFolder: true
                     ),
-                    style: .leading
+                    style: .leading,
+                    onRename: model.store.isOffline ? nil : { send(.rename, for: todo.id) }
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -708,9 +710,11 @@ private struct ConversationColumn: View {
             showsPopOut: showsPopOut,
             hasConversation: hasConversation,
             canChange: hasConversation && !model.store.isOffline,
+            canRename: !model.store.isOffline,
             isReady: state?.isReady ?? false,
             isConnected: state?.isConnected ?? false,
             copyInMenu: copyInMenu,
+            onRename: { send(.rename, for: todo.id) },
             onCopy: { send(.copyResume, for: todo.id) },
             onPopOut: popOut(todo.id),
             onMemories: { send(.memories, for: todo.id) },

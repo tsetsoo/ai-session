@@ -220,6 +220,7 @@ struct TodoListView: View {
                 Label("Open", systemImage: "arrow.up.forward.app")
             }
             MuteNotificationsButton(todoID: todo.id, actions: actions)
+            RenameTodoButton(todo: todo, store: store) { actions.renameTarget = $0 }
             // Project ▸ (disabled offline or without projects).
             TodoProjectMenu(todo: todo, store: store)
             // Offline, the changing items are left out, like the swipes.

@@ -330,6 +330,21 @@ final class TodoHubStore {
         await mutate { client in upsert(try await client.toggleTodo(id: todo.id)) }
     }
 
+    /// Renames the todo on the hub. Throws: the rename dialog shows its own errors.
+    func rename(_ todo: Todo, to title: String) async throws {
+        try await perform { client in
+            upsert(try await client.updateTodo(id: todo.id, UpdateTodoRequest(title: title)))
+        }
+    }
+
+    /// Gives one of the todo's conversations the same name on its computer.
+    func renameConversation(_ conversation: Conversation, to title: String, config: HostConnectionConfig) async throws {
+        #if DEBUG
+        if demo != nil { return } // demo data: nothing runs on a computer
+        #endif
+        try await RemoteConversations.rename(conversation, to: title, config: config)
+    }
+
     func delete(_ todo: Todo) async {
         await mutate { client in
             try await client.deleteTodo(id: todo.id)

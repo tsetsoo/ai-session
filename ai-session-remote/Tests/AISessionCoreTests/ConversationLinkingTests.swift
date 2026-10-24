@@ -155,6 +155,11 @@ final class ConversationLinkingTests: XCTestCase {
         XCTAssertTrue(TmuxCommandBuilder.deleteRemoteConversation(
             tool: "claude", sessionId: "s", tmuxName: "ai/claude/todo-1", waitSeconds: -3
         ).hasSuffix("--wait 0 --missing-ok"))
+        XCTAssertTrue(TmuxCommandBuilder.renameRemoteConversation(
+            tool: "claude", sessionId: "s", name: "Fix Ivan's \"parser\" ✓"
+        ).hasSuffix(
+            #""$HOME/.ai-remote/bin/ai-todo-sessions" rename 'claude' 's' 'Fix Ivan'"'"'s "parser" ✓'"#
+        ))
         // Claude keeps the 3-argument form older scripts accept; other tools pass a 4th.
         XCTAssertTrue(TmuxCommandBuilder.openTodoConversation(
             tmuxName: "ai/claude/todo-1", cwd: "~", sessionId: "s"

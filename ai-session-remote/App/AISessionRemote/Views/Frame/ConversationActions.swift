@@ -86,6 +86,7 @@ enum ConversationToolbar {
 /// What the column's toolbar asks the frontmost frame to do. The frame owns the terminal,
 /// the confirmation dialogs and the "Copied" toast.
 enum ConversationToolbarCommand: Equatable {
+    case rename
     case copyResume
     case memories
     case close
@@ -126,6 +127,9 @@ struct ConversationMenu: View {
     let hasConversation: Bool
     /// Close and Delete: a linked conversation and the hub online.
     let canChange: Bool
+    /// Rename: the hub online (a todo without a conversation can be renamed too).
+    let canRename: Bool
+    let onRename: () -> Void
     let isReady: Bool
     let isConnected: Bool
     /// iOS has no ⎘ button in the header, so copying the resume command lives here.
@@ -142,6 +146,10 @@ struct ConversationMenu: View {
 
     var body: some View {
         Menu {
+            Button(action: onRename) {
+                Label("Rename…", systemImage: "pencil")
+            }
+            .disabled(!canRename)
             if let onCopyResume {
                 Button(action: onCopyResume) {
                     Label("Copy Resume Command", systemImage: "doc.on.doc")
@@ -198,8 +206,23 @@ struct ConversationToolbarTitle: View {
     var title: String
     var subtitle: String
     var style: Style
+    /// Click or tap to rename; nil while renaming isn't possible (offline).
+    var onRename: (() -> Void)?
 
     var body: some View {
+        if let onRename {
+            Button(action: onRename) { label }
+                .buttonStyle(.plain)
+                #if os(macOS)
+                .help("Rename")
+                #endif
+                .accessibilityHint("Renames the todo")
+        } else {
+            label
+        }
+    }
+
+    private var label: some View {
         VStack(alignment: style == .leading ? .leading : .center, spacing: 1) {
             Text(title)
                 .font(.headline)
@@ -223,10 +246,12 @@ struct ConversationToolbarActions: View {
     var showsPopOut: Bool
     var hasConversation: Bool
     var canChange: Bool
+    var canRename: Bool
     var isReady: Bool
     var isConnected: Bool
     /// iOS keeps Copy Resume Command in the menu; the Mac has a button for it.
     var copyInMenu: Bool
+    var onRename: () -> Void
     var onCopy: () -> Void
     var onPopOut: () -> Void
     var onMemories: () -> Void
@@ -274,6 +299,8 @@ struct ConversationToolbarActions: View {
             ConversationMenu(
                 hasConversation: hasConversation,
                 canChange: canChange,
+                canRename: canRename,
+                onRename: onRename,
                 isReady: isReady,
                 isConnected: isConnected,
                 onCopyResume: copyInMenu ? onCopy : nil,
