@@ -61,6 +61,11 @@ final class TodoHubStore {
         case background
     }
 
+    /// MCP server lists by computer id, for this app session only.
+    private var mcpLists: [String: [MCPServer]] = [:]
+    /// Computers whose host scripts have no `ai-todo-mcp` (listing exited 127).
+    private var mcpListMissing: Set<String> = []
+
     private let cache: TodoHubCache
     /// Where hub calls get their client (`TodoHubSettings.makeClient` outside tests); see `hubClient()`.
     private let makeClient: () -> TodoHubClient?
@@ -365,6 +370,15 @@ final class TodoHubStore {
         }
     }
 
+    /// Sets (or, with nil, clears) the MCP servers new conversations on this computer start with.
+    func setDefaultServers(_ names: [String]?, for computer: Computer) async throws {
+        let change: MCPDefaultChange = names.map { .set($0) } ?? .clear
+        try await perform { client in
+            let updated = try await client.updateComputer(id: computer.id, UpdateComputerRequest(mcpDefault: change))
+            upsert(updated)
+        }
+    }
+
     func deleteComputer(_ computer: Computer) async throws {
         try await perform { client in try await client.deleteComputer(id: computer.id) }
     }
@@ -412,11 +426,14 @@ final class TodoHubStore {
     /// it prints is stored before the terminal attaches. A start that never produces an id
     /// kills the tmux session it may have left and removes the hub conversation, so the tool
     /// step shows again and the next start is a new one.
-    func openConversation(for todo: Todo, tool: String, config: HostConnectionConfig?) async throws -> Conversation {
+    /// `mcpServers` is the selection the conversation starts with; an existing conversation keeps its own.
+    func openConversation(
+        for todo: Todo, tool: String, config: HostConnectionConfig?, mcpServers: [String]? = nil
+    ) async throws -> Conversation {
         guard let client = hubClient() else {
             throw TodoHubError.invalidBaseURL
         }
-        var conversation = try await client.openConversation(todoId: todo.id, tool: tool)
+        var conversation = try await client.openConversation(todoId: todo.id, tool: tool, mcpServers: mcpServers)
         if conversation.sessionId.isEmpty {
             // An empty id is a start that has not finished. Keep it out of the store, and drop
             // the hub row unless this call is about to fill the id in.
@@ -487,11 +504,17 @@ final class TodoHubStore {
             let arguments = ForkCommand.arguments(tool: created.tool, sessionId: sourceSessionId) ?? []
             return try await captureNewSession(
                 created, config: config,
-                command: TmuxCommandBuilder.forkDetached(
-                    tmuxName: created.tmuxName, cwd: created.cwd, arguments: arguments
-                )
+                command: Self.forkCommand(created, arguments: arguments)
             )
         }
+    }
+
+    /// The hub copies the source's MCP selection onto the new row, so the fork starts with the
+    /// same servers as the conversation it was forked from.
+    static func forkCommand(_ created: Conversation, arguments: [String]) -> String {
+        TmuxCommandBuilder.forkDetached(
+            tmuxName: created.tmuxName, cwd: created.cwd, arguments: arguments, mcpServers: created.mcpServers
+        )
     }
 
     private func captureNewSession(
@@ -534,6 +557,44 @@ final class TodoHubStore {
             TmuxCommandBuilder.summarizeConversation(tool: conversation.tool, sessionId: conversation.sessionId),
             config: config, computerName: conversation.computer.name
         )
+    }
+
+    // MARK: MCP servers
+
+    /// The server files on the computer, listed once per app session. A computer without the
+    /// helper (127) gives `[]` and is remembered as having no list; any other failure throws and
+    /// is not remembered, so the next call tries again.
+    func mcpServers(on computer: Computer, config: HostConnectionConfig) async throws -> [MCPServer] {
+        #if DEBUG
+        if demo != nil { return [] } // screenshots only: nothing runs on a computer
+        #endif
+        if let cached = mcpLists[computer.id] { return cached }
+        if mcpListMissing.contains(computer.id) { return [] }
+        if let list = try await RemoteConversations.listMCPServers(config: config, computerName: computer.name) {
+            mcpLists[computer.id] = list
+            return list
+        }
+        mcpListMissing.insert(computer.id)
+        return []
+    }
+
+    /// Whether the computer can list MCP servers: nil until a listing has finished.
+    func hasMCPList(_ computer: Computer) -> Bool? {
+        if mcpLists[computer.id] != nil { return true }
+        return mcpListMissing.contains(computer.id) ? false : nil
+    }
+
+    /// Records the servers a running or resumable conversation uses. nil = not managed.
+    func setServers(_ names: [String]?, for conversation: Conversation) async throws {
+        try await perform { client in
+            remember(try await client.setConversationServers(id: conversation.id, names))
+        }
+    }
+
+    /// Sets (or, with nil, clears) the MCP servers new conversations in the project start with.
+    func setDefaultServers(_ names: [String]?, for project: Project) async throws {
+        let change: MCPDefaultChange = names.map { .set($0) } ?? .clear
+        try await updateProject(project, UpdateProjectRequest(mcpDefault: change))
     }
 
     /// A missing helper, program or transcript is reported as that, not as a retryable failure.
@@ -821,6 +882,15 @@ final class TodoHubStore {
     }
 
     /// Shows a project the hub just returned, in the hub's order (name ignoring case, then id).
+    private func upsert(_ computer: Computer) {
+        localChanges += 1
+        if let index = computers.firstIndex(where: { $0.id == computer.id }) {
+            computers[index] = computer
+        } else {
+            computers.append(computer)
+        }
+    }
+
     private func upsert(_ project: Project) {
         localChanges += 1
         projects.removeAll { $0.id == project.id }

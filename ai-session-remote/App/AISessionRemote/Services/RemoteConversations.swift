@@ -22,6 +22,11 @@ enum RemoteConversations {
         var errorDescription: String? { "Couldn't read the conversation list: \(detail)" }
     }
 
+    struct UnreadableMCPList: LocalizedError {
+        let detail: String
+        var errorDescription: String? { "Couldn't read the MCP server list: \(detail)" }
+    }
+
     /// Newest first, as the script returns them.
     static func list(config: HostConnectionConfig, computerName: String) async throws -> [RemoteConversation] {
         let result = try await NIOSSHClient().exec(config, command: TmuxCommandBuilder.listRemoteConversations())
@@ -30,6 +35,22 @@ enum RemoteConversations {
             return try RemoteConversation.decodeList(Data(result.stdout.utf8))
         } catch {
             throw UnreadableList(detail: String(describing: error))
+        }
+    }
+
+    /// The MCP server files on the computer, or nil when it has no `ai-todo-mcp` helper (127).
+    static func listMCPServers(config: HostConnectionConfig, computerName: String) async throws -> [MCPServer]? {
+        let result = try await NIOSSHClient().exec(config, command: TmuxCommandBuilder.listMCPServers())
+        return try mcpServers(from: result, computerName: computerName)
+    }
+
+    static func mcpServers(from result: SSHExecResult, computerName: String) throws -> [MCPServer]? {
+        if result.exitCode == TmuxCommandBuilder.scriptMissingExitCode { return nil }
+        try check(result, computerName: computerName)
+        do {
+            return try MCPServer.decodeList(Data(result.stdout.utf8))
+        } catch {
+            throw UnreadableMCPList(detail: String(describing: error))
         }
     }
 
