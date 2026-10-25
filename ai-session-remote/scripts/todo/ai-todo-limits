@@ -33,6 +33,7 @@ import glob
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import time
@@ -148,8 +149,7 @@ def http_json(method, url, token, headers, body=None):
     for key, value in headers.items():
         req.add_header(key, value)
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            payload = resp.read(1_000_000)
+        payload = fetch(req)
     except Exception:
         return None
     try:
@@ -157,6 +157,23 @@ def http_json(method, url, token, headers, body=None):
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+# The macOS system roots. A python.org Python has no CA bundle of its own
+# until its "Install Certificates" step runs, so every HTTPS request fails.
+SYSTEM_CAFILE = "/etc/ssl/cert.pem"
+
+
+def fetch(req):
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return resp.read(1_000_000)
+    except urllib.error.URLError as e:
+        if not isinstance(e.reason, ssl.SSLCertVerificationError) or not os.path.isfile(SYSTEM_CAFILE):
+            raise
+    context = ssl.create_default_context(cafile=SYSTEM_CAFILE)
+    with urllib.request.urlopen(req, timeout=8, context=context) as resp:
+        return resp.read(1_000_000)
 
 
 def oauth_from(blob):
