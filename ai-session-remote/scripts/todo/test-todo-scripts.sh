@@ -2524,6 +2524,47 @@ status=0
 ! grep -q "$TOKEN" "${SANDBOX}/limits-claude-401.out" "${SANDBOX}/limits-claude-401.err" || fail "token leaked on 401"
 pass "limits_claude_signed_out_or_rejected: no login prints an empty list; a failed request exits 75 and prints nothing"
 
+# The cache: a fresh reading is reused, a 429 pauses requests and shows the last reading.
+export AI_TODO_LIMITS_CACHE=1
+LCACHE="${HOME}/.ai-remote/limits-cache/claude.json"
+rm -f "$LCACHE"
+limits_5h() {
+  "$LIMITS" --tool claude 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["windows"][0]["used_percent"])'
+}
+age_cache() {  # $1: "at" seconds ago, $2: "blocked_until" seconds from now (optional)
+  python3 - "$LCACHE" "$1" "${2:-}" <<'PY'
+import json, sys, time
+path, ago, until = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+data = json.load(open(path))
+data["at"] = time.time() - ago
+if until:
+    data["blocked_until"] = time.time() + float(until)
+json.dump(data, open(path, "w"))
+PY
+}
+export AI_TODO_LIMITS_HTTP_STATUS=200
+export AI_TODO_LIMITS_HTTP_BODY='{"five_hour":{"utilization":10,"resets_at":"2026-10-18T15:00:00Z"}}'
+[[ "$(limits_5h)" == "10.0" ]] || fail "cache: first reading"
+! grep -q "$TOKEN" "$LCACHE" || fail "cache stored the token"
+export AI_TODO_LIMITS_HTTP_BODY='{"five_hour":{"utilization":20,"resets_at":"2026-10-18T15:00:00Z"}}'
+[[ "$(limits_5h)" == "10.0" ]] || fail "cache: a fresh reading was not reused"
+age_cache 600
+export AI_TODO_LIMITS_HTTP_STATUS=429 AI_TODO_LIMITS_RETRY_AFTER=250
+[[ "$(limits_5h)" == "10.0" ]] || fail "cache: a 429 did not show the last reading"
+python3 -c 'import json,sys,time; d=json.load(open(sys.argv[1])); assert 200 < d["blocked_until"] - time.time() <= 250, d' "$LCACHE" \
+  || fail "cache: 429 did not pause for its Retry-After: $(cat "$LCACHE")"
+export AI_TODO_LIMITS_HTTP_STATUS=200
+[[ "$(limits_5h)" == "10.0" ]] || fail "cache: asked again while paused"
+age_cache 600 -1
+[[ "$(limits_5h)" == "20.0" ]] || fail "cache: no new request after the pause"
+age_cache 7200 300
+status=0
+"$LIMITS" --tool claude >/dev/null 2>&1 || status=$?
+[[ $status -eq 75 ]] || fail "cache: a paused request with only an old reading exited $status"
+unset AI_TODO_LIMITS_CACHE AI_TODO_LIMITS_RETRY_AFTER
+rm -f "$LCACHE"
+pass "limits_cache: reuses a fresh reading, pauses for a 429's Retry-After showing the last reading, fails past an hour"
+
 SID="11111111-2222-4333-8444-555555555555"
 OTHER="99999999-8888-4777-8666-000000000000"
 mkdir -p "${HOME}/.codex/sessions/2026/10/15" "${HOME}/.codex/sessions/2026/10/16"
