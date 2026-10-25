@@ -21,8 +21,12 @@
 #              claude: --strict-mcp-config, then --mcp-config <file> per server (plugins
 #                and skills stay; connectors and other configs are dropped).
 #              codex: -c mcp_servers.<key>.enabled=false for every [mcp_servers.<key>] in
-#                $CODEX_HOME/config.toml whose key isn't selected, then -c overrides that
-#                add each selected server. stdio servers run through /bin/sh, which reads
+#                $CODEX_HOME/config.toml whose key isn't selected, except the Codex app's own
+#                servers (node_repl, computer-use) and the keys listed one per line in
+#                ~/.ai-remote/mcp/keep (blank lines and # comments ignored). Then -c overrides
+#                that add each selected server, with enabled=true so one that config.toml
+#                turns off is on. A config.toml that can't be read or decoded disables
+#                nothing. stdio servers run through /bin/sh, which reads
 #                ~/.ai-remote/mcp/env (shell syntax, exported) and exports the file's env
 #                first: Codex passes MCP servers only a small default environment. HTTP
 #                servers: `Authorization: Bearer ${X}` -> bearer_token_env_var, any other
@@ -57,6 +61,9 @@ WHOLE_REF_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 BEARER_REF_RE = re.compile(r"^Bearer \$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 # python3 on macOS is 3.9 (no tomllib): config.toml section headers by regex.
 CODEX_HEADER_RE = re.compile(r'^\[mcp_servers\.("?)([^".\]]+)\1\]')
+# Servers the Codex desktop app writes to config.toml for itself: never turned off.
+CODEX_APP_KEYS = ("node_repl", "computer-use")
+KEEP_FILE = os.path.join(MCP_DIR, "keep")
 # Sources the env file with every assignment exported, then the server's own env.
 ENV_FILE_LINE = 'set -a; [ -r "$HOME/.ai-remote/mcp/env" ] && . "$HOME/.ai-remote/mcp/env"; set +a'
 
@@ -84,8 +91,10 @@ def load(name):
     if not os.path.exists(path):
         raise Unusable("not found")
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
+    except UnicodeDecodeError:
+        raise Unusable("not UTF-8")
     except ValueError:
         raise Unusable("not valid JSON")
     except OSError as e:
@@ -168,7 +177,8 @@ def shell_value(value):
 
 def toml(value):
     # json.dumps gives valid TOML basic strings and arrays of them.
-    return json.dumps(value)
+    # ensure_ascii=False: TOML has no surrogate pairs, so non-BMP characters stay literal.
+    return json.dumps(value, ensure_ascii=False)
 
 
 def codex_server_args(key, entry):
@@ -187,7 +197,7 @@ def codex_server_args(key, entry):
                 out += ["-c", f"{prefix}.env_http_headers.{header}={toml(whole.group(1))}"]
             else:
                 raise Unusable("header can't be passed without its value")
-        return out
+        return out + codex_enabled(key)
     lines = [ENV_FILE_LINE]
     for name, value in entry.get("env", {}).items():
         if not ENV_NAME_RE.match(name):
@@ -196,20 +206,39 @@ def codex_server_args(key, entry):
     lines.append('exec "$@"')
     script = "; ".join(lines)
     args = ["-c", script, "ai-todo-mcp", entry["command"]] + entry.get("args", [])
-    return ["-c", f'{prefix}.command={toml("/bin/sh")}', "-c", f"{prefix}.args={toml(args)}"]
+    return ["-c", f'{prefix}.command={toml("/bin/sh")}', "-c", f"{prefix}.args={toml(args)}"] + codex_enabled(key)
+
+
+def codex_enabled(key):
+    return ["-c", f"mcp_servers.{key}.enabled=true"]
 
 
 def codex_config_keys():
     try:
-        with open(CODEX_CONFIG) as f:
+        with open(CODEX_CONFIG, encoding="utf-8") as f:
             text = f.read()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
     keys = []
     for line in text.splitlines():
         m = CODEX_HEADER_RE.match(line.strip())
         if m and m.group(2) not in keys:
             keys.append(m.group(2))
+    return keys
+
+
+def kept_keys():
+    """Config keys never turned off: the Codex app's own and the ones in the keep file."""
+    keys = set(CODEX_APP_KEYS)
+    try:
+        with open(KEEP_FILE, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        lines = []
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith("#"):
+            keys.add(line)
     return keys
 
 
@@ -240,9 +269,10 @@ def launch_args(tool, csv):
     else:
         # A selected server stays as the user chose it even when codex can't take its file.
         selected = {key for _, key, _ in loaded}
+        kept = kept_keys()
         words = []
         for key in codex_config_keys():
-            if key not in selected:
+            if key not in selected and key not in kept:
                 words += ["-c", f"mcp_servers.{key}.enabled=false"]
         for name, key, entry in loaded:
             try:

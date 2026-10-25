@@ -2833,6 +2833,9 @@ url = "https://mcp.miro.example/"
 
 [mcp_servers."node_repl"]
 command = "node"
+
+[mcp_servers.computer-use]
+command = "computer-use"
 EOF
 
 "$MCP" list --json >"${SANDBOX}/mcp-list.out" 2>"${SANDBOX}/mcp-list.err" || fail "mcp list failed: $(cat "${SANDBOX}/mcp-list.err")"
@@ -2864,13 +2867,62 @@ mcp_codex_args() { CODEX_HOME="$MCP_CODEX" "$MCP" launch-args codex "$1"; }
 eval "set -- $(mcp_codex_args grafana)"
 joined=" $* "
 [[ "$joined" == *" -c mcp_servers.miro.enabled=false "* ]] || fail "codex did not disable miro: $*"
-[[ "$joined" == *" -c mcp_servers.node_repl.enabled=false "* ]] || fail "codex did not disable node_repl: $*"
 [[ "$joined" != *"grafana.enabled=false"* ]] || fail "codex disabled the selected grafana: $*"
 [[ "$joined" == *' -c mcp_servers.grafana.command="/bin/sh" '* ]] || fail "codex did not add grafana: $*"
+[[ "$joined" == *" -c mcp_servers.grafana.enabled=true "* ]] || fail "codex did not enable the selected grafana: $*"
 eval "set -- $(mcp_codex_args '')"
-[[ "$*" == "-c mcp_servers.grafana.enabled=false -c mcp_servers.miro.enabled=false -c mcp_servers.node_repl.enabled=false" ]] \
+# The Codex app's own servers (node_repl, computer-use) stay.
+[[ "$*" == "-c mcp_servers.grafana.enabled=false -c mcp_servers.miro.enabled=false" ]] \
   || fail "codex empty selection: $*"
 pass "launch_args_codex_disables_unselected_config_servers"
+
+# The keep file lists more keys that stay; blank lines and comments are ignored.
+printf '# servers to keep\n\n  miro  \n#grafana\n' >"${MCP_DIR}/keep"
+eval "set -- $(mcp_codex_args '')"
+[[ "$*" == "-c mcp_servers.grafana.enabled=false" ]] || fail "codex with a keep file: $*"
+[[ "$("$MCP" list --json)" != *'"keep"'* ]] || fail "list shows the keep file"
+rm "${MCP_DIR}/keep"
+pass "launch_args_codex_keep_file"
+
+# A selected server that config.toml turns off is turned on.
+OFF_CODEX="${SANDBOX}/mcp-codex-off"
+mkdir -p "$OFF_CODEX"
+printf '[mcp_servers.slack]\ncommand = "docker"\nenabled = false\n' >"${OFF_CODEX}/config.toml"
+eval "set -- $(CODEX_HOME="$OFF_CODEX" "$MCP" launch-args codex slack)"
+[[ " $* " == *" -c mcp_servers.slack.enabled=true "* && " $* " != *"enabled=false"* ]] || fail "codex did not enable slack: $*"
+pass "launch_args_codex_enables_selected"
+
+# An undecodable config.toml disables nothing; an undecodable server file is skipped.
+printf '[mcp_servers.miro]\nurl = "\377\376"\n' >"${OFF_CODEX}/config.toml"
+status=0
+out="$(CODEX_HOME="$OFF_CODEX" "$MCP" launch-args codex slack 2>"${SANDBOX}/mcp-decode.err")" || status=$?
+[[ $status -eq 0 && "$out" == *slack.enabled=true* && "$out" != *enabled=false* ]] \
+  || fail "codex with a non-UTF-8 config.toml: $status $out $(cat "${SANDBOX}/mcp-decode.err")"
+printf '{"mcpServers":{"bad":{"command":"\377"}}}' >"${MCP_DIR}/latin.json"
+status=0
+out="$("$MCP" launch-args claude latin,slack 2>"${SANDBOX}/mcp-decode.err")" || status=$?
+[[ $status -eq 0 && "$out" == *slack.json* && "$out" != *latin* ]] || fail "claude with a non-UTF-8 server file: $status $out"
+grep -qx "ai-todo-mcp: skipped latin: not UTF-8" "${SANDBOX}/mcp-decode.err" || fail "non-UTF-8 skip: $(cat "${SANDBOX}/mcp-decode.err")"
+python3 - "$("$MCP" list --json)" <<'PY' || fail "list does not show the non-UTF-8 file with an error"
+import json, sys
+by = {s["name"]: s for s in json.loads(sys.argv[1])}
+assert by["latin"]["error"] == "not UTF-8", by["latin"]
+PY
+rm "${MCP_DIR}/latin.json"
+rm -rf "$OFF_CODEX"
+pass "launch_args_survive_undecodable_files"
+
+# Non-BMP characters stay literal: TOML has no surrogate-pair escapes.
+printf '{"mcpServers":{"emoji":{"command":"echo","args":["hi \360\237\231\202"]}}}' >"${MCP_DIR}/emoji.json"
+eval "set -- $(mcp_codex_args emoji)"
+emoji_args=""
+while [[ $# -gt 0 ]]; do
+  [[ "$1" == -c && "$2" == mcp_servers.emoji.args=* ]] && emoji_args="${2#mcp_servers.emoji.args=}"
+  shift
+done
+[[ "$emoji_args" == *'"hi '$'\360\237\231\202''"]' && "$emoji_args" != *'\u'* ]] || fail "codex emoji arg: $emoji_args"
+rm "${MCP_DIR}/emoji.json"
+pass "launch_args_codex_non_bmp_literal"
 
 eval "set -- $(mcp_codex_args atlassian)"
 [[ " $* " == *' -c mcp_servers.mcp-atlassian.command="/bin/sh" '* ]] || fail "codex atlassian command: $*"
@@ -3015,6 +3067,14 @@ wait_for_argv_lines 1
 [[ "$(tail -n 1 "$MCP_ARGV")" == "[--strict-mcp-config][--mcp-config][${MCP_DIR}/grafana.json][--session-id][${C_M1}]" ]] \
   || fail "claude argv with --mcp: $(tail -n 1 "$MCP_ARGV")"
 grep -q '^ai-todo-mcp: skipped gone: ' "${SANDBOX}/mcp-open.err" || fail "skipped server not shown: $(cat "${SANDBOX}/mcp-open.err")"
+# The attach clears stderr from the screen: the skip shows in the session's client too.
+# A control-mode client receives it as a %message line.
+( sleep 8 ) | tmux -L "$SOCK" -C attach -t "=ai/claude/todo-mcp1" >"${SANDBOX}/mcp-client.out" 2>&1 &
+mcp_client=$!
+for _ in $(seq 1 60); do grep -q '^%message ' "${SANDBOX}/mcp-client.out" && break; sleep 0.2; done
+kill "$mcp_client" 2>/dev/null || true
+grep -qx '%message ai-todo-mcp: skipped gone: not found' "${SANDBOX}/mcp-client.out" \
+  || fail "skip not shown in the tmux client: $(cat "${SANDBOX}/mcp-client.out")"
 wait_for_mcp_posts $((posts + 1))
 [[ "$(last_mcp_post)" == "Bearer s3cret {\"mcp_servers\":[\"grafana\"],\"session_id\":\"${C_M1}\",\"tool\":\"claude\"}" ]] \
   || fail "claude MCP report: $(last_mcp_post)"
@@ -3136,6 +3196,35 @@ out="$(open_mcp --mcp grafana "ai/cursor/todo-mcp8" '~/programming' "$U_M8" curs
 sleep 0.5
 [[ $(mcp_posts) -eq $posts ]] || fail "cursor open reported MCP servers: $(last_mcp_post)"
 pass "open_cursor_ignores_mcp"
+
+# A failing ai-todo-mcp (not 64) starts the tool without the selection and reports nothing;
+# 64 (bad arguments) still ends the open so the app retries without --mcp.
+FAIL_DIR="${SANDBOX}/open-mcp-fails"
+mkdir -p "$FAIL_DIR"
+cp "$OPEN" "${FAIL_DIR}/ai-todo-open"
+C_M9=aaaaaaaa-0000-4000-8000-000000000009
+printf '#!/bin/sh\necho "Traceback: UnicodeDecodeError" >&2\nexit 1\n' >"${FAIL_DIR}/ai-todo-mcp"
+chmod +x "${FAIL_DIR}/ai-todo-mcp"
+posts=$(mcp_posts)
+lines=$(wc -l <"$MCP_ARGV")
+status=0
+out="$(AI_TODO_CLAUDE_BIN="$MCP_TOOL" AI_TODO_HUB_CONF="$CONF" AI_TODO_OPEN_DETACH=1 \
+  "${FAIL_DIR}/ai-todo-open" --mcp grafana "ai/claude/todo-mcp9" '~/programming' "$C_M9" 2>"${SANDBOX}/mcp-fail.err")" || status=$?
+[[ $status -eq 0 && "$out" == created ]] || fail "open with a failing ai-todo-mcp: $status '$out' $(cat "${SANDBOX}/mcp-fail.err")"
+grep -qx 'ai-todo-open: MCP servers not applied (ai-todo-mcp failed)' "${SANDBOX}/mcp-fail.err" \
+  || fail "failing ai-todo-mcp not named: $(cat "${SANDBOX}/mcp-fail.err")"
+wait_for_argv_lines $((lines + 1))
+[[ "$(tail -n 1 "$MCP_ARGV")" == "[--session-id][${C_M9}]" ]] || fail "argv with a failing ai-todo-mcp: $(tail -n 1 "$MCP_ARGV")"
+sleep 0.5
+[[ $(mcp_posts) -eq $posts ]] || fail "a failing ai-todo-mcp was reported: $(last_mcp_post)"
+tmux -L "$SOCK" kill-session -t "=ai/claude/todo-mcp9"
+printf '#!/bin/sh\nexit 64\n' >"${FAIL_DIR}/ai-todo-mcp"
+status=0
+AI_TODO_CLAUDE_BIN="$MCP_TOOL" AI_TODO_HUB_CONF="$CONF" AI_TODO_OPEN_DETACH=1 \
+  "${FAIL_DIR}/ai-todo-open" --mcp grafana "ai/claude/todo-mcp9" '~/programming' "$C_M9" >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "ai-todo-mcp exit 64 became $status"
+! tmux -L "$SOCK" has-session -t "=ai/claude/todo-mcp9" 2>/dev/null || fail "exit 64 still started the tool"
+pass "open_mcp_helper_failure_starts_unmanaged"
 
 [[ ! -e "${SANDBOX}/guard.log" ]] || fail "a test reached a real binary: $(cat "${SANDBOX}/guard.log")"
 echo "All ${passes} todo script tests passed."

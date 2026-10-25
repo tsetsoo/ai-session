@@ -99,7 +99,10 @@ behaviour, no change). For a new start and for every resume it builds:
     values (`command`, `args`, `env`; `url` and headers for HTTP servers), and
   - disable every other MCP server defined in `~/.codex/config.toml` (and any profile it
     uses): each `mcp_servers.<key>` not ticked gets `enabled=false`. Plugin- and app-provided
-    servers are left alone.
+    servers are left alone, including the ones the Codex desktop app writes into
+    `config.toml` (`node_repl`, `computer-use`) and any key listed one per line in
+    `~/.ai-remote/mcp/keep`. Each ticked server also gets `enabled=true`, so one that
+    `config.toml` turns off is on.
 
   Passing these as `-c` arguments keeps `~/.codex/config.toml` untouched.
 

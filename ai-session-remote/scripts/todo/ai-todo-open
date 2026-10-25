@@ -30,7 +30,10 @@
 #                   server's environment lacks the tokens) when that file exists, and the
 #                   servers that were applied are reported to the hub in the background
 #                   (POST /api/conversations/mcp; a fresh Codex once its id appears).
-#                   Servers ai-todo-mcp skips are shown on stderr and left out of the report.
+#                   Servers ai-todo-mcp skips are shown on stderr, for 8 s in the session's
+#                   tmux client once one attaches, and left out of the report. If
+#                   ai-todo-mcp fails (other than 64, bad arguments), the tool starts
+#                   without the selection and nothing is reported.
 #
 # Exit codes: 64 bad arguments, 90 tmux / claude / codex / agent missing, 93 cwd not usable,
 #             94 no Codex or Cursor conversation with that id, or a new one
@@ -316,6 +319,7 @@ fi
 # arguments (the id stays its own word, which ai-todo-hook and ai-todo-sessions match on).
 mcp_report=0
 mcp_json=
+mcp_warnings=
 if [ "$mcp_given" = 1 ] && [ "$tool" != cursor ]; then
   mcp_bin=$(dirname "$0")/ai-todo-mcp
   if [ ! -x "$mcp_bin" ]; then
@@ -325,25 +329,33 @@ if [ "$mcp_given" = 1 ] && [ "$tool" != cursor ]; then
     mcp_status=0
     mcp_args=$("$mcp_bin" launch-args "$tool" "$mcp_names" 2>"$mcp_err") || mcp_status=$?
     mcp_skipped=$(sed -n 's/^ai-todo-mcp: skipped \([^:]*\): .*$/\1/p' "$mcp_err")
+    mcp_skip_lines=$(awk '/^ai-todo-mcp: skipped /{printf "%s%s", sep, $0; sep="; "}' "$mcp_err")
     cat "$mcp_err" >&2
     rm -f "$mcp_err"
-    [ "$mcp_status" -eq 0 ] || exit "$mcp_status"
-    # The names ai-todo-mcp used: as given (trimmed, each once), minus the skipped ones.
-    # They passed its name check, so they need no JSON escaping.
-    mcp_json=$(printf '%s\n' "$mcp_names" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
-      | awk 'NF && !seen[$0]++' \
-      | if [ -n "$mcp_skipped" ]; then grep -vxF "$mcp_skipped" || true; else cat; fi \
-      | sed 's/.*/"&"/' | paste -sd, -)
-    mcp_report=1
-    tool_bin=$1
-    shift
-    eval "set -- $mcp_args"' "$@"'
-    set -- "$tool_bin" "$@"
-    # The tool gets the tmux server's environment, not a login shell's: read the
-    # variables the server files reference from the env file, exported.
-    if [ -e "$HOME/.ai-remote/mcp/env" ]; then
-      # shellcheck disable=SC2016
-      set -- /bin/sh -c 'set -a; [ -r "$HOME/.ai-remote/mcp/env" ] && . "$HOME/.ai-remote/mcp/env"; set +a; exec "$@"' sh "$@"
+    # 64: bad arguments, which the app answers by retrying without --mcp.
+    [ "$mcp_status" -ne 64 ] || exit 64
+    if [ "$mcp_status" -ne 0 ]; then
+      # Anything else (a crash, an unreadable file): start the tool unmanaged, as without the helper.
+      echo "ai-todo-open: MCP servers not applied (ai-todo-mcp failed)" >&2
+    else
+      mcp_warnings=$mcp_skip_lines
+      # The names ai-todo-mcp used: as given (trimmed, each once), minus the skipped ones.
+      # They passed its name check, so they need no JSON escaping.
+      mcp_json=$(printf '%s\n' "$mcp_names" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+        | awk 'NF && !seen[$0]++' \
+        | if [ -n "$mcp_skipped" ]; then grep -vxF "$mcp_skipped" || true; else cat; fi \
+        | sed 's/.*/"&"/' | paste -sd, -)
+      mcp_report=1
+      tool_bin=$1
+      shift
+      eval "set -- $mcp_args"' "$@"'
+      set -- "$tool_bin" "$@"
+      # The tool gets the tmux server's environment, not a login shell's: read the
+      # variables the server files reference from the env file, exported.
+      if [ -e "$HOME/.ai-remote/mcp/env" ]; then
+        # shellcheck disable=SC2016
+        set -- /bin/sh -c 'set -a; [ -r "$HOME/.ai-remote/mcp/env" ] && . "$HOME/.ai-remote/mcp/env"; set +a; exec "$@"' sh "$@"
+      fi
     fi
   fi
 fi
@@ -377,6 +389,28 @@ report_mcp() { # <session id>
       [ "$code" = 404 ] && [ "$attempt" -lt 5 ] || break
       attempt=$((attempt + 1))
       sleep "${AI_TODO_MCP_REPORT_DELAY:-2}"
+    done
+  ) </dev/null >/dev/null 2>&1 &
+}
+
+# The skip lines on stderr vanish when the attach clears the screen. Show them in the
+# session's tmux client for 8 s too: in the background, once a client is attached (10 s at
+# most), and a failure is ignored. `#` is doubled so tmux doesn't read it as a format.
+show_mcp_warnings() {
+  [ -n "$mcp_warnings" ] || return 0
+  message=$(printf '%s' "$mcp_warnings" | sed 's/#/##/g')
+  (
+    set +eu
+    tries=0
+    while [ "$tries" -lt 50 ]; do
+      client=$(tmux_cmd list-clients -t "=$name" -F '#{client_name}' 2>/dev/null | head -n 1)
+      if [ -n "$client" ]; then
+        # -d (tmux 3.2+) keeps it up 8 s; an older tmux shows it for its display-time.
+        tmux_cmd display-message -c "$client" -d 8000 "$message" || tmux_cmd display-message -c "$client" "$message"
+        exit 0
+      fi
+      tries=$((tries + 1))
+      sleep 0.2
     done
   ) </dev/null >/dev/null 2>&1 &
 }
@@ -416,4 +450,5 @@ if [ "$fresh" = 1 ]; then
 else
   report_mcp "$sid"
 fi
+show_mcp_warnings
 attach "$mode"
