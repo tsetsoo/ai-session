@@ -711,10 +711,13 @@ private struct ConversationColumn: View {
             hasConversation: hasConversation,
             canChange: hasConversation && !model.store.isOffline,
             canRename: !model.store.isOffline,
+            canChangeServers: hasConversation && !model.store.isOffline
+                && model.store.displayed(forTodo: todo.id, selectedKey: model.selectedConversationID)?.tool != "cursor",
             isReady: state?.isReady ?? false,
             isConnected: state?.isConnected ?? false,
             copyInMenu: copyInMenu,
             onRename: { send(.rename, for: todo.id) },
+            onServers: { send(.servers, for: todo.id) },
             onCopy: { send(.copyResume, for: todo.id) },
             onPopOut: popOut(todo.id),
             onMemories: { send(.memories, for: todo.id) },

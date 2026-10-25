@@ -65,6 +65,8 @@ final class TodoHubStore {
     private var mcpLists: [String: [MCPServer]] = [:]
     /// Computers whose host scripts have no `ai-todo-mcp` (listing exited 127).
     private var mcpListMissing: Set<String> = []
+    /// Computers whose `ai-todo-open` rejected `--mcp` (scripts from before MCP support).
+    private var mcpFlagUnsupported: Set<String> = []
 
     private let cache: TodoHubCache
     /// Where hub calls get their client (`TodoHubSettings.makeClient` outside tests); see `hubClient()`.
@@ -611,6 +613,22 @@ final class TodoHubStore {
     func hasMCPList(_ computer: Computer) -> Bool? {
         if mcpLists[computer.id] != nil { return true }
         return mcpListMissing.contains(computer.id) ? false : nil
+    }
+
+    /// The servers an attach passes to `ai-todo-open`: the conversation's own, else what a new
+    /// one would start with (applied only if the tool actually starts). Cursor has none, and
+    /// neither does a computer whose scripts don't know `--mcp`.
+    func launchServers(for conversation: Conversation) -> [String]? {
+        guard conversation.tool != "cursor", !mcpFlagUnsupported.contains(conversation.computer.id) else { return nil }
+        if let servers = conversation.mcpServers { return servers }
+        let todo = todos.first { $0.id == conversation.todoId }
+        let computer = computers.first { $0.id == conversation.computer.id } ?? conversation.computer
+        return MCPSelection.initial(project: project(id: todo?.projectId), computer: computer)
+    }
+
+    /// Later attaches to this computer leave `--mcp` out, for this app session.
+    func noteServersUnsupported(on computer: Computer) {
+        mcpFlagUnsupported.insert(computer.id)
     }
 
     /// Records the servers a running or resumable conversation uses. nil = not managed.

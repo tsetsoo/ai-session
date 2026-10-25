@@ -62,6 +62,12 @@ struct ConversationFrame: View {
     @State private var toolChoice = ""
     @State private var isStarting = false
     @State private var toolError: String?
+    /// The start state's own pick of servers; until there is one, the defaults show.
+    @State private var serverChoice: [String]?
+    @State private var hasServerChoice = false
+    /// "Servers…": the conversation whose checklist is open, then the one waiting on a restart.
+    @State private var serversTarget: Conversation?
+    @State private var restartTarget: Conversation?
     /// How the conversation just created should attach, and the text to type once it connects.
     @State private var duplicateLaunch: DuplicateLaunch?
     @State private var summaryText = ""
@@ -132,6 +138,10 @@ struct ConversationFrame: View {
     }
 
     private var frame: some View {
+        serversPresentation(frameContent)
+    }
+
+    private var frameContent: some View {
         terminalArea
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
@@ -246,6 +256,43 @@ struct ConversationFrame: View {
         .reportsVisibleConversation(todo.id, isActive: isFrontmost && !isPoppedOut)
     }
 
+    /// Servers…: the checklist sheet, and the restart question while the tool is working.
+    private func serversPresentation(_ content: some View) -> some View {
+        content
+        .confirmationDialog(
+            "Restart \(RowText.toolName(restartTarget?.tool ?? "claude"))?",
+            isPresented: Binding(
+                get: { isFrontmost && restartTarget != nil },
+                set: { if !$0 { restartTarget = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: restartTarget
+        ) { conversation in
+            Button("Restart", role: .destructive) { restart(conversation) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Restarting stops it where it is. It resumes with the new servers.")
+        }
+        .sheet(isPresented: Binding(
+            get: { isFrontmost && serversTarget != nil },
+            set: { if !$0 { serversTarget = nil } }
+        )) {
+            if let conversation = serversTarget {
+                MCPServersSheet(
+                    computer: conversation.computer, store: store, hosts: hosts,
+                    selection: conversation.mcpServers,
+                    allowsUnmanaged: conversation.mcpServers == nil || defaultServers(for: conversation.computer) == nil,
+                    confirmTitle: "Save",
+                    onConfirm: { names in
+                        serversTarget = nil
+                        saveServers(names, for: conversation)
+                    },
+                    onCancel: { serversTarget = nil }
+                )
+            }
+        }
+    }
+
     // MARK: Terminal area
 
     @ViewBuilder
@@ -307,7 +354,7 @@ struct ConversationFrame: View {
             let conversation = open.conversation
             TerminalSurface(
                 config: open.config,
-                mode: .attach(attachCommand(for: conversation)),
+                mode: .attach(attachCommand(for: open)),
                 hostName: conversation.computer.name,
                 handle: terminal,
                 onConnectionFailed: { error in
@@ -323,7 +370,7 @@ struct ConversationFrame: View {
                 makeTransport: makeTransport
             )
             // Re-entering `.ready` for the same conversation and host must not reconnect.
-            .id("\(open.id)|\(open.hostID)")
+            .id(open.surfaceID)
         case let .problem(problem):
             onTerminalBackground(FrameStateView(
                 problem: problem,
@@ -365,6 +412,13 @@ struct ConversationFrame: View {
             .pickerStyle(.segmented)
             .frame(maxWidth: 360)
             .labelsHidden()
+            if let computer = newConversationComputer, toolChoice != "cursor" {
+                MCPServersStartRow(
+                    computer: computer, store: store, hosts: hosts,
+                    selection: serverSelection,
+                    allowsUnmanaged: defaultServers(for: computer) == nil
+                )
+            }
             if let toolError {
                 Text(toolError)
                     .font(.footnote)
@@ -400,13 +454,14 @@ struct ConversationFrame: View {
     private func confirmTool() {
         guard !isStarting else { return }
         let tool = ConversationStart.selectedTool(remembered: toolChoice)
+        let servers = tool == "cursor" ? nil : serverSelection.wrappedValue
         lastStartedTool = tool
         isStarting = true
         toolError = nil
         Task {
             defer { isStarting = false }
             do {
-                let conversation = try await startConversation(tool: tool)
+                let conversation = try await startConversation(tool: tool, mcpServers: servers)
                 loader.attachOpened(conversation)
             } catch {
                 toolError = TodoHubStore.message(for: error)
@@ -414,7 +469,7 @@ struct ConversationFrame: View {
         }
     }
 
-    private func startConversation(tool: String) async throws -> Conversation {
+    private func startConversation(tool: String, mcpServers: [String]?) async throws -> Conversation {
         #if DEBUG
         if DemoFixtures.isEnabled {
             return try await DemoFixtures.loaderDependencies().openConversation(todo)
@@ -432,7 +487,36 @@ struct ConversationFrame: View {
         } catch {
             throw HostLookup.Failure.keyUnavailable(host.displayName)
         }
-        return try await store.openConversation(for: todo, tool: tool, config: connection.config)
+        return try await store.openConversation(
+            for: todo, tool: tool, config: connection.config, mcpServers: mcpServers
+        )
+    }
+
+    /// The servers a new conversation starts with, exactly as the start state's checklist shows
+    /// them: the defaults until the checklist changes them.
+    private var serverSelection: Binding<[String]?> {
+        Binding(
+            get: {
+                if hasServerChoice { return serverChoice }
+                return newConversationComputer.flatMap(defaultServers(for:))
+            },
+            set: {
+                serverChoice = $0
+                hasServerChoice = true
+            }
+        )
+    }
+
+    /// The section's computer, where a new conversation starts, with its stored default.
+    private var newConversationComputer: Computer? {
+        guard let computer = store.sectionComputers[todo.section]?.computer else { return nil }
+        return store.computers.first { $0.id == computer.id } ?? computer
+    }
+
+    /// What a new conversation on `computer` starts with: the project's default, else the computer's.
+    private func defaultServers(for computer: Computer) -> [String]? {
+        let stored = store.computers.first { $0.id == computer.id } ?? computer
+        return MCPSelection.initial(project: store.project(id: todo.projectId), computer: stored)
     }
 
     private var idleState: some View {
@@ -510,10 +594,12 @@ struct ConversationFrame: View {
             hasConversation: conversation != nil,
             canChange: conversation != nil && !store.isOffline,
             canRename: !store.isOffline,
+            canChangeServers: canChangeServers,
             isReady: readyConversation != nil,
             isConnected: isConnected,
             copyInMenu: copyInMenu,
             onRename: { renameTarget = todo },
+            onServers: changeServers,
             onCopy: copyResumeCommand,
             onPopOut: { onPopOut?() },
             onMemories: { showingMemories = true },
@@ -534,6 +620,7 @@ struct ConversationFrame: View {
     private func performToolbar(_ command: ConversationToolbarCommand) {
         switch command {
         case .rename: if !store.isOffline { renameTarget = todo }
+        case .servers: changeServers()
         case .copyResume: copyResumeCommand()
         case .memories: showingMemories = true
         case .close: closeConversation()
@@ -600,7 +687,7 @@ struct ConversationFrame: View {
 
     /// The terminal surface's identity while ready: a new one connects afresh.
     private var readyTerminalID: String? {
-        readyConversation.map { "\($0.id)|\($0.hostID)" }
+        readyConversation?.surfaceID
     }
 
     /// After the surface's own focus-after-connect and whatever the list did with the click or
@@ -755,6 +842,51 @@ struct ConversationFrame: View {
         }
     }
 
+    /// Servers…: a linked Claude or Codex conversation, with the hub online.
+    private var canChangeServers: Bool {
+        guard let conversation else { return false }
+        return !store.isOffline && conversation.tool != "cursor"
+    }
+
+    private func changeServers() {
+        guard canChangeServers else { return }
+        serversTarget = conversation
+    }
+
+    /// Stores the new selection; a tool that is running restarts to pick it up, after asking
+    /// while it is working. One that isn't running uses it when it next starts.
+    private func saveServers(_ names: [String]?, for conversation: Conversation) {
+        guard names != conversation.mcpServers else { return }
+        Task {
+            do {
+                try await store.setServers(names, for: conversation)
+            } catch {
+                failure = ActionFailure(
+                    title: "Couldn't Change Servers",
+                    message: ConversationRowActions.message(for: error, computer: conversation.computer)
+                )
+                return
+            }
+            guard readyConversation?.conversation.id == conversation.id else { return }
+            let saved = store.conversations(forTodo: todo.id).first { $0.id == conversation.id } ?? conversation
+            if saved.status == .busy {
+                restartTarget = saved
+            } else {
+                restart(saved)
+            }
+        }
+    }
+
+    /// Ends the tmux session as Close does, then attaches again: `ai-todo-open` resumes the
+    /// conversation with the servers it now has.
+    private func restart(_ conversation: Conversation) {
+        perform("Couldn't Restart \(RowText.toolName(conversation.tool))") { _, config in
+            try await store.closeConversation(conversation, config: config)
+            let closed = store.conversations(forTodo: todo.id).first { $0.id == conversation.id } ?? conversation
+            loader.restart(closed)
+        }
+    }
+
     private func deleteConversation() {
         perform("Couldn't Delete Conversation") { conversation, config in
             try await store.deleteConversation(conversation, config: config)
@@ -810,17 +942,13 @@ struct ConversationFrame: View {
     // MARK: Duplicate
 
     /// The PTY command for this conversation: a native fork when this duplicate asked for one,
-    /// otherwise the usual `ai-todo-open` resume.
-    private func attachCommand(for conversation: Conversation) -> String {
-        if let launch = duplicateLaunch, launch.conversationID == conversation.id, let command = launch.attachCommand {
+    /// otherwise the usual `ai-todo-open` resume with the conversation's servers.
+    private func attachCommand(for open: OpenTodoConversation) -> String {
+        if let launch = duplicateLaunch, launch.conversationID == open.conversation.id,
+           let command = launch.attachCommand {
             return command
         }
-        return TmuxCommandBuilder.openTodoConversation(
-            tmuxName: conversation.tmuxName,
-            cwd: conversation.cwd,
-            sessionId: conversation.sessionId,
-            tool: conversation.tool
-        )
+        return open.attachCommand
     }
 
     private func beginDuplicate(tool: String, name: String) {

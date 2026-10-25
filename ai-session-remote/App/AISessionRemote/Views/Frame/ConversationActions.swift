@@ -87,6 +87,7 @@ enum ConversationToolbar {
 /// the confirmation dialogs and the "Copied" toast.
 enum ConversationToolbarCommand: Equatable {
     case rename
+    case servers
     case copyResume
     case memories
     case close
@@ -130,6 +131,9 @@ struct ConversationMenu: View {
     /// Rename: the hub online (a todo without a conversation can be renamed too).
     let canRename: Bool
     let onRename: () -> Void
+    /// Servers…: a Claude or Codex conversation and the hub online.
+    let canChangeServers: Bool
+    let onServers: () -> Void
     let isReady: Bool
     let isConnected: Bool
     /// iOS has no ⎘ button in the header, so copying the resume command lives here.
@@ -160,6 +164,10 @@ struct ConversationMenu: View {
                 Label("Memories", systemImage: "lightbulb")
             }
             .disabled(!hasConversation)
+            Button(action: onServers) {
+                Label("Servers…", systemImage: "server.rack")
+            }
+            .disabled(!canChangeServers)
             Button(action: onClose) {
                 Label("Close Conversation", systemImage: "xmark.circle")
             }
@@ -247,11 +255,13 @@ struct ConversationToolbarActions: View {
     var hasConversation: Bool
     var canChange: Bool
     var canRename: Bool
+    var canChangeServers: Bool
     var isReady: Bool
     var isConnected: Bool
     /// iOS keeps Copy Resume Command in the menu; the Mac has a button for it.
     var copyInMenu: Bool
     var onRename: () -> Void
+    var onServers: () -> Void
     var onCopy: () -> Void
     var onPopOut: () -> Void
     var onMemories: () -> Void
@@ -301,6 +311,8 @@ struct ConversationToolbarActions: View {
                 canChange: canChange,
                 canRename: canRename,
                 onRename: onRename,
+                canChangeServers: canChangeServers,
+                onServers: onServers,
                 isReady: isReady,
                 isConnected: isConnected,
                 onCopyResume: copyInMenu ? onCopy : nil,

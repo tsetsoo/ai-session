@@ -65,6 +65,7 @@
 		3F7D62C234999725F0C9833F /* ConversationLinkViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */; };
 		4057411C78160E1D7CD4628D /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90D767C2AC93115AC1E9B3F4 /* HostStore.swift */; };
 		414864BA66DF44F9F28242A1 /* QuickAddBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ECAA7E51EC00759D342A7CF /* QuickAddBar.swift */; };
+		43108C2BB86CA543782EB498 /* MCPServerChecklist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EF7DAFF1BD631F66BD246CA /* MCPServerChecklist.swift */; };
 		43742E0FFAA3656D1B6E80B8 /* TodoRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CB81134A32870654F0473B2 /* TodoRow.swift */; };
 		44F3E96E02F25239D27F1CE9 /* ProjectMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */; };
 		459745DF108E3518C8BB10E3 /* NIOSSHClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */; };
@@ -105,6 +106,7 @@
 		7676E04E635A23C1677E618F /* WeeklyStatsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5C23D18F2D719EE248BDB9A /* WeeklyStatsCard.swift */; };
 		7BAD97547D47B5D2812C9A76 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B30BC89B3A1D2CE46EB6921 /* AppModel.swift */; };
 		7C3A539C3130EFED602DDF5E /* VisiblePresenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDECEE903A5E03F5371FB37C /* VisiblePresenceTests.swift */; };
+		7D5552CE69AF23803F6EC8C0 /* MCPServerChecklist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EF7DAFF1BD631F66BD246CA /* MCPServerChecklist.swift */; };
 		7DCA1C4428513C5B31E15D8B /* TodoHubSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12419581E8EABDDBD2C33D6A /* TodoHubSettings.swift */; };
 		7EBF102046D1B8F7306B7A21 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AEEFD06D4BF1BB591C6A637 /* AppDelegate.swift */; };
 		7F6D43567AAD0DF479531266 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 5D3154CABEED9F0C1642E75F /* Crypto */; };
@@ -263,6 +265,7 @@
 		18F3BE4EBA6E99E52AEE6296 /* TodoHubDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubDemo.swift; sourceTree = "<group>"; };
 		19B17876012779CEAC4C80A8 /* TodoHubSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubSettingsView.swift; sourceTree = "<group>"; };
 		1E3343248834146F026E769E /* PhoneShellTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneShellTests.swift; sourceTree = "<group>"; };
+		1EF7DAFF1BD631F66BD246CA /* MCPServerChecklist.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServerChecklist.swift; sourceTree = "<group>"; };
 		2036F3717F8C775B947A95B7 /* MemoriesPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoriesPresenter.swift; sourceTree = "<group>"; };
 		20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionServiceFactory.swift; sourceTree = "<group>"; };
 		212307B0DF157E07D51ED051 /* AISessionRemoteTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AISessionRemoteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -445,6 +448,7 @@
 				CD5B403BB61AF13CDBD9EEC1 /* DuplicateSummarySheet.swift */,
 				F6DF7A48AF9E2D3EED9528A2 /* FrameStateView.swift */,
 				4968C45BBA0F9D47DF734624 /* KeyBar.swift */,
+				1EF7DAFF1BD631F66BD246CA /* MCPServerChecklist.swift */,
 				2036F3717F8C775B947A95B7 /* MemoriesPresenter.swift */,
 				72E273782071736284D2563C /* TerminalSurface.swift */,
 				CACA4D506127E0997E071460 /* UsageLimitsBar.swift */,
@@ -895,6 +899,7 @@
 				EB6822F143F473431F7E86B7 /* ListActions.swift in Sources */,
 				3C20726A071B705FCC2F9714 /* ListSelection.swift in Sources */,
 				9A9A1C513848F018C43DDFBA /* LocalConnection.swift in Sources */,
+				7D5552CE69AF23803F6EC8C0 /* MCPServerChecklist.swift in Sources */,
 				F20B4E30CA2C51E9A3F6C76A /* MacCompatibility.swift in Sources */,
 				DDC9B48D3E5C1D75C5A42285 /* MacShell.swift in Sources */,
 				C02C522D95113D7D02F16C02 /* MemoriesPresenter.swift in Sources */,
@@ -996,6 +1001,7 @@
 				4E3846485AA10B3B7344F5E0 /* ListActions.swift in Sources */,
 				B06BE65B10FD125FE3054794 /* ListSelection.swift in Sources */,
 				EEE34ECE95236577DE543771 /* LocalConnection.swift in Sources */,
+				43108C2BB86CA543782EB498 /* MCPServerChecklist.swift in Sources */,
 				A4969E70C98FC8113339AE7A /* MacCompatibility.swift in Sources */,
 				07BD53647E58789FDD83FF03 /* MacShell.swift in Sources */,
 				C61894B166CF872961980837 /* MemoriesPresenter.swift in Sources */,

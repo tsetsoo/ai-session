@@ -10,11 +10,34 @@ struct OpenTodoConversation: Identifiable, Hashable {
     let hostID: UUID
     let config: HostConnectionConfig
     let title: String
+    /// The servers the attach command asks `ai-todo-open` to start the tool with; nil adds no
+    /// `--mcp`. They only apply when the tool actually starts.
+    var mcpServers: [String]? = nil
+    /// Bumped when the same conversation is attached afresh (a restart, or the retry without
+    /// servers), so the terminal reconnects with the new command.
+    var attempt = 0
 
     /// The conversation, not the todo: two conversations on one todo are two terminals.
     var id: String { conversation.listKey }
 
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id && lhs.hostID == rhs.hostID }
+    /// The terminal surface's identity: re-entering `.ready` with the same one doesn't reconnect.
+    var surfaceID: String { "\(id)|\(hostID)|\(attempt)" }
+
+    /// The usual `ai-todo-open` resume.
+    var attachCommand: String {
+        TmuxCommandBuilder.openTodoConversation(
+            tmuxName: conversation.tmuxName,
+            cwd: conversation.cwd,
+            sessionId: conversation.sessionId,
+            tool: conversation.tool,
+            mcpServers: mcpServers
+        )
+    }
+
+    /// A fresh attempt is a change, so the phase notifies and the terminal reconnects.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.hostID == rhs.hostID && lhs.attempt == rhs.attempt
+    }
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
         hasher.combine(hostID)
@@ -96,6 +119,11 @@ final class ConversationLoader {
         var isOffline: () -> Bool
         /// Throws `HostLookup.Failure`.
         var resolveConfig: (Computer) throws -> (hostID: UUID, config: HostConnectionConfig)
+        /// The servers to attach with; nil leaves `--mcp` out.
+        var launchServers: (Conversation) -> [String]? = { _ in nil }
+        /// The computer's scripts rejected `--mcp`: later opens leave it out.
+        var serversUnsupported: (Computer) -> Void = { _ in }
+        var now: () -> Date = { Date() }
 
         /// `hosts` is read on every resolve, so a host added while a problem shows counts on retry.
         @MainActor
@@ -114,7 +142,9 @@ final class ConversationLoader {
                     } catch {
                         throw HostLookup.Failure.keyUnavailable(host.displayName)
                     }
-                }
+                },
+                launchServers: { store.launchServers(for: $0) },
+                serversUnsupported: { store.noteServersUnsupported(on: $0) }
             )
         }
     }
@@ -122,6 +152,14 @@ final class ConversationLoader {
     private let todo: Todo
     private let dependencies: Dependencies
     private(set) var phase: Phase = .idle
+    /// When the terminal was last handed a command, for telling an old script's `--mcp`
+    /// rejection from a tool that quit later with the same status.
+    private var readyAt: Date?
+    private var attempt = 0
+
+    /// Scripts installed before MCP support exit 64 on `--mcp` straight away.
+    static let serversRejectedStatus = 64
+    static let serversRejectionWindow: TimeInterval = 5
 
     init(todo: Todo, dependencies: Dependencies) {
         self.todo = todo
@@ -176,6 +214,15 @@ final class ConversationLoader {
         resolve(conversation)
     }
 
+    /// Attach this conversation afresh, after its tmux session was ended (new servers): the
+    /// terminal reconnects even though it is the conversation already on screen.
+    func restart(_ conversation: Conversation) {
+        guard phase != .preparing else { return }
+        phase = .preparing
+        attempt += 1
+        resolve(conversation)
+    }
+
     /// Selection path: attach only to a conversation that is already running. Never creates one.
     /// Synchronous, so a settled selection goes straight to the terminal without an idle frame.
     func attachIfRunning(_ conversation: Conversation?) {
@@ -186,8 +233,21 @@ final class ConversationLoader {
     /// The terminal session ended with the helper script's exit status. Known failures become a
     /// problem; anything else stays `.ready`, and the terminal shows its own card: Disconnected
     /// for a lost connection (no status), Conversation ended with Resume when the tool quit.
+    /// An attach with `--mcp` that exits 64 at once ran on scripts that predate it: run it once
+    /// more without, and leave it out for that computer from now on.
     func ended(exitStatus: Int?) {
-        guard case let .ready(open) = phase, let failure = OpenFailure(exitStatus: exitStatus) else { return }
+        guard case var .ready(open) = phase else { return }
+        if exitStatus == Self.serversRejectedStatus, open.mcpServers != nil, let readyAt,
+           dependencies.now().timeIntervalSince(readyAt) < Self.serversRejectionWindow {
+            dependencies.serversUnsupported(open.conversation.computer)
+            attempt += 1
+            open.mcpServers = nil
+            open.attempt = attempt
+            self.readyAt = dependencies.now()
+            phase = .ready(open)
+            return
+        }
+        guard let failure = OpenFailure(exitStatus: exitStatus) else { return }
         let name = open.conversation.computer.name
         switch failure {
         case .helpersMissing: phase = .problem(.helpersMissing(name))
@@ -221,8 +281,11 @@ final class ConversationLoader {
                 conversation: conversation,
                 hostID: resolved.hostID,
                 config: resolved.config,
-                title: todo.title
+                title: todo.title,
+                mcpServers: dependencies.launchServers(conversation),
+                attempt: attempt
             ))
+            readyAt = dependencies.now()
         } catch let HostLookup.Failure.noHost(computer) {
             phase = .problem(.needsAccess(computer))
         } catch let HostLookup.Failure.keyUnavailable(name) {

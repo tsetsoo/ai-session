@@ -46,6 +46,8 @@ final class ConversationLoaderTests: XCTestCase {
         cached: Conversation? = nil,
         offline: Bool = false,
         resolve: (() throws -> Void)? = nil,
+        servers: [String]? = nil,
+        unsupported: @escaping (Computer) -> Void = { _ in },
         calls: Calls = Calls()
     ) -> (ConversationLoader, Calls) {
         let config = HostConnectionConfig(host: "studio", port: 22, username: "me", privateKeyPEM: Data())
@@ -58,7 +60,9 @@ final class ConversationLoaderTests: XCTestCase {
                 calls.resolve += 1
                 try resolve?()
                 return (hostID, config)
-            }
+            },
+            launchServers: { _ in servers },
+            serversUnsupported: unsupported
         )
         return (ConversationLoader(todo: todo(), dependencies: deps), calls)
     }
@@ -184,6 +188,61 @@ final class ConversationLoaderTests: XCTestCase {
         let l = await readyLoader()
         l.ended(exitStatus: nil)
         guard case .ready = l.phase else { return XCTFail("\(l.phase)") }
+    }
+
+    func testOldScriptsRetryWithoutServers() async throws {
+        let conv = conversation()
+        var unsupported: [String] = []
+        let (l, _) = loader(open: { conv }, servers: ["grafana", "slack"], unsupported: { unsupported.append($0.id) })
+        await l.start()
+        guard case let .ready(first) = l.phase else { return XCTFail("\(l.phase)") }
+        XCTAssertTrue(first.attachCommand.contains("--mcp"))
+
+        // Scripts from before MCP support reject `--mcp` at once: the same attach, without it.
+        l.ended(exitStatus: 64)
+        guard case let .ready(retry) = l.phase else { return XCTFail("\(l.phase)") }
+        XCTAssertNil(retry.mcpServers)
+        XCTAssertFalse(retry.attachCommand.contains("--mcp"))
+        XCTAssertNotEqual(retry.surfaceID, first.surfaceID, "the terminal reconnects with the new command")
+        XCTAssertNotEqual(retry, first, "a phase equal to the last would not notify")
+        XCTAssertEqual(unsupported, ["c1"])
+
+        // A second 64 is the tool's own: the usual ended card, no further retry.
+        l.ended(exitStatus: 64)
+        guard case let .ready(after) = l.phase else { return XCTFail("\(l.phase)") }
+        XCTAssertEqual(after.surfaceID, retry.surfaceID)
+        XCTAssertEqual(unsupported, ["c1"])
+    }
+
+    func testLateExit64IsNotARetry() async {
+        var now = Date()
+        let conv = conversation()
+        let config = HostConnectionConfig(host: "studio", port: 22, username: "me", privateKeyPEM: Data())
+        let hostID = hostID
+        let deps = ConversationLoader.Dependencies(
+            openConversation: { _ in conv },
+            cachedConversation: { _ in nil },
+            isOffline: { false },
+            resolveConfig: { _ in (hostID, config) },
+            launchServers: { _ in ["grafana"] },
+            now: { now }
+        )
+        let l = ConversationLoader(todo: todo(), dependencies: deps)
+        await l.start()
+        guard case let .ready(first) = l.phase else { return XCTFail("\(l.phase)") }
+        now += 60
+        l.ended(exitStatus: 64)
+        guard case let .ready(after) = l.phase else { return XCTFail("\(l.phase)") }
+        XCTAssertEqual(after.surfaceID, first.surfaceID)
+        XCTAssertEqual(after.mcpServers, ["grafana"])
+    }
+
+    func testRestartAttachesAfresh() async {
+        let l = await readyLoader()
+        guard case let .ready(first) = l.phase else { return XCTFail("\(l.phase)") }
+        l.restart(first.conversation)
+        guard case let .ready(again) = l.phase else { return XCTFail("\(l.phase)") }
+        XCTAssertNotEqual(again.surfaceID, first.surfaceID)
     }
 
     func testStartWhilePreparingIsNoOp() async {
