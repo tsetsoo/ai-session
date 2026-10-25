@@ -8,6 +8,13 @@ use serde_json::Value;
 use crate::broadcast::Broadcaster;
 use crate::db::{DbPool, TestDb};
 
+/// One shared-limits store for every test request (tests use distinct account keys), so a
+/// claim and its report reach the same store although each call builds a new app.
+fn shared_limits() -> &'static crate::limits::SharedLimits {
+    static LIMITS: std::sync::OnceLock<crate::limits::SharedLimits> = std::sync::OnceLock::new();
+    LIMITS.get_or_init(Default::default)
+}
+
 /// A test database (removed on drop) and its pool; the pool is dropped first.
 pub(crate) fn pool(name: &str) -> (TestDb, DbPool) {
     let db = TestDb::new(name);
@@ -70,6 +77,7 @@ pub(crate) async fn call_with(
             .app_data(web::Data::new(Broadcaster::new()))
             .app_data(web::Data::new(notifier.clone()))
             .app_data(web::Data::new(presence.clone()))
+            .app_data(web::Data::new(shared_limits().clone()))
             .configure(crate::api_routes),
     )
     .await;

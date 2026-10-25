@@ -366,6 +366,7 @@ fn pick_tmux_name(
 /// Insert a conversation row under a free tmux name (see `pick_tmux_name`). Returns
 /// `false` when no name is free. Any other constraint error is returned as is, for the
 /// caller to report: names are checked first, so it is never mistaken for a name clash.
+#[allow(clippy::too_many_arguments)]
 fn insert_conversation(
     conn: &Connection,
     todo_id: &str,

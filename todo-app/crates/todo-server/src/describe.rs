@@ -236,7 +236,9 @@ fn base_description() -> Value {
             {"method": "GET", "path": "/api/push/status", "description": "Whether APNs is configured, the last error and send time, and the number of devices. Never contains key material"},
             {"method": "POST", "path": "/api/push/test", "description": "Send a test notification now to every device, or to {token}. Returns per-device results; 409 when APNs is not configured"},
             {"method": "PUT", "path": "/api/todos/{id}/push-mute", "description": "Mute push notifications for this todo. 404 for an unknown todo"},
-            {"method": "DELETE", "path": "/api/todos/{id}/push-mute", "description": "Unmute this todo"}
+            {"method": "DELETE", "path": "/api/todos/{id}/push-mute", "description": "Unmute this todo"},
+            {"method": "POST", "path": "/api/limits/{key}/claim", "description": "Usage limits shared by every computer on one tool account (ai-todo-limits). key is claude- or cursor- and a hex hash of the account id. Returns {fetch, windows, age_seconds, blocked_seconds}: windows is the latest reading under an hour old (or null). fetch is true for one caller at a time (a 30 s lease) when the reading is over 2 minutes old and no 429 pause is running; that caller fetches and PUTs the result. Kept in memory only"},
+            {"method": "PUT", "path": "/api/limits/{key}", "description": "Report a claimed fetch: {windows: [...]} stores the reading, {rate_limited: true, retry_after: s} pauses fetching for everyone on the account (default 300 s, at most an hour), {} reports a failure. Each frees the lease. 204", "example_request": {"windows": [{"kind": "5h", "used_percent": 41.0, "resets_at": "2026-10-25T09:40:00Z"}]}}
         ],
         "data_model": {
             "PushDevice": {

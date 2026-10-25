@@ -8,6 +8,7 @@ mod daily;
 mod db;
 mod describe;
 mod handlers;
+mod limits;
 mod memories;
 mod models;
 mod paths;
@@ -103,7 +104,10 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/sessions", web::get().to(sessions::list_sessions))
         .route("/api/sessions/stats", web::post().to(sessions::upload_stats))
         .route("/api/sessions/{tool}/{session_id}/project", web::put().to(sessions::set_session_project))
-        .route("/api/stats/weekly", web::get().to(sessions::weekly_stats));
+        .route("/api/stats/weekly", web::get().to(sessions::weekly_stats))
+        // Usage limits shared per tool account
+        .route("/api/limits/{key}/claim", web::post().to(limits::claim_limits))
+        .route("/api/limits/{key}", web::put().to(limits::report_limits));
 }
 
 #[actix_web::main]
@@ -121,6 +125,7 @@ async fn main() -> std::io::Result<()> {
 
     // Push notifications. The only outbound calls this server makes: HTTPS to Apple's APNs.
     let presence = push::Presence::default();
+    let shared_limits = limits::SharedLimits::default();
     let apns = match push::apns::ApnsConfig::from_env() {
         Ok(Some(config)) => match push::apns::JwtSigner::new(&config) {
             Ok(signer) => {
@@ -163,6 +168,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(api_token.clone()))
             .app_data(web::Data::new(notifier.clone()))
             .app_data(web::Data::new(presence.clone()))
+            .app_data(web::Data::new(shared_limits.clone()))
             .configure(api_routes)
     })
     .bind(&args.addr)?

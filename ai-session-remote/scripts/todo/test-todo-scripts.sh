@@ -2526,6 +2526,7 @@ pass "limits_claude_signed_out_or_rejected: no login prints an empty list; a fai
 
 # The cache: a fresh reading is reused, a 429 pauses requests and shows the last reading.
 export AI_TODO_LIMITS_CACHE=1
+export AI_TODO_HUB_CONF="${SANDBOX}/no-hub.conf"   # local cache only here; the hub is tested next
 LCACHE="${HOME}/.ai-remote/limits-cache/claude.json"
 rm -f "$LCACHE"
 limits_5h() {
@@ -2564,6 +2565,88 @@ status=0
 unset AI_TODO_LIMITS_CACHE AI_TODO_LIMITS_RETRY_AFTER
 rm -f "$LCACHE"
 pass "limits_cache: reuses a fresh reading, pauses for a 429's Retry-After showing the last reading, fails past an hour"
+
+# Shared per account through the hub: reuse its reading, fetch only with the lease, report back.
+LHUB_DIR="${SANDBOX}/limits-hub"
+mkdir -p "$LHUB_DIR"
+python3 - "$LHUB_DIR" <<'PY' &
+import json, os, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+d = sys.argv[1]
+class Hub(BaseHTTPRequestHandler):
+    def handle_one(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+        with open(os.path.join(d, "log"), "a") as f:
+            f.write(json.dumps({"method": self.command, "path": self.path,
+                                "auth": self.headers.get("Authorization"), "body": body}) + "\n")
+        if self.command == "POST":
+            out = open(os.path.join(d, "claim.json"), "rb").read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(out)
+        else:
+            self.send_response(204)
+            self.end_headers()
+    do_POST = handle_one
+    do_PUT = handle_one
+    def log_message(self, *args):
+        pass
+server = HTTPServer(("127.0.0.1", 0), Hub)
+open(os.path.join(d, "port"), "w").write(str(server.server_port))
+server.serve_forever()
+PY
+EXTRA_PIDS="$EXTRA_PIDS $!"
+for _ in $(seq 1 50); do [[ -s "${LHUB_DIR}/port" ]] && break; sleep 0.1; done
+printf 'TODO_HUB_URL=http://127.0.0.1:%s\nTODO_API_TOKEN=hubtoken\n' "$(cat "${LHUB_DIR}/port")" >"${LHUB_DIR}/hub.conf"
+export AI_TODO_HUB_CONF="${LHUB_DIR}/hub.conf" AI_TODO_LIMITS_CACHE=1
+printf '{"oauthAccount":{"accountUuid":"acct-1234"}}\n' >"${HOME}/.claude.json"
+ACCOUNT_KEY="claude-$(printf 'acct-1234' | shasum -a 256 | cut -c1-32)"
+rm -f "$LCACHE" "${LHUB_DIR}/log"
+
+# Another computer's fresh reading: shown, and no usage request (it would fail with a 500).
+printf '{"fetch":false,"windows":[{"kind":"5h","used_percent":33.0}],"age_seconds":30,"blocked_seconds":null}' >"${LHUB_DIR}/claim.json"
+export AI_TODO_LIMITS_HTTP_STATUS=500
+[[ "$(limits_5h)" == "33.0" ]] || fail "hub: a shared reading was not used"
+grep -q "\"path\": \"/api/limits/${ACCOUNT_KEY}/claim\"" "${LHUB_DIR}/log" || fail "hub: claim path: $(cat "${LHUB_DIR}/log")"
+grep -q '"auth": "Bearer hubtoken"' "${LHUB_DIR}/log" || fail "hub: no hub token sent"
+! grep -q 'acct-1234' "${LHUB_DIR}/log" || fail "hub: the account id left the computer"
+! grep -q '"method": "PUT"' "${LHUB_DIR}/log" || fail "hub: reported without holding the lease"
+
+# This computer holds the lease: it fetches and reports the windows.
+rm -f "$LCACHE" "${LHUB_DIR}/log"
+printf '{"fetch":true,"windows":null,"age_seconds":null,"blocked_seconds":null}' >"${LHUB_DIR}/claim.json"
+export AI_TODO_LIMITS_HTTP_STATUS=200
+export AI_TODO_LIMITS_HTTP_BODY='{"five_hour":{"utilization":44,"resets_at":"2026-10-18T15:00:00Z"}}'
+[[ "$(limits_5h)" == "44.0" ]] || fail "hub: the lease holder did not fetch"
+python3 - "${LHUB_DIR}/log" "$ACCOUNT_KEY" "$TOKEN" <<'PY' || fail "hub: report: $(cat "${LHUB_DIR}/log")"
+import json, sys
+lines = [json.loads(l) for l in open(sys.argv[1])]
+put = [l for l in lines if l["method"] == "PUT"]
+assert len(put) == 1 and put[0]["path"] == "/api/limits/" + sys.argv[2], lines
+assert json.loads(put[0]["body"])["windows"][0]["used_percent"] == 44.0, put
+assert sys.argv[3] not in open(sys.argv[1]).read()
+PY
+
+# A 429 while holding the lease pauses everyone: reported with its Retry-After.
+rm -f "$LCACHE" "${LHUB_DIR}/log"
+export AI_TODO_LIMITS_HTTP_STATUS=429 AI_TODO_LIMITS_RETRY_AFTER=200
+status=0
+"$LIMITS" --tool claude >/dev/null 2>&1 || status=$?
+[[ $status -eq 75 ]] || fail "hub: 429 with nothing to show exited $status"
+grep -q '"body": "{\\"rate_limited\\": true, \\"retry_after\\": 200}"' "${LHUB_DIR}/log" || fail "hub: 429 not reported: $(cat "${LHUB_DIR}/log")"
+
+# Paused or someone else fetching, with nothing to show yet: fail without a request.
+rm -f "$LCACHE" "${LHUB_DIR}/log"
+printf '{"fetch":false,"windows":null,"age_seconds":null,"blocked_seconds":120}' >"${LHUB_DIR}/claim.json"
+export AI_TODO_LIMITS_HTTP_STATUS=200
+status=0
+"$LIMITS" --tool claude >/dev/null 2>&1 || status=$?
+[[ $status -eq 75 ]] || fail "hub: paused with nothing to show exited $status"
+! grep -q '"method": "PUT"' "${LHUB_DIR}/log" || fail "hub: fetched while paused"
+unset AI_TODO_LIMITS_CACHE AI_TODO_LIMITS_RETRY_AFTER AI_TODO_HUB_CONF
+rm -f "$LCACHE" "${HOME}/.claude.json"
+pass "limits_shared_per_account: reuses the hub's reading, fetches only with the lease, reports windows and 429s, never sends the account id or a token"
 
 SID="11111111-2222-4333-8444-555555555555"
 OTHER="99999999-8888-4777-8666-000000000000"

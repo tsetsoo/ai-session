@@ -19,25 +19,33 @@
 # Exit codes: 64 bad arguments, 75 the login is present but the usage request
 #             failed (the app keeps the reading it already has).
 #
-# Claude and Cursor readings are cached in ~/.ai-remote/limits-cache/ (the
-# windows only, never a token). Every open chat in every app polls this, and
-# the usage endpoint rate-limits per account, so a reading under two minutes
-# old is reused, a 429 pauses requests for its Retry-After, and while a
-# request can't be made or fails, a reading under an hour old is shown.
+# Claude and Cursor readings are shared per account through the todo hub
+# (POST /api/limits/{key}/claim, key = tool and a hash of the account id):
+# a reading under two minutes old is reused by every computer on that login,
+# and only the computer holding the hub's lease asks the usage endpoint, so
+# one subscription makes one request per two minutes. A 429 pauses requests
+# for its Retry-After on every computer. They are also cached locally in
+# ~/.ai-remote/limits-cache/ (windows only, never a token), which is all
+# there is when the hub can't be reached: there a reading under two minutes
+# old is reused, a 429 pauses this computer, and while a request can't be
+# made or fails, a reading under an hour old is shown.
 #
 # Test hooks (not for normal use):
 #   AI_TODO_LIMITS_OFFLINE=1   do not touch the network or the macOS keychain
 #   AI_TODO_LIMITS_HTTP_BODY   response body used when offline
 #   AI_TODO_LIMITS_HTTP_STATUS HTTP status for that body (default 200)
 #   AI_TODO_LIMITS_RETRY_AFTER Retry-After for an offline 429
-#   AI_TODO_LIMITS_CACHE=1     use the cache while offline (off by default)
+#   AI_TODO_LIMITS_CACHE=1     use the cache and the hub while offline (off by default)
+#   AI_TODO_HUB_CONF           todo-hub.conf path (default ~/.ai-remote/todo-hub.conf)
 #   CLAUDE_CONFIG_DIR          Claude config directory (credentials live here)
 #   CODEX_HOME                 Codex home (sessions live under sessions/)
 export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/sbin:/sbin:$PATH"
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
 exec python3 - "$@" <<'PY'
+import base64
 import datetime
 import glob
+import hashlib
 import json
 import os
 import re
@@ -559,8 +567,91 @@ def cached_windows(cache, max_age, now):
     return windows
 
 
+def claude_account_id():
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    path = os.path.join(base, ".claude.json") if base else os.path.join(HOME, ".claude.json")
+    data = read_json(path)
+    account = data.get("oauthAccount") if isinstance(data, dict) else None
+    uuid = account.get("accountUuid") if isinstance(account, dict) else None
+    return uuid if isinstance(uuid, str) and uuid else None
+
+
+def cursor_account_id():
+    # The access token is a JWT; its subject names the account. Only the
+    # subject's hash leaves this process.
+    parts = cursor_token().split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except (ValueError, UnicodeError):
+        return None
+    sub = payload.get("sub") if isinstance(payload, dict) else None
+    return sub if isinstance(sub, str) and sub else None
+
+
+def account_key(tool):
+    account = claude_account_id() if tool == "claude" else cursor_account_id()
+    if not account:
+        return None
+    return tool + "-" + hashlib.sha256(account.encode("utf-8")).hexdigest()[:32]
+
+
+def hub_conf():
+    conf = os.environ.get("AI_TODO_HUB_CONF") or os.path.join(HOME, ".ai-remote", "todo-hub.conf")
+    values = {}
+    try:
+        with open(conf) as f:
+            for line in f:
+                m = re.match(r"\s*(TODO_HUB_URL|TODO_API_TOKEN)=['\"]?([^'\"\n]*)['\"]?\s*$", line)
+                if m:
+                    values[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    url = values.get("TODO_HUB_URL", "").rstrip("/")
+    return (url, values.get("TODO_API_TOKEN", "")) if url else None
+
+
+def hub_call(hub, method, path, body):
+    """The hub's JSON answer ({} for an empty one), or None when it can't be reached."""
+    url, token = hub
+    req = urllib.request.Request(url + path, data=json.dumps(body).encode("utf-8"), method=method)
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            payload = resp.read(1_000_000)
+        parsed = json.loads(payload.decode("utf-8", "replace")) if payload.strip() else {}
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def claim_shared(tool, cache, now):
+    """(hub, key, claim) when the hub answered a claim for this account, else None.
+
+    A shared reading newer than the local one is cached locally as well."""
+    hub = hub_conf()
+    key = account_key(tool)
+    if not hub or not key:
+        return None
+    claim = hub_call(hub, "POST", "/api/limits/%s/claim" % key, {})
+    if claim is None:
+        return None
+    windows = claim.get("windows")
+    age = as_number(claim.get("age_seconds"))
+    if isinstance(windows, list) and age is not None:
+        at = now - age
+        if at > (as_number(cache.get("at")) or 0):
+            cache.update({"at": at, "windows": windows})
+            write_cache(tool, cache)
+    return hub, key, claim
+
+
 def fetch_with_cache(tool, fetch_windows):
-    """Fresh reading, else a request (unless paused by a 429), else a recent one."""
+    """Fresh reading, else the account's shared one, else a request (unless paused
+    by a 429), else a recent one."""
     if not cache_enabled():
         return fetch_windows()
     now = time.time()
@@ -568,23 +659,38 @@ def fetch_with_cache(tool, fetch_windows):
     fresh = cached_windows(cache, CACHE_FRESH_SECONDS, now)
     if fresh is not None:
         return fresh
-    blocked_until = as_number(cache.get("blocked_until")) or 0
-    if now < blocked_until:
-        stale = cached_windows(cache, CACHE_STALE_SECONDS, now)
-        if stale is None:
-            raise RequestFailed()
-        return stale
+    shared = claim_shared(tool, cache, now)
+    if shared is not None:
+        hub, key, claim = shared
+        if not claim.get("fetch"):
+            # Fresh on the hub, paused by a 429, or another computer is fetching.
+            stale = cached_windows(cache, CACHE_STALE_SECONDS, now)
+            if stale is None:
+                raise RequestFailed()
+            return stale
+    else:
+        blocked_until = as_number(cache.get("blocked_until")) or 0
+        if now < blocked_until:
+            stale = cached_windows(cache, CACHE_STALE_SECONDS, now)
+            if stale is None:
+                raise RequestFailed()
+            return stale
     try:
         windows = fetch_windows()
     except RequestFailed as e:
         if isinstance(e, RateLimited):
             cache["blocked_until"] = now + e.retry_after
             write_cache(tool, cache)
+        if shared is not None:
+            report = {"rate_limited": True, "retry_after": e.retry_after} if isinstance(e, RateLimited) else {}
+            hub_call(hub, "PUT", "/api/limits/" + key, report)
         stale = cached_windows(cache, CACHE_STALE_SECONDS, now)
         if stale is None:
             raise
         return stale
     write_cache(tool, {"at": now, "windows": windows})
+    if shared is not None:
+        hub_call(hub, "PUT", "/api/limits/" + key, {"windows": windows})
     return windows
 
 
