@@ -181,12 +181,10 @@ def claude_credentials_path():
 
 
 def keychain_oauth():
-    # The app always runs this over SSH. A locked login keychain cannot be
-    # read there, and asking `security` can pop a dialog on the Mac every
-    # refresh. The credentials file is the copy that works from SSH.
+    # Claude Code on macOS keeps its live login in the keychain; the
+    # credentials file can be a stale copy. Only asked when the file's login
+    # has expired. Over SSH a locked keychain fails here without a dialog.
     if os.environ.get("AI_TODO_LIMITS_OFFLINE") == "1" or sys.platform != "darwin":
-        return None
-    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"):
         return None
     try:
         proc = subprocess.run(

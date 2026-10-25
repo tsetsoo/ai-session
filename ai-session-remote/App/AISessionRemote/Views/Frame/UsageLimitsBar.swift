@@ -4,7 +4,8 @@ import SwiftUI
 
 /// 5-hour, weekly and monthly limits for this chat's tool, read on the
 /// computer the chat runs on. A window that login does not have is absent,
-/// and a computer with no reading shows nothing.
+/// and a computer without the script shows nothing. A failed read with no
+/// earlier numbers says the limits are unavailable.
 struct UsageLimitsBar: View {
     let computer: Computer
     let tool: String
@@ -22,22 +23,29 @@ struct UsageLimitsBar: View {
 
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var limits: UsageLimits?
+    @State private var unavailable = false
 
     var body: some View {
         VStack(spacing: 0) {
             if let windows = limits?.windows, !windows.isEmpty {
                 chips(windows)
+            } else if limits == nil, unavailable {
+                strip {
+                    Text("Limits unavailable")
+                        .foregroundStyle(.secondary)
+                        .help("Couldn't read this tool's usage limits on \(computer.name).")
+                }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: hasWindows ? nil : 0)
+        .frame(maxWidth: .infinity, maxHeight: shows ? nil : 0)
         .task(id: taskID) {
             guard polls else { return }
             await poll()
         }
     }
 
-    private var hasWindows: Bool {
-        !(limits?.windows.isEmpty ?? true)
+    private var shows: Bool {
+        !(limits?.windows.isEmpty ?? true) || (limits == nil && unavailable)
     }
 
     /// Reloads when the chat's computer, tool, saved host, or polling gate changes.
@@ -47,15 +55,21 @@ struct UsageLimitsBar: View {
     }
 
     private func chips(_ windows: [UsageLimitWindow]) -> some View {
+        strip {
+            ForEach(windows) { window in
+                Text("\(window.title) \(window.percentText)")
+                    .foregroundStyle(window.isElevated ? DS.accent : Color.secondary)
+                    .fontWeight(window.isHigh ? .semibold : .regular)
+                    .help(window.accessibilityText)
+                    .accessibilityLabel(window.accessibilityText)
+            }
+        }
+    }
+
+    private func strip(@ViewBuilder _ content: () -> some View) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: DS.spacing.m) {
-                ForEach(windows) { window in
-                    Text("\(window.title) \(window.percentText)")
-                        .foregroundStyle(window.isElevated ? DS.accent : Color.secondary)
-                        .fontWeight(window.isHigh ? .semibold : .regular)
-                        .help(window.accessibilityText)
-                        .accessibilityLabel(window.accessibilityText)
-                }
+                content()
                 Spacer(minLength: 0)
             }
             .font(.caption.monospacedDigit())
@@ -88,8 +102,11 @@ struct UsageLimitsBar: View {
             let next = try await RemoteLimits.fetch(config: config, tool: tool, sessionId: sessionId)
             guard !Task.isCancelled else { return }
             limits = next
+            unavailable = false
         } catch {
             // Keep the last reading. A dropped SSH call should not blank the strip.
+            guard !Task.isCancelled else { return }
+            unavailable = true
         }
     }
 }
