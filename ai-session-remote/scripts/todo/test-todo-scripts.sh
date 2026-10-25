@@ -482,6 +482,22 @@ chmod +x "$MARK_CODEX"
 out="$(AI_TODO_CODEX_BIN="$MARK_CODEX" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-new2" '~/programming' - codex)"
 [[ "$out" == "created 01a16548-895c-7ff3-bbf0-a83014fc8ef9" ]] || fail "fresh codex with a TUI mark printed '$out'"
 
+# Codex started with -c overrides (`--mcp`) runs its own app-server: no TUI mark, only the
+# thread's writer lock, held open by the pane's codex process. Another Codex's lock that
+# appears meanwhile (not held by this pane) is not the new conversation.
+LOCK_CODEX="${SANDBOX}/bin/codex-lock"
+cat >"$LOCK_CODEX" <<EOF
+#!/bin/sh
+: > "$LOCKS/01a17375-0000-7000-8000-00000000f00d.lock"
+exec 3>>"$LOCKS/01a17375-2583-7b71-9f1d-26964c5c5219.lock"
+exec sleep 300
+EOF
+chmod +x "$LOCK_CODEX"
+out="$(AI_TODO_CODEX_BIN="$LOCK_CODEX" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-new-lock" '~/programming' - codex)"
+[[ "$out" == "created 01a17375-2583-7b71-9f1d-26964c5c5219" ]] || fail "fresh codex holding only its writer lock printed '$out'"
+tmux -L "$SOCK" kill-session -t "=ai/codex/todo-new-lock" 2>/dev/null || true
+pass "a fresh Codex with only a writer lock (as with --mcp) is found through the lock its pane holds"
+
 # A Codex that writes both for one thread is still one new conversation.
 BOTH_CODEX="${SANDBOX}/bin/codex-both"
 cat >"$BOTH_CODEX" <<EOF

@@ -47,6 +47,7 @@
 #   AI_TODO_AGENT_BIN    cursor agent binary to start instead of `command -v agent`
 #   AI_TODO_CLAUDE_JOBS  background job directory instead of ~/.claude/jobs
 #   AI_TODO_HOOK_BIN     ai-todo-hook path instead of the one next to this script
+#   AI_TODO_LSOF         lsof binary for the pane's writer lock (systems without /proc)
 #   AI_TODO_HUB_CONF     hub config instead of ~/.ai-remote/todo-hub.conf (for --mcp reports)
 #   AI_TODO_MCP_REPORT_DELAY  seconds between --mcp report attempts after a 404 (default 2)
 set -eu
@@ -176,8 +177,9 @@ codex_tui_marks="$HOME/.codex/tui-thread-reference-capabilities"
 # Ids of conversations that already exist, one per line, each once.
 # Codex 0.163+ writes the rollout only after the first message, but the TUI marks its
 # thread under tui-thread-reference-capabilities/<id> at startup. Older versions write
-# the rollout at once. A thread with both is one id. (Writer locks are no use: sub-agent
-# and guardian threads of any running Codex take them too.)
+# the rollout at once. A thread with both is one id. (Writer locks in general are no use:
+# sub-agent and guardian threads of any running Codex take them too. Only the one held by
+# this session's own pane counts; see pane_lock_id.)
 fresh_ids() {
   if [ "$1" = codex ]; then
     {
@@ -207,6 +209,26 @@ fresh_is_ours() {
     return 0
   fi
   [ "$2" = "$cursor_id" ]
+}
+
+# Codex started with -c overrides (`--mcp`) runs its own app-server and writes no TUI
+# mark, only the thread's writer lock. The lock this session's pane process holds open is
+# its thread; a lock any other Codex takes is not. Prints it when there is exactly one.
+pane_lock_id() {
+  pid=$(tmux_cmd list-panes -t "=$name:" -F '#{pane_pid}' 2>/dev/null | head -n 1)
+  [ -n "$pid" ] || return 0
+  locks=$(
+    {
+      if [ -d "/proc/$pid/fd" ]; then
+        for fd in "/proc/$pid/fd"/*; do readlink "$fd" 2>/dev/null; done
+      else
+        "${AI_TODO_LSOF:-lsof}" -n -P -p "$pid" -Fn 2>/dev/null | sed -n 's/^n//p'
+      fi
+    } | sed -n 's|^.*/\.codex/thread-writer-locks/\([^/]*\)\.lock$|\1|p' \
+      | LC_ALL=C grep -Ex "$uuid_re" | LC_ALL=C sort -u || true
+  )
+  [ -n "$locks" ] && [ "$(printf '%s\n' "$locks" | wc -l | tr -d ' ')" -eq 1 ] && printf '%s\n' "$locks"
+  return 0
 }
 
 # The id that was not in $fresh_before. Empty until one appears.
@@ -240,6 +262,19 @@ EOF
     if [ "$count" -eq 1 ]; then
       printf '%s\n' "$ids"
       return 0
+    fi
+    if [ "$1" = codex ] && ids=$(pane_lock_id) && [ -n "$ids" ]; then
+      case "
+$fresh_before
+" in
+        *"
+$ids
+"*) ;;
+        *)
+          printf '%s\n' "$ids"
+          return 0
+          ;;
+      esac
     fi
     sleep 0.2
   done
