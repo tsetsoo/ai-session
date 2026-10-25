@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Offline tests for scripts/todo: ai-todo-open, ai-todo-sessions, ai-todo-hook, tmux.conf, install.sh.
+# Offline tests for scripts/todo: ai-todo-open, ai-todo-sessions, ai-todo-hook, ai-todo-mcp, tmux.conf, install.sh.
 # Fully sandboxed: temp HOME, fake claude + codex, fake todo-server, private tmux socket.
 # Never touches the real ~/.claude, ~/.tmux.conf, ~/.ai-remote or tmux server.
 set -euo pipefail
@@ -2417,6 +2417,26 @@ fi
 check_installed || fail "settings.json hooks differ from before after re-installing: $(cat "$SETTINGS")"
 pass "install_no_nightly: no plist, the job is booted out; settings.json hooks stay exactly today's"
 
+LINK_SRC="${SANDBOX}/mcp-src"
+mkdir -p "$LINK_SRC" "${HOME}/.ai-remote/mcp"
+printf '{}\n' >"${LINK_SRC}/one.json"
+printf '{}\n' >"${LINK_SRC}/two.json"
+printf 'not a server\n' >"${LINK_SRC}/notes.txt"
+printf '{"mine":true}\n' >"${HOME}/.ai-remote/mcp/two.json"
+"$INSTALL" --mcp-link "$LINK_SRC" >/dev/null
+"$INSTALL" --mcp-link "$LINK_SRC" >/dev/null
+[[ -L "${HOME}/.ai-remote/mcp/one.json" && "$(readlink "${HOME}/.ai-remote/mcp/one.json")" == "${LINK_SRC}/one.json" ]] \
+  || fail "--mcp-link did not symlink one.json: $(ls -l "${HOME}/.ai-remote/mcp")"
+[[ ! -L "${HOME}/.ai-remote/mcp/two.json" && "$(cat "${HOME}/.ai-remote/mcp/two.json")" == '{"mine":true}' ]] \
+  || fail "--mcp-link replaced an existing two.json"
+[[ ! -e "${HOME}/.ai-remote/mcp/notes.txt" ]] || fail "--mcp-link linked a non-json file"
+[[ "$(ls "${HOME}/.ai-remote/mcp" | wc -l | tr -d ' ')" -eq 2 ]] || fail "--mcp-link duplicated: $(ls "${HOME}/.ai-remote/mcp")"
+[[ "$(stat -f '%Lp' "${HOME}/.ai-remote/mcp" 2>/dev/null || stat -c '%a' "${HOME}/.ai-remote/mcp")" == 700 ]] || fail "mcp folder is not mode 700"
+status=0
+"$INSTALL" --mcp-link "${SANDBOX}/no-such-dir" >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "--mcp-link with a missing folder exited $status"
+pass "install_mcp_link"
+
 cp "$SETTINGS" "${SANDBOX}/settings.good"
 printf '{ broken' >"$SETTINGS"
 if "$INSTALL" >/dev/null 2>&1; then fail "install accepted an invalid settings.json"; fi
@@ -2453,6 +2473,8 @@ pass "uninstall removes only our hooks, scripts, tmux line, codex notify and hoo
 [[ ! -e "${HOME}/.ai-remote/bin/ai-todo-memory" && ! -e "${HOME}/.ai-remote/bin/ai_todo_redact.py" ]] || fail "uninstall left ai-todo-memory"
 [[ -f "${HOME}/.ai-remote/memory-state/sessions/claude-x.json" ]] || fail "uninstall removed memory-state"
 grep -q "kept ${HOME}/.ai-remote/memory-state" "${SANDBOX}/uninstall.out" || fail "uninstall did not print the memory-state path"
+[[ -L "${HOME}/.ai-remote/mcp/one.json" ]] || fail "uninstall removed ~/.ai-remote/mcp"
+grep -q "kept ${HOME}/.ai-remote/mcp" "${SANDBOX}/uninstall.out" || fail "uninstall did not print the mcp path"
 if on_mac; then
   [[ ! -e "$PLIST" && "$(cat "$LAUNCHCTL_LOG")" == "bootout ${GUI}/com.ai-remote.todo-memory" ]] || fail "uninstall did not boot out the job: $(cat "$LAUNCHCTL_LOG")"
 fi
@@ -2745,6 +2767,160 @@ status=0
 "$TRANSCRIPT" cursor "$U_EMPTY" >"${SANDBOX}/transcript-empty.out" 2>"${SANDBOX}/transcript-empty.err" || status=$?
 [[ $status -eq 94 && ! -s "${SANDBOX}/transcript-empty.out" ]] || fail "textless transcript exit was $status: $(cat "${SANDBOX}/transcript-empty.err")"
 pass "transcript_without_text_is_missing"
+
+# --- ai-todo-mcp ------------------------------------------------------------------
+
+MCP="${SCRIPT_DIR}/ai-todo-mcp"
+MCP_DIR="${HOME}/.ai-remote/mcp"
+rm -rf "$MCP_DIR"
+mkdir -p "$MCP_DIR"
+# The Spread Mac's server shapes, with fake values.
+cat >"${MCP_DIR}/grafana.json" <<'EOF'
+{"mcpServers":{"grafana":{"command":"docker","args":["run","--rm","-i","-e","GRAFANA_URL","-e","GRAFANA_SERVICE_ACCOUNT_TOKEN","mcp/grafana","-t","stdio"],"env":{"GRAFANA_URL":"https://grafana.example.test"}}}}
+EOF
+cat >"${MCP_DIR}/slack.json" <<'EOF'
+{"mcpServers":{"slack":{"command":"docker","args":["run","--rm","-i","-e","SLACK_MCP_XOXP_TOKEN","ghcr.io/example/slack-mcp"],"env":{"SLACK_TEAM_ID":"T0FAKETEAM"}}}}
+EOF
+cat >"${MCP_DIR}/atlassian.json" <<'EOF'
+{"mcpServers":{"mcp-atlassian":{"command":"docker","args":["run","--rm","-i","-e","CONFLUENCE_URL","-e","CONFLUENCE_USERNAME","-e","CONFLUENCE_API_TOKEN","-e","JIRA_URL","-e","JIRA_USERNAME","-e","JIRA_API_TOKEN","ghcr.io/sooperset/mcp-atlassian:latest"],
+ "env":{"CONFLUENCE_URL":"https://example.atlassian.net/wiki","CONFLUENCE_USERNAME":"${ATLASSIAN_EMAIL}","CONFLUENCE_API_TOKEN":"${ATLASSIAN_API_TOKEN}","JIRA_URL":"https://example.atlassian.net","JIRA_USERNAME":"${ATLASSIAN_EMAIL}","JIRA_API_TOKEN":"${ATLASSIAN_API_TOKEN}"}}}}
+EOF
+cat >"${MCP_DIR}/github.json" <<'EOF'
+{"mcpServers":{"github":{"type":"http","url":"https://api.githubcopilot.com/mcp/","headers":{"Authorization":"Bearer ${GITHUB_TOKEN}"}}}}
+EOF
+MCP_CODEX="${SANDBOX}/mcp-codex"
+mkdir -p "$MCP_CODEX"
+cat >"${MCP_CODEX}/config.toml" <<'EOF'
+model = "gpt-5"
+
+[mcp_servers.grafana]
+command = "docker"
+
+[mcp_servers.grafana.env]
+GRAFANA_URL = "https://grafana.example.test"
+
+[mcp_servers.miro]
+url = "https://mcp.miro.example/"
+
+[mcp_servers."node_repl"]
+command = "node"
+EOF
+
+"$MCP" list --json >"${SANDBOX}/mcp-list.out" 2>"${SANDBOX}/mcp-list.err" || fail "mcp list failed: $(cat "${SANDBOX}/mcp-list.err")"
+python3 - "${SANDBOX}/mcp-list.out" <<'PY' || fail "mcp list is wrong: $(cat "${SANDBOX}/mcp-list.out")"
+import json, sys
+servers = json.load(open(sys.argv[1]))
+assert [s["name"] for s in servers] == ["atlassian", "github", "grafana", "slack"], servers
+by = {s["name"]: s for s in servers}
+assert all(set(s) == {"name", "kind", "summary", "error"} for s in servers), servers
+assert all(s["error"] is None for s in servers), servers
+assert by["github"]["kind"] == "http" and by["github"]["summary"] == "https://api.githubcopilot.com/mcp/", by["github"]
+assert by["grafana"]["kind"] == "stdio" and by["grafana"]["summary"].startswith("docker run --rm -i"), by["grafana"]
+assert all(len(s["summary"]) <= 120 for s in servers), servers
+PY
+for secret in '${' Bearer GITHUB_TOKEN ATLASSIAN_EMAIL T0FAKETEAM example.atlassian.net grafana.example.test; do
+  ! grep -qF "$secret" "${SANDBOX}/mcp-list.out" || fail "mcp list printed '$secret': $(cat "${SANDBOX}/mcp-list.out")"
+done
+[[ "$(HOME="${SANDBOX}/no-mcp-home" "$MCP" list --json)" == "[]" ]] || fail "mcp list without the folder is not []"
+pass "list_json_hides_secrets"
+
+eval "set -- $("$MCP" launch-args claude grafana,slack)"
+[[ "$*" == "--strict-mcp-config --mcp-config ${MCP_DIR}/grafana.json --mcp-config ${MCP_DIR}/slack.json" ]] \
+  || fail "claude launch args: $*"
+eval "set -- $("$MCP" launch-args claude '')"
+[[ $# -eq 1 && "$1" == "--strict-mcp-config" ]] || fail "claude empty selection: $*"
+pass "launch_args_claude_strict"
+
+mcp_codex_args() { CODEX_HOME="$MCP_CODEX" "$MCP" launch-args codex "$1"; }
+eval "set -- $(mcp_codex_args grafana)"
+joined=" $* "
+[[ "$joined" == *" -c mcp_servers.miro.enabled=false "* ]] || fail "codex did not disable miro: $*"
+[[ "$joined" == *" -c mcp_servers.node_repl.enabled=false "* ]] || fail "codex did not disable node_repl: $*"
+[[ "$joined" != *"grafana.enabled=false"* ]] || fail "codex disabled the selected grafana: $*"
+[[ "$joined" == *' -c mcp_servers.grafana.command="/bin/sh" '* ]] || fail "codex did not add grafana: $*"
+eval "set -- $(mcp_codex_args '')"
+[[ "$*" == "-c mcp_servers.grafana.enabled=false -c mcp_servers.miro.enabled=false -c mcp_servers.node_repl.enabled=false" ]] \
+  || fail "codex empty selection: $*"
+pass "launch_args_codex_disables_unselected_config_servers"
+
+eval "set -- $(mcp_codex_args atlassian)"
+[[ " $* " == *' -c mcp_servers.mcp-atlassian.command="/bin/sh" '* ]] || fail "codex atlassian command: $*"
+atlassian_args=""
+while [[ $# -gt 0 ]]; do
+  [[ "$1" == -c && "$2" == mcp_servers.mcp-atlassian.args=* ]] && atlassian_args="${2#mcp_servers.mcp-atlassian.args=}"
+  shift
+done
+[[ -n "$atlassian_args" ]] || fail "codex atlassian has no args"
+python3 - "$atlassian_args" "${SANDBOX}/mcp-wrapper" <<'PY' || fail "codex atlassian args are wrong: $atlassian_args"
+import json, sys
+args = json.loads(sys.argv[1])
+assert args[0] == "-c" and args[2] == "ai-todo-mcp" and args[3] == "docker", args
+assert args[4:] == ["run", "--rm", "-i", "-e", "CONFLUENCE_URL", "-e", "CONFLUENCE_USERNAME", "-e", "CONFLUENCE_API_TOKEN",
+                    "-e", "JIRA_URL", "-e", "JIRA_USERNAME", "-e", "JIRA_API_TOKEN", "ghcr.io/sooperset/mcp-atlassian:latest"], args
+script = args[1]
+assert 'export CONFLUENCE_USERNAME="${ATLASSIAN_EMAIL}"' in script, script
+assert "export CONFLUENCE_URL='https://example.atlassian.net/wiki'" in script, script
+assert script.endswith('exec "$@"'), script
+open(sys.argv[2], "w").write(script)
+PY
+printf 'ATLASSIAN_EMAIL=a@b\nATLASSIAN_API_TOKEN=fake-token\n' >"${MCP_DIR}/env"
+printf '#!/bin/sh\necho "$CONFLUENCE_USERNAME $ATLASSIAN_API_TOKEN $*"\n' >"${SANDBOX}/bin/fake-mcp-server"
+chmod +x "${SANDBOX}/bin/fake-mcp-server"
+out="$(env -i HOME="$HOME" PATH=/usr/bin:/bin /bin/sh -c "$(cat "${SANDBOX}/mcp-wrapper")" ai-todo-mcp "${SANDBOX}/bin/fake-mcp-server" one 'two words')"
+[[ "$out" == "a@b fake-token one two words" ]] || fail "codex stdio wrapper printed '$out'"
+rm "${MCP_DIR}/env"
+out="$(env -i HOME="$HOME" PATH=/usr/bin:/bin /bin/sh -c "$(cat "${SANDBOX}/mcp-wrapper")" ai-todo-mcp "${SANDBOX}/bin/fake-mcp-server" x)"
+[[ "$out" == "  x" ]] || fail "codex stdio wrapper without an env file printed '$out'"
+pass "launch_args_codex_stdio_wraps_env"
+
+eval "set -- $(mcp_codex_args github)"
+joined=" $* "
+[[ "$joined" == *' -c mcp_servers.github.url="https://api.githubcopilot.com/mcp/" '* ]] || fail "codex github url: $*"
+[[ "$joined" == *' -c mcp_servers.github.bearer_token_env_var="GITHUB_TOKEN" '* ]] || fail "codex github bearer: $*"
+[[ "$joined" != *Bearer* ]] || fail "codex github passed the header value: $*"
+cat >"${MCP_DIR}/keyed.json" <<'EOF'
+{"mcpServers":{"keyed":{"type":"http","url":"https://keyed.example/mcp","headers":{"X-Api-Key":"${KEYED_KEY}"}}}}
+EOF
+cat >"${MCP_DIR}/literal.json" <<'EOF'
+{"mcpServers":{"literal":{"type":"http","url":"https://literal.example/mcp","headers":{"Authorization":"Bearer sk-literal-DO-NOT-LEAK"}}}}
+EOF
+eval "set -- $(mcp_codex_args keyed,literal 2>"${SANDBOX}/mcp-headers.err")"
+[[ " $* " == *' -c mcp_servers.keyed.env_http_headers.X-Api-Key="KEYED_KEY" '* ]] || fail "codex env_http_headers: $*"
+[[ " $* " != *literal.example* ]] || fail "codex passed a literal header server: $*"
+grep -qx "ai-todo-mcp: skipped literal: header can't be passed without its value" "${SANDBOX}/mcp-headers.err" \
+  || fail "literal header skip: $(cat "${SANDBOX}/mcp-headers.err")"
+! grep -q 'DO-NOT-LEAK' "${SANDBOX}/mcp-headers.err" || fail "the skip printed the header value"
+rm "${MCP_DIR}/keyed.json" "${MCP_DIR}/literal.json"
+pass "launch_args_codex_http_bearer"
+
+printf '{ not json' >"${MCP_DIR}/broken.json"
+for tool in claude codex; do
+  status=0
+  out="$(CODEX_HOME="$MCP_CODEX" "$MCP" launch-args "$tool" grafana,gone,broken 2>"${SANDBOX}/mcp-skip.err")" || status=$?
+  [[ $status -eq 0 ]] || fail "$tool launch-args with skips exited $status"
+  [[ "$out" == *grafana* && "$out" != *gone* && "$out" != *broken* ]] || fail "$tool launch-args with skips: $out"
+  [[ "$(grep -c '^ai-todo-mcp: skipped ' "${SANDBOX}/mcp-skip.err")" -eq 2 ]] || fail "$tool skip lines: $(cat "${SANDBOX}/mcp-skip.err")"
+  grep -q '^ai-todo-mcp: skipped gone: ' "${SANDBOX}/mcp-skip.err" && grep -q '^ai-todo-mcp: skipped broken: ' "${SANDBOX}/mcp-skip.err" \
+    || fail "$tool skip lines: $(cat "${SANDBOX}/mcp-skip.err")"
+done
+python3 - "$("$MCP" list --json)" <<'PY' || fail "list does not show the broken file with an error"
+import json, sys
+by = {s["name"]: s for s in json.loads(sys.argv[1])}
+assert by["broken"]["error"], by["broken"]
+PY
+rm "${MCP_DIR}/broken.json"
+pass "launch_args_skip_missing_and_malformed"
+
+for bad in "claude ../x" "claude a/b" "claude grafana,../x" "cursor grafana" "claude"; do
+  status=0
+  # shellcheck disable=SC2086
+  "$MCP" launch-args $bad >/dev/null 2>&1 || status=$?
+  [[ $status -eq 64 ]] || fail "launch-args $bad exited $status, expected 64"
+done
+status=0
+"$MCP" bogus >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "unknown command exited $status"
+pass "launch_args_rejects_bad_names"
 
 [[ ! -e "${SANDBOX}/guard.log" ]] || fail "a test reached a real binary: $(cat "${SANDBOX}/guard.log")"
 echo "All ${passes} todo script tests passed."

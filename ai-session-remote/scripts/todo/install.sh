@@ -8,6 +8,9 @@
 #   ~/.ai-remote/bin/ai-todo-codex-notify  Codex `notify` program reporting idle
 #   ~/.ai-remote/bin/ai-todo-memory  memory extraction, stats push and digests (+ ai_todo_redact.py)
 #   ~/.ai-remote/bin/ai-todo-transcript  one conversation's text, read when duplicating it into another tool
+#   ~/.ai-remote/bin/ai-todo-mcp     lists the MCP servers below and builds claude / codex arguments
+#   ~/.ai-remote/mcp/                one <name>.json per MCP server (mode 700); --mcp-link DIR
+#                                    symlinks each DIR/*.json that isn't there yet
 #   ~/.ai-remote/memory-state/       ai-todo-memory's offsets, caches and log (mode 700)
 #   ~/.ai-remote/todo-hub.conf       todo-server URL, API token, computer id (mode 600)
 #   ~/.ai-remote/tmux.conf           tmux settings, sourced from ~/.tmux.conf
@@ -19,7 +22,7 @@
 #
 # Usage:
 #   install.sh [--hub-url URL] [--token TOKEN] [--computer-id ID] [--chain-codex-notify]
-#              [--no-nightly] [--dry-run]
+#              [--no-nightly] [--mcp-link DIR] [--dry-run]
 #   install.sh --uninstall [--remove-digests] [--dry-run]
 #
 # Codex runs hooks only once they are trusted (a hash in config.toml). install.sh trusts its
@@ -32,7 +35,7 @@
 # saved and put back by --uninstall).
 #
 # Safe to re-run. settings.json and config.toml are backed up before every change. --uninstall
-# removes hook-state/ but keeps todo-hub.conf, memory-state/ and the digests written into
+# removes hook-state/ but keeps todo-hub.conf, memory-state/, mcp/ and the digests written into
 # project folders; with --remove-digests it first runs `ai-todo-memory digest --remove-all`.
 set -euo pipefail
 
@@ -42,7 +45,7 @@ BIN_DIR="${AI_DIR}/bin"
 HUB_CONF="${AI_DIR}/todo-hub.conf"
 TMUX_SNIPPET="${AI_DIR}/tmux.conf"
 # Every helper copied to BIN_DIR, for install and uninstall alike. Programs are 755, modules 644.
-HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript)
+HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp)
 MODULES=(ai_todo_redact.py)
 TMUX_CONF="${HOME}/.tmux.conf"
 SETTINGS="${HOME}/.claude/settings.json"
@@ -55,6 +58,7 @@ CODEX_HOOKS="${CODEX_DIR}/hooks.json"
 CODEX_BIN="${AI_TODO_CODEX_BIN:-codex}"
 CODEX_NOTIFY_SAVED="${AI_DIR}/codex-notify-original"
 STATE_DIR="${AI_DIR}/memory-state"
+MCP_DIR="${AI_DIR}/mcp"
 LAUNCH_LABEL='com.ai-remote.todo-memory'
 PLIST="${HOME}/Library/LaunchAgents/${LAUNCH_LABEL}.plist"
 
@@ -66,6 +70,7 @@ uninstall=0
 chain_codex=0
 no_nightly=0
 remove_digests=0
+mcp_link=""
 
 usage() {
   # Print the header comment block (every leading line that starts with '#', minus the shebang).
@@ -80,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --chain-codex-notify) chain_codex=1; shift ;;
     --computer-id) computer_id="${2:?--computer-id needs a value}"; shift 2 ;;
     --no-nightly) no_nightly=1; shift ;;
+    --mcp-link) mcp_link="${2:?--mcp-link needs a folder}"; shift 2 ;;
     --remove-digests) remove_digests=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     --uninstall) uninstall=1; shift ;;
@@ -94,6 +100,14 @@ for value in "$hub_url" "$token" "$computer_id"; do
     exit 64
   fi
 done
+
+if [[ -n "$mcp_link" ]]; then
+  if [[ ! -d "$mcp_link" ]]; then
+    echo "--mcp-link: ${mcp_link} is not a folder" >&2
+    exit 64
+  fi
+  mcp_link="$(cd "$mcp_link" && pwd)"
+fi
 
 say() { echo "$*"; }
 run() {
@@ -462,6 +476,21 @@ EOF
   say "todo-hub.conf: written"
 }
 
+# Symlink every DIR/*.json into ~/.ai-remote/mcp unless that name is already there.
+link_mcp_servers() {
+  local src name linked=0
+  for src in "${mcp_link}"/*.json; do
+    [[ -f "$src" ]] || continue
+    name="$(basename "$src")"
+    if [[ -e "${MCP_DIR}/${name}" || -L "${MCP_DIR}/${name}" ]]; then
+      continue
+    fi
+    run ln -s "$src" "${MCP_DIR}/${name}"
+    linked=$((linked + 1))
+  done
+  say "mcp: linked ${linked} server file(s) from ${mcp_link}"
+}
+
 xml_escape() {
   printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
@@ -540,6 +569,9 @@ do_install() {
   say "scripts: installed to ${BIN_DIR}"
   run mkdir -p "$STATE_DIR"
   run chmod 700 "$STATE_DIR"
+  run mkdir -p "$MCP_DIR"
+  run chmod 700 "$MCP_DIR"
+  if [[ -n "$mcp_link" ]]; then link_mcp_servers; fi
 
   write_hub_conf
 
@@ -604,6 +636,9 @@ do_uninstall() {
   say "kept ${HUB_CONF} (delete it yourself if you no longer need the token)"
   if [[ -d "$STATE_DIR" ]]; then
     say "kept ${STATE_DIR} (memory offsets and log; delete it yourself if you no longer need it)"
+  fi
+  if [[ -d "$MCP_DIR" ]]; then
+    say "kept ${MCP_DIR} (MCP server files; delete it yourself if you no longer need it)"
   fi
   if [[ $remove_digests -eq 0 ]]; then
     say "kept project digests; install.sh --uninstall --remove-digests removes them"

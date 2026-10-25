@@ -1,0 +1,259 @@
+#!/bin/sh
+# List this computer's MCP servers and turn a selection of them into launch arguments.
+# The iPhone / Mac app runs `list --json` over SSH; ai-todo-open (and the app's resume and
+# fork commands) run `eval "set -- $(ai-todo-mcp launch-args <tool> <names>)"`.
+#
+# Usage:
+#   ai-todo-mcp list [--json]
+#   ai-todo-mcp launch-args <claude|codex> <comma-separated names>
+#
+# A server is one file, ~/.ai-remote/mcp/<name>.json, in Claude's format:
+#   {"mcpServers": {"<key>": {"command": ..., "args": [...], "env": {...}}}}
+#   {"mcpServers": {"<key>": {"type": "http", "url": ..., "headers": {...}}}}
+# The name (file name) can differ from the key inside the file. Secrets are `${VAR}`
+# references to the environment, never literal values.
+#
+# list         Sorted by name. JSON objects have: name, kind ("stdio" | "http"), summary
+#              (command and args, <= 120 chars, or the URL) and error (null or a short
+#              reason). env and header values are never printed. No folder: [].
+# launch-args  One line of shell-quoted words. A name that is missing or can't be used is
+#              left out with `ai-todo-mcp: skipped <name>: <reason>` on stderr (exit 0).
+#              claude: --strict-mcp-config, then --mcp-config <file> per server (plugins
+#                and skills stay; connectors and other configs are dropped).
+#              codex: -c mcp_servers.<key>.enabled=false for every [mcp_servers.<key>] in
+#                $CODEX_HOME/config.toml whose key isn't selected, then -c overrides that
+#                add each selected server. stdio servers run through /bin/sh, which reads
+#                ~/.ai-remote/mcp/env (shell syntax, exported) and exports the file's env
+#                first: Codex passes MCP servers only a small default environment. HTTP
+#                servers: `Authorization: Bearer ${X}` -> bearer_token_env_var, any other
+#                header that is exactly `${X}` -> env_http_headers; a header with any other
+#                value can't be passed by name, so the server is skipped.
+#
+# Exit codes: 64 bad arguments (unknown tool, or a name that isn't a plain file name).
+#
+# Test hooks (not for normal use):
+#   CODEX_HOME   Codex home (config.toml is read from here; default ~/.codex)
+export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/sbin:/sbin:$PATH"
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+exec python3 - "$@" <<'PY'
+import glob
+import json
+import os
+import re
+import shlex
+import sys
+
+HOME = os.path.expanduser("~")
+MCP_DIR = os.path.join(HOME, ".ai-remote", "mcp")
+CODEX_CONFIG = os.path.join(os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex"), "config.toml")
+USAGE = ("usage: ai-todo-mcp list [--json]\n"
+         "       ai-todo-mcp launch-args <claude|codex> <comma-separated names>")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+# A key Codex's -c can address without quoting.
+BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+WHOLE_REF_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+BEARER_REF_RE = re.compile(r"^Bearer \$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+# python3 on macOS is 3.9 (no tomllib): config.toml section headers by regex.
+CODEX_HEADER_RE = re.compile(r'^\[mcp_servers\.("?)([^".\]]+)\1\]')
+# Sources the env file with every assignment exported, then the server's own env.
+ENV_FILE_LINE = 'set -a; [ -r "$HOME/.ai-remote/mcp/env" ] && . "$HOME/.ai-remote/mcp/env"; set +a'
+
+
+def die(message, code=64):
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+class Unusable(Exception):
+    """The server file can't be used; the message is the short reason."""
+
+
+def path_for(name):
+    return os.path.join(MCP_DIR, name + ".json")
+
+
+def load(name):
+    """(key, entry) of a server file, or raise Unusable."""
+    path = path_for(name)
+    if not os.path.exists(path):
+        raise Unusable("not found")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except ValueError:
+        raise Unusable("not valid JSON")
+    except OSError as e:
+        raise Unusable(f"can't be read ({e.strerror or e})")
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    if not isinstance(servers, dict) or len(servers) != 1:
+        raise Unusable("expected exactly one server in mcpServers")
+    key, entry = next(iter(servers.items()))
+    if not isinstance(entry, dict):
+        raise Unusable("the server is not an object")
+    if isinstance(entry.get("url"), str) and entry["url"]:
+        headers = entry.get("headers", {})
+        if not isinstance(headers, dict) or not all(isinstance(v, str) for v in headers.values()):
+            raise Unusable("headers must be strings")
+    elif isinstance(entry.get("command"), str) and entry["command"]:
+        args = entry.get("args", [])
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            raise Unusable("args must be a list of strings")
+        env = entry.get("env", {})
+        if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
+            raise Unusable("env values must be strings")
+    else:
+        raise Unusable("no command or url")
+    return key, entry
+
+
+def kind_of(entry):
+    return "http" if entry.get("url") else "stdio"
+
+
+def summary_of(entry):
+    if kind_of(entry) == "http":
+        return entry["url"]
+    text = " ".join([entry["command"]] + entry.get("args", []))
+    return text if len(text) <= 120 else text[:119] + "…"
+
+
+def list_servers(as_json):
+    rows = []
+    for path in sorted(glob.glob(os.path.join(MCP_DIR, "*.json"))):
+        name = os.path.basename(path)[: -len(".json")]
+        if not NAME_RE.match(name):
+            continue
+        try:
+            _, entry = load(name)
+            rows.append({"name": name, "kind": kind_of(entry), "summary": summary_of(entry), "error": None})
+        except Unusable as e:
+            rows.append({"name": name, "kind": None, "summary": "", "error": str(e)})
+    if as_json:
+        print(json.dumps(rows))
+        return
+    for r in rows:
+        print(f"{r['name']}\t{r['kind'] or '-'}\t{r['error'] or r['summary']}")
+
+
+def skip(name, reason):
+    print(f"ai-todo-mcp: skipped {name}: {reason}", file=sys.stderr)
+
+
+def single_quoted(text):
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def shell_value(value):
+    """value as one sh word: literal text single-quoted, ${X} references left to expand."""
+    parts, pos = [], 0
+    for m in REF_RE.finditer(value):
+        if m.start() > pos:
+            parts.append(single_quoted(value[pos:m.start()]))
+        parts.append('"${%s}"' % m.group(1))
+        pos = m.end()
+    if pos < len(value) or not parts:
+        parts.append(single_quoted(value[pos:]))
+    return "".join(parts)
+
+
+def toml(value):
+    # json.dumps gives valid TOML basic strings and arrays of them.
+    return json.dumps(value)
+
+
+def codex_server_args(key, entry):
+    """-c overrides that add one server, or raise Unusable."""
+    if not BARE_KEY_RE.match(key):
+        raise Unusable(f"key {key!r} can't be passed to codex")
+    prefix = f"mcp_servers.{key}"
+    if kind_of(entry) == "http":
+        out = ["-c", f"{prefix}.url={toml(entry['url'])}"]
+        for header, value in entry.get("headers", {}).items():
+            bearer = BEARER_REF_RE.match(value)
+            whole = WHOLE_REF_RE.match(value)
+            if header.lower() == "authorization" and bearer:
+                out += ["-c", f"{prefix}.bearer_token_env_var={toml(bearer.group(1))}"]
+            elif whole and BARE_KEY_RE.match(header):
+                out += ["-c", f"{prefix}.env_http_headers.{header}={toml(whole.group(1))}"]
+            else:
+                raise Unusable("header can't be passed without its value")
+        return out
+    lines = [ENV_FILE_LINE]
+    for name, value in entry.get("env", {}).items():
+        if not ENV_NAME_RE.match(name):
+            raise Unusable(f"env name {name!r} is not a shell variable name")
+        lines.append(f"export {name}={shell_value(value)}")
+    lines.append('exec "$@"')
+    script = "; ".join(lines)
+    args = ["-c", script, "ai-todo-mcp", entry["command"]] + entry.get("args", [])
+    return ["-c", f'{prefix}.command={toml("/bin/sh")}', "-c", f"{prefix}.args={toml(args)}"]
+
+
+def codex_config_keys():
+    try:
+        with open(CODEX_CONFIG) as f:
+            text = f.read()
+    except OSError:
+        return []
+    keys = []
+    for line in text.splitlines():
+        m = CODEX_HEADER_RE.match(line.strip())
+        if m and m.group(2) not in keys:
+            keys.append(m.group(2))
+    return keys
+
+
+def launch_args(tool, csv):
+    if tool not in ("claude", "codex"):
+        die(USAGE)
+    names = []
+    for name in (n.strip() for n in csv.split(",")):
+        if not name:
+            continue
+        if not NAME_RE.match(name):
+            die(f"ai-todo-mcp: not a server name: {name!r}")
+        if name not in names:
+            names.append(name)
+    loaded = []
+    for name in names:
+        try:
+            key, entry = load(name)
+        except Unusable as e:
+            skip(name, e)
+            continue
+        loaded.append((name, key, entry))
+
+    if tool == "claude":
+        words = ["--strict-mcp-config"]
+        for name, _, _ in loaded:
+            words += ["--mcp-config", path_for(name)]
+    else:
+        # A selected server stays as the user chose it even when codex can't take its file.
+        selected = {key for _, key, _ in loaded}
+        words = []
+        for key in codex_config_keys():
+            if key not in selected:
+                words += ["-c", f"mcp_servers.{key}.enabled=false"]
+        for name, key, entry in loaded:
+            try:
+                words += codex_server_args(key, entry)
+            except Unusable as e:
+                skip(name, e)
+    print(" ".join(shlex.quote(w) for w in words))
+
+
+def main(argv):
+    if argv[:1] == ["list"] and argv[1:] in ([], ["--json"]):
+        list_servers(argv[1:] == ["--json"])
+    elif argv[:1] == ["launch-args"] and len(argv) == 3:
+        launch_args(argv[1], argv[2])
+    elif argv[:1] in (["-h"], ["--help"]):
+        print(USAGE)
+    else:
+        die(USAGE)
+
+
+main(sys.argv[1:])
+PY
