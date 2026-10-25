@@ -2917,10 +2917,33 @@ for bad in "claude ../x" "claude a/b" "claude grafana,../x" "cursor grafana" "cl
   "$MCP" launch-args $bad >/dev/null 2>&1 || status=$?
   [[ $status -eq 64 ]] || fail "launch-args $bad exited $status, expected 64"
 done
+long_name="$(printf 'a%.0s' $(seq 1 65))"
+for bad in "$long_name" "grafana,${long_name}" . ..; do
+  status=0
+  "$MCP" launch-args claude "$bad" >/dev/null 2>&1 || status=$?
+  [[ $status -eq 64 ]] || fail "launch-args claude '$bad' exited $status, expected 64"
+done
 status=0
 "$MCP" bogus >/dev/null 2>&1 || status=$?
 [[ $status -eq 64 ]] || fail "unknown command exited $status"
 pass "launch_args_rejects_bad_names"
+
+# Names may start with ".", "_" or "-" and be up to 64 characters, as on the hub.
+max_name="$(printf 'b%.0s' $(seq 1 64))"
+for odd in _x .dot -dash "$max_name"; do
+  cp "${MCP_DIR}/slack.json" "${MCP_DIR}/${odd}.json"
+done
+python3 - "$("$MCP" list --json)" "$max_name" <<'PY' || fail "list hides names allowed on the hub: $("$MCP" list --json)"
+import json, sys
+names = [s["name"] for s in json.loads(sys.argv[1])]
+for n in ("_x", ".dot", "-dash", sys.argv[2]):
+    assert n in names, (n, names)
+PY
+eval "set -- $("$MCP" launch-args claude "_x,.dot,-dash,${max_name}")"
+[[ "$*" == "--strict-mcp-config --mcp-config ${MCP_DIR}/_x.json --mcp-config ${MCP_DIR}/.dot.json --mcp-config ${MCP_DIR}/-dash.json --mcp-config ${MCP_DIR}/${max_name}.json" ]] \
+  || fail "claude launch args for hub-valid names: $*"
+for odd in _x .dot -dash "$max_name"; do rm "${MCP_DIR}/${odd}.json"; done
+pass "names_match_the_hub_rule"
 
 [[ ! -e "${SANDBOX}/guard.log" ]] || fail "a test reached a real binary: $(cat "${SANDBOX}/guard.log")"
 echo "All ${passes} todo script tests passed."

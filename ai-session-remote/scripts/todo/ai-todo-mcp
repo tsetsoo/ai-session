@@ -36,7 +36,6 @@
 export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/sbin:/sbin:$PATH"
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
 exec python3 - "$@" <<'PY'
-import glob
 import json
 import os
 import re
@@ -48,7 +47,8 @@ MCP_DIR = os.path.join(HOME, ".ai-remote", "mcp")
 CODEX_CONFIG = os.path.join(os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex"), "config.toml")
 USAGE = ("usage: ai-todo-mcp list [--json]\n"
          "       ai-todo-mcp launch-args <claude|codex> <comma-separated names>")
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+# The hub and the app use the same rule; "." and ".." are never names.
+NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 # A key Codex's -c can address without quoting.
 BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -68,6 +68,10 @@ def die(message, code=64):
 
 class Unusable(Exception):
     """The server file can't be used; the message is the short reason."""
+
+
+def valid_name(name):
+    return NAME_RE.fullmatch(name) is not None and name not in (".", "..")
 
 
 def path_for(name):
@@ -121,9 +125,13 @@ def summary_of(entry):
 
 def list_servers(as_json):
     rows = []
-    for path in sorted(glob.glob(os.path.join(MCP_DIR, "*.json"))):
-        name = os.path.basename(path)[: -len(".json")]
-        if not NAME_RE.match(name):
+    try:
+        files = os.listdir(MCP_DIR)
+    except OSError:
+        files = []
+    # Not glob: it skips names that start with ".".
+    for name in sorted(f[: -len(".json")] for f in files if f.endswith(".json")):
+        if not valid_name(name):
             continue
         try:
             _, entry = load(name)
@@ -212,7 +220,7 @@ def launch_args(tool, csv):
     for name in (n.strip() for n in csv.split(",")):
         if not name:
             continue
-        if not NAME_RE.match(name):
+        if not valid_name(name):
             die(f"ai-todo-mcp: not a server name: {name!r}")
         if name not in names:
             names.append(name)
