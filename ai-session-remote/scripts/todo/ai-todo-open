@@ -45,6 +45,7 @@
 #   AI_TODO_CLAUDE_JOBS  background job directory instead of ~/.claude/jobs
 #   AI_TODO_HOOK_BIN     ai-todo-hook path instead of the one next to this script
 #   AI_TODO_HUB_CONF     hub config instead of ~/.ai-remote/todo-hub.conf (for --mcp reports)
+#   AI_TODO_MCP_REPORT_DELAY  seconds between --mcp report attempts after a 404 (default 2)
 set -eu
 
 # Non-interactive SSH sessions often lack Homebrew paths; match TmuxCommandBuilder.
@@ -362,13 +363,21 @@ report_mcp() { # <session id>
     . "$conf" 2>/dev/null || exit 0
     [ -n "$TODO_HUB_URL" ] || exit 0
     body=$(printf '{"tool":"%s","session_id":"%s","mcp_servers":[%s]}' "$tool" "$1" "$mcp_json")
-    {
-      if [ -n "$TODO_API_TOKEN" ]; then
-        printf 'header = "Authorization: Bearer %s"\n' "$TODO_API_TOKEN"
-      fi
-    } | curl -s -o /dev/null --connect-timeout 2 --max-time 3 -K - \
-      -H 'Content-Type: application/json' --data-binary "$body" \
-      "${TODO_HUB_URL%/}/api/conversations/mcp"
+    # A fresh conversation's id reaches the hub only after the app reads `created <id>`,
+    # so the hub may not know it yet (404): try again a few times.
+    attempt=1
+    while :; do
+      code=$({
+        if [ -n "$TODO_API_TOKEN" ]; then
+          printf 'header = "Authorization: Bearer %s"\n' "$TODO_API_TOKEN"
+        fi
+      } | curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 -K - \
+        -H 'Content-Type: application/json' --data-binary "$body" \
+        "${TODO_HUB_URL%/}/api/conversations/mcp")
+      [ "$code" = 404 ] && [ "$attempt" -lt 5 ] || break
+      attempt=$((attempt + 1))
+      sleep "${AI_TODO_MCP_REPORT_DELAY:-2}"
+    done
   ) </dev/null >/dev/null 2>&1 &
 }
 

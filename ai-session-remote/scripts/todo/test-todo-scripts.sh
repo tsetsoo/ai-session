@@ -867,6 +867,9 @@ log_path, port_path = sys.argv[1], sys.argv[2]
 # When this file exists, the next post writes "now + 1" into the file it names: a keystroke
 # in the conversation right after the hook posted (for the waiting re-check test).
 touch_on_post = os.path.join(os.path.dirname(log_path), "touch-on-post")
+# When this file exists, the next post is answered 404 (and the file removed): a session id
+# the hub doesn't know yet.
+not_found_once = os.path.join(os.path.dirname(log_path), "not-found-once")
 
 class Hub(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -884,6 +887,11 @@ class Hub(BaseHTTPRequestHandler):
             os.remove(touch_on_post)
             with open(target, "w") as f:
                 f.write(str(int(time.time()) + 1))
+        if os.path.exists(not_found_once):
+            os.remove(not_found_once)
+            self.send_response(404)
+            self.end_headers()
+            return
         self.send_response(204)
         self.end_headers()
 
@@ -3034,15 +3042,28 @@ echo '$META_CLI' > "\$HOME/.codex/sessions/2026/10/25/rollout-2026-10-25T00-00-0
 exec "$MCP_TOOL" "\$@"
 EOF
 chmod +x "$MCP_FRESH"
+# The app stores a fresh conversation's id on the hub only after it reads `created <id>`,
+# so the first report can get a 404: the script tries again.
 posts=$(mcp_posts)
 lines=$(wc -l <"$MCP_ARGV")
-out="$(CODEX_HOME="$MCP_CODEX" AI_TODO_CODEX_BIN="$MCP_FRESH" open_mcp --mcp slack "ai/codex/todo-mcp3" '~/programming' - codex)"
+: >"${SANDBOX}/not-found-once"
+out="$(CODEX_HOME="$MCP_CODEX" AI_TODO_CODEX_BIN="$MCP_FRESH" AI_TODO_MCP_REPORT_DELAY=0.2 \
+  open_mcp --mcp slack "ai/codex/todo-mcp3" '~/programming' - codex)"
 [[ "$out" == "created NEWMCPX" ]] || fail "fresh codex with --mcp printed '$out'"
 wait_for_argv_lines $((lines + 1))
 [[ "$(tail -n 1 "$MCP_ARGV")" == "[-c]"*'[-c][mcp_servers.slack.command="/bin/sh"]'* ]] || fail "fresh codex argv: $(tail -n 1 "$MCP_ARGV")"
-wait_for_mcp_posts $((posts + 1))
-[[ "$(last_mcp_post)" == 'Bearer s3cret {"mcp_servers":["slack"],"session_id":"NEWMCPX","tool":"codex"}' ]] \
-  || fail "fresh codex MCP report: $(last_mcp_post)"
+wait_for_mcp_posts $((posts + 2))
+[[ ! -e "${SANDBOX}/not-found-once" ]] || fail "the fake hub never answered 404"
+python3 - "$HUB_LOG" <<'PY2' || fail "fresh codex MCP reports: $(tail -n 2 "$HUB_LOG")"
+import json, sys
+reqs = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+last = [r for r in reqs if r["path"] == "/api/conversations/mcp"][-2:]
+want = {"tool": "codex", "session_id": "NEWMCPX", "mcp_servers": ["slack"]}
+assert [r["body"] for r in last] == [want, want], last
+assert all(r["auth"] == "Bearer s3cret" for r in last), last
+PY2
+sleep 0.6
+[[ $(mcp_posts) -eq $((posts + 2)) ]] || fail "the report was retried after the hub accepted it: $(mcp_posts) posts"
 pass "open_codex_new_reports_after_id"
 
 posts=$(mcp_posts)
