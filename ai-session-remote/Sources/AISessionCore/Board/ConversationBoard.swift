@@ -33,6 +33,9 @@ public final class ConversationBoard: Sendable {
         var closedConversations: [Conversation] = []
         var newer: [Conversation] = []
         var changedByListKey: [String: Date] = [:]
+        // The lists and counts leave out a conversation whose todo isn't loaded (an archived
+        // todo): its row would have no title to show. Its status is still known.
+        let todoIDs = Set(todos.lazy.map(\.id))
 
         for conversation in conversations.values {
             let changed = Self.changeDate(conversation)
@@ -41,7 +44,9 @@ public final class ConversationBoard: Sendable {
             let status = ConversationDisplayStatus(conversation.status, tmuxAlive: alive)
             statusByListKey[conversation.listKey] = status
             byTodo[conversation.todoId, default: []].append((conversation, status))
-            if status == .closed {
+            if !todoIDs.contains(conversation.todoId) {
+                // Not listed.
+            } else if status == .closed {
                 closedConversations.append(conversation)
             } else {
                 open.append((conversation, status))

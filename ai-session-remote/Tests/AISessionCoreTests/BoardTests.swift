@@ -12,8 +12,16 @@ final class BoardTests: XCTestCase {
                      tmuxName: tmux ?? "t-\(todo)", sessionId: "s-\(todo)", status: status, createdAt: created)
     }
 
-    private func board(_ convs: [Conversation], todos: [Todo] = [], live: [String: Set<String>] = [:]) -> ConversationBoard {
-        ConversationBoard(todos: todos, conversations: Dictionary(uniqueKeysWithValues: convs.map { ($0.id, $0) }), liveTmux: live)
+    /// An open todo for each id, so the board lists their conversations.
+    private func todos(_ ids: String...) -> [Todo] {
+        ids.map { Todo(id: $0, section: .sp, title: $0) }
+    }
+
+    /// Without `todos`, each conversation gets an open todo.
+    private func board(_ convs: [Conversation], todos: [Todo]? = nil, live: [String: Set<String>] = [:]) -> ConversationBoard {
+        let todos = todos ?? Set(convs.map(\.todoId)).map { Todo(id: $0, section: .sp, title: $0) }
+        return ConversationBoard(todos: todos, conversations: Dictionary(uniqueKeysWithValues: convs.map { ($0.id, $0) }),
+                                 liveTmux: live)
     }
 
     func testBoardListsBothConversations() {
@@ -57,7 +65,7 @@ final class BoardTests: XCTestCase {
         var reported = conv("rep", .waiting, created: "2026-10-16T10:00:00Z")
         reported.statusUpdatedAt = "2026-10-16 10:40:00"    // the hub's SQLite spelling
         let b = ConversationBoard(
-            todos: [], conversations: ["new": started, "old": old, "rep": reported],
+            todos: todos("new", "old", "rep"), conversations: ["new": started, "old": old, "rep": reported],
             liveTmux: ["m1": []], listedAt: ["m1": listed]
         )
         // Started or reported after the listing: trust the hub until listed again.
@@ -74,7 +82,7 @@ final class BoardTests: XCTestCase {
     func testListedConversationIsNeverNewerThanListing() {
         let listed = HubDates.date(from: "2026-10-16T10:30:00Z")!
         let b = ConversationBoard(
-            todos: [], conversations: ["a": conv("a", .busy, created: "2026-10-16T10:45:00Z")],
+            todos: todos("a"), conversations: ["a": conv("a", .busy, created: "2026-10-16T10:45:00Z")],
             liveTmux: ["m1": ["t-a"]], listedAt: ["m1": listed]
         )
         XCTAssertEqual(b.status(forTodo: "a"), .working)
@@ -137,7 +145,8 @@ final class BoardTests: XCTestCase {
     func testSectionCountsAndRunning() {
         let todos = [Todo(id: "a", section: .sp, title: "A"),
                      Todo(id: "b", section: .sp, title: "B", completed: true),
-                     Todo(id: "c", section: .i, title: "C")]
+                     Todo(id: "c", section: .i, title: "C"),
+                     Todo(id: "x", section: .p, title: "X", completed: true)]
         let b = board([conv("a", .waiting), conv("c", .busy), conv("x", .busy, computer: box)], todos: todos)
         XCTAssertEqual(b.openTodoCount(.sp), 1)
         XCTAssertEqual(b.openTodoCount(.i), 1)
@@ -148,6 +157,22 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(b.openCount(computerID: "m2"), 1)
         XCTAssertEqual(b.needsYouCount(computerID: "m1"), 1)
         XCTAssertEqual(b.needsYouCount(computerID: "m2"), 0)
+    }
+
+    /// An archived todo isn't loaded: its conversations leave the lists and counts, but
+    /// their status is still known (an archived todo opened from a project).
+    func testConversationOfUnloadedTodoIsNotListed() {
+        let b = board([conv("kept", .idle), conv("archived", .idle), conv("archivedWait", .waiting),
+                       conv("archivedOld", .closed)],
+                      todos: todos("kept"), live: ["m1": ["t-kept", "t-archived", "t-archivedWait"]])
+        XCTAssertEqual(b.all.map(\.todoId), ["kept"])
+        XCTAssertEqual(b.review.map(\.todoId), ["kept"])
+        XCTAssertTrue(b.needsYou.isEmpty)
+        XCTAssertEqual(b.reviewCount(computerID: "m1"), 1)
+        XCTAssertEqual(b.needsYouCount(computerID: "m1"), 0)
+        XCTAssertEqual(b.openCount(computerID: "m1"), 1)
+        XCTAssertEqual(b.status(forTodo: "archivedWait"), .needsYou)
+        XCTAssertEqual(b.status(forTodo: "archivedOld"), .closed)
     }
 
     func testAllListsRunningThenClosedNewestFirst() {
@@ -177,7 +202,7 @@ final class BoardTests: XCTestCase {
         var reported = conv("rep", .waiting, created: "2026-10-16T10:00:00Z")
         reported.statusUpdatedAt = "2026-10-16 10:40:00"
         let fresh = ConversationBoard(
-            todos: [], conversations: ["new": started, "old": old, "rep": reported],
+            todos: todos("new", "old", "rep"), conversations: ["new": started, "old": old, "rep": reported],
             liveTmux: ["m1": []], listedAt: ["m1": listed]
         )
         assertAgrees(fresh)
@@ -187,7 +212,7 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(Set(fresh.newerThanListing.map(\.todoId)), ["new", "rep"])
 
         let present = ConversationBoard(
-            todos: [], conversations: ["a": conv("a", .busy, created: "2026-10-16T10:45:00Z")],
+            todos: todos("a"), conversations: ["a": conv("a", .busy, created: "2026-10-16T10:45:00Z")],
             liveTmux: ["m1": ["t-a"]], listedAt: ["m1": listed]
         )
         assertAgrees(present)
@@ -204,7 +229,8 @@ final class BoardTests: XCTestCase {
 
         let todos = [Todo(id: "a", section: .sp, title: "A"),
                      Todo(id: "b", section: .sp, title: "B", completed: true),
-                     Todo(id: "c", section: .i, title: "C")]
+                     Todo(id: "c", section: .i, title: "C"),
+                     Todo(id: "x", section: .p, title: "X", completed: true)]
         let counted = board([conv("a", .waiting), conv("c", .busy), conv("x", .busy, computer: box)], todos: todos)
         assertAgrees(counted, todos: todos)
         XCTAssertEqual(counted.openTodoCount(.sp), 1)
@@ -226,7 +252,7 @@ final class BoardTests: XCTestCase {
         var unparseable = conv("x", .busy, created: "not-a-date")
         unparseable.statusUpdatedAt = "also-not"
         let b = ConversationBoard(
-            todos: [],
+            todos: todos("u", "c", "x"),
             conversations: ["u": updatedLater, "c": createdLater, "x": unparseable],
             liveTmux: ["m1": []], listedAt: ["m1": listed]
         )
@@ -240,8 +266,10 @@ final class BoardTests: XCTestCase {
         assertAgrees(b)
     }
 
-    private func assertAgrees(_ board: ConversationBoard, todos: [Todo] = [],
+    /// Without `todos`, the board's todos are an open one per conversation (as `board(_:)` builds).
+    private func assertAgrees(_ board: ConversationBoard, todos: [Todo]? = nil,
                               file: StaticString = #filePath, line: UInt = #line) {
+        let todos = todos ?? Set(board.all.map(\.todoId)).map { Todo(id: $0, section: .sp, title: $0) }
         XCTAssertEqual(
             board.needsYou.map(\.todoId),
             board.open.filter { board.status(forTodo: $0.todoId) == .needsYou }.map(\.todoId),
