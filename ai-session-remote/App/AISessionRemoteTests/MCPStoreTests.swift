@@ -88,6 +88,16 @@ final class MCPStoreTests: XCTestCase {
         XCTAssertThrowsError(try RemoteConversations.mcpServers(from: garbled, computerName: "Mac"))
     }
 
+    func testRetryWithoutServersOnlyForExit64WithServers() {
+        let old = SSHExecResult(exitCode: 64, stdout: "", stderr: "usage")
+        XCTAssertTrue(TodoHubStore.shouldRetryWithoutServers(old, servers: ["a"], tool: "codex"))
+        XCTAssertTrue(TodoHubStore.shouldRetryWithoutServers(old, servers: [], tool: "codex"))
+        XCTAssertFalse(TodoHubStore.shouldRetryWithoutServers(old, servers: nil, tool: "codex"))
+        XCTAssertFalse(TodoHubStore.shouldRetryWithoutServers(old, servers: ["a"], tool: "cursor"))
+        let failed = SSHExecResult(exitCode: 1, stdout: "", stderr: "")
+        XCTAssertFalse(TodoHubStore.shouldRetryWithoutServers(failed, servers: ["a"], tool: "codex"))
+    }
+
     func testHasMCPListIsUnknownUntilListed() {
         XCTAssertNil(makeStore().hasMCPList(mac))
     }

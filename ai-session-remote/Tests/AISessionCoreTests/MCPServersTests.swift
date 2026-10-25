@@ -112,6 +112,21 @@ final class MCPServersTests: XCTestCase {
         XCTAssertFalse(cursor.contains("--mcp"))
     }
 
+    func testFreshTodoConversationMcpFlag() {
+        let base = TmuxCommandBuilder.freshTodoConversation(tmuxName: "n", cwd: "~/x", tool: "codex")
+        XCTAssertEqual(TmuxCommandBuilder.freshTodoConversation(tmuxName: "n", cwd: "~/x", tool: "codex", mcpServers: nil), base)
+        XCTAssertTrue(base.hasSuffix(#"AI_TODO_OPEN_DETACH=1 exec "$HOME/.ai-remote/bin/ai-todo-open" 'n' '~/x' - 'codex'"#), base)
+
+        let none = TmuxCommandBuilder.freshTodoConversation(tmuxName: "n", cwd: "~/x", tool: "codex", mcpServers: [])
+        XCTAssertTrue(none.hasSuffix(#"ai-todo-open" --mcp '' 'n' '~/x' - 'codex'"#), none)
+
+        let two = TmuxCommandBuilder.freshTodoConversation(tmuxName: "n", cwd: "~/x", tool: "codex", mcpServers: ["grafana", "slack"])
+        XCTAssertTrue(two.hasSuffix(#"ai-todo-open" --mcp 'grafana,slack' 'n' '~/x' - 'codex'"#), two)
+
+        let cursor = TmuxCommandBuilder.freshTodoConversation(tmuxName: "n", cwd: "~/x", tool: "cursor", mcpServers: ["a"])
+        XCTAssertFalse(cursor.contains("--mcp"))
+    }
+
     func testListMCPServersCommand() {
         XCTAssertTrue(TmuxCommandBuilder.listMCPServers().hasSuffix(#"exec "$HOME/.ai-remote/bin/ai-todo-mcp" list --json"#))
     }

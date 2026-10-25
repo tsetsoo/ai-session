@@ -153,9 +153,16 @@ public enum TmuxCommandBuilder {
 
     /// Starts a new Codex or Cursor conversation and prints `created <id>`. `-` tells the
     /// script the id does not exist yet. Detach returns as soon as the id appears.
-    public static func freshTodoConversation(tmuxName: String, cwd: String, tool: String) -> String {
-        let command = "AI_TODO_OPEN_DETACH=1 exec \"$HOME/.ai-remote/bin/ai-todo-open\" "
-            + "\(shellQuote(tmuxName)) \(shellQuote(cwd)) - \(shellQuote(tool))"
+    ///
+    /// `mcpServers` adds `--mcp <comma-joined names>` as the first argument, as in
+    /// `openTodoConversation` (none for cursor). This is the call that starts the tool, so it is
+    /// where the selection takes effect. `nil` leaves the command as before.
+    public static func freshTodoConversation(
+        tmuxName: String, cwd: String, tool: String, mcpServers: [String]? = nil
+    ) -> String {
+        var command = "AI_TODO_OPEN_DETACH=1 exec \"$HOME/.ai-remote/bin/ai-todo-open\" "
+        if let mcpServers, tool != "cursor" { command += "--mcp \(shellQuote(mcpServers.joined(separator: ","))) " }
+        command += "\(shellQuote(tmuxName)) \(shellQuote(cwd)) - \(shellQuote(tool))"
         return wrap(command)
     }
 

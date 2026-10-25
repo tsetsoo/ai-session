@@ -443,12 +443,21 @@ final class TodoHubStore {
                 throw TodoHubError.conflict("No \(tool) conversation appeared")
             }
             do {
-                let result = try await NIOSSHClient().exec(
+                let servers = conversation.mcpServers
+                var result = try await NIOSSHClient().exec(
                     config,
                     command: TmuxCommandBuilder.freshTodoConversation(
-                        tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool
+                        tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool, mcpServers: servers
                     )
                 )
+                if Self.shouldRetryWithoutServers(result, servers: servers, tool: tool) {
+                    result = try await NIOSSHClient().exec(
+                        config,
+                        command: TmuxCommandBuilder.freshTodoConversation(
+                            tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool
+                        )
+                    )
+                }
                 let created = ConversationStart.createdSessionId(from: result.stdout)
                 guard result.exitCode != 94, let created else {
                     let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -497,8 +506,13 @@ final class TodoHubStore {
             return try await captureNewSession(
                 created, config: config,
                 command: TmuxCommandBuilder.freshTodoConversation(
-                    tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool
-                )
+                    tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool,
+                    mcpServers: created.mcpServers
+                ),
+                fallbackCommand: Self.shouldOfferFallback(created)
+                    ? TmuxCommandBuilder.freshTodoConversation(
+                        tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool
+                    ) : nil
             )
         case let .captureFork(sourceSessionId):
             let arguments = ForkCommand.arguments(tool: created.tool, sessionId: sourceSessionId) ?? []
@@ -507,6 +521,16 @@ final class TodoHubStore {
                 command: Self.forkCommand(created, arguments: arguments)
             )
         }
+    }
+
+    /// Scripts installed before MCP support reject `--mcp` with exit 64. The start is then run
+    /// once more without it, as the conversation would have started before this feature.
+    static func shouldRetryWithoutServers(_ result: SSHExecResult, servers: [String]?, tool: String) -> Bool {
+        result.exitCode == 64 && servers != nil && tool != "cursor"
+    }
+
+    private static func shouldOfferFallback(_ conversation: Conversation) -> Bool {
+        conversation.mcpServers != nil && conversation.tool != "cursor"
     }
 
     /// The hub copies the source's MCP selection onto the new row, so the fork starts with the
@@ -518,11 +542,16 @@ final class TodoHubStore {
     }
 
     private func captureNewSession(
-        _ conversation: Conversation, config: HostConnectionConfig, command: String
+        _ conversation: Conversation, config: HostConnectionConfig, command: String,
+        fallbackCommand: String? = nil
     ) async throws -> Conversation {
         guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
         do {
-            let result = try await NIOSSHClient().exec(config, command: command)
+            var result = try await NIOSSHClient().exec(config, command: command)
+            if let fallbackCommand,
+               Self.shouldRetryWithoutServers(result, servers: conversation.mcpServers, tool: conversation.tool) {
+                result = try await NIOSSHClient().exec(config, command: fallbackCommand)
+            }
             let createdId = ConversationStart.createdSessionId(from: result.stdout)
             guard result.exitCode != 94, let createdId else {
                 let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
