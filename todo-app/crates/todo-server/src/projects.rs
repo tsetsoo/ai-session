@@ -11,18 +11,20 @@ use uuid::Uuid;
 
 use crate::broadcast::Broadcaster;
 use crate::conversations::{
-    bad_request, computer_at, conflict, not_found, server_error, valid_text, COMPUTER_COLS,
+    bad_request, computer_at, conflict, mcp_from_sql, mcp_to_sql, not_found, server_error, valid_text,
+    validate_mcp_option, COMPUTER_COLS,
 };
 use crate::db::DbPool;
 use crate::paths;
 
-/// Project columns with their counts (0..=11), then the computer (12..=18).
+/// Project columns with their counts (0..=11), `mcp_default` (12), then the computer (13..=20).
 const PROJECT_SELECT: &str = "SELECT p.id, p.name, p.section, p.folder, p.repo_url, p.digest_enabled, p.created_at, p.updated_at,
         (SELECT COUNT(*) FROM todos t WHERE t.project_id = p.id AND t.completed = 0),
         (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id),
         (SELECT COUNT(*) FROM memories x WHERE x.project_id = p.id AND x.archived = 0),
         (SELECT MAX(s.last_activity) FROM sessions s WHERE s.project_id = p.id),
-        m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at
+        p.mcp_default,
+        m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default
      FROM projects p
      JOIN section_computers sc ON sc.section = p.section
      JOIN computers m ON m.id = sc.computer_id";
@@ -55,7 +57,8 @@ fn row_to_project(row: &Row) -> rusqlite::Result<Project> {
         sessions: row.get(9)?,
         memories: row.get(10)?,
         last_activity: row.get(11)?,
-        computer: computer_at(row, 12)?,
+        mcp_default: mcp_from_sql(row, 12)?,
+        computer: computer_at(row, 13)?,
     })
 }
 
@@ -303,6 +306,12 @@ pub(crate) fn create_project_db(conn: &Connection, req: &CreateProjectRequest) -
 
 pub(crate) fn update_project_db(conn: &Connection, id: &str, req: &UpdateProjectRequest) -> Result<Project, ProjectError> {
     let name = req.name.as_deref().map(checked_name).transpose()?;
+    let mcp_default = req
+        .mcp_default
+        .clone()
+        .map(validate_mcp_option)
+        .transpose()
+        .map_err(|_| ProjectError::BadRequest("invalid MCP server name"))?;
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let existing = load_project(&tx, id)?.ok_or(ProjectError::NotFound("Project not found"))?;
     let section = existing.section.as_str();
@@ -322,14 +331,17 @@ pub(crate) fn update_project_db(conn: &Connection, id: &str, req: &UpdateProject
             folder = COALESCE(?2, folder),
             repo_url = CASE WHEN ?3 THEN ?4 ELSE repo_url END,
             digest_enabled = COALESCE(?5, digest_enabled),
+            mcp_default = CASE WHEN ?6 THEN ?7 ELSE mcp_default END,
             updated_at = datetime('now')
-         WHERE id = ?6",
+         WHERE id = ?8",
         params![
             name,
             folder,
             req.repo_url.is_some(),
             clean_url(req.repo_url.as_ref().and_then(|u| u.as_deref())),
             req.digest_enabled,
+            mcp_default.is_some(),
+            mcp_default.as_ref().and_then(|d| mcp_to_sql(d.as_deref())),
             id
         ],
     )?;
@@ -576,6 +588,27 @@ mod tests {
         let (status, body) = create(pool, computer, folder).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         body["id"].as_str().unwrap().to_string()
+    }
+
+    #[actix_web::test]
+    async fn project_mcp_default_update_and_clear() {
+        let (_db, pool) = pool("proj-mcp");
+        let conn = pool.get().unwrap();
+        seed_computers(&conn);
+        drop(conn);
+        let id = create_ok(&pool, "Si", "~/programming/sigma-revenue").await;
+        let uri = format!("/api/projects/{id}");
+        let (status, body) = patch(&pool, &uri, json!({"mcp_default": ["grafana", "slack"]})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["mcp_default"], json!(["grafana", "slack"]));
+        let (_, body) = patch(&pool, &uri, json!({"name": "renamed"})).await;
+        assert_eq!(body["mcp_default"], json!(["grafana", "slack"]), "absent leaves it unchanged");
+        let (_, body) = patch(&pool, &uri, json!({"mcp_default": []})).await;
+        assert_eq!(body["mcp_default"], json!([]));
+        let (_, body) = patch(&pool, &uri, json!({"mcp_default": null})).await;
+        assert!(body.get("mcp_default").is_none());
+        let (status, _) = patch(&pool, &uri, json!({"mcp_default": ["../x"]})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[actix_web::test]

@@ -255,6 +255,9 @@ pub struct Computer {
     pub username: String,
     pub created_at: String,
     pub updated_at: String,
+    /// MCP server names ticked by default for new conversations on this computer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_default: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -276,6 +279,9 @@ pub struct UpdateComputerRequest {
     pub port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// `null` clears the default.
+    #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
+    pub mcp_default: Option<Option<Vec<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,6 +298,23 @@ pub struct SetSectionComputerRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenConversationRequest {
     pub tool: String,
+    /// MCP server names for a conversation this call creates; ignored when it already exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Vec<String>>,
+}
+
+/// Replace a conversation's MCP selection. `null` means no selection was made.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetConversationMcpRequest {
+    pub mcp_servers: Option<Vec<String>>,
+}
+
+/// Sent by the host script after it starts a conversation: the servers it actually passed.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReportConversationMcpRequest {
+    pub tool: String,
+    pub session_id: String,
+    pub mcp_servers: Vec<String>,
 }
 
 /// Copy one conversation of a todo into another (or the same) tool.
@@ -335,6 +358,9 @@ pub struct Conversation {
     /// Name given when this conversation was duplicated. Absent on the original.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// MCP servers selected for this conversation. Absent when no selection was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Vec<String>>,
 }
 
 /// Sent by the status hooks on the computer. Either key identifies the conversation;
@@ -436,6 +462,9 @@ pub struct Project {
     /// Latest `last_activity` of the project's sessions
     #[serde(default)]
     pub last_activity: Option<String>,
+    /// MCP server names ticked by default for new conversations in this project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_default: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -460,6 +489,9 @@ pub struct UpdateProjectRequest {
     pub repo_url: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest_enabled: Option<bool>,
+    /// `null` clears the default.
+    #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
+    pub mcp_default: Option<Option<Vec<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

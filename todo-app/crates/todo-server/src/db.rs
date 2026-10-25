@@ -91,7 +91,8 @@ pub fn init_pool(db_path: &str) -> DbPool {
             port       INTEGER NOT NULL DEFAULT 22,
             username   TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            mcp_default TEXT
         );",
     )
     .expect("Failed to create computers table");
@@ -183,7 +184,8 @@ fn conversations_ddl(table: &str) -> String {
             status_message    TEXT,
             status_updated_at TEXT,
             created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-            label             TEXT
+            label             TEXT,
+            mcp_servers       TEXT
         )"
     )
 }
@@ -198,6 +200,7 @@ pub(crate) fn projects_ddl() -> &'static str {
         digest_enabled INTEGER NOT NULL DEFAULT 1,
         created_at     TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        mcp_default    TEXT,
         UNIQUE(section, folder)
     )"
 }
@@ -324,9 +327,11 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///   session ids may be null until Codex or Cursor reports one; every todo has a project
 /// - v6: a conversation has its own `id`; `todo_id` is no longer the primary key; `label`
 ///   is an optional name for a duplicate
+/// - v7: `conversations.mcp_servers`, `projects.mcp_default`, `computers.mcp_default`: JSON
+///   arrays of MCP server names, NULL when nothing was chosen (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -339,6 +344,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if conversations.as_deref().is_some_and(|sql| sql.contains("mcp_servers")) {
+        return Ok(7);
     }
     if conversations.as_deref().is_some_and(|sql| sql.contains("label")) {
         return Ok(6);
@@ -400,10 +408,30 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 5 {
         if !backed_up {
             backup_before_migration(conn, db_path, 6)?;
+            backed_up = true;
         }
         migrate_v5_to_v6(conn)?;
+        version = 6;
+    }
+    if version == 6 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 7)?;
+        }
+        migrate_v6_to_v7(conn)?;
     }
     Ok(())
+}
+
+/// v6 → v7. MCP server selections: three nullable JSON columns. A step that rebuilt a
+/// table from the current DDL may already have a column, so each is added only if missing.
+fn migrate_v6_to_v7(conn: &Connection) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for (table, column) in [("conversations", "mcp_servers"), ("projects", "mcp_default"), ("computers", "mcp_default")] {
+        if !column_exists(&tx, table, column)? {
+            tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT;"))?;
+        }
+    }
+    tx.commit()
 }
 
 /// v5 → v6. A todo can have many conversations. Each row gets its own id. Existing
@@ -1500,7 +1528,7 @@ mod tests {
 
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         let row: (String, String, String, Option<String>, String) = conn
             .query_row(
                 "SELECT todo_id, tool, tmux_name, label, id FROM conversations WHERE session_id = 'sess-1'",
@@ -1523,6 +1551,36 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM conversations WHERE todo_id = 't1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn migrates_v6_to_v7_adds_null_mcp_columns() {
+        let db = TestDb::new("migrate-v7");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        // A v6 database: the current tables without the v7 columns.
+        conn.execute_batch(
+            "ALTER TABLE conversations DROP COLUMN mcp_servers;
+             ALTER TABLE projects DROP COLUMN mcp_default;
+             ALTER TABLE computers DROP COLUMN mcp_default;
+             INSERT INTO computers (id, name, hostname, username) VALUES ('mac', 'Mac', 'mac.tailnet', 'me');
+             INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'prog', 'I', '~/programming');
+             INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'I', 'todo', 'p1');
+             INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id)
+                 VALUES ('c1', 't1', 'mac', '~/programming', 'claude', 'ai/claude/todo-t1', 's1');
+             PRAGMA user_version = 6;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 7);
+        assert_eq!(db.backups().len(), 1, "migrating backs up first");
+        let read = |sql: &str| -> Option<String> { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(read("SELECT mcp_servers FROM conversations WHERE id = 'c1'"), None);
+        assert_eq!(read("SELECT mcp_default FROM projects WHERE id = 'p1'"), None);
+        assert_eq!(read("SELECT mcp_default FROM computers WHERE id = 'mac'"), None);
     }
 
     #[test]

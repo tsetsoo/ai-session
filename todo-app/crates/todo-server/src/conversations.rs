@@ -13,7 +13,7 @@ use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transactio
 use todo_shared::{
     Computer, Conversation, ConversationStatus, ConversationStatusRequest, CreateComputerRequest, DeleteResponse,
     DuplicateConversationRequest, Importance, LinkConversationRequest, OpenConversationRequest, Section, SectionComputer,
-    SetConversationSessionRequest, SetSectionComputerRequest,
+    ReportConversationMcpRequest, SetConversationMcpRequest, SetConversationSessionRequest, SetSectionComputerRequest,
     TodoFromConversationRequest, TodoWithConversation, UpdateComputerRequest,
 };
 use uuid::Uuid;
@@ -28,20 +28,20 @@ use crate::push::{PushNotifier, Transition};
 /// Tools a conversation may use (matches `db::TOOLS_SQL`).
 pub(crate) const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
 
-pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at";
+pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at, mcp_default";
 
-/// Conversation columns (0..=10), its computer (11..=17), then whether its session is known
-/// and that session's project (18, 19).
+/// Conversation columns (0..=11), its computer (12..=19), then whether its session is known
+/// and that session's project (20, 21).
 const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
-        c.status_message, c.status_updated_at, c.created_at, c.label,
-        m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at,
+        c.status_message, c.status_updated_at, c.created_at, c.label, c.mcp_servers,
+        m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default,
         s.session_id IS NOT NULL, s.project_id
      FROM conversations c JOIN computers m ON m.id = c.computer_id
      LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id";
 
-/// Section mapping columns (0) followed by its computer (1..=7).
+/// Section mapping columns (0) followed by its computer (1..=8).
 const SECTION_COMPUTER_SELECT: &str = "SELECT s.section,
-        m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at
+        m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default
      FROM section_computers s JOIN computers m ON m.id = s.computer_id";
 
 pub(crate) fn error(status: actix_web::http::StatusCode, msg: impl ToString) -> HttpResponse {
@@ -64,6 +64,48 @@ pub(crate) fn conflict(msg: impl ToString) -> HttpResponse {
     error(actix_web::http::StatusCode::CONFLICT, msg)
 }
 
+/// Most MCP servers one selection may hold.
+const MAX_MCP_SERVERS: usize = 32;
+
+/// A selection of MCP server names: each `[A-Za-z0-9._-]{1,64}` (a file name stem under
+/// `~/.ai-remote/mcp/`, so never `.` or `..`), at most 32, duplicates dropped in first-seen order.
+pub(crate) fn validate_mcp_names(names: Vec<String>) -> Result<Vec<String>, String> {
+    const INVALID: &str = "invalid MCP server name";
+    if names.len() > MAX_MCP_SERVERS {
+        return Err(INVALID.into());
+    }
+    let mut kept: Vec<String> = Vec::with_capacity(names.len());
+    for name in names {
+        let valid = (1..=64).contains(&name.len())
+            && name != "."
+            && name != ".."
+            && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+        if !valid {
+            return Err(INVALID.into());
+        }
+        if !kept.contains(&name) {
+            kept.push(name);
+        }
+    }
+    Ok(kept)
+}
+
+/// Validate an optional selection (`None` stays `None`).
+pub(crate) fn validate_mcp_option(names: Option<Vec<String>>) -> Result<Option<Vec<String>>, String> {
+    names.map(validate_mcp_names).transpose()
+}
+
+/// A selection as stored: JSON text, NULL for none.
+pub(crate) fn mcp_to_sql(names: Option<&[String]>) -> Option<String> {
+    names.map(|n| serde_json::to_string(n).expect("a list of strings serializes"))
+}
+
+/// A stored selection; text that isn't a JSON list of strings reads as none.
+pub(crate) fn mcp_from_sql(row: &Row, idx: usize) -> rusqlite::Result<Option<Vec<String>>> {
+    let text: Option<String> = row.get(idx)?;
+    Ok(text.and_then(|t| serde_json::from_str(&t).ok()))
+}
+
 pub(crate) fn computer_at(row: &Row, start: usize) -> rusqlite::Result<Computer> {
     Ok(Computer {
         id: row.get(start)?,
@@ -73,6 +115,7 @@ pub(crate) fn computer_at(row: &Row, start: usize) -> rusqlite::Result<Computer>
         username: row.get(start + 4)?,
         created_at: row.get(start + 5)?,
         updated_at: row.get(start + 6)?,
+        mcp_default: mcp_from_sql(row, start + 7)?,
     })
 }
 
@@ -97,10 +140,11 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
         status_updated_at: row.get(8)?,
         created_at: row.get(9)?,
         label: row.get(10)?,
-        computer: computer_at(row, 11)?,
-        project_id: row.get(19)?,
+        mcp_servers: mcp_from_sql(row, 11)?,
+        computer: computer_at(row, 12)?,
+        project_id: row.get(21)?,
     };
-    Ok((conversation, row.get(18)?))
+    Ok((conversation, row.get(20)?))
 }
 
 /// A conversation whose session isn't known yet gets its project matched on the fly.
@@ -187,14 +231,26 @@ pub(crate) fn is_constraint_violation(e: &rusqlite::Error) -> bool {
 ///
 /// Runs in one IMMEDIATE transaction so it can't interleave with a concurrent
 /// close, status update or todo delete.
-pub(crate) fn open_conversation_db(conn: &Connection, todo_id: &str, tool: &str) -> Result<Conversation, OpenError> {
+///
+/// `mcp_servers` (already validated) is stored only when this call creates the row.
+pub(crate) fn open_conversation_db(
+    conn: &Connection,
+    todo_id: &str,
+    tool: &str,
+    mcp_servers: Option<&[String]>,
+) -> Result<Conversation, OpenError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let conversation = open_conversation_in(&tx, todo_id, tool)?;
+    let conversation = open_conversation_in(&tx, todo_id, tool, mcp_servers)?;
     tx.commit()?;
     Ok(conversation)
 }
 
-fn open_conversation_in(conn: &Connection, todo_id: &str, tool: &str) -> Result<Conversation, OpenError> {
+fn open_conversation_in(
+    conn: &Connection,
+    todo_id: &str,
+    tool: &str,
+    mcp_servers: Option<&[String]>,
+) -> Result<Conversation, OpenError> {
     let tool = tool.trim();
     if !SUPPORTED_TOOLS.contains(&tool) {
         return Err(OpenError::UnsupportedTool);
@@ -231,7 +287,7 @@ fn open_conversation_in(conn: &Connection, todo_id: &str, tool: &str) -> Result<
         .optional()?
         .ok_or(OpenError::NoProject)?;
     let session_id = (tool == "claude").then(|| Uuid::new_v4().to_string());
-    if insert_conversation(conn, todo_id, &computer_id, &cwd, tool, session_id.as_deref(), false, None)?.is_none() {
+    if insert_conversation(conn, todo_id, &computer_id, &cwd, tool, session_id.as_deref(), false, None, mcp_servers)?.is_none() {
         return Err(OpenError::NoTmuxName);
     }
     load_conversation(conn, todo_id)?.ok_or(OpenError::TodoNotFound)
@@ -275,6 +331,7 @@ fn duplicate_in(conn: &Connection, todo_id: &str, source_id: &str, tool: &str, l
         session_id.as_deref(),
         true,
         Some(label),
+        source.mcp_servers.as_deref(),
     )?
     else {
         return Err(OpenError::NoTmuxName);
@@ -376,15 +433,16 @@ fn insert_conversation(
     session_id: Option<&str>,
     replacing: bool,
     label: Option<&str>,
+    mcp_servers: Option<&[String]>,
 ) -> rusqlite::Result<Option<String>> {
     let Some(name) = pick_tmux_name(conn, tool, todo_id, session_id.unwrap_or(""), replacing)? else {
         return Ok(None);
     };
     let id = Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, label)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![id, todo_id, computer_id, cwd, tool, name, session_id, label],
+        "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, label, mcp_servers)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![id, todo_id, computer_id, cwd, tool, name, session_id, label, mcp_to_sql(mcp_servers)],
     )?;
     Ok(Some(id))
 }
@@ -510,7 +568,7 @@ pub(crate) fn link_conversation_db(
         tx.execute("DELETE FROM conversations WHERE id = ?1", params![existing.id])?;
         replacing = true;
     }
-    match insert_conversation(&tx, todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), replacing, None) {
+    match insert_conversation(&tx, todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), replacing, None, None) {
         Ok(Some(_)) => {}
         Ok(None) => return Err(LinkError::NoTmuxName),
         Err(e) => return Err(link_insert_error(&tx, e, todo_id, target)),
@@ -556,7 +614,7 @@ pub(crate) fn todo_from_conversation_db(
         return Err(LinkError::SectionMismatch);
     }
     let todo_id = insert_todo(&tx, new.section, new.title, new.importance, new.due_date, Some(project_id))?;
-    match insert_conversation(&tx, &todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), false, None) {
+    match insert_conversation(&tx, &todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), false, None, None) {
         Ok(Some(_)) => {}
         Ok(None) => return Err(LinkError::NoTmuxName),
         Err(e) => return Err(link_insert_error(&tx, e, &todo_id, target)),
@@ -701,6 +759,10 @@ pub async fn update_computer(
     if !valid_port(body.port) {
         return bad_request("port must be 1-65535");
     }
+    let mcp_default = match body.mcp_default.clone().map(validate_mcp_option).transpose() {
+        Ok(names) => names,
+        Err(msg) => return bad_request(&msg),
+    };
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
@@ -711,13 +773,16 @@ pub async fn update_computer(
             hostname = COALESCE(?2, hostname),
             port = COALESCE(?3, port),
             username = COALESCE(?4, username),
+            mcp_default = CASE WHEN ?5 THEN ?6 ELSE mcp_default END,
             updated_at = datetime('now')
-         WHERE id = ?5",
+         WHERE id = ?7",
         params![
             body.name.as_deref().map(str::trim),
             body.hostname.as_deref().map(str::trim),
             body.port,
             body.username.as_deref().map(str::trim),
+            mcp_default.is_some(),
+            mcp_default.as_ref().and_then(|d| mcp_to_sql(d.as_deref())),
             id
         ],
     );
@@ -940,7 +1005,11 @@ pub async fn open_conversation(
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match open_conversation_db(&conn, &path.into_inner(), &body.tool) {
+    let mcp_servers = match validate_mcp_option(body.mcp_servers.clone()) {
+        Ok(names) => names,
+        Err(msg) => return bad_request(&msg),
+    };
+    match open_conversation_db(&conn, &path.into_inner(), &body.tool, mcp_servers.as_deref()) {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)
@@ -1198,6 +1267,66 @@ pub async fn set_conversation_session_by_id(
     }
 }
 
+/// Replace a conversation's MCP selection (`null` clears it).
+pub async fn set_conversation_mcp_by_id(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<SetConversationMcpRequest>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let mcp_servers = match validate_mcp_option(body.mcp_servers.clone()) {
+        Ok(names) => names,
+        Err(msg) => return bad_request(&msg),
+    };
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    let id = path.into_inner();
+    match conn.execute(
+        "UPDATE conversations SET mcp_servers = ?1 WHERE id = ?2",
+        params![mcp_to_sql(mcp_servers.as_deref()), id],
+    ) {
+        Ok(0) => return not_found("Conversation not found"),
+        Ok(_) => {}
+        Err(e) => return server_error(e),
+    }
+    broadcaster.send();
+    match load_conversation_by_id(&conn, &id) {
+        Ok(Some(c)) => HttpResponse::Ok().json(c),
+        Ok(None) => not_found("Conversation not found"),
+        Err(e) => server_error(e),
+    }
+}
+
+/// The host script reports the servers it passed to a conversation, found by tool and
+/// session id. Unknown sessions get a 404, which the script ignores (like status hooks).
+pub async fn report_conversation_mcp(
+    pool: web::Data<DbPool>,
+    body: web::Json<ReportConversationMcpRequest>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let mcp_servers = match validate_mcp_names(body.mcp_servers.clone()) {
+        Ok(names) => names,
+        Err(msg) => return bad_request(&msg),
+    };
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match conn.execute(
+        "UPDATE conversations SET mcp_servers = ?1 WHERE tool = ?2 AND session_id = ?3",
+        params![mcp_to_sql(Some(&mcp_servers)), body.tool.trim(), body.session_id.trim()],
+    ) {
+        Ok(0) => not_found("Unknown session_id"),
+        Ok(_) => {
+            broadcaster.send();
+            HttpResponse::NoContent().finish()
+        }
+        Err(e) => server_error(e),
+    }
+}
+
 /// Status hook endpoint. Takes `session_id` or (older hooks) `claude_session_id`, plus an
 /// optional `tool` (default `claude`: hooks from before multi-tool support are Claude hooks).
 /// Unknown session ids (sessions that are not todo conversations) get a 404, which hooks ignore.
@@ -1292,6 +1421,7 @@ mod tests {
                 username: "me".into(),
                 created_at: String::new(),
                 updated_at: String::new(),
+                mcp_default: None,
             },
             cwd: "~/programming".into(),
             tool: "claude".into(),
@@ -1304,6 +1434,7 @@ mod tests {
             created_at: created.into(),
             project_id: None,
             label: None,
+            mcp_servers: None,
         }
     }
 
@@ -1421,6 +1552,148 @@ mod tests {
         assert!(kept.get("label").is_none() || kept["label"].is_null());
     }
 
+    use crate::test_support::{post as post_json, put as put_json};
+
+    #[actix_web::test]
+    async fn open_stores_mcp_only_when_creating() {
+        let (_db, pool) = crate::test_support::pool("mcp-open");
+        claude_on_mac(&pool).await;
+        // `claude_on_mac` already created t1's row without a selection; use a second todo.
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO todos (id, section, title, project_id) VALUES ('t2', 'P', 'two', 'p1')", [])
+            .unwrap();
+        drop(conn);
+        let first = post_json(
+            &pool,
+            "/api/todos/t2/conversation",
+            serde_json::json!({"tool": "claude", "mcp_servers": ["grafana", "slack", "grafana"]}),
+        )
+        .await
+        .1;
+        assert_eq!(first["mcp_servers"], serde_json::json!(["grafana", "slack"]));
+        let second = post_json(
+            &pool,
+            "/api/todos/t2/conversation",
+            serde_json::json!({"tool": "claude", "mcp_servers": ["x"]}),
+        )
+        .await
+        .1;
+        assert_eq!(second["mcp_servers"], serde_json::json!(["grafana", "slack"]));
+        assert_eq!(second["id"], first["id"]);
+    }
+
+    #[actix_web::test]
+    async fn duplicate_copies_mcp_servers() {
+        let (_db, pool) = crate::test_support::pool("mcp-dup");
+        claude_on_mac(&pool).await;
+        let conn = pool.get().unwrap();
+        conn.execute("UPDATE conversations SET mcp_servers = '[\"grafana\"]'", []).unwrap();
+        drop(conn);
+        let (_, rows) = crate::test_support::get(&pool, "/api/todos/t1/conversations").await;
+        let source_id = rows[0]["id"].as_str().unwrap().to_string();
+        let (status, created) = post_json(
+            &pool,
+            "/api/todos/t1/conversations",
+            serde_json::json!({"source_id": source_id, "tool": "codex", "label": "copy"}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{created}");
+        assert_eq!(created["mcp_servers"], serde_json::json!(["grafana"]));
+    }
+
+    #[actix_web::test]
+    async fn set_conversation_mcp_null_and_empty_differ() {
+        let (_db, pool) = crate::test_support::pool("mcp-set");
+        let source = claude_on_mac(&pool).await;
+        let uri = format!("/api/conversations/{}/mcp", source["id"].as_str().unwrap());
+        let (status, body) = put_json(&pool, &uri, serde_json::json!({"mcp_servers": []})).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{body}");
+        assert_eq!(body["mcp_servers"], serde_json::json!([]));
+        let (_, rows) = crate::test_support::get(&pool, "/api/todos/t1/conversations").await;
+        assert_eq!(rows[0]["mcp_servers"], serde_json::json!([]));
+        let (status, body) = put_json(&pool, &uri, serde_json::json!({"mcp_servers": null})).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{body}");
+        assert!(body.get("mcp_servers").is_none());
+        let (_, rows) = crate::test_support::get(&pool, "/api/todos/t1/conversations").await;
+        assert!(rows[0].get("mcp_servers").is_none());
+        let (status, _) = put_json(&pool, "/api/conversations/missing/mcp", serde_json::json!({"mcp_servers": []})).await;
+        assert_eq!(status, actix_web::http::StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn report_mcp_by_session() {
+        let (_db, pool) = crate::test_support::pool("mcp-report");
+        let source = claude_on_mac(&pool).await;
+        let session = source["session_id"].as_str().unwrap();
+        let (status, _) = post_json(
+            &pool,
+            "/api/conversations/mcp",
+            serde_json::json!({"tool": "claude", "session_id": session, "mcp_servers": ["grafana"]}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::NO_CONTENT);
+        let (_, rows) = crate::test_support::get(&pool, "/api/todos/t1/conversations").await;
+        assert_eq!(rows[0]["mcp_servers"], serde_json::json!(["grafana"]));
+        let (status, _) = post_json(
+            &pool,
+            "/api/conversations/mcp",
+            serde_json::json!({"tool": "claude", "session_id": "nope", "mcp_servers": ["grafana"]}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::NOT_FOUND);
+        let (status, _) = post_json(
+            &pool,
+            "/api/conversations/mcp",
+            serde_json::json!({"tool": "claude", "session_id": session, "mcp_servers": ["../x"]}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn rejects_bad_mcp_names() {
+        let (_db, pool) = crate::test_support::pool("mcp-bad");
+        let source = claude_on_mac(&pool).await;
+        let uri = format!("/api/conversations/{}/mcp", source["id"].as_str().unwrap());
+        let too_long = "a".repeat(65);
+        let too_many: Vec<String> = (0..33).map(|n| format!("s{n}")).collect();
+        for bad in [serde_json::json!(["../x"]), serde_json::json!([too_long]), serde_json::json!(too_many), serde_json::json!([""])] {
+            let (status, body) = put_json(&pool, &uri, serde_json::json!({"mcp_servers": bad})).await;
+            assert_eq!(status, actix_web::http::StatusCode::BAD_REQUEST, "{bad}");
+            assert_eq!(body["error"], "invalid MCP server name");
+        }
+        let (status, _) = post_json(
+            &pool,
+            "/api/todos/t1/conversation",
+            serde_json::json!({"tool": "claude", "mcp_servers": ["a/b"]}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::BAD_REQUEST);
+        let (status, _) = crate::test_support::patch(
+            &pool,
+            "/api/computers/mac",
+            serde_json::json!({"mcp_default": ["a b"]}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn computer_mcp_default_update_and_clear() {
+        let (_db, pool) = crate::test_support::pool("mcp-computer");
+        claude_on_mac(&pool).await;
+        let patch = crate::test_support::patch;
+        let (status, body) = patch(&pool, "/api/computers/mac", serde_json::json!({"mcp_default": ["grafana"]})).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{body}");
+        assert_eq!(body["mcp_default"], serde_json::json!(["grafana"]));
+        let (_, body) = patch(&pool, "/api/computers/mac", serde_json::json!({"name": "Renamed"})).await;
+        assert_eq!(body["mcp_default"], serde_json::json!(["grafana"]), "absent leaves it unchanged");
+        let (_, body) = patch(&pool, "/api/computers/mac", serde_json::json!({"mcp_default": []})).await;
+        assert_eq!(body["mcp_default"], serde_json::json!([]));
+        let (_, body) = patch(&pool, "/api/computers/mac", serde_json::json!({"mcp_default": null})).await;
+        assert!(body.get("mcp_default").is_none());
+    }
+
     #[actix_web::test]
     async fn delete_one_leaves_the_other() {
         let (_db, pool) = crate::test_support::pool("dup-del");
@@ -1468,7 +1741,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
 
-        let first = open_conversation_db(&conn, TODO, "claude").unwrap();
+        let first = open_conversation_db(&conn, TODO, "claude", None).unwrap();
         assert_eq!(first.tmux_name, "ai/claude/todo-0f3a9c21");
         assert_eq!(first.cwd, "~/programming");
         assert_eq!(first.computer.id, "m1");
@@ -1478,7 +1751,7 @@ mod tests {
 
         // Changing the section mapping does not move an existing conversation.
         conn.execute("UPDATE projects SET folder = '/elsewhere' WHERE id = 'p1'", []).unwrap();
-        let again = open_conversation_db(&conn, TODO, "claude").unwrap();
+        let again = open_conversation_db(&conn, TODO, "claude", None).unwrap();
         assert_eq!(again.claude_session_id, first.claude_session_id);
         assert_eq!(again.cwd, "~/programming");
     }
@@ -1488,8 +1761,8 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        assert!(matches!(open_conversation_db(&conn, "missing", "claude"), Err(OpenError::TodoNotFound)));
-        assert!(matches!(open_conversation_db(&conn, "t-p", "claude"), Err(OpenError::NoComputer(s)) if s == "P"));
+        assert!(matches!(open_conversation_db(&conn, "missing", "claude", None), Err(OpenError::TodoNotFound)));
+        assert!(matches!(open_conversation_db(&conn, "t-p", "claude", None), Err(OpenError::NoComputer(s)) if s == "P"));
     }
 
     #[test]
@@ -1502,8 +1775,8 @@ mod tests {
             [],
         )
         .unwrap();
-        open_conversation_db(&conn, TODO, "claude").unwrap();
-        let second = open_conversation_db(&conn, "0f3a9c21-ffff-4bbb-8ccc-000000000000", "claude").unwrap();
+        open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let second = open_conversation_db(&conn, "0f3a9c21-ffff-4bbb-8ccc-000000000000", "claude", None).unwrap();
         assert_eq!(second.tmux_name, "ai/claude/todo-0f3a9c21-ffff-4bbb-8ccc-000000000000");
     }
 
@@ -1514,7 +1787,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "claude").unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
         let writer = pool.get().unwrap();
         writer.execute_batch("BEGIN IMMEDIATE; UPDATE todos SET title = 'renamed' WHERE id = 'nope';").unwrap();
         let handle = std::thread::spawn(move || {
@@ -1532,7 +1805,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "claude").unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
         let busy = ConversationStatusRequest { status: ConversationStatus::Busy, ..Default::default() };
         let waiting = ConversationStatusRequest { status: ConversationStatus::Waiting, ..Default::default() };
         let first = set_status_db(&conn, "claude", &conv.session_id, &busy).unwrap().unwrap();
@@ -1548,7 +1821,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "claude").unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
 
         let req = ConversationStatusRequest {
             status: ConversationStatus::Waiting,
@@ -1567,7 +1840,7 @@ mod tests {
         assert_eq!(set_status_db(&conn, "claude", &conv.session_id, &late).unwrap(), None);
         assert_eq!(load_conversation(&conn, TODO).unwrap().unwrap().status, ConversationStatus::Closed);
 
-        let reopened = open_conversation_db(&conn, TODO, "claude").unwrap();
+        let reopened = open_conversation_db(&conn, TODO, "claude", None).unwrap();
         assert_eq!(reopened.status, ConversationStatus::Unknown);
         assert_eq!(reopened.claude_session_id, conv.claude_session_id);
     }
@@ -1577,7 +1850,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        open_conversation_db(&conn, TODO, "claude").unwrap();
+        open_conversation_db(&conn, TODO, "claude", None).unwrap();
 
         let err = conn.execute("DELETE FROM computers WHERE id = 'm1'", []).unwrap_err();
         assert!(is_constraint_violation(&err));
@@ -1617,7 +1890,7 @@ mod tests {
         // Linking the same conversation again is a no-op; opening keeps it.
         let again = link_conversation_db(&conn, TODO, &target("codex", "019f8b4e-ff53"), false).unwrap();
         assert_eq!(again.session_id, conv.session_id);
-        assert_eq!(open_conversation_db(&conn, TODO, "claude").unwrap().tool, "codex");
+        assert_eq!(open_conversation_db(&conn, TODO, "claude", None).unwrap().tool, "codex");
     }
 
     #[test]
@@ -1625,7 +1898,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let started = open_conversation_db(&conn, TODO, "claude").unwrap();
+        let started = open_conversation_db(&conn, TODO, "claude", None).unwrap();
         assert!(matches!(
             link_conversation_db(&conn, TODO, &target("claude", "other-id"), false),
             Err(LinkError::TodoHasConversation)
@@ -1680,12 +1953,12 @@ mod tests {
         link_conversation_db(&conn, TODO, &target("claude", "taken"), false).unwrap();
 
         // Insert the same (tool, session) for another todo, bypassing the pre-checks.
-        let err = insert_conversation(&conn, "t-2", "m1", "~", "claude", Some("taken"), false, None).unwrap_err();
+        let err = insert_conversation(&conn, "t-2", "m1", "~", "claude", Some("taken"), false, None, None).unwrap_err();
         assert!(matches!(
             link_insert_error(&conn, err, "t-2", &target("claude", "taken")),
             LinkError::SessionTaken(t) if t == TODO
         ));
-        let err = insert_conversation(&conn, "t-2", "missing-computer", "~", "codex", Some("x"), false, None).unwrap_err();
+        let err = insert_conversation(&conn, "t-2", "missing-computer", "~", "codex", Some("x"), false, None, None).unwrap_err();
         let nowhere = link_target("missing-computer", "codex", "x", "~").unwrap();
         assert!(matches!(link_insert_error(&conn, err, "t-2", &nowhere), LinkError::ComputerNotFound));
     }
@@ -1782,7 +2055,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "codex").unwrap();
+        let conv = open_conversation_db(&conn, TODO, "codex", None).unwrap();
         assert_eq!(conv.tool, "codex");
         assert!(conv.session_id.is_empty());
         assert_eq!(conv.cwd, "~/programming");
@@ -1798,7 +2071,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "claude").unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
         assert!(Uuid::parse_str(&conv.session_id).is_ok());
     }
 
@@ -1807,10 +2080,10 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        open_conversation_db(&conn, TODO, "codex").unwrap();
+        open_conversation_db(&conn, TODO, "codex", None).unwrap();
         let set = set_conversation_session_db(&conn, TODO, "019f8b4e").unwrap();
         assert_eq!(set.session_id, "019f8b4e");
-        let again = open_conversation_db(&conn, TODO, "claude").unwrap();
+        let again = open_conversation_db(&conn, TODO, "claude", None).unwrap();
         assert_eq!(again.session_id, "019f8b4e");
         assert_eq!(again.tool, "codex");
         let rows: i64 = conn.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0)).unwrap();
@@ -1822,8 +2095,8 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        assert!(matches!(open_conversation_db(&conn, TODO, "vim"), Err(OpenError::UnsupportedTool)));
-        assert!(matches!(open_conversation_db(&conn, TODO, ""), Err(OpenError::UnsupportedTool)));
+        assert!(matches!(open_conversation_db(&conn, TODO, "vim", None), Err(OpenError::UnsupportedTool)));
+        assert!(matches!(open_conversation_db(&conn, TODO, "", None), Err(OpenError::UnsupportedTool)));
     }
 
     #[test]

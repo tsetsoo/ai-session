@@ -181,7 +181,7 @@ fn base_description() -> Value {
                 "example_request": {"name": "Mac", "hostname": "mac.tailnet.ts.net", "port": 22, "username": "me"},
                 "response_status": 201
             },
-            {"method": "PATCH", "path": "/api/computers/{id}", "description": "Update name, hostname, port or username"},
+            {"method": "PATCH", "path": "/api/computers/{id}", "description": "Update name, hostname, port, username or mcp_default (array of MCP server names ticked by default for new conversations; null clears it). 400 for an invalid MCP server name"},
             {"method": "DELETE", "path": "/api/computers/{id}", "description": "Delete a computer; 409 while a section or conversation uses it"},
             {"method": "GET", "path": "/api/sections/computers", "description": "Section → computer mappings (sections without one are omitted)"},
             {
@@ -201,7 +201,7 @@ fn base_description() -> Value {
             {
                 "method": "POST",
                 "path": "/api/todos/{id}/conversation",
-                "description": "Get or create the todo's conversation. Body is {tool: claude|codex|cursor}. The computer is the section's; the folder is the project's. Claude stores a new session id. Codex and Cursor store none until PUT .../conversation/session. A second open returns the existing row unchanged. 400 for a missing or unknown tool, or a todo with no project. 409 if the section has no computer",
+                "description": "Get or create the todo's conversation. Body is {tool: claude|codex|cursor}. The computer is the section's; the folder is the project's. Claude stores a new session id. Codex and Cursor store none until PUT .../conversation/session. A second open returns the existing row unchanged. Optional mcp_servers (array of MCP server names) is stored only when this call creates the conversation; 400 for an invalid name. 400 for a missing or unknown tool, or a todo with no project. 409 if the section has no computer",
             },
             {
                 "method": "POST",
@@ -218,6 +218,18 @@ fn base_description() -> Value {
                 "description": "Create a todo linked to an existing conversation, atomically. project_id is required and stored in the same transaction; 400 when it is missing or the section disagrees, 404 when the project does not exist. 201 {todo, conversation}. Same 400/404/409 rules as link. Optional importance and due_date, as for POST /api/todos",
                 "example_request": {"section": "Sp", "title": "Review data-management PR 630", "project_id": "<uuid>", "computer_id": "<uuid>", "tool": "claude", "session_id": "<uuid>", "cwd": "~/Spread/Repository", "importance": "high"},
                 "response_status": 201
+            },
+            {
+                "method": "PUT",
+                "path": "/api/conversations/{id}/mcp",
+                "description": "Replace one conversation's MCP server selection. [] means none selected, null means no choice was made. Returns the Conversation. 400 for an invalid name (letters, digits, '.', '_', '-', 1-64 characters; at most 32; duplicates are dropped), 404 if unknown",
+                "example_request": {"mcp_servers": ["grafana", "slack"]}
+            },
+            {
+                "method": "POST",
+                "path": "/api/conversations/mcp",
+                "description": "Host-script report of the MCP servers a conversation was started with, found by tool and session_id. 204 on success, 404 when no conversation has that tool and session_id, 400 for an invalid name",
+                "example_request": {"tool": "claude", "session_id": "<uuid>", "mcp_servers": ["grafana"]}
             },
             {"method": "POST", "path": "/api/todos/{id}/conversation/close", "description": "Mark closed after the client killed the tmux session; the conversation stays resumable"},
             {"method": "DELETE", "path": "/api/todos/{id}/conversation", "description": "Forget the conversation link (the conversation itself stays on the computer). A later open starts a new one for the tool in the request"},
@@ -273,7 +285,7 @@ fn base_description() -> Value {
             },
             "Conversation": {
                 "todo_id": "string (UUID)",
-                "computer": "Computer {id, name, hostname, port, username, created_at, updated_at}",
+                "computer": "Computer {id, name, hostname, port, username, created_at, updated_at, mcp_default}",
                 "cwd": "string - working directory snapshot (may start with ~)",
                 "tool": "string enum: claude | codex | cursor",
                 "tmux_name": "string - ai/<tool>/todo-<first 8 chars of todo id>",
@@ -283,7 +295,8 @@ fn base_description() -> Value {
                 "status_message": "string or null",
                 "status_updated_at": "string (datetime) or null",
                 "created_at": "string (datetime)",
-                "project_id": "string or absent - the conversation's project (its session's, or matched from computer + cwd)"
+                "project_id": "string or absent - the conversation's project (its session's, or matched from computer + cwd)",
+                "mcp_servers": "string[] or absent - MCP server names selected for this conversation; absent when no selection was made"
             }
         },
         "usage_notes": [
@@ -324,7 +337,7 @@ fn project_endpoints() -> Vec<Value> {
         json!({
             "method": "PATCH",
             "path": "/api/projects/{id}",
-            "description": "Change any of name, folder, repo_url (null clears it) and digest_enabled. A new folder follows the same rules and 409s as on create, and re-matches the computer's conversations",
+            "description": "Change any of name, folder, repo_url (null clears it), digest_enabled and mcp_default (array of MCP server names ticked by default for new conversations; null clears it; 400 for an invalid name). A new folder follows the same rules and 409s as on create, and re-matches the computer's conversations",
             "example_request": {"folder": "~/programming/todo-app", "digest_enabled": false}
         }),
         json!({
@@ -570,6 +583,8 @@ mod tests {
             ("GET", "/api/projects/{id}"),
             ("PATCH", "/api/projects/{id}"),
             ("DELETE", "/api/projects/{id}"),
+            ("PUT", "/api/conversations/{id}/mcp"),
+            ("POST", "/api/conversations/mcp"),
             ("POST", "/api/sessions/stats"),
             ("GET", "/api/sessions"),
             ("PUT", "/api/sessions/{tool}/{session_id}/project"),
