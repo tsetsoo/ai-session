@@ -247,6 +247,28 @@ final class TmuxCommandBuilderTests: XCTestCase {
 }
 
 #if os(macOS)
+final class WrapPathTests: XCTestCase {
+    /// On macOS `/home` is an automount: a PATH entry there made every command lookup that
+    /// reached it a directory-service round trip.
+    func testWrappedPathHasHomebrewAndNothingUnderHome() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", TmuxCommandBuilder.wrap(#"printf '%s' "$PATH""#)]
+        process.environment = ["HOME": "/tmp", "PATH": "/usr/bin:/bin"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        process.waitUntilExit()
+        let dirs = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .split(separator: ":").map(String.init)
+        XCTAssertEqual(dirs.first, "/opt/homebrew/bin")
+        XCTAssertTrue(dirs.contains("/usr/bin"))
+        XCTAssertFalse(dirs.contains { $0.hasPrefix("/home/") }, "\(dirs)")
+    }
+}
+#endif
+
+#if os(macOS)
 /// Runs the duplicate's transcript and summary commands in `/bin/sh` against stand-ins for
 /// the helper, `python3` and `claude` under a temporary HOME, so each failure has its own code.
 final class TranscriptCommandTests: XCTestCase {

@@ -855,6 +855,30 @@ tmux -L "$PSOCK" kill-server >/dev/null 2>&1 || true
 grep -q "resume ${X_LINKED}" "$NODE_LOG" 2>/dev/null || fail "npm-installed codex couldn't find node inside an existing tmux server"
 pass "ai-todo-open passes the resolved PATH into new tmux sessions (nvm codex works with a running tmux server)"
 
+# Nested launches passed PATH on with the tool directories prepended again each time, and
+# on macOS every command lookup that reached a /home entry was an automount. The session
+# gets each directory once, the tool directories first, and nothing under /home on macOS.
+PATH_LOG="${SANDBOX}/session-path.log"
+printf '#!/bin/sh\nprintf "%%s\\n" "$PATH" >"%s"\nexec sleep 300\n' "$PATH_LOG" >"${SANDBOX}/path-claude"
+chmod +x "${SANDBOX}/path-claude"
+TMUX_DIR="$(dirname "$(command -v tmux)")"
+DUP_PATH="/usr/bin:/bin:${TMUX_DIR}:/usr/local/bin:${TMUX_DIR}:/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin"
+out="$(env PATH="$DUP_PATH" AI_TODO_CLAUDE_BIN="${SANDBOX}/path-claude" AI_TODO_TMUX_SOCKET="$PSOCK" AI_TODO_OPEN_DETACH=1 \
+  "$OPEN" "ai/claude/todo-pathdup" '~/programming' "77777777-1111-4222-8333-444444444444" claude)" \
+  || fail "ai-todo-open with a repeated PATH failed: $out"
+for _ in $(seq 1 50); do [[ -s "$PATH_LOG" ]] && break; sleep 0.1; done
+tmux -L "$PSOCK" kill-server >/dev/null 2>&1 || true
+python3 - "$PATH_LOG" "$(uname)" <<'PY' || fail "session PATH: $(cat "$PATH_LOG" 2>/dev/null)"
+import sys
+dirs = open(sys.argv[1]).read().strip().split(":")
+assert len(dirs) == len(set(dirs)), dirs
+assert dirs[0] == "/opt/homebrew/bin", dirs
+assert "/usr/bin" in dirs and "/bin" in dirs, dirs
+if sys.argv[2] == "Darwin":
+    assert not any(d.startswith("/home/") for d in dirs), dirs
+PY
+pass "ai-todo-open gives the session each PATH directory once, and nothing under /home on macOS"
+
 # --- ai-todo-hook -------------------------------------------------------------
 
 HUB_LOG="${SANDBOX}/hub.log"

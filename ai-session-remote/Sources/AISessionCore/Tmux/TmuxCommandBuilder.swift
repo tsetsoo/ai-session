@@ -2,8 +2,10 @@ public enum TmuxCommandBuilder {
     /// Non-interactive SSH sessions often omit Homebrew paths that login shells have
     /// (e.g. `/opt/homebrew/bin` on Apple Silicon). Prefix every remote command so
     /// `tmux` / `claude` / `codex` / `agent` resolve the same way as in a normal terminal.
+    /// Linuxbrew only off macOS (no `/System`): there `/home` is an automount, and every
+    /// command lookup that reached it cost a directory-service round trip.
     private static let pathExport =
-        #"export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH""#
+        #"export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"; [ -d /System ] || export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH""#
 
     /// A non-login SSH exec often has no UTF-8 locale. tmux then attaches with
     /// UTF-8 off and replaces Cyrillic, emoji, and other non-ASCII with `_`

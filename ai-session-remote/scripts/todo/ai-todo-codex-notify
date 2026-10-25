@@ -52,7 +52,24 @@ fi
 
 [ -n "$json" ] || exit 0
 
-export PATH="/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+# Tool directories a non-interactive SSH session often lacks, ahead of the rest, each
+# directory once. Copies piled up when launches nested (a tmux session started from
+# another inherits its PATH), and on macOS /home is an automount, so every command
+# lookup that reached a /home entry cost a directory-service round trip.
+ai_path=
+ai_ifs=$IFS
+IFS=:
+set -f
+for ai_dir in /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin /usr/local/bin "$HOME/.local/bin" /usr/sbin /sbin $PATH; do
+  [ -n "$ai_dir" ] || continue
+  case "$ai_dir" in /home/*) if [ -d /System ]; then continue; fi ;; esac
+  case ":$ai_path:" in *":$ai_dir:"*) continue ;; esac
+  ai_path=${ai_path:+$ai_path:}$ai_dir
+done
+set +f
+IFS=$ai_ifs
+export PATH="$ai_path"
+unset ai_path ai_ifs ai_dir
 
 conf=${AI_TODO_HUB_CONF:-$HOME/.ai-remote/todo-hub.conf}
 [ -r "$conf" ] || exit 0
