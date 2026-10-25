@@ -7,13 +7,15 @@ import SwiftUI
 struct MCPServerChecklist: View {
     let servers: [MCPServer]
     @Binding var selection: [String]?
-    /// Offers the top "Tool's own servers" row.
+    /// Offers the top row that means nil.
     let allowsUnmanaged: Bool
+    var unmanagedTitle = MCPServerListState.toolOwnTitle
+    var unmanagedDetail = "What the tool's own settings turn on"
 
     var body: some View {
         if allowsUnmanaged {
             Section {
-                row(title: "Tool's own servers", detail: "What the tool's own settings turn on", isOn: selection == nil) {
+                row(title: unmanagedTitle, detail: unmanagedDetail, isOn: selection == nil) {
                     selection = nil
                 }
             }
@@ -89,9 +91,11 @@ enum MCPServerListState: Equatable {
         }
     }
 
-    /// The ticked names in a line, for a row that opens the checklist.
-    static func summary(_ selection: [String]?) -> String {
-        guard let selection else { return "Tool's own servers" }
+    static let toolOwnTitle = "Tool's own servers"
+
+    /// The ticked names in a line, for a row that opens the checklist. `unmanaged` is what nil reads as.
+    static func summary(_ selection: [String]?, unmanaged: String = toolOwnTitle) -> String {
+        guard let selection else { return unmanaged }
         return selection.isEmpty ? "None" : selection.joined(separator: ", ")
     }
 
@@ -107,25 +111,34 @@ struct MCPServersSheet: View {
     let store: TodoHubStore
     let hosts: [HostEntity]
     let allowsUnmanaged: Bool
+    let unmanagedTitle: String
+    let unmanagedDetail: String
     let confirmTitle: String
     let onConfirm: ([String]?) -> Void
     let onCancel: () -> Void
 
+    /// What was saved, shown as plain text when the list can't be read.
+    private let stored: [String]?
     @State private var draft: [String]?
     @State private var state: MCPServerListState
 
     init(
         computer: Computer, store: TodoHubStore, hosts: [HostEntity], selection: [String]?,
-        allowsUnmanaged: Bool, list: MCPServerListState = .loading, confirmTitle: String,
+        allowsUnmanaged: Bool, unmanagedTitle: String = MCPServerListState.toolOwnTitle,
+        unmanagedDetail: String = "What the tool's own settings turn on",
+        list: MCPServerListState = .loading, confirmTitle: String,
         onConfirm: @escaping ([String]?) -> Void, onCancel: @escaping () -> Void
     ) {
         self.computer = computer
         self.store = store
         self.hosts = hosts
         self.allowsUnmanaged = allowsUnmanaged
+        self.unmanagedTitle = unmanagedTitle
+        self.unmanagedDetail = unmanagedDetail
         self.confirmTitle = confirmTitle
         self.onConfirm = onConfirm
         self.onCancel = onCancel
+        self.stored = selection
         _draft = State(initialValue: selection)
         _state = State(initialValue: list)
     }
@@ -171,7 +184,10 @@ struct MCPServersSheet: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case let .loaded(servers):
             Form {
-                MCPServerChecklist(servers: servers, selection: $draft, allowsUnmanaged: allowsUnmanaged)
+                MCPServerChecklist(
+                    servers: servers, selection: $draft, allowsUnmanaged: allowsUnmanaged,
+                    unmanagedTitle: unmanagedTitle, unmanagedDetail: unmanagedDetail
+                )
             }
             #if os(macOS)
             .formStyle(.grouped)
@@ -180,8 +196,16 @@ struct MCPServersSheet: View {
             FrameStateBlock(title: "No servers on \(computer.name)")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .failed:
-            FrameStateBlock(title: MCPServerListState.failureMessage(computer))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Form {
+                Section {
+                    LabeledContent("Saved", value: MCPServerListState.summary(stored, unmanaged: unmanagedTitle))
+                } footer: {
+                    Text(MCPServerListState.failureMessage(computer))
+                }
+            }
+            #if os(macOS)
+            .formStyle(.grouped)
+            #endif
         }
     }
 }

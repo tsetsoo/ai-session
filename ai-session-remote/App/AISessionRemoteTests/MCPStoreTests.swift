@@ -77,6 +77,20 @@ final class MCPStoreTests: XCTestCase {
         XCTAssertEqual(store.project(id: "p1")?.mcpDefault, ["a", "b"])
     }
 
+    func testProjectSameAsComputerSendsNullAndEmptyListStaysManaged() async throws {
+        let project = Project(id: "p1", name: "P", computer: mac, folder: "~/p", mcpDefault: ["a"])
+        RecordingHub.respond("PATCH", "/api/projects/p1", #"{"id":"p1","name":"P","computer":{"id":"m","name":"Mac","hostname":"mac","port":22,"username":"me","created_at":"","updated_at":""},"folder":"~/p","section":"Si"}"#)
+        let store = makeStore()
+        try await store.setDefaultServers(nil, for: project)
+        var request = try XCTUnwrap(RecordingHub.requests.last { $0.path == "/api/projects/p1" })
+        XCTAssertTrue(try bodyJSON(request.body)["mcp_default"] is NSNull)
+        XCTAssertNil(store.project(id: "p1")?.mcpDefault)
+
+        try await store.setDefaultServers([], for: project)
+        request = try XCTUnwrap(RecordingHub.requests.last { $0.path == "/api/projects/p1" })
+        XCTAssertEqual(try bodyJSON(request.body)["mcp_default"] as? [String], [])
+    }
+
     func testRestartEndsOnlyTheTmuxSession() async throws {
         RecordingHub.respond("PUT", "/api/conversations/c1/mcp", conversationJSON(servers: #"["grafana"]"#))
         let store = makeStore()

@@ -1,4 +1,5 @@
 import AISessionCore
+import SwiftData
 import SwiftUI
 
 /// Manage the hub's computers and which computer each section uses.
@@ -10,6 +11,8 @@ struct ComputersView: View {
     /// Shown inside this sheet: the Todos screen's alert can't present over it.
     @State private var errorMessage: String?
     @State private var computerToDelete: Computer?
+    @State private var serversComputer: Computer?
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
 
     /// `editing` opens that section's computer at once (a fix from the frame).
     init(store: TodoHubStore, editing section: TodoSection? = nil) {
@@ -66,8 +69,19 @@ struct ComputersView: View {
                                 Label("Delete…", systemImage: "trash")
                             }
                             .tint(.red)
+                            Button {
+                                serversComputer = computer
+                            } label: {
+                                Label("Default Servers…", systemImage: "server.rack")
+                            }
+                            .tint(.indigo)
                         }
                         .contextMenu {
+                            Button {
+                                serversComputer = computer
+                            } label: {
+                                Label("Default Servers…", systemImage: "server.rack")
+                            }
                             Button(role: .destructive) {
                                 computerToDelete = computer
                             } label: {
@@ -103,6 +117,19 @@ struct ComputersView: View {
                 ) { computerID in
                     run { try await store.assign(section, computerID: computerID) }
                 }
+            }
+            .sheet(item: $serversComputer) { computer in
+                MCPServersSheet(
+                    computer: computer, store: store, hosts: hosts, selection: computer.mcpDefault,
+                    allowsUnmanaged: true, unmanagedTitle: "No default",
+                    unmanagedDetail: "A new conversation starts with the tool's own servers",
+                    confirmTitle: "Save",
+                    onConfirm: { names in
+                        serversComputer = nil
+                        run { try await store.setDefaultServers(names, for: computer) }
+                    },
+                    onCancel: { serversComputer = nil }
+                )
             }
             .confirmationDialog(
                 "Delete \(computerToDelete?.name ?? "computer")?",

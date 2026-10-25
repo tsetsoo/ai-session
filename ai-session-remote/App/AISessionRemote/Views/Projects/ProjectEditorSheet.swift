@@ -1,4 +1,5 @@
 import AISessionCore
+import SwiftData
 import SwiftUI
 
 /// Create a project (blank, or prefilled from a suggestion) or edit one. A project belongs to
@@ -32,6 +33,7 @@ struct ProjectEditorSheet: View {
     @State private var error: String?
     @State private var isSaving = false
     @State private var loaded = false
+    @State private var mcpDefault: [String]?
 
     var body: some View {
         NavigationStack {
@@ -70,6 +72,9 @@ struct ProjectEditorSheet: View {
                     Toggle("Feed memories into new conversations", isOn: $digestEnabled)
                 } footer: {
                     Text("The computer writes a short digest of this project's memories where new Claude and Codex conversations in the folder load it.")
+                }
+                if case let .edit(project) = mode {
+                    ProjectDefaultServersSection(project: project, store: store, selection: $mcpDefault)
                 }
                 if case let .create(suggestion?) = mode, !suggestion.exampleCwds.isEmpty {
                     Section("Seen in") {
@@ -139,6 +144,7 @@ struct ProjectEditorSheet: View {
             folder = project.folder
             repoUrl = project.repoUrl ?? ""
             digestEnabled = project.digestEnabled
+            mcpDefault = project.mcpDefault
         }
     }
 
@@ -165,15 +171,88 @@ struct ProjectEditorSheet: View {
                         name: name == project.name ? nil : name,
                         folder: folder == project.folder ? nil : folder,
                         repoUrl: repo == (project.repoUrl ?? "") ? nil : (repo.isEmpty ? .clear : .set(repo)),
-                        digestEnabled: digestEnabled == project.digestEnabled ? nil : digestEnabled
+                        digestEnabled: digestEnabled == project.digestEnabled ? nil : digestEnabled,
+                        mcpDefault: mcpDefault == project.mcpDefault ? nil : (mcpDefault.map { .set($0) } ?? .clear)
                     )
-                    if request.name != nil || request.folder != nil || request.repoUrl != nil || request.digestEnabled != nil {
+                    if request.name != nil || request.folder != nil || request.repoUrl != nil
+                        || request.digestEnabled != nil || request.mcpDefault != nil {
                         try await store.updateProject(project, request)
                     }
                     dismiss()
                 }
             } catch {
                 self.error = TodoHubStore.message(for: error)
+            }
+        }
+    }
+}
+
+/// The project's default servers: "Same as computer" (nil) or a ticked list from the project's
+/// computer. When that computer's list can't be read, the saved names show as plain text.
+private struct ProjectDefaultServersSection: View {
+    let project: Project
+    let store: TodoHubStore
+    @Binding var selection: [String]?
+
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
+    @State private var state = MCPServerListState.loading
+    @State private var showingChecklist = false
+
+    private static let unmanaged = "Same as computer"
+
+    var body: some View {
+        Section {
+            switch state {
+            case .loading:
+                HStack(spacing: DS.spacing.s) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Reading servers…")
+                        .foregroundStyle(.secondary)
+                }
+            case .loaded:
+                Button { showingChecklist = true } label: {
+                    HStack(spacing: DS.spacing.s) {
+                        Text("Default servers")
+                            .foregroundStyle(.primary)
+                        Spacer(minLength: DS.spacing.m)
+                        Text(MCPServerListState.summary(selection, unmanaged: Self.unmanaged))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Default servers, \(MCPServerListState.summary(selection, unmanaged: Self.unmanaged))")
+            case .unavailable, .failed:
+                LabeledContent("Default servers", value: MCPServerListState.summary(selection, unmanaged: Self.unmanaged))
+            }
+        } footer: {
+            if state == .failed {
+                Text(MCPServerListState.failureMessage(project.computer))
+            } else {
+                Text("New conversations in this project start with these servers.")
+            }
+        }
+        .task {
+            state = await MCPServerListState.load(on: project.computer, store: store) {
+                try HostLookup.config(for: project.computer, in: hosts)
+            }
+        }
+        .sheet(isPresented: $showingChecklist) {
+            if case let .loaded(servers) = state {
+                MCPServersSheet(
+                    computer: project.computer, store: store, hosts: hosts, selection: selection,
+                    allowsUnmanaged: true, unmanagedTitle: Self.unmanaged,
+                    unmanagedDetail: "Whatever the computer's default is",
+                    list: .loaded(servers), confirmTitle: "Done",
+                    onConfirm: { selection = $0; showingChecklist = false },
+                    onCancel: { showingChecklist = false }
+                )
             }
         }
     }
