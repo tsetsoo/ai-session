@@ -65,6 +65,13 @@ public enum TmuxCommandBuilder {
         return wrap(command)
     }
 
+    /// Exit 0 when the Codex conversation has a rollout on the host, 1 when it has none: Codex
+    /// 0.163+ writes it only after the first message, and `codex resume` refuses one without.
+    public static func codexHasRollout(sessionId: String) -> String {
+        let pattern = shellQuote("rollout-*-\(sessionId).jsonl")
+        return wrap(#"[ -n "$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name "# + pattern + #" -print -quit 2>/dev/null)" ]"#)
+    }
+
     /// Lists the MCP server files on the host as JSON (`ai-todo-mcp list --json`).
     public static func listMCPServers() -> String {
         wrap("exec \"$HOME/.ai-remote/bin/ai-todo-mcp\" list --json")
@@ -106,7 +113,9 @@ public enum TmuxCommandBuilder {
     /// The id is the new file under `~/.claude/projects`, not the source and not a minted placeholder.
     ///
     /// With `mcpServers`, the host evaluates `ai-todo-mcp launch-args claude <names>` into the
-    /// claude arguments, ahead of `arguments`.
+    /// claude arguments, ahead of `arguments`, and (as `ai-todo-open` does) runs claude through
+    /// `/bin/sh` to read `~/.ai-remote/mcp/env` when that file exists: the tmux server's
+    /// environment lacks the variables the server files reference.
     public static func forkDetached(tmuxName: String, cwd: String, arguments: [String], mcpServers: [String]? = nil) -> String {
         var argv = arguments.map(shellQuote).joined(separator: " ")
         var mcpSetup = ""
@@ -119,6 +128,9 @@ public enum TmuxCommandBuilder {
                 set -- \(arguments.first.map(shellQuote) ?? "claude")
                 eval "set -- \\"\\$@\\" $mcp_args"
                 set -- "$@" \(rest)
+                if [ -e "$HOME/.ai-remote/mcp/env" ]; then
+                  set -- /bin/sh -c 'set -a; [ -r "$HOME/.ai-remote/mcp/env" ] && . "$HOME/.ai-remote/mcp/env"; set +a; exec "$@"' sh "$@"
+                fi
 
                 """
             argv = "\"$@\""

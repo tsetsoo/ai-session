@@ -146,6 +146,39 @@ final class MCPServersTests: XCTestCase {
         XCTAssertTrue(managed.contains(#"LC_ALL="${LC_ALL:-en_US.UTF-8}" "$@" || exit $?"#))
     }
 
+    func testCodexHasRolloutCommand() {
+        let command = TmuxCommandBuilder.codexHasRollout(sessionId: "019f-x")
+        XCTAssertTrue(command.hasPrefix("export PATH="))
+        XCTAssertTrue(command.hasSuffix(
+            #"[ -n "$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*-019f-x.jsonl' -print -quit 2>/dev/null)" ]"#
+        ), command)
+    }
+
+    #if os(macOS)
+    func testCodexHasRolloutExitsZeroOnlyWithTheRollout() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let day = home.appendingPathComponent(".codex/sessions/2026/10/25")
+        try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+        func status(_ id: String, codexHome: String? = nil) throws -> Int32 {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", TmuxCommandBuilder.codexHasRollout(sessionId: id)]
+            var environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
+            if let codexHome { environment["CODEX_HOME"] = codexHome }
+            process.environment = environment
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus
+        }
+        XCTAssertEqual(try status("abc"), 1)
+        try Data().write(to: day.appendingPathComponent("rollout-2026-10-25T00-00-00-abc.jsonl"))
+        XCTAssertEqual(try status("abc"), 0)
+        XCTAssertEqual(try status("other"), 1)
+        XCTAssertEqual(try status("abc", codexHome: home.appendingPathComponent("elsewhere").path), 1)
+    }
+    #endif
+
     func testResumeCommandWithAndWithoutServers() {
         XCTAssertEqual(ResumeCommand.string(for: conversation(nil)), "cd ~/'code' && claude --resume abc-123")
         XCTAssertEqual(ResumeCommand.string(for: conversation(["grafana", "slack"])),
@@ -155,3 +188,78 @@ final class MCPServersTests: XCTestCase {
         XCTAssertEqual(ResumeCommand.string(for: conversation(["a"], tool: "cursor")), "cd ~/'code' && agent --resume abc-123")
     }
 }
+
+#if os(macOS)
+/// Runs the fork command in `/bin/sh` under a temporary HOME: `tmux` is a shell function that
+/// runs the pane's command in place, `ai-todo-mcp` and `claude` are stand-ins. The fork's claude
+/// must see the env file's variables, as ai-todo-open's tools do.
+final class ForkMCPEnvTests: XCTestCase {
+    private var home: URL!
+
+    override func setUpWithError() throws {
+        home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".ai-remote/bin"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".ai-remote/mcp"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".claude/projects/p"), withIntermediateDirectories: true)
+        // Two words, one with a space and a quote, so a re-split shows up.
+        try script("echo \"--strict-mcp-config --mcp-config '/m/a b.json' 'it'\\\\''s'\"", at: ".ai-remote/bin/ai-todo-mcp")
+        try script("""
+            out="$HOME/claude.out"
+            printf '%s\\n' "${GRAFANA_TOKEN:-unset}" >"$out"
+            for a in "$@"; do printf '[%s]' "$a"; done >>"$out"
+            : >"$HOME/.claude/projects/p/forked.jsonl"
+            """, at: "fake-claude")
+    }
+
+    override func tearDownWithError() throws {
+        if let home { try? FileManager.default.removeItem(at: home) }
+    }
+
+    private func script(_ body: String, at path: String) throws {
+        let url = home.appendingPathComponent(path)
+        try ("#!/bin/sh\n" + body + "\n").write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private func runFork() throws -> (status: Int32, stdout: String, claude: [String]) {
+        let command = TmuxCommandBuilder.forkDetached(
+            tmuxName: "ai/claude/todo-f", cwd: home.path,
+            arguments: [home.appendingPathComponent("fake-claude").path, "--resume", "src", "--fork-session"],
+            mcpServers: ["a b"]
+        )
+        // Skip to the pane's command (after `--`) and run it here.
+        let tmux = #"tmux() { [ "$1" = new-session ] || return 0; while [ "$1" != -- ]; do shift; done; shift; "$@"; }"#
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", tmux + "\n" + command]
+        process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = Pipe()
+        try process.run()
+        let stdout = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let claude = (try? String(contentsOf: home.appendingPathComponent("claude.out"), encoding: .utf8)) ?? ""
+        return (process.terminationStatus, String(decoding: stdout, as: UTF8.self),
+                claude.split(separator: "\n").map(String.init))
+    }
+
+    func testForkWithServersReadsTheEnvFile() throws {
+        try "GRAFANA_TOKEN=from-env-file\n".write(to: home.appendingPathComponent(".ai-remote/mcp/env"), atomically: true, encoding: .utf8)
+        let result = try runFork()
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout, "created forked\n")
+        XCTAssertEqual(result.claude, [
+            "from-env-file",
+            "[--strict-mcp-config][--mcp-config][/m/a b.json][it's][--resume][src][--fork-session]",
+        ])
+    }
+
+    func testForkWithServersWithoutAnEnvFile() throws {
+        let result = try runFork()
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.claude.first, "unset")
+        XCTAssertEqual(result.claude.last, "[--strict-mcp-config][--mcp-config][/m/a b.json][it's][--resume][src][--fork-session]")
+    }
+}
+#endif
