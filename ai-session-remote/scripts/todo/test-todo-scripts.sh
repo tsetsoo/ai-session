@@ -330,7 +330,7 @@ class Hub(BaseHTTPRequestHandler):
     def do_GET(self):
         body = json.dumps([{"tool": "claude", "session_id": c_linked},
                            {"tool": "codex", "claude_session_id": x_linked}]).encode()
-        self.send_response(200 if self.path == "/api/conversations" else 404)
+        self.send_response(200 if self.path == "/api/conversations?show=all" else 404)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(body)

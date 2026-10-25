@@ -675,7 +675,8 @@ def linked_session_ids():
     url = values.get("TODO_HUB_URL", "").rstrip("/")
     if not url:
         die(f"no TODO_HUB_URL in {conf}; refusing to prune without knowing which conversations are linked", 65)
-    request = urllib.request.Request(url + "/api/conversations")
+    # show=all: a conversation whose todo is archived is still linked.
+    request = urllib.request.Request(url + "/api/conversations?show=all")
     if values.get("TODO_API_TOKEN"):
         request.add_header("Authorization", "Bearer " + values["TODO_API_TOKEN"])
     try:

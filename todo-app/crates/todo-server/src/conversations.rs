@@ -854,12 +854,28 @@ pub async fn clear_section_computer(
 // Conversations
 // ---------------------------------------------------------------------------
 
-pub async fn list_conversations(pool: web::Data<DbPool>) -> HttpResponse {
+#[derive(serde::Deserialize)]
+pub struct ConversationsQuery {
+    pub show: Option<String>,
+}
+
+/// Every conversation, newest first. By default it leaves out the conversations of
+/// archived todos, the same todos `GET /api/todos` leaves out, so a list never shows
+/// a conversation whose todo it can't name. `?show=all` includes them.
+pub async fn list_conversations(pool: web::Data<DbPool>, query: web::Query<ConversationsQuery>) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    let mut stmt = match conn.prepare(&format!("{CONVERSATION_SELECT} ORDER BY c.created_at DESC")) {
+    let filter = match query.show.as_deref() {
+        None => {
+            "WHERE NOT EXISTS (SELECT 1 FROM todos t WHERE t.id = c.todo_id
+                 AND t.completed = 1 AND t.completed_at IS NOT NULL AND t.completed_at < datetime('now', '-1 day'))"
+        }
+        Some("all") => "",
+        Some(_) => return error(actix_web::http::StatusCode::BAD_REQUEST, "Invalid show"),
+    };
+    let mut stmt = match conn.prepare(&format!("{CONVERSATION_SELECT} {filter} ORDER BY c.created_at DESC")) {
         Ok(s) => s,
         Err(e) => return server_error(e),
     };
@@ -1321,6 +1337,37 @@ mod tests {
             )
             .unwrap();
         assert_eq!(todo.conversation_status, Some(ConversationStatus::Waiting));
+    }
+
+    #[actix_web::test]
+    async fn list_leaves_out_archived_todos_unless_show_all() {
+        let (_db, pool) = crate::test_support::pool("archived");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute_batch(
+            "INSERT INTO todos (id, section, title, completed, completed_at) VALUES
+                 ('t-old', 'I', 'archived', 1, datetime('now', '-2 days')),
+                 ('t-new', 'I', 'done today', 1, datetime('now', '-1 hour'));
+             INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, status) VALUES
+                 ('c-open', '0f3a9c21-aaaa-4bbb-8ccc-123456789abc', 'm1', '~', 'claude', 'ai/claude/a', 's-open', 'idle'),
+                 ('c-old', 't-old', 'm1', '~', 'claude', 'ai/claude/b', 's-old', 'idle'),
+                 ('c-new', 't-new', 'm1', '~', 'claude', 'ai/claude/c', 's-new', 'idle');",
+        )
+        .unwrap();
+        drop(conn);
+        let ids = |body: serde_json::Value| -> Vec<String> {
+            let mut ids: Vec<String> =
+                body.as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().to_string()).collect();
+            ids.sort();
+            ids
+        };
+        let (status, body) = crate::test_support::get(&pool, "/api/conversations").await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{body}");
+        assert_eq!(ids(body), ["c-new", "c-open"]);
+        let (_, body) = crate::test_support::get(&pool, "/api/conversations?show=all").await;
+        assert_eq!(ids(body), ["c-new", "c-old", "c-open"]);
+        let (status, _) = crate::test_support::get(&pool, "/api/conversations?show=nope").await;
+        assert_eq!(status, actix_web::http::StatusCode::BAD_REQUEST);
     }
 
     async fn claude_on_mac(pool: &DbPool) -> serde_json::Value {
