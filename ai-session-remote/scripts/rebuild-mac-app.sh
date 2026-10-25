@@ -42,5 +42,7 @@ mkdir -p "${HOME}/Applications"
 cp -R "$built" "$DEST"
 
 # Opening in the same moment as quit fails with AppleEvent -600.
-open "$DEST"
+# A clean environment: the app passes its own to the conversations it starts, so launched
+# from inside a conversation it carried that conversation's PATH on to the next ones.
+env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" PATH=/usr/bin:/bin:/usr/sbin:/sbin open "$DEST"
 echo "$DEST"
