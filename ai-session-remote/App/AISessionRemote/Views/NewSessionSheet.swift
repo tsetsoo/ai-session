@@ -82,7 +82,7 @@ struct NewSessionSheet: View {
                 }
 
                 Section {
-                    TextField("/path/to/project", text: $path)
+                    FormTextField("/path/to/project", text: $path)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.body.monospaced())
@@ -114,7 +114,7 @@ struct NewSessionSheet: View {
                 }
 
                 Section {
-                    TextField("Name", text: $slug)
+                    FormTextField("Name", text: $slug)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.body.monospaced())

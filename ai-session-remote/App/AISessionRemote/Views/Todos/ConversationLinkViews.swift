@@ -469,14 +469,14 @@ struct NewTodoDetailsForm: View {
                         Text("New project").tag("new")
                     }
                     if makingNew {
-                        TextField("Project name", text: $newName)
-                        TextField("Folder", text: $newFolder)
+                        FormTextField("Project name", text: $newName)
+                        FormTextField("Folder", text: $newFolder)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .font(.body.monospaced())
                     }
                 }
-                TextField("Title", text: $title, axis: .vertical)
+                FormTextField("Title", text: $title, axis: .vertical)
             }
             Section("Conversation") {
                 LabeledContent("Tool", value: RemoteConversationPicker.toolName(remote.tool))

@@ -225,7 +225,7 @@ struct TodoTitleField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.spacing.xs) {
             HStack(alignment: .top, spacing: DS.spacing.xs) {
-                TextField(placeholder, text: $title, axis: .vertical)
+                FormTextField(placeholder, text: $title, axis: .vertical)
                     .lineLimit(minLines...max(minLines, 8))
                     .focused(focused)
                     .onSubmit(onSubmit)

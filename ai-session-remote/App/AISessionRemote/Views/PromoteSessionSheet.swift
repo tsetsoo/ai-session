@@ -31,7 +31,7 @@ struct PromoteSessionSheet: View {
                         Text(AppTheme.displayName(for: tool)).tag(tool)
                     }
                 }
-                TextField("Name", text: $slug)
+                FormTextField("Name", text: $slug)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.body.monospaced())

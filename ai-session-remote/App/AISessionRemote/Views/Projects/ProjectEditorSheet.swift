@@ -52,8 +52,8 @@ struct ProjectEditorSheet: View {
                             Button("Choose Computer") { openAppSettings?(.sections(section)) }
                         }
                     }
-                    TextField("Name", text: $name)
-                    TextField("Folder, e.g. ~/programming/app", text: $folder)
+                    FormTextField("Name", text: $name)
+                    FormTextField("Folder, e.g. ~/programming/app", text: $folder)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.body.monospaced())
@@ -61,7 +61,7 @@ struct ProjectEditorSheet: View {
                     Text("The section's computer is where this folder lives. A nested folder is its own project.")
                 }
                 Section {
-                    TextField("Repository URL (optional)", text: $repoUrl)
+                    FormTextField("Repository URL (optional)", text: $repoUrl)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)

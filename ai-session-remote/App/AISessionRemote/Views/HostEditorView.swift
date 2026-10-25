@@ -78,14 +78,14 @@ struct HostEditorView: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Display name", text: $displayName)
-                    TextField("Hostname / Tailscale IP", text: $hostname)
+                    FormTextField("Display name", text: $displayName)
+                    FormTextField("Hostname / Tailscale IP", text: $hostname)
                         .textContentType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    TextField("Port", text: $port)
+                    FormTextField("Port", text: $port)
                         .keyboardType(.numberPad)
-                    TextField("Username", text: $username)
+                    FormTextField("Username", text: $username)
                         .textContentType(.username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -179,7 +179,7 @@ struct HostEditorView: View {
                             .foregroundStyle(.secondary)
 
                         ForEach(AITool.allCases, id: \.self) { tool in
-                            TextField(
+                            FormTextField(
                                 "\(AppTheme.displayName(for: tool)) binary (optional)",
                                 text: binding(for: tool)
                             )

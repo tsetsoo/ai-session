@@ -15,11 +15,11 @@ struct TodoHubSettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("http://my-server:8080", text: $urlText)
+                    FormTextField("http://my-server:8080", text: $urlText)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    SecureField("API token (optional)", text: $token)
+                    FormSecureField("API token (optional)", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } header: {

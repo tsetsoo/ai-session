@@ -150,13 +150,13 @@ private struct AddComputerSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField("Name", text: $name)
-                TextField("Hostname (Tailscale name or IP)", text: $hostname)
+                FormTextField("Name", text: $name)
+                FormTextField("Hostname (Tailscale name or IP)", text: $hostname)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
-                TextField("Port", text: $port).keyboardType(.numberPad)
-                TextField("Username", text: $username)
+                FormTextField("Port", text: $port).keyboardType(.numberPad)
+                FormTextField("Username", text: $username)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             }

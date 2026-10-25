@@ -63,8 +63,8 @@ struct AddTodoSheet: View {
                         chipRow
                     }
                     if hasComputer && draft.choice.makingNew {
-                        TextField("Project name", text: $draft.newName)
-                        TextField("Folder, e.g. ~/programming/app", text: $draft.newFolder)
+                        FormTextField("Project name", text: $draft.newName)
+                        FormTextField("Folder, e.g. ~/programming/app", text: $draft.newFolder)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .font(.body.monospaced())

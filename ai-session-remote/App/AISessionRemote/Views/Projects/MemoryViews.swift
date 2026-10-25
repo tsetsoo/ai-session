@@ -231,14 +231,14 @@ struct MemoryEditorSheet: View {
                     ForEach(MemoryKind.allCases) { Label($0.label, systemImage: $0.systemImage).tag($0) }
                 }
                 Section {
-                    TextField("One or two sentences", text: $text, axis: .vertical)
+                    FormTextField("One or two sentences", text: $text, axis: .vertical)
                         .lineLimit(3...8)
                 } footer: {
                     Text("\(trimmedText.count)/\(Self.maxLength)")
                         .foregroundStyle(trimmedText.count > Self.maxLength ? DS.error : Color.secondary)
                 }
                 Section {
-                    TextField("path/relative/to/project", text: $filesText, axis: .vertical)
+                    FormTextField("path/relative/to/project", text: $filesText, axis: .vertical)
                         .lineLimit(1...6)
                         .font(.body.monospaced())
                         .textInputAutocapitalization(.never)
