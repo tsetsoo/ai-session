@@ -7,6 +7,12 @@ public enum ResumeCommand {
         case "cursor": resume = "agent --resume \(c.sessionId)"
         default: resume = "\(c.tool) --resume \(c.sessionId)"
         }
+        if let names = c.mcpServers, c.tool == "claude" || c.tool == "codex" {
+            // The host's helper prints the MCP flags as shell-quoted words, which `eval` splits.
+            let verb = c.tool == "codex" ? "resume" : "--resume"
+            let helper = "~/.ai-remote/bin/ai-todo-mcp launch-args \(c.tool) \(quote(names.joined(separator: ",")))"
+            return "cd \(quotedPath(c.cwd)) && eval \"\(c.tool) $(\(helper)) \(verb) \(c.sessionId)\""
+        }
         return "cd \(quotedPath(c.cwd)) && \(resume)"
     }
 

@@ -32,6 +32,36 @@ final class ConversationLinkingTests: XCTestCase {
         try JSONDecoder().decode([String: String].self, from: XCTUnwrap(request?.httpBody))
     }
 
+    func testSetConversationServersPutsAnExplicitNullToClear() async throws {
+        StubURLProtocol.handler = { _ in .init(status: 200, body: Self.codexConversationJSON) }
+        _ = try await client().setConversationServers(id: "c1", nil)
+        let cleared = try XCTUnwrap(StubURLProtocol.requests.last)
+        XCTAssertEqual(cleared.httpMethod, "PUT")
+        XCTAssertEqual(cleared.url?.path, "/api/conversations/c1/mcp")
+        XCTAssertEqual(String(decoding: try XCTUnwrap(cleared.httpBody), as: UTF8.self), #"{"mcp_servers":null}"#)
+
+        _ = try await client().setConversationServers(id: "c1", ["a", "b"])
+        XCTAssertEqual(String(decoding: try XCTUnwrap(StubURLProtocol.requests.last?.httpBody), as: UTF8.self), #"{"mcp_servers":["a","b"]}"#)
+    }
+
+    func testOpenConversationSendsServersAndUpdateComputerPatches() async throws {
+        StubURLProtocol.handler = { _ in .init(status: 200, body: Self.codexConversationJSON) }
+        _ = try await client().openConversation(todoId: "t1", tool: "claude", mcpServers: [])
+        let open = try XCTUnwrap(StubURLProtocol.requests.last)
+        let body = try XCTUnwrap(open.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        XCTAssertEqual(body["mcp_servers"] as? [String], [])
+
+        StubURLProtocol.handler = { _ in
+            .init(status: 200, body: #"{"id":"m1","name":"S","hostname":"h","port":22,"username":"me","created_at":"","updated_at":"","mcp_default":["a"]}"#)
+        }
+        let computer = try await client().updateComputer(id: "m1", UpdateComputerRequest(mcpDefault: .set(["a"])))
+        XCTAssertEqual(computer.mcpDefault, ["a"])
+        let patch = try XCTUnwrap(StubURLProtocol.requests.last)
+        XCTAssertEqual(patch.httpMethod, "PATCH")
+        XCTAssertEqual(patch.url?.path, "/api/computers/m1")
+        XCTAssertEqual(String(decoding: try XCTUnwrap(patch.httpBody), as: UTF8.self), #"{"mcp_default":["a"]}"#)
+    }
+
     func testDecodesSessionIdAndFallsBackToClaudeSessionId() throws {
         let decoder = TodoHubClient.makeDecoder()
         let codex = try decoder.decode(Conversation.self, from: Data(Self.codexConversationJSON.utf8))

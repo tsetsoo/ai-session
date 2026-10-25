@@ -107,6 +107,10 @@ public struct TodoHubClient: Sendable {
         try await decode(Computer.self, send("POST", "/api/computers", body: request))
     }
 
+    public func updateComputer(id: String, _ request: UpdateComputerRequest) async throws -> Computer {
+        try await decode(Computer.self, send("PATCH", "/api/computers/\(escape(id))", body: request))
+    }
+
     public func deleteComputer(id: String) async throws {
         _ = try await send("DELETE", "/api/computers/\(escape(id))")
     }
@@ -153,10 +157,19 @@ public struct TodoHubClient: Sendable {
     }
 
     /// Get-or-create for the chosen tool. Throws `.conflict` when the todo's section has no computer.
-    public func openConversation(todoId: String, tool: String) async throws -> Conversation {
+    /// `mcpServers` is the selection the conversation starts with (`nil` = not managed).
+    public func openConversation(todoId: String, tool: String, mcpServers: [String]? = nil) async throws -> Conversation {
         try await decode(
             Conversation.self,
-            send("POST", "/api/todos/\(escape(todoId))/conversation", body: OpenConversationRequest(tool: tool))
+            send("POST", "/api/todos/\(escape(todoId))/conversation", body: OpenConversationRequest(tool: tool, mcpServers: mcpServers))
+        )
+    }
+
+    /// Records the MCP servers a conversation runs with. `nil` clears the selection (not managed).
+    public func setConversationServers(id: String, _ names: [String]?) async throws -> Conversation {
+        try await decode(
+            Conversation.self,
+            send("PUT", "/api/conversations/\(escape(id))/mcp", body: SetConversationServersRequest(mcpServers: names))
         )
     }
 

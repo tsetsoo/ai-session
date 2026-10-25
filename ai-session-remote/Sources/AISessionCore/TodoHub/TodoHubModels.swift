@@ -78,9 +78,11 @@ public struct Computer: Codable, Hashable, Identifiable, Sendable {
     public var username: String
     public var createdAt: String
     public var updatedAt: String
+    /// MCP servers new conversations on this computer start with. `nil` = not managed, `[]` = none.
+    public var mcpDefault: [String]?
 
     public init(id: String, name: String, hostname: String, port: Int = 22, username: String,
-                createdAt: String = "", updatedAt: String = "") {
+                createdAt: String = "", updatedAt: String = "", mcpDefault: [String]? = nil) {
         self.id = id
         self.name = name
         self.hostname = hostname
@@ -88,6 +90,7 @@ public struct Computer: Codable, Hashable, Identifiable, Sendable {
         self.username = username
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.mcpDefault = mcpDefault
     }
 }
 
@@ -115,6 +118,9 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var projectId: String?
     /// Name given when this conversation was duplicated. Absent on the original.
     public var label: String?
+    /// The MCP servers this conversation was started with. `nil` = not managed (or an older
+    /// hub), `[]` = managed with none.
+    public var mcpServers: [String]?
 
     /// Row identity. A conversation from a hub that omits `id` is still the only one on its todo.
     public var listKey: String { id.isEmpty ? todoId : id }
@@ -136,7 +142,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         statusUpdatedAt: String? = nil,
         createdAt: String = "",
         projectId: String? = nil,
-        label: String? = nil
+        label: String? = nil,
+        mcpServers: [String]? = nil
     ) {
         self.id = id
         self.todoId = todoId
@@ -151,12 +158,13 @@ public struct Conversation: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.projectId = projectId
         self.label = label
+        self.mcpServers = mcpServers
     }
 
     // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
     private enum CodingKeys: String, CodingKey {
         case id, todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
-        case status, statusMessage, statusUpdatedAt, createdAt, projectId, label
+        case status, statusMessage, statusUpdatedAt, createdAt, projectId, label, mcpServers
     }
 
     public init(from decoder: Decoder) throws {
@@ -180,6 +188,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
         projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
         label = try c.decodeIfPresent(String.self, forKey: .label)
+        mcpServers = try c.decodeIfPresent([String].self, forKey: .mcpServers)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -197,6 +206,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         try c.encode(createdAt, forKey: .createdAt)
         try c.encodeIfPresent(projectId, forKey: .projectId)
         try c.encodeIfPresent(label, forKey: .label)
+        try c.encodeIfPresent(mcpServers, forKey: .mcpServers)
     }
 }
 
@@ -380,9 +390,44 @@ public struct SetSectionComputerRequest: Encodable, Sendable {
 
 public struct OpenConversationRequest: Encodable, Sendable {
     public var tool: String
+    /// Omitted when `nil` (not managed).
+    public var mcpServers: [String]?
 
-    public init(tool: String) {
+    public init(tool: String, mcpServers: [String]? = nil) {
         self.tool = tool
+        self.mcpServers = mcpServers
+    }
+}
+
+/// `PATCH /api/computers/{id}`. `nil` leaves the default unchanged.
+public struct UpdateComputerRequest: Encodable, Sendable {
+    public var mcpDefault: MCPDefaultChange?
+
+    public init(mcpDefault: MCPDefaultChange? = nil) {
+        self.mcpDefault = mcpDefault
+    }
+
+    private enum CodingKeys: String, CodingKey { case mcpDefault }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeMCPDefault(mcpDefault, forKey: .mcpDefault)
+    }
+}
+
+/// `PUT /api/conversations/{id}/mcp`. The hub requires the key, so `nil` encodes an explicit `null`.
+public struct SetConversationServersRequest: Encodable, Sendable {
+    public var mcpServers: [String]?
+
+    public init(mcpServers: [String]?) {
+        self.mcpServers = mcpServers
+    }
+
+    private enum CodingKeys: String, CodingKey { case mcpServers }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        if let mcpServers { try c.encode(mcpServers, forKey: .mcpServers) } else { try c.encodeNil(forKey: .mcpServers) }
     }
 }
 

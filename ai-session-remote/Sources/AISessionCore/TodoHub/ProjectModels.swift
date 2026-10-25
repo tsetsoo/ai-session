@@ -106,12 +106,16 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
     public var memories: Int
     /// ISO 8601 UTC.
     public var lastActivity: String?
+    /// MCP servers new conversations in this project start with. `nil` = not set (fall back to
+    /// the computer's), `[]` = none.
+    public var mcpDefault: [String]?
 
     public init(
         id: String, name: String, computer: Computer, folder: String, section: TodoSection = .si,
         repoUrl: String? = nil,
         digestEnabled: Bool = true, createdAt: String = "", updatedAt: String = "",
-        openTodos: Int = 0, sessions: Int = 0, memories: Int = 0, lastActivity: String? = nil
+        openTodos: Int = 0, sessions: Int = 0, memories: Int = 0, lastActivity: String? = nil,
+        mcpDefault: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -126,11 +130,12 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
         self.sessions = sessions
         self.memories = memories
         self.lastActivity = lastActivity
+        self.mcpDefault = mcpDefault
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, section, computer, folder, repoUrl, digestEnabled, createdAt, updatedAt
-        case openTodos, sessions, memories, lastActivity
+        case openTodos, sessions, memories, lastActivity, mcpDefault
     }
 
     public init(from decoder: Decoder) throws {
@@ -148,6 +153,7 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
         sessions = try c.decodeIfPresent(Int.self, forKey: .sessions) ?? 0
         memories = try c.decodeIfPresent(Int.self, forKey: .memories) ?? 0
         lastActivity = try c.decodeIfPresent(String.self, forKey: .lastActivity)
+        mcpDefault = try c.decodeIfPresent([String].self, forKey: .mcpDefault)
     }
 
     public var lastActivityDate: Date? { HubDates.date(from: lastActivity) }
@@ -225,16 +231,19 @@ public struct UpdateProjectRequest: Encodable, Sendable {
     public var folder: String?
     public var repoUrl: NullableChange<String>?
     public var digestEnabled: Bool?
+    public var mcpDefault: MCPDefaultChange?
 
-    public init(name: String? = nil, folder: String? = nil, repoUrl: NullableChange<String>? = nil, digestEnabled: Bool? = nil) {
+    public init(name: String? = nil, folder: String? = nil, repoUrl: NullableChange<String>? = nil, digestEnabled: Bool? = nil,
+                mcpDefault: MCPDefaultChange? = nil) {
         self.name = name
         self.folder = folder
         self.repoUrl = repoUrl
         self.digestEnabled = digestEnabled
+        self.mcpDefault = mcpDefault
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, folder, repoUrl, digestEnabled
+        case name, folder, repoUrl, digestEnabled, mcpDefault
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -243,6 +252,7 @@ public struct UpdateProjectRequest: Encodable, Sendable {
         try c.encodeIfPresent(folder, forKey: .folder)
         try c.encodeChange(repoUrl, forKey: .repoUrl)
         try c.encodeIfPresent(digestEnabled, forKey: .digestEnabled)
+        try c.encodeMCPDefault(mcpDefault, forKey: .mcpDefault)
     }
 }
 

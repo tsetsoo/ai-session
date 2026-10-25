@@ -52,10 +52,22 @@ public enum TmuxCommandBuilder {
     ///
     /// The tool is passed as a 4th argument only when it isn't `claude`: scripts installed
     /// before Codex support reject a 4th argument, and `claude` is their default anyway.
-    public static func openTodoConversation(tmuxName: String, cwd: String, sessionId: String, tool: String = "claude") -> String {
-        var command = "exec \"$HOME/.ai-remote/bin/ai-todo-open\" \(shellQuote(tmuxName)) \(shellQuote(cwd)) \(shellQuote(sessionId))"
+    ///
+    /// `mcpServers` adds `--mcp <comma-joined names>` as the first argument (`--mcp ''` = managed,
+    /// none), except for cursor, which has no MCP management. `nil` leaves the arguments as before.
+    public static func openTodoConversation(
+        tmuxName: String, cwd: String, sessionId: String, tool: String = "claude", mcpServers: [String]? = nil
+    ) -> String {
+        var command = "exec \"$HOME/.ai-remote/bin/ai-todo-open\""
+        if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
+        command += " \(shellQuote(tmuxName)) \(shellQuote(cwd)) \(shellQuote(sessionId))"
         if tool != "claude" { command += " \(shellQuote(tool))" }
         return wrap(command)
+    }
+
+    /// Lists the MCP server files on the host as JSON (`ai-todo-mcp list --json`).
+    public static func listMCPServers() -> String {
+        wrap("exec \"$HOME/.ai-remote/bin/ai-todo-mcp\" list --json")
     }
 
     /// Prints one conversation's user and assistant text. Exit 94 when it has no transcript or no
@@ -92,14 +104,31 @@ public enum TmuxCommandBuilder {
 
     /// Starts the fork in tmux and prints `created <id>` for the new transcript, without attaching.
     /// The id is the new file under `~/.claude/projects`, not the source and not a minted placeholder.
-    public static func forkDetached(tmuxName: String, cwd: String, arguments: [String]) -> String {
-        let argv = arguments.map(shellQuote).joined(separator: " ")
+    ///
+    /// With `mcpServers`, the host evaluates `ai-todo-mcp launch-args claude <names>` into the
+    /// claude arguments, ahead of `arguments`.
+    public static func forkDetached(tmuxName: String, cwd: String, arguments: [String], mcpServers: [String]? = nil) -> String {
+        var argv = arguments.map(shellQuote).joined(separator: " ")
+        var mcpSetup = ""
+        if let mcpServers {
+            // The first word is the command; `launch-args` output (shell-quoted words) goes right after it.
+            let names = shellQuote(mcpServers.joined(separator: ","))
+            let rest = arguments.dropFirst().map(shellQuote).joined(separator: " ")
+            mcpSetup = """
+                mcp_args=$("$HOME/.ai-remote/bin/ai-todo-mcp" launch-args claude \(names)) || exit $?
+                set -- \(arguments.first.map(shellQuote) ?? "claude")
+                eval "set -- \\"\\$@\\" $mcp_args"
+                set -- "$@" \(rest)
+
+                """
+            argv = "\"$@\""
+        }
         let name = shellQuote(tmuxName)
         let exact = shellQuote("=" + tmuxName)
         let folder = shellQuotePath(cwd)
         return wrap(
             """
-            list_sessions() { find "$HOME/.claude/projects" -maxdepth 2 -name '*.jsonl' -print 2>/dev/null | LC_ALL=C sort; }
+            \(mcpSetup)list_sessions() { find "$HOME/.claude/projects" -maxdepth 2 -name '*.jsonl' -print 2>/dev/null | LC_ALL=C sort; }
             before=$(list_sessions)
             tmux new-session -d -s \(name) -c \(folder) -- env PATH="$PATH" LANG="${LANG:-en_US.UTF-8}" LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}" LC_ALL="${LC_ALL:-en_US.UTF-8}" \(argv) || exit $?
             deadline=$(( $(date +%s) + 30 ))
