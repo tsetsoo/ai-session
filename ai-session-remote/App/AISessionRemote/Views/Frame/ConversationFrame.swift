@@ -877,13 +877,12 @@ struct ConversationFrame: View {
         }
     }
 
-    /// Ends the tmux session as Close does, then attaches again: `ai-todo-open` resumes the
-    /// conversation with the servers it now has.
+    /// Ends the tmux session (the hub row stays open, unlike Close), then attaches again:
+    /// `ai-todo-open` resumes the conversation with the servers it now has.
     private func restart(_ conversation: Conversation) {
         perform("Couldn't Restart \(RowText.toolName(conversation.tool))") { _, config in
-            try await store.closeConversation(conversation, config: config)
-            let closed = store.conversations(forTodo: todo.id).first { $0.id == conversation.id } ?? conversation
-            loader.restart(closed)
+            try await store.endSession(conversation, config: config)
+            loader.restart(conversation)
         }
     }
 

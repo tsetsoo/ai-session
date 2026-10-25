@@ -700,6 +700,22 @@ final class TodoHubStore {
         refreshSoon()
     }
 
+    /// Ends only the tmux session; the hub row keeps its status, so hooks keep reporting and
+    /// the attach that follows (a restart with new servers) resumes the same conversation.
+    func endSession(
+        _ conversation: Conversation, config: HostConnectionConfig,
+        exec: (HostConnectionConfig, String) async throws -> SSHExecResult = { try await NIOSSHClient().exec($0, command: $1) }
+    ) async throws {
+        #if DEBUG
+        if demo != nil { return } // demo data: nothing runs on a computer
+        #endif
+        let result = try await exec(config, TmuxCommandBuilder.killSessionExact(tmuxName: conversation.tmuxName))
+        // 1 = no such session (already gone), which is fine, as for Close.
+        guard result.exitCode == 0 || result.exitCode == 1 else {
+            throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
+        }
+    }
+
     // MARK: Linking existing conversations
     //
     // These throw: they run from sheets that show their own errors.

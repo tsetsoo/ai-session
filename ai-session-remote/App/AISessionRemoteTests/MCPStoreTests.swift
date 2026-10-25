@@ -77,6 +77,30 @@ final class MCPStoreTests: XCTestCase {
         XCTAssertEqual(store.project(id: "p1")?.mcpDefault, ["a", "b"])
     }
 
+    func testRestartEndsOnlyTheTmuxSession() async throws {
+        RecordingHub.respond("PUT", "/api/conversations/c1/mcp", conversationJSON(servers: #"["grafana"]"#))
+        let store = makeStore()
+        let conversation = try JSONDecoder.snake.decode(Conversation.self, from: Data(conversationJSON().utf8))
+        try await store.setServers(["grafana"], for: conversation)
+        let saved = try XCTUnwrap(store.conversations["c1"])
+        var commands: [String] = []
+        let config = HostConnectionConfig(host: "mac", port: 22, username: "me", privateKeyPEM: Data())
+        try await store.endSession(saved, config: config) { _, command in
+            commands.append(command)
+            return SSHExecResult(exitCode: 0, stdout: "", stderr: "")
+        }
+        XCTAssertEqual(commands, [TmuxCommandBuilder.killSessionExact(tmuxName: "ai/claude/todo-t1")])
+        XCTAssertFalse(RecordingHub.requests.contains { $0.path.hasSuffix("/close") }, "the hub row stays open")
+        XCTAssertNotEqual(store.conversations["c1"]?.status, .closed)
+
+        // Already gone is fine; anything else is a failure.
+        try await store.endSession(saved, config: config) { _, _ in SSHExecResult(exitCode: 1, stdout: "", stderr: "") }
+        do {
+            try await store.endSession(saved, config: config) { _, _ in SSHExecResult(exitCode: 2, stdout: "", stderr: "x") }
+            XCTFail("exit 2 should throw")
+        } catch {}
+    }
+
     func testListingExit127MeansNoList() throws {
         let missing = SSHExecResult(exitCode: 127, stdout: "", stderr: "not found")
         XCTAssertNil(try RemoteConversations.mcpServers(from: missing, computerName: "Mac"))
