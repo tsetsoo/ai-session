@@ -47,6 +47,7 @@ EXTRA_PIDS=""
 cleanup() {
   local status=$?
   tmux -L "$SOCK" kill-server >/dev/null 2>&1 || true
+  tmux -L "${SOCK}-mcpenv" kill-server >/dev/null 2>&1 || true
   for pid in $HUB_PID $EXTRA_PIDS; do
     kill "$pid" >/dev/null 2>&1 || true
     wait "$pid" 2>/dev/null || true
@@ -93,13 +94,14 @@ wait_for_log_lines() {
 
 # --- ai-todo-open -----------------------------------------------------------
 
-for args in "ai/claude/other x $SID" "ai/claude/todo-Bad ~ $SID" "$NAME ~ not-a-uuid" "$NAME ~"; do
+for args in "ai/claude/other x $SID" "ai/claude/todo-Bad ~ $SID" "$NAME ~ not-a-uuid" "$NAME ~" \
+  "--mcp" "$NAME ~ $SID --mcp grafana" "$NAME --mcp grafana ~ $SID" "--mcp grafana --mcp slack $NAME ~ $SID"; do
   # shellcheck disable=SC2086
   if AI_TODO_OPEN_DETACH=1 "$OPEN" $args >/dev/null 2>&1; then
     fail "ai-todo-open accepted bad arguments: $args"
   fi
 done
-pass "ai-todo-open rejects bad tmux names, session ids and argument counts"
+pass "ai-todo-open rejects bad tmux names, session ids and argument counts, and --mcp anywhere but first"
 
 # tmux without CLIENT_UTF8 rewrites Cyrillic and symbols as underscores.
 grep -q 'exec tmux -u ' "$OPEN" || fail "ai-todo-open must exec tmux -u (UTF-8 client)"
@@ -189,6 +191,10 @@ codex_conv "$X_OLD" '"cli"' "codex old work"
 codex_conv "$X_LINKED" '"cli"' "codex linked work"
 codex_conv "$X_RUN" '"cli"' "codex running work"
 codex_conv "$X_SUB" '{"subagent":{"parent":"x"}}' "sub-agent prompt"
+C_MCP=99999999-9999-4999-8999-999999999999    # old, running via ai-todo-open --mcp: kept
+X_MCP=019f0000-0000-7000-8000-000000000006     # codex, old, running via ai-todo-open --mcp: kept
+claude_conv "$C_MCP" "mcp work"
+codex_conv "$X_MCP" '"cli"' "codex mcp work"
 for f in "$PROJ"/*.jsonl "$CODEX_DAY"/*.jsonl; do
   [[ "$f" == *"$C_NEW"* || "$f" == *"/${SID}.jsonl" ]] || touch -t "$OLD" "$f"
 done
@@ -205,6 +211,15 @@ printf '#!/bin/sh\nsleep 300\n' >"${SANDBOX}/run/codex"
 chmod +x "${SANDBOX}/run/claude" "${SANDBOX}/run/codex"
 tmux -L "$SOCK" new-session -d -s argv-claude -- "${SANDBOX}/run/claude" --resume "$C_ARGV"
 tmux -L "$SOCK" new-session -d -s argv-codex -- "${SANDBOX}/run/codex" resume "$X_RUN"
+# Started by ai-todo-open with --mcp: the MCP flags come before the id, and the env file
+# wrapper (/bin/sh -c '... exec "$@"') must leave the tool itself as the pane's process.
+mkdir -p "${HOME}/.ai-remote/mcp"
+printf '{"mcpServers":{"grafana":{"command":"docker","args":["run","mcp/grafana"]}}}\n' >"${HOME}/.ai-remote/mcp/grafana.json"
+printf 'GRAFANA_TOKEN=fake\n' >"${HOME}/.ai-remote/mcp/env"
+AI_TODO_CLAUDE_BIN="${SANDBOX}/run/claude" AI_TODO_OPEN_DETACH=1 \
+  "$OPEN" --mcp grafana "ai/claude/todo-mcplist" '~/programming' "$C_MCP" >/dev/null || fail "claude --mcp open for list failed"
+AI_TODO_CODEX_BIN="${SANDBOX}/run/codex" AI_TODO_OPEN_DETACH=1 \
+  "$OPEN" --mcp grafana "ai/codex/todo-mcplist" '~/programming' "$X_MCP" codex >/dev/null || fail "codex --mcp open for list failed"
 sleep 0.5
 
 # Fake codex: records archive/delete/resume calls; resume stays alive like a real session.
@@ -241,11 +256,17 @@ assert by["$C_RUN"]["running"] and by["$C_RUN"]["tmux_session"] is None, by["$C_
 assert by["$C_ARGV"]["running"] and by["$C_ARGV"]["tmux_session"] == "argv-claude", by["$C_ARGV"]
 assert by["$X_RUN"]["running"] and by["$X_RUN"]["tmux_session"] == "argv-codex", by["$X_RUN"]
 assert not by["$C_STALE"]["running"] and not by["$C_OLD"]["running"], "dead or absent processes are not running"
+assert by["$C_MCP"]["running"] and by["$C_MCP"]["tmux_session"] == "ai/claude/todo-mcplist", by["$C_MCP"]
+assert by["$X_MCP"]["running"] and by["$X_MCP"]["tmux_session"] == "ai/codex/todo-mcplist", by["$X_MCP"]
 PY
 [[ "$("$SESSIONS" list --json --tool codex --limit 2 | python3 -c 'import json,sys; r=json.load(sys.stdin); print(len(r), {x["tool"] for x in r})')" == "2 {'codex'}" ]] \
   || fail "list --tool/--limit not applied"
 pass "list --json: fields, newest first, skips empty and sub-agent conversations, --tool/--limit"
-pass "list detects running conversations (sessions file, claude/codex argv) and their tmux session"
+pass "list detects running conversations (sessions file, claude/codex argv, started with --mcp) and their tmux session"
+tmux -L "$SOCK" kill-session -t "=ai/claude/todo-mcplist"
+tmux -L "$SOCK" kill-session -t "=ai/codex/todo-mcplist"
+rm -f "${HOME:?}/.ai-remote/mcp/grafana.json" "${HOME:?}/.ai-remote/mcp/env" "${PROJ:?}/${C_MCP:?}.jsonl" \
+  "${CODEX_DAY:?}/rollout-2026-01-02T10-00-00-${X_MCP:?}.jsonl"
 
 if "$SESSIONS" delete claude "$C_RUN" >/dev/null 2>&1; then fail "delete removed a running conversation"; else [[ $? -eq 65 ]] || fail "delete of a running conversation should exit 65"; fi
 [[ -f "${PROJ}/${C_RUN}.jsonl" ]] || fail "running conversation's transcript was removed"
@@ -2944,6 +2965,156 @@ eval "set -- $("$MCP" launch-args claude "_x,.dot,-dash,${max_name}")"
   || fail "claude launch args for hub-valid names: $*"
 for odd in _x .dot -dash "$max_name"; do rm "${MCP_DIR}/${odd}.json"; done
 pass "names_match_the_hub_rule"
+
+# --- ai-todo-open --mcp --------------------------------------------------------------
+# Uses the server files above and the ai-todo-hook fake hub (HUB_LOG, CONF).
+
+MCP_ARGV="${SANDBOX}/mcp-argv.log"
+MCP_TOOL="${SANDBOX}/bin/mcp-tool"
+# Records its arguments as [one][two words][three], then stays alive like a real session.
+cat >"$MCP_TOOL" <<EOF
+#!/bin/sh
+for a in "\$@"; do printf '[%s]' "\$a"; done >>"$MCP_ARGV"
+echo >>"$MCP_ARGV"
+exec sleep 300
+EOF
+chmod +x "$MCP_TOOL"
+open_mcp() { AI_TODO_HUB_CONF="$CONF" AI_TODO_OPEN_DETACH=1 "$OPEN" "$@"; }
+mcp_posts() { grep -c '"path": "/api/conversations/mcp"' "$HUB_LOG" || true; }
+wait_for_mcp_posts() { # <count>
+  for _ in $(seq 1 50); do [[ $(mcp_posts) -ge $1 ]] && return 0; sleep 0.1; done
+  fail "expected $1 MCP reports, got $(mcp_posts): $(cat "$HUB_LOG")"
+}
+last_mcp_post() { # the newest MCP report: its auth header, then the body as sorted compact JSON
+  python3 - "$HUB_LOG" <<'PY'
+import json, sys
+reqs = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+req = [r for r in reqs if r["path"] == "/api/conversations/mcp"][-1]
+print(req["auth"], json.dumps(req["body"], sort_keys=True, separators=(",", ":")))
+PY
+}
+wait_for_argv_lines() { # <count>
+  for _ in $(seq 1 50); do [[ -f "$MCP_ARGV" && $(wc -l <"$MCP_ARGV") -ge $1 ]] && return 0; sleep 0.1; done
+  fail "the fake tool did not start (expected $1 argv lines)"
+}
+
+C_M1=aaaaaaaa-0000-4000-8000-000000000001
+posts=$(mcp_posts)
+out="$(AI_TODO_CLAUDE_BIN="$MCP_TOOL" open_mcp --mcp grafana,gone "ai/claude/todo-mcp1" '~/programming' "$C_M1" 2>"${SANDBOX}/mcp-open.err")" \
+  || fail "claude open with --mcp failed: $(cat "${SANDBOX}/mcp-open.err")"
+[[ "$out" == created ]] || fail "claude open with --mcp printed '$out'"
+wait_for_argv_lines 1
+[[ "$(tail -n 1 "$MCP_ARGV")" == "[--strict-mcp-config][--mcp-config][${MCP_DIR}/grafana.json][--session-id][${C_M1}]" ]] \
+  || fail "claude argv with --mcp: $(tail -n 1 "$MCP_ARGV")"
+grep -q '^ai-todo-mcp: skipped gone: ' "${SANDBOX}/mcp-open.err" || fail "skipped server not shown: $(cat "${SANDBOX}/mcp-open.err")"
+wait_for_mcp_posts $((posts + 1))
+[[ "$(last_mcp_post)" == "Bearer s3cret {\"mcp_servers\":[\"grafana\"],\"session_id\":\"${C_M1}\",\"tool\":\"claude\"}" ]] \
+  || fail "claude MCP report: $(last_mcp_post)"
+pass "open_claude_with_mcp"
+
+posts=$(mcp_posts)
+lines=$(wc -l <"$MCP_ARGV")
+out="$(CODEX_HOME="$MCP_CODEX" AI_TODO_CODEX_BIN="$MCP_TOOL" open_mcp --mcp grafana "ai/codex/todo-mcp2" '~/programming' "$X_LINKED" codex)"
+[[ "$out" == resumed ]] || fail "codex resume with --mcp printed '$out'"
+wait_for_argv_lines $((lines + 1))
+argv="$(tail -n 1 "$MCP_ARGV")"
+[[ "$argv" == "[-c]"*"[resume][${X_LINKED}]" ]] || fail "codex argv with --mcp: $argv"
+[[ "$argv" == *"[-c][mcp_servers.miro.enabled=false]"* && "$argv" == *'[-c][mcp_servers.grafana.command="/bin/sh"]'* ]] \
+  || fail "codex argv lacks the MCP overrides: $argv"
+wait_for_mcp_posts $((posts + 1))
+[[ "$(last_mcp_post)" == "Bearer s3cret {\"mcp_servers\":[\"grafana\"],\"session_id\":\"${X_LINKED}\",\"tool\":\"codex\"}" ]] \
+  || fail "codex MCP report: $(last_mcp_post)"
+pass "open_codex_resume_with_mcp"
+
+MCP_FRESH="${SANDBOX}/bin/codex-mcp-fresh"
+cat >"$MCP_FRESH" <<EOF
+#!/bin/sh
+mkdir -p "\$HOME/.codex/sessions/2026/10/25"
+echo '$META_CLI' > "\$HOME/.codex/sessions/2026/10/25/rollout-2026-10-25T00-00-00-NEWMCPX.jsonl"
+exec "$MCP_TOOL" "\$@"
+EOF
+chmod +x "$MCP_FRESH"
+posts=$(mcp_posts)
+lines=$(wc -l <"$MCP_ARGV")
+out="$(CODEX_HOME="$MCP_CODEX" AI_TODO_CODEX_BIN="$MCP_FRESH" open_mcp --mcp slack "ai/codex/todo-mcp3" '~/programming' - codex)"
+[[ "$out" == "created NEWMCPX" ]] || fail "fresh codex with --mcp printed '$out'"
+wait_for_argv_lines $((lines + 1))
+[[ "$(tail -n 1 "$MCP_ARGV")" == "[-c]"*'[-c][mcp_servers.slack.command="/bin/sh"]'* ]] || fail "fresh codex argv: $(tail -n 1 "$MCP_ARGV")"
+wait_for_mcp_posts $((posts + 1))
+[[ "$(last_mcp_post)" == 'Bearer s3cret {"mcp_servers":["slack"],"session_id":"NEWMCPX","tool":"codex"}' ]] \
+  || fail "fresh codex MCP report: $(last_mcp_post)"
+pass "open_codex_new_reports_after_id"
+
+posts=$(mcp_posts)
+lines=$(wc -l <"$MCP_ARGV")
+out="$(AI_TODO_CLAUDE_BIN="$MCP_TOOL" open_mcp --mcp slack "ai/claude/todo-mcp1" '~/programming' "$C_M1")"
+[[ "$out" == attach ]] || fail "second open with another --mcp printed '$out'"
+sleep 0.5
+[[ $(wc -l <"$MCP_ARGV") -eq $lines ]] || fail "attach started the tool again: $(tail -n 1 "$MCP_ARGV")"
+[[ $(mcp_posts) -eq $posts ]] || fail "attach reported MCP servers: $(last_mcp_post)"
+pass "open_attach_ignores_mcp"
+
+# The tmux server's environment lacks the variable; the env file supplies it (a plain
+# VAR=value line is exported too). The wrapper execs, so the pane's process is the tool.
+printf 'ATLASSIAN_EMAIL=x@y\n' >"${MCP_DIR}/env"
+ENV_TOOL="${SANDBOX}/bin/env-tool"
+ENV_OUT="${SANDBOX}/env-tool.out"
+printf '#!/bin/sh\nprintf "%%s\\n" "${ATLASSIAN_EMAIL:-unset}" >"%s"\nsleep 300\n' "$ENV_OUT" >"$ENV_TOOL"
+chmod +x "$ENV_TOOL"
+ESOCK="${SOCK}-mcpenv"
+env -i HOME="$HOME" PATH=/usr/bin:/bin "$(command -v tmux)" -L "$ESOCK" new-session -d -s keep -- sleep 300
+C_M5=aaaaaaaa-0000-4000-8000-000000000005
+env -u ATLASSIAN_EMAIL AI_TODO_TMUX_SOCKET="$ESOCK" AI_TODO_CLAUDE_BIN="$ENV_TOOL" AI_TODO_HUB_CONF="$CONF" AI_TODO_OPEN_DETACH=1 \
+  "$OPEN" --mcp grafana "ai/claude/todo-mcp5" '~/programming' "$C_M5" >/dev/null || fail "open with the env file failed"
+for _ in $(seq 1 50); do [[ -s "$ENV_OUT" ]] && break; sleep 0.1; done
+env_seen="$(cat "$ENV_OUT" 2>/dev/null || true)"
+pane_pid="$(tmux -L "$ESOCK" list-panes -t "=ai/claude/todo-mcp5" -F '#{pane_pid}')"
+pane_args="$(ps -o args= -p "$pane_pid")"
+[[ "$env_seen" == "x@y" ]] || fail "the tool did not get ATLASSIAN_EMAIL from the env file: '$env_seen'"
+[[ "$pane_args" == "/bin/sh ${ENV_TOOL} "*" --session-id ${C_M5}" ]] || fail "the pane's process is not the tool: $pane_args"
+pass "open_sources_mcp_env_file"
+
+# No --mcp: today's arguments, no env file wrapper and no report, even with the env file present.
+C_M6=aaaaaaaa-0000-4000-8000-000000000006
+posts=$(mcp_posts)
+lines=$(wc -l <"$MCP_ARGV")
+rm -f "$ENV_OUT"
+env -u ATLASSIAN_EMAIL AI_TODO_TMUX_SOCKET="$ESOCK" AI_TODO_CLAUDE_BIN="$ENV_TOOL" AI_TODO_HUB_CONF="$CONF" AI_TODO_OPEN_DETACH=1 \
+  "$OPEN" "ai/claude/todo-mcp6" '~/programming' "$C_M6" >/dev/null || fail "open without --mcp failed"
+for _ in $(seq 1 50); do [[ -s "$ENV_OUT" ]] && break; sleep 0.1; done
+env_seen="$(cat "$ENV_OUT" 2>/dev/null || true)"
+tmux -L "$ESOCK" kill-server >/dev/null 2>&1 || true
+[[ "$env_seen" == unset ]] || fail "open without --mcp read the env file: $env_seen"
+out="$(AI_TODO_CLAUDE_BIN="$MCP_TOOL" open_mcp "ai/claude/todo-mcp6" '~/programming' "$C_M6")"
+[[ "$out" == created ]] || fail "open without --mcp printed '$out'"
+wait_for_argv_lines $((lines + 1))
+[[ "$(tail -n 1 "$MCP_ARGV")" == "[--session-id][${C_M6}]" ]] || fail "argv without --mcp: $(tail -n 1 "$MCP_ARGV")"
+sleep 0.5
+[[ $(mcp_posts) -eq $posts ]] || fail "open without --mcp reported MCP servers: $(last_mcp_post)"
+rm "${MCP_DIR}/env"
+pass "open_without_mcp_unchanged"
+
+C_M7=aaaaaaaa-0000-4000-8000-000000000007
+posts=$(mcp_posts)
+lines=$(wc -l <"$MCP_ARGV")
+out="$(AI_TODO_CLAUDE_BIN="$MCP_TOOL" open_mcp --mcp '' "ai/claude/todo-mcp7" '~/programming' "$C_M7")"
+[[ "$out" == created ]] || fail "open with --mcp '' printed '$out'"
+wait_for_argv_lines $((lines + 1))
+[[ "$(tail -n 1 "$MCP_ARGV")" == "[--strict-mcp-config][--session-id][${C_M7}]" ]] || fail "argv with --mcp '': $(tail -n 1 "$MCP_ARGV")"
+wait_for_mcp_posts $((posts + 1))
+[[ "$(last_mcp_post)" == "Bearer s3cret {\"mcp_servers\":[],\"session_id\":\"${C_M7}\",\"tool\":\"claude\"}" ]] \
+  || fail "empty MCP report: $(last_mcp_post)"
+pass "open_empty_mcp_is_strict"
+
+# Cursor has no MCP selection: --mcp is accepted and ignored, nothing is reported.
+U_M8=aaaaaaaa-0000-4000-8000-000000000008
+mkdir -p "${HOME}/.cursor/chats/workspace/${U_M8}"
+posts=$(mcp_posts)
+out="$(open_mcp --mcp grafana "ai/cursor/todo-mcp8" '~/programming' "$U_M8" cursor)" || fail "cursor open with --mcp failed"
+[[ "$out" == resumed ]] || fail "cursor open with --mcp printed '$out'"
+sleep 0.5
+[[ $(mcp_posts) -eq $posts ]] || fail "cursor open reported MCP servers: $(last_mcp_post)"
+pass "open_cursor_ignores_mcp"
 
 [[ ! -e "${SANDBOX}/guard.log" ]] || fail "a test reached a real binary: $(cat "${SANDBOX}/guard.log")"
 echo "All ${passes} todo script tests passed."
