@@ -331,7 +331,8 @@ fn duplicate_in(conn: &Connection, todo_id: &str, source_id: &str, tool: &str, l
         session_id.as_deref(),
         true,
         Some(label),
-        source.mcp_servers.as_deref(),
+        // Cursor has no MCP selection.
+        if tool == "cursor" { None } else { source.mcp_servers.as_deref() },
     )?
     else {
         return Err(OpenError::NoTmuxName);
@@ -1599,6 +1600,19 @@ mod tests {
         .await;
         assert_eq!(status, actix_web::http::StatusCode::OK, "{created}");
         assert_eq!(created["mcp_servers"], serde_json::json!(["grafana"]));
+        let (status, cursor) = post_json(
+            &pool,
+            "/api/todos/t1/conversations",
+            serde_json::json!({"source_id": source_id, "tool": "cursor", "label": "cursor copy"}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{cursor}");
+        assert!(cursor.get("mcp_servers").is_none(), "{cursor}");
+        let conn = pool.get().unwrap();
+        let stored: Option<String> = conn
+            .query_row("SELECT mcp_servers FROM conversations WHERE id = ?1", [cursor["id"].as_str().unwrap()], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, None);
     }
 
     #[actix_web::test]
