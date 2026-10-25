@@ -13,6 +13,19 @@ enum TodoRename {
         return title
     }
 
+    /// Todos whose rename is still running, on any screen. Another rename of the same todo is
+    /// ignored until it finishes, so its computers can't end up with different names.
+    static var inFlight: Set<String> = []
+
+    /// What the dialog says about the todo's conversations, or nil when it has none to rename.
+    static func dialogMessage(renamableCount: Int) -> String? {
+        switch renamableCount {
+        case 0: nil
+        case 1: "Its conversation gets the same name."
+        default: "Its \(renamableCount) conversations get the same name."
+        }
+    }
+
     /// The todo was renamed but a conversation on `computer` kept its old name.
     static func conversationFailureMessage(_ error: Error, computer: Computer) -> String {
         "The todo has its new name, but its conversation on \(computer.name) kept the old one. "
@@ -65,8 +78,10 @@ private struct TodoRenamePresenter: ViewModifier {
                 Button("Rename") { save(todo) }
                     .disabled(TodoRename.title(from: text, current: todo.title) == nil)
             } message: { todo in
-                if !RemoteConversations.renamable(store.conversations(forTodo: todo.id)).isEmpty {
-                    Text("Its conversation gets the same name.")
+                if let message = TodoRename.dialogMessage(
+                    renamableCount: RemoteConversations.renamable(store.conversations(forTodo: todo.id)).count
+                ) {
+                    Text(message)
                 }
             }
             .onChange(of: target?.id) {
@@ -92,30 +107,48 @@ private struct TodoRenamePresenter: ViewModifier {
     }
 
     private func save(_ todo: Todo) {
-        guard let title = TodoRename.title(from: text, current: todo.title) else { return }
-        let conversations = RemoteConversations.renamable(store.conversations(forTodo: todo.id))
+        guard let title = TodoRename.title(from: text, current: todo.title),
+              !TodoRename.inFlight.contains(todo.id) else { return }
+        TodoRename.inFlight.insert(todo.id)
+        // Looked up now, on the main actor: host entities stay here.
+        let jobs = RemoteConversations.renamable(store.conversations(forTodo: todo.id)).map { conversation in
+            (conversation, Result { try HostLookup.config(for: conversation.computer, in: hosts) })
+        }
+        let store = store
         Task {
+            defer { TodoRename.inFlight.remove(todo.id) }
             do {
                 try await store.rename(todo, to: title)
             } catch {
                 failure = .init(title: "Couldn't Rename Todo", message: TodoHubStore.message(for: error))
                 return
             }
-            // One computer's failure doesn't stop the others; the first one is reported.
-            var firstFailure: ConversationRowActions.Failure?
-            for conversation in conversations {
-                do {
-                    let config = try HostLookup.config(for: conversation.computer, in: hosts)
-                    try await store.renameConversation(conversation, to: title, config: config)
-                } catch {
-                    firstFailure = firstFailure ?? .init(
-                        title: "Conversation Not Renamed",
-                        message: TodoRename.conversationFailureMessage(error, computer: conversation.computer),
-                        setUpAccess: ConversationRowActions.computerToSetUp(after: error)
-                    )
+            // Every computer at once: one that's asleep doesn't hold up the others.
+            let failures = await withTaskGroup(of: (Computer, Error)?.self) { group in
+                for (conversation, config) in jobs {
+                    group.addTask {
+                        do {
+                            try await store.renameConversation(conversation, to: title, config: config.get())
+                            return nil
+                        } catch {
+                            return (conversation.computer, error)
+                        }
+                    }
                 }
+                var failures: [(Computer, Error)] = []
+                for await failure in group {
+                    if let failure { failures.append(failure) }
+                }
+                return failures
             }
-            failure = firstFailure
+            // The first one is reported.
+            if let (computer, error) = failures.first {
+                failure = .init(
+                    title: "Conversation Not Renamed",
+                    message: TodoRename.conversationFailureMessage(error, computer: computer),
+                    setUpAccess: ConversationRowActions.computerToSetUp(after: error)
+                )
+            }
         }
     }
 }

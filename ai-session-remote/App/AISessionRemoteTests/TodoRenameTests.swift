@@ -41,6 +41,12 @@ final class TodoRenameTests: XCTestCase {
         XCTAssertNotNil(error(1, "codex couldn't rename x: no rollout found"))
     }
 
+    func testDialogMessageCountsTheConversations() {
+        XCTAssertNil(TodoRename.dialogMessage(renamableCount: 0))
+        XCTAssertEqual(TodoRename.dialogMessage(renamableCount: 1), "Its conversation gets the same name.")
+        XCTAssertEqual(TodoRename.dialogMessage(renamableCount: 3), "Its 3 conversations get the same name.")
+    }
+
     func testConversationFailureSaysTheTodoWasRenamed() {
         XCTAssertEqual(
             TodoRename.conversationFailureMessage(SSHRemoteError.unreachable, computer: mac),

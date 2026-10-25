@@ -658,12 +658,14 @@ def cmd_rename(args):
         # line another process appended the next time it reads the end of its transcript.
         line = json.dumps({"type": "custom-title", "customTitle": name, "sessionId": sid}, ensure_ascii=False)
         for path in session["paths"]:
-            with open(path, "rb+") as f:
+            with open(path, "rb") as f:
                 f.seek(0, os.SEEK_END)
                 ends_with_newline = f.tell() == 0
                 if not ends_with_newline:
                     f.seek(-1, os.SEEK_END)
                     ends_with_newline = f.read(1) == b"\n"
+            # O_APPEND: one write at the end even while Claude appends to the same file.
+            with open(path, "ab") as f:
                 f.write(("" if ends_with_newline else "\n").encode() + (line + "\n").encode("utf-8"))
     else:
         codex_set_name(sid, name)

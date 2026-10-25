@@ -283,7 +283,13 @@ done
 if "$SESSIONS" rename claude "$C_NEW" $' \n ' >/dev/null 2>&1; then fail "rename accepted a blank name"; else [[ $? -eq 64 ]] || fail "blank name should exit 64"; fi
 if "$SESSIONS" rename claude "$C_DEL" "gone" >/dev/null 2>&1; then fail "rename of a missing conversation succeeded"; else [[ $? -eq 66 ]] || fail "missing conversation should exit 66"; fi
 [[ "$(cat "${PROJ}/${C_NEW}.jsonl")" == "$before" ]] || fail "a refused rename changed the transcript"
-pass "rename claude appends a custom-title line (whitespace collapsed); bad args 64, missing 66"
+# A transcript without a final newline (Claude mid-write) gets one before our line.
+printf '{"type":"user","message":{"content":"x"}}' >>"${PROJ}/${C_OLD}.jsonl"
+"$SESSIONS" rename claude "$C_OLD" "Half line" >/dev/null || fail "claude rename after a partial line failed"
+tail -2 "${PROJ}/${C_OLD}.jsonl" | python3 -c 'import json,sys; [json.loads(l) for l in sys.stdin]' \
+  || fail "rename after a partial line broke the JSONL: $(tail -2 "${PROJ}/${C_OLD}.jsonl")"
+touch -t "$OLD" "${PROJ}/${C_OLD}.jsonl"  # still old for the prune tests below
+pass "rename claude appends a custom-title line (whitespace collapsed, after a newline); bad args 64, missing 66"
 
 FAKE_APP_SERVER="${SANDBOX}/bin/fake-codex-rename"
 RENAME_LOG="${SANDBOX}/codex-rename.log"
