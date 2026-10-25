@@ -878,9 +878,17 @@ struct ConversationFrame: View {
     }
 
     /// Ends the tmux session (the hub row stays open, unlike Close), then attaches again:
-    /// `ai-todo-open` resumes the conversation with the servers it now has.
+    /// `ai-todo-open` resumes the conversation with the servers it now has. A Codex
+    /// conversation with no rollout yet can't be resumed, so it keeps running as it is.
     private func restart(_ conversation: Conversation) {
         perform("Couldn't Restart \(RowText.toolName(conversation.tool))") { _, config in
+            let hasRollout = ServersRestart.checksRollout(conversation.tool)
+                ? try? await store.codexHasRollout(conversation, config: config)
+                : nil
+            guard ServersRestart.decide(tool: conversation.tool, hasRollout: hasRollout) == .restart else {
+                failure = ActionFailure(title: "Servers Saved", message: ServersRestart.notStartedMessage)
+                return
+            }
             try await store.endSession(conversation, config: config)
             loader.restart(conversation)
         }
@@ -1116,6 +1124,24 @@ private struct ToolBand: View {
         .modifier(TerminalColorScheme())
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// Whether Servers… restarts the tool after saving a new selection.
+enum ServersRestart: Equatable {
+    case restart
+    /// Saved only: the new servers apply when the tool next starts.
+    case saveOnly
+
+    static let notStartedMessage =
+        "Codex can't restart a conversation before its first message. The new servers apply when it next starts."
+
+    /// Only Codex needs the rollout check: Claude starts with `--session-id` when it has no transcript.
+    static func checksRollout(_ tool: String) -> Bool { tool == "codex" }
+
+    /// `hasRollout` is nil when the check didn't run or failed: restart as usual rather than block.
+    static func decide(tool: String, hasRollout: Bool?) -> ServersRestart {
+        checksRollout(tool) && hasRollout == false ? .saveOnly : .restart
     }
 }
 

@@ -716,6 +716,23 @@ final class TodoHubStore {
         }
     }
 
+    /// Whether a Codex conversation has a rollout on the computer. Codex 0.163+ writes none
+    /// until the first message, and `ai-todo-open` can't resume one without it.
+    func codexHasRollout(
+        _ conversation: Conversation, config: HostConnectionConfig,
+        exec: (HostConnectionConfig, String) async throws -> SSHExecResult = { try await NIOSSHClient().exec($0, command: $1) }
+    ) async throws -> Bool {
+        #if DEBUG
+        if demo != nil { return true } // demo data: nothing runs on a computer
+        #endif
+        let result = try await exec(config, TmuxCommandBuilder.codexHasRollout(sessionId: conversation.sessionId))
+        switch result.exitCode {
+        case 0: return true
+        case 1: return false
+        default: throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
+        }
+    }
+
     // MARK: Linking existing conversations
     //
     // These throw: they run from sheets that show their own errors.
@@ -944,7 +961,6 @@ final class TodoHubStore {
         todos.removeAll { $0.id == id }
     }
 
-    /// Shows a project the hub just returned, in the hub's order (name ignoring case, then id).
     private func upsert(_ computer: Computer) {
         localChanges += 1
         if let index = computers.firstIndex(where: { $0.id == computer.id }) {
@@ -954,6 +970,7 @@ final class TodoHubStore {
         }
     }
 
+    /// Shows a project the hub just returned, in the hub's order (name ignoring case, then id).
     private func upsert(_ project: Project) {
         localChanges += 1
         projects.removeAll { $0.id == project.id }

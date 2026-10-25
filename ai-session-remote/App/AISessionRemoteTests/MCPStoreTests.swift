@@ -136,6 +136,48 @@ final class MCPStoreTests: XCTestCase {
         XCTAssertFalse(TodoHubStore.shouldRetryWithoutServers(failed, servers: ["a"], tool: "codex"))
     }
 
+    func testCodexHasRolloutMapsExitCodes() async throws {
+        let store = makeStore()
+        let codex = Conversation(
+            id: "c2", todoId: "t1", computer: mac, cwd: "~", tool: "codex", tmuxName: "ai/codex/todo-t1",
+            sessionId: "019f", status: .idle
+        )
+        let config = HostConnectionConfig(host: "mac", port: 22, username: "me", privateKeyPEM: Data())
+        var commands: [String] = []
+        let present = try await store.codexHasRollout(codex, config: config) { _, command in
+            commands.append(command)
+            return SSHExecResult(exitCode: 0, stdout: "", stderr: "")
+        }
+        XCTAssertTrue(present)
+        XCTAssertEqual(commands, [TmuxCommandBuilder.codexHasRollout(sessionId: "019f")])
+        let absent = try await store.codexHasRollout(codex, config: config) { _, _ in SSHExecResult(exitCode: 1, stdout: "", stderr: "") }
+        XCTAssertFalse(absent)
+        do {
+            _ = try await store.codexHasRollout(codex, config: config) { _, _ in SSHExecResult(exitCode: 255, stdout: "", stderr: "x") }
+            XCTFail("exit 255 should throw")
+        } catch {}
+    }
+
+    func testServersRestartSkipsOnlyCodexWithoutARollout() {
+        XCTAssertEqual(ServersRestart.decide(tool: "codex", hasRollout: false), .saveOnly)
+        XCTAssertEqual(ServersRestart.decide(tool: "codex", hasRollout: true), .restart)
+        // The check failed: restart as before rather than block.
+        XCTAssertEqual(ServersRestart.decide(tool: "codex", hasRollout: nil), .restart)
+        XCTAssertEqual(ServersRestart.decide(tool: "claude", hasRollout: nil), .restart)
+        XCTAssertEqual(ServersRestart.decide(tool: "claude", hasRollout: false), .restart)
+        XCTAssertTrue(ServersRestart.checksRollout("codex"))
+        XCTAssertFalse(ServersRestart.checksRollout("claude"))
+    }
+
+    func testOnlyAComputerWithoutAListClearsTheSelection() {
+        XCTAssertTrue(MCPServerListState.clearsSelection(.unavailable, hasList: false))
+        // An existing but empty folder: a [] default stays [].
+        XCTAssertFalse(MCPServerListState.clearsSelection(.unavailable, hasList: true))
+        XCTAssertFalse(MCPServerListState.clearsSelection(.unavailable, hasList: nil))
+        XCTAssertFalse(MCPServerListState.clearsSelection(.failed, hasList: false))
+        XCTAssertFalse(MCPServerListState.clearsSelection(.loaded([]), hasList: true))
+    }
+
     func testHasMCPListIsUnknownUntilListed() {
         XCTAssertNil(makeStore().hasMCPList(mac))
     }

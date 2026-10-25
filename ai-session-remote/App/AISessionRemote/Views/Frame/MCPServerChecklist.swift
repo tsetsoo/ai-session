@@ -91,6 +91,12 @@ enum MCPServerListState: Equatable {
         }
     }
 
+    /// A computer with no list at all (no helper) can't manage servers, so the selection becomes
+    /// nil. An empty server folder keeps it: a `[]` default still means "none".
+    static func clearsSelection(_ state: MCPServerListState, hasList: Bool?) -> Bool {
+        state == .unavailable && hasList == false
+    }
+
     static let toolOwnTitle = "Tool's own servers"
 
     /// The ticked names in a line, for a row that opens the checklist. `unmanaged` is what nil reads as.
@@ -270,7 +276,7 @@ struct MCPServersStartRow: View {
             state = await MCPServerListState.load(on: computer, store: store) {
                 try HostLookup.config(for: computer, in: hosts)
             }
-            if state == .unavailable { selection = nil }
+            if MCPServerListState.clearsSelection(state, hasList: store.hasMCPList(computer)) { selection = nil }
         }
         .sheet(isPresented: $showingChecklist) {
             if case let .loaded(servers) = state {
