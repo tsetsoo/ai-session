@@ -159,6 +159,7 @@ fi
 # The last status sent per thread, so a delayed re-check can tell the turn moved on.
 state_dir="$HOME/.ai-remote/hook-state"
 state_file="$state_dir/codex-$sid"
+sent_file="$state_file.sent"
 state=$status
 [ "$status" = waiting ] && state="waiting $prompt_time.$$"
 mkdir -p "$state_dir" 2>/dev/null && printf '%s\n' "$state" >"$state_file" 2>/dev/null
@@ -169,9 +170,10 @@ post() {
     if [ -n "$TODO_API_TOKEN" ]; then
       printf 'header = "Authorization: Bearer %s"\n' "$TODO_API_TOKEN"
     fi
-  } | curl -s -o /dev/null --connect-timeout 2 --max-time 3 -K - \
+  } | curl -fsS -o /dev/null --connect-timeout 2 --max-time 3 -K - \
     -H 'Content-Type: application/json' --data-binary "$body" \
-    "${TODO_HUB_URL%/}/api/conversations/status"
+    "${TODO_HUB_URL%/}/api/conversations/status" || return
+  [ "$(cat "$state_file" 2>/dev/null)" = "$state" ] && printf '%s\n' "$status" >"$sent_file"
 }
 
 # waiting only: a keystroke after the prompt means it was answered at the terminal.
@@ -189,9 +191,10 @@ recheck() {
   post
 }
 
+post >/dev/null 2>&1
 if [ "${AI_TODO_HOOK_SYNC:-}" = 1 ]; then
-  { post; recheck; } >/dev/null 2>&1
+  recheck >/dev/null 2>&1
 else
-  { post; recheck; } </dev/null >/dev/null 2>&1 &
+  recheck </dev/null >/dev/null 2>&1 &
 fi
 exit 0

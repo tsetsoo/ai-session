@@ -25,7 +25,7 @@ public enum TodoGrouping: String, CaseIterable, Sendable {
 
     /// What a todo's conversation is doing, in the Conversations tab's order.
     public enum Status: String, CaseIterable, Sendable, Identifiable {
-        case needsYou, review, working, noConversation
+        case needsYou, review, working, ready, noConversation
 
         public var id: String { rawValue }
 
@@ -34,6 +34,7 @@ public enum TodoGrouping: String, CaseIterable, Sendable {
             case .needsYou: "Needs you"
             case .review: "Ready for review"
             case .working: "Working"
+            case .ready: "Ready"
             case .noConversation: "No conversation"
             }
         }
@@ -44,6 +45,7 @@ public enum TodoGrouping: String, CaseIterable, Sendable {
             case .needsYou: self = .needsYou
             case .idle: self = .review
             case .working: self = .working
+            case .ready: self = .ready
             case .closed, nil: self = .noConversation
             }
         }

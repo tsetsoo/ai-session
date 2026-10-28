@@ -35,7 +35,7 @@ pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, crea
 const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
         c.status_message, c.status_updated_at, c.created_at, c.label, c.mcp_servers,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default,
-        s.session_id IS NOT NULL, s.project_id
+        s.session_id IS NOT NULL, s.project_id, c.status_revision, c.reviewed
      FROM conversations c JOIN computers m ON m.id = c.computer_id
      LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id";
 
@@ -138,6 +138,8 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
         status: ConversationStatus::parse(&status).unwrap_or(ConversationStatus::Unknown),
         status_message: row.get(7)?,
         status_updated_at: row.get(8)?,
+        status_revision: row.get(22)?,
+        reviewed: row.get(23)?,
         created_at: row.get(9)?,
         label: row.get(10)?,
         mcp_servers: mcp_from_sql(row, 11)?,
@@ -170,7 +172,7 @@ pub(crate) fn get_computer(conn: &Connection, id: &str) -> rusqlite::Result<Opti
 
 pub(crate) fn most_urgent(conversations: &[Conversation]) -> Option<&Conversation> {
     conversations.iter().min_by(|left, right| {
-        urgency(left.status).cmp(&urgency(right.status)).then_with(|| {
+        urgency(left).cmp(&urgency(right)).then_with(|| {
             let left_at = left.status_updated_at.as_deref().unwrap_or("");
             let right_at = right.status_updated_at.as_deref().unwrap_or("");
             right_at.cmp(left_at)
@@ -179,12 +181,13 @@ pub(crate) fn most_urgent(conversations: &[Conversation]) -> Option<&Conversatio
     })
 }
 
-fn urgency(status: ConversationStatus) -> u8 {
-    match status {
+fn urgency(conversation: &Conversation) -> u8 {
+    match conversation.status {
         ConversationStatus::Waiting => 0,
         ConversationStatus::Busy => 1,
-        ConversationStatus::Idle | ConversationStatus::Unknown => 2,
-        ConversationStatus::Closed => 3,
+        ConversationStatus::Idle if !conversation.reviewed => 2,
+        ConversationStatus::Idle | ConversationStatus::Unknown => 3,
+        ConversationStatus::Closed => 4,
     }
 }
 
@@ -671,7 +674,11 @@ pub(crate) fn set_status_db(
         .optional()?;
     let Some((todo_id, old)) = current else { return Ok(None) };
     tx.execute(
-        "UPDATE conversations SET status = ?1, status_message = ?2, status_updated_at = datetime('now')
+        "UPDATE conversations SET
+         status_revision = status_revision + CASE WHEN status != ?1 THEN 1 ELSE 0 END,
+         reviewed = CASE WHEN status != ?1 THEN 0 ELSE reviewed END,
+         status_updated_at = CASE WHEN status != ?1 OR status_message IS NOT ?2 THEN datetime('now') ELSE status_updated_at END,
+         status = ?1, status_message = ?2
          WHERE tool = ?3 AND session_id = ?4 AND status != 'closed'",
         params![req.status.as_str(), req.message, tool, session_id],
     )?;
@@ -1159,6 +1166,28 @@ fn close_conversation_id(conn: &Connection, id: &str) -> Result<Conversation, Op
     load_conversation_by_id(conn, id)?.ok_or(OpenError::TodoNotFound)
 }
 
+fn review_conversation(conn: &Connection, id: &str, revision: i64) -> Result<Conversation, OpenError> {
+    conn.execute(
+        "UPDATE conversations SET reviewed = 1 WHERE id = ?1 AND status = 'idle' AND status_revision = ?2",
+        params![id, revision],
+    )?;
+    load_conversation_by_id(conn, id)?.ok_or(OpenError::TodoNotFound)
+}
+
+pub async fn review_conversation_by_id(
+    pool: web::Data<DbPool>, path: web::Path<String>,
+    body: web::Json<todo_shared::ReviewConversationRequest>, broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match review_conversation(&conn, &path.into_inner(), body.status_revision) {
+        Ok(c) => { broadcaster.send(); HttpResponse::Ok().json(c) }
+        Err(e) => open_error(e),
+    }
+}
+
 pub async fn close_conversation(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
@@ -1432,6 +1461,8 @@ mod tests {
             status,
             status_message: None,
             status_updated_at: updated.map(str::to_string),
+            status_revision: 0,
+            reviewed: false,
             created_at: created.into(),
             project_id: None,
             label: None,
@@ -1448,6 +1479,15 @@ mod tests {
         let earlier = sample("a", ConversationStatus::Waiting, Some("2026-10-20T08:00:00Z"), "2026-10-16T09:00:00Z");
         let later = sample("b", ConversationStatus::Waiting, Some("2026-10-20T09:00:00Z"), "2026-10-16T08:00:00Z");
         assert_eq!(most_urgent(&[earlier, later]).map(|c| c.id.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn unread_result_outranks_newer_reviewed_and_unknown_conversations() {
+        let unread = sample("unread", ConversationStatus::Idle, Some("2026-10-20T08:00:00Z"), "2026-10-16T08:00:00Z");
+        let mut read = sample("read", ConversationStatus::Idle, Some("2026-10-20T12:00:00Z"), "2026-10-16T12:00:00Z");
+        read.reviewed = true;
+        let unknown = sample("unknown", ConversationStatus::Unknown, Some("2026-10-20T13:00:00Z"), "2026-10-16T13:00:00Z");
+        assert_eq!(most_urgent(&[read, unread, unknown]).map(|c| c.id.as_str()), Some("unread"));
     }
 
     #[test]
@@ -1828,6 +1868,33 @@ mod tests {
         assert_eq!(second.old, ConversationStatus::Busy);
         let repeat = set_status_db(&conn, "claude", &conv.session_id, &waiting).unwrap().unwrap();
         assert_eq!(repeat.old, ConversationStatus::Waiting);
+    }
+
+    #[test]
+    fn review_acknowledges_only_the_displayed_result_and_rearms_on_next_turn() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let idle = ConversationStatusRequest { status: ConversationStatus::Idle, ..Default::default() };
+        let busy = ConversationStatusRequest { status: ConversationStatus::Busy, ..Default::default() };
+        set_status_db(&conn, "claude", &conv.session_id, &idle).unwrap();
+        let first = load_conversation_by_id(&conn, &conv.id).unwrap().unwrap();
+        assert!(!first.reviewed);
+        assert!(review_conversation(&conn, &conv.id, first.status_revision).unwrap().reviewed);
+        // Duplicate Stop/notify heartbeats must not make a read result unread again.
+        set_status_db(&conn, "claude", &conv.session_id, &idle).unwrap();
+        let repeated = load_conversation_by_id(&conn, &conv.id).unwrap().unwrap();
+        assert!(repeated.reviewed);
+        assert_eq!(repeated.status_revision, first.status_revision);
+        assert_eq!(repeated.status_updated_at, first.status_updated_at);
+        set_status_db(&conn, "claude", &conv.session_id, &busy).unwrap();
+        assert!(!review_conversation(&conn, &conv.id, first.status_revision).unwrap().reviewed);
+        set_status_db(&conn, "claude", &conv.session_id, &idle).unwrap();
+        let second = review_conversation(&conn, &conv.id, first.status_revision).unwrap();
+        assert!(!second.reviewed, "late acknowledgement must not clear a newer result");
+        assert!(second.status_revision > first.status_revision);
+        assert!(review_conversation(&conn, &conv.id, second.status_revision).unwrap().reviewed);
     }
 
     #[test]

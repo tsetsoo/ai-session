@@ -41,7 +41,7 @@ public final class ConversationBoard: Sendable {
             let changed = Self.changeDate(conversation)
             changedByListKey[conversation.listKey] = changed
             let alive = Self.tmuxAlive(conversation, changed: changed, liveTmux: liveTmux, listedAt: listedAt)
-            let status = ConversationDisplayStatus(conversation.status, tmuxAlive: alive)
+            let status = ConversationDisplayStatus(conversation.status, tmuxAlive: alive, reviewed: conversation.reviewed)
             statusByListKey[conversation.listKey] = status
             byTodo[conversation.todoId, default: []].append((conversation, status))
             if !todoIDs.contains(conversation.todoId) {
@@ -87,7 +87,7 @@ public final class ConversationBoard: Sendable {
                 guard !doneTodoIDs.contains(conversation.todoId) else { break }
                 review.append(conversation)
                 reviewByComputer[computer, default: 0] += 1
-            case .closed:
+            case .ready, .closed:
                 break
             }
         }

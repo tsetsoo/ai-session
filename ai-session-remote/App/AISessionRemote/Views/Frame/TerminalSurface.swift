@@ -28,16 +28,53 @@ enum TerminalHitTarget: Equatable {
 }
 
 #if os(macOS)
-/// Cmd+C reaches this view when it is first responder. A drag under tmux mouse tracking is
-/// not a local selection, and SwiftTerm's `copy` still clears the pasteboard in that case.
-private final class LocalClipboardTerminalView: TerminalView {
+/// Dragging selects locally even when tmux or the agent requests mouse events. Option-click
+/// still reaches the remote program; wheel events keep their normal remote scrolling.
+final class LocalClipboardTerminalView: TerminalView {
     /// The conversation's tool, for the bytes Shift+Return sends.
     var tool: String?
     private var keyMonitor: Any?
+    private var reportsPointerGesture = false
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        reportsPointerGesture = event.modifierFlags.contains(.option)
+        withPointerReporting { super.mouseDown(with: event) }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        withPointerReporting { super.mouseDragged(with: event) }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        withPointerReporting { super.mouseUp(with: event) }
+        reportsPointerGesture = false
+    }
+
+    private func withPointerReporting(_ action: () -> Void) {
+        let previous = allowMouseReporting
+        allowMouseReporting = previous && reportsPointerGesture
+        defer { allowMouseReporting = previous }
+        action()
+    }
+
+    func feedPreservingSelection(_ bytes: ArraySlice<UInt8>) {
+        // SwiftTerm clears selection at the start of every feed while mouse reporting is
+        // enabled. Suppress it only during output so remote wheel gestures still work.
+        let previous = allowMouseReporting
+        allowMouseReporting = false
+        defer { allowMouseReporting = previous }
+        feed(byteArray: bytes)
+    }
 
     override func copy(_ sender: Any) {
-        guard selectionActive else { return }
-        super.copy(sender)
+        copySelection(to: .general)
+    }
+
+    func copySelection(to clipboard: NSPasteboard) {
+        guard selectionActive, let text = getSelection(), !text.isEmpty else { return }
+        clipboard.clearContents()
+        clipboard.setString(text, forType: .string)
     }
 
     /// Keys SwiftTerm gets wrong on the Mac. Shift+Return sends a plain carriage return, so the
@@ -232,6 +269,7 @@ final class TerminalHandle {
     func send(_ bytes: [UInt8]) { coordinator?.send(bytes) }
     /// Types `text` as a paste (bracketed when the program asked for it), then Return.
     func submit(_ text: String) { coordinator?.submit(text) }
+    func sendMessage(_ text: String) async -> Bool { await coordinator?.sendMessage(text) ?? false }
     /// `submit`, after waiting for a tool that is still starting to turn bracketed paste on.
     /// False when nothing was typed: the wait was cancelled or the connection went.
     func submitWhenPasteReady(_ text: String) async -> Bool {

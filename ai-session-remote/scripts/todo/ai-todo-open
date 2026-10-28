@@ -13,8 +13,9 @@
 #
 # claude (default): `claude --resume <id>` if the transcript exists, else
 #                   `claude --session-id <id>` to start it with that id.
-# codex:            `codex resume <id>` when the conversation exists.
+# codex:            `codex resume <id> --approve-for-me` when the conversation exists.
 #                   `-` starts a new one and waits for the id Codex assigns.
+#                   Both use automatic approval review with the workspace-write sandbox.
 # cursor:           `agent --resume <id>` for a chat already stored under
 #                   ~/.cursor/chats. `-` starts a new one with `--new-session-id`
 #                   and waits for that chat directory. A logged-out CLI fails
@@ -303,7 +304,7 @@ if [ "$tool" = codex ]; then
   [ -n "$codex_bin" ] || { echo "codex not found" >&2; exit 90; }
   if [ "$fresh" = 1 ]; then
     mode=created
-    set -- "$codex_bin"
+    set -- "$codex_bin" --approve-for-me
   elif [ -z "$(find "$HOME/.codex/sessions" -name "rollout-*-$sid.jsonl" -print 2>/dev/null | head -n 1)" ]; then
     # Started but never sent a message: Codex 0.163+ keeps no rollout for it and
     # `codex resume` refuses it. Nothing was said in it, so a new one loses nothing.
@@ -318,7 +319,7 @@ if [ "$tool" = codex ]; then
     exit 94
   else
     mode=resumed
-    set -- "$codex_bin" resume "$sid"
+    set -- "$codex_bin" resume "$sid" --approve-for-me
   fi
 elif [ "$tool" = cursor ]; then
   agent_bin=${AI_TODO_AGENT_BIN:-$(command -v agent || true)}

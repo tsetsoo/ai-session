@@ -405,7 +405,7 @@ XNAME="ai/codex/todo-0f3a9c21"
 out="$(AI_TODO_OPEN_DETACH=1 "$OPEN" "$XNAME" '~/programming' "$X_LINKED" codex)"
 [[ "$out" == resumed ]] || fail "codex open printed '$out', expected resumed"
 for _ in $(seq 1 50); do [[ -s "$CODEX_LOG" ]] && break; sleep 0.1; done
-[[ "$(cat "$CODEX_LOG")" == "${HOME}/programming resume ${X_LINKED}" ]] || fail "unexpected codex start: $(cat "$CODEX_LOG")"
+[[ "$(cat "$CODEX_LOG")" == "${HOME}/programming resume ${X_LINKED} --approve-for-me" ]] || fail "unexpected codex start: $(cat "$CODEX_LOG")"
 [[ "$(AI_TODO_OPEN_DETACH=1 "$OPEN" "$XNAME" '~/programming' "$X_LINKED" codex)" == attach ]] || fail "second codex open did not attach"
 if AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-nothere" '~/programming' 019f0000-0000-7000-8000-0000000000ff codex >/dev/null 2>&1; then
   fail "codex open accepted an unknown conversation"
@@ -458,6 +458,7 @@ META_SUB='{"type":"session_meta","payload":{"source":{"subagent":{"other":"guard
 FRESH_CODEX="${SANDBOX}/bin/codex-fresh"
 cat >"$FRESH_CODEX" <<EOF
 #!/bin/sh
+[ "\$*" = --approve-for-me ] || exit 99
 mkdir -p "\$HOME/.codex/sessions/2026/10/20"
 echo '$META_CLI' > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-NEWCODX.jsonl"
 exec sleep 300
@@ -1283,6 +1284,22 @@ codex_hook tool PostToolUse ',"tool_name":"Bash"'
 codex_hook tool PostToolUse ',"tool_name":"Bash"'
 [[ $(wc -l <"$HUB_LOG") -eq $((before + 1)) && "$(last_status)" == busy ]] || fail "codex tool posts wrong: $(tail -2 "$HUB_LOG")"
 pass "hook --codex tool posts busy once after notify's idle (shared hook-state/codex-<id>)"
+
+# A rejected delivery must not make the next tool event skip busy. The hook itself waits
+# for HTTP, even without the synchronous re-check test flag.
+codex_hook idle Stop
+: >"${SANDBOX}/not-found-once"
+before=$(wc -l <"$HUB_LOG")
+codex_hook tool PreToolUse
+codex_hook tool PostToolUse
+codex_hook tool PostToolUse
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 2)) ]] || fail "failed busy delivery was not retried exactly once"
+codex_hook idle Interrupt
+[[ "$(last_status)" == idle ]] || fail "Codex interruption did not clear working"
+before=$(wc -l <"$HUB_LOG")
+printf '{"session_id":"%s"}' "$X_LINKED" | env -u AI_TODO_HOOK_SYNC AI_TODO_TMUX_SESSION="$XTMUX" "$HOOK" --codex busy
+[[ $(wc -l <"$HUB_LOG") -eq $((before + 1)) && "$(last_status)" == busy ]] || fail "hook returned before delivery finished"
+pass "status delivery finishes before hook exit, retries after HTTP errors, and clears interrupted turns"
 
 before=$(wc -l <"$HUB_LOG")
 printf '{"session_id":"%s"}' "$X_LINKED" | AI_TODO_TMUX_SESSION="ai/claude/todo-0f3a9c21" "$HOOK" --codex idle
@@ -2408,9 +2425,11 @@ hooks = json.load(open(sys.argv[1]))["hooks"]
 cmds = {e: [h["command"] for g in groups for h in g["hooks"]] for e, groups in hooks.items()}
 b = sys.argv[2]
 assert cmds == {"Stop": ["say done", f"{b} --codex idle"], "UserPromptSubmit": [f"{b} --codex busy"],
-                "PermissionRequest": [f"{b} --codex waiting"], "PostToolUse": [f"{b} --codex tool"]}, cmds
+                "PermissionRequest": [f"{b} --codex waiting"], "PostToolUse": [f"{b} --codex tool"],
+                "PreToolUse": [f"{b} --codex tool"], "Interrupt": [f"{b} --codex idle"],
+                "SessionEnd": [f"{b} --codex idle"]}, cmds
 PY
-grep -q "codex hooks: trusted 4" <<<"$out" || fail "install did not report trusting the codex hooks: $out"
+grep -q "codex hooks: trusted 7" <<<"$out" || fail "install did not report trusting the codex hooks: $out"
 python3 - "$CODEX_TRUST_LOG" "${CX}/hooks.json" <<'PY' || fail "codex trust writes wrong: $(cat "$CODEX_TRUST_LOG")"
 import json, sys
 writes = [json.loads(l) for l in open(sys.argv[1])]
@@ -2418,7 +2437,7 @@ assert len(writes) == 1, writes  # the re-run found them trusted already
 edit = writes[0]["edits"][0]
 assert edit["keyPath"] == "hooks.state" and edit["mergeStrategy"] == "upsert", edit
 keys = sorted(edit["value"])
-assert keys == sorted(f"{sys.argv[2]}:{e}" for e in ["PermissionRequest:0:0", "PostToolUse:0:0", "Stop:1:0", "UserPromptSubmit:0:0"]), keys
+assert keys == sorted(f"{sys.argv[2]}:{e}" for e in ["PermissionRequest:0:0", "PostToolUse:0:0", "PreToolUse:0:0", "Interrupt:0:0", "SessionEnd:0:0", "Stop:1:0", "UserPromptSubmit:0:0"]), keys
 assert all(v["trusted_hash"].startswith("sha256:") for v in edit["value"].values())
 PY
 CODEX_HOME="$CX" "$INSTALL" --uninstall >/dev/null
@@ -2836,6 +2855,17 @@ status=0
 "$TRANSCRIPT" cursor "$U_EMPTY" >"${SANDBOX}/transcript-empty.out" 2>"${SANDBOX}/transcript-empty.err" || status=$?
 [[ $status -eq 94 && ! -s "${SANDBOX}/transcript-empty.out" ]] || fail "textless transcript exit was $status: $(cat "${SANDBOX}/transcript-empty.err")"
 pass "transcript_without_text_is_missing"
+python3 "${SCRIPT_DIR}/test-transcript.py" || fail "structured chat transcript regression tests"
+"$TRANSCRIPT" claude "$SID_A" --json >"${SANDBOX}/chat.json"
+python3 - "${SANDBOX}/chat.json" <<'PY' || fail "structured transcript CLI response"
+import json, sys
+messages = json.load(open(sys.argv[1]))
+assert messages == [
+    {"id": "0", "role": "user", "text": "hello from the source"},
+    {"id": "1", "role": "assistant", "text": "hello back"},
+], messages
+PY
+pass "chat transcript preserves roles, blank lines and indentation"
 
 # --- ai-todo-mcp ------------------------------------------------------------------
 
@@ -3126,7 +3156,7 @@ out="$(CODEX_HOME="$MCP_CODEX" AI_TODO_CODEX_BIN="$MCP_TOOL" open_mcp --mcp graf
 [[ "$out" == resumed ]] || fail "codex resume with --mcp printed '$out'"
 wait_for_argv_lines $((lines + 1))
 argv="$(tail -n 1 "$MCP_ARGV")"
-[[ "$argv" == "[-c]"*"[resume][${X_LINKED}]" ]] || fail "codex argv with --mcp: $argv"
+[[ "$argv" == "[-c]"*"[resume][${X_LINKED}][--approve-for-me]" ]] || fail "codex argv with --mcp: $argv"
 [[ "$argv" == *"[-c][mcp_servers.miro.enabled=false]"* && "$argv" == *'[-c][mcp_servers.grafana.command="/bin/sh"]'* ]] \
   || fail "codex argv lacks the MCP overrides: $argv"
 wait_for_mcp_posts $((posts + 1))

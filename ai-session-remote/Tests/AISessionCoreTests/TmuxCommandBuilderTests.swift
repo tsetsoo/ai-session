@@ -173,6 +173,21 @@ final class TmuxCommandBuilderTests: XCTestCase {
         XCTAssertTrue(command.contains("'\"'\"'"))
     }
 
+    func testCodexSessionsUseAutomaticReviewWithTheWorkspaceSandbox() throws {
+        let name = try XCTUnwrap(SessionName(tool: .codex, slug: "demo"))
+        let template = try SessionMetadata.printfTemplate(
+            tool: .codex, cwd: "/tmp", title: "Demo", startedAt: Date(timeIntervalSince1970: 0)
+        )
+        let command = TmuxCommandBuilder.createSession(
+            name: name, cwd: "/tmp", binary: "/custom/codex", metadataTemplate: template
+        )
+        XCTAssertTrue(command.contains("command -v '/custom/codex'"))
+        XCTAssertTrue(command.hasSuffix("-- \"$p\" '--approve-for-me'"))
+        XCTAssertTrue(template.contains("\"cli\":[\"%s\",\"--approve-for-me\"]"))
+        XCTAssertFalse(command.contains("danger-full-access"))
+        XCTAssertFalse(command.contains("dangerously-bypass"))
+    }
+
     func testShellQuotePathExpandsBareTilde() {
         XCTAssertEqual(TmuxCommandBuilder.shellQuotePath("~"), "\"$HOME\"")
     }
@@ -372,6 +387,14 @@ final class TranscriptCommandTests: XCTestCase {
         let result = try run(transcript)
         XCTAssertEqual(result.status, 0, result.stderr)
         XCTAssertEqual(result.stdout, "cursor abc\n")
+    }
+
+    func testChatRequestsStructuredTranscript() throws {
+        try helper("printf '%s\\n' \"$@\"")
+        try python3()
+        let result = try run(TmuxCommandBuilder.conversationTranscript(tool: "codex", sessionId: "abc", json: true))
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertEqual(result.stdout, "codex\nabc\n--json\n")
     }
 }
 #endif

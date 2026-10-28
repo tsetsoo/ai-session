@@ -271,7 +271,9 @@ if [ "$tool" = codex ]; then
 else
   state_file="$state_dir/$sid"
 fi
-if [ -n "$only_if_changed" ] && [ "$(cat "$state_file" 2>/dev/null)" = "$status" ]; then
+sent_file="$state_file.sent"
+if [ -n "$only_if_changed" ] && [ "$(cat "$state_file" 2>/dev/null)" = "$status" ] \
+    && [ "$(cat "$sent_file" 2>/dev/null)" = "$status" ]; then
   exit 0
 fi
 
@@ -304,9 +306,12 @@ post() {
     if [ -n "$TODO_API_TOKEN" ]; then
       printf 'header = "Authorization: Bearer %s"\n' "$TODO_API_TOKEN"
     fi
-  } | curl -s -o /dev/null --connect-timeout 2 --max-time 3 -K - \
+  } | curl -fsS -o /dev/null --connect-timeout 2 --max-time 3 -K - \
     -H 'Content-Type: application/json' --data-binary "$body" \
-    "${TODO_HUB_URL%/}/api/conversations/status"
+    "${TODO_HUB_URL%/}/api/conversations/status" || return
+  # Only successful delivery can suppress a later PostToolUse retry. A newer event may
+  # already have replaced the desired state while curl was in flight.
+  [ "$(cat "$state_file" 2>/dev/null)" = "$state" ] && printf '%s\n' "$status" >"$sent_file"
 }
 
 # waiting only: if a client typed after the prompt appeared, the prompt was answered at the
@@ -326,9 +331,12 @@ recheck() {
   post
 }
 
+# Finish the bounded HTTP request before returning. Hook runners can terminate descendants
+# on exit; backgrounding the request lost status updates even though hook-state said busy.
+post >/dev/null 2>&1
 if [ "${AI_TODO_HOOK_SYNC:-}" = 1 ]; then
-  { post; recheck; } >/dev/null 2>&1
+  recheck >/dev/null 2>&1
 else
-  { post; recheck; } </dev/null >/dev/null 2>&1 &
+  recheck </dev/null >/dev/null 2>&1 &
 fi
 exit 0

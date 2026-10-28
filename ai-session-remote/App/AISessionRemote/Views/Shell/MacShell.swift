@@ -357,7 +357,7 @@ struct MacShell: View {
         case .needsYou: .needsYou
         case .idle: .review
         case .working: .working
-        case .closed, nil: nil
+        case .ready, .closed, nil: nil
         }
         switch current {
         case .section(todo.section): return current

@@ -197,6 +197,12 @@ public struct TodoHubClient: Sendable {
         try await decode(Conversation.self, send("POST", "/api/conversations/\(escape(id))/close"))
     }
 
+    public func reviewConversation(id: String, statusRevision: Int) async throws -> Conversation {
+        struct Review: Encodable { let statusRevision: Int }
+        return try await decode(Conversation.self, send("POST", "/api/conversations/\(escape(id))/review",
+                                                      body: Review(statusRevision: statusRevision)))
+    }
+
     /// Forgets the todo's conversation on the hub (the next open starts a new one). Delete the
     /// conversation on the computer first if it should go away there too.
     public func deleteConversation(todoId: String) async throws {

@@ -185,7 +185,9 @@ fn conversations_ddl(table: &str) -> String {
             status_updated_at TEXT,
             created_at        TEXT NOT NULL DEFAULT (datetime('now')),
             label             TEXT,
-            mcp_servers       TEXT
+            mcp_servers       TEXT,
+            status_revision   INTEGER NOT NULL DEFAULT 0,
+            reviewed          INTEGER NOT NULL DEFAULT 0
         )"
     )
 }
@@ -329,9 +331,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///   is an optional name for a duplicate
 /// - v7: `conversations.mcp_servers`, `projects.mcp_default`, `computers.mcp_default`: JSON
 ///   arrays of MCP server names, NULL when nothing was chosen (additive)
+/// - v8: an idle result's reviewed flag and status revision (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -344,6 +347,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if conversations.as_deref().is_some_and(|sql| sql.contains("reviewed")) {
+        return Ok(8);
     }
     if conversations.as_deref().is_some_and(|sql| sql.contains("mcp_servers")) {
         return Ok(7);
@@ -416,8 +422,23 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 6 {
         if !backed_up {
             backup_before_migration(conn, db_path, 7)?;
+            backed_up = true;
         }
         migrate_v6_to_v7(conn)?;
+        version = 7;
+    }
+    if version == 7 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 8)?;
+        }
+        let tx = conn.unchecked_transaction()?;
+        if !column_exists(&tx, "conversations", "status_revision")? {
+            tx.execute_batch("ALTER TABLE conversations ADD COLUMN status_revision INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        if !column_exists(&tx, "conversations", "reviewed")? {
+            tx.execute_batch("ALTER TABLE conversations ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        tx.commit()?;
     }
     Ok(())
 }
@@ -1575,7 +1596,7 @@ mod tests {
 
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 7);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert_eq!(db.backups().len(), 1, "migrating backs up first");
         let read = |sql: &str| -> Option<String> { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(read("SELECT mcp_servers FROM conversations WHERE id = 'c1'"), None);
@@ -1754,6 +1775,40 @@ mod tests {
         assert_eq!(left, 1, "deleting a todo still cascades to its conversation");
         let fk_on: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
         assert_eq!(fk_on, 1);
+    }
+
+    #[test]
+    fn migrates_v7_results_as_unreviewed_and_preserves_conversations() {
+        let db = TestDb::new("migrate-v8");
+        {
+            let pool = db.pool();
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "INSERT INTO computers (id, name, hostname, username) VALUES ('mac', 'Mac', 'mac.local', 'me');
+                 INSERT INTO todos (id, section, title) VALUES ('t', 'Sp', 'Existing result');
+                 INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, status)
+                     VALUES ('c', 't', 'mac', '~/code', 'claude', 'ai/claude/todo-t', 's', 'idle');
+                 ALTER TABLE conversations DROP COLUMN status_revision;
+                 ALTER TABLE conversations DROP COLUMN reviewed;
+                 PRAGMA user_version = 7;",
+            ).unwrap();
+        }
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        let result: (String, i64, bool) = conn.query_row(
+            "SELECT status, status_revision, reviewed FROM conversations WHERE id = 'c'", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(result, ("idle".into(), 0, false));
+        assert_eq!(db.backups().len(), 1);
+        let backup = Connection::open(&db.backups()[0]).unwrap();
+        assert_eq!(user_version(&backup), 7);
+        assert!(!column_exists(&backup, "conversations", "reviewed").unwrap());
+        drop(conn);
+        drop(pool);
+        drop(db.pool());
+        assert_eq!(db.backups().len(), 1, "reopening must not migrate again");
     }
 
     #[test]

@@ -32,11 +32,24 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(b.status(forTodo: "t"), .needsYou)
     }
 
+    func testUnreadResultOutranksNewerReviewedAndUnknownConversations() {
+        let unread = conv("t", .idle, created: "2026-10-16T09:00:00Z", id: "unread")
+        var read = conv("t", .idle, created: "2026-10-16T12:00:00Z", id: "read")
+        read.reviewed = true
+        let unknown = conv("t", .unknown, created: "2026-10-16T13:00:00Z", id: "unknown")
+        let b = board([read, unread, unknown])
+        XCTAssertEqual(ConversationIndex.mostUrgent([read, unread, unknown])?.id, unread.id)
+        XCTAssertEqual(b.status(forTodo: "t"), .idle)
+        XCTAssertEqual(b.review.map(\.id), [unread.id])
+    }
+
     func testDisplayStatusMapping() {
         XCTAssertEqual(ConversationDisplayStatus(.busy, tmuxAlive: nil), .working)
         XCTAssertEqual(ConversationDisplayStatus(.waiting, tmuxAlive: nil), .needsYou)
         XCTAssertEqual(ConversationDisplayStatus(.idle, tmuxAlive: nil), .idle)
-        XCTAssertEqual(ConversationDisplayStatus(.unknown, tmuxAlive: nil), .idle)
+        XCTAssertEqual(ConversationDisplayStatus(.unknown, tmuxAlive: nil), .ready)
+        XCTAssertEqual(ConversationDisplayStatus(.idle, tmuxAlive: nil, reviewed: true), .ready)
+        XCTAssertEqual(ConversationDisplayStatus(.busy, tmuxAlive: nil, reviewed: true), .working)
         XCTAssertEqual(ConversationDisplayStatus(.closed, tmuxAlive: nil), .closed)
         XCTAssertEqual(ConversationDisplayStatus(.busy, tmuxAlive: true), .working)
         for s in ConversationStatus.allCases {
@@ -118,14 +131,26 @@ final class BoardTests: XCTestCase {
         let b = board([early, late, unknown, conv("busy", .busy), conv("wait", .waiting),
                        conv("gone", .idle, tmux: "gone"), conv("busy2", .busy, computer: box)],
                       live: ["m1": ["t-early", "t-late", "t-unk", "t-busy", "t-wait"]])
-        XCTAssertEqual(b.review.map(\.todoId), ["early", "late", "unk"])
+        XCTAssertEqual(b.review.map(\.todoId), ["early", "late"])
         XCTAssertEqual(Set(b.working.map(\.todoId)), ["busy", "busy2"])
         XCTAssertEqual(b.needsYou.map(\.todoId), ["wait"])
-        XCTAssertEqual(b.reviewCount(computerID: "m1"), 3)
+        XCTAssertEqual(b.reviewCount(computerID: "m1"), 2)
         XCTAssertEqual(b.workingCount(computerID: "m1"), 1)
         XCTAssertEqual(b.workingCount(computerID: "m2"), 1)
         XCTAssertEqual(b.conversation(atShortcut: 1, in: b.review)?.todoId, "early")
         XCTAssertNil(b.conversation(atShortcut: 4, in: b.review))
+        assertAgrees(b)
+    }
+
+    func testReviewedResultStaysOpenAndLeavesReviewCounts() {
+        var read = conv("read", .idle)
+        read.reviewed = true
+        let b = board([read, conv("unread", .idle)])
+        XCTAssertEqual(b.status(of: read), .ready)
+        XCTAssertEqual(b.review.map(\.todoId), ["unread"])
+        XCTAssertEqual(b.reviewCount(computerID: "m1"), 1)
+        XCTAssertEqual(b.openCount(computerID: "m1"), 2)
+        XCTAssertTrue(b.open.contains(read))
         assertAgrees(b)
     }
 
@@ -292,7 +317,7 @@ final class BoardTests: XCTestCase {
         }
         let doneTodoIDs = Set(todos.filter(\.completed).map(\.id))
         let reviewable = board.open.filter {
-            !(board.status(of: $0) == .idle && doneTodoIDs.contains($0.todoId))
+            board.status(of: $0) != .ready && !(board.status(of: $0) == .idle && doneTodoIDs.contains($0.todoId))
         }
         XCTAssertEqual(
             Set((board.needsYou + board.working + board.review).map(\.listKey)), Set(reviewable.map(\.listKey)),

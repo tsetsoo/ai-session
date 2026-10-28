@@ -145,7 +145,9 @@ targets:
       DEVELOPMENT_TEAM: 233QTK6KCL
       # No restricted entitlements, so a provisioning profile is not required.
       CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
-    scheme: {}
+    scheme:
+      testTargets:
+        - AISessionRemoteMacTests
     dependencies:
       - package: AISessionRemote
         product: AISessionCore
@@ -157,5 +159,19 @@ targets:
         product: NIOPosix
       - package: swift-crypto
         product: Crypto
+      - package: SwiftTerm
+        product: SwiftTerm
+
+  AISessionRemoteMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: App/AISessionRemoteMacTests
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+      SWIFT_VERSION: "5.9"
+      TEST_HOST: "$(BUILT_PRODUCTS_DIR)/AI Session Remote.app/Contents/MacOS/AI Session Remote"
+    dependencies:
+      - target: AISessionRemoteMac
       - package: SwiftTerm
         product: SwiftTerm

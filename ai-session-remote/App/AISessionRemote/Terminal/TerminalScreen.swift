@@ -165,7 +165,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
         switch hiddenOutput.receive(bytes, isShown: isShown) {
         case .feed(let pending):
             guard !pending.isEmpty else { return }
-            terminalView?.feed(byteArray: pending[...])
+            feedTerminal(pending[...])
         case .hold:
             break
         }
@@ -180,9 +180,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
             resizeDebouncer.cancelPending()
             return
         }
-        guard let terminalView else { return }
+        guard terminalView != nil else { return }
         if let pending = hiddenOutput.flushHeld(isShown: true) {
-            terminalView.feed(byteArray: pending[...])
+            feedTerminal(pending[...])
         }
         sendThemeNotice()
     }
@@ -286,10 +286,20 @@ final class TerminalCoordinator: TerminalViewDelegate {
         coalescer.discard()
         themeReporter.reset()
         if let fix = contrastGuard.reset() {
-            terminalView?.feed(byteArray: fix[...])
+            feedTerminal(fix[...])
         }
         session?.disconnect()
         session = nil
+    }
+
+    private func feedTerminal(_ bytes: ArraySlice<UInt8>) {
+        #if os(macOS)
+        if let view = terminalView as? LocalClipboardTerminalView {
+            view.feedPreservingSelection(bytes)
+            return
+        }
+        #endif
+        terminalView?.feed(byteArray: bytes)
     }
 
     func send(_ bytes: [UInt8]) {
@@ -320,6 +330,21 @@ final class TerminalCoordinator: TerminalViewDelegate {
         }
         guard !Task.isCancelled, state == .connected else { return false }
         submit(text)
+        return true
+    }
+
+    /// Chat drafts are sent only as bracketed pastes. Preserve all whitespace, including
+    /// final blank lines, and never send a multiline draft as individual terminal commands.
+    @MainActor
+    func sendMessage(_ text: String) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(8)
+        while !isBracketedPasteMode, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled, state == .connected else { return false }
+        }
+        guard !Task.isCancelled, state == .connected, session != nil, isShown, isBracketedPasteMode else { return false }
+        send(TerminalPaste.bytes(for: text, bracketed: true) + [0x0D])
+        onUserInput?()
         return true
     }
 

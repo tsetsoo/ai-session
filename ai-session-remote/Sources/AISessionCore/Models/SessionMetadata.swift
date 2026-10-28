@@ -83,7 +83,7 @@ public extension SessionMetadata {
         startedAt: Date
     ) throws -> String {
         let templated = SessionMetadata(
-            tool: tool, cwd: cwd, title: title, startedAt: startedAt, cli: [cliPlaceholder]
+            tool: tool, cwd: cwd, title: title, startedAt: startedAt, cli: [cliPlaceholder] + tool.defaultArguments
         )
         let json = String(decoding: try templated.jsonData(), as: UTF8.self)
 

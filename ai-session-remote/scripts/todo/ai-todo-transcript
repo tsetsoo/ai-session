@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print one conversation's user and assistant text. Does not call a model.
 
-Usage: ai-todo-transcript <claude|codex|cursor> <session_id>
+Usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json]
 Exit 94 when that conversation has no transcript on this machine, or one with no text.
 """
 import glob
@@ -11,7 +11,7 @@ import sys
 
 HOME = os.path.expanduser("~")
 CLAUDE_PROJECTS = os.path.join(HOME, ".claude", "projects")
-CODEX_SESSIONS = os.path.join(HOME, ".codex", "sessions")
+CODEX_SESSIONS = os.path.join(os.environ.get("CODEX_HOME", os.path.join(HOME, ".codex")), "sessions")
 CURSOR_PROJECTS = os.path.join(HOME, ".cursor", "projects")
 
 
@@ -29,7 +29,7 @@ def read_jsonl(path):
 
 def text_of(content):
     if isinstance(content, str):
-        return content.strip()
+        return content if content.strip() else ""
     if isinstance(content, list):
         parts = []
         for part in content:
@@ -38,7 +38,7 @@ def text_of(content):
             if part.get("type") in ("text", "input_text", "output_text"):
                 value = part.get("text", "")
                 if isinstance(value, str) and value.strip():
-                    parts.append(value.strip())
+                    parts.append(value)
         return "\n".join(parts)
     return ""
 
@@ -50,7 +50,7 @@ def claude_lines(path):
         message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
         text = text_of(message.get("content"))
         if text:
-            yield text
+            yield {"role": entry["type"], "text": text}
 
 
 def codex_lines(path):
@@ -64,7 +64,7 @@ def codex_lines(path):
             continue
         text = text_of(payload.get("content"))
         if text:
-            yield text
+            yield {"role": payload["role"], "text": text}
 
 
 def cursor_lines(path):
@@ -78,14 +78,15 @@ def cursor_lines(path):
         for entry in read_jsonl(file):
             if not isinstance(entry, dict):
                 continue
-            role = entry.get("role") or entry.get("type")
+            message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+            role = entry.get("role") or message.get("role") or entry.get("type")
             if role not in ("user", "assistant"):
                 continue
             text = text_of(entry.get("content") or entry.get("text") or "")
             if not text and isinstance(entry.get("message"), dict):
                 text = text_of(entry["message"].get("content"))
             if text:
-                yield text
+                yield {"role": role, "text": text}
 
 
 def find_paths(tool, session_id):
@@ -98,13 +99,17 @@ def find_paths(tool, session_id):
             recursive=True,
         )
     if tool == "cursor":
-        return glob.glob(os.path.join(CURSOR_PROJECTS, "*", "agent-transcripts", escaped))
+        base = os.path.join(CURSOR_PROJECTS, "*", "agent-transcripts", escaped)
+        return glob.glob(base) + glob.glob(base + ".jsonl")
     return []
 
 
 def main(argv):
+    structured = len(argv) == 3 and argv[-1] == "--json"
+    if structured:
+        argv = argv[:2]
     if len(argv) != 2 or argv[0] not in ("claude", "codex", "cursor"):
-        print("usage: ai-todo-transcript <claude|codex|cursor> <session_id>", file=sys.stderr)
+        print("usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json]", file=sys.stderr)
         return 64
     tool, session_id = argv
     paths = find_paths(tool, session_id)
@@ -113,11 +118,14 @@ def main(argv):
         return 94
     path = max(paths, key=os.path.getmtime)
     reader = {"claude": claude_lines, "codex": codex_lines, "cursor": cursor_lines}[tool]
-    printed = False
-    for line in reader(path):
-        print(line)
-        printed = True
-    if not printed:
+    messages = list(reader(path))
+    if structured:
+        # Empty is valid for a new chat. IDs are stable while polling and preserve scroll position.
+        print(json.dumps([dict(message, id=str(i)) for i, message in enumerate(messages)], ensure_ascii=False))
+        return 0
+    for message in messages:
+        print(message["text"].strip())
+    if not messages:
         # A chat that only ended on an error has a file but nothing to hand over.
         print("no text in %s %s" % (tool, session_id), file=sys.stderr)
         return 94

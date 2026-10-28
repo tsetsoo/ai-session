@@ -39,6 +39,17 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "9B1143A440491FCAD4D9E5C1"
+               BuildableName = "AISessionRemoteMacTests.xctest"
+               BlueprintName = "AISessionRemoteMacTests"
+               ReferencedContainer = "container:AISessionRemote.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>

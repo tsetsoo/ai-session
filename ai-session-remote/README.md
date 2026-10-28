@@ -99,8 +99,11 @@ The installer is safe to re-run. It sets up:
   - Claude (the default) starts `claude --session-id <id>`, or `claude --resume <id>` once the
     conversation exists in `~/.claude/projects`, so a reboot or a closed conversation picks up
     where it left off.
-  - Codex runs `codex resume <id>` for a linked, existing Codex conversation. It exits 94 if
-    there is none, because Codex can't start a new conversation with a chosen id.
+  - Codex runs `codex resume <id> --approve-for-me` for a linked, existing conversation,
+    or `codex --approve-for-me` for a new one. New and resumed Codex sessions use automatic
+    approval review with the workspace-write sandbox. Attaching keeps a running session's
+    current permissions. This requires a Codex CLI that supports `--approve-for-me`.
+    It exits 94 for a missing conversation id, because Codex can't start one with a chosen id.
 - `~/.ai-remote/bin/ai-todo-sessions`: lists, deletes and prunes this computer's Claude Code and
   Codex conversations, so the app can link existing ones to todos.
   - `list --json [--tool claude|codex] [--limit N]` prints the newest first, with title, folder,

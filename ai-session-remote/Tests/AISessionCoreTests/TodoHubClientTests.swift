@@ -99,6 +99,24 @@ final class TodoHubClientTests: XCTestCase {
         XCTAssertEqual(mappings.first?.computer.id, "f3dde920-1744-4b76-9104-2c2b078ee3d9")
     }
 
+    func testReviewSendsDisplayedRevisionAndDecodesAcknowledgement() async throws {
+        var response = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(Self.conversationJSON.utf8)) as? [String: Any])
+        response["status"] = "idle"
+        response["status_revision"] = 7
+        response["reviewed"] = true
+        let body = String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self)
+        StubURLProtocol.handler = { _ in .init(status: 200, body: body) }
+
+        let reviewed = try await client().reviewConversation(id: "c1", statusRevision: 7)
+        let request = try XCTUnwrap(StubURLProtocol.requests.last)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/api/conversations/c1/review")
+        let sent = try XCTUnwrap(request.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        XCTAssertEqual(sent["status_revision"] as? Int, 7)
+        XCTAssertTrue(reviewed.reviewed)
+        XCTAssertEqual(reviewed.statusRevision, 7)
+    }
+
     func testOpenSendsTheToolAndSessionUpdateSendsTheId() async throws {
         StubURLProtocol.handler = { _ in .init(status: 200, body: Self.conversationJSON) }
         _ = try await client().openConversation(todoId: "t1", tool: "codex")

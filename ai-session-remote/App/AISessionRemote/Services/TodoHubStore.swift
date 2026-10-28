@@ -582,6 +582,22 @@ final class TodoHubStore {
         )
     }
 
+    func conversationMessages(of conversation: Conversation, config: HostConnectionConfig) async throws -> [ConversationMessage] {
+        #if DEBUG
+        if DemoFixtures.isEnabled {
+            return [
+                ConversationMessage(id: "0", role: .user, text: "Can you explain the change and show an example?"),
+                ConversationMessage(id: "1", role: .assistant, text: "Long replies now wrap to your phone’s width. You can select a few words, or copy the entire message using Copy above.\n\nBlank lines and indentation stay intact when you copy:\n\n    if ready {\n        send(message)\n    }\n\nReturn in the message box adds a new line. Tap Send when you’re ready."),
+            ]
+        }
+        #endif
+        let output = try await remoteStdout(
+            TmuxCommandBuilder.conversationTranscript(tool: conversation.tool, sessionId: conversation.sessionId, json: true),
+            config: config, computerName: conversation.computer.name
+        )
+        return try JSONDecoder().decode([ConversationMessage].self, from: Data(output.utf8))
+    }
+
     /// A one-shot summary. The model is a new `claude -p`, not the conversation being duplicated.
     func summarizeConversation(_ conversation: Conversation, config: HostConnectionConfig) async throws -> String {
         try await remoteStdout(
@@ -668,6 +684,29 @@ final class TodoHubStore {
 
     private func remember(_ conversation: Conversation) {
         conversations[Self.storageKey(conversation)] = conversation
+    }
+
+    /// Opening an idle result acknowledges only that result. A response racing with a
+    /// new busy/idle turn must not overwrite the newer status already received by the app.
+    func review(_ conversation: Conversation) async {
+        #if DEBUG
+        if DemoFixtures.isEnabled { return }
+        #endif
+        guard conversation.status == .idle, !conversation.reviewed, !conversation.id.isEmpty,
+              !isOffline, let client = hubClient() else { return }
+        do {
+            let updated = try await client.reviewConversation(id: conversation.id, statusRevision: conversation.statusRevision)
+            let key = Self.storageKey(conversation)
+            if let current = conversations[key], current.statusRevision == updated.statusRevision,
+               current.status == updated.status {
+                localChanges += 1
+                remember(updated)
+            }
+            refreshSoon()
+        } catch {
+            // An older/offline hub leaves the result unacknowledged; it must never vanish
+            // from review only on this device while the write hasn't succeeded.
+        }
     }
 
     private func forget(_ conversation: Conversation) {

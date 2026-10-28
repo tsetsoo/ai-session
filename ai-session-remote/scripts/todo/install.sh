@@ -151,7 +151,8 @@ kind = sys.argv[6]
 name = os.path.basename(path)
 if kind == "codex":
     # Codex has no Notification event; PermissionRequest fires when it asks for approval.
-    ours = {"UserPromptSubmit": "busy", "PermissionRequest": "waiting", "Stop": "idle", "PostToolUse": "tool"}
+    ours = {"UserPromptSubmit": "busy", "PreToolUse": "tool", "PermissionRequest": "waiting",
+            "Stop": "idle", "Interrupt": "idle", "SessionEnd": "idle", "PostToolUse": "tool"}
     prefix = f"{bin_dir}/ai-todo-hook --codex"
 else:
     ours = {"UserPromptSubmit": "busy", "Notification": "waiting", "Stop": "idle", "PostToolUse": "tool"}

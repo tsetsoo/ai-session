@@ -80,7 +80,7 @@ public enum RowText {
             guard let since = date(conversation.statusUpdatedAt) else { return status.label }
             let elapsed = now.timeIntervalSince(since)
             return elapsed < 60 ? "Finished just now" : "Finished \(shortInterval(elapsed)) ago"
-        case .closed:
+        case .ready, .closed:
             return status.label
         }
     }

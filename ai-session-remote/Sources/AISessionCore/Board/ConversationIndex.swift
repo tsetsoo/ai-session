@@ -12,12 +12,12 @@ public enum DuplicateName {
 
 /// Which conversation of a todo is the one to open, and the status that todo shows.
 public enum ConversationIndex {
-    /// Needs you, then working, then idle, then closed. A tie goes to the later status
+    /// Needs you, then working, then unread idle, then ready, then closed. A tie goes to the later status
     /// change, then the later start, then the smaller id.
     public static func mostUrgent(_ conversations: [Conversation]) -> Conversation? {
         conversations.min { left, right in
-            let leftRank = urgency(left.status)
-            let rightRank = urgency(right.status)
+            let leftRank = urgency(left)
+            let rightRank = urgency(right)
             if leftRank != rightRank { return leftRank < rightRank }
             let leftAt = left.statusUpdatedAt ?? ""
             let rightAt = right.statusUpdatedAt ?? ""
@@ -27,12 +27,13 @@ public enum ConversationIndex {
         }
     }
 
-    private static func urgency(_ status: ConversationStatus) -> Int {
-        switch status {
+    private static func urgency(_ conversation: Conversation) -> Int {
+        switch conversation.status {
         case .waiting: return 0
         case .busy: return 1
-        case .idle, .unknown: return 2
-        case .closed: return 3
+        case .idle: return conversation.reviewed ? 3 : 2
+        case .unknown: return 3
+        case .closed: return 4
         }
     }
 }

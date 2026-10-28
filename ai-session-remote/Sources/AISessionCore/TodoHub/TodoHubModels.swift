@@ -113,6 +113,8 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var status: ConversationStatus
     public var statusMessage: String?
     public var statusUpdatedAt: String?
+    public var statusRevision: Int
+    public var reviewed: Bool
     public var createdAt: String
     /// The project of the conversation's session (absent when none, and from older servers).
     public var projectId: String?
@@ -143,7 +145,9 @@ public struct Conversation: Codable, Equatable, Sendable {
         createdAt: String = "",
         projectId: String? = nil,
         label: String? = nil,
-        mcpServers: [String]? = nil
+        mcpServers: [String]? = nil,
+        statusRevision: Int = 0,
+        reviewed: Bool = false
     ) {
         self.id = id
         self.todoId = todoId
@@ -159,12 +163,15 @@ public struct Conversation: Codable, Equatable, Sendable {
         self.projectId = projectId
         self.label = label
         self.mcpServers = mcpServers
+        self.statusRevision = statusRevision
+        self.reviewed = reviewed
     }
 
     // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
     private enum CodingKeys: String, CodingKey {
         case id, todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
         case status, statusMessage, statusUpdatedAt, createdAt, projectId, label, mcpServers
+        case statusRevision, reviewed
     }
 
     public init(from decoder: Decoder) throws {
@@ -185,6 +192,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         status = try c.decode(ConversationStatus.self, forKey: .status)
         statusMessage = try c.decodeIfPresent(String.self, forKey: .statusMessage)
         statusUpdatedAt = try c.decodeIfPresent(String.self, forKey: .statusUpdatedAt)
+        statusRevision = try c.decodeIfPresent(Int.self, forKey: .statusRevision) ?? 0
+        reviewed = try c.decodeIfPresent(Bool.self, forKey: .reviewed) ?? false
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
         projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
         label = try c.decodeIfPresent(String.self, forKey: .label)
@@ -203,6 +212,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         try c.encode(status, forKey: .status)
         try c.encodeIfPresent(statusMessage, forKey: .statusMessage)
         try c.encodeIfPresent(statusUpdatedAt, forKey: .statusUpdatedAt)
+        try c.encode(statusRevision, forKey: .statusRevision)
+        try c.encode(reviewed, forKey: .reviewed)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encodeIfPresent(projectId, forKey: .projectId)
         try c.encodeIfPresent(label, forKey: .label)

@@ -75,6 +75,9 @@ struct ConversationFrame: View {
     @State private var isDuplicating = false
     /// Typing a duplicate's hand-off once the new tool takes pastes. Cancelled when the frame goes.
     @State private var handoffTask: Task<Void, Never>?
+    #if os(iOS)
+    @AppStorage("conversation.phoneChat") private var showsChat = true
+    #endif
 
     init(
         todo: Todo,
@@ -171,12 +174,19 @@ struct ConversationFrame: View {
             waitingFocus.readyChanged(isReady: id != nil, status: liveStatus)
         }
         .onDisappear { handoffTask?.cancel() }
+        #if os(iOS)
+        .onChange(of: showsChat) { _, chat in
+            if !chat, isFrontmost, terminal.isConnected { reviewOpenedConversation() }
+        }
+        #endif
         .onChange(of: terminal.connectionState) { _, state in
             if state == .connected { deliverDuplicateText() }
+            if state == .connected, isFrontmost { reviewOpenedConversation() }
             guard state == .connected, waitingFocus.connected() else { return }
             focusTerminalWhenWaiting()
         }
         .onChange(of: isFrontmost) { _, front in
+            if front, terminal.isConnected { reviewOpenedConversation() }
             // Coming back to a terminal that is already connected: focus it when it is waiting.
             // One that is still connecting focuses itself when it connects.
             guard front, terminal.connectionState == .connected else { return }
@@ -351,11 +361,36 @@ struct ConversationFrame: View {
         case .preparing:
             onTerminalBackground(FrameStateBlock(showsProgress: true, title: preparingTitle))
         case let .ready(open):
-            let conversation = open.conversation
-            TerminalSurface(
+            #if os(iOS)
+            PhoneConversationView(
+                conversation: conversation ?? open.conversation, config: open.config, store: store,
+                terminal: terminal, isFrontmost: isFrontmost, needsApproval: liveStatus == .waiting,
+                showsChat: $showsChat
+            ) {
+                liveTerminal(open)
+            }
+            .id(open.surfaceID)
+            #else
+            liveTerminal(open)
+                .id(open.surfaceID)
+            #endif
+        case let .problem(problem):
+            onTerminalBackground(FrameStateView(
+                problem: problem,
+                actions: actions,
+                tool: conversation?.tool,
+                resumeCommand: conversation.map(ResumeCommand.string(for:))
+            ))
+        }
+    }
+
+    private func liveTerminal(_ open: OpenTodoConversation) -> some View {
+        let conversation = open.conversation
+        return TerminalSurface(
                 config: open.config,
                 mode: .attach(attachCommand(for: open)),
                 hostName: conversation.computer.name,
+                focusOnConnect: shouldFocusTerminal,
                 handle: terminal,
                 onConnectionFailed: { error in
                     let noted = SSHSignInRecord.problem(hostID: open.config.hostID)
@@ -369,16 +404,14 @@ struct ConversationFrame: View {
                 isFrontmost: isFrontmost,
                 makeTransport: makeTransport
             )
-            // Re-entering `.ready` for the same conversation and host must not reconnect.
-            .id(open.surfaceID)
-        case let .problem(problem):
-            onTerminalBackground(FrameStateView(
-                problem: problem,
-                actions: actions,
-                tool: conversation?.tool,
-                resumeCommand: conversation.map(ResumeCommand.string(for:))
-            ))
-        }
+    }
+
+    private var shouldFocusTerminal: Bool {
+        #if os(iOS)
+        !showsChat
+        #else
+        true
+        #endif
     }
 
     private var toolStep: some View {
@@ -693,6 +726,7 @@ struct ConversationFrame: View {
     /// After the surface's own focus-after-connect and whatever the list did with the click or
     /// key that selected this conversation.
     private func focusTerminalWhenWaiting() {
+        guard shouldFocusTerminal else { return }
         #if DEBUG
         // Screenshots: `-uiDemoKeyboard down` keeps the soft keyboard away.
         if DemoFixtures.isEnabled, DemoFixtures.value(after: "-uiDemoKeyboard") == "down" { return }
@@ -700,7 +734,7 @@ struct ConversationFrame: View {
         Task {
             try? await Task.sleep(for: .milliseconds(250))
             // Not from under the ⌘K palette's search field; closing it brings focus back.
-            guard appModel?.allowsTerminalAutoFocus ?? true else { return }
+            guard shouldFocusTerminal, appModel?.allowsTerminalAutoFocus ?? true else { return }
             terminal.focus()
         }
     }
@@ -763,6 +797,14 @@ struct ConversationFrame: View {
     }
 
     // MARK: Actions
+
+    private func reviewOpenedConversation() {
+        #if os(iOS)
+        guard !showsChat else { return } // Chat acknowledges after its text has loaded.
+        #endif
+        guard let conversation else { return }
+        Task { await store.review(conversation) }
+    }
 
     private var actions: FrameActions {
         FrameActions(

@@ -37,12 +37,12 @@ struct StatusBadge: View {
             }
         case (.working, .dot):
             WorkingDots()
-        case (.idle, .pill):
+        case (.idle, .pill), (.ready, .pill):
             HStack(spacing: DS.spacing.xs + 2) {
                 idleDot
                 label
             }
-        case (.idle, .dot):
+        case (.idle, .dot), (.ready, .dot):
             idleDot
         case (.closed, .pill):
             Text(status.label)

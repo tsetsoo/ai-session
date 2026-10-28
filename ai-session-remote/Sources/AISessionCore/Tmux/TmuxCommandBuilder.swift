@@ -81,8 +81,8 @@ public enum TmuxCommandBuilder {
 
     /// Prints one conversation's user and assistant text. Exit 94 when it has no transcript or no
     /// text, 127 when the helper isn't installed, 90 when `python3` isn't (stderr names it).
-    public static func conversationTranscript(tool: String, sessionId: String) -> String {
-        wrap(transcriptHelperCheck + "exec \"$helper\" \(shellQuote(tool)) \(shellQuote(sessionId))")
+    public static func conversationTranscript(tool: String, sessionId: String, json: Bool = false) -> String {
+        wrap(transcriptHelperCheck + "exec \"$helper\" \(shellQuote(tool)) \(shellQuote(sessionId))" + (json ? " --json" : ""))
     }
 
     /// A new `claude -p` over that transcript. It is not the source session. The transcript is
@@ -274,12 +274,13 @@ public enum TmuxCommandBuilder {
         metadataTemplate: String
     ) -> String {
         let file = SessionMetadataStore.filename(for: name.tmuxName)
+        let arguments = name.tool.defaultArguments.map(shellQuote).joined(separator: " ")
         return wrap(
             """
             p=$(command -v \(shellQuote(binary))) || exit 90
             mkdir -p ~/.ai-remote/sessions || exit 91
             printf \(shellQuote(metadataTemplate)) "$p" > ~/.ai-remote/sessions/\(shellQuote(file)) || exit 92
-            exec tmux new-session -d -s \(shellQuote(name.tmuxName)) -c \(shellQuotePath(cwd)) -- "$p"
+            exec tmux new-session -d -s \(shellQuote(name.tmuxName)) -c \(shellQuotePath(cwd)) -- "$p"\(arguments.isEmpty ? "" : " " + arguments)
             """
         )
     }

@@ -351,6 +351,10 @@ pub struct Conversation {
     pub status: ConversationStatus,
     pub status_message: Option<String>,
     pub status_updated_at: Option<String>,
+    #[serde(default)]
+    pub status_revision: i64,
+    #[serde(default)]
+    pub reviewed: bool,
     pub created_at: String,
     /// The conversation's project: its session's project, or matched from computer + cwd
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -383,6 +387,12 @@ pub struct ConversationStatusRequest {
     /// the push. Older hooks omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attended: Option<bool>,
+}
+
+/// Acknowledge only the idle result the client actually displayed.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReviewConversationRequest {
+    pub status_revision: i64,
 }
 
 impl ConversationStatusRequest {
