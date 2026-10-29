@@ -965,14 +965,15 @@ req = json.loads(open(sys.argv[1]).read().splitlines()[-1])
 assert req["path"] == "/api/conversations/status", req
 assert req["auth"] == "Bearer s3cret", req
 assert req["type"] == "application/json", req
-assert req["body"] == {"claude_session_id": sys.argv[2], "status": "waiting", "attended": False,
+assert isinstance(req["body"].pop("event_timestamp_ns"), int)
+assert req["body"] == {"tool":"claude", "session_id": sys.argv[2], "status": "waiting", "attended": False,
                        "message": 'Claude needs your "permission"'}, req
 PY
 pass "hook posts status + message with the bearer token"
 
 printf '{"session_id":"%s","hook_event_name":"Stop"}' "$SID" | AI_TODO_TMUX_SESSION="$NAME" "$HOOK" idle
 [[ $(wc -l <"$HUB_LOG") -eq 2 ]] || fail "idle hook did not post"
-python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert b=={"claude_session_id":sys.argv[2],"status":"idle","attended":False}, b' "$HUB_LOG" "$SID" \
+python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert isinstance(b.pop("event_timestamp_ns"),int); assert b=={"tool":"claude","session_id":sys.argv[2],"status":"idle","attended":False}, b' "$HUB_LOG" "$SID" \
   || fail "idle hook body wrong"
 pass "hook posts idle without a message"
 
@@ -988,7 +989,7 @@ OUTSIDE_SID="4bb0448b-c814-41b3-a216-32cc0d398499"
 printf '{"session_id":"%s","hook_event_name":"Stop"}' "$OUTSIDE_SID" | env -u TMUX -u AI_TODO_TMUX_SESSION "$HOOK" idle
 printf '{"session_id":"%s","hook_event_name":"Stop"}' "$OUTSIDE_SID" | AI_TODO_TMUX_SESSION="ai/claude/sigma-revenue" "$HOOK" idle
 [[ $(wc -l <"$HUB_LOG") -eq 4 ]] || fail "hook did not post outside a todo session"
-python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert b=={"claude_session_id":sys.argv[2],"status":"idle","attended":False}, b' "$HUB_LOG" "$OUTSIDE_SID" \
+python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert isinstance(b.pop("event_timestamp_ns"),int); assert b=={"tool":"claude","session_id":sys.argv[2],"status":"idle","attended":False}, b' "$HUB_LOG" "$OUTSIDE_SID" \
   || fail "outside-tmux body wrong: $(tail -1 "$HUB_LOG")"
 pass "hook reports conversations outside a todo tmux session by id, unattended"
 
@@ -2358,7 +2359,10 @@ assert commands("UserPromptSubmit") == [f"{bin_dir}/ai-todo-hook busy"], command
 assert commands("Notification") == [f"{bin_dir}/ai-todo-hook waiting"], commands("Notification")
 assert commands("Stop") == ["afplay /System/Library/Sounds/Glass.aiff", f"{bin_dir}/ai-todo-hook idle"], commands("Stop")
 assert commands("PostToolUse") == [f"{bin_dir}/ai-todo-hook tool"], commands("PostToolUse")
-assert commands("PreToolUse") == ["echo pre"], commands("PreToolUse")
+assert commands("PreToolUse") == ["echo pre", f"{bin_dir}/ai-todo-hook tool"], commands("PreToolUse")
+for event, status in {"PermissionRequest":"waiting", "PostToolUseFailure":"tool", "SessionEnd":"idle",
+                      "StopFailure":"waiting", "Elicitation":"waiting", "ElicitationResult":"tool"}.items():
+    assert commands(event) == [f"{bin_dir}/ai-todo-hook {status}"], (event, commands(event))
 assert hooks["PreToolUse"][0]["matcher"] == "Bash"
 assert s["projectInstructions"] == "claude-md-and-agents-md", s.get("projectInstructions")
 assert s["model"] == "opus"
@@ -2417,6 +2421,17 @@ if sys.platform == "darwin":
     assert job["ProgramArguments"] == [str(home / ".ai-remote/bin/ai-todo-status"), "watch"], job
 PY
 pass "status-only installs the persistent monitor without changing Claude, hub credentials or nightly memory"
+
+python3 - "$INSTALL" "$HOME" <<'PY' || fail "Claude-only status update changed unrelated settings or jobs"
+import pathlib, subprocess, sys
+install, home = sys.argv[1], pathlib.Path(sys.argv[2])
+paths = [home / ".codex/config.toml", home / ".codex/hooks.json", home / ".ai-remote/todo-hub.conf",
+         home / ".ai-remote/bin/ai-todo-memory", home / "Library/LaunchAgents/com.ai-remote.todo-memory.plist"]
+before = {str(p): p.read_bytes() if p.exists() else None for p in paths}
+subprocess.run([install, "--claude-status-only"], stdout=subprocess.DEVNULL, check=True)
+assert before == {str(p): p.read_bytes() if p.exists() else None for p in paths}
+PY
+pass "claude-status-only preserves Codex settings, hub credentials and nightly memory"
 
 "$INSTALL" --token newtok >/dev/null
 grep -qx "TODO_HUB_URL='http://hub:8080'" "${HOME}/.ai-remote/todo-hub.conf" || fail "hub URL lost when only --token was given"

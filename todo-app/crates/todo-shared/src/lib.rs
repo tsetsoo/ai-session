@@ -387,7 +387,7 @@ pub struct ConversationStatusRequest {
     /// the push. Older hooks omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attended: Option<bool>,
-    /// Capture time on the reporting host, before any network work. New Codex reporters
+    /// Capture time on the reporting host, before any network work. Claude/Codex reporters
     /// persist this with their outbox so retrying an old event cannot undo a newer one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_timestamp_ns: Option<i64>,

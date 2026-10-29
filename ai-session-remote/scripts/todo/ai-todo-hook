@@ -25,8 +25,8 @@
 #   waiting with "attended": true, which cancels the server's held push. busy only arrives
 #   after the approved tool finishes, which can take minutes.
 #
-# Never fails Claude: always exits 0, with bounded HTTP delivery (3s for Claude; Codex
-# persists an ordered outbox first and has independent delivery retries). Every conversation is reported, matched by session id;
+# Always exits 0. Both tools persist an ordered outbox before bounded HTTP delivery;
+# the persistent status service retries independently. Every conversation is reported, matched by session id;
 # todo-server answers 404 for ids that aren't a todo's. A todo's turns don't always run in
 # its tmux session: one imported from a background job (`claude attach`, ~/.claude/jobs)
 # runs its hooks in the job's own process. The tmux session is only used for "attended":
@@ -60,15 +60,14 @@
 #   AI_TODO_RECHECK_DELAY seconds before the waiting re-check (default 12)
 #   AI_TODO_MEMORY_BIN    ai-todo-memory path instead of ~/.ai-remote/bin/ai-todo-memory
 #   AI_TODO_CLAUDE_JOBS   background job directory instead of ~/.claude/jobs
+# Runtime reconciliation uses the supported `claude agents --json --all` interface,
+# including approved tools, pending questions and background sessions already open.
 tool=claude
 if [ "${1:-}" = --codex ]; then
   tool=codex
   shift
 fi
-event_time=
-if [ "$tool" = codex ]; then
-  event_time=${AI_TODO_STATUS_EVENT_NS:-$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null)}
-fi
+event_time=${AI_TODO_STATUS_EVENT_NS:-$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null)}
 status=${1:-}
 case "$status" in
   busy | waiting | idle | tool) ;;
@@ -131,6 +130,8 @@ if [ "$tool" = claude ] && [ "$status" = idle ] && [ -x "$memory_bin" ]; then
     memory_args=$(printf '%s' "$input" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
+if data.get("hook_event_name") not in (None, "Stop"):
+    sys.exit(1)
 sid = data.get("session_id") if isinstance(data, dict) else None
 path = data.get("transcript_path") if isinstance(data, dict) else None
 if not isinstance(sid, str) or not sid or not all(c.isalnum() or c == "-" for c in sid):
@@ -232,12 +233,24 @@ allowed = "-_" if sys.argv[2] == "codex" else "-"
 if not isinstance(sid, str) or not sid or not all(c.isalnum() or c in allowed for c in sid):
     sys.exit(1)
 status, tool = sys.argv[1], sys.argv[2]
+if tool == "claude" and data.get("agent_id"):
+    sys.exit(1)  # A subagent ending must not mark the parent conversation complete.
+event = data.get("hook_event_name")
+if tool == "claude" and event == "Notification" and data.get("notification_type") in ("auth_success", "local_command"):
+    sys.exit(1)
 msg = data.get("message")
 msg = msg if isinstance(msg, str) else ""
 if status == "waiting" and (
     data.get("notification_type") == "idle_prompt" or "waiting for your input" in msg.lower()
 ):
     status = "idle"
+if tool == "claude":
+    if event == "PreToolUse" and data.get("tool_name") in ("AskUserQuestion", "ExitPlanMode"):
+        status, msg = "waiting", "Claude needs your answer"
+    elif event == "StopFailure":
+        status, msg = "waiting", "Claude encountered an error; open the conversation"
+    elif status == "waiting" and not msg:
+        msg = "Claude needs approval" if event == "PermissionRequest" else "Claude needs your answer"
 if tool == "codex":
     # PermissionRequest carries the tool, not a message.
     name = data.get("tool_name")
@@ -309,7 +322,7 @@ post() {
   # The durable publisher serializes concurrent hooks and prefers a fresh runtime snapshot
   # over a hook's incomplete view (e.g. another tool finishing while approval is pending).
   status_bin=${AI_TODO_STATUS_BIN:-$(dirname "$0")/ai-todo-status}
-  if [ "$tool" = codex ] && [ -x "$status_bin" ] && [ -n "$event_time" ]; then
+  if [ -x "$status_bin" ] && [ -n "$event_time" ]; then
     printf '%s' "$body" | "$status_bin" publish --time "$event_time"
     return $?
   fi

@@ -227,6 +227,61 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(set(pool.states()), {"own", "shared"})
             pool.close()
 
+    def test_claude_and_codex_with_the_same_id_have_separate_outboxes(self):
+        status.publish(self.body("busy"), 100, try_send=False)
+        status.publish(dict(self.body("idle"), tool="claude"), 200, try_send=False)
+        self.assertEqual(self.record()["body"]["tool"], "codex")
+        claude = status.read_json(status.root() / "claude.thread-1.json")
+        self.assertEqual(claude["body"]["tool"], "claude")
+        self.assertEqual(status.retry_pending(), {"delivered": 2, "pending": 0})
+        self.assertEqual({body["tool"] for body in self.requests}, {"claude", "codex"})
+
+    def test_claude_legacy_hook_is_durable_and_ordered(self):
+        self.http_status = 503
+        status.publish({"claude_session_id": "thread-1", "status": "idle"}, 300)
+        status.publish({"claude_session_id": "thread-1", "status": "waiting"}, 200)
+        self.http_status = 204
+        status.retry_pending()
+        self.assertEqual(self.requests[-1]["status"], "idle")
+        self.assertEqual(self.requests[-1]["event_timestamp_ns"], 300)
+        self.assertEqual((self.home / ".ai-remote/hook-state/thread-1.sent").read_text().strip(), "idle")
+
+    def test_claude_runtime_wins_over_an_incomplete_hook(self):
+        observed = time.time_ns()
+        status.atomic_json(status.root() / "claude-runtime.json", {
+            "observed_ns": observed, "threads": {"thread-1": ["waiting", "Claude needs your answer"]}})
+        status.publish(dict(self.body("busy"), tool="claude"), observed + 10)
+        self.assertEqual(self.requests[-1]["status"], "waiting")
+        self.assertEqual(self.requests[-1]["message"], "Claude needs your answer")
+        self.assertFalse((status.root() / "runtime.json").exists())
+
+    def test_claude_background_work_and_blocked_errors_are_distinct(self):
+        self.assertEqual(status.claude_status({"status": "idle", "state": "working"}), ("busy", None))
+        self.assertEqual(status.claude_status({"state": "blocked"})[0], "waiting")
+        self.assertEqual(status.claude_status({"status": "waiting", "waitingFor": "permission prompt"}), ("waiting", "Claude needs approval"))
+        self.assertEqual(status.claude_status({"status": "waiting", "waitingFor": "input needed"}), ("waiting", "Claude needs your answer"))
+        self.assertEqual(status.claude_status({"state": "done"}), ("idle", None))
+        self.assertEqual(status.claude_status({"state": "stopped"}), ("idle", None))
+        self.assertEqual(status.claude_status({"state": "failed"})[0], "waiting")
+        self.assertIsNone(status.claude_status({"status": "new-unknown-state"}))
+
+    def test_claude_status_command_uses_full_ids_and_metadata_only(self):
+        rows = [{"id": "short", "sessionId": "full-id", "state": "done", "name": "private text"},
+                {"id": "not-a-full-id", "state": "working"}, {"sessionId": "../bad", "status": "busy"}]
+        with patch.object(status, "find_claude", return_value="/claude"), patch.object(status.subprocess, "run") as command:
+            command.return_value = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
+            self.assertEqual(status.ClaudeRuntime().states(), {"full-id": ("idle", None)})
+            self.assertEqual(command.call_args.args[0], ["/claude", "agents", "--json", "--all"])
+
+    def test_runtime_waiting_keeps_the_hooks_prompt_identity(self):
+        legacy = self.home / ".ai-remote/hook-state/thread-1"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("waiting 123.456\n")
+        status.sync_legacy_state("thread-1", "waiting", tool="claude")
+        self.assertEqual(legacy.read_text(), "waiting 123.456\n")
+        status.sync_legacy_state("thread-1", "busy", tool="claude")
+        self.assertEqual(legacy.read_text(), "busy\n")
+
 
 if __name__ == "__main__":
     unittest.main()

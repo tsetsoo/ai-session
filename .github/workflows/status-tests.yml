@@ -1,4 +1,4 @@
-name: Codex status regressions
+name: AI session status regressions
 
 on:
   push:

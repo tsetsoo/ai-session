@@ -676,7 +676,7 @@ pub(crate) fn set_status_db(
     let Some((todo_id, old, event_ns)) = current else { return Ok(None) };
     let old = ConversationStatus::parse(&old).unwrap_or(ConversationStatus::Unknown);
     if event_ns.is_some_and(|previous| req.event_timestamp_ns.is_some_and(|next| next < previous || (next == previous && req.status != old))
-        || (tool == "codex" && req.event_timestamp_ns.is_none())) {
+        || (matches!(tool, "codex" | "claude") && req.event_timestamp_ns.is_none())) {
         return Ok(Some(StatusChange { todo_id, old, applied: false }));
     }
     tx.execute(
@@ -1905,6 +1905,31 @@ mod tests {
         assert_eq!(read.status, ConversationStatus::Idle);
         assert_eq!(read.status_revision, done.status_revision);
         assert!(set_status_db(&conn, "codex", "ordered-codex", &event(ConversationStatus::Busy, Some(400))).unwrap().unwrap().applied);
+    }
+
+    #[test]
+    fn delayed_claude_events_cannot_undo_completion_or_review() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        set_session_on(&conn, &conv.id, "ordered-claude").unwrap();
+        let event = |status, timestamp| ConversationStatusRequest {
+            status, event_timestamp_ns: timestamp, ..Default::default()
+        };
+        set_status_db(&conn, "claude", "ordered-claude", &event(ConversationStatus::Busy, Some(100))).unwrap();
+        set_status_db(&conn, "claude", "ordered-claude", &event(ConversationStatus::Idle, Some(300))).unwrap();
+        let done = load_conversation_by_id(&conn, &conv.id).unwrap().unwrap();
+        review_conversation(&conn, &conv.id, done.status_revision).unwrap();
+        for timestamp in [Some(200), Some(300), None] {
+            let late = set_status_db(&conn, "claude", "ordered-claude", &event(ConversationStatus::Waiting, timestamp)).unwrap().unwrap();
+            assert!(!late.applied);
+        }
+        let read = load_conversation_by_id(&conn, &conv.id).unwrap().unwrap();
+        assert!(read.reviewed);
+        assert_eq!(read.status, ConversationStatus::Idle);
+        assert_eq!(read.status_revision, done.status_revision);
+        assert!(set_status_db(&conn, "claude", "ordered-claude", &event(ConversationStatus::Busy, Some(400))).unwrap().unwrap().applied);
     }
 
     #[test]

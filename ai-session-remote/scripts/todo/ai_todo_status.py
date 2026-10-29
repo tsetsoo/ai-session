@@ -1,4 +1,4 @@
-"""Codex runtime status, an ordered durable outbox, and local-only RPC transport.
+"""Claude/Codex runtime status, an ordered durable outbox, and local-only RPC transport.
 
 No third-party packages. Tokens are read only at delivery time and never written to the
 outbox or log. The monitor reads metadata; it never resumes threads or submits prompts.
@@ -70,14 +70,15 @@ def configuration():
 
 
 @contextlib.contextmanager
-def session_lock(sid, blocking=True):
+def session_lock(sid, blocking=True, tool="codex"):
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", sid):
         raise ValueError("invalid session id")
     directory = root()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with open(directory / (sid + ".lock"), "a") as handle:
+    key = ("claude." if tool == "claude" else "") + sid
+    with open(directory / (key + ".lock"), "a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-        yield directory / (sid + ".json")
+        yield directory / (key + ".json")
 
 
 def runtime_status(status):
@@ -97,8 +98,8 @@ def runtime_status(status):
     return None
 
 
-def fresh_runtime_state(sid):
-    snapshot = read_json(root() / "runtime.json", {})
+def fresh_runtime_state(sid, tool="codex"):
+    snapshot = read_json(root() / ("claude-runtime.json" if tool == "claude" else "runtime.json"), {})
     observed = snapshot.get("observed_ns", 0)
     if not 0 <= time.time_ns() - observed < 8_000_000_000:
         return None
@@ -106,10 +107,16 @@ def fresh_runtime_state(sid):
     return (observed, state) if state else None
 
 
-def sync_legacy_state(sid, status, delivered=False):
+def sync_legacy_state(sid, status, delivered=False, tool="codex"):
     directory = Path.home() / ".ai-remote" / "hook-state"
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / ("codex-" + sid + (".sent" if delivered else ""))
+    path = directory / (("codex-" if tool == "codex" else "") + sid + (".sent" if delivered else ""))
+    if not delivered and status == "waiting":
+        try:
+            if path.read_text().startswith("waiting "):
+                return  # Preserve the hook's prompt identity for its attendance recheck.
+        except OSError:
+            pass
     path.write_text(status + "\n")
 
 
@@ -126,7 +133,7 @@ def deliver(path, record, timeout=0.5):
             if not 200 <= response.status < 300:
                 raise OSError("HTTP " + str(response.status))
         record.update(pending=False, delivered_ns=time.time_ns(), last_error=None)
-        sync_legacy_state(body["session_id"], body["status"], delivered=True)
+        sync_legacy_state(body["session_id"], body["status"], delivered=True, tool=body.get("tool", "codex"))
     except (OSError, ValueError, urllib.error.URLError) as error:
         # Error types/codes only: URLs, credentials and tool inputs do not belong in logs.
         record.update(pending=True, last_error=("HTTP " + str(error.code) if isinstance(error, urllib.error.HTTPError) else type(error).__name__))
@@ -136,17 +143,20 @@ def deliver(path, record, timeout=0.5):
 
 
 def publish(body, observed_ns=None, source="hook", try_send=True):
-    sid = body.get("session_id")
+    sid = body.get("session_id") or body.get("claude_session_id")
+    tool = body.get("tool", "claude" if body.get("claude_session_id") else "codex")
+    if tool not in ("claude", "codex"):
+        raise ValueError("invalid tool")
     if not isinstance(sid, str):
         raise ValueError("invalid session id")
     if body.get("status") not in ("busy", "idle", "waiting"):
         raise ValueError("invalid status")
-    body = dict(body, tool="codex")
+    body = dict(body, session_id=sid, tool=tool)
     body.pop("claude_session_id", None)
     observed = int(observed_ns if observed_ns is not None else time.time_ns())
     overridden = False
     if source != "runtime":
-        snapshot = fresh_runtime_state(sid)
+        snapshot = fresh_runtime_state(sid, tool)
         if snapshot:
             observed, state = snapshot
             body["status"], body["message"] = state
@@ -154,12 +164,12 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
                 body.pop("message", None)
             overridden = True
     body["event_timestamp_ns"] = observed
-    with session_lock(sid) as path:
+    with session_lock(sid, tool=tool) as path:
         previous = read_json(path, {})
         previous_body = previous.get("body", {})
         previous_time = previous_body.get("event_timestamp_ns", -1)
         if previous_time > observed or (previous_time == observed and previous_body.get("status") != body["status"]):
-            sync_legacy_state(sid, previous["body"]["status"])
+            sync_legacy_state(sid, previous["body"]["status"], tool=tool)
             return True
         attended_ns = previous.get("attended_ns", 0)
         if source != "runtime" and body.get("attended"):
@@ -170,7 +180,7 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
         # Persist before networking; a killed hook must leave the final event recoverable.
         atomic_json(path, record)
         if overridden or source == "runtime":
-            sync_legacy_state(sid, body["status"])
+            sync_legacy_state(sid, body["status"], tool=tool)
         return deliver(path, record) if try_send else False
 
 
@@ -180,15 +190,19 @@ def retry_pending(budget=None, respect_backoff=False):
     for path in sorted(root().glob("*.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True):
         if time.monotonic() >= deadline:
             break
-        if path.name in ("runtime.json", "health.json", "delivery.json"):
+        if path.name in ("runtime.json", "health.json", "delivery.json", "claude-runtime.json", "claude-health.json"):
             continue
         try:
-            with session_lock(path.stem, blocking=False):
+            # Codex's existing filenames stay compatible; Claude gets its own namespace.
+            preview = read_json(path, {}).get("body", {})
+            tool = preview.get("tool", "codex") if isinstance(preview, dict) else "codex"
+            sid = path.stem[7:] if tool == "claude" and path.stem.startswith("claude.") else path.stem
+            with session_lock(sid, blocking=False, tool=tool):
                 record = read_json(path, {})
                 if not record.get("pending"):
                     continue
                 body = record.get("body")
-                if not isinstance(body, dict) or body.get("session_id") != path.stem or body.get("status") not in ("idle", "busy", "waiting"):
+                if not isinstance(body, dict) or body.get("session_id") != sid or body.get("status") not in ("idle", "busy", "waiting"):
                     record.update(pending=False, last_error="InvalidOutboxRecord")
                     atomic_json(path, record)
                     continue
@@ -467,7 +481,64 @@ class RuntimePool:
         self.clients.clear()
 
 
-def poll_runtime(client, previous, try_send=True):
+def find_claude():
+    candidates = [os.environ.get("AI_TODO_CLAUDE_BIN"), shutil.which("claude"),
+                  str(Path.home() / ".local/bin/claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
+    candidates += sorted(glob.glob(str(Path.home() / ".nvm/versions/node/*/bin/claude")), reverse=True)
+    for candidate in dict.fromkeys(candidates):
+        if not candidate or not os.path.isfile(candidate):
+            continue
+        env = dict(os.environ, PATH=str(Path(candidate).parent) + os.pathsep + os.environ.get("PATH", ""))
+        try:
+            check = subprocess.run([candidate, "--version"], capture_output=True, text=True, timeout=4, env=env)
+            if check.returncode == 0:
+                return candidate
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    raise FileNotFoundError("No working Claude binary")
+
+
+def claude_status(row):
+    status, state = row.get("status"), row.get("state")
+    if status == "waiting" or state == "blocked":
+        reason = row.get("waitingFor")
+        return "waiting", {"permission prompt": "Claude needs approval", "input needed": "Claude needs your answer",
+                           "sandbox request": "Claude needs sandbox approval"}.get(reason, "Claude needs your attention")
+    if state == "failed":
+        return "waiting", "Claude encountered an error; open the conversation"
+    if status == "busy" or state == "working":
+        return "busy", None
+    if status in ("idle", "shell") or state in ("done", "stopped"):
+        return "idle", None
+    return None  # Missing or new status values are not proof that work completed.
+
+
+class ClaudeRuntime:
+    def __init__(self):
+        self.cli = find_claude()
+
+    def states(self):
+        env = dict(os.environ, PATH=str(Path(self.cli).parent) + os.pathsep + os.environ.get("PATH", ""))
+        response = subprocess.run([self.cli, "agents", "--json", "--all"], capture_output=True, text=True, timeout=5, env=env)
+        if response.returncode:
+            raise OSError("Claude status command failed")
+        rows = json.loads(response.stdout)
+        if not isinstance(rows, list):
+            raise ValueError("invalid Claude status response")
+        result = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sid = row.get("sessionId")
+            if not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", sid):
+                continue
+            state = claude_status(row)
+            if state:
+                result[sid] = state
+        return result
+
+
+def poll_runtime(client, previous, try_send=True, tool="codex"):
     states = client.states()
     observed = time.time_ns()
     effective = {}
@@ -484,11 +555,11 @@ def poll_runtime(client, previous, try_send=True):
         else:
             prior.pop("idle_since_ns", None)
         effective[sid] = state
-    atomic_json(root() / "runtime.json", {"observed_ns": observed, "threads": effective})
+    atomic_json(root() / ("claude-runtime.json" if tool == "claude" else "runtime.json"), {"observed_ns": observed, "threads": effective})
     for sid, state in effective.items():
         prior = previous[sid]
         if tuple(prior.get("state", ())) != tuple(state) or observed - prior.get("reported_ns", 0) >= 30_000_000_000:
-            publish({"session_id": sid, "status": state[0], "message": state[1], "attended": False}, observed, source="runtime", try_send=try_send)
+            publish({"session_id": sid, "tool": tool, "status": state[0], "message": state[1], "attended": False}, observed, source="runtime", try_send=try_send)
             prior.update(state=state, reported_ns=observed)
     for sid in set(previous) - set(states):
         previous.pop(sid)
@@ -498,6 +569,7 @@ def poll_runtime(client, previous, try_send=True):
 def watch():
     previous = {}
     client = None
+    enabled = set(os.environ.get("AI_TODO_MONITOR_TOOLS", "claude,codex").split(","))
     def delivery_loop():
         while True:
             try:
@@ -508,13 +580,29 @@ def watch():
             time.sleep(1)
 
     threading.Thread(target=delivery_loop, daemon=True).start()
+    def claude_loop():
+        client, previous = None, {}
+        while True:
+            health = {"checked_ns": time.time_ns(), "runtime_connected": False}
+            try:
+                if client is None:
+                    client = ClaudeRuntime()
+                health["threads"] = poll_runtime(client, previous, try_send=False, tool="claude")
+                health["runtime_connected"] = True
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                client = None
+            atomic_json(root() / "claude-health.json", health)
+            time.sleep(1 if health["runtime_connected"] else 5)
+    if "claude" in enabled:
+        threading.Thread(target=claude_loop, daemon=True).start()
     while True:
         health = {"protocol_version": 2, "checked_ns": time.time_ns(), "runtime_connected": False}
         try:
-            if client is None:
-                client = RuntimePool()
-            health["threads"] = poll_runtime(client, previous, try_send=False)
-            health["runtime_connected"] = True
+            if "codex" in enabled:
+                if client is None:
+                    client = RuntimePool()
+                health["threads"] = poll_runtime(client, previous, try_send=False)
+                health["runtime_connected"] = True
         except (OSError, ValueError, EOFError, TimeoutError):
             if client:
                 client.close()

@@ -132,7 +132,7 @@ The installer is safe to re-run. It sets up:
   - When a turn completes, it posts `idle` (with `"tool":"codex"`) for conversations in tmux sessions named `ai/codex/todo-*`.
   - Codex allows only one `notify`. If one is already configured, `install.sh` leaves it alone and explains how to proceed.
   - `install.sh --chain-codex-notify` wraps an existing `notify` so both run. `--uninstall` puts the original back.
-- `~/.ai-remote/bin/ai-todo-status`: a persistent Codex status monitor. It reads the managed
+- `~/.ai-remote/bin/ai-todo-status`: a persistent Claude/Codex status monitor. It reads the managed
   runtime's metadata over its private Unix socket, so approval prompts and questions remain
   waiting until answered, then return to working while the tool runs. It never submits prompts
   or resumes threads. Idle is confirmed once more before reporting completion.
@@ -154,6 +154,19 @@ The installer is safe to re-run. It sets up:
     interruption, user-input and hub-outage turns using the host's existing Codex login and configured model.
     `python3 scripts/todo/test-codex-terminal.py` checks fresh/resumed terminals, working
     folders, MCP selection and environment in an isolated home.
+  - Claude is reconciled through `claude agents --json --all`, including already-open
+    interactive and background sessions. Approval prompts and questions remain waiting
+    until answered; approved tools return to busy while they execute. Background work
+    remains busy between steps, and failed sessions remain waiting for attention.
+  - Claude hooks cover permission requests, questions, failed tools, API failures and
+    session exit. Claude and Codex use separate outboxes/snapshots, including when their
+    session IDs coincide. Delayed hooks cannot undo a newer status or reviewed result.
+  - `scripts/todo/install.sh --claude-status-only` updates Claude hooks and the shared
+    monitor while preserving Codex settings, hub credentials and nightly jobs. Both
+    `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are retained in the monitor's launchd environment.
+  - `python3 scripts/todo/test-claude-live.py` runs opt-in native completion, approval,
+    question, interruption, failed-tool, hub-outage and saved-resume tests with the host's
+    existing login/model and a disposable session; it never approves user conversations.
 
 To rebuild the Mac app you run, use `scripts/rebuild-mac-app.sh`. It builds Release, checks the Apple Development team, and replaces `~/Applications/AI Session Remote.app`. `scripts/build-mac-release.sh` only prints the built `.app` path.
 - `~/.ai-remote/todo-hub.conf` (mode 600): `TODO_HUB_URL` and `TODO_API_TOKEN` for the hook.

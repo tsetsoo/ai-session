@@ -24,6 +24,7 @@
 #   install.sh [--hub-url URL] [--token TOKEN] [--computer-id ID] [--chain-codex-notify]
 #              [--no-nightly] [--mcp-link DIR] [--dry-run]
 #   install.sh --status-only [--dry-run]  # keep Claude, nightly jobs and hub config as-is
+#   install.sh --claude-status-only [--dry-run]  # keep Codex, nightly jobs and hub config as-is
 #   install.sh --uninstall [--remove-digests] [--dry-run]
 #
 # Codex runs hooks only once they are trusted (a hash in config.toml). install.sh trusts its
@@ -49,7 +50,8 @@ TMUX_SNIPPET="${AI_DIR}/tmux.conf"
 HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status)
 MODULES=(ai_todo_redact.py ai_todo_status.py)
 TMUX_CONF="${HOME}/.tmux.conf"
-SETTINGS="${HOME}/.claude/settings.json"
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+SETTINGS="${CLAUDE_DIR}/settings.json"
 SOURCE_LINE='source-file -q ~/.ai-remote/tmux.conf'
 HOOK_MARKER='/.ai-remote/bin/ai-todo-hook'
 CODEX_DIR="${CODEX_HOME:-${HOME}/.codex}"
@@ -73,6 +75,7 @@ uninstall=0
 chain_codex=0
 no_nightly=0
 status_only=0
+claude_status_only=0
 remove_digests=0
 mcp_link=""
 
@@ -90,6 +93,7 @@ while [[ $# -gt 0 ]]; do
     --computer-id) computer_id="${2:?--computer-id needs a value}"; shift 2 ;;
     --no-nightly) no_nightly=1; shift ;;
     --status-only) status_only=1; shift ;;
+    --claude-status-only) claude_status_only=1; shift ;;
     --mcp-link) mcp_link="${2:?--mcp-link needs a folder}"; shift 2 ;;
     --remove-digests) remove_digests=1; shift ;;
     --dry-run) dry_run=1; shift ;;
@@ -99,6 +103,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ $claude_status_only -eq 1 && ( $status_only -eq 1 || $uninstall -eq 1 ) ]]; then
+  echo '--claude-status-only cannot be combined with --status-only or --uninstall' >&2
+  exit 64
+fi
 if [[ $status_only -eq 1 && $uninstall -eq 1 ]]; then
   echo '--status-only is an install/update option; use --uninstall for a full removal' >&2
   exit 64
@@ -165,7 +173,9 @@ if kind == "codex":
             "Stop": "idle", "Interrupt": "idle", "SessionEnd": "idle", "PostToolUse": "tool"}
     prefix = f"{bin_dir}/ai-todo-hook --codex"
 else:
-    ours = {"UserPromptSubmit": "busy", "Notification": "waiting", "Stop": "idle", "PostToolUse": "tool"}
+    ours = {"UserPromptSubmit": "busy", "Notification": "waiting", "Stop": "idle", "PostToolUse": "tool",
+            "PreToolUse": "tool", "PermissionRequest": "waiting", "PostToolUseFailure": "tool",
+            "SessionEnd": "idle", "StopFailure": "waiting", "Elicitation": "waiting", "ElicitationResult": "tool"}
     prefix = f"{bin_dir}/ai-todo-hook"
 
 data = {}
@@ -586,18 +596,18 @@ install_status_agent() {
     return
   fi
   if [[ $dry_run -eq 1 ]]; then
-    say "would install ${STATUS_PLIST} (continuous Codex status and delivery retries)"
+    say "would install ${STATUS_PLIST} (continuous Claude/Codex status and delivery retries)"
     return
   fi
   mkdir -p "${AI_DIR}/status-state" "$(dirname "$STATUS_PLIST")"
   chmod 700 "${AI_DIR}/status-state"
-  python3 - "$STATUS_PLIST" "$STATUS_LABEL" "$BIN_DIR" "$AI_DIR" "$CODEX_DIR" <<'PY'
+  python3 - "$STATUS_PLIST" "$STATUS_LABEL" "$BIN_DIR" "$AI_DIR" "$CODEX_DIR" "$CLAUDE_DIR" <<'PY'
 import plistlib, sys
-path, label, bin_dir, ai_dir, codex_dir = sys.argv[1:]
+path, label, bin_dir, ai_dir, codex_dir, claude_dir = sys.argv[1:]
 with open(path, "wb") as handle:
     plistlib.dump({"Label": label, "ProgramArguments": [bin_dir + "/ai-todo-status", "watch"],
                    "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 5,
-                   "EnvironmentVariables": {"CODEX_HOME": codex_dir},
+                   "EnvironmentVariables": {"CODEX_HOME": codex_dir, "CLAUDE_CONFIG_DIR": claude_dir},
                    "ProcessType": "Background", "StandardOutPath": ai_dir + "/status-state/service.log",
                    "StandardErrorPath": ai_dir + "/status-state/service.log"}, handle)
 PY
@@ -642,6 +652,18 @@ do_install_status() {
   merge_codex_hooks install
   install_status_agent
   say "Codex status updated; hub config, Claude settings and nightly jobs kept"
+}
+
+do_install_claude_status() {
+  run mkdir -p "$BIN_DIR"
+  local file
+  for file in ai-todo-hook ai-todo-status; do
+    run install -m 755 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"
+  done
+  run install -m 644 "${SRC_DIR}/ai_todo_status.py" "${BIN_DIR}/ai_todo_status.py"
+  merge_settings install
+  install_status_agent
+  say "Claude status updated; Codex settings, hub config and nightly jobs kept"
 }
 
 do_install() {
@@ -737,7 +759,9 @@ if [[ $status_only -eq 0 ]] && command -v python3 >/dev/null 2>&1; then
   merge_settings check
 fi
 
-if [[ $status_only -eq 1 ]]; then
+if [[ $claude_status_only -eq 1 ]]; then
+  do_install_claude_status
+elif [[ $status_only -eq 1 ]]; then
   do_install_status
 elif [[ $uninstall -eq 1 ]]; then
   do_uninstall

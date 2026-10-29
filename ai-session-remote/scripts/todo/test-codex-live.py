@@ -51,7 +51,7 @@ def run():
         conf = work / "hub.conf"
         conf.write_text("TODO_HUB_URL='http://127.0.0.1:%s'\n" % hub.server_port)
         env = os.environ.copy()
-        env.update(AI_TODO_HUB_CONF=str(conf), AI_TODO_STATUS_DIR=str(work / "queue"), AI_TODO_CODEX_SOCKET=str(work / "runtime.sock"))
+        env.update(AI_TODO_HUB_CONF=str(conf), AI_TODO_STATUS_DIR=str(work / "queue"), AI_TODO_CODEX_SOCKET=str(work / "runtime.sock"), AI_TODO_MONITOR_TOOLS="codex")
         env["PATH"] = str(Path(cli).parent) + os.pathsep + env.get("PATH", "")
         model = None
         config_path = status.codex_home() / "config.toml"
