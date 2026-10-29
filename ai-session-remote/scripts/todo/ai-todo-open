@@ -38,7 +38,8 @@
 #
 # Exit codes: 64 bad arguments, 90 tmux / claude / codex / agent missing, 93 cwd not usable,
 #             94 no Codex or Cursor conversation with that id, or a new one
-#             did not appear within 30 seconds.
+#             did not appear within 30 seconds,
+#             95 another Codex holds that Codex conversation (its writer lock).
 #
 # Test hooks (not for normal use):
 #   AI_TODO_TMUX_SOCKET  use a private tmux server (tmux -L <name>)
@@ -49,6 +50,7 @@
 #   AI_TODO_CLAUDE_JOBS  background job directory instead of ~/.claude/jobs
 #   AI_TODO_HOOK_BIN     ai-todo-hook path instead of the one next to this script
 #   AI_TODO_LSOF         lsof binary for the pane's writer lock (systems without /proc)
+#   AI_TODO_STATUS_BIN   ai-todo-status path instead of the one next to this script
 #   AI_TODO_HUB_CONF     hub config instead of ~/.ai-remote/todo-hub.conf (for --mcp reports)
 #   AI_TODO_MCP_REPORT_DELAY  seconds between --mcp report attempts after a 404 (default 2)
 set -eu
@@ -232,6 +234,17 @@ pane_lock_id() {
   return 0
 }
 
+# A Codex thread has one writer at a time. When another Codex holds this one (Codex's
+# shared server, the ChatGPT app, a codex in another terminal, another todo's backend), a
+# resumed TUI only shows "This conversation is open in another app". ai-todo-status names the
+# holder instead, before tmux starts. Without it (or if it fails) the resume goes ahead.
+check_codex_writer() {
+  [ -x "$status_bin" ] || return 0
+  "$status_bin" writer "$name" "$sid" || {
+    [ "$?" -ne 95 ] || exit 95
+  }
+}
+
 # The id that was not in $fresh_before. Empty until one appears.
 wait_for_fresh_id() {
   deadline=$(( $(date +%s) + 30 ))
@@ -328,6 +341,7 @@ if [ "$tool" = codex ]; then
     exit 94
   else
     mode=resumed
+    check_codex_writer
     set -- "$codex_bin" resume "$sid" --approve-for-me
   fi
   if [ "$managed_runtime" = 1 ]; then

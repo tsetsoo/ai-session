@@ -60,6 +60,8 @@ enum FrameProblem: Equatable {
     case toolMissing(String)
     case folderMissing(String, String)
     case conversationNotFound(String)
+    /// Another Codex holds the conversation. The command names it.
+    case openElsewhere(String, check: String)
     /// The todo server turned the API token down.
     case tokenRejected
     case hub(String)
@@ -254,6 +256,7 @@ final class ConversationLoader {
         case .toolMissing: phase = .problem(.toolMissing(name))
         case .folderMissing: phase = .problem(.folderMissing(name, open.conversation.cwd))
         case .conversationNotFound: phase = .problem(.conversationNotFound(name))
+        case .openElsewhere: phase = .problem(.openElsewhere(name, check: ResumeCommand.writerCheck(for: open.conversation)))
         }
     }
 

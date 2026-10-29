@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor."""
+"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor | writer NAME ID."""
 import json
 import os
 from pathlib import Path
@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-from ai_todo_status import find_codex, find_claude, ClaudeRuntime, publish, read_json, retry_pending, root, RuntimeSocket, RuntimePool, socket_path, terminal, watch
+from ai_todo_status import find_codex, find_claude, ClaudeRuntime, publish, read_json, retry_pending, root, RuntimeSocket, RuntimePool, socket_path, terminal, watch, writer_conflict
 
 
 def main(args):
@@ -15,6 +15,12 @@ def main(args):
         watch()
     elif args[:1] == ["terminal"] and len(args) >= 4:
         terminal(args[1], args[2], args[3:])
+    elif args[:1] == ["writer"] and len(args) == 3:
+        # 95: another Codex holds the conversation (ai-todo-open's exit code for it).
+        conflict = writer_conflict(args[1], args[2])
+        if conflict:
+            print(conflict, file=sys.stderr)
+            return 95
     elif args == ["codex-path"]:
         print(find_codex())
     elif args == ["claude-path"]:

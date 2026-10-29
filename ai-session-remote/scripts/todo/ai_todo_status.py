@@ -374,12 +374,105 @@ def terminal_arguments(args, endpoint):
     return backend + ["--listen", endpoint], terminal
 
 
+def terminal_socket(name):
+    """Where the backend for tmux session `name` listens; its .json/.lock/.log sit beside it."""
+    return root() / "r" / (hashlib.sha256(name.encode()).hexdigest()[:12] + ".sock")
+
+
+def file_holders(path):
+    """Pids with `path` open: /proc where there is one, else lsof."""
+    target = os.path.realpath(path)
+    if os.path.isdir("/proc/self/fd"):
+        pids = set()
+        for pid in filter(str.isdigit, os.listdir("/proc")):
+            try:
+                if any(os.readlink(f"/proc/{pid}/fd/{fd}") == target for fd in os.listdir(f"/proc/{pid}/fd")):
+                    pids.add(int(pid))
+            except OSError:
+                continue
+        return sorted(pids)
+    try:
+        listed = subprocess.run([os.environ.get("AI_TODO_LSOF", "lsof"), "-t", "--", target],
+                                capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return sorted({int(word) for word in listed.split() if word.isdigit()})
+
+
+def writer_conflict(name, sid):
+    """Who else holds Codex thread `sid`'s writer lock, as a message; None when it is free or
+    held by the backend for tmux session `name` (the conversation's own).
+
+    Codex keeps a thread's lock file flocked while a process writes the thread, so a
+    non-blocking probe answers whether it is held; naming the holder needs lsof or /proc.
+    A free lock is taken for an instant and released.
+    """
+    lock = codex_home() / "thread-writer-locks" / (sid + ".lock")
+    try:
+        fd = os.open(lock, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return None
+    except BlockingIOError:
+        pass
+    finally:
+        os.close(fd)
+    own = terminal_socket(name)
+    backends = own.parent
+    tmux = ["tmux"] + (["-L", os.environ["AI_TODO_TMUX_SOCKET"]] if os.environ.get("AI_TODO_TMUX_SOCKET") else [])
+    try:
+        sessions = subprocess.run(tmux + ["list-sessions", "-F", "#{session_name}"],
+                                  capture_output=True, text=True, timeout=5).stdout.split("\n")
+    except (OSError, subprocess.TimeoutExpired):
+        sessions = []
+    by_socket = {terminal_socket(session): session for session in sessions if session}
+    lines, hints = [], []
+    for pid in file_holders(lock):
+        try:
+            command = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                                     capture_output=True, text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            command = ""
+        if not command:
+            continue
+        # A backend's argv ends with `--listen unix://<socket>` (terminal_arguments).
+        listen = Path(command.rsplit(" unix://", 1)[1]) if " unix://" in command else None
+        if listen == own:
+            return None
+        if listen is not None and listen.parent == backends:
+            session = by_socket.get(listen)
+            if session:
+                lines.append(f"  pid {pid}: this computer's Codex backend for {session}, which has it open")
+                hints.append(f"Close Codex in {session} and stop its backend with `kill {pid}`, then open this one again.")
+            else:
+                lines.append(f"  pid {pid}: this computer's Codex backend for a todo session that has closed")
+                hints.append(f"Nothing uses it any more. Stop it with `kill {pid}`, then open this one again.")
+        elif "--managed-daemon" in command or str(socket_path()) in command:
+            lines.append(f"  pid {pid}: Codex's shared server")
+            hints.append("Run `codex app-server daemon restart` on this computer, then open it again. "
+                         "The restart also disconnects plain `codex` windows that use that server.")
+        elif "/ChatGPT.app/" in command:
+            lines.append(f"  pid {pid}: the ChatGPT app")
+            hints.append("Close the conversation in the ChatGPT app, or quit it, then open it again.")
+        else:
+            lines.append(f"  pid {pid}: {command[:160]}")
+            hints.append("Close it there, or stop that process, then open it again.")
+    if not lines:
+        # Held, but the holder could not be named (no lsof, or another user's process).
+        lines.append("  a process this script can't identify")
+        hints.append(f"Find it with `lsof {lock}`, close it, then open it again.")
+    return "\n".join([f"Codex conversation {sid} is open in another Codex on this computer:"]
+                     + lines + list(dict.fromkeys(hints)))
+
+
 def terminal(name, cwd, args):
     """Launch an observable backend with this terminal's MCP config and environment."""
-    directory = root() / "r"
+    path = terminal_socket(name)
+    directory = path.parent
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    key = hashlib.sha256(name.encode()).hexdigest()[:12]
-    path = directory / (key + ".sock")
+    key = path.stem
     endpoint = "unix://" + str(path)
     backend, client_args = terminal_arguments(args, endpoint)
     env_file = Path.home() / ".ai-remote/mcp/env"

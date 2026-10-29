@@ -33,11 +33,17 @@ final class CommandsTests: XCTestCase {
                        "scripts/todo/install.sh --hub-url 'http://h:8080' --token \"$TODO_API_TOKEN\"")
     }
 
+    func testWriterCheck() {
+        XCTAssertEqual(ResumeCommand.writerCheck(for: conv(tool: "codex", cwd: "/srv/x")),
+                       "~/.ai-remote/bin/ai-todo-status writer 'n' 'abc-123'")
+    }
+
     func testOpenFailure() {
         XCTAssertEqual(OpenFailure(exitStatus: 127), .helpersMissing)
         XCTAssertEqual(OpenFailure(exitStatus: 90), .toolMissing)
         XCTAssertEqual(OpenFailure(exitStatus: 93), .folderMissing)
         XCTAssertEqual(OpenFailure(exitStatus: 94), .conversationNotFound)
+        XCTAssertEqual(OpenFailure(exitStatus: 95), .openElsewhere)
         XCTAssertNil(OpenFailure(exitStatus: nil))
         XCTAssertNil(OpenFailure(exitStatus: 0))
         XCTAssertNil(OpenFailure(exitStatus: 1))

@@ -184,6 +184,13 @@ final class ConversationLoaderTests: XCTestCase {
         XCTAssertEqual(l.phase, .problem(.folderMissing("Mac Studio", "~/proj")))
     }
 
+    func testExit95IsOpenElsewhereWithCheckCommand() async {
+        let l = await readyLoader()
+        l.ended(exitStatus: 95)
+        XCTAssertEqual(l.phase, .problem(.openElsewhere("Mac Studio",
+                                                        check: "~/.ai-remote/bin/ai-todo-status writer 'todo-t1' 's1'")))
+    }
+
     func testExitNilStaysReady() async {
         let l = await readyLoader()
         l.ended(exitStatus: nil)

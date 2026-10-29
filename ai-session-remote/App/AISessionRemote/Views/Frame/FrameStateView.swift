@@ -204,6 +204,16 @@ struct FrameStateView: View {
                     FrameStateButton(title: "Copy Resume Command") { actions.copy(command) }
                 }
             )
+        case let .openElsewhere(name, check):
+            FrameStateBlock(
+                systemImage: "lock",
+                iconTint: DS.accent,
+                title: "This conversation is open in another Codex on \(name)",
+                message: "Close it there, then try again. This command on \(name) names what has it open: Codex's shared server, the ChatGPT app, a codex in a terminal, or another todo.",
+                code: check,
+                primary: FrameStateButton(title: "Try Again", action: actions.retry),
+                secondary: FrameStateButton(title: "Copy Command") { actions.copy(check) }
+            )
         case .tokenRejected:
             FrameStateBlock(
                 systemImage: "key",

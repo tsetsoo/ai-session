@@ -57,6 +57,7 @@ struct DemoFrameScreen: View {
         case "toolMissing": loader.ended(exitStatus: 90)
         case "folderMissing": loader.ended(exitStatus: 93)
         case "conversationNotFound": loader.ended(exitStatus: 94)
+        case "openElsewhere": loader.ended(exitStatus: 95)
         default: break
         }
     }

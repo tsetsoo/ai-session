@@ -416,6 +416,79 @@ if AI_TODO_OPEN_DETACH=1 "$OPEN" "$NAME" '~/programming' "$X_LINKED" codex >/dev
 if AI_TODO_OPEN_DETACH=1 "$OPEN" "$XNAME" '~/programming' "$X_LINKED" cursor >/dev/null 2>&1; then fail "cursor open accepted a codex tmux name"; fi
 pass "ai-todo-open codex: resumes in tmux, attaches when running, exits 94 for unknown ids, checks tool vs name"
 
+# Another Codex holding the conversation's writer lock: say which one and exit 95 instead of
+# leaving the TUI on "This conversation is open in another app". Codex flocks the lock file;
+# the holder does the same, with the argv a real holder would have after its arguments.
+WLOCK="${HOME}/.codex/thread-writer-locks/${X_RUN}.lock"
+mkdir -p "$(dirname "$WLOCK")"
+HOLDER="${SANDBOX}/bin/lock-holder"
+cat >"$HOLDER" <<'EOF'
+#!/usr/bin/env python3
+import fcntl, sys, time
+handle = open(sys.argv[1], "a")
+if sys.argv[2] == "lock":
+    fcntl.flock(handle, fcntl.LOCK_EX)
+open(sys.argv[3], "w").close()
+time.sleep(300)
+EOF
+chmod +x "$HOLDER"
+HOLDER_PID=
+start_holder() { # <lock|open> <argv...>: HOLDER_PID once it has the lock file
+  local ready="${SANDBOX}/holder.ready" mode=$1
+  shift
+  rm -f "$ready"
+  "$HOLDER" "$WLOCK" "$mode" "$ready" "$@" </dev/null >/dev/null 2>&1 &
+  HOLDER_PID=$!
+  EXTRA_PIDS="$EXTRA_PIDS $HOLDER_PID"
+  for _ in $(seq 1 50); do [[ -e "$ready" ]] && return; sleep 0.1; done
+  fail "lock holder never opened the lock"
+}
+stop_holder() { kill "$HOLDER_PID" 2>/dev/null || true; wait "$HOLDER_PID" 2>/dev/null || true; }
+open_held() { # <tmux name>: ai-todo-open's exit status, stderr in held.err
+  local status=0
+  AI_TODO_OPEN_DETACH=1 "$OPEN" "$1" '~/programming' "$X_RUN" codex >"${SANDBOX}/held.out" 2>"${SANDBOX}/held.err" || status=$?
+  echo "$status"
+}
+saved_codex_log=$(cat "$CODEX_LOG")
+
+start_holder lock app-server --listen unix:// --managed-daemon
+[[ "$(open_held ai/codex/todo-held)" == 95 ]] || fail "a conversation the shared server holds should exit 95: $(cat "${SANDBOX}/held.err")"
+grep -q "pid ${HOLDER_PID}: Codex's shared server" "${SANDBOX}/held.err" && grep -q 'codex app-server daemon restart' "${SANDBOX}/held.err" \
+  || fail "shared server message wrong: $(cat "${SANDBOX}/held.err")"
+tmux -L "$SOCK" has-session -t "=ai/codex/todo-held" 2>/dev/null && fail "a held conversation still started a tmux session"
+stop_holder
+
+start_holder lock some-other-codex
+[[ "$(open_held ai/codex/todo-held)" == 95 ]] || fail "a conversation another Codex holds should exit 95: $(cat "${SANDBOX}/held.err")"
+grep -q "pid ${HOLDER_PID}: /" "${SANDBOX}/held.err" && grep -q "stop that process" "${SANDBOX}/held.err" \
+  || fail "other Codex message wrong: $(cat "${SANDBOX}/held.err")"
+stop_holder
+
+# Another todo's backend (they outlive their tmux session): named, with the session if it runs.
+other_sock="${HOME}/.ai-remote/status-state/r/$(printf '%s' ai/codex/todo-other | shasum -a 256 | cut -c1-12).sock"
+start_holder lock app-server --listen "unix://${other_sock}"
+[[ "$(open_held ai/codex/todo-held)" == 95 ]] || fail "another todo's backend holding it should exit 95: $(cat "${SANDBOX}/held.err")"
+grep -q "backend for a todo session that has closed" "${SANDBOX}/held.err" && grep -q "kill ${HOLDER_PID}" "${SANDBOX}/held.err" \
+  || fail "closed todo backend message wrong: $(cat "${SANDBOX}/held.err")"
+tmux -L "$SOCK" new-session -d -s ai/codex/todo-other -- sleep 300
+[[ "$(open_held ai/codex/todo-held)" == 95 ]] || fail "a running todo's backend holding it should exit 95"
+grep -q "backend for ai/codex/todo-other, which has it open" "${SANDBOX}/held.err" || fail "running todo backend message wrong: $(cat "${SANDBOX}/held.err")"
+tmux -L "$SOCK" kill-session -t "=ai/codex/todo-other"
+stop_holder
+
+# Its own backend (same tmux name), or a process with the file open but not locked, doesn't count.
+own_sock="${HOME}/.ai-remote/status-state/r/$(printf '%s' ai/codex/todo-held | shasum -a 256 | cut -c1-12).sock"
+start_holder lock app-server --listen "unix://${own_sock}"
+[[ "$(open_held ai/codex/todo-held)" == 0 && "$(cat "${SANDBOX}/held.out")" == resumed ]] || fail "its own backend's lock blocked the resume: $(cat "${SANDBOX}/held.err")"
+tmux -L "$SOCK" kill-session -t "=ai/codex/todo-held"
+stop_holder
+start_holder open some-reader
+[[ "$(open_held ai/codex/todo-held)" == 0 ]] || fail "a file opened without the lock blocked the resume: $(cat "${SANDBOX}/held.err")"
+tmux -L "$SOCK" kill-session -t "=ai/codex/todo-held"
+stop_holder
+printf '%s\n' "$saved_codex_log" >"$CODEX_LOG"
+pass "ai-todo-open codex: a conversation another Codex holds exits 95 naming it (shared server, other todo's backend, other); its own backend and unlocked opens don't count"
+
 U_LINKED=4e21e083-3303-468c-a212-e5d1cd2c7515
 UNAME="ai/cursor/todo-0f3a9c21"
 mkdir -p "${HOME}/.cursor/chats/workspace/${U_LINKED}"

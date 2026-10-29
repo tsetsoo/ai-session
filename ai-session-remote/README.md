@@ -104,6 +104,10 @@ The installer is safe to re-run. It sets up:
     approval review with the workspace-write sandbox. Attaching keeps a running session's
     current permissions. This requires a Codex CLI that supports `--approve-for-me`.
     It exits 94 for a missing conversation id, because Codex can't start one with a chosen id.
+    It exits 95 when another Codex holds the conversation's writer lock (Codex's shared server,
+    the ChatGPT app, a codex in another terminal), naming the process instead of resuming into
+    Codex's "This conversation is open in another app" screen. `ai-todo-status writer <tmux_name> <id>`
+    prints the same explanation; the app shows that command on its "open in another Codex" screen.
 - `~/.ai-remote/bin/ai-todo-sessions`: lists, deletes and prunes this computer's Claude Code and
   Codex conversations, so the app can link existing ones to todos.
   - `list --json [--tool claude|codex] [--limit N]` prints the newest first, with title, folder,

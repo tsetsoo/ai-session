@@ -16,6 +16,11 @@ public enum ResumeCommand {
         return "cd \(quotedPath(c.cwd)) && \(resume)"
     }
 
+    /// Names whatever else holds a Codex conversation, as `ai-todo-open` does when it exits 95.
+    public static func writerCheck(for c: Conversation) -> String {
+        "~/.ai-remote/bin/ai-todo-status writer \(quote(c.tmuxName)) \(quote(c.sessionId))"
+    }
+
     public static func install(hubURL: String) -> String {
         "scripts/todo/install.sh --hub-url \(quote(hubURL)) --token \"$TODO_API_TOKEN\""
     }
