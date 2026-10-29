@@ -392,6 +392,19 @@ def terminal_socket(name):
     return root() / "r" / (hashlib.sha256(name.encode()).hexdigest()[:12] + ".sock")
 
 
+def terminal_threads(name):
+    """The threads the backend for tmux session `name` has loaded; empty without one.
+    A fresh TUI's thread is loaded there at startup, before anything is written for it."""
+    try:
+        client = RuntimeSocket(terminal_socket(name))
+    except (OSError, ValueError, EOFError):
+        return []
+    try:
+        return client.call("thread/loaded/list", {}).get("data", [])
+    finally:
+        client.close()
+
+
 def file_holders(path):
     """Pids with `path` open: /proc where there is one, else lsof."""
     target = os.path.realpath(path)
@@ -574,6 +587,20 @@ def writer_conflict(name, sid):
                      + lines + list(dict.fromkeys(hints)))
 
 
+def trust_folder(client, cwd):
+    """Save `cwd` as trusted, as Codex's own "Trust and continue" does, unless it already is.
+
+    A conversation started from the app is in a folder the user picked. The TUI asks "Trust
+    this folder?" from the saved config (a launch -c override doesn't count), and a fresh
+    start attaches only once its id appears, so nobody would see the question.
+    """
+    projects = (client.call("config/read", {"cwd": cwd}).get("config") or {}).get("projects") or {}
+    if (projects.get(cwd) or {}).get("trust_level") == "trusted":
+        return
+    client.call("config/value/write", {"keyPath": "projects", "mergeStrategy": "upsert",
+                                       "value": {cwd: {"trust_level": "trusted"}}})
+
+
 def terminal(name, cwd, args):
     """Launch an observable backend with this terminal's MCP config and environment."""
     path = terminal_socket(name)
@@ -637,6 +664,14 @@ def terminal(name, cwd, args):
                     os.killpg(process.pid, signal.SIGTERM)
                 raise OSError("terminal runtime did not become ready")
             atomic_json(record_path, {"pid": process.pid, "digest": digest})
+    try:
+        client = RuntimeSocket(path)
+        try:
+            trust_folder(client, cwd)
+        finally:
+            client.close()
+    except (OSError, ValueError, EOFError, TimeoutError):
+        pass  # Codex then asks as usual.
     os.chdir(cwd)
     os.execv(client_args[0], client_args)
 

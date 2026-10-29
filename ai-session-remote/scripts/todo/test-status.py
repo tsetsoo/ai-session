@@ -278,6 +278,21 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(self.reap(set()), [])
         self.assertFalse(path.with_suffix(".json").exists())
 
+    def test_terminal_saves_the_folder_as_trusted_once(self):
+        class Client:
+            def __init__(self, projects):
+                self.projects, self.calls = projects, []
+            def call(self, method, params):
+                self.calls.append((method, params))
+                return {"config": {"projects": self.projects}} if method == "config/read" else {}
+        fresh = Client({"/other": {"trust_level": "trusted"}})
+        status.trust_folder(fresh, "/work/a.b")
+        self.assertEqual(fresh.calls[-1], ("config/value/write", {"keyPath": "projects", "mergeStrategy": "upsert",
+                                                                 "value": {"/work/a.b": {"trust_level": "trusted"}}}))
+        trusted = Client({"/work/a.b": {"trust_level": "trusted"}})
+        status.trust_folder(trusted, "/work/a.b")
+        self.assertEqual([method for method, _ in trusted.calls], ["config/read"])
+
     def test_claude_and_codex_with_the_same_id_have_separate_outboxes(self):
         status.publish(self.body("busy"), 100, try_send=False)
         status.publish(dict(self.body("idle"), tool="claude"), 200, try_send=False)

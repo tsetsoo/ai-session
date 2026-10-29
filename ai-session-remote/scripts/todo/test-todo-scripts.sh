@@ -228,7 +228,7 @@ CODEX_LOG="${SANDBOX}/codex.log"
 cat >"$FAKE_CODEX" <<EOF
 #!/bin/sh
 echo "\$(pwd -P) \$*" >>"$CODEX_LOG"
-[ "\$1" = resume ] && exec sleep 300
+case " \$* " in *" resume "*) exec sleep 300 ;; esac
 exit 0
 EOF
 chmod +x "$FAKE_CODEX"
@@ -571,6 +571,34 @@ out="$(AI_TODO_CODEX_BIN="$LOCK_CODEX" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/t
 [[ "$out" == "created 01a17375-2583-7b71-9f1d-26964c5c5219" ]] || fail "fresh codex holding only its writer lock printed '$out'"
 tmux -L "$SOCK" kill-session -t "=ai/codex/todo-new-lock" 2>/dev/null || true
 pass "a fresh Codex with only a writer lock (as with --mcp) is found through the lock its pane holds"
+
+# With an ai-todo-status backend, the new conversation is the thread that backend loaded,
+# not whatever appears first: another Codex's new thread (here a TUI mark written at once)
+# would otherwise be taken for it. Threads the backend already had are not new.
+LOADED="${SANDBOX}/backend-loaded"
+echo 01a1cccc-0000-7000-8000-00000000c0c0 >"$LOADED"
+OWN_CODEX="${SANDBOX}/bin/codex-own"
+cat >"$OWN_CODEX" <<EOF
+#!/bin/sh
+: > "$MARKS/01a1aaaa-0000-7000-8000-00000000a0a0"
+sleep 1
+echo 01a1bbbb-0000-7000-8000-00000000b0b0 >>"$LOADED"
+exec sleep 300
+EOF
+cat >"${SANDBOX}/fake-backend-status" <<EOF
+#!/bin/sh
+case "\$1" in
+  codex-path) echo "$OWN_CODEX" ;;
+  terminal) shift 3; exec "\$@" ;;
+  loaded) [ "\$2" = ai/codex/todo-own ] && cat "$LOADED" ;;
+esac
+EOF
+chmod +x "$OWN_CODEX" "${SANDBOX}/fake-backend-status"
+out="$(env -u AI_TODO_CODEX_BIN AI_TODO_STATUS_BIN="${SANDBOX}/fake-backend-status" AI_TODO_OPEN_DETACH=1 \
+  "$OPEN" "ai/codex/todo-own" '~/programming' - codex)" || fail "fresh codex with its own backend failed: $out"
+[[ "$out" == "created 01a1bbbb-0000-7000-8000-00000000b0b0" ]] || fail "fresh codex with its own backend printed '$out'"
+tmux -L "$SOCK" kill-session -t "=ai/codex/todo-own" 2>/dev/null || true
+pass "a fresh Codex with its own backend is the thread that backend loaded, not another Codex's new one"
 
 # A Codex that writes both for one thread is still one new conversation.
 BOTH_CODEX="${SANDBOX}/bin/codex-both"

@@ -245,10 +245,36 @@ check_codex_writer() {
   }
 }
 
+# The threads this session's own ai-todo-status backend has loaded that were not in
+# $loaded_before, one per line. A fresh TUI's thread is loaded there at startup.
+backend_new_ids() {
+  "$status_bin" loaded "$name" 2>/dev/null | LC_ALL=C grep -Ex "$uuid_re" \
+    | if [ -n "$loaded_before" ]; then LC_ALL=C grep -vxF "$loaded_before" || true; else cat; fi
+}
+
 # The id that was not in $fresh_before. Empty until one appears.
 wait_for_fresh_id() {
   deadline=$(( $(date +%s) + 30 ))
   while [ "$(date +%s)" -le "$deadline" ]; do
+    # With its own backend, ask it: new rollouts, marks and locks also come from every
+    # other Codex on this computer, and one started meanwhile would be taken for ours.
+    if [ "$1" = codex ] && [ "${managed_runtime:-0}" = 1 ]; then
+      ids=$(backend_new_ids)
+      case "$ids" in
+        "") ;;
+        *"
+"*)
+          echo "more than one new codex conversation appeared" >&2
+          return 1
+          ;;
+        *)
+          printf '%s\n' "$ids"
+          return 0
+          ;;
+      esac
+      sleep 0.2
+      continue
+    fi
     now=$(fresh_ids "$1")
     ids=
     count=0
@@ -511,8 +537,13 @@ case "${LC_ALL:-}$session_ctype$session_lang" in
   *) session_lang=en_US.UTF-8; session_ctype=en_US.UTF-8 ;;
 esac
 fresh_before=
+loaded_before=
 if [ "$fresh" = 1 ]; then
   fresh_before=$(fresh_ids "$tool")
+  # This session's backend can outlive its tmux session; its threads are not the new one.
+  if [ "$tool" = codex ] && [ "${managed_runtime:-0}" = 1 ]; then
+    loaded_before=$("$status_bin" loaded "$name" 2>/dev/null || true)
+  fi
 fi
 # Cursor's CLI probes the macOS login keychain when it thinks it is on SSH.
 # This tmux server cannot pass that probe, so `agent` exits immediately and
