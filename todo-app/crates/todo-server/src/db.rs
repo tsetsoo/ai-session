@@ -187,7 +187,8 @@ fn conversations_ddl(table: &str) -> String {
             label             TEXT,
             mcp_servers       TEXT,
             status_revision   INTEGER NOT NULL DEFAULT 0,
-            reviewed          INTEGER NOT NULL DEFAULT 0
+            reviewed          INTEGER NOT NULL DEFAULT 0,
+            status_event_ns   INTEGER
         )"
     )
 }
@@ -332,9 +333,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v7: `conversations.mcp_servers`, `projects.mcp_default`, `computers.mcp_default`: JSON
 ///   arrays of MCP server names, NULL when nothing was chosen (additive)
 /// - v8: an idle result's reviewed flag and status revision (additive)
+/// - v9: reporter event time, rejecting delayed/retried Codex statuses (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -347,6 +349,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if conversations.as_deref().is_some_and(|sql| sql.contains("status_event_ns")) {
+        return Ok(9);
     }
     if conversations.as_deref().is_some_and(|sql| sql.contains("reviewed")) {
         return Ok(8);
@@ -430,6 +435,7 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 7 {
         if !backed_up {
             backup_before_migration(conn, db_path, 8)?;
+            backed_up = true;
         }
         let tx = conn.unchecked_transaction()?;
         if !column_exists(&tx, "conversations", "status_revision")? {
@@ -439,6 +445,15 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
             tx.execute_batch("ALTER TABLE conversations ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 0;")?;
         }
         tx.commit()?;
+        version = 8;
+    }
+    if version == 8 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 9)?;
+        }
+        if !column_exists(conn, "conversations", "status_event_ns")? {
+            conn.execute_batch("ALTER TABLE conversations ADD COLUMN status_event_ns INTEGER;")?;
+        }
     }
     Ok(())
 }
@@ -1809,6 +1824,32 @@ mod tests {
         drop(pool);
         drop(db.pool());
         assert_eq!(db.backups().len(), 1, "reopening must not migrate again");
+    }
+
+    #[test]
+    fn migrates_v8_event_ordering_without_resetting_reviewed_results() {
+        let db = TestDb::new("migrate-v9");
+        {
+            let pool = db.pool();
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "INSERT INTO computers (id, name, hostname, username) VALUES ('mac', 'Mac', 'mac.local', 'me');
+                 INSERT INTO todos (id, section, title) VALUES ('t', 'Sp', 'Read result');
+                 INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, status, status_revision, reviewed)
+                     VALUES ('c', 't', 'mac', '~/code', 'codex', 'ai/codex/todo-t', 's', 'idle', 7, 1);
+                 ALTER TABLE conversations DROP COLUMN status_event_ns;
+                 PRAGMA user_version = 8;",
+            ).unwrap();
+        }
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        let row: (i64, bool, Option<i64>) = conn.query_row(
+            "SELECT status_revision, reviewed, status_event_ns FROM conversations WHERE id = 'c'", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(row, (7, true, None));
+        assert_eq!(db.backups().len(), 1);
     }
 
     #[test]

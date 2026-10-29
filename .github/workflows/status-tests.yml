@@ -1,0 +1,32 @@
+name: Codex status regressions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ai-session-remote/scripts/todo/**"
+      - ".github/workflows/status-tests.yml"
+  pull_request:
+    paths:
+      - "ai-session-remote/scripts/todo/**"
+      - ".github/workflows/status-tests.yml"
+
+jobs:
+  status:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Offline delivery and runtime regressions
+        run: python3 ai-session-remote/scripts/todo/test-status.py
+      - name: Shell syntax
+        run: |
+          bash -n ai-session-remote/scripts/todo/install.sh
+          sh -n ai-session-remote/scripts/todo/ai-todo-open
+          sh -n ai-session-remote/scripts/todo/ai-todo-hook
+          sh -n ai-session-remote/scripts/todo/ai-todo-codex-notify

@@ -23,6 +23,7 @@
 # Usage:
 #   install.sh [--hub-url URL] [--token TOKEN] [--computer-id ID] [--chain-codex-notify]
 #              [--no-nightly] [--mcp-link DIR] [--dry-run]
+#   install.sh --status-only [--dry-run]  # keep Claude, nightly jobs and hub config as-is
 #   install.sh --uninstall [--remove-digests] [--dry-run]
 #
 # Codex runs hooks only once they are trusted (a hash in config.toml). install.sh trusts its
@@ -45,8 +46,8 @@ BIN_DIR="${AI_DIR}/bin"
 HUB_CONF="${AI_DIR}/todo-hub.conf"
 TMUX_SNIPPET="${AI_DIR}/tmux.conf"
 # Every helper copied to BIN_DIR, for install and uninstall alike. Programs are 755, modules 644.
-HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp)
-MODULES=(ai_todo_redact.py)
+HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status)
+MODULES=(ai_todo_redact.py ai_todo_status.py)
 TMUX_CONF="${HOME}/.tmux.conf"
 SETTINGS="${HOME}/.claude/settings.json"
 SOURCE_LINE='source-file -q ~/.ai-remote/tmux.conf'
@@ -61,6 +62,8 @@ STATE_DIR="${AI_DIR}/memory-state"
 MCP_DIR="${AI_DIR}/mcp"
 LAUNCH_LABEL='com.ai-remote.todo-memory'
 PLIST="${HOME}/Library/LaunchAgents/${LAUNCH_LABEL}.plist"
+STATUS_LABEL='com.ai-remote.todo-status'
+STATUS_PLIST="${HOME}/Library/LaunchAgents/${STATUS_LABEL}.plist"
 
 hub_url=""
 token=""
@@ -69,6 +72,7 @@ dry_run=0
 uninstall=0
 chain_codex=0
 no_nightly=0
+status_only=0
 remove_digests=0
 mcp_link=""
 
@@ -85,6 +89,7 @@ while [[ $# -gt 0 ]]; do
     --chain-codex-notify) chain_codex=1; shift ;;
     --computer-id) computer_id="${2:?--computer-id needs a value}"; shift 2 ;;
     --no-nightly) no_nightly=1; shift ;;
+    --status-only) status_only=1; shift ;;
     --mcp-link) mcp_link="${2:?--mcp-link needs a folder}"; shift 2 ;;
     --remove-digests) remove_digests=1; shift ;;
     --dry-run) dry_run=1; shift ;;
@@ -93,6 +98,11 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown option: $1" >&2; usage 64 ;;
   esac
 done
+
+if [[ $status_only -eq 1 && $uninstall -eq 1 ]]; then
+  echo '--status-only is an install/update option; use --uninstall for a full removal' >&2
+  exit 64
+fi
 
 for value in "$hub_url" "$token" "$computer_id"; do
   if [[ "$value" == *"'"* ]]; then
@@ -201,7 +211,8 @@ for event in list(hooks):
 if mode == "install":
     for event, status in ours.items():
         hooks.setdefault(event, []).append(
-            {"hooks": [{"type": "command", "command": f"{prefix} {status}"}]}
+            {"hooks": [dict({"type": "command", "command": f"{prefix} {status}"},
+                            **({"timeout": 3} if kind == "codex" and event in ("Interrupt", "SessionEnd") else {}))]}
         )
     # Claude skips AGENTS.md when a CLAUDE.md is present unless this is set. Other keys stay.
     if kind == "claude":
@@ -257,7 +268,7 @@ merge_codex_hooks() {
 trust_codex_hooks() {
   command -v python3 >/dev/null 2>&1 || return 0
   python3 - "$CODEX_BIN" "$BIN_DIR" "$CODEX_HOOKS" <<'PY' || true
-import json, os, subprocess, sys, threading
+import json, os, signal, subprocess, sys, threading
 
 codex, bin_dir, hooks_path = sys.argv[1:4]
 # Exactly the commands merge_settings writes: never vouch for anything else in hooks.json.
@@ -265,11 +276,17 @@ expected = {f"{bin_dir}/ai-todo-hook --codex {s}" for s in ("busy", "waiting", "
 manual = "codex hooks: not trusted automatically; Codex asks you to review them when it next starts"
 try:
     p = subprocess.Popen([codex, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                         stderr=subprocess.DEVNULL, text=True)
+                         stderr=subprocess.DEVNULL, text=True, start_new_session=True)
 except OSError:
     print(manual)
     sys.exit(0)
-timer = threading.Timer(30, p.kill)
+def stop():
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+timer = threading.Timer(30, stop)
 timer.start()
 
 def send(msg):
@@ -313,7 +330,7 @@ except Exception as e:
     print(f"{manual} ({e})")
 finally:
     timer.cancel()
-    p.kill()
+    stop()
 PY
 }
 
@@ -561,11 +578,78 @@ remove_launch_agent() {
   fi
 }
 
+# Runtime truth and the outbox must survive the terminal closing and a host reboot.
+# Kept separate from the optional nightly memory job: --no-nightly does not disable it.
+install_status_agent() {
+  if [[ "$(uname -s)" != Darwin ]]; then
+    say "status monitor: run '${BIN_DIR}/ai-todo-status watch' as a user service on this host"
+    return
+  fi
+  if [[ $dry_run -eq 1 ]]; then
+    say "would install ${STATUS_PLIST} (continuous Codex status and delivery retries)"
+    return
+  fi
+  mkdir -p "${AI_DIR}/status-state" "$(dirname "$STATUS_PLIST")"
+  chmod 700 "${AI_DIR}/status-state"
+  python3 - "$STATUS_PLIST" "$STATUS_LABEL" "$BIN_DIR" "$AI_DIR" "$CODEX_DIR" <<'PY'
+import plistlib, sys
+path, label, bin_dir, ai_dir, codex_dir = sys.argv[1:]
+with open(path, "wb") as handle:
+    plistlib.dump({"Label": label, "ProgramArguments": [bin_dir + "/ai-todo-status", "watch"],
+                   "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 5,
+                   "EnvironmentVariables": {"CODEX_HOME": codex_dir},
+                   "ProcessType": "Background", "StandardOutPath": ai_dir + "/status-state/service.log",
+                   "StandardErrorPath": ai_dir + "/status-state/service.log"}, handle)
+PY
+  launchctl bootout "gui/$(id -u)/${STATUS_LABEL}" >/dev/null 2>&1 || true
+  if launchctl bootstrap "gui/$(id -u)" "$STATUS_PLIST"; then
+    say "status monitor: loaded (runtime state + durable delivery retries)"
+  else
+    say "status monitor: launchctl bootstrap failed; run ai-todo-status doctor after loading ${STATUS_PLIST}"
+  fi
+}
+
+remove_status_agent() {
+  [[ "$(uname -s)" == Darwin ]] || return 0
+  if [[ $dry_run -eq 1 ]]; then
+    say "would remove ${STATUS_PLIST}"
+    return
+  fi
+  launchctl bootout "gui/$(id -u)/${STATUS_LABEL}" >/dev/null 2>&1 || true
+  [[ ! -e "$STATUS_PLIST" ]] || rm -f "$STATUS_PLIST"
+}
+
+resolve_codex_for_hooks() {
+  if [[ $dry_run -eq 0 && -z "${AI_TODO_CODEX_BIN:-}" ]]; then
+    # A non-interactive SSH PATH often omits nvm. Probe candidates instead of trusting a
+    # stale npm shim, and use the same selected binary to review/trust the installed hooks.
+    if resolved_codex=$("${BIN_DIR}/ai-todo-status" codex-path 2>/dev/null); then
+      CODEX_BIN="$resolved_codex"
+      export PATH="$(dirname "$CODEX_BIN"):$PATH"
+    fi
+  fi
+}
+
+do_install_status() {
+  run mkdir -p "$BIN_DIR"
+  local file
+  for file in ai-todo-open ai-todo-hook ai-todo-codex-notify ai-todo-status; do
+    run install -m 755 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"
+  done
+  run install -m 644 "${SRC_DIR}/ai_todo_status.py" "${BIN_DIR}/ai_todo_status.py"
+  resolve_codex_for_hooks
+  merge_codex_notify install
+  merge_codex_hooks install
+  install_status_agent
+  say "Codex status updated; hub config, Claude settings and nightly jobs kept"
+}
+
 do_install() {
   run mkdir -p "$BIN_DIR"
   local file
   for file in "${HELPERS[@]}"; do run install -m 755 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   for file in "${MODULES[@]}"; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
+  resolve_codex_for_hooks
   run install -m 644 "${SRC_DIR}/tmux.conf" "$TMUX_SNIPPET"
   say "scripts: installed to ${BIN_DIR}"
   run mkdir -p "$STATE_DIR"
@@ -589,6 +673,7 @@ do_install() {
   merge_codex_notify install
   merge_codex_hooks install
   install_launch_agent
+  install_status_agent
 
   if [[ $dry_run -eq 0 ]]; then
     if tmux info >/dev/null 2>&1; then
@@ -609,6 +694,7 @@ do_uninstall() {
     fi
   fi
   remove_launch_agent
+  remove_status_agent
 
   # Put Codex's own notify back before its program disappears.
   merge_codex_notify uninstall
@@ -647,11 +733,13 @@ do_uninstall() {
 }
 
 # Refuse before touching anything if settings.json can't be merged safely.
-if command -v python3 >/dev/null 2>&1; then
+if [[ $status_only -eq 0 ]] && command -v python3 >/dev/null 2>&1; then
   merge_settings check
 fi
 
-if [[ $uninstall -eq 1 ]]; then
+if [[ $status_only -eq 1 ]]; then
+  do_install_status
+elif [[ $uninstall -eq 1 ]]; then
   do_uninstall
 else
   do_install

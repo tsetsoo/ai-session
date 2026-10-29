@@ -651,6 +651,7 @@ fn link_error_response(e: LinkError) -> HttpResponse {
 pub(crate) struct StatusChange {
     pub todo_id: String,
     pub old: ConversationStatus,
+    pub applied: bool,
 }
 
 /// Apply a hook status update to the `(tool, session_id)` conversation (UNIQUE, so at most
@@ -665,25 +666,30 @@ pub(crate) fn set_status_db(
     // IMMEDIATE: take the write lock before reading, so a concurrent writer makes this wait
     // (busy timeout) instead of failing the update on a stale read snapshot.
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let current: Option<(String, String)> = tx
+    let current: Option<(String, String, Option<i64>)> = tx
         .query_row(
-            "SELECT todo_id, status FROM conversations WHERE tool = ?1 AND session_id = ?2 AND status != 'closed'",
+            "SELECT todo_id, status, status_event_ns FROM conversations WHERE tool = ?1 AND session_id = ?2 AND status != 'closed'",
             params![tool, session_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    let Some((todo_id, old)) = current else { return Ok(None) };
+    let Some((todo_id, old, event_ns)) = current else { return Ok(None) };
+    let old = ConversationStatus::parse(&old).unwrap_or(ConversationStatus::Unknown);
+    if event_ns.is_some_and(|previous| req.event_timestamp_ns.is_some_and(|next| next < previous || (next == previous && req.status != old))
+        || (tool == "codex" && req.event_timestamp_ns.is_none())) {
+        return Ok(Some(StatusChange { todo_id, old, applied: false }));
+    }
     tx.execute(
         "UPDATE conversations SET
          status_revision = status_revision + CASE WHEN status != ?1 THEN 1 ELSE 0 END,
          reviewed = CASE WHEN status != ?1 THEN 0 ELSE reviewed END,
          status_updated_at = CASE WHEN status != ?1 OR status_message IS NOT ?2 THEN datetime('now') ELSE status_updated_at END,
-         status = ?1, status_message = ?2
+         status = ?1, status_message = ?2, status_event_ns = COALESCE(?5, status_event_ns)
          WHERE tool = ?3 AND session_id = ?4 AND status != 'closed'",
-        params![req.status.as_str(), req.message, tool, session_id],
+        params![req.status.as_str(), req.message, tool, session_id, req.event_timestamp_ns],
     )?;
     tx.commit()?;
-    Ok(Some(StatusChange { todo_id, old: ConversationStatus::parse(&old).unwrap_or(ConversationStatus::Unknown) }))
+    Ok(Some(StatusChange { todo_id, old, applied: true }))
 }
 
 pub(crate) fn valid_text(s: &str) -> bool {
@@ -1366,6 +1372,9 @@ pub async fn post_conversation_status(
     broadcaster: web::Data<Broadcaster>,
     notifier: web::Data<PushNotifier>,
 ) -> HttpResponse {
+    if body.event_timestamp_ns.is_some_and(|timestamp| timestamp < 0) {
+        return bad_request("event_timestamp_ns must be nonnegative");
+    }
     if body.status == ConversationStatus::Closed {
         return bad_request("Hooks cannot close a conversation; use POST /api/todos/{id}/conversation/close");
     }
@@ -1383,6 +1392,9 @@ pub async fn post_conversation_status(
     match set_status_db(&conn, tool, session_id, &body) {
         Ok(None) => not_found("Unknown or closed session_id"),
         Ok(Some(change)) => {
+            if !change.applied {
+                return HttpResponse::NoContent().finish();
+            }
             broadcaster.send();
             notifier.notify(Transition {
                 todo_id: change.todo_id,
@@ -1863,11 +1875,36 @@ mod tests {
         let busy = ConversationStatusRequest { status: ConversationStatus::Busy, ..Default::default() };
         let waiting = ConversationStatusRequest { status: ConversationStatus::Waiting, ..Default::default() };
         let first = set_status_db(&conn, "claude", &conv.session_id, &busy).unwrap().unwrap();
-        assert_eq!(first, StatusChange { todo_id: TODO.into(), old: ConversationStatus::Unknown });
+        assert_eq!(first, StatusChange { todo_id: TODO.into(), old: ConversationStatus::Unknown, applied: true });
         let second = set_status_db(&conn, "claude", &conv.session_id, &waiting).unwrap().unwrap();
         assert_eq!(second.old, ConversationStatus::Busy);
         let repeat = set_status_db(&conn, "claude", &conv.session_id, &waiting).unwrap().unwrap();
         assert_eq!(repeat.old, ConversationStatus::Waiting);
+    }
+
+    #[test]
+    fn delayed_codex_events_cannot_undo_completion_or_review() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let conv = open_conversation_db(&conn, TODO, "codex", None).unwrap();
+        set_session_on(&conn, &conv.id, "ordered-codex").unwrap();
+        let event = |status, timestamp| ConversationStatusRequest {
+            status, event_timestamp_ns: timestamp, ..Default::default()
+        };
+        set_status_db(&conn, "codex", "ordered-codex", &event(ConversationStatus::Busy, Some(100))).unwrap();
+        set_status_db(&conn, "codex", "ordered-codex", &event(ConversationStatus::Idle, Some(300))).unwrap();
+        let done = load_conversation_by_id(&conn, &conv.id).unwrap().unwrap();
+        review_conversation(&conn, &conv.id, done.status_revision).unwrap();
+        for timestamp in [Some(200), Some(300), None] {
+            let late = set_status_db(&conn, "codex", "ordered-codex", &event(ConversationStatus::Waiting, timestamp)).unwrap().unwrap();
+            assert!(!late.applied);
+        }
+        let read = load_conversation_by_id(&conn, &conv.id).unwrap().unwrap();
+        assert!(read.reviewed);
+        assert_eq!(read.status, ConversationStatus::Idle);
+        assert_eq!(read.status_revision, done.status_revision);
+        assert!(set_status_db(&conn, "codex", "ordered-codex", &event(ConversationStatus::Busy, Some(400))).unwrap().unwrap().applied);
     }
 
     #[test]

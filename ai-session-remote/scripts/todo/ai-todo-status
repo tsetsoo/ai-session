@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Maintain Codex status: watch | publish [--time NS] | retry | codex-path | ensure-runtime | doctor."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+from ai_todo_status import find_codex, publish, read_json, retry_pending, root, RuntimeSocket, socket_path, watch
+
+
+def main(args):
+    if args == ["watch"]:
+        watch()
+    elif args == ["codex-path"]:
+        print(find_codex())
+    elif args == ["ensure-runtime"]:
+        try:
+            client = RuntimeSocket(socket_path())
+            client.close()
+        except (OSError, ValueError, EOFError, TimeoutError):
+            codex = find_codex()
+            environment = os.environ.copy()
+            environment["PATH"] = str(Path(codex).parent) + os.pathsep + environment.get("PATH", "")
+            result = subprocess.run([codex, "app-server", "daemon", "start"], capture_output=True, text=True, env=environment, timeout=30)
+            if result.returncode:
+                raise OSError("Could not start the managed Codex runtime")
+            client = RuntimeSocket(socket_path())
+            client.close()
+        print("unix://" + str(socket_path()))
+    elif args == ["retry"]:
+        print(json.dumps(retry_pending()))
+    elif args[:1] == ["publish"]:
+        observed = int(args[2]) if len(args) == 3 and args[1] == "--time" else time.time_ns()
+        return 0 if publish(json.load(sys.stdin), observed) else 1
+    elif args == ["doctor"]:
+        service = read_json(root() / "health.json", {})
+        result = {"protocol_version": 2, "codex": None, "runtime_connected": False,
+                  "status_service": service, "service_running": 0 <= time.time_ns() - service.get("checked_ns", 0) < 8_000_000_000, "pending": 0}
+        try:
+            result["codex"] = find_codex()
+        except FileNotFoundError as error:
+            result["codex_error"] = str(error)
+        try:
+            client = RuntimeSocket(socket_path())
+            result["runtime_connected"] = True
+            result["runtime_threads"] = len(client.states())
+            hooks = client.call("hooks/list", {"cwds": [str(Path.home())]})
+            result["hooks"] = [{k: hook.get(k) for k in ["eventName", "enabled", "trustStatus"]}
+                               for entry in hooks.get("data", []) for hook in entry.get("hooks", [])
+                               if "ai-todo-hook" in hook.get("command", "")]
+            client.close()
+        except (OSError, ValueError, EOFError, TimeoutError) as error:
+            result["runtime_error"] = type(error).__name__
+        result["pending"] = sum(bool(read_json(path, {}).get("pending")) for path in root().glob("*.json"))
+        print(json.dumps(result, indent=2))
+    else:
+        print(__doc__, file=sys.stderr)
+        return 64
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (OSError, ValueError) as error:
+        print("ai-todo-status: " + type(error).__name__, file=sys.stderr)
+        sys.exit(1)

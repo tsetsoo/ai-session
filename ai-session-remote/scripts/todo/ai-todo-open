@@ -295,6 +295,15 @@ fi
 [ -d "$cwd" ] || { echo "cwd not found: $cwd" >&2; exit 93; }
 
 if [ "$tool" = codex ]; then
+  status_bin=${AI_TODO_STATUS_BIN:-$(dirname "$0")/ai-todo-status}
+  runtime_endpoint=
+  # Explicit binary overrides are also used by adapters/tests that do not implement the
+  # native app-server protocol. Normal launches use a healthy CLI and an observable server.
+  if [ -z "${AI_TODO_CODEX_BIN:-}" ] && [ -x "$status_bin" ]; then
+    AI_TODO_CODEX_BIN=$("$status_bin" codex-path) || exit 90
+    PATH="$(dirname "$AI_TODO_CODEX_BIN"):$PATH"
+    runtime_endpoint=$("$status_bin" ensure-runtime) || { echo 'Codex runtime could not start; run ai-todo-status doctor' >&2; exit 90; }
+  fi
   codex_bin=${AI_TODO_CODEX_BIN:-$(command -v codex || true)}
   if [ -z "$codex_bin" ]; then
     # Installed with npm under nvm: not on PATH in a plain SSH session.
@@ -320,6 +329,12 @@ if [ "$tool" = codex ]; then
   else
     mode=resumed
     set -- "$codex_bin" resume "$sid" --approve-for-me
+  fi
+  if [ -n "$runtime_endpoint" ]; then
+    tool_bin=$1
+    shift
+    # A hidden terminal must not stop on an updater menu before Chat can send a message.
+    set -- "$tool_bin" --cd "$cwd" -c check_for_update_on_startup=false --remote "$runtime_endpoint" "$@"
   fi
 elif [ "$tool" = cursor ]; then
   agent_bin=${AI_TODO_AGENT_BIN:-$(command -v agent || true)}

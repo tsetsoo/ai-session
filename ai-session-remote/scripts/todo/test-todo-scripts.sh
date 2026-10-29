@@ -864,8 +864,10 @@ printf '#!/bin/sh\necho "node $*" >>"%s"\nexec sleep 300\n' "$NODE_LOG" >"${NVM_
 printf '#!/usr/bin/env fakenode\n' >"${NVM_BIN}/codex"
 chmod +x "${NVM_BIN}/fakenode" "${NVM_BIN}/codex"
 PSOCK="${SOCK}-path"
+printf '#!/bin/sh\ncase "$1" in codex-path) echo "%s/codex";; ensure-runtime) echo unix:///tmp/fake-codex-test.sock;; esac\n' "$NVM_BIN" >"${SANDBOX}/fake-nvm-status"
+chmod +x "${SANDBOX}/fake-nvm-status"
 env -i HOME="$HOME" PATH=/usr/bin:/bin "$(command -v tmux)" -L "$PSOCK" new-session -d -s keep -- sleep 300
-out="$(env -u AI_TODO_CODEX_BIN PATH=/usr/bin:/bin AI_TODO_TMUX_SOCKET="$PSOCK" AI_TODO_OPEN_DETACH=1 \
+out="$(env -u AI_TODO_CODEX_BIN PATH=/usr/bin:/bin AI_TODO_STATUS_BIN="${SANDBOX}/fake-nvm-status" AI_TODO_TMUX_SOCKET="$PSOCK" AI_TODO_OPEN_DETACH=1 \
   "$OPEN" "ai/codex/todo-pathtest" '~/programming' "$X_LINKED" codex)" || fail "ai-todo-open via nvm codex failed: $out"
 for _ in $(seq 1 50); do [[ -s "$NODE_LOG" ]] && break; sleep 0.1; done
 tmux -L "$PSOCK" kill-server >/dev/null 2>&1 || true
@@ -1148,6 +1150,7 @@ import json, sys
 req = json.loads(open(sys.argv[1]).read().splitlines()[-1])
 assert req["path"] == "/api/conversations/status", req
 assert req["auth"] == "Bearer s3cret", req
+assert isinstance(req["body"].pop("event_timestamp_ns"), int), req
 assert req["body"] == {"session_id": sys.argv[2], "tool": "codex", "status": "idle", "attended": False}, req
 PY
 APPROVAL=$(printf '{"type":"approval-requested","thread-id":"%s"}' "$X_LINKED")
@@ -1260,7 +1263,7 @@ codex_hook() { # <status> <event> [extra json fields]: one Codex hook call for X
   printf '{"session_id":"%s","turn_id":"t1","hook_event_name":"%s"%s}' "$X_LINKED" "$2" "${3:-}" \
     | AI_TODO_MEMORY_BIN="$FAKE_MEMORY" AI_TODO_TMUX_SESSION="$XTMUX" "$HOOK" --codex "$1"
 }
-last_body() { python3 -c 'import json,sys; print(json.dumps(json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"], sort_keys=True))' "$HUB_LOG"; }
+last_body() { python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; b.pop("event_timestamp_ns", None); print(json.dumps(b, sort_keys=True))' "$HUB_LOG"; }
 : >"$MEMORY_TRIGGERS"
 before=$(wc -l <"$HUB_LOG")
 codex_hook busy UserPromptSubmit ',"prompt":"go"'
@@ -1268,7 +1271,7 @@ codex_hook busy UserPromptSubmit ',"prompt":"go"'
 [[ "$(last_body)" == "{\"attended\": false, \"session_id\": \"${X_LINKED}\", \"status\": \"busy\", \"tool\": \"codex\"}" ]] \
   || fail "codex busy body wrong: $(last_body)"
 codex_hook waiting PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"rm -rf x"}'
-python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert b=={"session_id":sys.argv[2],"tool":"codex","status":"waiting","attended":False,"message":"Codex needs your permission to use Bash"}, b' "$HUB_LOG" "$X_LINKED" \
+python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert isinstance(b.pop("event_timestamp_ns"),int); assert b=={"session_id":sys.argv[2],"tool":"codex","status":"waiting","attended":False,"message":"Codex needs your permission to use Bash"}, b' "$HUB_LOG" "$X_LINKED" \
   || fail "codex waiting body wrong: $(last_body)"
 codex_hook idle Stop ',"last_assistant_message":"done","stop_hook_active":false'
 [[ "$(last_status)" == idle ]] || fail "codex Stop did not post idle"
@@ -2395,10 +2398,25 @@ assert p["ProgramArguments"] == [ai + "/bin/ai-todo-memory", "nightly"], p
 assert p["StartCalendarInterval"] == {"Hour": 3, "Minute": 30}, p
 assert p["StandardOutPath"] == p["StandardErrorPath"] == ai + "/memory-state/launchd.log", p
 PY
-  expected="bootout ${GUI}/com.ai-remote.todo-memory"$'\n'"bootstrap ${GUI} ${PLIST}"
+  expected="bootout ${GUI}/com.ai-remote.todo-memory"$'\n'"bootstrap ${GUI} ${PLIST}"$'\n'"bootout ${GUI}/com.ai-remote.todo-status"$'\n'"bootstrap ${GUI} ${HOME}/Library/LaunchAgents/com.ai-remote.todo-status.plist"
   [[ "$(cat "$LAUNCHCTL_LOG")" == "${expected}"$'\n'"${expected}" ]] || fail "launchctl calls wrong: $(cat "$LAUNCHCTL_LOG")"
 fi
 pass "install_memory_and_launchd: ai-todo-memory + ai_todo_redact.py installed, memory-state 700, plist (03:30, nightly) booted out then bootstrapped"
+
+python3 - "$INSTALL" "$HOME" <<'PY' || fail "status-only update changed unrelated settings or jobs"
+import os, pathlib, plistlib, subprocess, sys
+install, home = sys.argv[1], pathlib.Path(sys.argv[2])
+paths = [home / ".claude/settings.json", home / ".ai-remote/todo-hub.conf",
+         home / ".ai-remote/bin/ai-todo-memory", home / "Library/LaunchAgents/com.ai-remote.todo-memory.plist"]
+before = {str(p): p.read_bytes() if p.exists() else None for p in paths}
+subprocess.run([install, "--status-only"], stdout=subprocess.DEVNULL, check=True)
+assert before == {str(p): p.read_bytes() if p.exists() else None for p in paths}
+if sys.platform == "darwin":
+    job = plistlib.load(open(home / "Library/LaunchAgents/com.ai-remote.todo-status.plist", "rb"))
+    assert job["RunAtLoad"] and job["KeepAlive"], job
+    assert job["ProgramArguments"] == [str(home / ".ai-remote/bin/ai-todo-status"), "watch"], job
+PY
+pass "status-only installs the persistent monitor without changing Claude, hub credentials or nightly memory"
 
 "$INSTALL" --token newtok >/dev/null
 grep -qx "TODO_HUB_URL='http://hub:8080'" "${HOME}/.ai-remote/todo-hub.conf" || fail "hub URL lost when only --token was given"
@@ -2498,7 +2516,7 @@ pass "--computer-id is written to todo-hub.conf (once), keeping the other settin
 "$INSTALL" --no-nightly >/dev/null
 check_installed || fail "settings.json changed by --no-nightly: $(cat "$SETTINGS")"
 if on_mac; then
-  [[ ! -e "$PLIST" && "$(cat "$LAUNCHCTL_LOG")" == "bootout ${GUI}/com.ai-remote.todo-memory" ]] || fail "--no-nightly left the job: $(cat "$LAUNCHCTL_LOG")"
+  [[ ! -e "$PLIST" && "$(cat "$LAUNCHCTL_LOG")" == "bootout ${GUI}/com.ai-remote.todo-memory"* ]] || fail "--no-nightly left the job: $(cat "$LAUNCHCTL_LOG")"
 fi
 "$INSTALL" >/dev/null
 { ! on_mac || [[ -f "$PLIST" ]]; } || fail "re-install did not restore the plist"
@@ -2564,7 +2582,7 @@ grep -q "kept ${HOME}/.ai-remote/memory-state" "${SANDBOX}/uninstall.out" || fai
 [[ -L "${HOME}/.ai-remote/mcp/one.json" ]] || fail "uninstall removed ~/.ai-remote/mcp"
 grep -q "kept ${HOME}/.ai-remote/mcp" "${SANDBOX}/uninstall.out" || fail "uninstall did not print the mcp path"
 if on_mac; then
-  [[ ! -e "$PLIST" && "$(cat "$LAUNCHCTL_LOG")" == "bootout ${GUI}/com.ai-remote.todo-memory" ]] || fail "uninstall did not boot out the job: $(cat "$LAUNCHCTL_LOG")"
+  [[ ! -e "$PLIST" && "$(cat "$LAUNCHCTL_LOG")" == "bootout ${GUI}/com.ai-remote.todo-memory"* ]] || fail "uninstall did not boot out the job: $(cat "$LAUNCHCTL_LOG")"
 fi
 pass "uninstall_removes_job_keeps_state: bootout, plist and ai-todo-memory removed, memory-state kept and printed"
 
@@ -2866,6 +2884,8 @@ assert messages == [
 ], messages
 PY
 pass "chat transcript preserves roles, blank lines and indentation"
+python3 "${SCRIPT_DIR}/test-status.py" || fail "Codex status delivery/runtime regressions"
+pass "Codex runtime state, concurrency, durable retries and executable discovery"
 
 # --- ai-todo-mcp ------------------------------------------------------------------
 

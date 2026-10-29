@@ -25,8 +25,8 @@
 #   waiting with "attended": true, which cancels the server's held push. busy only arrives
 #   after the approved tool finishes, which can take minutes.
 #
-# Never blocks or fails Claude: always exits 0, and the HTTP call runs in the
-# background with a 3s limit. Every conversation is reported, matched by session id;
+# Never fails Claude: always exits 0, with bounded HTTP delivery (3s for Claude; Codex
+# persists an ordered outbox first and has independent delivery retries). Every conversation is reported, matched by session id;
 # todo-server answers 404 for ids that aren't a todo's. A todo's turns don't always run in
 # its tmux session: one imported from a background job (`claude attach`, ~/.claude/jobs)
 # runs its hooks in the job's own process. The tmux session is only used for "attended":
@@ -64,6 +64,10 @@ tool=claude
 if [ "${1:-}" = --codex ]; then
   tool=codex
   shift
+fi
+event_time=
+if [ "$tool" = codex ]; then
+  event_time=${AI_TODO_STATUS_EVENT_NS:-$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null)}
 fi
 status=${1:-}
 case "$status" in
@@ -224,7 +228,8 @@ try:
 except Exception:
     sys.exit(1)
 sid = data.get("session_id") if isinstance(data, dict) else None
-if not isinstance(sid, str) or not sid or not all(c.isalnum() or c == "-" for c in sid):
+allowed = "-_" if sys.argv[2] == "codex" else "-"
+if not isinstance(sid, str) or not sid or not all(c.isalnum() or c in allowed for c in sid):
     sys.exit(1)
 status, tool = sys.argv[1], sys.argv[2]
 msg = data.get("message")
@@ -301,6 +306,13 @@ mkdir -p "$state_dir" 2>/dev/null && printf '%s\n' "$state" >"$state_file" 2>/de
 find "$state_dir" -type f -mtime +7 -exec rm -f {} + 2>/dev/null
 
 post() {
+  # The durable publisher serializes concurrent hooks and prefers a fresh runtime snapshot
+  # over a hook's incomplete view (e.g. another tool finishing while approval is pending).
+  status_bin=${AI_TODO_STATUS_BIN:-$(dirname "$0")/ai-todo-status}
+  if [ "$tool" = codex ] && [ -x "$status_bin" ] && [ -n "$event_time" ]; then
+    printf '%s' "$body" | "$status_bin" publish --time "$event_time"
+    return $?
+  fi
   # The token goes through curl's config on stdin so it never shows up in `ps`.
   {
     if [ -n "$TODO_API_TOKEN" ]; then
