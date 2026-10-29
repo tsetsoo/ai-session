@@ -282,6 +282,45 @@ class StatusTests(unittest.TestCase):
         status.sync_legacy_state("thread-1", "busy", tool="claude")
         self.assertEqual(legacy.read_text(), "busy\n")
 
+    def test_idle_snapshot_cannot_hide_a_fast_new_turn(self):
+        observed = time.time_ns()
+        for tool in ("claude", "codex"):
+            with self.subTest(tool=tool):
+                filename = "claude-runtime.json" if tool == "claude" else "runtime.json"
+                status.atomic_json(status.root() / filename, {"observed_ns": observed, "threads": {tool: ["idle", None]}})
+                status.publish({"tool": tool, "session_id": tool, "status": "busy", "_hook_event": "UserPromptSubmit"}, observed + 10)
+                self.assertEqual(self.requests[-1]["status"], "busy")
+                self.assertNotIn("_hook_event", self.requests[-1])
+                status.publish({"tool": tool, "session_id": tool, "status": "idle", "_hook_event": "Stop"}, observed + 20)
+                self.assertEqual(self.requests[-1]["status"], "idle")
+                self.assertEqual(self.requests[-1]["turn_started_ns"], observed + 10)
+
+    def test_overtaking_heartbeat_does_not_erase_a_new_turn_identity(self):
+        status.publish(self.body("idle"), 300, source="runtime")
+        status.publish(dict(self.body("busy"), _hook_event="UserPromptSubmit"), 200)
+        self.assertEqual(self.requests[-1]["status"], "idle")
+        self.assertEqual(self.requests[-1]["event_timestamp_ns"], 300)
+        self.assertEqual(self.requests[-1]["turn_started_ns"], 200)
+
+    def test_offline_coalescing_and_heartbeats_retain_the_latest_turn(self):
+        self.http_status = 503
+        status.publish(dict(self.body("busy"), _hook_event="UserPromptSubmit"), 100)
+        status.publish(dict(self.body("idle"), _hook_event="Stop"), 200)
+        status.publish(self.body("idle"), 300, source="runtime")
+        self.http_status = 204
+        status.retry_pending()
+        self.assertEqual(self.requests[-1]["status"], "idle")
+        self.assertEqual(self.requests[-1]["turn_started_ns"], 100)
+
+    def test_unknown_claude_wait_reason_shape_does_not_crash_monitor(self):
+        self.assertEqual(status.claude_status({"status": "waiting", "waitingFor": {"new": "shape"}}),
+                         ("waiting", "Claude needs your attention"))
+
+    def test_invalid_event_timestamp_is_rejected_before_queueing(self):
+        for value in (-1, 2**63):
+            with self.assertRaises(ValueError):
+                status.publish(self.body("busy"), value)
+
 
 if __name__ == "__main__":
     unittest.main()

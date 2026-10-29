@@ -373,6 +373,17 @@ struct ConversationFrame: View {
             #else
             liveTerminal(open)
                 .id(open.surfaceID)
+                .task(id: clipboardSourceID) {
+                    terminal.setClipboardCode([])
+                    guard clipboardSourceID != nil else { return }
+                    do {
+                        let messages = try await store.conversationMessages(of: conversation ?? open.conversation, config: open.config)
+                        guard !Task.isCancelled else { return }
+                        terminal.setClipboardCode(CommandClipboard.candidates(in: messages.map(\.text)))
+                    } catch {
+                        // Selection remains usable when the transcript helper is unavailable.
+                    }
+                }
             #endif
         case let .problem(problem):
             onTerminalBackground(FrameStateView(
@@ -754,6 +765,11 @@ struct ConversationFrame: View {
     /// A live terminal on screen (the handle can lag behind a phase change).
     private var isConnected: Bool {
         readyConversation != nil && terminal.isConnected
+    }
+
+    private var clipboardSourceID: String? {
+        guard isFrontmost, isConnected, let conversation else { return nil }
+        return "\(conversation.id):\(conversation.sessionId):\(conversation.statusRevision):\(conversation.statusUpdatedAt ?? "")"
     }
 
     private var conversation: Conversation? {

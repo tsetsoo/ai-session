@@ -391,6 +391,10 @@ pub struct ConversationStatusRequest {
     /// persist this with their outbox so retrying an old event cannot undo a newer one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_timestamp_ns: Option<i64>,
+    /// Latest user turn, retained when offline updates coalesce or a fast turn is missed
+    /// by runtime polling. Repeated heartbeats for this turn do not rearm review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_started_ns: Option<i64>,
 }
 
 /// Acknowledge only the idle result the client actually displayed.

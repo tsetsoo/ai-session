@@ -1337,7 +1337,7 @@ codex_hook() { # <status> <event> [extra json fields]: one Codex hook call for X
   printf '{"session_id":"%s","turn_id":"t1","hook_event_name":"%s"%s}' "$X_LINKED" "$2" "${3:-}" \
     | AI_TODO_MEMORY_BIN="$FAKE_MEMORY" AI_TODO_TMUX_SESSION="$XTMUX" "$HOOK" --codex "$1"
 }
-last_body() { python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; b.pop("event_timestamp_ns", None); print(json.dumps(b, sort_keys=True))' "$HUB_LOG"; }
+last_body() { python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; b.pop("event_timestamp_ns", None); b.pop("turn_started_ns", None); print(json.dumps(b, sort_keys=True))' "$HUB_LOG"; }
 : >"$MEMORY_TRIGGERS"
 before=$(wc -l <"$HUB_LOG")
 codex_hook busy UserPromptSubmit ',"prompt":"go"'
@@ -1345,7 +1345,7 @@ codex_hook busy UserPromptSubmit ',"prompt":"go"'
 [[ "$(last_body)" == "{\"attended\": false, \"session_id\": \"${X_LINKED}\", \"status\": \"busy\", \"tool\": \"codex\"}" ]] \
   || fail "codex busy body wrong: $(last_body)"
 codex_hook waiting PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"rm -rf x"}'
-python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert isinstance(b.pop("event_timestamp_ns"),int); assert b=={"session_id":sys.argv[2],"tool":"codex","status":"waiting","attended":False,"message":"Codex needs your permission to use Bash"}, b' "$HUB_LOG" "$X_LINKED" \
+python3 -c 'import json,sys; b=json.loads(open(sys.argv[1]).read().splitlines()[-1])["body"]; assert isinstance(b.pop("event_timestamp_ns"),int); assert isinstance(b.pop("turn_started_ns"),int); assert b=={"session_id":sys.argv[2],"tool":"codex","status":"waiting","attended":False,"message":"Codex needs your permission to use Bash"}, b' "$HUB_LOG" "$X_LINKED" \
   || fail "codex waiting body wrong: $(last_body)"
 codex_hook idle Stop ',"last_assistant_message":"done","stop_hook_active":false'
 [[ "$(last_status)" == idle ]] || fail "codex Stop did not post idle"

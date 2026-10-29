@@ -33,6 +33,7 @@ enum TerminalHitTarget: Equatable {
 final class LocalClipboardTerminalView: TerminalView {
     /// The conversation's tool, for the bytes Shift+Return sends.
     var tool: String?
+    var clipboardCode: [String] = []
     private var keyMonitor: Any?
     private var reportsPointerGesture = false
 
@@ -72,9 +73,15 @@ final class LocalClipboardTerminalView: TerminalView {
     }
 
     func copySelection(to clipboard: NSPasteboard) {
-        guard selectionActive, let text = getSelection(), !text.isEmpty else { return }
+        guard selectionActive else { return }
+        let text = clipboardSelectionText()
+        guard !text.isEmpty else { return }
         clipboard.clearContents()
         clipboard.setString(text, forType: .string)
+    }
+
+    func clipboardSelectionText() -> String {
+        CommandClipboard.text(for: getSelection() ?? "", candidates: clipboardCode)
     }
 
     /// Keys SwiftTerm gets wrong on the Mac. Shift+Return sends a plain carriage return, so the
@@ -262,6 +269,11 @@ final class TerminalHandle {
     func focus() { coordinator?.focusTerminal() }
     func resignFocus() { coordinator?.resignFocus() }
     func paste() { coordinator?.pasteFromClipboard() }
+    func setClipboardCode(_ snippets: [String]) {
+        #if os(macOS)
+        (coordinator?.terminalView as? LocalClipboardTerminalView)?.clipboardCode = snippets
+        #endif
+    }
     /// The selection if there is one, otherwise the whole visible screen. True when something
     /// was copied.
     @discardableResult

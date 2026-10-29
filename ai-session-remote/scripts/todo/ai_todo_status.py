@@ -153,24 +153,37 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
         raise ValueError("invalid status")
     body = dict(body, session_id=sid, tool=tool)
     body.pop("claude_session_id", None)
+    hook_event = body.pop("_hook_event", None)
     observed = int(observed_ns if observed_ns is not None else time.time_ns())
-    overridden = False
-    if source != "runtime":
-        snapshot = fresh_runtime_state(sid, tool)
-        if snapshot:
-            observed, state = snapshot
-            body["status"], body["message"] = state
-            if body["message"] is None:
-                body.pop("message", None)
-            overridden = True
-    body["event_timestamp_ns"] = observed
+    if not 0 <= observed <= 2**63 - 1:
+        raise ValueError("invalid event timestamp")
     with session_lock(sid, tool=tool) as path:
         previous = read_json(path, {})
         previous_body = previous.get("body", {})
         previous_time = previous_body.get("event_timestamp_ns", -1)
+        previous_turn = previous_body.get("turn_started_ns", 0)
+        turn_started = max(previous_turn, observed if hook_event == "UserPromptSubmit" else 0)
+        new_turn = turn_started > previous_turn
+        overridden = False
+        if source != "runtime" and hook_event != "UserPromptSubmit":
+            snapshot = fresh_runtime_state(sid, tool)
+            if snapshot and snapshot[0] >= turn_started:
+                observed, state = snapshot
+                body["status"], body["message"] = state
+                if body["message"] is None:
+                    body.pop("message", None)
+                overridden = True
         if previous_time > observed or (previous_time == observed and previous_body.get("status") != body["status"]):
-            sync_legacy_state(sid, previous["body"]["status"], tool=tool)
-            return True
+            if not new_turn:
+                sync_legacy_state(sid, previous["body"]["status"], tool=tool)
+                return True
+            # A runtime heartbeat can overtake the prompt hook. Keep the newer state,
+            # but retain the turn identity so a fast/offline result becomes unread once.
+            body = dict(previous_body)
+            observed = previous_time
+        body["event_timestamp_ns"] = observed
+        if turn_started:
+            body["turn_started_ns"] = turn_started
         attended_ns = previous.get("attended_ns", 0)
         if source != "runtime" and body.get("attended"):
             attended_ns = time.time_ns()
@@ -595,6 +608,7 @@ def claude_status(row):
     status, state = row.get("status"), row.get("state")
     if status == "waiting" or state == "blocked":
         reason = row.get("waitingFor")
+        reason = reason if isinstance(reason, str) else None
         return "waiting", {"permission prompt": "Claude needs approval", "input needed": "Claude needs your answer",
                            "sandbox request": "Claude needs sandbox approval"}.get(reason, "Claude needs your attention")
     if state == "failed":

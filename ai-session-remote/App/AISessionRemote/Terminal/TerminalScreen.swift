@@ -412,7 +412,11 @@ final class TerminalCoordinator: TerminalViewDelegate {
         guard let terminalView else { return false }
         let text: String?
         if terminalView.selectionActive {
+            #if os(macOS)
+            text = (terminalView as? LocalClipboardTerminalView)?.clipboardSelectionText() ?? terminalView.getSelection()
+            #else
             text = terminalView.getSelection()
+            #endif
         } else {
             terminalView.selectAll()
             text = terminalView.getSelection()

@@ -188,7 +188,8 @@ fn conversations_ddl(table: &str) -> String {
             mcp_servers       TEXT,
             status_revision   INTEGER NOT NULL DEFAULT 0,
             reviewed          INTEGER NOT NULL DEFAULT 0,
-            status_event_ns   INTEGER
+            status_event_ns   INTEGER,
+            status_turn_ns    INTEGER
         )"
     )
 }
@@ -334,9 +335,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///   arrays of MCP server names, NULL when nothing was chosen (additive)
 /// - v8: an idle result's reviewed flag and status revision (additive)
 /// - v9: reporter event time, rejecting delayed/retried Codex statuses (additive)
+/// - v10: user-turn identity, preserving unread results across offline coalescing (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -349,6 +351,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if conversations.as_deref().is_some_and(|sql| sql.contains("status_turn_ns")) {
+        return Ok(10);
     }
     if conversations.as_deref().is_some_and(|sql| sql.contains("status_event_ns")) {
         return Ok(9);
@@ -450,9 +455,19 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 8 {
         if !backed_up {
             backup_before_migration(conn, db_path, 9)?;
+            backed_up = true;
         }
         if !column_exists(conn, "conversations", "status_event_ns")? {
             conn.execute_batch("ALTER TABLE conversations ADD COLUMN status_event_ns INTEGER;")?;
+        }
+        version = 9;
+    }
+    if version == 9 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 10)?;
+        }
+        if !column_exists(conn, "conversations", "status_turn_ns")? {
+            conn.execute_batch("ALTER TABLE conversations ADD COLUMN status_turn_ns INTEGER;")?;
         }
     }
     Ok(())
@@ -1849,6 +1864,32 @@ mod tests {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         ).unwrap();
         assert_eq!(row, (7, true, None));
+        assert_eq!(db.backups().len(), 1);
+    }
+
+    #[test]
+    fn migrates_v9_turn_identity_without_resetting_reviewed_results() {
+        let db = TestDb::new("migrate-v10");
+        {
+            let pool = db.pool();
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "INSERT INTO computers (id, name, hostname, username) VALUES ('mac', 'Mac', 'mac.local', 'me');
+                 INSERT INTO todos (id, section, title) VALUES ('t', 'Sp', 'Read result');
+                 INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, status, status_revision, reviewed, status_event_ns)
+                     VALUES ('c', 't', 'mac', '~/code', 'claude', 'ai/claude/todo-t', 's', 'idle', 7, 1, 123);
+                 ALTER TABLE conversations DROP COLUMN status_turn_ns;
+                 PRAGMA user_version = 9;",
+            ).unwrap();
+        }
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        let row: (i64, bool, Option<i64>, Option<i64>) = conn.query_row(
+            "SELECT status_revision, reviewed, status_event_ns, status_turn_ns FROM conversations WHERE id = 'c'", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).unwrap();
+        assert_eq!(row, (7, true, Some(123), None));
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert_eq!(db.backups().len(), 1);
     }
 

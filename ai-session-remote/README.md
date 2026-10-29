@@ -142,6 +142,8 @@ The installer is safe to re-run. It sets up:
   or resumes threads. Idle is confirmed once more before reporting completion.
   - Failed deliveries are kept in `~/.ai-remote/status-state/` and retried independently of
     the terminal. Reporter timestamps prevent delayed hooks or retries from undoing a newer state.
+    The latest user-turn identity survives coalescing, so a fast or offline result becomes
+    unread once even when the hub never received its intermediate busy state.
   - New Codex launches use an observable local runtime with that terminal's MCP settings
     and environment; the monitor also reads the shared managed runtime. The CLI resolver probes normal,
     standalone and nvm installations, skipping broken shims on non-interactive SSH PATHs and
@@ -173,6 +175,10 @@ The installer is safe to re-run. It sets up:
     existing login/model and a disposable session; it never approves user conversations.
 
 To rebuild the Mac app you run, use `scripts/rebuild-mac-app.sh`. It builds Release, checks the Apple Development team, and replaces `~/Applications/AI Session Remote.app`. `scripts/build-mac-release.sh` only prints the built `.app` path.
+- On Mac, copying a complete code snippet restores its original text from the saved reply
+  when there is a unique match. This removes Claude's display wrapping and padding while
+  preserving quoted spaces, actual newlines, continuations and heredocs for `!` commands.
+  Unmatched/ambiguous selections and unavailable transcripts keep ordinary terminal copying.
 - `~/.ai-remote/todo-hub.conf` (mode 600): `TODO_HUB_URL` and `TODO_API_TOKEN` for the hook.
 - `~/.ai-remote/tmux.conf`, sourced from `~/.tmux.conf`. Run `tmux source-file ~/.tmux.conf`
   to apply it to a running server. It sets:

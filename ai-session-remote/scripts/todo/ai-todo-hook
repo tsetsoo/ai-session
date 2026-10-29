@@ -259,6 +259,8 @@ if tool == "codex":
     out = {"session_id": sid, "tool": "codex", "status": status, "attended": False}
 else:
     out = {"claude_session_id": sid, "status": status, "attended": False}
+if isinstance(event, str):
+    out["_hook_event"] = event
 if status == "waiting" and msg:
     out["message"] = msg[:500]
 print(sid)

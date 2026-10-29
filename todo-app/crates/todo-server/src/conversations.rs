@@ -666,27 +666,29 @@ pub(crate) fn set_status_db(
     // IMMEDIATE: take the write lock before reading, so a concurrent writer makes this wait
     // (busy timeout) instead of failing the update on a stale read snapshot.
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let current: Option<(String, String, Option<i64>)> = tx
+    let current: Option<(String, String, Option<i64>, Option<i64>)> = tx
         .query_row(
-            "SELECT todo_id, status, status_event_ns FROM conversations WHERE tool = ?1 AND session_id = ?2 AND status != 'closed'",
+            "SELECT todo_id, status, status_event_ns, status_turn_ns FROM conversations WHERE tool = ?1 AND session_id = ?2 AND status != 'closed'",
             params![tool, session_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    let Some((todo_id, old, event_ns)) = current else { return Ok(None) };
+    let Some((todo_id, old, event_ns, turn_ns)) = current else { return Ok(None) };
     let old = ConversationStatus::parse(&old).unwrap_or(ConversationStatus::Unknown);
     if event_ns.is_some_and(|previous| req.event_timestamp_ns.is_some_and(|next| next < previous || (next == previous && req.status != old))
         || (matches!(tool, "codex" | "claude") && req.event_timestamp_ns.is_none())) {
         return Ok(Some(StatusChange { todo_id, old, applied: false }));
     }
+    let new_turn = req.turn_started_ns.is_some_and(|next| turn_ns.is_none_or(|previous| next > previous));
     tx.execute(
         "UPDATE conversations SET
-         status_revision = status_revision + CASE WHEN status != ?1 THEN 1 ELSE 0 END,
-         reviewed = CASE WHEN status != ?1 THEN 0 ELSE reviewed END,
-         status_updated_at = CASE WHEN status != ?1 OR status_message IS NOT ?2 THEN datetime('now') ELSE status_updated_at END,
-         status = ?1, status_message = ?2, status_event_ns = COALESCE(?5, status_event_ns)
+         status_revision = status_revision + CASE WHEN status != ?1 OR ?7 THEN 1 ELSE 0 END,
+         reviewed = CASE WHEN status != ?1 OR ?7 THEN 0 ELSE reviewed END,
+         status_updated_at = CASE WHEN status != ?1 OR status_message IS NOT ?2 OR ?7 THEN datetime('now') ELSE status_updated_at END,
+         status = ?1, status_message = ?2, status_event_ns = COALESCE(?5, status_event_ns),
+         status_turn_ns = CASE WHEN ?7 THEN ?6 ELSE status_turn_ns END
          WHERE tool = ?3 AND session_id = ?4 AND status != 'closed'",
-        params![req.status.as_str(), req.message, tool, session_id, req.event_timestamp_ns],
+        params![req.status.as_str(), req.message, tool, session_id, req.event_timestamp_ns, req.turn_started_ns, new_turn],
     )?;
     tx.commit()?;
     Ok(Some(StatusChange { todo_id, old, applied: true }))
@@ -1372,8 +1374,8 @@ pub async fn post_conversation_status(
     broadcaster: web::Data<Broadcaster>,
     notifier: web::Data<PushNotifier>,
 ) -> HttpResponse {
-    if body.event_timestamp_ns.is_some_and(|timestamp| timestamp < 0) {
-        return bad_request("event_timestamp_ns must be nonnegative");
+    if body.event_timestamp_ns.is_some_and(|timestamp| timestamp < 0) || body.turn_started_ns.is_some_and(|timestamp| timestamp < 0) {
+        return bad_request("status timestamps must be nonnegative");
     }
     if body.status == ConversationStatus::Closed {
         return bad_request("Hooks cannot close a conversation; use POST /api/todos/{id}/conversation/close");
@@ -1930,6 +1932,35 @@ mod tests {
         assert_eq!(read.status, ConversationStatus::Idle);
         assert_eq!(read.status_revision, done.status_revision);
         assert!(set_status_db(&conn, "claude", "ordered-claude", &event(ConversationStatus::Busy, Some(400))).unwrap().unwrap().applied);
+    }
+
+    #[test]
+    fn coalesced_offline_turn_rearms_review_once_without_a_delivered_busy_event() {
+        for tool in ["claude", "codex"] {
+            let (_db, pool) = pool();
+            let conn = pool.get().unwrap();
+            seed(&conn);
+            let conv = open_conversation_db(&conn, TODO, tool, None).unwrap();
+            set_session_on(&conn, &conv.id, "offline-turn").unwrap();
+            let event = |at, turn| ConversationStatusRequest {
+                status: ConversationStatus::Idle, event_timestamp_ns: Some(at), turn_started_ns: Some(turn), ..Default::default()
+            };
+            set_status_db(&conn, tool, "offline-turn", &event(200, 100)).unwrap();
+            let first = load_conversation_by_id(&conn, &conv.id).unwrap().unwrap();
+            review_conversation(&conn, &conv.id, first.status_revision).unwrap();
+            // Offline busy+idle were coalesced. The next delivered state is still idle.
+            set_status_db(&conn, tool, "offline-turn", &event(400, 300)).unwrap();
+            let next = load_conversation_by_id(&conn, &conv.id).unwrap().unwrap();
+            assert!(!next.reviewed);
+            assert_eq!(next.status_revision, first.status_revision + 1);
+            review_conversation(&conn, &conv.id, next.status_revision).unwrap();
+            for at in [400, 500] {
+                set_status_db(&conn, tool, "offline-turn", &event(at, 300)).unwrap();
+            }
+            let repeated = load_conversation_by_id(&conn, &conv.id).unwrap().unwrap();
+            assert!(repeated.reviewed);
+            assert_eq!(repeated.status_revision, next.status_revision);
+        }
     }
 
     #[test]
