@@ -864,7 +864,7 @@ printf '#!/bin/sh\necho "node $*" >>"%s"\nexec sleep 300\n' "$NODE_LOG" >"${NVM_
 printf '#!/usr/bin/env fakenode\n' >"${NVM_BIN}/codex"
 chmod +x "${NVM_BIN}/fakenode" "${NVM_BIN}/codex"
 PSOCK="${SOCK}-path"
-printf '#!/bin/sh\ncase "$1" in codex-path) echo "%s/codex";; ensure-runtime) echo unix:///tmp/fake-codex-test.sock;; esac\n' "$NVM_BIN" >"${SANDBOX}/fake-nvm-status"
+printf '#!/bin/sh\ncase "$1" in codex-path) echo "%s/codex";; terminal) shift 3; exec "$@";; esac\n' "$NVM_BIN" >"${SANDBOX}/fake-nvm-status"
 chmod +x "${SANDBOX}/fake-nvm-status"
 env -i HOME="$HOME" PATH=/usr/bin:/bin "$(command -v tmux)" -L "$PSOCK" new-session -d -s keep -- sleep 300
 out="$(env -u AI_TODO_CODEX_BIN PATH=/usr/bin:/bin AI_TODO_STATUS_BIN="${SANDBOX}/fake-nvm-status" AI_TODO_TMUX_SOCKET="$PSOCK" AI_TODO_OPEN_DETACH=1 \

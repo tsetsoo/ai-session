@@ -201,6 +201,32 @@ class StatusTests(unittest.TestCase):
         with patch.dict(os.environ, {"AI_TODO_CODEX_BIN": str(broken)}), patch.object(status.shutil, "which", return_value=None):
             self.assertEqual(status.find_codex(), str(good))
 
+    def test_remote_terminal_keeps_mcp_and_permissions_on_the_backend(self):
+        backend, terminal = status.terminal_arguments(
+            ["/codex", "-c", 'mcp_servers.probe.enabled=true', "--cd", "/project",
+             "resume", "thread-1", "--approve-for-me"], "unix:///runtime.sock")
+        self.assertIn('mcp_servers.probe.enabled=true', backend)
+        self.assertIn('approvals_reviewer="auto_review"', backend)
+        self.assertIn('sandbox_mode="workspace-write"', backend)
+        self.assertNotIn("--approve-for-me", terminal)
+        self.assertNotIn('mcp_servers.probe.enabled=true', terminal)
+        self.assertEqual(terminal[-4:], ["--cd", "/project", "resume", "thread-1"])
+
+    def test_monitor_combines_shared_and_per_terminal_runtimes(self):
+        path = status.root() / "r/test.json"
+        status.atomic_json(path, {"pid": 123})
+        class Client:
+            def __init__(self, endpoint):
+                self.endpoint = endpoint
+            def states(self):
+                return {"own" if self.endpoint == path.with_suffix(".sock") else "shared": ("busy", None)}
+            def close(self):
+                pass
+        with patch.object(status, "RuntimeSocket", Client):
+            pool = status.RuntimePool()
+            self.assertEqual(set(pool.states()), {"own", "shared"})
+            pool.close()
+
 
 if __name__ == "__main__":
     unittest.main()

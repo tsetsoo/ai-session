@@ -7,12 +7,14 @@ import subprocess
 import sys
 import time
 
-from ai_todo_status import find_codex, publish, read_json, retry_pending, root, RuntimeSocket, socket_path, watch
+from ai_todo_status import find_codex, publish, read_json, retry_pending, root, RuntimeSocket, RuntimePool, socket_path, terminal, watch
 
 
 def main(args):
     if args == ["watch"]:
         watch()
+    elif args[:1] == ["terminal"] and len(args) >= 4:
+        terminal(args[1], args[2], args[3:])
     elif args == ["codex-path"]:
         print(find_codex())
     elif args == ["ensure-runtime"]:
@@ -43,14 +45,17 @@ def main(args):
         except FileNotFoundError as error:
             result["codex_error"] = str(error)
         try:
-            client = RuntimeSocket(socket_path())
-            result["runtime_connected"] = True
-            result["runtime_threads"] = len(client.states())
-            hooks = client.call("hooks/list", {"cwds": [str(Path.home())]})
-            result["hooks"] = [{k: hook.get(k) for k in ["eventName", "enabled", "trustStatus"]}
-                               for entry in hooks.get("data", []) for hook in entry.get("hooks", [])
-                               if "ai-todo-hook" in hook.get("command", "")]
-            client.close()
+            pool = RuntimePool()
+            try:
+                result["runtime_threads"] = len(pool.states())
+                result["runtime_connected"] = True
+                result["runtime_count"] = len(pool.clients)
+                hooks = next(iter(pool.clients.values())).call("hooks/list", {"cwds": [str(Path.home())]})
+                result["hooks"] = [{k: hook.get(k) for k in ["eventName", "enabled", "trustStatus"]}
+                                   for entry in hooks.get("data", []) for hook in entry.get("hooks", [])
+                                   if "ai-todo-hook" in hook.get("command", "")]
+            finally:
+                pool.close()
         except (OSError, ValueError, EOFError, TimeoutError) as error:
             result["runtime_error"] = type(error).__name__
         result["pending"] = sum(bool(read_json(path, {}).get("pending")) for path in root().glob("*.json"))

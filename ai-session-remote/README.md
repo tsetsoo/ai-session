@@ -138,7 +138,8 @@ The installer is safe to re-run. It sets up:
   or resumes threads. Idle is confirmed once more before reporting completion.
   - Failed deliveries are kept in `~/.ai-remote/status-state/` and retried independently of
     the terminal. Reporter timestamps prevent delayed hooks or retries from undoing a newer state.
-  - New Codex launches use the managed runtime explicitly. The CLI resolver probes normal,
+  - New Codex launches use an observable local runtime with that terminal's MCP settings
+    and environment; the monitor also reads the shared managed runtime. The CLI resolver probes normal,
     standalone and nvm installations, skipping broken shims on non-interactive SSH PATHs and
     preferring the installed managed runtime's matching client. App-started terminals skip
     interactive updater menus; no global Codex installation or update policy is changed.
@@ -146,11 +147,13 @@ The installer is safe to re-run. It sets up:
     run `ai-todo-status watch` under their user service manager.
   - `scripts/todo/install.sh --status-only` updates this integration without changing the hub
     config, Claude settings or nightly memory jobs. Existing Codex clients outside the managed
-    runtime need reconnecting once; future launches use it automatically.
+    runtime need reconnecting once; future launches are monitored automatically.
   - Run `~/.ai-remote/bin/ai-todo-status doctor` on each host to check the service, runtime,
     hook trust and pending deliveries. `python3 scripts/todo/test-status.py` is offline;
     `python3 scripts/todo/test-codex-live.py` explicitly runs disposable completion, approval,
     interruption, user-input and hub-outage turns using the host's existing Codex login and configured model.
+    `python3 scripts/todo/test-codex-terminal.py` checks fresh/resumed terminals, working
+    folders, MCP selection and environment in an isolated home.
 
 To rebuild the Mac app you run, use `scripts/rebuild-mac-app.sh`. It builds Release, checks the Apple Development team, and replaces `~/Applications/AI Session Remote.app`. `scripts/build-mac-release.sh` only prints the built `.app` path.
 - `~/.ai-remote/todo-hub.conf` (mode 600): `TODO_HUB_URL` and `TODO_API_TOKEN` for the hook.

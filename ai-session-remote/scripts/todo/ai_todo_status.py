@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -332,6 +333,140 @@ def find_codex():
     raise FileNotFoundError("No working Codex binary; run ai-todo-status doctor")
 
 
+def terminal_arguments(args, endpoint):
+    """Remote TUIs ignore MCP -c flags and reject resume permission overrides.
+
+    Apply configuration and approval defaults on the owning backend instead.
+    Values stay as argv, never evaluated or written into the registry.
+    """
+    backend = [args[0], "app-server", "-c", 'approval_policy="on-request"',
+               "-c", 'approvals_reviewer="auto_review"', "-c", 'sandbox_mode="workspace-write"']
+    terminal = [args[0], "--remote", endpoint]
+    index = 1
+    while index < len(args):
+        arg = args[index]
+        if arg in ("-c", "--config"):
+            if index + 1 >= len(args):
+                raise ValueError("missing config override")
+            backend += args[index:index + 2]
+            index += 2
+        elif arg == "--approve-for-me":
+            index += 1
+        else:
+            terminal.append(arg)
+            index += 1
+    # Updater UI belongs to the client; this one option must remain there too.
+    terminal[1:1] = ["-c", "check_for_update_on_startup=false"]
+    return backend + ["--listen", endpoint], terminal
+
+
+def terminal(name, cwd, args):
+    """Launch an observable backend with this terminal's MCP config and environment."""
+    directory = root() / "r"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key = hashlib.sha256(name.encode()).hexdigest()[:12]
+    path = directory / (key + ".sock")
+    endpoint = "unix://" + str(path)
+    backend, client_args = terminal_arguments(args, endpoint)
+    env_file = Path.home() / ".ai-remote/mcp/env"
+    stamp = env_file.stat().st_mtime_ns if env_file.exists() else 0
+    digest = hashlib.sha256(json.dumps([backend, cwd, stamp]).encode()).hexdigest()
+    record_path = directory / (key + ".json")
+    with open(directory / (key + ".lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        record = read_json(record_path, {})
+        existing = None
+        try:
+            existing = RuntimeSocket(path)
+        except (OSError, ValueError, EOFError):
+            pass
+        if existing:
+            try:
+                if record.get("digest") != digest:
+                    if any(value[0] != "idle" for value in existing.states().values()):
+                        raise ValueError("runtime settings changed while a turn is active")
+                    pid = record.get("pid")
+                    # Only replace our own idle backend, never an unrelated reused PID.
+                    command = subprocess.check_output(["ps", "-p", str(pid), "-o", "command="], text=True)
+                    if endpoint not in command or os.getpgid(pid) != pid:
+                        raise ValueError("could not verify the previous runtime process")
+                    os.killpg(pid, signal.SIGTERM)
+                    for _ in range(50):
+                        try:
+                            os.kill(pid, 0)
+                        except ProcessLookupError:
+                            break
+                        time.sleep(0.1)
+                    else:
+                        # A listener can close before the process releases thread writer
+                        # locks. The verified, idle backend must be gone before resuming.
+                        os.killpg(pid, signal.SIGKILL)
+                        time.sleep(0.2)
+                    existing.close()
+                    existing = None
+            finally:
+                if existing:
+                    existing.close()
+        if not existing:
+            path.unlink(missing_ok=True)
+            # This file contains server diagnostics only; credentials are inherited via
+            # the environment, not included in the registry or status service's log.
+            log_fd = os.open(directory / (key + ".log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                process = subprocess.Popen(backend, cwd=cwd, stdin=subprocess.DEVNULL,
+                                           stdout=log_fd, stderr=log_fd, start_new_session=True)
+            finally:
+                os.close(log_fd)
+            ready = False
+            for _ in range(100):
+                if process.poll() is not None:
+                    break
+                try:
+                    probe = RuntimeSocket(path)
+                    probe.close()
+                    ready = True
+                    break
+                except (OSError, ValueError, EOFError):
+                    time.sleep(0.1)
+            if not ready:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGTERM)
+                raise OSError("terminal runtime did not become ready")
+            atomic_json(record_path, {"pid": process.pid, "digest": digest})
+    os.chdir(cwd)
+    os.execv(client_args[0], client_args)
+
+
+class RuntimePool:
+    """Observe the shared daemon plus app terminals with their own MCP settings."""
+    def __init__(self):
+        self.clients = {}
+
+    def states(self):
+        paths = {socket_path()}
+        paths.update(path.with_suffix(".sock") for path in (root() / "r").glob("*.json"))
+        result = {}
+        connected = 0
+        for path in sorted(paths):
+            try:
+                if path not in self.clients:
+                    self.clients[path] = RuntimeSocket(path)
+                result.update(self.clients[path].states())
+                connected += 1
+            except (OSError, ValueError, EOFError, TimeoutError):
+                client = self.clients.pop(path, None)
+                if client:
+                    client.close()
+        if not connected:
+            raise OSError("no connected runtimes")
+        return result
+
+    def close(self):
+        for client in self.clients.values():
+            client.close()
+        self.clients.clear()
+
+
 def poll_runtime(client, previous, try_send=True):
     states = client.states()
     observed = time.time_ns()
@@ -377,7 +512,7 @@ def watch():
         health = {"protocol_version": 2, "checked_ns": time.time_ns(), "runtime_connected": False}
         try:
             if client is None:
-                client = RuntimeSocket(socket_path())
+                client = RuntimePool()
             health["threads"] = poll_runtime(client, previous, try_send=False)
             health["runtime_connected"] = True
         except (OSError, ValueError, EOFError, TimeoutError):

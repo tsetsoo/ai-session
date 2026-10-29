@@ -296,13 +296,13 @@ fi
 
 if [ "$tool" = codex ]; then
   status_bin=${AI_TODO_STATUS_BIN:-$(dirname "$0")/ai-todo-status}
-  runtime_endpoint=
+  managed_runtime=0
   # Explicit binary overrides are also used by adapters/tests that do not implement the
   # native app-server protocol. Normal launches use a healthy CLI and an observable server.
   if [ -z "${AI_TODO_CODEX_BIN:-}" ] && [ -x "$status_bin" ]; then
     AI_TODO_CODEX_BIN=$("$status_bin" codex-path) || exit 90
     PATH="$(dirname "$AI_TODO_CODEX_BIN"):$PATH"
-    runtime_endpoint=$("$status_bin" ensure-runtime) || { echo 'Codex runtime could not start; run ai-todo-status doctor' >&2; exit 90; }
+    managed_runtime=1
   fi
   codex_bin=${AI_TODO_CODEX_BIN:-$(command -v codex || true)}
   if [ -z "$codex_bin" ]; then
@@ -330,11 +330,10 @@ if [ "$tool" = codex ]; then
     mode=resumed
     set -- "$codex_bin" resume "$sid" --approve-for-me
   fi
-  if [ -n "$runtime_endpoint" ]; then
+  if [ "$managed_runtime" = 1 ]; then
     tool_bin=$1
     shift
-    # A hidden terminal must not stop on an updater menu before Chat can send a message.
-    set -- "$tool_bin" --cd "$cwd" -c check_for_update_on_startup=false --remote "$runtime_endpoint" "$@"
+    set -- "$tool_bin" --cd "$cwd" "$@"
   fi
 elif [ "$tool" = cursor ]; then
   agent_bin=${AI_TODO_AGENT_BIN:-$(command -v agent || true)}
@@ -417,14 +416,16 @@ if [ "$mcp_given" = 1 ] && [ "$tool" != cursor ]; then
       shift
       eval "set -- $mcp_args"' "$@"'
       set -- "$tool_bin" "$@"
-      # The tool gets the tmux server's environment, not a login shell's: read the
-      # variables the server files reference from the env file, exported.
-      if [ -e "$HOME/.ai-remote/mcp/env" ]; then
-        # shellcheck disable=SC2016
-        set -- /bin/sh -c 'set -a; [ -r "$HOME/.ai-remote/mcp/env" ] && . "$HOME/.ai-remote/mcp/env"; set +a; exec "$@"' sh "$@"
-      fi
     fi
   fi
+fi
+
+if [ "$tool" = codex ] && [ "${managed_runtime:-0}" = 1 ]; then
+  set -- "$status_bin" terminal "$name" "$cwd" "$@"
+fi
+# Both the runtime and terminal need the selected servers' environment.
+if [ "$mcp_report" = 1 ] && [ -e "$HOME/.ai-remote/mcp/env" ]; then
+  set -- /bin/sh -c 'set -a; [ -r "$HOME/.ai-remote/mcp/env" ] && . "$HOME/.ai-remote/mcp/env"; set +a; exec "$@"' sh "$@"
 fi
 
 # Tell the hub which servers this conversation started with, in the background: 3 s at
