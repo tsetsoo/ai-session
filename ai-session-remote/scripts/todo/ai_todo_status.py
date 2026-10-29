@@ -412,6 +412,106 @@ def file_holders(path):
     return sorted({int(word) for word in listed.split() if word.isdigit()})
 
 
+def tmux_sessions():
+    """Running tmux session names, or None when tmux can't be asked. The status service runs
+    under launchd without Homebrew on PATH, so the usual places are tried too."""
+    tmux = next((c for c in [shutil.which("tmux"), "/opt/homebrew/bin/tmux", "/usr/local/bin/tmux",
+                             "/home/linuxbrew/.linuxbrew/bin/tmux"] if c and os.path.isfile(c)), None)
+    if not tmux:
+        return None
+    socket_name = os.environ.get("AI_TODO_TMUX_SOCKET")
+    try:
+        listed = subprocess.run([tmux] + (["-L", socket_name] if socket_name else []) + ["list-sessions", "-F", "#{session_name}"],
+                                capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if listed.returncode:
+        # No server (or no socket yet) means no sessions; anything else is not an answer.
+        return set() if "no server running" in listed.stderr or "error connecting" in listed.stderr else None
+    return {line for line in listed.stdout.split("\n") if line}
+
+
+def stop_process_group(pid):
+    """SIGTERM a backend's process group, then SIGKILL if it is still there after 5 s."""
+    os.killpg(pid, signal.SIGTERM)
+    for _ in range(50):
+        try:
+            # Our own child (a backend this process started) stays a zombie until reaped.
+            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                return
+        except ChildProcessError:
+            pass
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    # A listener can close before the process releases thread writer locks.
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        # Gone meanwhile, or only a zombie left (macOS refuses to signal its group).
+        return
+    time.sleep(0.2)
+
+
+def reap_backends():
+    """Stop the terminal backends whose tmux session has gone, once their threads are idle.
+
+    terminal() starts each in its own session so it outlives the pane, with that
+    conversation's MCP servers; nothing else stops it. A backend is stopped only when its
+    record's pid is still the process listening on its socket. Returns the pids stopped.
+    """
+    directory = root() / "r"
+    sessions = tmux_sessions()
+    if sessions is None:
+        return []
+    stopped = []
+    for record_path in sorted(directory.glob("*.json")):
+        if record_path.stem in {terminal_socket(name).stem for name in sessions}:
+            continue
+        try:
+            with open(directory / (record_path.stem + ".lock"), "a") as lock:
+                # terminal() holds this while it starts or reuses a backend, inside a tmux
+                # session that already exists: under it, a session that is still missing is gone.
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                sessions = tmux_sessions()
+                if sessions is None or record_path.stem in {terminal_socket(name).stem for name in sessions}:
+                    continue
+                pid = reap_backend(record_path)
+                if pid:
+                    stopped.append(pid)
+        except (BlockingIOError, OSError, ValueError, EOFError, TimeoutError, subprocess.SubprocessError):
+            continue
+    return stopped
+
+
+def reap_backend(record_path):
+    """Stop one backend whose session has gone (called under its lock); its pid, or None."""
+    path = record_path.with_suffix(".sock")
+    pid = read_json(record_path, {}).get("pid")
+    alive = isinstance(pid, int) and pid > 0
+    if alive:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            alive = False
+    if alive:
+        command = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+        if "unix://" + str(path) not in command or os.getpgid(pid) != pid:
+            return None
+        client = RuntimeSocket(path)
+        try:
+            if any(value[0] != "idle" for value in client.states().values()):
+                return None
+        finally:
+            client.close()
+        stop_process_group(pid)
+    for suffix in (".json", ".sock", ".log"):
+        record_path.with_suffix(suffix).unlink(missing_ok=True)
+    return pid if alive else None
+
+
 def writer_conflict(name, sid):
     """Who else holds Codex thread `sid`'s writer lock, as a message; None when it is free or
     held by the backend for tmux session `name` (the conversation's own).
@@ -434,13 +534,7 @@ def writer_conflict(name, sid):
         os.close(fd)
     own = terminal_socket(name)
     backends = own.parent
-    tmux = ["tmux"] + (["-L", os.environ["AI_TODO_TMUX_SOCKET"]] if os.environ.get("AI_TODO_TMUX_SOCKET") else [])
-    try:
-        sessions = subprocess.run(tmux + ["list-sessions", "-F", "#{session_name}"],
-                                  capture_output=True, text=True, timeout=5).stdout.split("\n")
-    except (OSError, subprocess.TimeoutExpired):
-        sessions = []
-    by_socket = {terminal_socket(session): session for session in sessions if session}
+    by_socket = {terminal_socket(session): session for session in tmux_sessions() or ()}
     lines, hints = [], []
     for pid in file_holders(lock):
         try:
@@ -510,18 +604,8 @@ def terminal(name, cwd, args):
                     command = subprocess.check_output(["ps", "-p", str(pid), "-o", "command="], text=True)
                     if endpoint not in command or os.getpgid(pid) != pid:
                         raise ValueError("could not verify the previous runtime process")
-                    os.killpg(pid, signal.SIGTERM)
-                    for _ in range(50):
-                        try:
-                            os.kill(pid, 0)
-                        except ProcessLookupError:
-                            break
-                        time.sleep(0.1)
-                    else:
-                        # A listener can close before the process releases thread writer
-                        # locks. The verified, idle backend must be gone before resuming.
-                        os.killpg(pid, signal.SIGKILL)
-                        time.sleep(0.2)
+                    # The verified, idle backend must be gone before resuming.
+                    stop_process_group(pid)
                     existing.close()
                     existing = None
             finally:
@@ -702,6 +786,15 @@ def watch():
             time.sleep(1 if health["runtime_connected"] else 5)
     if "claude" in enabled:
         threading.Thread(target=claude_loop, daemon=True).start()
+    def reap_loop():
+        while True:
+            time.sleep(60)
+            try:
+                reap_backends()
+            except (OSError, ValueError):
+                pass
+    if "codex" in enabled:
+        threading.Thread(target=reap_loop, daemon=True).start()
     while True:
         health = {"protocol_version": 2, "checked_ns": time.time_ns(), "runtime_connected": False}
         try:

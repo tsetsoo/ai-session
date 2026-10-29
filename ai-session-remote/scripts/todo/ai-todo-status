@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor | writer NAME ID."""
+"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor | writer NAME ID | reap."""
 import json
 import os
 from pathlib import Path
@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-from ai_todo_status import find_codex, find_claude, ClaudeRuntime, publish, read_json, retry_pending, root, RuntimeSocket, RuntimePool, socket_path, terminal, watch, writer_conflict
+from ai_todo_status import find_codex, find_claude, ClaudeRuntime, publish, read_json, retry_pending, root, RuntimeSocket, RuntimePool, socket_path, terminal, watch, writer_conflict, reap_backends
 
 
 def main(args):
@@ -21,6 +21,9 @@ def main(args):
         if conflict:
             print(conflict, file=sys.stderr)
             return 95
+    elif args == ["reap"]:
+        # The status service does this every minute; by hand it prints the pids it stopped.
+        print(json.dumps(reap_backends()))
     elif args == ["codex-path"]:
         print(find_codex())
     elif args == ["claude-path"]:

@@ -227,6 +227,57 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(set(pool.states()), {"own", "shared"})
             pool.close()
 
+    def backend(self, name, argv_endpoint=True):
+        """A process started like terminal()'s backends: own session, endpoint in its argv."""
+        path = status.terminal_socket(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        argv = [sys.executable, "-c", "import time; time.sleep(300)"] + (["--listen", "unix://" + str(path)] if argv_endpoint else [])
+        process = subprocess.Popen(argv, start_new_session=True)
+        self.addCleanup(lambda: (process.poll() is None and process.kill(), process.wait()))
+        status.atomic_json(path.with_suffix(".json"), {"pid": process.pid, "digest": "d"})
+        path.with_suffix(".log").write_text("log")
+        return process, path
+
+    def reap(self, sessions, states=None):
+        class Client:
+            def __init__(self, endpoint):
+                self.endpoint = endpoint
+            def states(self):
+                return (states or {}).get(self.endpoint, {})
+            def close(self):
+                pass
+        with patch.object(status, "tmux_sessions", lambda: sessions), patch.object(status, "RuntimeSocket", Client):
+            return status.reap_backends()
+
+    def test_reaper_stops_idle_backends_whose_tmux_session_has_gone(self):
+        gone, gone_path = self.backend("ai/codex/todo-gone")
+        kept, _ = self.backend("ai/codex/todo-open")
+        busy, busy_path = self.backend("ai/codex/todo-busy")
+        stranger, _ = self.backend("ai/codex/todo-stranger", argv_endpoint=False)
+        stopped = self.reap({"ai/codex/todo-open", "other"}, {busy_path: {"t": ("busy", None)}, gone_path: {"u": ("idle", None)}})
+        self.assertEqual(stopped, [gone.pid])
+        self.assertIsNotNone(gone.wait(timeout=5))
+        self.assertFalse(gone_path.with_suffix(".json").exists() or gone_path.with_suffix(".log").exists())
+        # Its session is open, a turn is running, or the pid is not the one on that socket.
+        self.assertTrue(all(p.poll() is None for p in (kept, busy, stranger)))
+        self.assertTrue(busy_path.with_suffix(".json").exists())
+
+    def test_reaper_does_nothing_without_an_answer_from_tmux_or_while_terminal_holds_the_lock(self):
+        process, path = self.backend("ai/codex/todo-gone")
+        self.assertEqual(self.reap(None), [])
+        with open(path.with_suffix(".lock"), "a") as lock:
+            status.fcntl.flock(lock, status.fcntl.LOCK_EX)
+            self.assertEqual(self.reap(set()), [])
+        self.assertIsNone(process.poll())
+        self.assertEqual(self.reap(set()), [process.pid])
+
+    def test_reaper_clears_the_record_of_a_backend_that_already_exited(self):
+        process, path = self.backend("ai/codex/todo-dead")
+        process.kill()
+        process.wait()
+        self.assertEqual(self.reap(set()), [])
+        self.assertFalse(path.with_suffix(".json").exists())
+
     def test_claude_and_codex_with_the_same_id_have_separate_outboxes(self):
         status.publish(self.body("busy"), 100, try_send=False)
         status.publish(dict(self.body("idle"), tool="claude"), 200, try_send=False)
