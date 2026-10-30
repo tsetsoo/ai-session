@@ -30,6 +30,10 @@ struct PhoneConversationView<TerminalContent: View>: View {
     @State private var draftEditor = ChatDraftEditorHandle()
 
     private var shouldPoll: Bool { showsChat && isFrontmost && scenePhase == .active }
+    private var pollID: String? {
+        guard shouldPoll else { return nil }
+        return "\(conversation.id):\(conversation.sessionId):\(conversation.statusRevision)"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -58,7 +62,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
             if !front { reviewedOnOpen = false; sendTask?.cancel(); composing = false }
         }
         .onDisappear { sendTask?.cancel() }
-        .task(id: shouldPoll) {
+        .task(id: pollID) {
             guard shouldPoll else { return }
             while !Task.isCancelled {
                 await refresh()
@@ -179,8 +183,11 @@ struct PhoneConversationView<TerminalContent: View>: View {
             if messages != result { messages = result }
             loadError = nil
             if !reviewedOnOpen, !result.isEmpty {
-                reviewedOnOpen = true
-                await store.review(conversation)
+                // A busy result or a failed request is not an acknowledgement. Retry
+                // after loading the current result, including after a busy/idle turn.
+                let acknowledged = await store.review(conversation)
+                guard !Task.isCancelled else { return }
+                reviewedOnOpen = acknowledged
             }
         } catch {
             guard !Task.isCancelled else { return }

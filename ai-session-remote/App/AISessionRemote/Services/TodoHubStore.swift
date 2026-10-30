@@ -688,12 +688,13 @@ final class TodoHubStore {
 
     /// Opening an idle result acknowledges only that result. A response racing with a
     /// new busy/idle turn must not overwrite the newer status already received by the app.
-    func review(_ conversation: Conversation) async {
+    @discardableResult
+    func review(_ conversation: Conversation) async -> Bool {
         #if DEBUG
-        if DemoFixtures.isEnabled { return }
+        if DemoFixtures.isEnabled { return true }
         #endif
         guard conversation.status == .idle, !conversation.reviewed, !conversation.id.isEmpty,
-              !isOffline, let client = hubClient() else { return }
+              !isOffline, let client = hubClient() else { return conversation.reviewed }
         do {
             let updated = try await client.reviewConversation(id: conversation.id, statusRevision: conversation.statusRevision)
             let key = Self.storageKey(conversation)
@@ -703,9 +704,11 @@ final class TodoHubStore {
                 remember(updated)
             }
             refreshSoon()
+            return updated.reviewed && updated.status == .idle && updated.statusRevision == conversation.statusRevision
         } catch {
             // An older/offline hub leaves the result unacknowledged; it must never vanish
             // from review only on this device while the write hasn't succeeded.
+            return false
         }
     }
 

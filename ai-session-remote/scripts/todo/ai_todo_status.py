@@ -247,6 +247,10 @@ def retry_pending(budget=None, respect_backoff=False):
     return result
 
 
+class RuntimeRPCError(ValueError):
+    """A rejected request, with the socket itself still usable."""
+
+
 class RuntimeSocket:
     """JSON-RPC over a WebSocket on a private Unix socket; never a TCP listener."""
     def __init__(self, path, timeout=2, experimental=False):
@@ -337,7 +341,7 @@ class RuntimeSocket:
             response = self.receive()
             if response.get("id") == request_id and "method" not in response:
                 if "error" in response:
-                    raise ValueError(method + " failed")
+                    raise RuntimeRPCError(method + " failed")
                 return response.get("result", {})
         raise TimeoutError("runtime request timed out")
 
@@ -345,7 +349,12 @@ class RuntimeSocket:
         loaded = self.call("thread/loaded/list", {}).get("data", [])
         result = {}
         for sid in loaded:
-            thread = self.call("thread/read", {"threadId": sid, "includeTurns": False}).get("thread", {})
+            try:
+                thread = self.call("thread/read", {"threadId": sid, "includeTurns": False}).get("thread", {})
+            except RuntimeRPCError:
+                # A thread can unload between listing and reading. Keep observing the
+                # other threads; transport errors still reconnect the whole socket.
+                continue
             state = runtime_status(thread.get("status", {}))
             if state:
                 result[sid] = state
@@ -701,6 +710,8 @@ class RuntimePool:
     def states(self):
         paths = {socket_path()}
         paths.update(path.with_suffix(".sock") for path in (root() / "r").glob("*.json"))
+        for removed in set(self.clients) - paths:
+            self.clients.pop(removed).close()
         result = {}
         connected = 0
         for path in sorted(paths):

@@ -46,6 +46,7 @@ struct ConversationFrame: View {
     /// Absent in previews.
     @Environment(AppModel.self) private var appModel: AppModel?
     @State private var terminal = TerminalHandle()
+    @State private var clipboardSessionID: String?
     @State private var copied = TransientValue<Bool>(for: .toast)
     @State private var showingDeleteConfirmation = false
     @State private var renameTarget: Todo?
@@ -374,10 +375,14 @@ struct ConversationFrame: View {
             liveTerminal(open)
                 .id(open.surfaceID)
                 .task(id: clipboardSourceID) {
-                    terminal.setClipboardCode([])
-                    guard clipboardSourceID != nil else { return }
+                    guard clipboardSourceID != nil, let conversation else { return }
+                    let identity = "\(conversation.id):\(conversation.sessionId)"
+                    if clipboardSessionID != identity {
+                        terminal.setClipboardCode([])
+                        clipboardSessionID = identity
+                    }
                     do {
-                        let messages = try await store.conversationMessages(of: conversation ?? open.conversation, config: open.config)
+                        let messages = try await store.conversationMessages(of: conversation, config: open.config)
                         guard !Task.isCancelled else { return }
                         terminal.setClipboardCode(CommandClipboard.candidates(in: messages.map(\.text)))
                     } catch {

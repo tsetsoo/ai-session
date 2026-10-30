@@ -37,4 +37,28 @@ final class CommandClipboardTests: XCTestCase {
         let snippets = CommandClipboard.candidates(in: ["```sh\ngit status\nprintf '%s' 'hello  world'\ngit diff\n```"])
         XCTAssertEqual(CommandClipboard.text(for: "printf '%s'\n  'hello  world'", candidates: snippets), "printf '%s' 'hello  world'")
     }
+
+    func testSelectMultilineCommandFromMiddleOfLargerBlock() {
+        let command = "curl --header 'X-Name: a  b' \\\n  https://example.test/long/path"
+        let snippets = CommandClipboard.candidates(in: ["```sh\npwd\n\(command)\ngit status\n```"])
+        let selected = "  curl --header\n    'X-Name: a  b' \\\n    https://example.test/long/path"
+        XCTAssertEqual(CommandClipboard.text(for: selected, candidates: snippets), command)
+    }
+
+    func testMarkdownContainerIndentationIsNotPartOfHeredoc() {
+        let command = "cat <<'EOF'\n  keep this  \nEOF"
+        let message = "1. Run:\n\n   ```sh\n   cat <<'EOF'\n     keep this  \n   EOF\n   ```"
+        let snippets = CommandClipboard.candidates(in: [message])
+        XCTAssertEqual(CommandClipboard.text(for: "cat <<'EOF'\n    keep this\n  EOF", candidates: snippets), command)
+    }
+
+    func testSourceWithWindowsLineEndingsIsParsed() {
+        let snippets = CommandClipboard.candidates(in: ["```sh\r\necho hello world\r\n```\r\n"])
+        XCTAssertEqual(CommandClipboard.text(for: "echo hello\n  world", candidates: snippets), "echo hello world")
+    }
+
+    func testPartialArgumentsAreNotExpandedIntoAWholeCommand() {
+        let snippets = CommandClipboard.candidates(in: ["```sh\necho hello world\n```"])
+        XCTAssertEqual(CommandClipboard.text(for: "hello\n  world", candidates: snippets), "hello\n  world")
+    }
 }

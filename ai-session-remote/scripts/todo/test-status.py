@@ -227,6 +227,37 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(set(pool.states()), {"own", "shared"})
             pool.close()
 
+    def test_monitor_closes_connections_when_backend_registry_is_removed(self):
+        path = status.root() / "r/test.json"
+        status.atomic_json(path, {"pid": 123})
+        class Client:
+            def __init__(self, endpoint):
+                self.closed = False
+            def states(self):
+                return {}
+            def close(self):
+                self.closed = True
+        with patch.object(status, "RuntimeSocket", Client):
+            pool = status.RuntimePool()
+            pool.states()
+            removed = pool.clients[path.with_suffix(".sock")]
+            path.unlink()
+            pool.states()
+            self.assertTrue(removed.closed)
+            self.assertNotIn(path.with_suffix(".sock"), pool.clients)
+            pool.close()
+
+    def test_one_unloaded_thread_does_not_hide_other_runtime_threads(self):
+        client = object.__new__(status.RuntimeSocket)
+        def call(method, params):
+            if method == "thread/loaded/list":
+                return {"data": ["gone", "working"]}
+            if params["threadId"] == "gone":
+                raise status.RuntimeRPCError("thread/read failed")
+            return {"thread": {"status": {"type": "active", "activeFlags": []}}}
+        client.call = call
+        self.assertEqual(client.states(), {"working": ("busy", None)})
+
     def backend(self, name, argv_endpoint=True):
         """A process started like terminal()'s backends: own session, endpoint in its argv."""
         path = status.terminal_socket(name)
