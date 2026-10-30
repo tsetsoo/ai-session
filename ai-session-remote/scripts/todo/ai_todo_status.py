@@ -225,7 +225,9 @@ def retry_pending(budget=None, respect_backoff=False):
                     latest = max(body.get("event_timestamp_ns", 0), record.get("delivered_ns", 0), record.get("attempted_ns", 0))
                     if now - latest > PRUNE_SETTLED_NS:
                         locked.unlink(missing_ok=True)
-                        locked.with_suffix(".lock").unlink(missing_ok=True)
+                        # Keep the lock inode: another publisher may already be waiting
+                        # on it. Unlinking lets a third process lock a new inode while
+                        # that waiter still owns the old one, breaking event ordering.
                     continue
                 body = record.get("body")
                 if not isinstance(body, dict) or body.get("session_id") != sid or body.get("status") not in ("idle", "busy", "waiting"):

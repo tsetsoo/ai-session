@@ -247,6 +247,23 @@ class StatusTests(unittest.TestCase):
             self.assertNotIn(path.with_suffix(".sock"), pool.clients)
             pool.close()
 
+    def test_pruning_records_keeps_the_shared_lock_inode(self):
+        now = time.time_ns()
+        status.publish(self.body("idle"), now - status.PRUNE_SETTLED_NS - 10**9, try_send=False)
+        path = status.root() / "thread-1.json"
+        lock = path.with_suffix(".lock")
+        inode = lock.stat().st_ino
+        record = status.read_json(path)
+        record["pending"] = False
+        status.atomic_json(path, record)
+        status.retry_pending()
+        self.assertFalse(path.exists())
+        self.assertTrue(lock.exists(), "waiting publishers must keep locking the same inode")
+        self.assertEqual(lock.stat().st_ino, inode)
+        status.publish(self.body("busy"), now, try_send=False)
+        self.assertEqual(lock.stat().st_ino, inode)
+        self.assertEqual(self.record()["body"]["status"], "busy")
+
     def test_one_unloaded_thread_does_not_hide_other_runtime_threads(self):
         client = object.__new__(status.RuntimeSocket)
         def call(method, params):
@@ -348,7 +365,8 @@ class StatusTests(unittest.TestCase):
             status.atomic_json(path, record)
         self.assertFalse(self.record("thread-old")["pending"])
         status.retry_pending()
-        self.assertFalse(old.exists() or old.with_suffix(".lock").exists())
+        self.assertFalse(old.exists())
+        self.assertTrue(old.with_suffix(".lock").exists())
         self.assertTrue(recent.exists())
 
     def test_claude_and_codex_with_the_same_id_have_separate_outboxes(self):
