@@ -293,6 +293,33 @@ class StatusTests(unittest.TestCase):
         status.trust_folder(trusted, "/work/a.b")
         self.assertEqual([method for method, _ in trusted.calls], ["config/read"])
 
+    def test_unknown_conversation_is_retried_for_a_day_then_given_up(self):
+        self.http_status = 404
+        day = status.GIVE_UP_404_NS
+        now = time.time_ns()
+        for sid, observed in (("thread-old", now - day - 10**9), ("thread-new", now - day + 60 * 10**9)):
+            self.assertFalse(status.publish(self.body("idle", sid), observed))
+        self.requests.clear()
+        status.retry_pending()
+        self.assertEqual([r["session_id"] for r in self.requests], ["thread-new"])
+        self.assertFalse(self.record("thread-old")["pending"])
+        self.assertTrue(self.record("thread-new")["pending"])
+        self.assertEqual(status.retry_pending()["pending"], 1)
+
+    def test_settled_records_are_removed_after_a_week(self):
+        week = status.PRUNE_SETTLED_NS
+        now = time.time_ns()
+        old, recent = status.root() / "thread-old.json", status.root() / "thread-recent.json"
+        for path, age in ((old, week + 10**9), (recent, week - 60 * 10**9)):
+            status.publish(self.body("idle", path.stem), now - age)
+            record = status.read_json(path)
+            record.update(delivered_ns=now - age, attempted_ns=now - age)
+            status.atomic_json(path, record)
+        self.assertFalse(self.record("thread-old")["pending"])
+        status.retry_pending()
+        self.assertFalse(old.exists() or old.with_suffix(".lock").exists())
+        self.assertTrue(recent.exists())
+
     def test_claude_and_codex_with_the_same_id_have_separate_outboxes(self):
         status.publish(self.body("busy"), 100, try_send=False)
         status.publish(dict(self.body("idle"), tool="claude"), 200, try_send=False)

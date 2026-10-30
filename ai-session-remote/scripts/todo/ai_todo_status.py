@@ -197,6 +197,13 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
         return deliver(path, record) if try_send else False
 
 
+# The status service reports every conversation on the computer; the hub answers 404 for
+# those no todo links to. Retrying lets one linked later still get its state, but only
+# for a day: after that its next change is reported anew. Settled records go after a week.
+GIVE_UP_404_NS = 24 * 3600 * 1_000_000_000
+PRUNE_SETTLED_NS = 7 * 24 * 3600 * 1_000_000_000
+
+
 def retry_pending(budget=None, respect_backoff=False):
     result = {"delivered": 0, "pending": 0}
     deadline = time.monotonic() + budget if budget is not None else float("inf")
@@ -210,13 +217,23 @@ def retry_pending(budget=None, respect_backoff=False):
             preview = read_json(path, {}).get("body", {})
             tool = preview.get("tool", "codex") if isinstance(preview, dict) else "codex"
             sid = path.stem[7:] if tool == "claude" and path.stem.startswith("claude.") else path.stem
-            with session_lock(sid, blocking=False, tool=tool):
+            with session_lock(sid, blocking=False, tool=tool) as locked:
                 record = read_json(path, {})
+                now = time.time_ns()
                 if not record.get("pending"):
+                    body = record.get("body") if isinstance(record.get("body"), dict) else {}
+                    latest = max(body.get("event_timestamp_ns", 0), record.get("delivered_ns", 0), record.get("attempted_ns", 0))
+                    if now - latest > PRUNE_SETTLED_NS:
+                        locked.unlink(missing_ok=True)
+                        locked.with_suffix(".lock").unlink(missing_ok=True)
                     continue
                 body = record.get("body")
                 if not isinstance(body, dict) or body.get("session_id") != sid or body.get("status") not in ("idle", "busy", "waiting"):
                     record.update(pending=False, last_error="InvalidOutboxRecord")
+                    atomic_json(path, record)
+                    continue
+                if record.get("last_error") == "HTTP 404" and now - body.get("event_timestamp_ns", now) > GIVE_UP_404_NS:
+                    record.update(pending=False, gave_up_ns=now)
                     atomic_json(path, record)
                     continue
                 wait = 30 if record.get("last_error") == "HTTP 404" else 5
