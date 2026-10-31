@@ -81,4 +81,17 @@ final class TerminalPromptTests: XCTestCase {
                        TerminalKey.down.bytes(tool: "claude") + TerminalKey.down.bytes(tool: "claude") + TerminalKey.enter.bytes(tool: "claude"))
         XCTAssertEqual(prompt.keys(toChoose: 0, tool: "claude"), TerminalKey.enter.bytes(tool: "claude"))
     }
+
+    func testTypeSomethingIsTypedInPlaceButTellCodexIsNot() throws {
+        let question = try XCTUnwrap(parse(TerminalPromptFixtures.claudeQuestion))
+        XCTAssertTrue(question.options[3].typesInPlace)
+        XCTAssertFalse(question.options[0].typesInPlace)
+        let codex = try XCTUnwrap(parse(TerminalPromptFixtures.codexCommand))
+        XCTAssertFalse(codex.options[2].typesInPlace)
+    }
+
+    func testMovesWithoutEnter() throws {
+        let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeQuestion))
+        XCTAssertEqual(prompt.keys(toChoose: 1, tool: "claude", enter: false), TerminalKey.down.bytes(tool: "claude"))
+    }
 }

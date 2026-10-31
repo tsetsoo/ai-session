@@ -260,6 +260,11 @@ private struct TerminalContainerView: UIViewRepresentable {
 @Observable
 final class TerminalHandle {
     fileprivate(set) var connectionState: TerminalConnectionState = .idle
+    /// The Claude or Codex question on screen, if any (see `TerminalPrompt`).
+    fileprivate(set) var prompt: TerminalPrompt?
+    /// The last non-empty rows on screen, for answering a question the app can't read.
+    fileprivate(set) var screenTail: [String] = []
+    static let screenTailRows = 12
     @ObservationIgnored fileprivate weak var coordinator: TerminalCoordinator?
     @ObservationIgnored fileprivate var reconnectAction: () -> Void = {}
 
@@ -286,6 +291,20 @@ final class TerminalHandle {
     /// False when nothing was typed: the wait was cancelled or the connection went.
     func submitWhenPasteReady(_ text: String) async -> Bool {
         await coordinator?.submitWhenPasteReady(text) ?? false
+    }
+    /// Chooses `option` only if `prompt` is still the question on screen.
+    func answer(_ prompt: TerminalPrompt, option: Int, tool: String) -> Bool {
+        coordinator?.answer(prompt, option: option, tool: tool) ?? false
+    }
+    func answer(_ prompt: TerminalPrompt, option: Int, text: String, tool: String) async -> Bool {
+        await coordinator?.answer(prompt, option: option, text: text, tool: tool) ?? false
+    }
+
+    fileprivate func screenChanged(_ lines: [String]) {
+        let next = TerminalPrompt.parse(screen: lines)
+        if next != prompt { prompt = next }
+        let tail = Array(lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.suffix(Self.screenTailRows))
+        if tail != screenTail { screenTail = tail }
     }
 }
 
@@ -486,6 +505,7 @@ struct TerminalSurface: View {
                 onEnded(exitStatus)
             }
             coordinator.onUserInput = onUserInput
+            coordinator.onScreenChange = { [weak handle] lines in handle?.screenChanged(lines) }
             handle?.coordinator = coordinator
             handle?.reconnectAction = { Task { await reconnect() } }
         }

@@ -10,6 +10,9 @@ public struct TerminalPrompt: Equatable, Sendable {
         public let detail: String?
         /// Choosing it asks for words: "Type something", "No, and tell Codex what to do differently".
         public let needsText: Bool
+        /// Claude's "Type something" takes the words while it is highlighted, before Enter.
+        /// Other text options are chosen first and then ask for the words in the input box.
+        public var typesInPlace: Bool { needsText && label.lowercased().hasPrefix("type something") }
     }
 
     public let question: String
@@ -21,11 +24,11 @@ public struct TerminalPrompt: Equatable, Sendable {
     /// Tells two prompts apart, so an answer is only sent to the prompt it was meant for.
     public var signature: String { ([question] + options.map(\.label)).joined(separator: "\n") }
 
-    /// Down or up from the current option to `index`, then Enter.
-    public func keys(toChoose index: Int, tool: String) -> [UInt8] {
+    /// Down or up from the current option to `index`, then Enter unless `enter` is false.
+    public func keys(toChoose index: Int, tool: String, enter: Bool = true) -> [UInt8] {
         let key: TerminalKey = index > selected ? .down : .up
         let moves = Array(repeating: key.bytes(tool: tool), count: abs(index - selected)).flatMap { $0 }
-        return moves + TerminalKey.enter.bytes(tool: tool)
+        return moves + (enter ? TerminalKey.enter.bytes(tool: tool) : [])
     }
 
     public static func parse(screen: [String]) -> TerminalPrompt? {

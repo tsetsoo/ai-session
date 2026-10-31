@@ -86,6 +86,11 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// (DA/DSR/cursor, focus and mouse reports, colour and version replies) don't count, and
     /// neither do bytes sent with `send(_:)`.
     var onUserInput: (() -> Void)?
+    /// The visible rows, at most every `screenCheckDelay` after output arrives. Set it to watch
+    /// for a Claude or Codex question (see `TerminalPrompt`).
+    var onScreenChange: (([String]) -> Void)?
+    private var screenCheckPending = false
+    private let screenCheckDelay: TimeInterval = 0.25
     /// The surface is the one on screen. Output for a background conversation is held and fed
     /// once from `setShown(true)`. A hidden surface does not take the keyboard or play the
     /// connect sound. Set on the main thread; the coalescer flushes on the main thread too.
@@ -300,6 +305,61 @@ final class TerminalCoordinator: TerminalViewDelegate {
         }
         #endif
         terminalView?.feed(byteArray: bytes)
+        scheduleScreenCheck()
+    }
+
+    private func scheduleScreenCheck() {
+        guard onScreenChange != nil, !screenCheckPending else { return }
+        screenCheckPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + screenCheckDelay) { [weak self] in
+            guard let self else { return }
+            screenCheckPending = false
+            onScreenChange?(screenLines())
+        }
+    }
+
+    /// The rows on screen now, trailing spaces trimmed.
+    func screenLines() -> [String] {
+        guard let terminal = terminalView?.getTerminal() else { return [] }
+        return (0..<terminal.rows).map { terminal.getLine(row: $0)?.translateToString(trimRight: true) ?? "" }
+    }
+
+    func currentPrompt() -> TerminalPrompt? {
+        TerminalPrompt.parse(screen: screenLines())
+    }
+
+    /// The prompt still on screen, if it is the one the user was shown.
+    private func sameShown(_ prompt: TerminalPrompt) -> TerminalPrompt? {
+        guard state == .connected, let current = currentPrompt(), current.signature == prompt.signature else { return nil }
+        return current
+    }
+
+    /// Chooses `option` with arrow keys and Enter, only if `prompt` is still the one on screen.
+    /// Moves from where the cursor is now, which may differ from when the prompt was read.
+    func answer(_ prompt: TerminalPrompt, option: Int, tool: String) -> Bool {
+        guard let current = sameShown(prompt), current.options.indices.contains(option) else { return false }
+        send(current.keys(toChoose: option, tool: tool))
+        return true
+    }
+
+    /// An option that takes words. Claude's "Type something" takes them while highlighted; an
+    /// option like Codex's "tell Codex what to do differently" is chosen first and the words
+    /// go to the input box once the menu has closed (3 s at most).
+    @MainActor
+    func answer(_ prompt: TerminalPrompt, option: Int, text: String, tool: String) async -> Bool {
+        guard let current = sameShown(prompt), current.options.indices.contains(option) else { return false }
+        if current.options[option].typesInPlace {
+            send(current.keys(toChoose: option, tool: tool, enter: false))
+            submit(text)
+            return true
+        }
+        send(current.keys(toChoose: option, tool: tool))
+        let deadline = ContinuousClock.now + .seconds(3)
+        while currentPrompt()?.signature == prompt.signature, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled, state == .connected else { return false }
+        }
+        return await submitWhenPasteReady(text, timeout: .seconds(3))
     }
 
     func send(_ bytes: [UInt8]) {

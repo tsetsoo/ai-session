@@ -91,6 +91,8 @@ targets:
     platform: iOS
     sources:
       - path: App/AISessionRemoteTests
+      # Real Claude/Codex prompt screens, shared with the core tests.
+      - path: Tests/AISessionCoreTests/TerminalPromptFixtures.swift
     settings:
       GENERATE_INFOPLIST_FILE: YES
       SWIFT_VERSION: "5.9"
