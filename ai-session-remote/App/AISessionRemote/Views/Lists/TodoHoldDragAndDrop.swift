@@ -88,23 +88,22 @@ struct TodoHoldDropArea: View {
     }
 }
 
+/// `.itemProvider` rather than `.onDrag`: in a selectable `List` the table starts the drag itself,
+/// so a click still selects the row. `.onDrag` adds its own mouse-down handling that swallowed
+/// clicks with any small mouse movement. The modifier chain is the same in every state, so a todo
+/// or offline change never rebuilds the row in the middle of a click.
 private struct TodoDragSource: ViewModifier {
     let todo: Todo?
     let store: TodoHubStore
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if let todo, !todo.completed, !todo.onHold, !store.isOffline {
-            content.onDrag {
-                TodoDragItem(todoID: todo.id).itemProvider()
-            } preview: {
-                Label(todo.title, systemImage: "pause.circle")
-                    .padding(DS.spacing.m)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-            }
-        } else {
-            content
-        }
+        content.itemProvider(provider)
+    }
+
+    private var provider: (() -> NSItemProvider?)? {
+        guard let todo, !todo.completed, !todo.onHold, !store.isOffline else { return nil }
+        let id = todo.id
+        return { TodoDragItem(todoID: id).itemProvider() }
     }
 }
 
@@ -113,18 +112,13 @@ private struct TodoHoldDropTarget: ViewModifier {
     let enabled: Bool
     @State private var isTargeted = false
 
-    @ViewBuilder
+    /// Always applied; a disabled target accepts no types, so the row keeps its identity.
     func body(content: Content) -> some View {
-        if enabled {
-            content
-                .contentShape(Rectangle())
-                .background(isTargeted ? DS.accent.opacity(0.12) : Color.clear)
-                .onDrop(of: [TodoDragItem.contentType], isTargeted: $isTargeted) { providers in
-                    TodoHoldDrop.accept(providers, store: store)
-                }
-        } else {
-            content
-        }
+        content
+            .background(enabled && isTargeted ? DS.accent.opacity(0.12) : Color.clear)
+            .onDrop(of: enabled ? [TodoDragItem.contentType] : [], isTargeted: $isTargeted) { providers in
+                enabled && TodoHoldDrop.accept(providers, store: store)
+            }
     }
 }
 #endif
