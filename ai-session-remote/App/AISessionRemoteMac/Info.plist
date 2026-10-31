@@ -29,5 +29,18 @@
 	</dict>
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>AI Session Todo</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.aisessionremote.todo</string>
+		</dict>
+	</array>
 </dict>
 </plist>

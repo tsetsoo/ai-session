@@ -126,6 +126,11 @@ targets:
       properties:
         CFBundleDisplayName: AI Session Remote
         LSApplicationCategoryType: public.app-category.developer-tools
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.aisessionremote.todo
+            UTTypeDescription: AI Session Todo
+            UTTypeConformsTo:
+              - public.data
         NSHumanReadableCopyright: ""
         # ATS applies to URLSession on macOS too, sandboxed or not. Same reasoning as iOS above.
         NSAppTransportSecurity:

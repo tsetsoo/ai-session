@@ -123,14 +123,14 @@ struct ComputerDetailView: View {
                 }
             }
             #if os(macOS)
-            if !held.isEmpty {
-                Section {
-                    ForEach(held, id: \.listKey) { conversation in
-                        row(conversation, todo: todos[conversation.todoId], board: board)
-                    }
-                } header: {
-                    Text("On hold (\(held.count))").textCase(nil)
+            Section {
+                TodoHoldDropArea(store: store)
+                ForEach(held, id: \.listKey) { conversation in
+                    row(conversation, todo: todos[conversation.todoId], board: board)
                 }
+            } header: {
+                Text("On hold (\(held.count))").textCase(nil)
+                    .todoHoldDropTarget(store: store)
             }
             #endif
         }
@@ -203,6 +203,8 @@ struct ComputerDetailView: View {
         .rowTap(selection == nil ? open : nil)
         .conversationRowMenu(conversation, todo: todo, isRunning: status != .closed, actions: actions,
                              store: store, hosts: hosts, open: open)
+        .todoDragSource(todo, store: store)
+        .todoHoldDropTarget(store: store, enabled: todo?.onHold == true)
     }
 }
 

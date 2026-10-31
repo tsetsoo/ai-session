@@ -71,14 +71,14 @@ struct TodoListView: View {
             }
             #if os(macOS)
             let held = searched.filter { sections.contains($0.section) && $0.onHold }
-            if !held.isEmpty {
-                Section {
-                    ForEach(held) { todo in
-                        row(todo, board: board)
-                    }
-                } header: {
-                    Text("On hold (\(held.count))").textCase(nil)
+            Section {
+                TodoHoldDropArea(store: store)
+                ForEach(held) { todo in
+                    row(todo, board: board)
                 }
+            } header: {
+                Text("On hold (\(held.count))").textCase(nil)
+                    .todoHoldDropTarget(store: store)
             }
             #endif
         }
@@ -279,6 +279,8 @@ struct TodoListView: View {
                 }
             }
         }
+        .todoDragSource(todo, store: store)
+        .todoHoldDropTarget(store: store, enabled: todo.onHold)
     }
 
     private func toggle(_ todo: Todo) {
