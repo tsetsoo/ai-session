@@ -6,11 +6,13 @@ public struct PendingSend: Equatable, Sendable, Identifiable {
     public let id: UUID
     public let text: String
     public let afterCount: Int
+    public let sentAt: Date
 
-    public init(id: UUID = UUID(), text: String, afterCount: Int) {
+    public init(id: UUID = UUID(), text: String, afterCount: Int, sentAt: Date = Date()) {
         self.id = id
         self.text = text
         self.afterCount = afterCount
+        self.sentAt = sentAt
     }
 }
 
@@ -94,15 +96,31 @@ public enum ChatTimeline {
         return items
     }
 
-    /// Sends the transcript doesn't show yet: no user entry at or after `afterCount` has the
-    /// same text, ignoring surrounding whitespace.
-    public static func unconfirmed(_ pending: [PendingSend], in entries: [ConversationMessage]) -> [PendingSend] {
-        pending.filter { send in
-            let text = send.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return !entries.dropFirst(send.afterCount).contains {
-                $0.role == .user && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == text
+    /// A send nothing in the transcript has confirmed by then is dropped: Codex doesn't log
+    /// slash commands at all.
+    public static let pendingTimeout: TimeInterval = 30
+
+    /// Sends the transcript doesn't show yet. Each user entry at or after a send's `afterCount`
+    /// confirms one send: the one with the same text first, otherwise the oldest, since a tool
+    /// may log a message differently (Claude stores `/compact` inside command tags).
+    public static func unconfirmed(_ pending: [PendingSend], in entries: [ConversationMessage], now: Date = Date()) -> [PendingSend] {
+        let users = entries.indices.filter { entries[$0].role == .user }
+        var used = Set<Int>()
+        var confirmed = Set<UUID>()
+        func trimmed(_ text: String) -> String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        for send in pending {
+            if let match = users.first(where: { $0 >= send.afterCount && !used.contains($0) && trimmed(entries[$0].text) == trimmed(send.text) }) {
+                used.insert(match)
+                confirmed.insert(send.id)
             }
         }
+        for send in pending where !confirmed.contains(send.id) {
+            if let match = users.first(where: { $0 >= send.afterCount && !used.contains($0) }) {
+                used.insert(match)
+                confirmed.insert(send.id)
+            }
+        }
+        return pending.filter { !confirmed.contains($0.id) && now.timeIntervalSince($0.sentAt) <= pendingTimeout }
     }
 
     /// "Read 2 files · edited 1 file · ran 3 commands". Reads and edits count distinct targets.

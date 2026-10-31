@@ -60,12 +60,11 @@ final class ChatTimelineTests: XCTestCase {
         XCTAssertEqual(kinds(items), ["message", "message"])
     }
 
-    func testPendingShowsUntilTranscriptHasMatchingUserText() {
+    func testPendingShowsUntilTranscriptHasALaterUserEntry() {
         let pending = PendingSend(id: UUID(), text: "fix it", afterCount: 2)
         let before = [user("0", "fix it"), assistant("1")]
         XCTAssertEqual(ChatTimeline.unconfirmed([pending], in: before), [pending])
         XCTAssertEqual(ChatTimeline.unconfirmed([pending], in: before + [user("2", "fix it\n")]), [])
-        XCTAssertEqual(ChatTimeline.unconfirmed([pending], in: before + [user("2", "other")]), [pending])
     }
 
     func testPendingAndNotesAreOrderedByAfterCount() {
@@ -74,5 +73,23 @@ final class ChatTimelineTests: XCTestCase {
         let entries = [user("0", "a"), assistant("1"), assistant("2")]
         let items = ChatTimeline.items(entries: entries, pending: [pending], notes: [note])
         XCTAssertEqual(kinds(items), ["message", "note", "message", "message", "pending"])
+    }
+
+    func testRewrittenSlashCommandStillConfirmsTheSend() {
+        let pending = PendingSend(id: UUID(), text: "/compact", afterCount: 1, sentAt: start)
+        let entries = [user("0", "a"), user("1", "<command-name>/compact</command-name>")]
+        XCTAssertEqual(ChatTimeline.unconfirmed([pending], in: entries, now: start), [])
+    }
+
+    func testEachUserEntryConfirmsOnlyOneSend() {
+        let first = PendingSend(id: UUID(), text: "one", afterCount: 0, sentAt: start)
+        let second = PendingSend(id: UUID(), text: "two", afterCount: 0, sentAt: start)
+        XCTAssertEqual(ChatTimeline.unconfirmed([first, second], in: [user("0", "something else")], now: start), [second])
+    }
+
+    func testUnloggedSendGoesAwayAfterTimeout() {
+        let pending = PendingSend(id: UUID(), text: "/status", afterCount: 0, sentAt: start)
+        XCTAssertEqual(ChatTimeline.unconfirmed([pending], in: [], now: start.addingTimeInterval(10)), [pending])
+        XCTAssertEqual(ChatTimeline.unconfirmed([pending], in: [], now: start.addingTimeInterval(ChatTimeline.pendingTimeout + 1)), [])
     }
 }

@@ -596,18 +596,24 @@ final class TodoHubStore {
         )
     }
 
-    func conversationMessages(of conversation: Conversation, config: HostConnectionConfig) async throws -> [ConversationMessage] {
+    /// The conversation's transcript. With `previous` (what the chat already shows) only later
+    /// entries are fetched and appended, so polling a long conversation stays cheap.
+    func conversationMessages(of conversation: Conversation, config: HostConnectionConfig, previous: [ConversationMessage] = []) async throws -> [ConversationMessage] {
         #if DEBUG
         if DemoFixtures.isEnabled { return DemoFixtures.chatTranscript }
         #endif
         let computer = conversation.computer
         if !transcriptActivityUnsupported.contains(computer.id) {
             do {
+                let after = conversation.tool == "cursor" ? nil : ConversationMessage.lastLine(of: previous)
                 let output = try await remoteStdout(
-                    TmuxCommandBuilder.conversationTranscript(tool: conversation.tool, sessionId: conversation.sessionId, json: true, activity: true),
+                    TmuxCommandBuilder.conversationTranscript(
+                        tool: conversation.tool, sessionId: conversation.sessionId, json: true, activity: true, after: after
+                    ),
                     config: config, computerName: computer.name
                 )
-                return try ConversationMessage.decodeList(Data(output.utf8))
+                let fetched = try ConversationMessage.decodeList(Data(output.utf8))
+                return after == nil ? fetched : previous + fetched
             } catch is RemoteConversations.OldHelper {
                 transcriptActivityUnsupported.insert(computer.id)
             }

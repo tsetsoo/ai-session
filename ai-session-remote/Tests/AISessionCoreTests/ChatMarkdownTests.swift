@@ -39,4 +39,18 @@ final class ChatMarkdownTests: XCTestCase {
         XCTAssertTrue(ChatMarkdown.isLong(String(repeating: "x", count: 2001)))
         XCTAssertEqual(ChatMarkdown.preview(lines(40)).components(separatedBy: "\n").count, 20)
     }
+
+    func testPreviewNeverCutsACodeBlock() {
+        let prose = (1...15).map { "line \($0)" }.joined(separator: "\n")
+        let code = (1...20).map { "echo \($0)" }.joined(separator: "\n")
+        let preview = ChatMarkdown.preview(prose + "\n```sh\n" + code + "\n```\nafter")
+        XCTAssertFalse(ChatMarkdown.blocks(preview).contains { if case .code = $0 { return true } else { return false } })
+        XCTAssertTrue(preview.hasSuffix("line 15"))
+    }
+
+    func testPreviewKeepsAWholeCodeBlockThatStartsTheReply() {
+        let code = (1...25).map { "echo \($0)" }.joined(separator: "\n")
+        let text = "```sh\n" + code + "\n```\n" + (1...20).map { "tail \($0)" }.joined(separator: "\n")
+        XCTAssertEqual(ChatMarkdown.blocks(ChatMarkdown.preview(text)).first, .code(language: "sh", code: code))
+    }
 }

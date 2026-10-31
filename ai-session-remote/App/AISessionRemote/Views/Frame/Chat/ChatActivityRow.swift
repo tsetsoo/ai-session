@@ -110,9 +110,14 @@ struct ChatFollowBottom: ViewModifier {
 
     func body(content: Content) -> some View {
         if #available(iOS 18, *) {
-            content.modifier(ChatFollowBottomGeometry(follow: $follow))
+            // Start at the end only. The one-argument form also anchors size changes, which
+            // would slide text the user scrolled up to read.
+            content
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .modifier(ChatFollowBottomGeometry(follow: $follow))
         } else {
             content
+                .defaultScrollAnchor(.bottom)
                 .onChange(of: contentVersion) { _, _ in
                     if follow.followsNewContent { proxy.scrollTo(ChatFollowBottom.endID, anchor: .bottom) }
                 }

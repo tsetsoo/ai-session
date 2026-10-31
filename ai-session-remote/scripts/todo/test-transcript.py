@@ -143,6 +143,27 @@ class TranscriptTests(unittest.TestCase):
         self.assertEqual(plain, [{"role": "user", "text": "hi", "id": "0"}, {"role": "assistant", "text": "yo", "id": "1"}])
         self.assertEqual([m["role"] for m in rich], ["user", "assistant", "activity"])
 
+    def test_after_returns_only_later_lines(self):
+        with tempfile.TemporaryDirectory() as home:
+            project = os.path.join(home, "p")
+            os.makedirs(project)
+            with open(os.path.join(project, "sid.jsonl"), "w") as handle:
+                for text in ("one", "two", "three"):
+                    handle.write(json.dumps({"type": "user", "message": {"content": text}}) + "\n")
+            old = transcript.CLAUDE_PROJECTS
+            transcript.CLAUDE_PROJECTS = home
+            try:
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(transcript.main(["claude", "sid", "--json", "--activity", "--after", "0"]), 0)
+                later = json.loads(out.getvalue())
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(transcript.main(["claude", "sid", "--json", "--activity", "--after", "x"]), 64)
+            finally:
+                transcript.CLAUDE_PROJECTS = old
+        self.assertEqual([m["text"] for m in later], ["two", "three"])
+        self.assertEqual([m["id"] for m in later], ["1.0", "2.0"])
+
     def test_ids_are_stable_when_lines_are_appended(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl") as handle:
             handle.write(json.dumps({"type": "user", "message": {"content": "a"}}) + "\n")

@@ -89,6 +89,25 @@ final class TerminalPromptWatchTests: XCTestCase {
         XCTAssertTrue(result)
         XCTAssertEqual(transport.sent.last, Array("\u{1B}[200~use pnpm\u{1B}[201~\r".utf8))
     }
+
+    func testChatMessageIsNotSentWhileAQuestionIsOnScreen() async throws {
+        transport.onOutput?(Array("\u{1B}[?2004h".utf8))
+        try await show(TerminalPromptFixtures.claudeBash)
+        let before = transport.sent.count
+        let sent = await coordinator.sendMessage("yes")
+        XCTAssertFalse(sent)
+        XCTAssertEqual(transport.sent.count, before)
+    }
+
+    func testTypedAnswerGivesUpWhenTheMenuStaysOpen() async throws {
+        transport.onOutput?(Array("\u{1B}[?2004h".utf8))
+        try await show(TerminalPromptFixtures.codexCommand)
+        let prompt = try XCTUnwrap(coordinator.currentPrompt())
+        let answered = await coordinator.answer(prompt, option: 2, text: "use pnpm", tool: "codex")
+        XCTAssertFalse(answered)
+        let codexDown = TerminalKey.down.bytes(tool: "codex")
+        XCTAssertEqual(transport.sent.last, codexDown + codexDown + TerminalKey.enter.bytes(tool: "codex"), "no paste after the keys")
+    }
 }
 
 private final class PromptRecordingTransport: TerminalTransport {

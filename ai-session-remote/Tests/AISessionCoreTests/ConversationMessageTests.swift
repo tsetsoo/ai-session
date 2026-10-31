@@ -26,4 +26,12 @@ final class ConversationMessageTests: XCTestCase {
         XCTAssertNil(entries[0].time)
         XCTAssertNil(entries[1].kind)
     }
+
+    func testLastLineComesFromTheLastEntryId() {
+        XCTAssertEqual(ConversationMessage.lastLine(of: [ConversationMessage(id: "3.0", role: .user, text: "a"),
+                                                        ConversationMessage(id: "17.2", role: .activity, text: "")]), 17)
+        XCTAssertNil(ConversationMessage.lastLine(of: []))
+        XCTAssertNil(ConversationMessage.lastLine(of: [ConversationMessage(id: "0.4.1", role: .user, text: "cursor")]))
+        XCTAssertNil(ConversationMessage.lastLine(of: [ConversationMessage(id: "4", role: .user, text: "old --json id")]))
+    }
 }

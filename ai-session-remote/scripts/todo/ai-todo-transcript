@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Print one conversation's user and assistant text. Does not call a model.
 
-Usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json [--activity]]
+Usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json [--activity [--after <line>]]]
 --activity adds tool steps (role "activity", with kind and target), timestamps, and ids that
 stay the same as the transcript grows. Without it, --json prints only messages, as before.
+--after <line> prints only entries from later jsonl lines (an id's first number), so a client
+polling a long conversation fetches what is new. Cursor ignores it and prints everything.
 Exit 94 when that conversation has no transcript on this machine, or one with no text.
 """
 import glob
@@ -224,12 +226,16 @@ def find_paths(tool, session_id):
 
 
 def main(argv):
+    after = None
+    if argv[2:4] == ["--json", "--activity"] and len(argv) == 6 and argv[4] == "--after" and argv[5].isdigit():
+        after = int(argv[5])
+        argv = argv[:4]
     activity = argv[2:] == ["--json", "--activity"]
     structured = activity or argv[2:] == ["--json"]
     if structured:
         argv = argv[:2]
     if len(argv) != 2 or argv[0] not in ("claude", "codex", "cursor"):
-        print("usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json [--activity]]", file=sys.stderr)
+        print("usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json [--activity [--after <line>]]]", file=sys.stderr)
         return 64
     tool, session_id = argv
     paths = find_paths(tool, session_id)
@@ -239,7 +245,10 @@ def main(argv):
     path = max(paths, key=os.path.getmtime)
     reader = {"claude": claude_lines, "codex": codex_lines, "cursor": cursor_lines}[tool]
     if activity:
-        print(json.dumps(list(reader(path, activity=True)), ensure_ascii=False))
+        entries = list(reader(path, activity=True))
+        if after is not None and tool != "cursor":
+            entries = [entry for entry in entries if int(entry["id"].split(".")[0]) > after]
+        print(json.dumps(entries, ensure_ascii=False))
         return 0
     messages = list(reader(path))
     if structured:

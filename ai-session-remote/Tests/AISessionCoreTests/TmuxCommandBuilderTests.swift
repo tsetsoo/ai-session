@@ -404,5 +404,13 @@ final class TranscriptCommandTests: XCTestCase {
         XCTAssertEqual(result.status, 0, result.stderr)
         XCTAssertEqual(result.stdout, "claude\ns\n--json\n--activity\n")
     }
+
+    func testTranscriptCommandAddsAfterLine() throws {
+        try helper("printf '%s\\n' \"$@\"")
+        try python3()
+        let result = try run(TmuxCommandBuilder.conversationTranscript(tool: "claude", sessionId: "s", json: true, activity: true, after: 41))
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertEqual(result.stdout, "claude\ns\n--json\n--activity\n--after\n41\n")
+    }
 }
 #endif

@@ -51,6 +51,16 @@ public struct ConversationMessage: Decodable, Identifiable, Equatable, Sendable 
         try JSONDecoder().decode([ConversationMessage].self, from: data)
     }
 
+    /// The transcript line of the last entry (an `--activity` id is `<line>.<part>`), to fetch only
+    /// what came after it. Nil when there is nothing yet, or the ids aren't line-based (Cursor's
+    /// `<file>.<line>.<part>`, plain `--json` indexes).
+    public static func lastLine(of entries: [ConversationMessage]) -> Int? {
+        guard let id = entries.last?.id else { return nil }
+        let parts = id.split(separator: ".")
+        guard parts.count == 2 else { return nil }
+        return Int(parts[0])
+    }
+
     /// Claude writes fractional seconds; Codex may not.
     static func parseTime(_ string: String) -> Date? {
         let fractional = ISO8601DateFormatter()

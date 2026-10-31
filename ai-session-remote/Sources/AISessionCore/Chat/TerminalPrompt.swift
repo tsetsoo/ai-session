@@ -22,8 +22,9 @@ public struct TerminalPrompt: Equatable, Sendable {
     public let options: [Option]
     /// The option the cursor is on now.
     public let selected: Int
-    /// Tells two prompts apart, so an answer is only sent to the prompt it was meant for.
-    public var signature: String { ([question] + options.map(\.label)).joined(separator: "\n") }
+    /// Tells two prompts apart, so an answer is only sent to the prompt it was meant for. The
+    /// detail is in it: Claude asks "Do you want to proceed?" with the same options for every command.
+    public var signature: String { ([question, detail ?? ""] + options.map(\.label)).joined(separator: "\n") }
 
     /// Down or up from the current option to `index`, then Enter unless `enter` is false.
     public func keys(toChoose index: Int, tool: String, enter: Bool = true) -> [UInt8] {

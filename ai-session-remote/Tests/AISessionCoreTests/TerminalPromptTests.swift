@@ -120,4 +120,12 @@ final class TerminalPromptTests: XCTestCase {
         ])
         XCTAssertEqual(prompt.options.map(\.needsText), [false, false, true])
     }
+
+    func testSameQuestionAboutADifferentCommandHasADifferentSignature() throws {
+        let first = try XCTUnwrap(parse(TerminalPromptFixtures.claudeBash))
+        let other = try XCTUnwrap(parse(TerminalPromptFixtures.claudeBash.replacingOccurrences(of: " touch made-by-test.txt\n╌", with: " rm -rf build\n╌")))
+        XCTAssertEqual(first.question, other.question)
+        XCTAssertEqual(first.options.map(\.label), other.options.map(\.label))
+        XCTAssertNotEqual(first.signature, other.signature)
+    }
 }

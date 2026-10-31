@@ -359,6 +359,8 @@ final class TerminalCoordinator: TerminalViewDelegate {
             try? await Task.sleep(for: .milliseconds(100))
             guard !Task.isCancelled, state == .connected else { return false }
         }
+        // Still in that menu, or another question took its place: the words would answer it.
+        guard currentPrompt() == nil else { return false }
         return await submitWhenPasteReady(text, timeout: .seconds(3))
     }
 
@@ -403,6 +405,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
             guard !Task.isCancelled, state == .connected else { return false }
         }
         guard !Task.isCancelled, state == .connected, session != nil, isShown, isBracketedPasteMode else { return false }
+        // Return would pick the highlighted option of a question that appeared since the chat
+        // last looked; the caller keeps the draft.
+        guard currentPrompt() == nil else { return false }
         send(TerminalPaste.bytes(for: text, bracketed: true) + [0x0D])
         onUserInput?()
         return true

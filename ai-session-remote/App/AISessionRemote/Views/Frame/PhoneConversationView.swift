@@ -77,8 +77,11 @@ struct PhoneConversationView<TerminalContent: View>: View {
         .onDisappear { sendTask?.cancel() }
         .task(id: pollID) {
             guard shouldPoll else { return }
+            var full = true
             while !Task.isCancelled {
-                await refresh()
+                // A full read whenever polling (re)starts; later polls fetch only what is new.
+                await refresh(full: full)
+                full = false
                 do { try await Task.sleep(for: pollInterval) } catch { return }
             }
         }
@@ -106,7 +109,6 @@ struct PhoneConversationView<TerminalContent: View>: View {
                     }
                     .padding()
                 }
-                .defaultScrollAnchor(.bottom)
                 .scrollDismissesKeyboard(.interactively)
                 .modifier(ChatFollowBottom(follow: $follow, proxy: proxy, contentVersion: contentVersion))
             }
@@ -186,9 +188,9 @@ struct PhoneConversationView<TerminalContent: View>: View {
         }
     }
 
-    private func refresh() async {
+    private func refresh(full: Bool = false) async {
         do {
-            let result = try await store.conversationMessages(of: conversation, config: config)
+            let result = try await store.conversationMessages(of: conversation, config: config, previous: full ? [] : messages)
             guard !Task.isCancelled else { return }
             if messages != result { messages = result }
             let stillPending = ChatTimeline.unconfirmed(pending, in: result)
@@ -250,7 +252,9 @@ struct PhoneConversationView<TerminalContent: View>: View {
                 await refresh()
             } else {
                 pending.removeAll { $0.id == local.id }
-                sendError = "The session isn’t ready for a message. Open Terminal to check it. Your draft is saved here."
+                sendError = terminal.prompt != nil
+                    ? "\(RowText.toolName(conversation.tool)) is asking something first. Answer it above; your draft is saved here."
+                    : "The session isn’t ready for a message. Open Terminal to check it. Your draft is saved here."
             }
         }
     }

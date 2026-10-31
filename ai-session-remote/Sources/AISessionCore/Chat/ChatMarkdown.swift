@@ -76,8 +76,36 @@ public enum ChatMarkdown {
         text.count > foldCharacters || text.components(separatedBy: "\n").count > foldLines
     }
 
+    /// The start of a long reply, never ending inside a code block: a block cut by the limit is
+    /// left out, or kept whole when the reply starts with it, so a code block's Copy is complete.
     public static func preview(_ text: String) -> String {
-        String(text.components(separatedBy: "\n").prefix(previewLines).joined(separator: "\n").prefix(previewCharacters))
+        let lines = text.components(separatedBy: "\n")
+        var count = 0
+        var characters = 0
+        while count < min(previewLines, lines.count), characters + lines[count].count <= previewCharacters {
+            characters += lines[count].count + 1
+            count += 1
+        }
+        count = max(count, 1)
+        var openFence: (marker: String, start: Int)?
+        for index in 0..<count {
+            if let open = openFence {
+                if closes(lines[index], open.marker) { openFence = nil }
+            } else if let opening = fence(lines[index]) {
+                openFence = (opening.marker, index)
+            }
+        }
+        if let open = openFence {
+            if open.start > 0 {
+                count = open.start
+            } else {
+                let close = lines.indices.dropFirst(1).first { closes(lines[$0], open.marker) }
+                count = close.map { $0 + 1 } ?? lines.count
+            }
+        }
+        var kept = Array(lines.prefix(count))
+        while kept.count > 1, kept.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { kept.removeLast() }
+        return kept.joined(separator: "\n")
     }
 
     /// One prose line's block-level marker removed: `(kind, rest)`.
