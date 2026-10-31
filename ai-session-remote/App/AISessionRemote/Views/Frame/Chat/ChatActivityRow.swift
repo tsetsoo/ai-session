@@ -121,6 +121,9 @@ struct ChatFollowBottom: ViewModifier {
                 .onChange(of: contentVersion) { _, _ in
                     if follow.followsNewContent { proxy.scrollTo(ChatFollowBottom.endID, anchor: .bottom) }
                 }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+                    if follow.followsNewContent { proxy.scrollTo(ChatFollowBottom.endID, anchor: .bottom) }
+                }
                 .overlay(alignment: .bottomTrailing) {
                     if follow.showsJumpButton {
                         ChatJumpButton {
@@ -159,6 +162,10 @@ private struct ChatFollowBottomGeometry: ViewModifier {
             }
             .onScrollGeometryChange(for: Double.self) { $0.contentSize.height } action: { _, _ in
                 // Lazy rows are measured as they appear, so keep going to the end while pinned.
+                if follow.followsNewContent, !userScrolling { position.scrollTo(edge: .bottom) }
+            }
+            .onScrollGeometryChange(for: Double.self) { $0.containerSize.height } action: { _, _ in
+                // The keyboard shrank or grew the view: keep the newest message in sight.
                 if follow.followsNewContent, !userScrolling { position.scrollTo(edge: .bottom) }
             }
             .overlay(alignment: .bottomTrailing) {

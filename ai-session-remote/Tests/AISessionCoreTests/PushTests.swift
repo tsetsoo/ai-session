@@ -216,4 +216,10 @@ final class QuietHoursTimeTests: XCTestCase {
         XCTAssertNil(QuietHours.date(fromHHMM: "7:5x", calendar: calendar))
         XCTAssertNil(QuietHours.date(fromHHMM: "24:00", calendar: calendar))
     }
+
+    func testOnlyANeedsYouAlertOpensTheChat() {
+        XCTAssertTrue(PushPayload(todoId: "t", kind: "waiting").opensChat)
+        XCTAssertFalse(PushPayload(todoId: "t", kind: "done").opensChat)
+        XCTAssertFalse(PushPayload(todoId: "t").opensChat)
+    }
 }

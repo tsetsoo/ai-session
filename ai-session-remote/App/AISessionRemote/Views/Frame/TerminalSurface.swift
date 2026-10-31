@@ -300,11 +300,19 @@ final class TerminalHandle {
         await coordinator?.answer(prompt, option: option, text: text, tool: tool) ?? false
     }
 
-    fileprivate func screenChanged(_ lines: [String]) {
+    func screenChanged(_ lines: [String]) {
         let next = TerminalPrompt.parse(screen: lines)
         if next != prompt { prompt = next }
         let tail = Array(lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.suffix(Self.screenTailRows))
         if tail != screenTail { screenTail = tail }
+    }
+
+    /// A question read before the connection went may already be answered, or gone; drop it.
+    func connectionChanged(to state: TerminalConnectionState) {
+        connectionState = state
+        guard state != .connected else { return }
+        if prompt != nil { prompt = nil }
+        if !screenTail.isEmpty { screenTail = [] }
     }
 }
 
@@ -488,7 +496,7 @@ struct TerminalSurface: View {
             coordinator.setShown(isFrontmost)
             coordinator.onStateChange = { state in
                 connectionState = state
-                handle?.connectionState = state
+                handle?.connectionChanged(to: state)
                 if state == .connected {
                     isDisconnected = false
                     // A session that finished connecting behind another conversation stays quiet.
@@ -496,7 +504,7 @@ struct TerminalSurface: View {
                 }
             }
             connectionState = coordinator.state
-            handle?.connectionState = coordinator.state
+            handle?.connectionChanged(to: coordinator.state)
             coordinator.onError = { error in onConnectionFailed(error) }
             coordinator.onDisconnected = { exitStatus in
                 ending = TerminalEnding(exitStatus: exitStatus)
@@ -556,7 +564,7 @@ struct TerminalSurface: View {
             coordinator.disconnect()
             // Unless a newer surface already took the handle over.
             if handle?.coordinator === coordinator {
-                handle?.connectionState = .idle
+                handle?.connectionChanged(to: .idle)
             }
         }
     }

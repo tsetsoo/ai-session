@@ -75,11 +75,13 @@ final class TerminalPromptTests: XCTestCase {
         XCTAssertEqual(bash.signature, try XCTUnwrap(parse(TerminalPromptFixtures.claudeBash)).signature)
     }
 
-    func testKeysMoveFromSelectedThenEnter() throws {
+    /// Both tools choose an option the moment its number is typed (checked live against Claude
+    /// Code 2.1.316 and codex-cli 0.166). If the menu has already gone, a digit is just text;
+    /// ↑ would recall the last message and Enter would send it again.
+    func testChoosingTypesTheOptionNumber() throws {
         let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeBash))
-        XCTAssertEqual(prompt.keys(toChoose: 2, tool: "claude"),
-                       TerminalKey.down.bytes(tool: "claude") + TerminalKey.down.bytes(tool: "claude") + TerminalKey.enter.bytes(tool: "claude"))
-        XCTAssertEqual(prompt.keys(toChoose: 0, tool: "claude"), TerminalKey.enter.bytes(tool: "claude"))
+        XCTAssertEqual(prompt.keys(toChoose: 2, tool: "claude"), Array("3".utf8))
+        XCTAssertEqual(prompt.keys(toChoose: 0, tool: "codex"), Array("1".utf8))
     }
 
     func testTypeSomethingIsTypedInPlaceButTellCodexIsNot() throws {

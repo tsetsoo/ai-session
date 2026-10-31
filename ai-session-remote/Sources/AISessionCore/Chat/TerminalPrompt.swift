@@ -26,8 +26,11 @@ public struct TerminalPrompt: Equatable, Sendable {
     /// detail is in it: Claude asks "Do you want to proceed?" with the same options for every command.
     public var signature: String { ([question, detail ?? ""] + options.map(\.label)).joined(separator: "\n") }
 
-    /// Down or up from the current option to `index`, then Enter unless `enter` is false.
+    /// The keys that choose option `index`: its number, which both tools act on at once and
+    /// which is only text if the menu has already closed. Past 9 options, and with `enter` false
+    /// (just highlighting it, for "Type something"), arrows from the current option instead.
     public func keys(toChoose index: Int, tool: String, enter: Bool = true) -> [UInt8] {
+        if enter, index < 9 { return Array(String(index + 1).utf8) }
         let key: TerminalKey = index > selected ? .down : .up
         let moves = Array(repeating: key.bytes(tool: tool), count: abs(index - selected)).flatMap { $0 }
         return moves + (enter ? TerminalKey.enter.bytes(tool: tool) : [])

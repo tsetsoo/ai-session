@@ -51,6 +51,15 @@ public enum ChatItem: Identifiable, Equatable {
 /// Turns transcript entries into what the chat draws: messages, collapsed tool steps,
 /// timestamps, and the phone's own not-yet-confirmed sends and answered prompts.
 public enum ChatTimeline {
+    /// How many items the chat draws at first; "Show earlier messages" adds this many more.
+    public static let windowSize = 80
+
+    /// The newest `limit` items, and how many older ones are left out.
+    public static func window(_ items: [ChatItem], limit: Int) -> (items: ArraySlice<ChatItem>, hidden: Int) {
+        let hidden = max(0, items.count - limit)
+        return (items.dropFirst(hidden), hidden)
+    }
+
     /// A timestamp shows before the first timed entry and after a gap this long.
     public static let timeGap: TimeInterval = 30 * 60
 

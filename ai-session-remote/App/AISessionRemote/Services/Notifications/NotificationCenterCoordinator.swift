@@ -43,27 +43,27 @@ final class NotificationCenterCoordinator {
     /// Opens a todo's conversation. A tap that launched the app is replayed once this is set.
     var onOpenTodo: ((String) -> Void)? {
         didSet {
-            if let todo = pendingOpenTodo, onOpenTodo != nil {
-                pendingOpenTodo = nil
-                open(todo)
+            if let payload = pendingOpen, onOpenTodo != nil {
+                pendingOpen = nil
+                open(payload)
             }
         }
     }
 
-    private func open(_ todoId: String) {
+    private func open(_ payload: PushPayload) {
         guard let onOpenTodo else {
-            pendingOpenTodo = todoId
+            pendingOpen = payload
             return
         }
+        let todoId = payload.todoId
         #if os(iOS)
-        // A "needs you" alert opens on the chat, where its question can be answered.
-        UserDefaults.standard.set(true, forKey: "conversation.phoneChat")
+        if payload.opensChat { UserDefaults.standard.set(true, forKey: "conversation.phoneChat") }
         #endif
         NotificationCenter.default.post(name: .todoNotificationOpened, object: todoId)
         onOpenTodo(todoId)
     }
 
-    @ObservationIgnored private var pendingOpenTodo: String?
+    @ObservationIgnored private var pendingOpen: PushPayload?
     @ObservationIgnored fileprivate var presence = PresenceTracker()
     @ObservationIgnored private var registration = PushRegistrationState(
         registeredHub: UserDefaults.standard.string(forKey: registeredHubKey)
@@ -426,7 +426,7 @@ final class NotificationCenterCoordinator {
         case Self.muteAction:
             try? await setMuted(todoId: payload.todoId, true)
         case UNNotificationDefaultActionIdentifier:
-            open(payload.todoId)
+            open(payload)
         default:
             break
         }

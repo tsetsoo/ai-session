@@ -92,4 +92,14 @@ final class ChatTimelineTests: XCTestCase {
         XCTAssertEqual(ChatTimeline.unconfirmed([pending], in: [], now: start.addingTimeInterval(10)), [pending])
         XCTAssertEqual(ChatTimeline.unconfirmed([pending], in: [], now: start.addingTimeInterval(ChatTimeline.pendingTimeout + 1)), [])
     }
+
+    func testWindowKeepsTheNewestItems() {
+        let entries = (0..<200).map { user(String($0), "m\($0)") }
+        let items = ChatTimeline.items(entries: entries, pending: [], notes: [])
+        let window = ChatTimeline.window(items, limit: 80)
+        XCTAssertEqual(window.items.count, 80)
+        XCTAssertEqual(window.items.last, items.last)
+        XCTAssertEqual(window.hidden, 120)
+        XCTAssertEqual(ChatTimeline.window(Array(items.prefix(10)), limit: 80).hidden, 0)
+    }
 }

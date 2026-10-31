@@ -13,6 +13,10 @@ public struct PushPayload: Equatable, Sendable {
         self.kind = kind
     }
 
+    /// A "needs you" alert: opening it should show the chat, where its question can be answered.
+    /// Other alerts ("done") leave the Chat/Terminal choice as it is.
+    public var opensChat: Bool { kind == "waiting" }
+
     public init?(userInfo: [AnyHashable: Any]) {
         guard let todoId = userInfo["todo_id"] as? String, !todoId.isEmpty else { return nil }
         self.init(todoId: todoId, sessionId: userInfo["session_id"] as? String, kind: userInfo["kind"] as? String)

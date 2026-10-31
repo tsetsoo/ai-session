@@ -32,6 +32,8 @@ struct PhoneConversationView<TerminalContent: View>: View {
     @State private var composerMode = ChatComposerMode.normal
     /// The last option tapped found a different question on screen.
     @State private var promptChanged = false
+    /// How many of the newest items the chat draws; "Show earlier messages" raises it.
+    @State private var windowLimit = ChatTimeline.windowSize
 
     private var needsApproval: Bool { status == .waiting }
     /// The question on screen, read from the live terminal behind the chat.
@@ -58,12 +60,17 @@ struct PhoneConversationView<TerminalContent: View>: View {
             .padding(.horizontal)
             .padding(.vertical, 8)
 
-            ZStack {
-                terminalContent()
-                    .opacity(showsChat ? 0 : 1)
-                    .allowsHitTesting(!showsChat)
-                    .accessibilityHidden(showsChat)
-                if showsChat { chat }
+            // The terminal gets exactly the space there is. Its own minimum height would otherwise
+            // size the stack, and with the keyboard up the chat's messages got no room at all.
+            GeometryReader { proxy in
+                ZStack {
+                    terminalContent()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .opacity(showsChat ? 0 : 1)
+                        .allowsHitTesting(!showsChat)
+                        .accessibilityHidden(showsChat)
+                    if showsChat { chat }
+                }
             }
         }
         .onChange(of: showsChat, initial: true) { _, chat in
@@ -75,6 +82,14 @@ struct PhoneConversationView<TerminalContent: View>: View {
             if !front { reviewedOnOpen = false; sendTask?.cancel(); composing = false }
         }
         .onDisappear { sendTask?.cancel() }
+        #if DEBUG
+        .task {
+            // Screenshots: `-uiDemoCompose` focuses the message field, so the keyboard layout shows.
+            guard DemoFixtures.isEnabled, ProcessInfo.processInfo.arguments.contains("-uiDemoCompose") else { return }
+            try? await Task.sleep(for: .seconds(3))
+            composing = true
+        }
+        #endif
         .task(id: pollID) {
             guard shouldPoll else { return }
             var full = true
@@ -91,7 +106,10 @@ struct PhoneConversationView<TerminalContent: View>: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 16) {
+                    // Not lazy: a lazy stack guesses unseen rows' heights, and when the keyboard
+                    // shrinks the view it can scroll past the real rows and show nothing.
+                    // Drawing only the newest items keeps a long chat cheap instead.
+                    VStack(alignment: .leading, spacing: 16) {
                         if isLoading && messages.isEmpty {
                             ProgressView("Loading conversation…").frame(maxWidth: .infinity)
                         } else if messages.isEmpty && pending.isEmpty && loadError == nil {
@@ -99,9 +117,14 @@ struct PhoneConversationView<TerminalContent: View>: View {
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 30)
                         }
-                        let items = self.items
-                        let liveActivity = isBusy ? Self.activityID(items.last) : nil
-                        ForEach(items) { item in row(item, isLive: item.id == liveActivity) }
+                        let window = ChatTimeline.window(self.items, limit: windowLimit)
+                        if window.hidden > 0 {
+                            Button("Show earlier messages") { windowLimit += ChatTimeline.windowSize }
+                                .font(.footnote.weight(.medium))
+                                .frame(maxWidth: .infinity)
+                        }
+                        let liveActivity = isBusy ? Self.activityID(window.items.last) : nil
+                        ForEach(window.items) { item in row(item, isLive: item.id == liveActivity) }
                         if isBusy { ChatWorkingLine() }
                         Color.clear.frame(height: 1).id(ChatFollowBottom.endID)
                             .onAppear { if !ChatFollowBottom.usesGeometry { follow.jumpToLatest() } }
@@ -115,8 +138,13 @@ struct PhoneConversationView<TerminalContent: View>: View {
             if let loadError {
                 Text(loadError).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
             }
-            if let prompt {
+            if let prompt, composing {
+                // While typing, the card would leave no room for the messages.
+                ChatPromptBanner(question: prompt.question) { composing = false }
+            } else if let prompt {
                 ChatPromptCard(prompt: prompt, changed: promptChanged, onChoose: { choose($0, in: prompt) })
+            } else if showsFallback, composing {
+                ChatPromptBanner(question: "Needs your input") { composing = false }
             } else if showsFallback {
                 ChatScreenFallbackCard(
                     lines: terminal.screenTail,

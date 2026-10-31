@@ -46,7 +46,7 @@ final class TerminalPromptWatchTests: XCTestCase {
         try await show(TerminalPromptFixtures.claudeBash)
         let prompt = try XCTUnwrap(coordinator.currentPrompt())
         XCTAssertTrue(coordinator.answer(prompt, option: 1, tool: "claude"))
-        XCTAssertEqual(transport.sent.last, down + enter)
+        XCTAssertEqual(transport.sent.last, Array("2".utf8))
     }
 
     func testAnswerRefusesWhenPromptChanged() async throws {
@@ -80,10 +80,9 @@ final class TerminalPromptWatchTests: XCTestCase {
         transport.onOutput?(Array("\u{1B}[?2004h".utf8))
         try await show(TerminalPromptFixtures.codexCommand)
         let prompt = try XCTUnwrap(coordinator.currentPrompt())
-        let codexDown = TerminalKey.down.bytes(tool: "codex")
         async let answered = coordinator.answer(prompt, option: 2, text: "use pnpm", tool: "codex")
         try await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(transport.sent.last, codexDown + codexDown + TerminalKey.enter.bytes(tool: "codex"))
+        XCTAssertEqual(transport.sent.last, Array("3".utf8))
         try await show(TerminalPromptFixtures.codexIdle)
         let result = await answered
         XCTAssertTrue(result)
@@ -105,8 +104,17 @@ final class TerminalPromptWatchTests: XCTestCase {
         let prompt = try XCTUnwrap(coordinator.currentPrompt())
         let answered = await coordinator.answer(prompt, option: 2, text: "use pnpm", tool: "codex")
         XCTAssertFalse(answered)
-        let codexDown = TerminalKey.down.bytes(tool: "codex")
-        XCTAssertEqual(transport.sent.last, codexDown + codexDown + TerminalKey.enter.bytes(tool: "codex"), "no paste after the keys")
+        XCTAssertEqual(transport.sent.last, Array("3".utf8), "no paste after the choice")
+    }
+
+    func testLosingTheConnectionClearsTheQuestion() {
+        let handle = TerminalHandle()
+        handle.screenChanged(TerminalPromptFixtures.claudeBash.components(separatedBy: "\n"))
+        XCTAssertNotNil(handle.prompt)
+        XCTAssertFalse(handle.screenTail.isEmpty)
+        handle.connectionChanged(to: .failed)
+        XCTAssertNil(handle.prompt)
+        XCTAssertTrue(handle.screenTail.isEmpty)
     }
 }
 

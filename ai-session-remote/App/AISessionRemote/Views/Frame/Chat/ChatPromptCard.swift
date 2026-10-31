@@ -63,6 +63,32 @@ struct ChatPromptCard: View {
     }
 }
 
+/// A question waiting while the keyboard is up: one line, so the messages keep their room.
+/// Tapping it hides the keyboard and brings the full card back.
+struct ChatPromptBanner: View {
+    let question: String
+    let onShow: () -> Void
+
+    var body: some View {
+        Button(action: onShow) {
+            HStack(spacing: 8) {
+                Image(systemName: "questionmark.bubble")
+                Text(question).lineLimit(1)
+                Spacer(minLength: 4)
+                Text("Answer").fontWeight(.semibold)
+            }
+            .font(.footnote)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(DS.warning.opacity(0.5)))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
+    }
+}
+
 /// The agent is waiting but the app can't read the question: the bottom of the terminal, with
 /// the keys a menu needs.
 struct ChatScreenFallbackCard: View {
