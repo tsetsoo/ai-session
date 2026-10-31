@@ -6,6 +6,8 @@ import SwiftUI
 /// On iPad the shells swap as the width changes. The open conversation lives on as
 /// `AppModel.selectedTodoID`: the Mac layout selects it, the phone shell pushes its frame.
 struct RootView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
@@ -36,17 +38,25 @@ struct RootView: View {
 
     @ViewBuilder
     private var main: some View {
-        #if os(iOS)
-        // An iPhone stays on the phone shell in landscape too, where the larger models report a
-        // regular width.
-        if UIDevice.current.userInterfaceIdiom == .phone || horizontalSizeClass == .compact || Self.forcesCompactWidth {
-            PhoneShell()
-        } else {
+        Group {
+            #if os(iOS)
+            // An iPhone stays on the phone shell in landscape too, where the larger models report a
+            // regular width.
+            if UIDevice.current.userInterfaceIdiom == .phone || horizontalSizeClass == .compact || Self.forcesCompactWidth {
+                PhoneShell()
+            } else {
+                MacShell()
+            }
+            #else
             MacShell()
+            #endif
         }
-        #else
-        MacShell()
-        #endif
+        // Resuming refreshes hub data without disturbing SSH terminals. A suspended
+        // WebSocket may still look connected until its next read or heartbeat fails.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await model.store.refresh(trigger: .background) }
+        }
     }
 
     #if os(iOS)

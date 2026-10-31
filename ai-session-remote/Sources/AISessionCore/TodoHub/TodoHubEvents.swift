@@ -15,30 +15,37 @@ public enum TodoHubEvent: Equatable, Sendable {
 /// Listens on the hub's `/api/ws` and yields one event per server-side change. The server
 /// sends a bare `refresh` text frame on every mutation; consumers re-fetch what they show.
 ///
-/// Reconnects with exponential backoff (1s → 30s) until the stream's consumer stops
-/// iterating, which cancels the underlying task.
+/// Reconnects with exponential backoff (1s → 30s). Independently reconciles every 15s:
+/// a half-open socket or a missed frame must not freeze conversation status indefinitely.
 public enum TodoHubEvents {
     public static func refreshes(
         baseURL: URL,
         token: String?,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        reconciliationInterval: Duration = .seconds(15)
     ) -> AsyncStream<TodoHubEvent> {
-        AsyncStream { continuation in
+        precondition(reconciliationInterval > .zero)
+        return AsyncStream { continuation in
             let task = Task {
                 var delay: UInt64 = 1
                 while !Task.isCancelled {
                     guard let url = webSocketURL(baseURL: baseURL, token: token) else { return }
                     let socket = session.webSocketTask(with: url)
                     socket.resume()
-                    do {
-                        while !Task.isCancelled {
-                            _ = try await socket.receive()
-                            delay = 1
-                            continuation.yield(.changed)
+                    await withTaskCancellationHandler {
+                        do {
+                            while !Task.isCancelled {
+                                _ = try await socket.receive()
+                                delay = 1
+                                continuation.yield(.changed)
+                            }
+                        } catch {
+                            // The retry below refreshes after the connection was lost.
                         }
-                    } catch {
+                    } onCancel: {
                         socket.cancel(with: .goingAway, reason: nil)
                     }
+                    socket.cancel(with: .goingAway, reason: nil)
                     guard !Task.isCancelled else { break }
                     // A reconnect may have missed changes: ask consumers to refresh once more.
                     try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
@@ -46,7 +53,17 @@ public enum TodoHubEvents {
                     continuation.yield(.reconnected)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+            let reconcile = Task {
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: reconciliationInterval) } catch { return }
+                    guard !Task.isCancelled else { return }
+                    continuation.yield(.changed)
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+                reconcile.cancel()
+            }
         }
     }
 

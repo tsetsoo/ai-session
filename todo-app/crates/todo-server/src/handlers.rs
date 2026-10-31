@@ -330,15 +330,50 @@ pub async fn ws_handler(
     body: web::Payload,
     broadcaster: web::Data<Broadcaster>,
 ) -> actix_web::Result<HttpResponse> {
-    let (response, mut session, _msg_stream) = actix_ws::handle(&req, body)?;
+    let (response, mut session, mut messages) = actix_ws::handle(&req, body)?;
 
     let mut rx = broadcaster.subscribe();
     actix_web::rt::spawn(async move {
-        while rx.recv().await.is_ok() {
-            if session.text("refresh").await.is_err() {
-                break;
+        // The first fetch and the upgrade are separate requests. Reconcile anything
+        // that changed between them, even if no later mutation arrives.
+        if session.text("refresh").await.is_err() {
+            return;
+        }
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(25));
+        let mut last_pong = tokio::time::Instant::now();
+        loop {
+            tokio::select! {
+                change = rx.recv() => {
+                    match change {
+                        Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            // A slow reader only needs the latest snapshot. Lagging
+                            // must not permanently stop its refresh notifications.
+                            if session.text("refresh").await.is_err() { break; }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                message = messages.recv() => {
+                    match message {
+                        Some(Ok(actix_ws::Message::Ping(bytes))) => {
+                            if session.pong(&bytes).await.is_err() { break; }
+                        }
+                        Some(Ok(actix_ws::Message::Pong(_))) => last_pong = tokio::time::Instant::now(),
+                        Some(Ok(actix_ws::Message::Close(reason))) => {
+                            let _ = session.close(reason).await;
+                            return;
+                        }
+                        None | Some(Err(_)) => break,
+                        _ => {}
+                    }
+                }
+                _ = heartbeat.tick() => {
+                    if last_pong.elapsed() > std::time::Duration::from_secs(60)
+                        || session.ping(b"hub").await.is_err() { break; }
+                }
             }
         }
+        let _ = session.close(None).await;
     });
 
     Ok(response)
@@ -350,6 +385,31 @@ mod tests {
     use serde_json::json;
 
     use crate::test_support::{pool, post, seed_computers};
+
+    #[actix_web::test]
+    async fn websocket_reconciles_on_connect_and_answers_client_ping() {
+        use actix_web::{test, web, App};
+        let app = test::init_service(
+            App::new().app_data(web::Data::new(crate::broadcast::Broadcaster::new()))
+                .route("/api/ws", web::get().to(super::ws_handler))
+        ).await;
+        // Masked client ping("test"), then close. Reading the request stream is
+        // essential: the old send-only handler never answered or closed this body.
+        let frames = vec![0x89, 0x84, 1, 2, 3, 4, b't' ^ 1, b'e' ^ 2, b's' ^ 3, b't' ^ 4,
+                          0x88, 0x80, 1, 2, 3, 4];
+        let request = test::TestRequest::get().uri("/api/ws")
+            .insert_header(("connection", "upgrade"))
+            .insert_header(("upgrade", "websocket"))
+            .insert_header(("sec-websocket-version", "13"))
+            .insert_header(("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="))
+            .set_payload(frames).to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        let bytes = tokio::time::timeout(std::time::Duration::from_secs(2), test::read_body(response))
+            .await.expect("WebSocket must process the client's close frame");
+        assert!(bytes.windows(9).any(|frame| frame == b"\x81\x07refresh"), "initial refresh missing");
+        assert!(bytes.windows(6).any(|frame| frame == b"\x8a\x04test"), "ping was not answered");
+    }
 
     fn project_on(conn: &rusqlite::Connection, section: &str) -> String {
         let id = format!("p-{section}");

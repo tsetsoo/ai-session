@@ -305,6 +305,25 @@ final class TodoHubClientTests: XCTestCase {
         XCTAssertEqual(first, .reconnected)
     }
 
+    func testReconciliationContinuesWithoutAnyWebSocketMessages() async {
+        let url = URL(string: "http://127.0.0.1:1")!
+        let refreshed = expectation(description: "independent reconciliation")
+        refreshed.expectedFulfillmentCount = 3
+        let listener = Task {
+            var changes = 0
+            for await event in TodoHubEvents.refreshes(baseURL: url, token: nil,
+                                                       reconciliationInterval: .milliseconds(20)) {
+                if event == .changed {
+                    refreshed.fulfill()
+                    changes += 1
+                    if changes == 3 { return }
+                }
+            }
+        }
+        await fulfillment(of: [refreshed], timeout: 3)
+        listener.cancel()
+    }
+
     func testTodoConversationCommands() {
         let open = TmuxCommandBuilder.openTodoConversation(
             tmuxName: "ai/claude/todo-4f3ff5fa", cwd: "~/it's here", sessionId: "20218a19"
