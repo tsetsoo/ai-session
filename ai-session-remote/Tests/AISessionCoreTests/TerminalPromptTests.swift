@@ -1,0 +1,84 @@
+import XCTest
+@testable import AISessionCore
+
+final class TerminalPromptTests: XCTestCase {
+    private func parse(_ screen: String) -> TerminalPrompt? {
+        TerminalPrompt.parse(screen: screen.components(separatedBy: "\n"))
+    }
+
+    func testClaudeBashPrompt() throws {
+        let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeBash))
+        XCTAssertEqual(prompt.question, "Do you want to proceed?")
+        XCTAssertTrue(prompt.detail?.contains("touch made-by-test.txt") ?? false)
+        XCTAssertFalse(prompt.detail?.contains("Tip:") ?? true)
+        XCTAssertEqual(prompt.options.count, 4)
+        XCTAssertEqual(prompt.selected, 0)
+        XCTAssertEqual(prompt.options[0].label, "Yes")
+        XCTAssertTrue(prompt.options[1].label.hasPrefix("Yes, and always allow access to /private"))
+        XCTAssertTrue(prompt.options[1].label.hasSuffix("from this project"), "wrapped label is joined")
+        XCTAssertEqual(prompt.options[3].label, "No")
+        XCTAssertEqual(prompt.options.map(\.needsText), [false, false, false, false])
+    }
+
+    func testClaudeEditPrompt() throws {
+        let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeEdit))
+        XCTAssertEqual(prompt.question, "Do you want to make this edit to a.txt?")
+        XCTAssertEqual(prompt.options.count, 3)
+        XCTAssertTrue(prompt.options[1].label.hasSuffix("for this session"), prompt.options[1].label)
+        XCTAssertEqual(prompt.options[2].label, "No")
+    }
+
+    func testClaudeQuestionMarksTypeSomethingAsText() throws {
+        let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeQuestion))
+        XCTAssertEqual(prompt.question, "Which colour do you prefer?")
+        XCTAssertEqual(prompt.options.map(\.label), ["Red", "Green", "Blue", "Type something.", "Chat about this"])
+        XCTAssertEqual(prompt.options[0].detail, "The colour red")
+        XCTAssertEqual(prompt.options.map(\.needsText), [false, false, false, true, false])
+        XCTAssertEqual(prompt.selected, 0)
+    }
+
+    func testCodexCommandPrompt() throws {
+        let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.codexCommand))
+        XCTAssertEqual(prompt.question, "Would you like to run the following command?")
+        XCTAssertTrue(prompt.detail?.contains("$ touch codex-made.txt") ?? false)
+        XCTAssertEqual(prompt.options.map(\.label), [
+            "Yes, proceed",
+            "Yes, and don't ask again for commands that start with `touch codex-made.txt`",
+            "No, and tell Codex what to do differently",
+        ])
+        XCTAssertEqual(prompt.options.map(\.needsText), [false, false, true])
+        XCTAssertEqual(prompt.selected, 0)
+    }
+
+    func testCodexPatchPrompt() throws {
+        let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.codexPatch))
+        XCTAssertEqual(prompt.question, "Would you like to make the following edits?")
+        XCTAssertTrue(prompt.detail?.contains("a.txt") ?? false)
+        XCTAssertEqual(prompt.options.count, 3)
+    }
+
+    func testIdleAndNumberedReplyAreNotPrompts() {
+        XCTAssertNil(parse(TerminalPromptFixtures.claudeIdle))
+        XCTAssertNil(parse(TerminalPromptFixtures.claudeNumberedReply))
+        XCTAssertNil(parse(TerminalPromptFixtures.codexIdle))
+    }
+
+    func testUnnumberedTrustScreensAreLeftToTheFallback() {
+        XCTAssertNil(parse(TerminalPromptFixtures.claudeTrust))
+        XCTAssertNil(parse(TerminalPromptFixtures.codexTrust))
+    }
+
+    func testDifferentPromptsHaveDifferentSignatures() throws {
+        let bash = try XCTUnwrap(parse(TerminalPromptFixtures.claudeBash))
+        let edit = try XCTUnwrap(parse(TerminalPromptFixtures.claudeEdit))
+        XCTAssertNotEqual(bash.signature, edit.signature)
+        XCTAssertEqual(bash.signature, try XCTUnwrap(parse(TerminalPromptFixtures.claudeBash)).signature)
+    }
+
+    func testKeysMoveFromSelectedThenEnter() throws {
+        let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeBash))
+        XCTAssertEqual(prompt.keys(toChoose: 2, tool: "claude"),
+                       TerminalKey.down.bytes(tool: "claude") + TerminalKey.down.bytes(tool: "claude") + TerminalKey.enter.bytes(tool: "claude"))
+        XCTAssertEqual(prompt.keys(toChoose: 0, tool: "claude"), TerminalKey.enter.bytes(tool: "claude"))
+    }
+}
