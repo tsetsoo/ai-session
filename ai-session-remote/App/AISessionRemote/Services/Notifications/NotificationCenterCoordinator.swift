@@ -55,6 +55,10 @@ final class NotificationCenterCoordinator {
             pendingOpenTodo = todoId
             return
         }
+        #if os(iOS)
+        // A "needs you" alert opens on the chat, where its question can be answered.
+        UserDefaults.standard.set(true, forKey: "conversation.phoneChat")
+        #endif
         NotificationCenter.default.post(name: .todoNotificationOpened, object: todoId)
         onOpenTodo(todoId)
     }

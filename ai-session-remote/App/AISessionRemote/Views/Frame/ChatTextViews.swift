@@ -62,7 +62,7 @@ struct ChatDraftEditor: UIViewRepresentable {
         view.backgroundColor = .clear
         view.font = .preferredFont(forTextStyle: .body)
         view.adjustsFontForContentSizeCategory = true
-        view.textContainerInset = UIEdgeInsets(top: 10, left: 8, bottom: 10, right: 8)
+        view.textContainerInset = UIEdgeInsets(top: 9, left: 8, bottom: 9, right: 8)
         view.autocorrectionType = .no
         view.autocapitalizationType = .none
         view.smartQuotesType = .no
@@ -84,7 +84,7 @@ struct ChatDraftEditor: UIViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
         guard let width = proposal.width else { return nil }
         let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        return CGSize(width: width, height: min(180, max(64, size.height)))
+        return CGSize(width: width, height: min(180, max(38, size.height)))
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {

@@ -29,8 +29,15 @@ struct PhoneConversationView<TerminalContent: View>: View {
     @State private var reviewedOnOpen = false
     @State private var composing = false
     @State private var draftEditor = ChatDraftEditorHandle()
+    @State private var composerMode = ChatComposerMode.normal
+    /// The last option tapped found a different question on screen.
+    @State private var promptChanged = false
 
     private var needsApproval: Bool { status == .waiting }
+    /// The question on screen, read from the live terminal behind the chat.
+    private var prompt: TerminalPrompt? { showsChat ? terminal.prompt : nil }
+    /// Waiting on something the app can't read: show the bottom of the terminal instead.
+    private var showsFallback: Bool { showsChat && prompt == nil && needsApproval }
     private var isBusy: Bool { status == .busy }
     private var shouldPoll: Bool { showsChat && isFrontmost && scenePhase == .active }
     private var pollID: String? {
@@ -106,17 +113,49 @@ struct PhoneConversationView<TerminalContent: View>: View {
             if let loadError {
                 Text(loadError).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
             }
-            if needsApproval {
-                Button("Needs your input — open Terminal") { showsChat = false }
-                    .font(.callout.weight(.medium))
-                    .padding(12)
+            if let prompt {
+                ChatPromptCard(prompt: prompt, changed: promptChanged, onChoose: { choose($0, in: prompt) })
+            } else if showsFallback {
+                ChatScreenFallbackCard(
+                    lines: terminal.screenTail,
+                    onKey: { terminal.send($0.bytes(tool: conversation.tool)) },
+                    onOpenTerminal: { showsChat = false }
+                )
             }
             if let sendError {
                 Text(sendError).font(.footnote).foregroundStyle(.red).padding(.horizontal)
             }
-            composer
+            ChatComposer(
+                draft: $draft, focused: $composing, mode: $composerMode, editor: draftEditor,
+                connected: terminal.isConnected, promptShowing: prompt != nil || showsFallback,
+                isSending: isSending, onSend: send, onQuickReply: { send($0, clearsDraft: false) }
+            )
         }
         .background(Color(uiColor: .systemGroupedBackground))
+        .onChange(of: terminal.prompt?.signature) { _, signature in
+            if case let .answering(answering, _) = composerMode, answering.signature != signature { composerMode = .normal }
+            if signature == nil { promptChanged = false }
+        }
+    }
+
+    /// An option without words is answered now; one that takes words opens the composer for them.
+    private func choose(_ option: Int, in prompt: TerminalPrompt) {
+        if prompt.options[option].needsText {
+            composerMode = .answering(prompt: prompt, option: option)
+            composing = true
+            return
+        }
+        if terminal.answer(prompt, option: option, tool: conversation.tool) {
+            answered(prompt, option: option)
+        } else {
+            promptChanged = true
+        }
+    }
+
+    private func answered(_ prompt: TerminalPrompt, option: Int) {
+        promptChanged = false
+        notes.append(AnsweredNote(text: "✓ \(prompt.options[option].label) · \(prompt.question)", afterCount: messages.count))
+        follow.jumpToLatest()
     }
 
     private static func activityID(_ item: ChatItem?) -> String? {
@@ -147,33 +186,6 @@ struct PhoneConversationView<TerminalContent: View>: View {
         }
     }
 
-    private var composer: some View {
-        VStack(spacing: 8) {
-            ChatDraftEditor(text: $draft, focused: $composing, handle: draftEditor)
-                .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
-                .overlay(alignment: .topLeading) {
-                    if draft.isEmpty {
-                        Text("Message…").foregroundStyle(.tertiary).padding(12).allowsHitTesting(false)
-                    }
-                }
-            HStack {
-                PasteButton(payloadType: String.self) { strings in
-                    draftEditor.insert(strings.joined(separator: "\n"))
-                    composing = true
-                }
-                .labelStyle(.titleAndIcon)
-                Spacer()
-                Button(action: send) {
-                    Label(isSending ? "Sending…" : "Send", systemImage: "arrow.up.circle.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isSending || !terminal.isConnected || needsApproval || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(12)
-        .background(.bar)
-    }
-
     private func refresh() async {
         do {
             let result = try await store.conversationMessages(of: conversation, config: config)
@@ -201,7 +213,31 @@ struct PhoneConversationView<TerminalContent: View>: View {
     }
 
     private func send() {
-        let text = draft
+        if case let .answering(prompt, option) = composerMode {
+            sendAnswer(draft, to: prompt, option: option)
+        } else {
+            send(draft, clearsDraft: true)
+        }
+    }
+
+    private func sendAnswer(_ text: String, to prompt: TerminalPrompt, option: Int) {
+        isSending = true
+        sendError = nil
+        sendTask = Task { @MainActor in
+            defer { isSending = false }
+            if await terminal.answer(prompt, option: option, text: text, tool: conversation.tool) {
+                if draft == text { draft = "" }
+                composerMode = .normal
+                answered(prompt, option: option)
+            } else {
+                promptChanged = true
+                composerMode = .normal
+                sendError = "That question changed before your answer was sent. Your answer is saved here."
+            }
+        }
+    }
+
+    private func send(_ text: String, clearsDraft: Bool) {
         let local = PendingSend(text: text, afterCount: messages.count)
         isSending = true
         sendError = nil
@@ -210,7 +246,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
         sendTask = Task { @MainActor in
             defer { isSending = false }
             if await terminal.sendMessage(text) {
-                if draft == text { draft = "" }
+                if clearsDraft, draft == text { draft = "" }
                 await refresh()
             } else {
                 pending.removeAll { $0.id == local.id }
