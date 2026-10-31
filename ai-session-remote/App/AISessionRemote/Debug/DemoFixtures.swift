@@ -53,6 +53,44 @@ enum DemoFixtures {
         ]
     }
 
+    /// A chat like mockup A: a question, tool steps, a markdown reply with code, a reply long
+    /// enough to fold, and a 40-minute gap before the last turn.
+    static var chatTranscript: [ConversationMessage] {
+        let start = Date().addingTimeInterval(-50 * 60)
+        func at(_ minutes: Double) -> Date { start.addingTimeInterval(minutes * 60) }
+        func step(_ id: String, _ kind: ActivityKind, _ target: String, _ minutes: Double) -> ConversationMessage {
+            ConversationMessage(id: id, role: .activity, text: "", time: at(minutes), kind: kind, target: target)
+        }
+        let long = (1...45).map { "\($0). Checked `route\($0)` — redirect keeps `next`." }.joined(separator: "\n")
+        return [
+            ConversationMessage(id: "0.0", role: .user, text: "why does login bounce back to /start after the OAuth callback?", time: at(0)),
+            step("1.0", .read, "src/auth/callback.ts", 0.2),
+            step("2.0", .search, "redirect_uri", 0.3),
+            step("3.0", .run, "git log -5 -- src/auth", 0.4),
+            ConversationMessage(id: "4.0", role: .assistant, text: """
+            ## Cause
+            The callback handler drops the `next` param, so it falls back to `/start`.
+
+            - Fix is in `auth/callback.ts`
+            - **One** test needs updating
+
+            ```sh
+            npm test -- auth/callback
+            ```
+
+            | File | Change |
+            |---|---|
+            | callback.ts | keep `next` |
+            """, time: at(0.5)),
+            ConversationMessage(id: "5.0", role: .user, text: "ok fix it and check every route", time: at(1)),
+            step("6.0", .edit, "src/auth/callback.ts", 1.2),
+            step("7.0", .edit, "src/auth/callback.test.ts", 1.3),
+            ConversationMessage(id: "8.0", role: .assistant, text: "Done. Every route:\n\n" + long, time: at(2)),
+            ConversationMessage(id: "9.0", role: .user, text: "great, now run the tests", time: at(42)),
+            step("10.0", .run, "npm test -- auth/callback", 42.1),
+        ]
+    }
+
     private static let now = "2026-10-17T09:00:00Z"
 
     private static func cwd(for section: TodoSection) -> String {

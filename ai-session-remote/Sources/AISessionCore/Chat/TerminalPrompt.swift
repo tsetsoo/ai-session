@@ -1,7 +1,8 @@
 import Foundation
 
 /// A Claude or Codex question read off the terminal screen: a numbered menu with one option
-/// marked by the cursor (❯ or ›) and an Esc hint below it, under a line ending in "?".
+/// marked by the cursor (❯ or ›) under a line ending in "?", and an Esc hint as the last line
+/// (below the menu, or on its last option in older Claude's boxed prompt).
 /// Fixtures in `TerminalPromptFixtures` are real captures; parse nothing they don't justify.
 public struct TerminalPrompt: Equatable, Sendable {
     public struct Option: Equatable, Sendable {
@@ -33,9 +34,11 @@ public struct TerminalPrompt: Equatable, Sendable {
 
     public static func parse(screen: [String]) -> TerminalPrompt? {
         let lines = screen.map(clean)
-        guard let footer = lines.lastIndex(where: { !$0.isEmpty }),
-              lines[footer].range(of: #"(?i)\besc\b"#, options: .regularExpression) != nil
+        guard let hint = lines.lastIndex(where: { !$0.isEmpty && !isRule($0) }),
+              lines[hint].range(of: #"(?i)\besc\b"#, options: .regularExpression) != nil
         else { return nil }
+        // Where the menu ends: below the hint line, unless the hint is on the last option.
+        let footer = optionLine(lines[hint]) == nil ? hint : hint + 1
 
         // Up from the hint to option 1: only options, their indented continuations, blanks and rules.
         var first: Int?

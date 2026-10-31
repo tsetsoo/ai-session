@@ -598,12 +598,7 @@ final class TodoHubStore {
 
     func conversationMessages(of conversation: Conversation, config: HostConnectionConfig) async throws -> [ConversationMessage] {
         #if DEBUG
-        if DemoFixtures.isEnabled {
-            return [
-                ConversationMessage(id: "0", role: .user, text: "Can you explain the change and show an example?"),
-                ConversationMessage(id: "1", role: .assistant, text: "Long replies now wrap to your phone’s width. You can select a few words, or copy the entire message using Copy above.\n\nBlank lines and indentation stay intact when you copy:\n\n    if ready {\n        send(message)\n    }\n\nReturn in the message box adds a new line. Tap Send when you’re ready."),
-            ]
-        }
+        if DemoFixtures.isEnabled { return DemoFixtures.chatTranscript }
         #endif
         let computer = conversation.computer
         if !transcriptActivityUnsupported.contains(computer.id) {

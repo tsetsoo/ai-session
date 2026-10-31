@@ -94,4 +94,30 @@ final class TerminalPromptTests: XCTestCase {
         let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeQuestion))
         XCTAssertEqual(prompt.keys(toChoose: 1, tool: "claude", enter: false), TerminalKey.down.bytes(tool: "claude"))
     }
+
+    /// Older Claude Code drew the prompt in a box, with "(esc)" on the last option and no hint below.
+    func testBoxedPromptWithEscOnTheLastOption() throws {
+        let screen = """
+        ⏺ Update(src/import/rates.rs)
+          ⎿  Updated src/import/rates.rs with 6 additions and 1 removal
+
+        ╭────────────────────────────────────────────────────────────╮
+        │ Bash command                                               │
+        │                                                            │
+        │   cargo test import::rates                                 │
+        │                                                            │
+        │ Do you want to proceed?                                    │
+        │ ❯ 1. Yes                                                   │
+        │   2. Yes, and don't ask again for cargo test commands      │
+        │   3. No, and tell Claude what to do differently (esc)      │
+        ╰────────────────────────────────────────────────────────────╯
+        """
+        let prompt = try XCTUnwrap(parse(screen))
+        XCTAssertEqual(prompt.question, "Do you want to proceed?")
+        XCTAssertEqual(prompt.detail, "Bash command\ncargo test import::rates")
+        XCTAssertEqual(prompt.options.map(\.label), [
+            "Yes", "Yes, and don't ask again for cargo test commands", "No, and tell Claude what to do differently",
+        ])
+        XCTAssertEqual(prompt.options.map(\.needsText), [false, false, true])
+    }
 }

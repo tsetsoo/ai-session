@@ -21,24 +21,32 @@ struct ChatPromptCard: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(detail)
                         .font(.caption.monospaced())
+                        .lineLimit(8)
                         .fixedSize(horizontal: true, vertical: false)
                         .padding(8)
                 }
-                .frame(maxHeight: 120)
+                .fixedSize(horizontal: false, vertical: true)
                 .background(DS.chipFill, in: RoundedRectangle(cornerRadius: 8))
             }
             ForEach(prompt.options.indices, id: \.self) { index in
                 let option = prompt.options[index]
                 Button { onChoose(index) } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(option.label + (option.needsText ? " …" : ""))
-                            .font(.callout.weight(index == prompt.selected ? .semibold : .regular))
-                            .multilineTextAlignment(.leading)
-                        if let detail = option.detail {
-                            Text(detail).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.leading)
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(option.label)
+                                .font(.callout.weight(index == prompt.selected ? .semibold : .regular))
+                            if let detail = option.detail {
+                                Text(detail).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        if option.needsText {
+                            Image(systemName: "keyboard").font(.caption).foregroundStyle(.secondary)
+                                .accessibilityLabel("Asks you to type")
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
                     .background(index == prompt.selected ? DS.accentTint : Color(uiColor: .tertiarySystemFill),
