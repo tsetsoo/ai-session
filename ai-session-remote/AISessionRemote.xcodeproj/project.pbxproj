@@ -49,6 +49,7 @@
 		2C88335BD42E331992BF6C04 /* TodoRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CB81134A32870654F0473B2 /* TodoRow.swift */; };
 		2DF7D033594787FFDA1BB4F0 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 14F6B7A8CBAF4F1974CDDB24 /* SwiftTerm */; };
 		2E522C088AFAA44BA3CFE3CC /* TerminalSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72E273782071736284D2563C /* TerminalSurface.swift */; };
+		31D055419DFEFA9E026CE3F9 /* ChatActivityRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6DD2792E09F189B076545E0 /* ChatActivityRow.swift */; };
 		34635CC272011A10046EA8BB /* ComputersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DAA2B5F3D51BEC4051A381D /* ComputersView.swift */; };
 		3538D4106650FB5DD44CE028 /* HostRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3B756FF0192985AADAFF36 /* HostRepository.swift */; };
 		356AA5D493C40F589E915D9A /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A467E31C965B1E36C7CB08F0 /* RootView.swift */; };
@@ -101,6 +102,7 @@
 		6706683192E13B74B7AA1CB1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 45685B58CE2C40C0BCC9C856 /* Assets.xcassets */; };
 		6853311BF7EEA474ECC0FB70 /* SelectTextSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E73B14EDD641FC1EDBABAAF8 /* SelectTextSheet.swift */; };
 		68A3E02B06E4A0FB06B56C19 /* TodoListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3C31BAE70EEEAC4E0643FB /* TodoListView.swift */; };
+		69DFE130890EF5A5A3396C42 /* ChatActivityRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6DD2792E09F189B076545E0 /* ChatActivityRow.swift */; };
 		6AB07421D7A5594E87E1A818 /* TerminalPromptWatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C61D2879D37DC73DD7AF7E03 /* TerminalPromptWatchTests.swift */; };
 		6ACD4E8A9285511C722CEB3F /* SelectTextSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E73B14EDD641FC1EDBABAAF8 /* SelectTextSheet.swift */; };
 		6B4B322E64EB1EF13613EC80 /* MacShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE1413C37D001C7F1155CEB0 /* MacShellTests.swift */; };
@@ -387,6 +389,7 @@
 		C2E686F0583F636575A8741C /* DesignSystemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystemTests.swift; sourceTree = "<group>"; };
 		C42DA3B83B3817679DCCC8E4 /* AISessionRemoteMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AISessionRemoteMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C61D2879D37DC73DD7AF7E03 /* TerminalPromptWatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPromptWatchTests.swift; sourceTree = "<group>"; };
+		C6DD2792E09F189B076545E0 /* ChatActivityRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatActivityRow.swift; sourceTree = "<group>"; };
 		C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectionPoolTests.swift; sourceTree = "<group>"; };
 		CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectionPool.swift; sourceTree = "<group>"; };
 		CA8B20C587DEA3DCF7492AD7 /* TerminalReconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalReconnectTests.swift; sourceTree = "<group>"; };
@@ -553,6 +556,7 @@
 		288228CAE535B77E67EFC507 /* Chat */ = {
 			isa = PBXGroup;
 			children = (
+				C6DD2792E09F189B076545E0 /* ChatActivityRow.swift */,
 				D85EAC354443F3D03E6BAD90 /* ChatCodeBlock.swift */,
 				2EEA147830218031EA1DDBEF /* ChatMessageView.swift */,
 				3EE8C53F9D661BF68CA334B7 /* ChatStyledText.swift */,
@@ -984,6 +988,7 @@
 				54786EE8A4EC63320E5D2268 /* AppDelegate.swift in Sources */,
 				A22C2ED227DF733D3FA7F932 /* AppModel.swift in Sources */,
 				AC88844C58FEA9FD997A86AD /* AppTheme.swift in Sources */,
+				69DFE130890EF5A5A3396C42 /* ChatActivityRow.swift in Sources */,
 				E135A9C032C1EEE94521B02D /* ChatCodeBlock.swift in Sources */,
 				7B110F70F7E357C75AEA17A3 /* ChatMessageView.swift in Sources */,
 				9C7B44037AC306AFF0894848 /* ChatStyledText.swift in Sources */,
@@ -1093,6 +1098,7 @@
 				7EBF102046D1B8F7306B7A21 /* AppDelegate.swift in Sources */,
 				7BAD97547D47B5D2812C9A76 /* AppModel.swift in Sources */,
 				2C713B734C872820F76100DD /* AppTheme.swift in Sources */,
+				31D055419DFEFA9E026CE3F9 /* ChatActivityRow.swift in Sources */,
 				3D1684ED234059326AF42DBD /* ChatCodeBlock.swift in Sources */,
 				98ED5889E1560F4A0DE9E986 /* ChatMessageView.swift in Sources */,
 				A0A7C2DC31C7BDFF2A0AEB43 /* ChatStyledText.swift in Sources */,

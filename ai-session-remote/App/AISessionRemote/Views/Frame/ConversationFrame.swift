@@ -365,7 +365,7 @@ struct ConversationFrame: View {
             #if os(iOS)
             PhoneConversationView(
                 conversation: conversation ?? open.conversation, config: open.config, store: store,
-                terminal: terminal, isFrontmost: isFrontmost, needsApproval: liveStatus == .waiting,
+                terminal: terminal, isFrontmost: isFrontmost, status: liveStatus,
                 showsChat: $showsChat
             ) {
                 liveTerminal(open)

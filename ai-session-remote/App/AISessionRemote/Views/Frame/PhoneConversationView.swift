@@ -11,7 +11,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
     let store: TodoHubStore
     let terminal: TerminalHandle
     let isFrontmost: Bool
-    let needsApproval: Bool
+    let status: ConversationStatus?
     @Binding var showsChat: Bool
     @ViewBuilder let terminalContent: () -> TerminalContent
 
@@ -23,17 +23,23 @@ struct PhoneConversationView<TerminalContent: View>: View {
     @State private var isLoading = true
     @State private var isSending = false
     @State private var sendTask: Task<Void, Never>?
-    @State private var followsLatest = true
-    @State private var copiedID: String?
+    @State private var follow = ChatFollow()
+    @State private var pending: [PendingSend] = []
+    @State private var notes: [AnsweredNote] = []
     @State private var reviewedOnOpen = false
     @State private var composing = false
     @State private var draftEditor = ChatDraftEditorHandle()
 
+    private var needsApproval: Bool { status == .waiting }
+    private var isBusy: Bool { status == .busy }
     private var shouldPoll: Bool { showsChat && isFrontmost && scenePhase == .active }
     private var pollID: String? {
         guard shouldPoll else { return nil }
-        return "\(conversation.id):\(conversation.sessionId):\(conversation.statusRevision)"
+        return "\(conversation.id):\(conversation.sessionId):\(conversation.statusRevision):\(status?.rawValue ?? "")"
     }
+    /// Faster while the agent works or waits, so steps and answers show up promptly.
+    private var pollInterval: Duration { isBusy || needsApproval ? .seconds(1) : .seconds(3) }
+    private var items: [ChatItem] { ChatTimeline.items(entries: messages, pending: pending, notes: notes) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,7 +72,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
             guard shouldPoll else { return }
             while !Task.isCancelled {
                 await refresh()
-                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                do { try await Task.sleep(for: pollInterval) } catch { return }
             }
         }
     }
@@ -75,36 +81,27 @@ struct PhoneConversationView<TerminalContent: View>: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 20) {
+                    LazyVStack(alignment: .leading, spacing: 16) {
                         if isLoading && messages.isEmpty {
                             ProgressView("Loading conversation…").frame(maxWidth: .infinity)
-                        } else if messages.isEmpty && loadError == nil {
+                        } else if messages.isEmpty && pending.isEmpty && loadError == nil {
                             Text("Send a message to start the conversation.")
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 30)
                         }
-                        ForEach(messages) { message in bubble(message) }
-                        Color.clear.frame(height: 1).id("latest")
-                            .onAppear { followsLatest = true }
-                            .onDisappear { followsLatest = false }
+                        let items = self.items
+                        let liveActivity = isBusy ? Self.activityID(items.last) : nil
+                        ForEach(items) { item in row(item, isLive: item.id == liveActivity) }
+                        if isBusy { ChatWorkingLine() }
+                        Color.clear.frame(height: 1).id(ChatFollowBottom.endID)
+                            .onAppear { if !ChatFollowBottom.usesGeometry { follow.jumpToLatest() } }
+                            .onDisappear { if !ChatFollowBottom.usesGeometry { follow.userScrolled(distanceFromBottom: .infinity) } }
                     }
                     .padding()
                 }
+                .defaultScrollAnchor(.bottom)
                 .scrollDismissesKeyboard(.interactively)
-                .onChange(of: messages) { old, _ in
-                    if old.isEmpty || followsLatest { proxy.scrollTo("latest", anchor: .bottom) }
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    if !followsLatest && !messages.isEmpty {
-                        Button {
-                            withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
-                        } label: {
-                            Label("Latest", systemImage: "arrow.down")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .padding()
-                    }
-                }
+                .modifier(ChatFollowBottom(follow: $follow, proxy: proxy, contentVersion: contentVersion))
             }
             if let loadError {
                 Text(loadError).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
@@ -122,31 +119,32 @@ struct PhoneConversationView<TerminalContent: View>: View {
         .background(Color(uiColor: .systemGroupedBackground))
     }
 
-    private func bubble(_ message: ConversationMessage) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(message.role == .user ? "You" : RowText.toolName(conversation.tool))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    PlatformSupport.pasteboardString = message.text
-                    copiedID = message.id
-                } label: {
-                    Label(copiedID == message.id ? "Copied" : "Copy",
-                          systemImage: copiedID == message.id ? "checkmark" : "doc.on.doc")
-                        .font(.caption)
-                }
-                .accessibilityLabel("Copy \(message.role == .user ? "your" : "assistant") message")
-            }
-            ChatMessageText(text: message.text)
+    private static func activityID(_ item: ChatItem?) -> String? {
+        guard let item, case .activity = item else { return nil }
+        return item.id
+    }
+
+    /// Changes whenever something is added or a step arrives, for the iOS 17 follow.
+    private var contentVersion: Int { messages.count &* 31 &+ pending.count &* 7 &+ notes.count &+ (isBusy ? 1 : 0) }
+
+    @ViewBuilder
+    private func row(_ item: ChatItem, isLive: Bool) -> some View {
+        let tool = RowText.toolName(conversation.tool)
+        switch item {
+        case let .time(_, date):
+            ChatTimestamp(date: date)
+        case let .message(message):
+            ChatMessageView(message: message, toolName: tool)
+        case let .activity(_, steps, summary):
+            ChatActivityRow(steps: steps, summary: summary, isLive: isLive)
+        case let .pending(send):
+            ChatMessageView(message: ConversationMessage(id: send.id.uuidString, role: .user, text: send.text), toolName: tool, isPending: true)
+        case let .note(note):
+            Text(note.text)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(16)
-        .background(message.role == .user ? Color.accentColor.opacity(0.10) : Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 18))
-        .padding(.leading, message.role == .user ? 24 : 0)
-        .padding(.trailing, message.role == .assistant ? 12 : 0)
     }
 
     private var composer: some View {
@@ -181,6 +179,8 @@ struct PhoneConversationView<TerminalContent: View>: View {
             let result = try await store.conversationMessages(of: conversation, config: config)
             guard !Task.isCancelled else { return }
             if messages != result { messages = result }
+            let stillPending = ChatTimeline.unconfirmed(pending, in: result)
+            if stillPending != pending { pending = stillPending }
             loadError = nil
             if !reviewedOnOpen, !result.isEmpty {
                 // A busy result or a failed request is not an acknowledgement. Retry
@@ -202,15 +202,18 @@ struct PhoneConversationView<TerminalContent: View>: View {
 
     private func send() {
         let text = draft
+        let local = PendingSend(text: text, afterCount: messages.count)
         isSending = true
         sendError = nil
+        pending.append(local)
+        follow.jumpToLatest()
         sendTask = Task { @MainActor in
             defer { isSending = false }
             if await terminal.sendMessage(text) {
                 if draft == text { draft = "" }
-                followsLatest = true
                 await refresh()
             } else {
+                pending.removeAll { $0.id == local.id }
                 sendError = "The session isn’t ready for a message. Open Terminal to check it. Your draft is saved here."
             }
         }
