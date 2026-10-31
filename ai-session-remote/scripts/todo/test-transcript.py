@@ -100,6 +100,23 @@ class TranscriptTests(unittest.TestCase):
         self.assertEqual([m["kind"] for m in result], ["run", "run", "edit"])
         self.assertEqual([m["target"] for m in result], ["rg foo", "npm test", "src/a.ts"])
 
+    def test_codex_code_mode_exec_calls_become_activity(self):
+        # codex-cli 0.166 runs tools from JavaScript through one "exec" custom tool.
+        result = self.read_activity(transcript.codex_lines, [
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+                "input": 'text(await tools.exec_command({cmd:"npm test -- \\"auth\\"",sandbox_permissions:"require_escalated"}));'}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+                "input": 'text(await tools.apply_patch("*** Begin Patch\\n*** Update File: /r/.gitignore\\n@@\\n+x\\n*** End Patch"));'}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+                "input": 'text(await tools.exec_command({cmd:"apply_patch <<\'PATCH\'\\n*** Begin Patch\\n*** Add File: b.txt\\n+hi\\n*** End Patch\\nPATCH"}));'}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+                "input": 'text(await tools.web__run({search_query:[{q:"hilton availability api"}]}));'}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+                "input": 'text(await tools.write_stdin({session_id:3,chars:""}));'}},
+        ])
+        self.assertEqual([m["kind"] for m in result], ["run", "edit", "edit", "search", "other"])
+        self.assertEqual([m["target"] for m in result], ['npm test -- "auth"', "/r/.gitignore", "b.txt", "hilton availability api", "write_stdin"])
+
     def test_json_without_activity_is_unchanged(self):
         with tempfile.TemporaryDirectory() as home:
             project = os.path.join(home, "p")

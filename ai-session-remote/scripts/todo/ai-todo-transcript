@@ -73,11 +73,43 @@ def claude_step(part):
     return step(CLAUDE_KINDS.get(name, "other"), target, name)
 
 
+PATCH_FILE = re.compile(r"\*\*\* (?:Update|Add|Delete) File: (.+?)(?:\\n|\n|$)")
+
+
+def js_string(script, key):
+    """The first `key:"..."` string in a code-mode script, unescaped; None if there is none."""
+    match = re.search(key + r'\s*:\s*"((?:[^"\\]|\\.)*)"', script)
+    if not match:
+        return None
+    try:
+        return json.loads('"' + match.group(1) + '"')
+    except ValueError:
+        return match.group(1)
+
+
+def codex_exec_step(script):
+    # codex-cli 0.166+ "code mode": one `exec` tool runs JavaScript that calls tools.<name>(...).
+    patch = PATCH_FILE.search(script)
+    if patch:
+        return step("edit", patch.group(1), "apply_patch")
+    command = js_string(script, "cmd")
+    if command is not None:
+        return step("run", command, "exec_command")
+    query = js_string(script, "q")
+    if query is not None:
+        return step("search", query, "web")
+    tool = re.search(r"tools\.(\w+)\(", script)
+    name = tool.group(1) if tool else "exec"
+    return step("other", name, name)
+
+
 def codex_step(payload):
     name = payload.get("name") if isinstance(payload.get("name"), str) else "tool"
+    if name == "exec" and isinstance(payload.get("input"), str):
+        return codex_exec_step(payload["input"])
     if name == "apply_patch":
         patch = payload.get("input") or payload.get("arguments") or ""
-        match = re.search(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", str(patch), re.M)
+        match = PATCH_FILE.search(str(patch))
         return step("edit", match.group(1) if match else name, name)
     try:
         arguments = json.loads(payload.get("arguments") or "{}")
