@@ -25,6 +25,12 @@ struct TodoDragItem: Codable {
 
 @MainActor
 enum TodoHoldDrop {
+    /// A row can be dragged to On hold when its todo is active and the hub is reachable.
+    static func canDrag(_ todo: Todo?, isOffline: Bool) -> Bool {
+        guard let todo else { return false }
+        return !todo.completed && !todo.onHold && !isOffline
+    }
+
     static func accept(_ providers: [NSItemProvider], store: TodoHubStore) -> Bool {
         Logger(subsystem: "com.aisessionremote.mac.drag", category: "Todos").debug("Todo drop received")
         guard !store.isOffline else { return false }
@@ -101,24 +107,31 @@ private struct TodoDragSource: ViewModifier {
     }
 
     private var provider: (() -> NSItemProvider?)? {
-        guard let todo, !todo.completed, !todo.onHold, !store.isOffline else { return nil }
+        guard let todo, TodoHoldDrop.canDrag(todo, isOffline: store.isOffline) else { return nil }
         let id = todo.id
         return { TodoDragItem(todoID: id).itemProvider() }
     }
 }
 
+/// Only held rows (which an on-hold change moves to another section anyway) and the header
+/// carry a drop target, so the condition can switch the modifier on and off.
 private struct TodoHoldDropTarget: ViewModifier {
     let store: TodoHubStore
     let enabled: Bool
     @State private var isTargeted = false
 
-    /// Always applied; a disabled target accepts no types, so the row keeps its identity.
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content
-            .background(enabled && isTargeted ? DS.accent.opacity(0.12) : Color.clear)
-            .onDrop(of: enabled ? [TodoDragItem.contentType] : [], isTargeted: $isTargeted) { providers in
-                enabled && TodoHoldDrop.accept(providers, store: store)
-            }
+        if enabled {
+            content
+                .contentShape(Rectangle())
+                .background(isTargeted ? DS.accent.opacity(0.12) : Color.clear)
+                .onDrop(of: [TodoDragItem.contentType], isTargeted: $isTargeted) { providers in
+                    TodoHoldDrop.accept(providers, store: store)
+                }
+        } else {
+            content
+        }
     }
 }
 #endif

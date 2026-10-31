@@ -22,6 +22,15 @@ final class TodoHoldDropTests: XCTestCase {
         return TodoHubStore(cache: cache, makeClient: { client }, sleep: { _ in })
     }
 
+    func testOnlyActiveTodosAreDraggableAndOnlyWhileOnline() {
+        let active = Todo(id: "active", section: .sp, title: "a")
+        XCTAssertTrue(TodoHoldDrop.canDrag(active, isOffline: false))
+        XCTAssertFalse(TodoHoldDrop.canDrag(active, isOffline: true))
+        XCTAssertFalse(TodoHoldDrop.canDrag(Todo(id: "d", section: .sp, title: "d", completed: true), isOffline: false))
+        XCTAssertFalse(TodoHoldDrop.canDrag(Todo(id: "h", section: .sp, title: "h", onHold: true), isOffline: false))
+        XCTAssertFalse(TodoHoldDrop.canDrag(nil, isOffline: false))
+    }
+
     func testDropUpdatesOneTodoForDuplicateConversationPayloadsAndPreservesItsProject() async throws {
         let store = try store()
         let refreshed = expectation(description: "Drop saved to hub and refreshed")
