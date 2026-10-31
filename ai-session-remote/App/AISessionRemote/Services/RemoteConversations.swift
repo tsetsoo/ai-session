@@ -17,6 +17,12 @@ enum RemoteConversations {
         var errorDescription: String? { "This conversation has no transcript on \(computer)." }
     }
 
+    /// The helper rejected its arguments (exit 64): it predates a flag the app passed.
+    struct OldHelper: LocalizedError {
+        let computer: String
+        var errorDescription: String? { "The todo scripts on \(computer) are too old for this. Run scripts/todo/install.sh there." }
+    }
+
     struct UnreadableList: LocalizedError {
         let detail: String
         var errorDescription: String? { "Couldn't read the conversation list: \(detail)" }
@@ -97,7 +103,7 @@ enum RemoteConversations {
     }
 
     /// Maps the host scripts' exit codes: 127 the scripts are missing, 90 a program they need is
-    /// (stderr is `<name> not found`), 94 no transcript. Anything else non-zero is a failure.
+    /// (stderr is `<name> not found`), 94 no transcript, 64 a flag the scripts don't know. Anything else non-zero is a failure.
     static func check(_ result: SSHExecResult, computerName: String) throws {
         switch result.exitCode {
         case TmuxCommandBuilder.scriptMissingExitCode:
@@ -106,6 +112,8 @@ enum RemoteConversations {
             if let binary = missingBinary(in: result.stderr) { throw SSHRemoteError.binaryMissing(binary) }
         case TmuxCommandBuilder.noTranscriptExitCode:
             throw NoTranscript(computer: computerName)
+        case 64:
+            throw OldHelper(computer: computerName)
         default:
             break
         }

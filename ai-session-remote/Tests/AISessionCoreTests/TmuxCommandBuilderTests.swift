@@ -396,5 +396,13 @@ final class TranscriptCommandTests: XCTestCase {
         XCTAssertEqual(result.status, 0, result.stderr)
         XCTAssertEqual(result.stdout, "codex\nabc\n--json\n")
     }
+
+    func testTranscriptCommandAddsActivityFlag() throws {
+        try helper("printf '%s\\n' \"$@\"")
+        try python3()
+        let result = try run(TmuxCommandBuilder.conversationTranscript(tool: "claude", sessionId: "s", json: true, activity: true))
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertEqual(result.stdout, "claude\ns\n--json\n--activity\n")
+    }
 }
 #endif

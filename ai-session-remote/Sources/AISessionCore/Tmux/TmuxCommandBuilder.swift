@@ -81,8 +81,10 @@ public enum TmuxCommandBuilder {
 
     /// Prints one conversation's user and assistant text. Exit 94 when it has no transcript or no
     /// text, 127 when the helper isn't installed, 90 when `python3` isn't (stderr names it).
-    public static func conversationTranscript(tool: String, sessionId: String, json: Bool = false) -> String {
-        wrap(transcriptHelperCheck + "exec \"$helper\" \(shellQuote(tool)) \(shellQuote(sessionId))" + (json ? " --json" : ""))
+    /// `activity` adds tool steps and times; helpers older than that exit 64 (usage).
+    public static func conversationTranscript(tool: String, sessionId: String, json: Bool = false, activity: Bool = false) -> String {
+        wrap(transcriptHelperCheck + "exec \"$helper\" \(shellQuote(tool)) \(shellQuote(sessionId))"
+            + (json ? " --json" : "") + (json && activity ? " --activity" : ""))
     }
 
     /// A new `claude -p` over that transcript. It is not the source session. The transcript is

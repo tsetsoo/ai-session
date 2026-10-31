@@ -1,19 +1,60 @@
 import Foundation
 
+/// What a tool step did, from `ai-todo-transcript --activity`. Unknown kinds read as `other`.
+public enum ActivityKind: String, Decodable, Sendable {
+    case read, edit, run, search, other
+
+    public init(from decoder: Decoder) throws {
+        self = ActivityKind(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .other
+    }
+}
+
 /// Saved user/assistant text, without terminal line wrapping or padding. Keep text verbatim
-/// so copying a message preserves blank lines, indentation and trailing spaces.
+/// so copying a message preserves blank lines, indentation and trailing spaces. With
+/// `--activity`, tool steps arrive as `activity` entries with an empty text.
 public struct ConversationMessage: Decodable, Identifiable, Equatable, Sendable {
     public enum Role: String, Decodable, Sendable {
-        case user, assistant
+        case user, assistant, activity
     }
 
     public let id: String
     public let role: Role
     public let text: String
+    public let time: Date?
+    public let kind: ActivityKind?
+    /// The file, command or query a step acted on; the tool's name when it had none.
+    public let target: String?
 
-    public init(id: String, role: Role, text: String) {
+    public init(id: String, role: Role, text: String, time: Date? = nil, kind: ActivityKind? = nil, target: String? = nil) {
         self.id = id
         self.role = role
         self.text = text
+        self.time = time
+        self.kind = kind
+        self.target = target
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, role, text, time, kind, target }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        role = try container.decode(Role.self, forKey: .role)
+        text = try container.decode(String.self, forKey: .text)
+        time = (try container.decodeIfPresent(String.self, forKey: .time)).flatMap(Self.parseTime)
+        kind = try container.decodeIfPresent(ActivityKind.self, forKey: .kind)
+        target = try container.decodeIfPresent(String.self, forKey: .target)
+    }
+
+    /// The transcript script's `--json` output, with or without `--activity`.
+    public static func decodeList(_ data: Data) throws -> [ConversationMessage] {
+        try JSONDecoder().decode([ConversationMessage].self, from: data)
+    }
+
+    /// Claude writes fractional seconds; Codex may not.
+    static func parseTime(_ string: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
     }
 }

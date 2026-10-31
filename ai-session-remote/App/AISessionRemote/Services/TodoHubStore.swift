@@ -67,6 +67,8 @@ final class TodoHubStore {
     private var mcpListMissing: Set<String> = []
     /// Computers whose `ai-todo-open` rejected `--mcp` (scripts from before MCP support).
     private var mcpFlagUnsupported: Set<String> = []
+    /// Computers whose `ai-todo-transcript` rejected `--activity`; their chat shows messages only.
+    private var transcriptActivityUnsupported: Set<String> = []
 
     private let cache: TodoHubCache
     /// Where hub calls get their client (`TodoHubSettings.makeClient` outside tests); see `hubClient()`.
@@ -603,11 +605,23 @@ final class TodoHubStore {
             ]
         }
         #endif
+        let computer = conversation.computer
+        if !transcriptActivityUnsupported.contains(computer.id) {
+            do {
+                let output = try await remoteStdout(
+                    TmuxCommandBuilder.conversationTranscript(tool: conversation.tool, sessionId: conversation.sessionId, json: true, activity: true),
+                    config: config, computerName: computer.name
+                )
+                return try ConversationMessage.decodeList(Data(output.utf8))
+            } catch is RemoteConversations.OldHelper {
+                transcriptActivityUnsupported.insert(computer.id)
+            }
+        }
         let output = try await remoteStdout(
             TmuxCommandBuilder.conversationTranscript(tool: conversation.tool, sessionId: conversation.sessionId, json: true),
-            config: config, computerName: conversation.computer.name
+            config: config, computerName: computer.name
         )
-        return try JSONDecoder().decode([ConversationMessage].self, from: Data(output.utf8))
+        return try ConversationMessage.decodeList(Data(output.utf8))
     }
 
     /// A one-shot summary. The model is a new `claude -p`, not the conversation being duplicated.

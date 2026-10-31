@@ -55,6 +55,7 @@ final class ConversationRowActionsTests: XCTestCase {
         XCTAssertNil(error(0))
         XCTAssertTrue(error(127) is RemoteConversations.ScriptMissing)
         XCTAssertTrue(error(94) is RemoteConversations.NoTranscript)
+        XCTAssertTrue(error(64) is RemoteConversations.OldHelper)
         XCTAssertEqual(error(90, "python3 not found") as? SSHRemoteError, .binaryMissing("python3"))
         XCTAssertEqual(error(90, "warning: x\nclaude not found\n") as? SSHRemoteError, .binaryMissing("claude"))
         // 90 without a name it can trust stays a plain failure.
