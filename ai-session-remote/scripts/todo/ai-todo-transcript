@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Print one conversation's user and assistant text. Does not call a model.
 
-Usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json]
+Usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json [--activity]]
+--activity adds tool steps (role "activity", with kind and target), timestamps, and ids that
+stay the same as the transcript grows. Without it, --json prints only messages, as before.
 Exit 94 when that conversation has no transcript on this machine, or one with no text.
 """
 import glob
 import json
 import os
+import re
 import sys
 
 HOME = os.path.expanduser("~")
@@ -16,11 +19,12 @@ CURSOR_PROJECTS = os.path.join(HOME, ".cursor", "projects")
 
 
 def read_jsonl(path):
+    """Yields (line number, entry). Numbers count every line, so ids stay put as a file grows."""
     try:
         with open(path, errors="replace") as handle:
-            for line in handle:
+            for number, line in enumerate(handle):
                 try:
-                    yield json.loads(line)
+                    yield number, json.loads(line)
                 except ValueError:
                     continue
     except OSError:
@@ -43,50 +47,133 @@ def text_of(content):
     return ""
 
 
-def claude_lines(path):
-    for entry in read_jsonl(path):
+TARGET_LIMIT = 120
+CLAUDE_KINDS = {
+    "Read": "read", "NotebookRead": "read", "WebFetch": "read",
+    "Edit": "edit", "Write": "edit", "MultiEdit": "edit", "NotebookEdit": "edit",
+    "Bash": "run",
+    "Grep": "search", "Glob": "search", "WebSearch": "search",
+}
+
+
+def short(value):
+    lines = str(value).strip().splitlines()
+    return (lines[0] if lines else "")[:TARGET_LIMIT]
+
+
+def step(kind, target, name):
+    return {"role": "activity", "text": "", "kind": kind, "target": short(target) or name, "name": name}
+
+
+def claude_step(part):
+    name = part.get("name") if isinstance(part.get("name"), str) else "tool"
+    tool_input = part.get("input") if isinstance(part.get("input"), dict) else {}
+    target = next((tool_input[key] for key in ("file_path", "notebook_path", "command", "pattern", "url", "query")
+                   if isinstance(tool_input.get(key), str) and tool_input[key].strip()), name)
+    return step(CLAUDE_KINDS.get(name, "other"), target, name)
+
+
+def codex_step(payload):
+    name = payload.get("name") if isinstance(payload.get("name"), str) else "tool"
+    if name == "apply_patch":
+        patch = payload.get("input") or payload.get("arguments") or ""
+        match = re.search(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", str(patch), re.M)
+        return step("edit", match.group(1) if match else name, name)
+    try:
+        arguments = json.loads(payload.get("arguments") or "{}")
+    except (TypeError, ValueError):
+        arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+    if name in ("shell", "exec_command", "local_shell"):
+        command = arguments.get("cmd") or arguments.get("command") or name
+        if isinstance(command, list):
+            command = command[-1] if command else name
+        return step("run", command, name)
+    return step("other", name, name)
+
+
+def with_meta(item, ident, entry):
+    item["id"] = ident
+    time = entry.get("timestamp")
+    if isinstance(time, str) and time:
+        item["time"] = time
+    return item
+
+
+def claude_lines(path, activity=False):
+    for number, entry in read_jsonl(path):
         if not isinstance(entry, dict) or entry.get("type") not in ("user", "assistant"):
             continue
         message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
-        text = text_of(message.get("content"))
-        if text:
-            yield {"role": entry["type"], "text": text}
+        content = message.get("content")
+        if not activity:
+            text = text_of(content)
+            if text:
+                yield {"role": entry["type"], "text": text}
+            continue
+        parts = content if isinstance(content, list) else [{"type": "text", "text": content}]
+        for index, part in enumerate(parts):
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "tool_use" and entry["type"] == "assistant":
+                yield with_meta(claude_step(part), "%d.%d" % (number, index), entry)
+            else:
+                text = text_of([part])
+                if text:
+                    yield with_meta({"role": entry["type"], "text": text}, "%d.%d" % (number, index), entry)
 
 
-def codex_lines(path):
-    for entry in read_jsonl(path):
+def codex_lines(path, activity=False):
+    for number, entry in read_jsonl(path):
         if not isinstance(entry, dict):
             continue
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
-        if entry.get("type") != "response_item" or payload.get("type") != "message":
+        if entry.get("type") != "response_item":
             continue
-        if payload.get("role") not in ("user", "assistant"):
+        if activity and payload.get("type") in ("function_call", "custom_tool_call", "local_shell_call"):
+            yield with_meta(codex_step(payload), "%d.0" % number, entry)
+            continue
+        if payload.get("type") != "message" or payload.get("role") not in ("user", "assistant"):
             continue
         text = text_of(payload.get("content"))
         if text:
-            yield {"role": payload["role"], "text": text}
+            item = {"role": payload["role"], "text": text}
+            yield with_meta(item, "%d.0" % number, entry) if activity else item
 
 
-def cursor_lines(path):
+def cursor_lines(path, activity=False):
     # Cursor stores a directory of jsonl files, or one jsonl. Read every jsonl under the path.
     files = []
     if os.path.isdir(path):
         files = sorted(glob.glob(os.path.join(path, "**", "*.jsonl"), recursive=True))
     elif path.endswith(".jsonl"):
         files = [path]
-    for file in files:
-        for entry in read_jsonl(file):
+    for file_number, file in enumerate(files):
+        for number, entry in read_jsonl(file):
             if not isinstance(entry, dict):
                 continue
             message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
             role = entry.get("role") or message.get("role") or entry.get("type")
             if role not in ("user", "assistant"):
                 continue
-            text = text_of(entry.get("content") or entry.get("text") or "")
-            if not text and isinstance(entry.get("message"), dict):
-                text = text_of(entry["message"].get("content"))
+            content = entry.get("content") or entry.get("text") or message.get("content") or ""
+            if activity and isinstance(content, list):
+                for index, part in enumerate(content):
+                    if not isinstance(part, dict):
+                        continue
+                    ident = "%d.%d.%d" % (file_number, number, index)
+                    if part.get("type") == "tool_use" and role == "assistant":
+                        yield with_meta(claude_step(part), ident, entry)
+                    else:
+                        text = text_of([part])
+                        if text:
+                            yield with_meta({"role": role, "text": text}, ident, entry)
+                continue
+            text = text_of(content)
             if text:
-                yield {"role": role, "text": text}
+                item = {"role": role, "text": text}
+                yield with_meta(item, "%d.%d.0" % (file_number, number), entry) if activity else item
 
 
 def find_paths(tool, session_id):
@@ -105,11 +192,12 @@ def find_paths(tool, session_id):
 
 
 def main(argv):
-    structured = len(argv) == 3 and argv[-1] == "--json"
+    activity = argv[2:] == ["--json", "--activity"]
+    structured = activity or argv[2:] == ["--json"]
     if structured:
         argv = argv[:2]
     if len(argv) != 2 or argv[0] not in ("claude", "codex", "cursor"):
-        print("usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json]", file=sys.stderr)
+        print("usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json [--activity]]", file=sys.stderr)
         return 64
     tool, session_id = argv
     paths = find_paths(tool, session_id)
@@ -118,6 +206,9 @@ def main(argv):
         return 94
     path = max(paths, key=os.path.getmtime)
     reader = {"claude": claude_lines, "codex": codex_lines, "cursor": cursor_lines}[tool]
+    if activity:
+        print(json.dumps(list(reader(path, activity=True)), ensure_ascii=False))
+        return 0
     messages = list(reader(path))
     if structured:
         # Empty is valid for a new chat. IDs are stable while polling and preserve scroll position.

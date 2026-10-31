@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Offline regression tests for the chat transcript's roles and exact whitespace."""
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import tempfile
@@ -50,6 +52,91 @@ class TranscriptTests(unittest.TestCase):
             {"message": {"role": "assistant", "content": [{"type": "text", "text": self.text}]}},
         ])
         self.assertEqual(result, [{"role": "user", "text": self.text}, {"role": "assistant", "text": self.text}])
+
+    def read_activity(self, reader, entries):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl") as handle:
+            for entry in entries:
+                handle.write(json.dumps(entry) + "\n")
+            handle.write('{"incomplete":')
+            handle.flush()
+            return list(reader(handle.name, activity=True))
+
+    def test_claude_activity_kinds_targets_and_order(self):
+        time = "2026-10-31T10:00:00.000Z"
+        result = self.read_activity(transcript.claude_lines, [
+            {"type": "assistant", "timestamp": time, "message": {"content": [
+                {"type": "text", "text": "Looking."},
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "/r/a.swift"}},
+                {"type": "tool_use", "name": "Bash", "input": {"command": "npm test\nsecond line"}},
+                {"type": "tool_use", "name": "Grep", "input": {"pattern": "redirect_uri"}},
+                {"type": "tool_use", "name": "Edit", "input": {"file_path": "/r/b.swift"}},
+                {"type": "tool_use", "name": "TodoWrite", "input": {}}]}},
+        ])
+        self.assertEqual([m["role"] for m in result], ["assistant"] + ["activity"] * 5)
+        self.assertEqual([m.get("kind") for m in result[1:]], ["read", "run", "search", "edit", "other"])
+        self.assertEqual([m.get("target") for m in result[1:]], ["/r/a.swift", "npm test", "redirect_uri", "/r/b.swift", "TodoWrite"])
+        self.assertEqual([m["id"] for m in result], ["0.0", "0.1", "0.2", "0.3", "0.4", "0.5"])
+        self.assertTrue(all(m["time"] == time for m in result))
+        self.assertTrue(all(m["text"] == "" for m in result[1:]))
+
+    def test_long_command_target_is_truncated(self):
+        result = self.read_activity(transcript.claude_lines, [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "x" * 5000}}]}},
+        ])
+        self.assertEqual(len(result[0]["target"]), 120)
+
+    def test_tool_use_without_input_is_other_with_name(self):
+        result = self.read_activity(transcript.claude_lines, [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Mystery"}]}},
+        ])
+        self.assertEqual((result[0]["kind"], result[0]["target"], result[0]["name"]), ("other", "Mystery", "Mystery"))
+
+    def test_codex_function_calls_become_activity(self):
+        result = self.read_activity(transcript.codex_lines, [
+            {"type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": '{"command":["bash","-lc","rg foo"]}'}},
+            {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": '{"cmd":"npm test"}'}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "apply_patch", "input": "*** Begin Patch\n*** Update File: src/a.ts\n@@\n-a\n+b\n*** End Patch"}},
+        ])
+        self.assertEqual([m["kind"] for m in result], ["run", "run", "edit"])
+        self.assertEqual([m["target"] for m in result], ["rg foo", "npm test", "src/a.ts"])
+
+    def test_json_without_activity_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as home:
+            project = os.path.join(home, "p")
+            os.makedirs(project)
+            with open(os.path.join(project, "sid.jsonl"), "w") as handle:
+                handle.write(json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n")
+                handle.write(json.dumps({"type": "assistant", "message": {"content": [
+                    {"type": "text", "text": "yo"}, {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}}) + "\n")
+            old = transcript.CLAUDE_PROJECTS
+            transcript.CLAUDE_PROJECTS = home
+            try:
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(transcript.main(["claude", "sid", "--json"]), 0)
+                plain = json.loads(out.getvalue())
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(transcript.main(["claude", "sid", "--json", "--activity"]), 0)
+                rich = json.loads(out.getvalue())
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(transcript.main(["claude", "sid", "--json", "--bogus"]), 64)
+            finally:
+                transcript.CLAUDE_PROJECTS = old
+        self.assertEqual(plain, [{"role": "user", "text": "hi", "id": "0"}, {"role": "assistant", "text": "yo", "id": "1"}])
+        self.assertEqual([m["role"] for m in rich], ["user", "assistant", "activity"])
+
+    def test_ids_are_stable_when_lines_are_appended(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl") as handle:
+            handle.write(json.dumps({"type": "user", "message": {"content": "a"}}) + "\n")
+            handle.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}}) + "\n")
+            handle.flush()
+            first = list(transcript.claude_lines(handle.name, activity=True))
+            handle.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "done"}]}}) + "\n")
+            handle.flush()
+            second = list(transcript.claude_lines(handle.name, activity=True))
+        self.assertEqual(second[:len(first)], first)
+        self.assertEqual(len(second), len(first) + 1)
 
 
 if __name__ == "__main__":
