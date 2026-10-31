@@ -16,6 +16,20 @@ final class ChatTextTests: XCTestCase {
         XCTAssertEqual(view.text, "before   pasted\n\n    code  \n after")
     }
 
+    func testStyledTextHasNoMarkdownMarkers() {
+        let styled = ChatStyledText.make("# Title\n**bold** `x`\n- item")
+        XCTAssertEqual(String(styled.characters), "Title\nbold x\n• item")
+        let code = styled.runs.first { String(styled[$0.range].characters) == "x" }
+        XCTAssertEqual(code?.font, ChatStyledText.codeFont)
+        let title = styled.runs.first { String(styled[$0.range].characters) == "Title" }
+        XCTAssertEqual(title?.font, ChatStyledText.headingFont(1))
+    }
+
+    func testCodeBlockCopyIsExact() {
+        XCTAssertEqual(ChatCodeBlock.copyText(for: .code(language: nil, code: "  a  \n\n b")), "  a  \n\n b")
+        XCTAssertNil(ChatCodeBlock.copyText(for: .text("x")))
+    }
+
     func testChatSubmissionPreservesFinalBlankLines() async throws {
         let transport = ChatRecordingTransport()
         let config = HostConnectionConfig(host: "example.test", port: 22, username: "me", privateKeyPEM: Data())
