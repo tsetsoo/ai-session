@@ -8,6 +8,7 @@ import Foundation
 /// when the inputs change.
 public final class ConversationBoard: Sendable {
     private let closed: [Conversation]
+    private let onHoldTodoIDs: Set<String>
     private let statusByTodoID: [String: ConversationDisplayStatus]
     private let statusByListKey: [String: ConversationDisplayStatus]
     private let openTodoCounts: [TodoSection: Int]
@@ -25,6 +26,7 @@ public final class ConversationBoard: Sendable {
     ///     unknown rather than closed. Without a date the listing counts as current.
     public init(todos: [Todo], conversations: [String: Conversation], liveTmux: [String: Set<String>],
                 listedAt: [String: Date] = [:]) {
+        onHoldTodoIDs = Set(todos.lazy.filter(\.onHold).map(\.id))
         var statusByListKey: [String: ConversationDisplayStatus] = [:]
         statusByListKey.reserveCapacity(conversations.count)
         var byTodo: [String: [(Conversation, ConversationDisplayStatus)]] = [:]
@@ -151,6 +153,15 @@ public final class ConversationBoard: Sendable {
 
     public func status(forTodo id: String) -> ConversationDisplayStatus? {
         statusByTodoID[id]
+    }
+
+    public func isOnHold(_ conversation: Conversation) -> Bool {
+        onHoldTodoIDs.contains(conversation.todoId)
+    }
+
+    /// Preserve the existing order within each group; Mac lists put On hold at the bottom.
+    public func activeFirst(_ conversations: [Conversation]) -> [Conversation] {
+        conversations.filter { !isOnHold($0) } + conversations.filter { isOnHold($0) }
     }
 
     /// This conversation's own status, including a dead tmux session.

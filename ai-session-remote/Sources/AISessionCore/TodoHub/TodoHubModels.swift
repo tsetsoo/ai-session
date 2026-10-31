@@ -26,6 +26,7 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
     public var section: TodoSection
     public var title: String
     public var completed: Bool
+    public var onHold: Bool
     public var importance: TodoImportance
     public var dueDate: String?
     public var dailyDate: String?
@@ -51,12 +52,14 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
         updatedAt: String = "",
         completedAt: String? = nil,
         conversationStatus: ConversationStatus? = nil,
-        projectId: String? = nil
+        projectId: String? = nil,
+        onHold: Bool = false
     ) {
         self.id = id
         self.section = section
         self.title = title
         self.completed = completed
+        self.onHold = onHold
         self.importance = importance
         self.dueDate = dueDate
         self.dailyDate = dailyDate
@@ -66,6 +69,30 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
         self.completedAt = completedAt
         self.conversationStatus = conversationStatus
         self.projectId = projectId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, section, title, completed, onHold, importance, dueDate, dailyDate, carriedFrom
+        case createdAt, updatedAt, completedAt, conversationStatus, projectId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        section = try c.decode(TodoSection.self, forKey: .section)
+        title = try c.decode(String.self, forKey: .title)
+        completed = try c.decode(Bool.self, forKey: .completed)
+        // Older hubs and cached snapshots predate On hold.
+        onHold = try c.decodeIfPresent(Bool.self, forKey: .onHold) ?? false
+        importance = try c.decode(TodoImportance.self, forKey: .importance)
+        dueDate = try c.decodeIfPresent(String.self, forKey: .dueDate)
+        dailyDate = try c.decodeIfPresent(String.self, forKey: .dailyDate)
+        carriedFrom = try c.decodeIfPresent(String.self, forKey: .carriedFrom)
+        createdAt = try c.decode(String.self, forKey: .createdAt)
+        updatedAt = try c.decode(String.self, forKey: .updatedAt)
+        completedAt = try c.decodeIfPresent(String.self, forKey: .completedAt)
+        conversationStatus = try c.decodeIfPresent(ConversationStatus.self, forKey: .conversationStatus)
+        projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
     }
 }
 
@@ -349,28 +376,31 @@ public struct CreateTodoRequest: Encodable, Sendable {
 public struct UpdateTodoRequest: Encodable, Sendable {
     public var title: String?
     public var completed: Bool?
+    public var onHold: Bool?
     public var section: TodoSection?
     public var importance: TodoImportance?
     /// `nil`: project unchanged (key absent). `.clear` sends `"project_id": null`.
     public var projectId: ProjectChange?
 
     public init(title: String? = nil, completed: Bool? = nil, section: TodoSection? = nil,
-                importance: TodoImportance? = nil, projectId: ProjectChange? = nil) {
+                importance: TodoImportance? = nil, projectId: ProjectChange? = nil, onHold: Bool? = nil) {
         self.title = title
         self.completed = completed
+        self.onHold = onHold
         self.section = section
         self.importance = importance
         self.projectId = projectId
     }
 
     private enum CodingKeys: String, CodingKey {
-        case title, completed, section, importance, projectId
+        case title, completed, section, importance, projectId, onHold
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(title, forKey: .title)
         try c.encodeIfPresent(completed, forKey: .completed)
+        try c.encodeIfPresent(onHold, forKey: .onHold)
         try c.encodeIfPresent(section, forKey: .section)
         try c.encodeIfPresent(importance, forKey: .importance)
         try c.encodeChange(projectId, forKey: .projectId)

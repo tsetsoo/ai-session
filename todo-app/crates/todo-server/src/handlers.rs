@@ -7,7 +7,7 @@ use crate::broadcast::Broadcaster;
 use crate::db::DbPool;
 use crate::models::row_to_todo;
 
-pub(crate) const SELECT_COLS: &str = "id, section, title, completed, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, project_id, \
+pub(crate) const SELECT_COLS: &str = "id, section, title, completed, on_hold, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, project_id, \
     (SELECT status FROM conversations WHERE conversations.todo_id = todos.id \
         ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'busy' THEN 1 \
             WHEN 'idle' THEN 2 WHEN 'unknown' THEN 2 WHEN 'closed' THEN 3 ELSE 4 END, \
@@ -208,6 +208,15 @@ pub async fn update_todo(
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "project_id is required"}));
     }
 
+    if body.on_hold == Some(true) {
+        let completed = body.completed.unwrap_or_else(|| {
+            conn.query_row("SELECT completed FROM todos WHERE id = ?1", params![id], |row| row.get::<_, bool>(0)).unwrap()
+        });
+        if completed {
+            return HttpResponse::BadRequest().json(serde_json::json!({"error": "A completed todo cannot be put on hold"}));
+        }
+    }
+
     let new_project = if let Some(Some(project_id)) = body.project_id.as_ref() {
         match project_section(&conn, project_id) {
             Ok(Some(section)) => Some((project_id.clone(), section)),
@@ -242,7 +251,7 @@ pub async fn update_todo(
     if let Some(completed) = body.completed {
         if completed {
             conn.execute(
-                "UPDATE todos SET completed = 1, updated_at = datetime('now'), completed_at = COALESCE(completed_at, datetime('now')), carried_from = NULL WHERE id = ?1",
+                "UPDATE todos SET completed = 1, on_hold = 0, updated_at = datetime('now'), completed_at = COALESCE(completed_at, datetime('now')), carried_from = NULL WHERE id = ?1",
                 params![id],
             )
             .unwrap();
@@ -255,6 +264,10 @@ pub async fn update_todo(
         if let Some(section) = body.section {
             conn.execute("UPDATE todos SET section = ?1, updated_at = datetime('now') WHERE id = ?2", params![section.as_str(), id]).unwrap();
         }
+    }
+
+    if let Some(on_hold) = body.on_hold {
+        conn.execute("UPDATE todos SET on_hold = ?1, updated_at = datetime('now') WHERE id = ?2", params![on_hold, id]).unwrap();
     }
 
     if let Some(importance) = body.importance {
@@ -307,6 +320,7 @@ pub async fn toggle_todo(pool: web::Data<DbPool>, path: web::Path<String>, broad
         .execute(
             "UPDATE todos SET
                 completed = 1 - completed,
+                on_hold = 0,
                 updated_at = datetime('now'),
                 completed_at = CASE WHEN completed = 0 THEN datetime('now') ELSE NULL END,
                 carried_from = CASE WHEN completed = 0 THEN NULL ELSE carried_from END
@@ -419,6 +433,53 @@ mod tests {
         )
         .unwrap();
         id
+    }
+
+    #[actix_web::test]
+    async fn hold_and_resume_preserve_todo_and_conversations() {
+        use crate::test_support::{get, patch};
+        let (_db, pool) = pool("todo-hold");
+        let conn = pool.get().unwrap();
+        seed_computers(&conn);
+        let project = project_on(&conn, "Si");
+        let (status, created) = post(&pool, "/api/todos", json!({"title": "Continue later", "project_id": project})).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(created["on_hold"], false);
+        let id = created["id"].as_str().unwrap();
+        let uri = format!("/api/todos/{id}");
+        conn.execute(
+            "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, status) VALUES ('c', ?1, 'mac', '~/code', 'claude', 'hold-test', 'busy')",
+            rusqlite::params![id],
+        ).unwrap();
+        for on_hold in [true, false, true] {
+            let (status, updated) = patch(&pool, &uri, json!({"on_hold": on_hold})).await;
+            assert_eq!(status, StatusCode::OK, "{updated}");
+            assert_eq!(updated["on_hold"], on_hold);
+            assert_eq!(updated["completed"], false);
+            assert_eq!(updated["project_id"], project);
+            assert_eq!(updated["conversation_status"], "busy");
+            let (_, fetched) = get(&pool, &uri).await;
+            assert_eq!(fetched["on_hold"], on_hold);
+            let (_, listed) = get(&pool, "/api/todos").await;
+            assert_eq!(listed[0]["on_hold"], on_hold);
+        }
+        // An older client updating another field must preserve the hold state.
+        let (_, renamed) = patch(&pool, &uri, json!({"title": "Renamed"})).await;
+        assert_eq!(renamed["on_hold"], true);
+        let (_, done) = post(&pool, &format!("{uri}/toggle"), json!({})).await;
+        assert_eq!(done["completed"], true);
+        assert_eq!(done["on_hold"], false);
+        let (status, _) = patch(&pool, &uri, json!({"on_hold": true, "title": "Invalid"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, unchanged) = get(&pool, &uri).await;
+        assert_eq!(unchanged["title"], "Renamed");
+        let (_, held) = patch(&pool, &uri, json!({"completed": false, "on_hold": true})).await;
+        assert_eq!(held["on_hold"], true);
+        let (_, done) = patch(&pool, &uri, json!({"completed": true})).await;
+        assert_eq!(done["on_hold"], false);
+        let (status, _) = patch(&pool, &uri, json!({"completed": true, "on_hold": true})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(conn.query_row("SELECT status FROM conversations WHERE id = 'c'", [], |r| r.get::<_, String>(0)).unwrap(), "busy");
     }
 
     #[actix_web::test]

@@ -15,12 +15,18 @@ struct ConversationListView: View {
         }
 
         func conversations(_ board: ConversationBoard) -> [Conversation] {
+            let conversations: [Conversation]
             switch self {
-            case .needsYou: board.needsYou
-            case .review: board.review
-            case .working: board.working
-            case .all: board.all
+            case .needsYou: conversations = board.needsYou
+            case .review: conversations = board.review
+            case .working: conversations = board.working
+            case .all: conversations = board.all
             }
+            #if os(macOS)
+            return board.activeFirst(conversations)
+            #else
+            return conversations
+            #endif
         }
     }
 
@@ -61,6 +67,12 @@ struct ConversationListView: View {
         let shortcuts: [String: Int] = showsShortcuts
             ? Dictionary(uniqueKeysWithValues: filtered.prefix(9).enumerated().map { ($1.listKey, $0 + 1) })
             : [:]
+        #if os(macOS)
+        let active = conversations.filter { !board.isOnHold($0) }
+        let held = conversations.filter { board.isOnHold($0) }
+        #else
+        let active = conversations
+        #endif
         SelectableList(selection: selection) {
             ListStatusBanner(store: store)
             if showsFilterPicker {
@@ -83,9 +95,9 @@ struct ConversationListView: View {
                     }
                 }
                 .listRowBackground(Color.clear)
-            } else {
+            } else if !active.isEmpty {
                 Section {
-                    ForEach(conversations, id: \.listKey) { conversation in
+                    ForEach(active, id: \.listKey) { conversation in
                         row(conversation, todo: todos[conversation.todoId], board: board,
                             shortcut: shortcuts[conversation.listKey])
                     }
@@ -95,6 +107,18 @@ struct ConversationListView: View {
                     #endif
                 }
             }
+            #if os(macOS)
+            if !held.isEmpty {
+                Section {
+                    ForEach(held, id: \.listKey) { conversation in
+                        row(conversation, todo: todos[conversation.todoId], board: board,
+                            shortcut: shortcuts[conversation.listKey])
+                    }
+                } header: {
+                    Text("On hold (\(held.count))").textCase(nil)
+                }
+            }
+            #endif
         }
         .listStyle(.insetGrouped)
         .refreshable {

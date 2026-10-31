@@ -24,6 +24,24 @@ final class BoardTests: XCTestCase {
                                  liveTmux: live)
     }
 
+    func testOnHoldGroupsAllConversationsWithoutChangingTheirStatus() {
+        let heldBusy = conv("held", .busy, id: "held-busy")
+        let heldWaiting = conv("held", .waiting, id: "held-waiting")
+        let active = conv("active", .waiting)
+        let items = [heldBusy, active, heldWaiting]
+        let b = board(items, todos: [
+            Todo(id: "held", section: .sp, title: "Later", onHold: true),
+            Todo(id: "active", section: .sp, title: "Now"),
+        ])
+        XCTAssertEqual(b.activeFirst(items).map(\.id), [active.id, heldBusy.id, heldWaiting.id])
+        XCTAssertEqual(b.status(of: heldBusy), .working)
+        XCTAssertEqual(b.status(of: heldWaiting), .needsYou)
+        XCTAssertEqual(b.open.count, 3)
+        let resumed = board(items)
+        XCTAssertEqual(resumed.activeFirst(items), items)
+        XCTAssertFalse(resumed.isOnHold(heldBusy))
+    }
+
     func testBoardListsBothConversations() {
         let idle = conv("t", .idle, created: "2026-10-16T12:00:00Z", id: "idle")
         let waiting = conv("t", .waiting, created: "2026-10-16T09:00:00Z", id: "wait")

@@ -56,19 +56,31 @@ struct TodoListView: View {
                     sectionView(section, board: board)
                 }
             case .project:
-                let groups = TodoGrouping.byProject(searched, projects: store.projects)
+                let groups = TodoGrouping.byProject(searched.filter(isInMainList), projects: store.projects)
                 if groups.isEmpty { emptyGroups }
                 ForEach(groups) { group in
                     groupView(group.title, detail: group.project?.computer.name, todos: group.todos,
                               addTo: group.project, board: board)
                 }
             case .status:
-                let groups = TodoGrouping.byStatus(searched) { board.status(forTodo: $0) }
+                let groups = TodoGrouping.byStatus(searched.filter(isInMainList)) { board.status(forTodo: $0) }
                 if groups.isEmpty { emptyGroups }
                 ForEach(groups) { group in
                     groupView(group.status.label, detail: nil, todos: group.todos, addTo: nil, board: board)
                 }
             }
+            #if os(macOS)
+            let held = searched.filter { sections.contains($0.section) && $0.onHold }
+            if !held.isEmpty {
+                Section {
+                    ForEach(held) { todo in
+                        row(todo, board: board)
+                    }
+                } header: {
+                    Text("On hold (\(held.count))").textCase(nil)
+                }
+            }
+            #endif
         }
         .listStyle(.insetGrouped)
         .refreshable { await store.refresh() }
@@ -82,6 +94,14 @@ struct TodoListView: View {
     /// Every todo matching the search, for the project and status groupings.
     private var searched: [Todo] {
         store.todos.filter { ListSearch.matches(query, $0.title) }
+    }
+
+    private func isInMainList(_ todo: Todo) -> Bool {
+        #if os(macOS)
+        !todo.onHold
+        #else
+        true
+        #endif
     }
 
     @ViewBuilder
@@ -126,7 +146,7 @@ struct TodoListView: View {
     private func sectionView(_ section: TodoSection, board: ConversationBoard) -> some View {
         Section {
             InlineTodoAdd(place: .section(section), acceptsQuickAddFocus: quickAddSection == section)
-            let all = store.todos(in: section)
+            let all = store.todos(in: section).filter(isInMainList)
             let todos = all.filter { ListSearch.matches(query, $0.title) }
             if !all.isEmpty && todos.isEmpty {
                 Text("No results for “\(query)” in \(section.rawValue)")
@@ -225,6 +245,7 @@ struct TodoListView: View {
             TodoProjectMenu(todo: todo, store: store)
             // Offline, the changing items are left out, like the swipes.
             if canChange {
+                TodoHoldButton(todo: todo, store: store)
                 Button {
                     toggle(todo)
                 } label: {

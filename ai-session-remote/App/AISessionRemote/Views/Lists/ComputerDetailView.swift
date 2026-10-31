@@ -77,6 +77,12 @@ struct ComputerDetailView: View {
                                       RowText.conversationSearchText(conversation, section: todo?.section),
                                       conversation.statusMessage)
         }
+        #if os(macOS)
+        let active = running.filter { !board.isOnHold($0) }
+        let held = running.filter { board.isOnHold($0) }
+        #else
+        let active = running
+        #endif
         SelectableList(selection: selection) {
             ListStatusBanner(store: store)
             if host == nil {
@@ -92,7 +98,7 @@ struct ComputerDetailView: View {
                     Text("No open conversations. Open a todo to start one.")
                         .foregroundStyle(.secondary)
                 }
-                ForEach(running, id: \.listKey) { conversation in
+                ForEach(active, id: \.listKey) { conversation in
                     row(conversation, todo: todos[conversation.todoId], board: board)
                 }
             } header: {
@@ -116,6 +122,17 @@ struct ComputerDetailView: View {
                     Text("Other sessions run here without a todo. On This Computer lists conversations you can link to a todo or turn into a new one.")
                 }
             }
+            #if os(macOS)
+            if !held.isEmpty {
+                Section {
+                    ForEach(held, id: \.listKey) { conversation in
+                        row(conversation, todo: todos[conversation.todoId], board: board)
+                    }
+                } header: {
+                    Text("On hold (\(held.count))").textCase(nil)
+                }
+            }
+            #endif
         }
         .listStyle(.insetGrouped)
         .navigationTitle(computer.name)

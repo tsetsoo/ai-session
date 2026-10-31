@@ -33,6 +33,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
             section    TEXT NOT NULL CHECK(section IN ('Sp','I','Si','P')),
             title      TEXT NOT NULL,
             completed  INTEGER NOT NULL DEFAULT 0,
+            on_hold    INTEGER NOT NULL DEFAULT 0 CHECK(on_hold IN (0,1)),
             importance TEXT NOT NULL DEFAULT 'medium' CHECK(importance IN ('low','medium','high','critical')),
             due_date   TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -336,9 +337,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v8: an idle result's reviewed flag and status revision (additive)
 /// - v9: reporter event time, rejecting delayed/retried Codex statuses (additive)
 /// - v10: user-turn identity, preserving unread results across offline coalescing (additive)
+/// - v11: todos can be put on hold (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -351,6 +353,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if column_exists(conn, "todos", "on_hold")? {
+        return Ok(11);
     }
     if conversations.as_deref().is_some_and(|sql| sql.contains("status_turn_ns")) {
         return Ok(10);
@@ -391,6 +396,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
 fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     let mut version = schema_version(conn)?;
     let mut backed_up = false;
+    if version == 0 && !column_exists(conn, "todos", "on_hold")? {
+        conn.execute_batch("ALTER TABLE todos ADD COLUMN on_hold INTEGER NOT NULL DEFAULT 0 CHECK(on_hold IN (0,1));")?;
+    }
     if version == 1 {
         backup_before_migration(conn, db_path, 2)?;
         backed_up = true;
@@ -465,9 +473,19 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 9 {
         if !backed_up {
             backup_before_migration(conn, db_path, 10)?;
+            backed_up = true;
         }
         if !column_exists(conn, "conversations", "status_turn_ns")? {
             conn.execute_batch("ALTER TABLE conversations ADD COLUMN status_turn_ns INTEGER;")?;
+        }
+        version = 10;
+    }
+    if version == 10 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 11)?;
+        }
+        if !column_exists(conn, "todos", "on_hold")? {
+            conn.execute_batch("ALTER TABLE todos ADD COLUMN on_hold INTEGER NOT NULL DEFAULT 0 CHECK(on_hold IN (0,1));")?;
         }
     }
     Ok(())
@@ -1890,6 +1908,34 @@ mod tests {
         ).unwrap();
         assert_eq!(row, (7, true, Some(123), None));
         assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(db.backups().len(), 1);
+    }
+
+    #[test]
+    fn migrates_v10_todos_as_active_and_preserves_holds_on_restart() {
+        let db = TestDb::new("migrate-v11");
+        {
+            let pool = db.pool();
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "INSERT INTO todos (id, section, title, completed) VALUES ('t', 'Sp', 'Later', 0), ('done', 'I', 'Done', 1);
+                 ALTER TABLE todos DROP COLUMN on_hold;
+                 PRAGMA user_version = 10;",
+            ).unwrap();
+        }
+        {
+            let pool = db.pool();
+            let conn = pool.get().unwrap();
+            let active: i64 = conn.query_row("SELECT COUNT(*) FROM todos WHERE on_hold = 0", [], |r| r.get(0)).unwrap();
+            assert_eq!(active, 2);
+            assert_eq!(user_version(&conn), SCHEMA_VERSION);
+            assert_eq!(db.backups().len(), 1);
+            conn.execute("UPDATE todos SET on_hold = 1 WHERE id = 't'", []).unwrap();
+        }
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        let held: bool = conn.query_row("SELECT on_hold FROM todos WHERE id = 't'", [], |r| r.get(0)).unwrap();
+        assert!(held);
         assert_eq!(db.backups().len(), 1);
     }
 

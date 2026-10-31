@@ -71,6 +71,7 @@ final class TodoHubClientTests: XCTestCase {
         StubURLProtocol.handler = { _ in .init(status: 200, body: Self.todosJSON) }
         let todos = try await client().listTodos(section: .i, filter: .all)
         XCTAssertEqual(todos.count, 2)
+        XCTAssertFalse(todos[0].onHold, "Older hubs default to active")
         XCTAssertEqual(todos[0].section, .i)
         XCTAssertEqual(todos[0].conversationStatus, .waiting)
         XCTAssertEqual(todos[1].section, .sp)
@@ -79,6 +80,22 @@ final class TodoHubClientTests: XCTestCase {
         let url = try XCTUnwrap(StubURLProtocol.requests.first?.url)
         XCTAssertEqual(url.path, "/api/todos")
         XCTAssertEqual(url.query, "section=I&show=all")
+    }
+
+    func testOnHoldUpdateUsesWireKeyAndSurvivesCaching() async throws {
+        StubURLProtocol.handler = { _ in
+            let original = Self.todosJSON.data(using: .utf8)!
+            var todo = (try! JSONSerialization.jsonObject(with: original) as! [[String: Any]])[0]
+            todo["on_hold"] = true
+            return .init(status: 200, body: String(data: try! JSONSerialization.data(withJSONObject: todo), encoding: .utf8)!)
+        }
+        let todo = try await client().updateTodo(id: "t", UpdateTodoRequest(onHold: true))
+        XCTAssertTrue(todo.onHold)
+        let body = try XCTUnwrap(StubURLProtocol.requests.last?.httpBody)
+        let payload = try JSONSerialization.jsonObject(with: body) as! [String: Bool]
+        XCTAssertEqual(payload, ["on_hold": true])
+        let snapshot = try JSONEncoder().encode(todo)
+        XCTAssertEqual(try JSONDecoder().decode(Todo.self, from: snapshot), todo)
     }
 
     func testDecodesConversationAndSectionMapping() async throws {

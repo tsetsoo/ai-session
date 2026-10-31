@@ -116,6 +116,9 @@ pub struct Todo {
     pub section: Section,
     pub title: String,
     pub completed: bool,
+    /// Deliberately paused; independent of the AI conversation's status.
+    #[serde(default)]
+    pub on_hold: bool,
     pub importance: Importance,
     /// Optional due date in YYYY-MM-DD format
     pub due_date: Option<String>,
@@ -156,6 +159,8 @@ pub struct UpdateTodoRequest {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_hold: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<Section>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1078,6 +1083,7 @@ mod tests {
             section: Section::P,
             title: "x".into(),
             completed: false,
+            on_hold: false,
             importance: Importance::Medium,
             due_date: None,
             daily_date: None,
@@ -1100,6 +1106,7 @@ mod tests {
         let old = r#"{"id":"t","section":"P","title":"x","completed":false,"importance":"low","due_date":null,
                       "created_at":"c","updated_at":"u","completed_at":null}"#;
         assert_eq!(serde_json::from_str::<Todo>(old).unwrap().project_id, None);
+        assert!(!serde_json::from_str::<Todo>(old).unwrap().on_hold);
     }
 
     #[test]

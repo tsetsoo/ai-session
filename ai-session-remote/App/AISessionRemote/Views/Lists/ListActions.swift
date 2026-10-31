@@ -331,6 +331,7 @@ private struct ConversationRowMenu: ViewModifier {
                 // Offline, the changing items are left out, like the swipes.
                 if !store.isOffline {
                     if let todo {
+                        TodoHoldButton(todo: todo, store: store)
                         Button {
                             Task { await store.toggle(todo) }
                         } label: {

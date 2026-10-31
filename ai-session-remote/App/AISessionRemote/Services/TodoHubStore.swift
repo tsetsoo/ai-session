@@ -337,6 +337,18 @@ final class TodoHubStore {
         await mutate { client in upsert(try await client.toggleTodo(id: todo.id)) }
     }
 
+    func setOnHold(_ onHold: Bool, for todo: Todo) async {
+        await mutate { client in
+            let updated = try await client.updateTodo(id: todo.id, UpdateTodoRequest(onHold: onHold))
+            guard updated.onHold == onHold else {
+                throw NSError(domain: "TodoHub", code: 0, userInfo: [
+                    NSLocalizedDescriptionKey: "The todo hub needs to be updated to support On hold."
+                ])
+            }
+            upsert(updated)
+        }
+    }
+
     /// Renames the todo on the hub. Throws: the rename dialog shows its own errors.
     func rename(_ todo: Todo, to title: String) async throws {
         try await perform { client in

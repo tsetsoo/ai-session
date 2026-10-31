@@ -25,6 +25,7 @@ pub fn row_to_todo(row: &Row) -> rusqlite::Result<Todo> {
         section,
         title,
         completed,
+        on_hold: row.get("on_hold")?,
         importance,
         due_date,
         daily_date,
