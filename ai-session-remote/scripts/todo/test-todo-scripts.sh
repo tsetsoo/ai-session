@@ -1805,11 +1805,12 @@ schema = {"type": "object", "additionalProperties": False, "required": ["memorie
           "properties": {"memories": {"type": "array", "maxItems": 12, "items": {
               "type": "object", "additionalProperties": False, "required": ["kind", "text", "confidence"],
               "properties": {
-                  "kind": {"type": "string", "enum": ["decision", "gotcha", "open_thread", "done", "files_changed"]},
+                  "kind": {"type": "string", "enum": ["decision", "gotcha", "open_thread"]},
                   "text": {"type": "string", "minLength": 10, "maxLength": 400},
                   "files": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 300}},
                   "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                  "supersedes": {"type": "array", "maxItems": 10, "items": {"type": "string"}}}}}}}
+                  "supersedes": {"type": "array", "maxItems": 10, "items": {"type": "string"}}}}},
+              "used": {"type": "array", "maxItems": 20, "items": {"type": "string"}}}}
 assert argv[:5] == ["-p", "--no-session-persistence", "--output-format", "json", "--json-schema"], argv[:5]
 assert json.loads(argv[5]) == schema, argv[5]
 assert argv[6:15] == ["--tools", "", "--strict-mcp-config", "--setting-sources", "", "--model", "sonnet", "--system-prompt", argv[14]], argv[6:]
@@ -2049,6 +2050,75 @@ if AI_TODO_HOSTNAME=test-mac mem run claude "$M12" >/dev/null 2>&1; then fail "t
 hub_edit "s['computers'].pop()"
 write_conf
 pass "computer_id_autodetect: one computer matching \$USER + host name is used (with a hint); two -> exit 65"
+
+# --- ai-todo-memory: memory upgrade extraction ----------------------------------------------
+
+U_REPLY="${SANDBOX}/used-reply.json"
+python3 - "$M_REPLY" "$U_REPLY" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+r["structured_output"]["used"] = ["mem-known", "bogus", "mem-known"]
+json.dump(r, open(sys.argv[2], "w"))
+PY
+hub_edit "s['memories'] += [
+  dict(id='mem-known', project_id='proj-app', todo_id=None, computer_id='comp-1', tool='claude', session_id='x', kind='gotcha',
+       text='Run the hub tests with cargo test from todo-app.', files=[], confidence=0.9, source='extracted', pinned=False,
+       archived=False, pending=False, created_at='2026-10-16T09:00:00Z', updated_at='2026-10-16T09:00:00Z'),
+  dict(id='mem-shown', project_id='proj-app', todo_id=None, computer_id='comp-1', tool='claude', session_id='y', kind='decision',
+       text='Old decision shown in this session index only.', files=[], confidence=0.9, source='extracted', pinned=False,
+       archived=False, pending=False, created_at='2020-01-01T09:00:00Z', updated_at='2020-01-01T09:00:00Z')]"
+
+U1=d0d0d0d0-0000-4000-8000-0000000000c1
+python3 "$TRANSCRIPT" claude "$(cfile $U1)" "$M_APP" "$U1" --turn "prompt that relies on the hub tests" "answer"
+mkdir -p "${M_STATE}/sessions" && printf 'mem-shown\n' >"${M_STATE}/sessions/claude-${U1}.shown"
+base=$(calls)
+FAKE_CLAUDE_REPLY="$U_REPLY" mem run claude "$U1" >/dev/null || fail "run with used ids failed"
+n=$((base + 1))
+python3 - "${M_CLAUDE_LOG}/$n.argv" <<'PY' || fail "extraction schema wrong: $(cat "${M_CLAUDE_LOG}/$n.argv")"
+import json, sys
+argv = json.load(open(sys.argv[1]))
+schema = json.loads(argv[argv.index("--json-schema") + 1])
+kinds = schema["properties"]["memories"]["items"]["properties"]["kind"]["enum"]
+assert kinds == ["decision", "gotcha", "open_thread"], kinds
+assert schema["properties"]["used"]["type"] == "array", schema
+prompt = argv[argv.index("--system-prompt") + 1]
+assert "files_changed" not in prompt and "used" in prompt, prompt
+PY
+pass "extract_schema_has_three_kinds: decision, gotcha, open_thread, plus a used list"
+stdin_of "$n" | grep -q "\[mem-shown\] decision: Old decision shown" || fail "shown ids missing from ALREADY KNOWN: $(stdin_of "$n")"
+pass "extract_known_includes_shown: memories from this session's index are in ALREADY KNOWN"
+last_body POST /api/memories/uses | python3 -c '
+import json, re, sys
+b = json.load(sys.stdin)
+assert b["computer_id"] == "comp-1" and re.fullmatch(r"\d{4}-\d\d-\d\d", b["day"]), b
+assert b["project_ids"] == ["proj-app"], b
+assert b["uses"] == [{"id": "mem-known", "signal": "relied"}], b
+' || fail "uses post wrong: $(last_body POST /api/memories/uses)"
+pass "extract_posts_relied_uses: one uses post with the known ids only, the day and the project"
+
+hub_edit "s['projects'].append(dict(id='proj-work', name='work', computer=dict(id='comp-1', name='test-mac'), folder='~/work', repo_url=None, digest_enabled=True))"
+rm -f "${M_STATE}/projects.json"
+U2=d0d0d0d0-0000-4000-8000-0000000000c2
+python3 "$TRANSCRIPT" claude "$(cfile $U2)" "$M_APP" "$U2" --turn "prompt inside a nested project" "answer"
+mem run claude "$U2" >/dev/null || fail "run in a nested project failed"
+last_body POST /api/memories/uses | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert b["project_ids"] == ["proj-app", "proj-work"], b
+assert b["uses"] == [], b
+' || fail "ancestor project missing: $(last_body POST /api/memories/uses)"
+hub_edit "s['projects'] = [p for p in s['projects'] if p['id'] != 'proj-work']"
+rm -f "${M_STATE}/projects.json"
+pass "extract_project_ids_include_ancestor: a conversation counts as an active day for the enclosing project too"
+
+U3=d0d0d0d0-0000-4000-8000-0000000000c3
+python3 "$TRANSCRIPT" claude "$(cfile $U3)" "$M_APP" "$U3" --turn "prompt with digests on" "answer"
+write_conf "AI_TODO_MEMORY_DIGEST='on'"
+rm -f "${M_APP}/AGENTS.md" "${M_APP}/CLAUDE.local.md"
+mem run claude "$U3" >/dev/null || fail "run with digests on failed"
+[[ ! -e "${M_APP}/AGENTS.md" ]] || ! grep -q "BEGIN ai-todo-memory" "${M_APP}/AGENTS.md" || fail "run wrote a digest"
+write_conf
+pass "extract_writes_no_digest: extraction no longer writes AGENTS.md digests"
 
 # --- ai-todo-memory: digest -----------------------------------------------------------------
 
@@ -2327,9 +2397,8 @@ assert "/api/memories/bulk" in [p for p, _ in posts[1:]]
 PY
 [[ -f "${M_STATE}/nightly.json" ]] || fail "nightly.json not written"
 pass "nightly_pushes_stats_then_extracts_oldest_first_within_cap"
-grep -q "^<!-- BEGIN ai-todo-memory" "${M_APP}/AGENTS.md" || fail "nightly did not rewrite the digest"
-grep -q "^- .*Transcripts are parsed with the stdlib only" "${M_APP}/AGENTS.md" || fail "digest lacks the extracted memories"
-pass "nightly_rewrites_digests"
+! grep -q "Transcripts are parsed with the stdlib only" "${M_APP}/AGENTS.md" 2>/dev/null || fail "nightly wrote a digest"
+pass "nightly_writes_no_digest"
 
 H1=d0d0d0d0-0000-4000-8000-0000000000a1
 python3 "$TRANSCRIPT" claude "$(cfile $H1)" "$M_APP" "$H1" --turn "hub down prompt" "answer"

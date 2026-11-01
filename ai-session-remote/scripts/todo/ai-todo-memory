@@ -1,7 +1,8 @@
 #!/bin/sh
 # Extract short project memories from the new part of this computer's Claude Code / Codex
-# conversations with `claude -p`, post them to todo-server, push usage stats, and write a
-# digest of each project's memories where new conversations in its folder load it.
+# conversations with `claude -p`, post them to todo-server, push usage stats, and report which
+# known memories each conversation relied on. New conversations get a small index of the
+# memories through the session-start hook (`session-start`), not through written digests.
 # todo-server only stores data: transcripts never leave this computer except as redacted
 # excerpts sent through the user's own `claude -p` (which writes no transcript itself).
 #
@@ -97,7 +98,10 @@ STATE_DIR = os.environ.get("AI_TODO_MEMORY_STATE_DIR") or os.path.join(AI_DIR, "
 CLAUDE_PROJECTS = os.path.join(HOME, ".claude", "projects")
 CODEX_SESSIONS = os.path.join(HOME, ".codex", "sessions")
 ID_RE = re.compile(r"^[0-9a-fA-F][0-9a-fA-F-]{7,63}$")
+ID_LIKE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 KINDS = ("decision", "gotcha", "open_thread", "done", "files_changed")
+# What extraction still produces; "done" and "files_changed" only duplicated git.
+EXTRACT_KINDS = ("decision", "gotcha", "open_thread")
 
 CHUNK_CHARS = 48000
 TRIGGER_CHUNKS = 3
@@ -123,12 +127,12 @@ DEFAULTS = {
 
 SYSTEM_PROMPT = """You extract durable project memory from an excerpt of an AI coding conversation.
 
-Return only facts that would help a future conversation in the same project:
+Return only facts a future conversation in the same project would otherwise have to rediscover
+(commands, locations, ids, causes of failures, constraints, conventions), not a story of the session:
 - decision: a choice that was made and why (architecture, library, approach, convention).
 - gotcha: a non-obvious pitfall, constraint, environment quirk or failure cause, and how it was handled.
 - open_thread: work that was started or agreed but is not finished, or a question left open.
-- done: a meaningful piece of work that was completed (not every small step).
-- files_changed: a one-sentence summary of a coherent change with the files involved.
+Completed work and changed files are not memories: git already records them.
 
 Rules:
 - One or two plain sentences per memory, self-contained, no "the user said". At most 12 memories.
@@ -140,17 +144,20 @@ Rules:
 - Skip what only matters to this session: temporary or scratch paths (e.g. under ~/.claude/jobs/ or /tmp),
   which agent or reviewer is currently working on what, and progress that the next step will make stale.
 - confidence: 0.9+ explicitly stated and confirmed; 0.6–0.8 clearly implied; below 0.5 speculative.
+- used: the ids from ALREADY KNOWN that this excerpt actually relied on (the conversation acted on
+  the fact, or it answered a question). Do not list ids that were merely visible.
 - If nothing durable happened, return an empty list."""
 
 SCHEMA = """{"type":"object","additionalProperties":false,"required":["memories"],
  "properties":{"memories":{"type":"array","maxItems":12,"items":{
    "type":"object","additionalProperties":false,"required":["kind","text","confidence"],
    "properties":{
-     "kind":{"type":"string","enum":["decision","gotcha","open_thread","done","files_changed"]},
+     "kind":{"type":"string","enum":["decision","gotcha","open_thread"]},
      "text":{"type":"string","minLength":10,"maxLength":400},
      "files":{"type":"array","maxItems":20,"items":{"type":"string","maxLength":300}},
      "confidence":{"type":"number","minimum":0,"maximum":1},
-     "supersedes":{"type":"array","maxItems":10,"items":{"type":"string"}}}}}}}"""
+     "supersedes":{"type":"array","maxItems":10,"items":{"type":"string"}}}}},
+  "used":{"type":"array","maxItems":20,"items":{"type":"string"}}}}"""
 
 
 class Refused(Exception):
@@ -468,6 +475,17 @@ class Projects:
             if p.get("id") == pid:
                 return p
         return None
+
+    def ancestors(self, project):
+        """This computer's projects whose folder strictly contains the project's, nearest first."""
+        folder = expand_folder(project.get("folder"))
+        found = []
+        for p in self.mine():
+            other = expand_folder(p.get("folder"))
+            if p.get("id") != project.get("id") and other != folder and \
+                    any(within(a, b) for a in spellings(folder) for b in spellings(other)):
+                found.append((len(other), p))
+        return [p for _, p in sorted(found, key=lambda x: -x[0])]
 
     def match(self, cwd):
         best, best_len = None, -1
@@ -825,7 +843,8 @@ def run_claude(model, message):
     output = envelope.get("structured_output")
     if not isinstance(output, dict) or not isinstance(output.get("memories"), list):
         raise ExtractError("no structured_output")
-    return output["memories"]
+    used = output.get("used") if isinstance(output.get("used"), list) else []
+    return output["memories"], [u for u in used[:20] if isinstance(u, str) and u.strip()]
 
 
 def clean_memories(items, min_confidence, redact, folder_renderer):
@@ -836,7 +855,7 @@ def clean_memories(items, min_confidence, redact, folder_renderer):
             dropped += 1
             continue
         kind, text, confidence = m.get("kind"), m.get("text"), m.get("confidence")
-        if kind not in KINDS or not isinstance(text, str) or isinstance(confidence, bool) \
+        if kind not in EXTRACT_KINDS or not isinstance(text, str) or isinstance(confidence, bool) \
                 or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
             dropped += 1
             continue
@@ -937,12 +956,49 @@ def fetch_known(ctx, tool, sid, project):
         queries += [{"project_id": pid, "pinned": "true", "limit": 100},
                     {"project_id": pid, "kind": "open_thread", "limit": 100},
                     {"project_id": pid, "since": since, "limit": 100}]
+    shown = read_shown(tool, sid)
+    if shown:
+        queries.append({"ids": ",".join(shown[:100]), "limit": 100})
     for query in queries:
         result = ctx.hub.request("GET", "/api/memories", query=query)
         if not isinstance(result, list):
             raise HubError("GET /api/memories: not a list")
         found += [m for m in result if isinstance(m, dict) and m.get("id")]
     return found
+
+
+def shown_path(tool, sid):
+    return os.path.join(STATE_DIR, "sessions", "%s-%s.shown" % (tool, sid))
+
+
+def read_shown(tool, sid):
+    """Ids of the memories the session-start hook put in this conversation's index."""
+    try:
+        with open(shown_path(tool, sid)) as f:
+            return [l.strip() for l in f if ID_LIKE_RE.match(l.strip())]
+    except OSError:
+        return []
+
+
+def local_day(stamp=None):
+    """The local date of an ISO time (a transcript turn), or today."""
+    m = TS_RE.match(str(stamp or ""))
+    if m:
+        epoch = calendar.timegm(tuple(int(x) for x in m.groups()))
+        return time.strftime("%Y-%m-%d", time.localtime(epoch))
+    return time.strftime("%Y-%m-%d", time.localtime(now()))
+
+
+def post_uses(ctx, day, project_ids, uses):
+    """One host day of activity plus the uses seen: POST /api/memories/uses. Best effort."""
+    body = {"computer_id": ctx.computer_id, "day": day, "project_ids": project_ids, "uses": uses}
+    try:
+        response = ctx.hub.request("POST", "/api/memories/uses", body=body) or {}
+    except HubError as e:
+        Log.write("error", step="uses", error=e)
+        return None
+    Log.write("uses", recorded=response.get("recorded"), archived=len(response.get("archived") or []))
+    return response
 
 
 def known_block(known, cap_chars):
@@ -1105,6 +1161,7 @@ def process_session(ctx, tool, sid, mode, hint=None):
     model = conf.get("AI_TODO_MEMORY_MODEL") or "sonnet"
     min_conf = conf.number("AI_TODO_MEMORY_MIN_CONFIDENCE", float)
     found, ran, posted, duplicates = [], 0, 0, 0
+    used, last_stamp = [], None
     for n, chunk in enumerate(chunks, 1):
         if not chunk["pieces"]:
             continue
@@ -1117,11 +1174,17 @@ def process_session(ctx, tool, sid, mode, hint=None):
         message = redact(message)
         try:
             ran += 1
-            memories, dropped = clean_memories(run_claude(model, message), min_conf, redact, renderer)
+            raw, chunk_used = run_claude(model, message)
+            memories, dropped = clean_memories(raw, min_conf, redact, renderer)
+            last_stamp = chunk["last"]
         except ExtractError as e:
             Log.write("error", step="extract", tool=tool, session=sid, chunk=n, error=e)
             ctx.errors += 1
             break
+        known_ids = {m.get("id") for m in found + known}
+        for u in chunk_used:
+            if u in known_ids and u not in used:
+                used.append(u)
         if ctx.dry or ctx.no_post:
             ctx.printed += memories
             found += [dict(m, id="new-%d" % (len(found) + i + 1)) for i, m in enumerate(memories)]
@@ -1145,6 +1208,9 @@ def process_session(ctx, tool, sid, mode, hint=None):
             save_offset(tool, sid, path, state, chunk)
         Log.write("chunk", tool=tool, session=sid, chunk="%d/%d" % (n, len(chunks)), memories=len(memories),
                   dropped=dropped)
+    if ran and not ctx.dry and not ctx.no_post:
+        project_ids = [project["id"]] + [p["id"] for p in ctx.load_projects().ancestors(project)] if project else []
+        post_uses(ctx, local_day(last_stamp), project_ids, [{"id": u, "signal": "relied"} for u in used])
     if ran and not ctx.dry and ctx.per_session_stats:
         push_stats(ctx, sessions=[(tool, sid)])
     if not ctx.dry and ctx.errors == errors_before:
@@ -1727,8 +1793,6 @@ def cmd_run(args):
             print(json.dumps({"tool": tool, "session_id": sid, "memories": ctx.printed}, indent=1, ensure_ascii=False))
         else:
             print("%s %s: %s" % (tool, sid, outcome))
-        if ctx.touched_projects and not ctx.no_digest and not ctx.dry:
-            refresh_digests(ctx, ctx.touched_projects)
     finally:
         if lock is not None:
             os.close(lock)
@@ -1759,8 +1823,6 @@ def cmd_trigger(args):
             return
         ctx = Context(conf, set(), TRIGGER_CHUNKS)
         process_session(ctx, tool, sid, "trigger", hint=values.get("--transcript"))
-        if ctx.touched_projects and not ctx.no_digest:
-            refresh_digests(ctx, ctx.touched_projects)
     finally:
         os.close(lock)
     sys.exit(1 if ctx.errors else 0)
@@ -1822,9 +1884,7 @@ def cmd_nightly(args):
                     Log.write("nightly_chunk_cap", cap=conf.number("AI_TODO_MEMORY_MAX_CHUNKS_NIGHT"))
                     break
                 process_session(ctx, tool, sid, "nightly", hint=transcript)
-        if not ctx.no_digest:
-            ctx.load_projects(force_refresh=not conf.on("AI_TODO_MEMORY"))
-            refresh_digests(ctx, None)
+        # Digests are no longer written: the session-start index replaces them.
         nightly["last_run"] = started
         nightly["last_errors"] = ctx.errors
         save_json(path, nightly)
