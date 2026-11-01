@@ -132,7 +132,8 @@ class Hub(BaseHTTPRequestHandler):
             if q(key) is not None:
                 ms = [m for m in ms if m.get(key) == q(key)]
         if q("global") == "true":
-            ms = [m for m in ms if not m.get("project_id") and not m.get("todo_id")]
+            ms = [m for m in ms if not m.get("project_id") and not m.get("todo_id")
+                  and m.get("source") in ("manual", "agent", "claude-memory")]
         ms = [m for m in ms if bool(m.get("pending")) == (q("pending") == "true")]
         if q("q") is not None:
             words = [w for w in re.split(r"[^\w]+", q("q").lower()) if w]

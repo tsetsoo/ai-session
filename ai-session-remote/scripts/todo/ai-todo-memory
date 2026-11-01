@@ -968,24 +968,25 @@ def push_stats(ctx, sessions=None, since=None):
 
 
 def fetch_known(ctx, tool, sid, project):
-    """Memories the model must not repeat: this session's, then the project's pinned, open
-    threads and newest of the last 30 days. Raises HubError."""
+    """Memories the model must not repeat: first the ones this session's index showed (so a
+    "used" answer can name them), then this session's, the project's pinned, open threads
+    and newest of the last 30 days. Imported Claude memory files are left out: they are long,
+    search-only and never extracted again. Raises HubError."""
     found = []
-    queries = [{"tool": tool, "session_id": sid, "include_archived": "true", "limit": 100}]
+    shown = read_shown(tool, sid)
+    queries = [{"ids": ",".join(shown[:100]), "limit": 100}] if shown else []
+    queries.append({"tool": tool, "session_id": sid, "include_archived": "true", "limit": 100})
     if project:
         pid = project["id"]
         since = time.strftime("%Y-%m-%d", time.gmtime(now() - 30 * 86400))
         queries += [{"project_id": pid, "pinned": "true", "limit": 100},
                     {"project_id": pid, "kind": "open_thread", "limit": 100},
                     {"project_id": pid, "since": since, "limit": 100}]
-    shown = read_shown(tool, sid)
-    if shown:
-        queries.append({"ids": ",".join(shown[:100]), "limit": 100})
     for query in queries:
         result = ctx.hub.request("GET", "/api/memories", query=query)
         if not isinstance(result, list):
             raise HubError("GET /api/memories: not a list")
-        found += [m for m in result if isinstance(m, dict) and m.get("id")]
+        found += [m for m in result if isinstance(m, dict) and m.get("id") and m.get("source") != "claude-memory"]
     return found
 
 
@@ -1028,7 +1029,7 @@ def known_block(known, cap_chars):
     for m in known:
         if m["id"] in seen or len(lines) >= KNOWN_MAX_ITEMS:
             continue
-        line = "- [%s] %s: %s" % (m["id"], m.get("kind"), one_line(m.get("text") or ""))
+        line = "- [%s] %s: %s" % (m["id"], m.get("kind"), cut(one_line(m.get("text") or ""), 400))
         if size + len(line) + 1 > cap_chars:
             break
         seen.add(m["id"])
@@ -2062,8 +2063,13 @@ def load_cache():
     return cache
 
 
+GLOBAL_SOURCES = ("manual", "agent", "claude-memory")
+
+
 def is_global(m):
-    return not m.get("project_id") and not m.get("todo_id")
+    """Global on purpose (imported, added by an agent or by hand), not an extracted memory
+    whose project was deleted or unlinked."""
+    return not m.get("project_id") and not m.get("todo_id") and m.get("source") in GLOBAL_SOURCES
 
 
 def refresh_cache(ctx):
@@ -2237,7 +2243,8 @@ def cmd_search(args):
         ranks = {pid: i for i, pid in enumerate(scope_projects(cache.get("projects") or [], cwd))}
         keep = lambda m: in_scope(m, ranks, computer_id)
     elif scope == "all":
-        keep = lambda m: True
+        # Every project, but global memories only from this computer (they stay on their computer).
+        keep = lambda m: not is_global(m) or m.get("computer_id") == computer_id
     else:
         keep = lambda m: m.get("project_id") == scope
     hub = Hub(conf)

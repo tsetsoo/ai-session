@@ -2095,6 +2095,21 @@ assert b["project_ids"] == ["proj-app"], b
 assert b["uses"] == [{"id": "mem-known", "signal": "relied"}], b
 ' || fail "uses post wrong: $(last_body POST /api/memories/uses)"
 pass "extract_posts_relied_uses: one uses post with the known ids only, the day and the project"
+hub_edit "s['memories'] += [dict(id='crowd-%d' % n, project_id='proj-app', todo_id=None, computer_id='comp-1', tool='claude',
+  session_id='z', kind='gotcha', text='Crowding memory number %d with enough words to take real room in the list.' % n, files=[],
+  confidence=0.9, source='extracted', pinned=False, archived=False, pending=False, created_at='2026-10-16T09:00:00Z',
+  updated_at='2026-10-16T09:00:00Z') for n in range(120)] + [dict(id='imp-big', project_id='proj-app', todo_id=None,
+  computer_id='comp-1', tool=None, session_id=None, kind='gotcha', text='Imported file ' + 'y' * 7000, files=[], confidence=1.0,
+  source='claude-memory', pinned=False, archived=False, pending=False, created_at='2026-10-16T09:00:00Z', updated_at='2026-10-16T09:00:00Z')]"
+U1B=d0d0d0d0-0000-4000-8000-0000000000c9
+python3 "$TRANSCRIPT" claude "$(cfile $U1B)" "$M_APP" "$U1B" --turn "prompt in a crowded project" "answer"
+printf 'mem-shown\n' >"${M_STATE}/sessions/claude-${U1B}.shown"
+base=$(calls)
+mem run claude "$U1B" >/dev/null || fail "run in a crowded project failed"
+stdin_of $((base + 1)) | grep -q "\[mem-shown\]" || fail "a shown memory fell out of a crowded ALREADY KNOWN"
+! stdin_of $((base + 1)) | grep -q "imp-big" || fail "an imported Claude memory file went into ALREADY KNOWN"
+hub_edit "s['memories'] = [m for m in s['memories'] if not (m['id'].startswith('crowd-') or m['id'] == 'imp-big')]"
+pass "extract_known_shown_first_without_imports: shown memories come first; imported files stay out of the list"
 
 hub_edit "s['projects'].append(dict(id='proj-work', name='work', computer=dict(id='comp-1', name='test-mac'), folder='~/work', repo_url=None, digest_enabled=True))"
 rm -f "${M_STATE}/projects.json"
@@ -2142,8 +2157,8 @@ ms = [
     m("u_new", "decision", "Used recently fact.", use_count=1, last_used_at="2026-10-30 10:00:00"),
     m("ot", "open_thread", "Open thread never shown.", use_count=9, last_used_at="2026-10-31 10:00:00"),
     m("imp", "gotcha", "Imported note never in index.", source="claude-memory", use_count=9, last_used_at="2026-10-31 10:00:00"),
-    m("glob", "gotcha", "Mac-wide global fact.", project=None, use_count=2, last_used_at="2026-10-29 10:00:00"),
-    m("oglob", "gotcha", "Other computer global.", project=None, computer_id="comp-2", use_count=9, last_used_at="2026-10-31 10:00:00"),
+    m("glob", "gotcha", "Mac-wide global fact.", project=None, source="manual", use_count=2, last_used_at="2026-10-29 10:00:00"),
+    m("oglob", "gotcha", "Other computer global.", project=None, source="manual", computer_id="comp-2", use_count=9, last_used_at="2026-10-31 10:00:00"),
     m("oproj", "gotcha", "Other project fact.", project="proj-other", use_count=9, last_used_at="2026-10-31 10:00:00"),
 ] + [m("f%d" % n, "gotcha", "Filler fact number %d that takes up room in the index budget for sure." % n,
        use_count=1, last_used_at="2026-01-01 10:00:00") for n in range(40)]
@@ -2192,6 +2207,16 @@ pass "index_json_lists_ids"
 pass "index_never_calls_hub"
 python3 - "$I_CACHE" <<'PY'
 import json, sys
+c = json.load(open(sys.argv[1]))
+c["memories"].append(dict(id="orphan", project_id=None, todo_id=None, computer_id="comp-1", tool="claude", session_id="s9",
+                          kind="gotcha", text="Orphan from a deleted project.", source="extracted", pinned=False, archived=False,
+                          pending=False, use_count=9, last_used_at="2026-10-31 10:00:00", created_at="2020-01-01T00:00:00Z"))
+json.dump(c, open(sys.argv[1], "w"))
+PY
+mem index --cwd "${HOME}/work/elsewhere" | grep -q "Orphan from a deleted project" && fail "an orphaned extracted memory became global"
+pass "index_orphans_are_not_global: a memory that lost its project doesn't reach every index"
+python3 - "$I_CACHE" <<'PY'
+import json, sys
 c = json.load(open(sys.argv[1])); c["projects"][0]["digest_enabled"] = False; json.dump(c, open(sys.argv[1], "w"))
 PY
 mem index --cwd "$M_APP" >"${SANDBOX}/index-off.out" || fail "index with feeding off failed"
@@ -2218,6 +2243,14 @@ b = json.load(sys.stdin)
 assert b["uses"] == [{"id": "mem-kc", "signal": "search"}] and b["project_ids"] == [], b
 ' || fail "search did not report its hits: $(last_body POST /api/memories/uses)"
 pass "search_uses_hub_and_posts_search_uses"
+hub_edit "s['memories'].append(dict(id='mem-kc-spread', project_id=None, todo_id=None, computer_id='comp-2', tool=None, session_id=None,
+  kind='gotcha', text='Keychain fact from the work Mac.', files=[], confidence=None, source='manual', pinned=False, archived=False,
+  pending=False, use_count=0, created_at='2026-10-20T09:00:00Z', updated_at='2026-10-20T09:00:00Z'))"
+mem search keychain --project all --cwd "$M_APP" >"${SANDBOX}/search-all.out" || fail "search --project all failed"
+! grep -q "work Mac" "${SANDBOX}/search-all.out" || fail "search --project all showed another computer's global fact"
+grep -q "another folder" "${SANDBOX}/search-all.out" || fail "search --project all missed another project's fact"
+hub_edit "s['memories'] = [m for m in s['memories'] if m['id'] != 'mem-kc-spread']"
+pass "search_all_keeps_other_computers_globals_out"
 write_conf
 sed -i.bak "s#^TODO_HUB_URL=.*#TODO_HUB_URL='http://127.0.0.1:9'#" "$M_CONF"
 mem search signing --cwd "$M_APP" >"${SANDBOX}/search-cache.out" || fail "search with the hub down failed"

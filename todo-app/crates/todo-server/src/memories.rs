@@ -620,7 +620,9 @@ pub(crate) fn list_memories_db(conn: &Connection, q: &MemoryQuery) -> Result<Vec
     }
     add(" AND pending = ?", SqlValue::Integer(i64::from(q.pending)));
     if q.global {
-        sql.push_str(" AND project_id IS NULL AND todo_id IS NULL");
+        // Global means made global on purpose: imported, added by an agent, or by hand. An
+        // extracted memory whose project was deleted or unlinked is an orphan, not a global.
+        sql.push_str(" AND project_id IS NULL AND todo_id IS NULL AND source IN ('manual','agent','claude-memory')");
     }
     if !q.kinds.is_empty() {
         let list = q.kinds.iter().map(|k| format!("'{}'", k.as_str())).collect::<Vec<_>>().join(",");
@@ -978,6 +980,22 @@ mod tests {
         post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Project fact", "project_id": "pa"})).await;
         let (_, r) = get(&pool, "/api/memories?global=true&computer_id=mac").await;
         assert_eq!(r.as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap()).collect::<Vec<_>>(), vec!["Mac global"]);
+    }
+
+    #[actix_web::test]
+    async fn orphaned_extracted_memory_is_not_global() {
+        let (_db, pool) = pool("mem");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Real global", "computer_id": "mac"})).await;
+        conn.execute(
+            "INSERT INTO memories (id, computer_id, tool, session_id, kind, text, text_key, source)
+             VALUES ('orphan', 'mac', 'claude', 's9', 'gotcha', 'Lost its project', 'lost', 'extracted')",
+            [],
+        )
+        .unwrap();
+        let (_, r) = get(&pool, "/api/memories?global=true&computer_id=mac").await;
+        assert_eq!(r.as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap()).collect::<Vec<_>>(), vec!["Real global"]);
     }
 
     #[actix_web::test]
