@@ -23,6 +23,9 @@ final class TodoHubStore {
     /// project pages, weekly stats, and memories refetch off this, while lists observe `todos`
     /// and `conversations` directly.
     private(set) var revision = 0
+    /// Memories agents proposed (`ai-todo-memory add`) that wait for an OK, on every project
+    /// and computer. Shown as a badge on Projects.
+    private(set) var pendingMemoryCount = 0
     /// True while showing the cached snapshot because the hub could not be reached.
     private(set) var isOffline = false
     private(set) var cachedAt: Date?
@@ -195,8 +198,10 @@ final class TodoHubStore {
             // the todo list. On any failure the last known projects stay.
             async let projects = try? client.listProjects()
             async let suggestions = try? client.projectSuggestions()
+            // Optional too: a hub from before pending memories ignores the filter.
+            async let pending = try? client.listMemories(MemoryQuery(limit: 1000, pending: true))
             let (t, c, m, comps) = try await (todos, conversations, mappings, computers)
-            let (p, sugg) = await (projects, suggestions)
+            let (p, sugg, pend) = await (projects, suggestions, pending)
             // A refresh that started later has newer data; don't overwrite it.
             guard generation == refreshGeneration else { return }
             guard changesAtStart == localChanges else { return }
@@ -205,6 +210,7 @@ final class TodoHubStore {
                 projects: p, suggestions: sugg, startedAtEpoch: startedAtEpoch,
                 trigger: trigger
             )
+            if let pend { pendingMemoryCount = pend.filter(\.pending).count }
             if wantsLiveUpdates && eventsTask == nil { startEventsTask() }
         } catch TodoHubError.unreachable {
             guard generation == refreshGeneration else { return }
@@ -949,6 +955,19 @@ final class TodoHubStore {
             projectId: projectId, todoId: projectId == nil ? todoId : nil,
             includeArchived: includeArchived, limit: 1000
         ))
+    }
+
+    /// Memories waiting for approval: a project's, or a computer's global ones.
+    func pendingMemories(projectId: String? = nil, computerId: String? = nil) async throws -> [Memory] {
+        #if DEBUG
+        if demo != nil { return [] }
+        #endif
+        let memories = try await requireClient().listMemories(MemoryQuery(
+            projectId: projectId, limit: 1000, pending: true,
+            computerId: computerId, global: computerId == nil ? nil : true
+        ))
+        // A hub from before pending memories ignores the filter: show nothing rather than everything.
+        return memories.filter(\.pending)
     }
 
     func createMemory(_ request: CreateMemoryRequest) async throws {

@@ -33,7 +33,7 @@ struct SidebarView: View {
                 }
             }
             Section {
-                SidebarRow(title: "Projects", systemImage: "folder", count: 0)
+                SidebarRow(title: "Projects", systemImage: "folder", count: store.pendingMemoryCount)
                     .tag(AppModel.SidebarItem.projects)
             }
             if !counts.computers.isEmpty {

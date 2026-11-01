@@ -119,6 +119,7 @@ struct PhoneShell: View {
                     .navigationDestination(for: Route.self) { destination($0, path: $projectsPath, in: .projects) }
             }
             .tabItem { Label("Projects", systemImage: "folder") }
+            .badge(store.pendingMemoryCount)
             .tag(Tab.projects)
 
             NavigationStack(path: $computersPath) {

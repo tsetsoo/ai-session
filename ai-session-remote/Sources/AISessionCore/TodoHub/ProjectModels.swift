@@ -621,12 +621,19 @@ public struct Memory: Codable, Hashable, Identifiable, Sendable {
     /// Relative to the project folder.
     public var files: [String]
     public var confidence: Double?
-    /// `extracted` or `manual`.
+    /// `extracted`, `manual`, `claude-memory` (imported) or `agent` (saved on purpose).
     public var source: String
     public var pinned: Bool
     public var archived: Bool
     public var createdAt: String
     public var updatedAt: String
+    /// Proposed by an agent; waits for the user's OK.
+    public var pending: Bool = false
+    /// Relied on, found by search, touched by the user, or re-extracted.
+    public var useCount: Int = 0
+    public var lastUsedAt: String?
+    /// `unused`, `duplicate`, `superseded`, `retired` or `user`.
+    public var archivedReason: String?
 
     public init(id: String, projectId: String? = nil, todoId: String? = nil, computerId: String? = nil,
                 tool: String? = nil, sessionId: String? = nil, kind: MemoryKind, text: String,
@@ -652,6 +659,7 @@ public struct Memory: Codable, Hashable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, projectId, todoId, computerId, tool, sessionId, kind, text, files, confidence
         case source, pinned, archived, createdAt, updatedAt
+        case pending, useCount, lastUsedAt, archivedReason
     }
 
     public init(from decoder: Decoder) throws {
@@ -671,9 +679,17 @@ public struct Memory: Codable, Hashable, Identifiable, Sendable {
         archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
         updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
+        pending = try c.decodeIfPresent(Bool.self, forKey: .pending) ?? false
+        useCount = try c.decodeIfPresent(Int.self, forKey: .useCount) ?? 0
+        lastUsedAt = try c.decodeIfPresent(String.self, forKey: .lastUsedAt)
+        archivedReason = try c.decodeIfPresent(String.self, forKey: .archivedReason)
     }
 
     public var isManual: Bool { source == "manual" }
+    /// Saved on purpose by an agent (`ai-todo-memory add`).
+    public var isFromAgent: Bool { source == "agent" }
+    /// No project and no todo: belongs to its computer.
+    public var isGlobal: Bool { projectId == nil && todoId == nil }
     public var createdDate: Date? { HubDates.date(from: createdAt) }
 }
 
@@ -691,10 +707,19 @@ public struct MemoryQuery: Equatable, Sendable {
     public var includeArchived: Bool
     /// Server default 200, max 1000.
     public var limit: Int?
+    /// `true`: only memories waiting for approval. The server hides them otherwise.
+    public var pending: Bool?
+    public var computerId: String?
+    /// `true`: only memories with no project and no todo.
+    public var global: Bool?
 
     public init(projectId: String? = nil, todoId: String? = nil, kinds: [MemoryKind] = [], since: String? = nil,
                 tool: String? = nil, sessionId: String? = nil, pinned: Bool? = nil,
-                includeArchived: Bool = false, limit: Int? = nil) {
+                includeArchived: Bool = false, limit: Int? = nil, pending: Bool? = nil,
+                computerId: String? = nil, global: Bool? = nil) {
+        self.pending = pending
+        self.computerId = computerId
+        self.global = global
         self.projectId = projectId
         self.todoId = todoId
         self.kinds = kinds
@@ -720,6 +745,9 @@ public struct MemoryQuery: Equatable, Sendable {
         add("pinned", pinned.map { $0 ? "true" : "false" })
         if includeArchived { add("include_archived", "true") }
         add("limit", limit.map(String.init))
+        add("pending", pending.map { $0 ? "true" : "false" })
+        add("computer_id", computerId)
+        add("global", global.map { $0 ? "true" : "false" })
         return items
     }
 }
@@ -755,9 +783,13 @@ public struct UpdateMemoryRequest: Encodable, Sendable {
     public var archived: Bool?
     public var projectId: NullableChange<String>?
     public var todoId: NullableChange<String>?
+    /// `false` approves a memory an agent proposed.
+    public var pending: Bool?
 
     public init(text: String? = nil, kind: MemoryKind? = nil, files: [String]? = nil, pinned: Bool? = nil,
-                archived: Bool? = nil, projectId: NullableChange<String>? = nil, todoId: NullableChange<String>? = nil) {
+                archived: Bool? = nil, projectId: NullableChange<String>? = nil, todoId: NullableChange<String>? = nil,
+                pending: Bool? = nil) {
+        self.pending = pending
         self.text = text
         self.kind = kind
         self.files = files
@@ -768,7 +800,7 @@ public struct UpdateMemoryRequest: Encodable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case text, kind, files, pinned, archived, projectId, todoId
+        case text, kind, files, pinned, archived, projectId, todoId, pending
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -780,6 +812,7 @@ public struct UpdateMemoryRequest: Encodable, Sendable {
         try c.encodeIfPresent(archived, forKey: .archived)
         try c.encodeChange(projectId, forKey: .projectId)
         try c.encodeChange(todoId, forKey: .todoId)
+        try c.encodeIfPresent(pending, forKey: .pending)
     }
 }
 

@@ -2190,6 +2190,18 @@ assert j["text"].rstrip("\n").endswith("(the user approves it)"), j["text"][-60:
 pass "index_json_lists_ids"
 [[ $(wc -l <"$M_HUB_LOG") -eq $log_lines ]] || fail "index called the hub"
 pass "index_never_calls_hub"
+python3 - "$I_CACHE" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1])); c["projects"][0]["digest_enabled"] = False; json.dump(c, open(sys.argv[1], "w"))
+PY
+mem index --cwd "$M_APP" >"${SANDBOX}/index-off.out" || fail "index with feeding off failed"
+[[ "$(grep -c '^- ' "${SANDBOX}/index-off.out")" -eq 1 ]] && grep -q "Mac-wide global fact" "${SANDBOX}/index-off.out" \
+  || fail "a project with feeding switched off still fed the index: $(cat "${SANDBOX}/index-off.out")"
+python3 - "$I_CACHE" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1])); c["projects"][0]["digest_enabled"] = True; json.dump(c, open(sys.argv[1], "w"))
+PY
+pass "index_respects_project_feed_switch: a project with 'Feed memories into new conversations' off adds nothing"
 
 hub_edit "s['memories'] += [dict(id='mem-kc', project_id='proj-app', todo_id=None, computer_id='comp-1', tool=None, session_id=None,
   kind='gotcha', text='Unlock the login keychain before signing over SSH.', files=[], confidence=None, source='extracted',

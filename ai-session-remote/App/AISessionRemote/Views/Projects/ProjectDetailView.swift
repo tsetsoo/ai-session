@@ -15,6 +15,7 @@ struct ProjectDetailView: View {
     @Environment(AppModel.self) private var model
     @State private var sessions: [HubSession]?
     @State private var memories: [Memory]?
+    @State private var pendingMemories: [Memory] = []
     @State private var loadError: String?
     @State private var showArchived = false
     @State private var memoryActions = MemoryActions()
@@ -232,6 +233,7 @@ struct ProjectDetailView: View {
         } header: {
             Text("Memories")
         }
+        PendingMemoriesSection(memories: pendingMemories, store: store)
         if let memories {
             MemoryGroupSections(memories: memories, actions: memoryActions, store: store)
         }
@@ -242,10 +244,12 @@ struct ProjectDetailView: View {
     private func load() async {
         async let loadedSessions = store.sessions(projectId: projectId)
         async let loadedMemories = store.memories(projectId: projectId, includeArchived: showArchived)
+        async let loadedPending = try? store.pendingMemories(projectId: projectId)
         do {
             let (s, m) = try await (loadedSessions, loadedMemories)
             sessions = s
             memories = m
+            pendingMemories = await loadedPending ?? []
             loadError = nil
         } catch {
             guard !Task.isCancelled else { return }

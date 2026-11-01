@@ -66,6 +66,9 @@ struct ComputerDetailView: View {
 
     private var store: TodoHubStore { model.store }
 
+    /// This computer's global memories (no project) that an agent proposed.
+    @State private var pendingGlobal: [Memory] = []
+
     var body: some View {
         let board = model.board
         let host = HostLookup.host(for: computer, in: hosts)
@@ -90,6 +93,7 @@ struct ComputerDetailView: View {
                     noAccess
                 }
             }
+            PendingMemoriesSection(memories: pendingGlobal, store: store)
             Section {
                 if running.isEmpty && !query.isEmpty {
                     Text("No results for “\(query)”")
@@ -135,6 +139,9 @@ struct ComputerDetailView: View {
             #endif
         }
         .listStyle(.insetGrouped)
+        .task(id: "\(computer.id)|\(store.revision)") {
+            pendingGlobal = (try? await store.pendingMemories(computerId: computer.id)) ?? []
+        }
         .navigationTitle(computer.name)
         .refreshable {
             await store.refresh(trigger: .background)

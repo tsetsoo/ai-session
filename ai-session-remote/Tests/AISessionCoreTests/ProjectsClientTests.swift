@@ -386,6 +386,41 @@ final class ProjectsClientTests: XCTestCase {
         XCTAssertNil(lastRequest.url?.query)
     }
 
+    func testMemoryDecodesWithoutNewFields() throws {
+        let memory = try TodoHubClient.makeDecoder().decode(Memory.self, from: Data(Self.memoryJSON.utf8))
+        XCTAssertFalse(memory.pending)
+        XCTAssertEqual(memory.useCount, 0)
+        XCTAssertNil(memory.lastUsedAt)
+        XCTAssertNil(memory.archivedReason)
+    }
+
+    func testMemoryDecodesPendingAndUsage() throws {
+        let json = """
+        {"id":"m9","project_id":null,"todo_id":null,"computer_id":"mac","tool":null,"session_id":null,"kind":"gotcha",
+         "text":"Agent fact","files":[],"confidence":null,"source":"agent","pinned":false,"archived":false,
+         "created_at":"2026-11-01 10:00:00","updated_at":"2026-11-01 10:00:00","pending":true,"use_count":3,
+         "last_used_at":"2026-11-01 11:00:00","archived_reason":null,"source_key":null}
+        """
+        let memory = try TodoHubClient.makeDecoder().decode(Memory.self, from: Data(json.utf8))
+        XCTAssertTrue(memory.pending)
+        XCTAssertEqual(memory.useCount, 3)
+        XCTAssertEqual(memory.lastUsedAt, "2026-11-01 11:00:00")
+        XCTAssertTrue(memory.isGlobal)
+        XCTAssertTrue(memory.isFromAgent)
+    }
+
+    func testMemoryQueryPendingGlobalItems() async throws {
+        respond("[]")
+        _ = try await client().listMemories(MemoryQuery(pending: true, computerId: "c1", global: true))
+        XCTAssertEqual(queryItems(), ["pending": "true", "computer_id": "c1", "global": "true"])
+    }
+
+    func testUpdateMemoryRequestEncodesPending() async throws {
+        respond(Self.memoryJSON)
+        _ = try await client().updateMemory(id: "m1", UpdateMemoryRequest(pending: false))
+        XCTAssertEqual(String(data: try XCTUnwrap(lastRequest.httpBody), encoding: .utf8), #"{"pending":false}"#)
+    }
+
     func testCreateMemoryBody() async throws {
         respond(Self.manualMemoryJSON, status: 201)
         let memory = try await client().createMemory(CreateMemoryRequest(

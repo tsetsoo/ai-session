@@ -343,6 +343,7 @@ struct MemoriesPanel: View {
     let initialConversation: Conversation
 
     @State private var memories: [Memory]?
+    @State private var pending: [Memory] = []
     @State private var loadError: String?
     @State private var showArchived = false
     @State private var actions = MemoryActions()
@@ -376,6 +377,7 @@ struct MemoriesPanel: View {
                         .foregroundStyle(DS.warning)
                 }
             }
+            PendingMemoriesSection(memories: pending, store: store)
             content
         }
         .listStyle(.insetGrouped)
@@ -411,10 +413,64 @@ struct MemoriesPanel: View {
     private func load() async {
         do {
             memories = try await store.memories(projectId: projectId, todoId: todoId, includeArchived: showArchived)
+            pending = projectId == nil ? [] : (try? await store.pendingMemories(projectId: projectId)) ?? []
             loadError = nil
         } catch {
             guard !Task.isCancelled else { return }
             loadError = TodoHubStore.message(for: error)
+        }
+    }
+}
+
+/// Facts an agent saved with `ai-todo-memory add`: they wait here until approved (then they
+/// join the index new conversations get) or rejected (deleted). Hidden when there are none.
+struct PendingMemoriesSection: View {
+    let memories: [Memory]
+    let store: TodoHubStore
+
+    @State private var errorMessage: String?
+
+    var body: some View {
+        if !memories.isEmpty {
+            Section {
+                ForEach(memories) { memory in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(memory.text, systemImage: memory.kind.systemImage)
+                        HStack {
+                            Button("Approve") {
+                                run { try await store.updateMemory(memory, UpdateMemoryRequest(pending: false)) }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button("Reject", role: .destructive) {
+                                run { try await store.deleteMemory(memory) }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .disabled(store.isOffline)
+                    }
+                    .padding(.vertical, 2)
+                }
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(DS.warning)
+                }
+            } header: {
+                Text("Waiting for OK (\(memories.count))")
+            } footer: {
+                Text("An agent saved these. Approved facts join the index new conversations get.")
+            }
+        }
+    }
+
+    private func run(_ body: @escaping () async throws -> Void) {
+        Task {
+            do {
+                try await body()
+                errorMessage = nil
+            } catch {
+                errorMessage = TodoHubStore.message(for: error)
+            }
         }
     }
 }

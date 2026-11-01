@@ -2093,7 +2093,8 @@ def refresh_cache(ctx):
             memories.append(m)
     ensure_state_dir()
     save_json(cache_path(), {"fetched_at": now(), "computer_id": ctx.computer_id,
-                             "projects": [{"id": p["id"], "folder": p.get("folder")} for p in projects],
+                             "projects": [{"id": p["id"], "folder": p.get("folder"),
+                                           "digest_enabled": p.get("digest_enabled") is not False} for p in projects],
                              "memories": memories})
     Log.write("cache", memories=len(memories), projects=len(projects))
     return True
@@ -2126,7 +2127,9 @@ def index_line(m, cut=None):
 def build_index(cache, cwd, budget=INDEX_BUDGET):
     """(text, ids): the session-start index for cwd, from the cache only."""
     computer_id = cache.get("computer_id")
-    ranks = {pid: i for i, pid in enumerate(scope_projects(cache.get("projects") or [], cwd))}
+    # A project whose "Feed memories into new conversations" switch is off adds nothing.
+    fed = [p for p in cache.get("projects") or [] if p.get("digest_enabled") is not False]
+    ranks = {pid: i for i, pid in enumerate(scope_projects(fed, cwd))}
     near = lambda m: ranks.get(m.get("project_id"), len(ranks))
     cands = [m for m in cache.get("memories") or [] if isinstance(m, dict) and in_scope(m, ranks, computer_id)
              and not m.get("archived") and not m.get("pending") and m.get("kind") != "open_thread"
