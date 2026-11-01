@@ -2335,7 +2335,25 @@ mem nightly >/dev/null 2>&1 || true
 pass "nightly_imports_claude_memory_files"
 hub_edit "s['memories'] = [m for m in s['memories'] if m.get('source') != 'claude-memory']"
 rm -rf "${HOME}/.claude/projects/$(enc "${HOME}/work/elsewhere")" "${HOME}/.claude/projects/$(enc "${HOME}/work/deleted-folder")" "$IM_APP"
-rm -f "${M_STATE}/imports.json"
+
+# --- ai-todo-memory: status reports usefulness ---------------------------------------------------
+
+mem refresh >/dev/null 2>&1 || true
+mem status --json | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+for key in ("posted_per_day", "cache_age_s", "cache_memories", "index_bytes", "searches_7d", "last_import",
+            "hooks", "most_used", "never_used", "archived_unused_7d"):
+    assert key in s, (key, sorted(s))
+assert isinstance(s["posted_per_day"], dict) and s["posted_per_day"], s["posted_per_day"]
+assert isinstance(s["cache_memories"], int) and s["cache_memories"] > 0, s
+assert set(s["hooks"]) == {"claude", "codex"}, s["hooks"]
+assert isinstance(s["searches_7d"], int) and s["searches_7d"] >= 1, s["searches_7d"]
+assert isinstance(s["most_used"], list) and isinstance(s["never_used"], int), s
+assert s["last_import"] is not None, s
+' || fail "status --json lacks usefulness: $(mem status --json)"
+mem status | grep -q "^searches (7d): " || fail "status text lacks the usefulness lines: $(mem status)"
+pass "status_json_has_usefulness_keys"
 
 # --- ai-todo-memory: digest -----------------------------------------------------------------
 

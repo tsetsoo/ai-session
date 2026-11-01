@@ -1925,6 +1925,64 @@ def cmd_nightly(args):
     sys.exit(1 if ctx.errors else 0)
 
 
+LOG_LINE_RE = re.compile(r"^(\d{4}-\d\d-\d\d)T\S+ (\S+)(.*)$")
+
+
+def log_lines(days):
+    """(date, event, {field: value}) of memory.log lines from the last `days` days."""
+    since = time.strftime("%Y-%m-%d", time.gmtime(now() - days * 86400))
+    rows = []
+    for name in ("memory.log.1", "memory.log"):
+        try:
+            with open(os.path.join(STATE_DIR, name), errors="replace") as f:
+                for line in f:
+                    m = LOG_LINE_RE.match(line.rstrip("\n"))
+                    if m and m.group(1) >= since:
+                        fields = dict(kv.split("=", 1) for kv in m.group(3).split() if "=" in kv)
+                        rows.append((m.group(1), m.group(2), fields))
+        except OSError:
+            pass
+    return rows
+
+
+def hook_installed(path, needle):
+    try:
+        with open(path) as f:
+            return needle in f.read()
+    except OSError:
+        return False
+
+
+def usefulness_status():
+    """What was collected, delivered and used, from local files only (no hub call)."""
+    lines = log_lines(7)
+    posted = {}
+    for day, event, fields in lines:
+        if event == "run" and fields.get("posted", "0").isdigit():
+            posted[day] = posted.get(day, 0) + int(fields["posted"])
+    cache = load_cache()
+    memories = [m for m in (cache or {}).get("memories", []) if isinstance(m, dict)]
+    codex_home = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
+    imports = load_json(imports_path(), {}) or {}
+    ranked = sorted((m for m in memories if int(m.get("use_count") or 0) > 0),
+                    key=lambda m: -int(m.get("use_count") or 0))[:5]
+    return {
+        "posted_per_day": posted,
+        "cache_age_s": int(now() - float(cache.get("fetched_at") or 0)) if cache else None,
+        "cache_memories": len(memories),
+        "index_bytes": len(build_index(cache, os.getcwd())[0].encode("utf-8")) if cache else 0,
+        "searches_7d": sum(1 for _, event, _ in lines if event == "search"),
+        "last_import": imports.get("last_import"),
+        "hooks": {"claude": hook_installed(os.path.join(HOME, ".claude", "settings.json"), "ai-todo-memory session-start"),
+                  "codex": hook_installed(os.path.join(codex_home, "hooks.json"), "ai-todo-memory session-start --codex")},
+        "most_used": [{"id": m["id"], "use_count": int(m.get("use_count") or 0), "text": cut(one_line(m.get("text") or ""), 80)}
+                      for m in ranked],
+        "never_used": sum(1 for m in memories if not m.get("use_count")),
+        "archived_unused_7d": sum(int(f.get("archived", "0")) for _, event, f in lines
+                                  if event == "uses" and f.get("archived", "0").isdigit()),
+    }
+
+
 def cmd_status(args):
     as_json = "--json" in args
     conf = Config()
@@ -1953,6 +2011,7 @@ def cmd_status(args):
         "nightly_env_secrets": "TODO_API_TOKEN only: launchd runs without the shell environment; "
                                "other secrets rely on the pattern rules",
     }
+    status.update(usefulness_status())
     if as_json:
         print(json.dumps(status, indent=1))
         return
@@ -1961,6 +2020,18 @@ def cmd_status(args):
     for key in ("last_nightly", "last_stats_push"):
         print("%-17s %s" % (key + ":", iso(status[key]) if status[key] else "never"))
     print("%-17s %s" % ("nightly secrets:", status["nightly_env_secrets"]))
+    print("%-17s %s" % ("posted per day:", ", ".join("%s %d" % kv for kv in sorted(status["posted_per_day"].items()))
+                                              or "none in 7 days"))
+    print("%-17s %s" % ("cache:", "%d memories, %ss old" % (status["cache_memories"], status["cache_age_s"])
+                        if status["cache_age_s"] is not None else "none yet (ai-todo-memory refresh)"))
+    print("%-17s %s bytes for %s" % ("index:", status["index_bytes"], tilde(os.getcwd())))
+    print("%-17s %d" % ("searches (7d):", status["searches_7d"]))
+    print("%-17s %s" % ("last import:", iso(status["last_import"]) if status["last_import"] else "never"))
+    print("%-17s claude %s, codex %s" % ("session hook:", *("yes" if status["hooks"][k] else "no" for k in ("claude", "codex"))))
+    print("%-17s %d never used, %d archived as unused (7d)" % ("usefulness:", status["never_used"],
+                                                               status["archived_unused_7d"]))
+    for m in status["most_used"]:
+        print("%-17s %3d× %s" % ("most used:", m["use_count"], m["text"]))
     for d in written:
         print("digest:           %s (%s%s)" % (d["path"], d.get("kind"), ", created by us" if d.get("created_by_us") else ""))
     for d in skipped:
