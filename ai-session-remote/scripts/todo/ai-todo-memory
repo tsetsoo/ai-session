@@ -12,6 +12,19 @@
 #   ai-todo-memory nightly                                                  # from launchd
 #   ai-todo-memory digest [--project ID] [--dry-run] [--remove-all]
 #   ai-todo-memory status [--json]
+#   ai-todo-memory index [--cwd PATH] [--budget BYTES] [--json]   # from the local cache only
+#   ai-todo-memory search <words> [--project auto|ID|all] [--limit N] [--cwd PATH]
+#   ai-todo-memory add "<text>" [--kind gotcha|decision] [--global] [--cwd PATH]
+#   ai-todo-memory list --global
+#   ai-todo-memory refresh                                                  # rebuild the cache
+#
+# index    The session-start index (2048 bytes): pinned memories, then about 512 bytes of new
+#          ones (unused, < 7 days old), then the rest by most recent use. The cwd's project, its
+#          enclosing projects and this computer's global memories; never open threads, never
+#          imported Claude memory files unless pinned. Ends with the search and add hints.
+# search   GET /api/memories?q= (3 s), else the cache. Reports the printed ids as "search" uses.
+#          Logs the hit count only, never the words.
+# add      Redacted, posted as source=agent, pending: it waits for the user's OK in the app.
 #
 # run      On demand, for one conversation. --dry-run prints the extracted memories (JSON) and
 #          changes nothing (no POST, no offset update, no digest). --no-post / --no-digest skip
@@ -43,7 +56,8 @@
 # TODO_API_TOKEN, and other secrets are caught by the pattern rules alone. `status` says so.
 #
 # State: ~/.ai-remote/memory-state/ (mode 700): sessions/<tool>-<id>.json (offsets),
-# projects.json, digests.json, nightly.json, lock, run/ (claude's cwd), memory.log (ids,
+# projects.json, cache.json (memories for index and offline search), digests.json,
+# nightly.json, lock, run/ (claude's cwd), memory.log (ids,
 # counts and errors only; never transcript text; rotated at 1 MB).
 #
 # Exit codes: 1 a step failed (logged), 64 bad arguments, 65 refused (no hub / computer id),
@@ -102,6 +116,7 @@ ID_LIKE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 KINDS = ("decision", "gotcha", "open_thread", "done", "files_changed")
 # What extraction still produces; "done" and "files_changed" only duplicated git.
 EXTRACT_KINDS = ("decision", "gotcha", "open_thread")
+MAX_ADD_CHARS = 400
 
 CHUNK_CHARS = 48000
 TRIGGER_CHUNKS = 3
@@ -1789,6 +1804,8 @@ def cmd_run(args):
         outcome = process_session(ctx, tool, sid, "run")
         if outcome == "missing":
             die("no %s conversation %s on this computer" % (tool, sid), 66)
+        if not ctx.no_post:
+            refresh_cache(ctx)
         if ctx.dry or ctx.no_post:
             print(json.dumps({"tool": tool, "session_id": sid, "memories": ctx.printed}, indent=1, ensure_ascii=False))
         else:
@@ -1823,6 +1840,7 @@ def cmd_trigger(args):
             return
         ctx = Context(conf, set(), TRIGGER_CHUNKS)
         process_session(ctx, tool, sid, "trigger", hint=values.get("--transcript"))
+        refresh_cache(ctx)
     finally:
         os.close(lock)
     sys.exit(1 if ctx.errors else 0)
@@ -1885,6 +1903,7 @@ def cmd_nightly(args):
                     break
                 process_session(ctx, tool, sid, "nightly", hint=transcript)
         # Digests are no longer written: the session-start index replaces them.
+        refresh_cache(ctx)
         nightly["last_run"] = started
         nightly["last_errors"] = ctx.errors
         save_json(path, nightly)
@@ -1936,12 +1955,300 @@ def cmd_status(args):
         print("skipped:          %s (%s)" % (d["path"], d.get("reason")))
 
 
+# --- Cache, index, search and add ---------------------------------------------------
+
+CACHE_TTL = 3600
+INDEX_BUDGET = 2048
+GRACE_BYTES = 512
+GRACE_DAYS = 7
+PINNED_CUT = 200
+SEARCH_LIMIT = 8
+SEARCH_TIMEOUT = 3
+INDEX_HINTS = ("More: ai-todo-memory search <words>",
+               'Save a fact: ai-todo-memory add "<text>" (the user approves it)')
+
+
+def cache_path():
+    return os.path.join(STATE_DIR, "cache.json")
+
+
+def load_cache():
+    cache = load_json(cache_path())
+    if not isinstance(cache, dict) or not isinstance(cache.get("memories"), list):
+        return None
+    return cache
+
+
+def is_global(m):
+    return not m.get("project_id") and not m.get("todo_id")
+
+
+def refresh_cache(ctx):
+    """The memories an index or offline search may need: live gotchas and decisions plus
+    pinned memories of this computer's projects, and this computer's global memories.
+    Failures are logged and leave the old cache."""
+    if ctx.dry:
+        return False
+    try:
+        projects = ctx.load_projects().mine()
+        rows = []
+        for p in projects:
+            rows += ctx.hub.request("GET", "/api/memories", query={"project_id": p["id"], "kind": "gotcha,decision",
+                                                                   "limit": 1000}) or []
+            rows += ctx.hub.request("GET", "/api/memories", query={"project_id": p["id"], "pinned": "true",
+                                                                   "limit": 1000}) or []
+        rows += ctx.hub.request("GET", "/api/memories", query={"global": "true", "computer_id": ctx.computer_id,
+                                                               "limit": 1000}) or []
+    except HubError as e:
+        Log.write("error", step="cache", error=e)
+        return False
+    seen, memories = set(), []
+    for m in rows:
+        if isinstance(m, dict) and m.get("id") and m["id"] not in seen and not m.get("pending") \
+                and not m.get("archived"):
+            seen.add(m["id"])
+            memories.append(m)
+    ensure_state_dir()
+    save_json(cache_path(), {"fetched_at": now(), "computer_id": ctx.computer_id,
+                             "projects": [{"id": p["id"], "folder": p.get("folder")} for p in projects],
+                             "memories": memories})
+    Log.write("cache", memories=len(memories), projects=len(projects))
+    return True
+
+
+def scope_projects(projects, cwd):
+    """Ids of the projects whose folder contains cwd, nearest (deepest) first."""
+    found = []
+    for p in projects:
+        folder = expand_folder(p.get("folder"))
+        if folder and any(within(c, f) for c in spellings(cwd) for f in spellings(folder)):
+            found.append((len(folder), p.get("id")))
+    return [pid for _, pid in sorted(found, key=lambda x: -x[0])]
+
+
+def in_scope(m, project_rank, computer_id):
+    if m.get("project_id"):
+        return m["project_id"] in project_rank
+    return is_global(m) and m.get("computer_id") == computer_id
+
+
+def index_line(m, cut=None):
+    text = str(m.get("text") or "")
+    if cut:
+        first = text.strip().split("\n", 1)[0].strip()
+        return "- " + one_line(first)[:cut].rstrip()
+    return "- " + one_line(text)
+
+
+def build_index(cache, cwd, budget=INDEX_BUDGET):
+    """(text, ids): the session-start index for cwd, from the cache only."""
+    computer_id = cache.get("computer_id")
+    ranks = {pid: i for i, pid in enumerate(scope_projects(cache.get("projects") or [], cwd))}
+    near = lambda m: ranks.get(m.get("project_id"), len(ranks))
+    cands = [m for m in cache.get("memories") or [] if isinstance(m, dict) and in_scope(m, ranks, computer_id)
+             and not m.get("archived") and not m.get("pending") and m.get("kind") != "open_thread"
+             and (m.get("source") != "claude-memory" or m.get("pinned"))]
+    pinned = sorted([m for m in cands if m.get("pinned")], key=near)
+    fresh_after = now() - GRACE_DAYS * 86400
+    grace = sorted([m for m in cands if not m.get("pinned") and not m.get("use_count")
+                    and created_epoch(m) >= fresh_after], key=lambda m: -created_epoch(m))
+    grace_ids = {m["id"] for m in grace}
+    rest = [m for m in cands if not m.get("pinned") and m["id"] not in grace_ids]
+    rest.sort(key=near)
+    rest.sort(key=lambda m: -int(m.get("use_count") or 0))
+    rest.sort(key=lambda m: str(m.get("last_used_at") or ""), reverse=True)
+
+    footer = "\n".join(INDEX_HINTS) + "\n"
+    left = budget - len(footer.encode("utf-8"))
+    lines, ids = [], []
+
+    def take(line, m, limit):
+        size = len(line.encode("utf-8")) + 1
+        if size > limit:
+            return 0
+        lines.append(line)
+        ids.append(m["id"])
+        return size
+
+    for m in pinned:
+        line = index_line(m)
+        if len(line.encode("utf-8")) + 1 > left:
+            line = index_line(m, PINNED_CUT)
+        left -= take(line, m, left)
+    grace_left = min(GRACE_BYTES, left)
+    for m in grace:
+        used = take(index_line(m), m, grace_left)
+        grace_left -= used
+        left -= used
+    for m in rest:
+        left -= take(index_line(m), m, left)
+    text = ("\n".join(lines) + "\n" if lines else "") + footer
+    return text, ids
+
+
+def value_of(args, flag, default=None):
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 >= len(args):
+            die("%s needs a value" % flag, 64)
+        value = args[i + 1]
+        del args[i:i + 2]
+        return value
+    return default
+
+
+def flag_of(args, flag):
+    if flag in args:
+        args.remove(flag)
+        return True
+    return False
+
+
+def cmd_index(args):
+    args = list(args)
+    cwd = os.path.normpath(value_of(args, "--cwd", os.getcwd()))
+    budget = value_of(args, "--budget", str(INDEX_BUDGET))
+    as_json = flag_of(args, "--json")
+    if args or not budget.isdigit():
+        die("usage: ai-todo-memory index [--cwd PATH] [--budget BYTES] [--json]", 64)
+    cache = load_cache() or {"memories": [], "projects": []}
+    text, ids = build_index(cache, cwd, int(budget))
+    if as_json:
+        print(json.dumps({"text": text, "ids": ids}, ensure_ascii=False))
+    else:
+        sys.stdout.write(text)
+
+
+def light_context(conf):
+    """A Context for the small commands: no chunk budget, nothing printed."""
+    return Context(conf, set(), 0)
+
+
+def search_line(m):
+    text = str(m.get("text") or "")
+    if m.get("source") == "claude-memory":
+        first, _, body = text.strip().partition("\n")
+        text = one_line(first) + (" — " + one_line(body)[:160] if body.strip() else "")
+    else:
+        text = one_line(text)
+    return "[%s] %s — %s" % (m.get("kind"), text, str(m.get("created_at") or "")[:10])
+
+
+def cmd_search(args):
+    args = list(args)
+    usage = "usage: ai-todo-memory search <words> [--project auto|ID|all] [--limit N] [--cwd PATH]"
+    cwd = os.path.normpath(value_of(args, "--cwd", os.getcwd()))
+    scope = value_of(args, "--project", "auto")
+    limit = value_of(args, "--limit", str(SEARCH_LIMIT))
+    words = " ".join(args).strip()
+    if not words or not limit.isdigit() or int(limit) < 1:
+        die(usage, 64)
+    limit = int(limit)
+    conf = Config()
+    cache = load_cache() or {"memories": [], "projects": []}
+    computer_id = conf.get("TODO_COMPUTER_ID") or cache.get("computer_id")
+    if scope == "auto":
+        ranks = {pid: i for i, pid in enumerate(scope_projects(cache.get("projects") or [], cwd))}
+        keep = lambda m: in_scope(m, ranks, computer_id)
+    elif scope == "all":
+        keep = lambda m: True
+    else:
+        keep = lambda m: m.get("project_id") == scope
+    hub = Hub(conf)
+    source, hits = "hub", None
+    if conf.get("TODO_HUB_URL"):
+        query = {"q": words, "include_unused": "true", "limit": 200}
+        if scope not in ("auto", "all"):
+            query["project_id"] = scope
+        try:
+            rows = hub.request("GET", "/api/memories", query=query, timeout=SEARCH_TIMEOUT)
+            hits = [m for m in rows if isinstance(m, dict) and keep(m)][:limit] if isinstance(rows, list) else None
+        except HubError:
+            hits = None
+    if hits is None:
+        source = "cache"
+        terms = [w for w in re.split(r"[^\w]+", words.lower()) if w]
+        score = lambda m: sum(1 for w in terms if w in str(m.get("text") or "").lower())
+        hits = sorted([m for m in cache.get("memories") or [] if isinstance(m, dict) and keep(m) and score(m)],
+                      key=lambda m: -score(m))[:limit]
+    for m in hits:
+        print(search_line(m))
+    if not hits:
+        print("No memories match.")
+    Log.write("search", hits=len(hits), source=source)
+    if hits and source == "hub" and computer_id:
+        try:
+            hub.request("POST", "/api/memories/uses", timeout=SEARCH_TIMEOUT, body={
+                "computer_id": computer_id, "day": local_day(), "project_ids": [],
+                "uses": [{"id": m["id"], "signal": "search"} for m in hits]})
+        except HubError:
+            pass
+
+
+def cmd_add(args):
+    args = list(args)
+    usage = 'usage: ai-todo-memory add "<text>" [--kind gotcha|decision] [--global] [--cwd PATH]'
+    cwd = os.path.normpath(value_of(args, "--cwd", os.getcwd()))
+    kind = value_of(args, "--kind", "gotcha")
+    as_global = flag_of(args, "--global")
+    text = " ".join(args).strip()
+    if not text or kind not in ("gotcha", "decision"):
+        die(usage, 64)
+    conf = Config()
+    ctx = light_context(conf)
+    text = ctx.redactor()(one_line(text))[:MAX_ADD_CHARS].strip()
+    body = {"kind": kind, "text": text, "source": "agent", "pending": True}
+    project = None if as_global else ctx.load_projects().match(cwd)
+    if project:
+        body["project_id"] = project["id"]
+    else:
+        body["computer_id"] = ctx.computer_id
+    try:
+        ctx.hub.request("POST", "/api/memories", body=body)
+    except HubError as e:
+        Log.write("error", step="add", error=e)
+        die("ai-todo-memory: could not reach todo-server (%s)" % e, 1)
+    Log.write("add", kind=kind, scope="project" if project else "global")
+    print("Saved for approval in the app.")
+
+
+def cmd_list(args):
+    if list(args) != ["--global"]:
+        die("usage: ai-todo-memory list --global", 64)
+    conf = Config()
+    ctx = light_context(conf)
+    try:
+        rows = ctx.hub.request("GET", "/api/memories", query={"global": "true", "computer_id": ctx.computer_id,
+                                                              "limit": 1000}, timeout=SEARCH_TIMEOUT)
+    except HubError:
+        rows = [m for m in (load_cache() or {}).get("memories", []) if is_global(m)]
+    for m in rows or []:
+        print(search_line(m))
+
+
+def cmd_refresh(args):
+    if args:
+        die("usage: ai-todo-memory refresh", 64)
+    conf = Config()
+    ctx = light_context(conf)
+    lock = take_lock(blocking=False)
+    if lock is None:
+        return
+    try:
+        ok = refresh_cache(ctx)
+    finally:
+        os.close(lock)
+    sys.exit(0 if ok else 1)
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
-        die("usage: ai-todo-memory run|trigger|nightly|digest|status ... (see the header of this script)", 64)
+        die("usage: ai-todo-memory run|trigger|nightly|digest|status|index|search|add|list|refresh ... "
+            "(see the header of this script)", 64)
     command, rest = argv[0], list(argv[1:])
     commands = {"run": cmd_run, "trigger": cmd_trigger, "nightly": cmd_nightly, "digest": cmd_digest,
-                "status": cmd_status}
+                "status": cmd_status, "index": cmd_index, "search": cmd_search, "add": cmd_add,
+                "list": cmd_list, "refresh": cmd_refresh}
     if command not in commands:
         die("unknown command: %s" % command, 64)
     try:

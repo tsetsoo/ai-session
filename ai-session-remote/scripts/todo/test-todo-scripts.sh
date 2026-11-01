@@ -2120,6 +2120,122 @@ mem run claude "$U3" >/dev/null || fail "run with digests on failed"
 write_conf
 pass "extract_writes_no_digest: extraction no longer writes AGENTS.md digests"
 
+# --- ai-todo-memory: index and search ----------------------------------------------------------
+
+I_CACHE="${M_STATE}/cache.json"
+I_LONG_PINNED="Long pinned title line"
+python3 - "$I_CACHE" "$I_LONG_PINNED" <<'PY'
+import json, sys, time
+now = time.time()
+iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+def m(i, kind, text, project="proj-app", **kw):
+    row = dict(id=i, project_id=project, todo_id=None, computer_id="comp-1", kind=kind, text=text, source="extracted",
+               pinned=False, archived=False, pending=False, use_count=0, last_used_at=None,
+               created_at="2020-01-01T00:00:00Z", updated_at="2020-01-01T00:00:00Z")
+    row.update(kw)
+    return row
+ms = [
+    m("p1", "decision", "Pinned: signing uses team 233QTK6KCL.", pinned=True),
+    m("plong", "gotcha", sys.argv[2] + "\n" + "x" * 7000, source="claude-memory", pinned=True),
+    m("g1", "gotcha", "Fresh gotcha from yesterday.", created_at=iso(now - 86400)),
+    m("u_old", "gotcha", "Used long ago fact.", use_count=5, last_used_at="2026-10-01 10:00:00"),
+    m("u_new", "decision", "Used recently fact.", use_count=1, last_used_at="2026-10-30 10:00:00"),
+    m("ot", "open_thread", "Open thread never shown.", use_count=9, last_used_at="2026-10-31 10:00:00"),
+    m("imp", "gotcha", "Imported note never in index.", source="claude-memory", use_count=9, last_used_at="2026-10-31 10:00:00"),
+    m("glob", "gotcha", "Mac-wide global fact.", project=None, use_count=2, last_used_at="2026-10-29 10:00:00"),
+    m("oglob", "gotcha", "Other computer global.", project=None, computer_id="comp-2", use_count=9, last_used_at="2026-10-31 10:00:00"),
+    m("oproj", "gotcha", "Other project fact.", project="proj-other", use_count=9, last_used_at="2026-10-31 10:00:00"),
+] + [m("f%d" % n, "gotcha", "Filler fact number %d that takes up room in the index budget for sure." % n,
+       use_count=1, last_used_at="2026-01-01 10:00:00") for n in range(40)]
+json.dump({"fetched_at": now, "computer_id": "comp-1",
+           "projects": [{"id": "proj-app", "folder": "~/work/app"}, {"id": "proj-other", "folder": "~/work/other"}],
+           "memories": ms}, open(sys.argv[1], "w"))
+PY
+log_lines=$(wc -l <"$M_HUB_LOG")
+mem index --cwd "$M_APP" >"${SANDBOX}/index.out" || fail "index failed"
+python3 - "${SANDBOX}/index.out" "$I_LONG_PINNED" <<'PY' || fail "index wrong: $(cat "${SANDBOX}/index.out")"
+import sys
+raw = open(sys.argv[1], "rb").read()
+assert len(raw) <= 2048, len(raw)
+lines = raw.decode().rstrip("\n").split("\n")
+assert lines[-2:] == ["More: ai-todo-memory search <words>",
+                      'Save a fact: ai-todo-memory add "<text>" (the user approves it)'], lines[-2:]
+PY
+pass "index_budget_and_hints: at most 2048 bytes, ending with the search and add hints"
+python3 - "${SANDBOX}/index.out" "$I_LONG_PINNED" <<'PY' || fail "index order wrong: $(cat "${SANDBOX}/index.out")"
+import sys
+lines = open(sys.argv[1]).read().split("\n")
+pos = lambda t: next(i for i, l in enumerate(lines) if t in l)
+assert pos("Pinned: signing") < pos("Fresh gotcha") < pos("Used recently") < pos("Used long ago") < pos("Filler fact number"), lines
+assert pos(sys.argv[2]) < pos("Fresh gotcha"), lines
+assert lines[pos(sys.argv[2])] == "- " + sys.argv[2], lines[pos(sys.argv[2])]
+PY
+pass "index_order_pinned_grace_used: pinned, then new facts, then by most recent use"
+pass "index_long_pinned_shows_first_line: a pinned memory longer than the budget shows its first line"
+for t in "Open thread never shown" "Imported note never in index" "Other computer global" "Other project fact"; do
+  ! grep -q "$t" "${SANDBOX}/index.out" || fail "index includes '$t'"
+done
+grep -q "Mac-wide global fact" "${SANDBOX}/index.out" || fail "index lacks this computer's global fact"
+pass "index_skips_open_threads_and_unpinned_imports (and other computers and projects)"
+mem index --cwd "${HOME}/work/elsewhere" >"${SANDBOX}/index-out.out" || fail "index outside a project failed"
+[[ "$(grep -c '^- ' "${SANDBOX}/index-out.out")" -eq 1 ]] && grep -q "Mac-wide global fact" "${SANDBOX}/index-out.out" \
+  || fail "outside a project the index should hold only globals: $(cat "${SANDBOX}/index-out.out")"
+pass "index_outside_project_globals_only"
+mem index --cwd "$M_APP" --json | python3 -c '
+import json, sys
+j = json.load(sys.stdin)
+assert j["ids"][:2] == ["p1", "plong"] and "g1" in j["ids"] and "ot" not in j["ids"], j["ids"]
+assert j["text"].rstrip("\n").endswith("(the user approves it)"), j["text"][-60:]
+' || fail "index --json wrong"
+pass "index_json_lists_ids"
+[[ $(wc -l <"$M_HUB_LOG") -eq $log_lines ]] || fail "index called the hub"
+pass "index_never_calls_hub"
+
+hub_edit "s['memories'] += [dict(id='mem-kc', project_id='proj-app', todo_id=None, computer_id='comp-1', tool=None, session_id=None,
+  kind='gotcha', text='Unlock the login keychain before signing over SSH.', files=[], confidence=None, source='extracted',
+  pinned=False, archived=False, pending=False, use_count=0, created_at='2026-10-20T09:00:00Z', updated_at='2026-10-20T09:00:00Z'),
+  dict(id='mem-kc-other', project_id='proj-zzz', todo_id=None, computer_id='comp-1', tool=None, session_id=None,
+  kind='gotcha', text='Keychain in a project of another folder.', files=[], confidence=None, source='extracted',
+  pinned=False, archived=False, pending=False, use_count=0, created_at='2026-10-20T09:00:00Z', updated_at='2026-10-20T09:00:00Z')]"
+mem search keychain --cwd "$M_APP" >"${SANDBOX}/search.out" || fail "search failed"
+grep -q "^\[gotcha\] Unlock the login keychain before signing over SSH. — 2026-10-20$" "${SANDBOX}/search.out" || fail "search output wrong: $(cat "${SANDBOX}/search.out")"
+! grep -q "another folder" "${SANDBOX}/search.out" || fail "search left the folder's projects"
+last_body POST /api/memories/uses | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert b["uses"] == [{"id": "mem-kc", "signal": "search"}] and b["project_ids"] == [], b
+' || fail "search did not report its hits: $(last_body POST /api/memories/uses)"
+pass "search_uses_hub_and_posts_search_uses"
+write_conf
+sed -i.bak "s#^TODO_HUB_URL=.*#TODO_HUB_URL='http://127.0.0.1:9'#" "$M_CONF"
+mem search signing --cwd "$M_APP" >"${SANDBOX}/search-cache.out" || fail "search with the hub down failed"
+grep -q "Pinned: signing uses team" "${SANDBOX}/search-cache.out" || fail "cache fallback found nothing: $(cat "${SANDBOX}/search-cache.out")"
+pass "search_falls_back_to_cache"
+grep -q "search hits=" "${M_STATE}/memory.log" && ! grep -q "signing" "${M_STATE}/memory.log" || fail "the log has no search line or holds the query"
+write_conf
+pass "search_log_has_no_query"
+
+if mem add "Agents can approve nothing" --kind nonsense >/dev/null 2>&1; then fail "a bad kind was accepted"; else [[ $? -eq 64 ]] || fail "a bad kind should exit 64"; fi
+if mem add "" >/dev/null 2>&1; then fail "empty text was accepted"; else [[ $? -eq 64 ]] || fail "empty text should exit 64"; fi
+MY_SERVICE_TOKEN=LocalTok3n_Value9 mem add "Deploys use the token LocalTok3n_Value9 from the env" --cwd "$M_APP" >"${SANDBOX}/add.out" || fail "add failed"
+grep -qx "Saved for approval in the app." "${SANDBOX}/add.out" || fail "add printed: $(cat "${SANDBOX}/add.out")"
+last_body POST /api/memories | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert (b["source"], b["pending"], b["kind"], b.get("project_id")) == ("agent", True, "gotcha", "proj-app"), b
+assert "LocalTok3n_Value9" not in json.dumps(b), b
+' || fail "add body wrong: $(last_body POST /api/memories)"
+pass "add_posts_pending_agent"
+pass "add_redacts_secret"
+mem add "Codbex login needs the AI Session key" --global --kind decision --cwd "$M_APP" >/dev/null || fail "add --global failed"
+last_body POST /api/memories | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert (b.get("project_id"), b["computer_id"], b["kind"]) == (None, "comp-1", "decision"), b
+' || fail "add --global body wrong: $(last_body POST /api/memories)"
+pass "add_global_sets_computer"
+hub_edit "s['memories'] = [m for m in s['memories'] if m.get('source') != 'agent']"
+
 # --- ai-todo-memory: digest -----------------------------------------------------------------
 
 unset XDG_CONFIG_HOME GIT_CONFIG_GLOBAL
