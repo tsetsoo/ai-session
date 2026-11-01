@@ -26,9 +26,9 @@
 		<true/>
 	</dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Dictate new todos.</string>
+	<string>Dictate todos and chat messages.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Turns your dictation into todo text.</string>
+	<string>Turns your dictation into text.</string>
 	<key>UIApplicationShortcutItems</key>
 	<array>
 		<dict>

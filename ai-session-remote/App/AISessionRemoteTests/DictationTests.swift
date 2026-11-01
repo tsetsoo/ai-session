@@ -25,10 +25,20 @@ final class DictationTests: XCTestCase {
             pendingAuthorization = nil
         }
 
-        func begin(onResult: @escaping @MainActor (String?, Bool) -> Void) throws {
+        /// Hold `begin` (e.g. a model download) until `releaseBegin()`.
+        var holdBegin = false
+        private(set) var pendingBegin: CheckedContinuation<Void, Never>?
+
+        func begin(onResult: @escaping @MainActor (String?, Bool) -> Void) async throws {
             beginCount += 1
+            if holdBegin { await withCheckedContinuation { pendingBegin = $0 } }
             if failBegin { throw BeginFailed() }
             self.onResult = onResult
+        }
+
+        func releaseBegin() {
+            pendingBegin?.resume()
+            pendingBegin = nil
         }
 
         func finish() { finishCount += 1 }
@@ -163,5 +173,61 @@ final class DictationTests: XCTestCase {
             XCTAssertEqual(error as? Dictation.Failure, .unavailable)
         }
         XCTAssertEqual(dictation.phase, .idle)
+    }
+
+    func testStopWhileTheSessionIsStartingTurnsItOff() async throws {
+        let fake = FakeSession()
+        fake.holdBegin = true
+        let dictation = makeDictation(fake)
+        let start = Task { try await dictation.start() }
+        while fake.pendingBegin == nil { await Task.yield() }
+
+        dictation.stop()
+        fake.releaseBegin()
+        try await start.value
+
+        XCTAssertEqual(dictation.phase, .idle)
+        XCTAssertGreaterThanOrEqual(fake.cancelCount, 1, "the stop reaches the starting session")
+        fake.emit("ghost")
+        XCTAssertEqual(dictation.transcript, "")
+    }
+
+    func testStopReachesTheSessionBeforeItFinishesStarting() async throws {
+        let fake = FakeSession()
+        fake.holdBegin = true
+        let dictation = makeDictation(fake)
+        let start = Task { try await dictation.start() }
+        while fake.pendingBegin == nil { await Task.yield() }
+
+        dictation.cancel()
+        XCTAssertEqual(fake.cancelCount, 1, "cancelled while still starting, e.g. mid-download")
+        fake.releaseBegin()
+        try await start.value
+    }
+
+    func testFailedStartAfterStopShowsNoError() async throws {
+        let fake = FakeSession()
+        fake.holdBegin = true
+        fake.failBegin = true
+        let dictation = makeDictation(fake)
+        let start = Task { try await dictation.start() }
+        while fake.pendingBegin == nil { await Task.yield() }
+
+        dictation.stop()
+        fake.releaseBegin()
+        try await start.value // no throw: the user ended this run
+        XCTAssertEqual(dictation.phase, .idle)
+    }
+
+    func testTranscriptKeepsFinalizedTextAndReplacesVolatileText() {
+        var transcript = TranscriptAccumulator()
+        transcript.receive("Call the", isFinal: false)
+        transcript.receive("Call the Bansko", isFinal: false)
+        XCTAssertEqual(transcript.text, "Call the Bansko")
+        transcript.receive("Call the Bansko hotel.", isFinal: true)
+        transcript.receive("Ask", isFinal: false)
+        XCTAssertEqual(transcript.text, "Call the Bansko hotel. Ask")
+        transcript.receive(" Ask about parking.", isFinal: true)
+        XCTAssertEqual(transcript.text, "Call the Bansko hotel. Ask about parking.")
     }
 }

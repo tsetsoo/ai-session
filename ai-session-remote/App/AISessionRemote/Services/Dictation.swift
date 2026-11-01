@@ -11,15 +11,16 @@ protocol SpeechSession: AnyObject {
     /// Speech and microphone permission (asked the first time).
     func authorize() async -> Bool
     /// Starts listening. `onResult` gets the text so far and whether it is final. Throws
-    /// `Dictation.Failure.unavailable` with everything torn down.
-    func begin(onResult: @escaping @MainActor (String?, Bool) -> Void) throws
+    /// `Dictation.Failure.unavailable` with everything torn down. May wait (the first run can
+    /// download a speech model); the caller cancels the session if it was abandoned meanwhile.
+    func begin(onResult: @escaping @MainActor (String?, Bool) -> Void) async throws
     /// Stops the microphone; the recognizer still delivers its final result.
     func finish()
     /// Stops everything; no more results.
     func cancel()
 }
 
-/// In-app speech-to-text for the quick-add field, on-device when the recognizer supports it.
+/// In-app speech-to-text for the quick-add field and the chat composer, on-device.
 /// `transcript` grows while it runs.
 /// - `stop()` (a second tap) ends listening and lets the final result land.
 /// - `cancel()` (adding the todo, leaving, going offline) drops anything still to come.
@@ -57,7 +58,7 @@ final class Dictation {
     /// Incremented per start and per cancel; anything from an older run is dropped.
     @ObservationIgnored private var generation = 0
 
-    init(makeSession: @escaping @MainActor () -> SpeechSession = { LiveSpeechSession() }) {
+    init(makeSession: @escaping @MainActor () -> SpeechSession = { AdaptiveSpeechSession() }) {
         self.makeSession = makeSession
     }
 
@@ -78,15 +79,24 @@ final class Dictation {
             phase = .idle
             throw Failure.notAllowed
         }
+        // Held while starting, so a stop or cancel during a slow start (model download) reaches it.
+        self.session = session
         do {
-            try session.begin { [weak self] text, isFinal in
+            try await session.begin { [weak self] text, isFinal in
                 self?.receive(text: text, isFinal: isFinal, run: run)
             }
         } catch {
+            // The user already stopped this run: no error to show.
+            guard run == generation else { return }
             phase = .idle
+            self.session = nil
             throw (error as? Failure) ?? Failure.unavailable
         }
-        self.session = session
+        // Stopped, cancelled or already finished while the session was starting: make sure it's off.
+        guard run == generation, phase == .starting else {
+            session.cancel()
+            return
+        }
         phase = .running
     }
 
@@ -121,7 +131,8 @@ final class Dictation {
     }
 }
 
-/// The microphone through `AVAudioEngine` into `SFSpeechRecognizer`.
+/// The microphone through `AVAudioEngine` into `SFSpeechRecognizer`: the pre-iOS 26 engine, and
+/// the fallback when `SpeechTranscriber` doesn't cover the device or language.
 @MainActor
 final class LiveSpeechSession: SpeechSession {
     private let recognizer = SFSpeechRecognizer()
@@ -129,18 +140,22 @@ final class LiveSpeechSession: SpeechSession {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var tapInstalled = false
+    private var ownsAudio = false
 
     func authorize() async -> Bool {
-        guard await Self.speechAuthorized() else { return false }
+        await Self.authorizeSpeechAndMicrophone()
+    }
+
+    static func authorizeSpeechAndMicrophone() async -> Bool {
+        guard await speechAuthorized() else { return false }
         return await AVAudioApplication.requestRecordPermission()
     }
 
-    func begin(onResult: @escaping @MainActor (String?, Bool) -> Void) throws {
+    func begin(onResult: @escaping @MainActor (String?, Bool) -> Void) async throws {
         guard let recognizer, recognizer.isAvailable else { throw Dictation.Failure.unavailable }
-        let audio = AVAudioSession.sharedInstance()
         do {
-            try audio.setCategory(.record, mode: .measurement, options: .duckOthers)
-            try audio.setActive(true, options: .notifyOthersOnDeactivation)
+            ownsAudio = true
+            try RecordingAudioSession.activate()
         } catch {
             tearDown()
             throw Dictation.Failure.unavailable
@@ -154,6 +169,7 @@ final class LiveSpeechSession: SpeechSession {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
+        request.addsPunctuation = true
         if recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
@@ -189,9 +205,11 @@ final class LiveSpeechSession: SpeechSession {
         }
         request?.endAudio()
         request = nil
-        let audio = AVAudioSession.sharedInstance()
-        try? audio.setActive(false, options: .notifyOthersOnDeactivation)
-        try? audio.setCategory(.soloAmbient, mode: .default, options: [])
+        // Only its own: a late cancel must not cut off a newer run's microphone.
+        if ownsAudio {
+            ownsAudio = false
+            RecordingAudioSession.deactivate()
+        }
     }
 
     // The tap and result callbacks run off the main actor; build them outside it.
