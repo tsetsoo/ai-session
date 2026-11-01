@@ -2236,6 +2236,53 @@ assert (b.get("project_id"), b["computer_id"], b["kind"]) == (None, "comp-1", "d
 pass "add_global_sets_computer"
 hub_edit "s['memories'] = [m for m in s['memories'] if m.get('source') != 'agent']"
 
+# --- ai-todo-memory: session-start hook ---------------------------------------------------------
+
+S1=e0e0e0e0-0000-4000-8000-0000000000a1
+write_conf "AI_TODO_MEMORY_DIGEST='on'"
+printf '{"session_id":"%s","cwd":"%s","hook_event_name":"SessionStart"}' "$S1" "$M_APP" | mem session-start >"${SANDBOX}/ss.out" \
+  || fail "session-start failed"
+python3 - "${SANDBOX}/ss.out" <<'PY' || fail "session-start output wrong: $(cat "${SANDBOX}/ss.out")"
+import json, sys
+out = json.load(open(sys.argv[1]))
+h = out["hookSpecificOutput"]
+assert h["hookEventName"] == "SessionStart", h
+assert "Pinned: signing uses team" in h["additionalContext"], h
+assert h["additionalContext"].rstrip().endswith("(the user approves it)"), h
+PY
+pass "session_start_prints_additional_context"
+grep -qx "p1" "${M_STATE}/sessions/claude-${S1}.shown" && ! grep -q "ot" "${M_STATE}/sessions/claude-${S1}.shown" \
+  || fail "shown ids wrong: $(cat "${M_STATE}/sessions/claude-${S1}.shown" 2>&1)"
+printf '{"session_id":"%s","cwd":"%s"}' "$S1" "$M_APP" | mem session-start --codex >/dev/null || fail "session-start --codex failed"
+[[ -s "${M_STATE}/sessions/codex-${S1}.shown" ]] || fail "codex shown ids not written"
+pass "session_start_writes_shown_ids"
+sed -i.bak "s#^TODO_HUB_URL=.*#TODO_HUB_URL='http://10.255.255.1:9'#" "$M_CONF"
+python3 - "$I_CACHE" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1])); c["fetched_at"] = 0; json.dump(c, open(sys.argv[1], "w"))
+PY
+python3 - "$MEMORY" "$M_CONF" "$S1" "$M_APP" <<'PY' || fail "session-start with the hub down was slow or empty"
+import json, os, subprocess, sys, time
+env = dict(os.environ, AI_TODO_HUB_CONF=sys.argv[2])
+start = time.time()
+p = subprocess.run([sys.argv[1], "session-start"], input=json.dumps({"session_id": sys.argv[3], "cwd": sys.argv[4]}),
+                   capture_output=True, text=True, env=env, timeout=10)
+took = time.time() - start
+assert p.returncode == 0, p
+assert "Pinned: signing" in p.stdout, p.stdout
+assert took < 0.3, took
+PY
+write_conf "AI_TODO_MEMORY_DIGEST='on'"
+pass "session_start_hub_down_uses_cache: exit 0, the cached index, under 300 ms (a stale cache refreshes in the background)"
+out="$(printf '{"session_id":"%s","cwd":"%s"}' "$S1" "$M_APP" | AI_TODO_MEMORY_RUN=1 mem session-start)"
+[[ -z "$out" ]] || fail "session-start printed inside ai-todo-memory's own claude run: $out"
+out="$(printf 'not json' | mem session-start)" || fail "session-start failed on bad input"
+[[ -z "$out" ]] || fail "session-start printed on bad input: $out"
+write_conf
+out="$(printf '{"session_id":"%s","cwd":"%s"}' "$S1" "$M_APP" | mem session-start)"
+[[ -z "$out" ]] || fail "session-start printed with AI_TODO_MEMORY_DIGEST off: $out"
+pass "session_start_noop_under_memory_run (and silent on bad input or with delivery switched off)"
+
 # --- ai-todo-memory: digest -----------------------------------------------------------------
 
 unset XDG_CONFIG_HOME GIT_CONFIG_GLOBAL
@@ -2630,7 +2677,13 @@ original_settings="$(cat "$SETTINGS")"
 [[ ! -e "$LAUNCHCTL_LOG" && ! -e "$PLIST" ]] || fail "--dry-run wrote the plist or ran launchctl"
 pass "install --dry-run changes nothing"
 
+OLD_DIGEST_DIR="${SANDBOX}/old-digest"
+mkdir -p "$OLD_DIGEST_DIR" "${HOME}/.ai-remote/memory-state"
+printf '%s\nold digest line\n%s\n' '<!-- BEGIN ai-todo-memory: managed by todo-hub, rewritten automatically; edit memories in the app -->' '<!-- END ai-todo-memory -->' >"${OLD_DIGEST_DIR}/AGENTS.md"
+printf '{"projects": {"p": {"targets": [{"kind": "codex", "path": "%s/AGENTS.md", "created_by_us": true}], "skipped": []}}}' "$OLD_DIGEST_DIR" >"${HOME}/.ai-remote/memory-state/digests.json"
 "$INSTALL" --hub-url http://hub:8080 --token tok >/dev/null
+[[ ! -e "${OLD_DIGEST_DIR}/AGENTS.md" ]] || ! grep -q "old digest line" "${OLD_DIGEST_DIR}/AGENTS.md" || fail "install left an old digest block: $(cat "${OLD_DIGEST_DIR}/AGENTS.md")"
+pass "install_removes_old_digest_blocks"
 "$INSTALL" >/dev/null
 check_installed() {
   python3 - "$SETTINGS" "${HOME}/.ai-remote/bin" <<'PY'
@@ -2649,6 +2702,7 @@ assert commands("PreToolUse") == ["echo pre", f"{bin_dir}/ai-todo-hook tool"], c
 for event, status in {"PermissionRequest":"waiting", "PostToolUseFailure":"tool", "SessionEnd":"idle",
                       "StopFailure":"waiting", "Elicitation":"waiting", "ElicitationResult":"tool"}.items():
     assert commands(event) == [f"{bin_dir}/ai-todo-hook {status}"], (event, commands(event))
+assert commands("SessionStart") == [f"{bin_dir}/ai-todo-memory session-start"], commands("SessionStart")
 assert hooks["PreToolUse"][0]["matcher"] == "Bash"
 assert s["projectInstructions"] == "claude-md-and-agents-md", s.get("projectInstructions")
 assert s["model"] == "opus"
@@ -2743,12 +2797,13 @@ import json, sys
 hooks = json.load(open(sys.argv[1]))["hooks"]
 cmds = {e: [h["command"] for g in groups for h in g["hooks"]] for e, groups in hooks.items()}
 b = sys.argv[2]
+m = b.replace("ai-todo-hook", "ai-todo-memory")
 assert cmds == {"Stop": ["say done", f"{b} --codex idle"], "UserPromptSubmit": [f"{b} --codex busy"],
                 "PermissionRequest": [f"{b} --codex waiting"], "PostToolUse": [f"{b} --codex tool"],
                 "PreToolUse": [f"{b} --codex tool"], "Interrupt": [f"{b} --codex idle"],
-                "SessionEnd": [f"{b} --codex idle"]}, cmds
+                "SessionEnd": [f"{b} --codex idle"], "SessionStart": [f"{m} session-start --codex"]}, cmds
 PY
-grep -q "codex hooks: trusted 7" <<<"$out" || fail "install did not report trusting the codex hooks: $out"
+grep -q "codex hooks: trusted 8" <<<"$out" || fail "install did not report trusting the codex hooks: $out"
 python3 - "$CODEX_TRUST_LOG" "${CX}/hooks.json" <<'PY' || fail "codex trust writes wrong: $(cat "$CODEX_TRUST_LOG")"
 import json, sys
 writes = [json.loads(l) for l in open(sys.argv[1])]
@@ -2756,7 +2811,7 @@ assert len(writes) == 1, writes  # the re-run found them trusted already
 edit = writes[0]["edits"][0]
 assert edit["keyPath"] == "hooks.state" and edit["mergeStrategy"] == "upsert", edit
 keys = sorted(edit["value"])
-assert keys == sorted(f"{sys.argv[2]}:{e}" for e in ["PermissionRequest:0:0", "PostToolUse:0:0", "PreToolUse:0:0", "Interrupt:0:0", "SessionEnd:0:0", "Stop:1:0", "UserPromptSubmit:0:0"]), keys
+assert keys == sorted(f"{sys.argv[2]}:{e}" for e in ["PermissionRequest:0:0", "PostToolUse:0:0", "PreToolUse:0:0", "Interrupt:0:0", "SessionEnd:0:0", "SessionStart:0:0", "Stop:1:0", "UserPromptSubmit:0:0"]), keys
 assert all(v["trusted_hash"].startswith("sha256:") for v in edit["value"].values())
 PY
 CODEX_HOME="$CX" "$INSTALL" --uninstall >/dev/null

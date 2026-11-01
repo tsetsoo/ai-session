@@ -17,6 +17,7 @@
 #   ai-todo-memory add "<text>" [--kind gotcha|decision] [--global] [--cwd PATH]
 #   ai-todo-memory list --global
 #   ai-todo-memory refresh                                                  # rebuild the cache
+#   ai-todo-memory session-start [--codex]     # SessionStart hook (Claude, Codex): the index as context
 #
 # index    The session-start index (2048 bytes): pinned memories, then about 512 bytes of new
 #          ones (unused, < 7 days old), then the rest by most recent use. The cwd's project, its
@@ -87,6 +88,11 @@ IFS=$ai_ifs
 export PATH="$ai_path"
 unset ai_path ai_ifs ai_dir
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+# Python reads its program from stdin below, so a hook's JSON input is handed over here.
+if [ "${1:-}" = session-start ]; then
+  AI_TODO_HOOK_INPUT=$(head -c 65536)
+  export AI_TODO_HOOK_INPUT
+fi
 exec python3 - "$@" <<'PY'
 import calendar
 import fcntl
@@ -2241,6 +2247,45 @@ def cmd_refresh(args):
     sys.exit(0 if ok else 1)
 
 
+def spawn_refresh():
+    """Start `ai-todo-memory refresh` in the background; never wait for it."""
+    try:
+        subprocess.Popen([os.path.join(LIB_DIR, "ai-todo-memory"), "refresh"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                         close_fds=True)
+    except OSError:
+        pass
+
+
+def cmd_session_start(args):
+    """Claude / Codex SessionStart hook: print the index as additional context, from the cache
+    only, and remember which memories it showed. Never fails and never waits on the network."""
+    if args not in ([], ["--codex"]) or os.environ.get("AI_TODO_MEMORY_RUN") == "1":
+        return
+    tool = "codex" if args else "claude"
+    try:
+        if not Config().on("AI_TODO_MEMORY_DIGEST"):
+            return
+        data = json.loads(os.environ.get("AI_TODO_HOOK_INPUT") or "null")
+        if not isinstance(data, dict):
+            return
+        cwd = os.path.normpath(str(data.get("cwd") or os.getcwd()))
+        cache = load_cache()
+        if cache is None or now() - float(cache.get("fetched_at") or 0) > CACHE_TTL:
+            spawn_refresh()
+        if cache is None:
+            return
+        text, ids = build_index(cache, cwd)
+        sid = str(data.get("session_id") or "")
+        if ID_LIKE_RE.match(sid):
+            os.makedirs(os.path.join(STATE_DIR, "sessions"), exist_ok=True)
+            write_atomic(shown_path(tool, sid), "".join(i + "\n" for i in ids))
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}},
+                         ensure_ascii=False))
+    except Exception:  # a hook must never break the session it runs for
+        return
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         die("usage: ai-todo-memory run|trigger|nightly|digest|status|index|search|add|list|refresh ... "
@@ -2248,7 +2293,7 @@ def main(argv):
     command, rest = argv[0], list(argv[1:])
     commands = {"run": cmd_run, "trigger": cmd_trigger, "nightly": cmd_nightly, "digest": cmd_digest,
                 "status": cmd_status, "index": cmd_index, "search": cmd_search, "add": cmd_add,
-                "list": cmd_list, "refresh": cmd_refresh}
+                "list": cmd_list, "refresh": cmd_refresh, "session-start": cmd_session_start}
     if command not in commands:
         die("unknown command: %s" % command, 64)
     try:

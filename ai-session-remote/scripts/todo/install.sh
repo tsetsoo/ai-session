@@ -6,7 +6,7 @@
 #   ~/.ai-remote/bin/ai-todo-sessions  list / delete / prune / stats of Claude and Codex; delete also removes Cursor chats
 #   ~/.ai-remote/bin/ai-todo-limits    5h / weekly / monthly usage for the chat's tool on this computer
 #   ~/.ai-remote/bin/ai-todo-codex-notify  Codex `notify` program reporting idle
-#   ~/.ai-remote/bin/ai-todo-memory  memory extraction, stats push and digests (+ ai_todo_redact.py)
+#   ~/.ai-remote/bin/ai-todo-memory  memory extraction, session-start index, search, stats push (+ ai_todo_redact.py)
 #   ~/.ai-remote/bin/ai-todo-transcript  one conversation's text, read when duplicating it into another tool
 #   ~/.ai-remote/bin/ai-todo-mcp     lists the MCP servers below and builds claude / codex arguments
 #   ~/.ai-remote/mcp/                one <name>.json per MCP server (mode 700); --mcp-link DIR
@@ -198,8 +198,12 @@ if mode == "check":
 before = json.dumps(data, sort_keys=True)
 hooks = data.setdefault("hooks", {})
 
+# The memory index hook (SessionStart) is ours too.
+memory_marker = "/.ai-remote/bin/ai-todo-memory session-start"
+
 def is_ours(h):
-    return isinstance(h, dict) and marker in str(h.get("command", ""))
+    command = str(h.get("command", "")) if isinstance(h, dict) else ""
+    return marker in command or memory_marker in command
 
 # Drop our entries everywhere first, so re-running never duplicates them.
 for event in list(hooks):
@@ -224,6 +228,9 @@ if mode == "install":
             {"hooks": [dict({"type": "command", "command": f"{prefix} {status}"},
                             **({"timeout": 3} if kind == "codex" and event in ("Interrupt", "SessionEnd") else {}))]}
         )
+    # The session-start memory index: printed from a local cache, never waits on the network.
+    start = f"{bin_dir}/ai-todo-memory session-start" + (" --codex" if kind == "codex" else "")
+    hooks.setdefault("SessionStart", []).append({"hooks": [{"type": "command", "command": start, "timeout": 5}]})
     # Claude skips AGENTS.md when a CLAUDE.md is present unless this is set. Other keys stay.
     if kind == "claude":
         data["projectInstructions"] = "claude-md-and-agents-md"
@@ -283,6 +290,7 @@ import json, os, signal, subprocess, sys, threading
 codex, bin_dir, hooks_path = sys.argv[1:4]
 # Exactly the commands merge_settings writes: never vouch for anything else in hooks.json.
 expected = {f"{bin_dir}/ai-todo-hook --codex {s}" for s in ("busy", "waiting", "idle", "tool")}
+expected.add(f"{bin_dir}/ai-todo-memory session-start --codex")
 manual = "codex hooks: not trusted automatically; Codex asks you to review them when it next starts"
 try:
     p = subprocess.Popen([codex, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -696,6 +704,12 @@ do_install() {
   merge_codex_hooks install
   install_launch_agent
   install_status_agent
+  # The session-start hook replaces the AGENTS.md digests: remove the ones written before.
+  if [[ $dry_run -eq 0 && -f "${STATE_DIR}/digests.json" ]]; then
+    "${BIN_DIR}/ai-todo-memory" digest --remove-all >/dev/null 2>&1 \
+      && say "memory: old AGENTS.md digests removed (the session-start hook gives the index now)" \
+      || say "memory: removing old digests failed; run ai-todo-memory digest --remove-all"
+  fi
 
   if [[ $dry_run -eq 0 ]]; then
     if tmux info >/dev/null 2>&1; then
