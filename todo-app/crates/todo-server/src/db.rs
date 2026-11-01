@@ -113,6 +113,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     // A fresh database gets the v3 objects here; existing ones got them in `migrate`.
     create_v3_objects(&conn).expect("Failed to create project, session and memory tables");
     create_v4_objects(&conn).expect("Failed to create push notification tables");
+    create_v12_objects(&conn).expect("Failed to create memory usage and search objects");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -260,7 +261,18 @@ pub(crate) fn session_days_ddl() -> &'static str {
 }
 
 pub(crate) fn memories_ddl() -> &'static str {
-    "CREATE TABLE IF NOT EXISTS memories (
+    memories_ddl_named("memories")
+}
+
+/// The memories table under any name (the v12 step builds `memories_new` and renames it).
+fn memories_ddl_named(table: &str) -> &'static str {
+    match table {
+        "memories_new" => MEMORIES_NEW_DDL,
+        _ => MEMORIES_DDL,
+    }
+}
+
+const MEMORIES_DDL: &str = "CREATE TABLE IF NOT EXISTS memories (
         id          TEXT PRIMARY KEY,
         project_id  TEXT REFERENCES projects(id) ON DELETE SET NULL,
         todo_id     TEXT REFERENCES todos(id) ON DELETE SET NULL,
@@ -272,12 +284,104 @@ pub(crate) fn memories_ddl() -> &'static str {
         text_key    TEXT NOT NULL,
         files       TEXT NOT NULL DEFAULT '[]',
         confidence  REAL,
-        source      TEXT NOT NULL DEFAULT 'extracted' CHECK(source IN ('extracted','manual')),
+        source      TEXT NOT NULL DEFAULT 'extracted' CHECK(source IN ('extracted','manual','claude-memory','agent')),
         pinned      INTEGER NOT NULL DEFAULT 0,
         archived    INTEGER NOT NULL DEFAULT 0,
         created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-    )"
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        pending     INTEGER NOT NULL DEFAULT 0,
+        use_count   INTEGER NOT NULL DEFAULT 0,
+        last_used_at TEXT,
+        aged_from   TEXT NOT NULL DEFAULT (date('now')),
+        archived_reason TEXT CHECK(archived_reason IN ('unused','duplicate','superseded','retired','user')),
+        source_key  TEXT
+    )";
+
+/// Same columns as `MEMORIES_DDL`, for the v12 rebuild.
+const MEMORIES_NEW_DDL: &str = "CREATE TABLE memories_new (
+        id          TEXT PRIMARY KEY,
+        project_id  TEXT REFERENCES projects(id) ON DELETE SET NULL,
+        todo_id     TEXT REFERENCES todos(id) ON DELETE SET NULL,
+        computer_id TEXT REFERENCES computers(id) ON DELETE SET NULL,
+        tool        TEXT,
+        session_id  TEXT,
+        kind        TEXT NOT NULL CHECK(kind IN ('decision','gotcha','open_thread','done','files_changed')),
+        text        TEXT NOT NULL,
+        text_key    TEXT NOT NULL,
+        files       TEXT NOT NULL DEFAULT '[]',
+        confidence  REAL,
+        source      TEXT NOT NULL DEFAULT 'extracted' CHECK(source IN ('extracted','manual','claude-memory','agent')),
+        pinned      INTEGER NOT NULL DEFAULT 0,
+        archived    INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        pending     INTEGER NOT NULL DEFAULT 0,
+        use_count   INTEGER NOT NULL DEFAULT 0,
+        last_used_at TEXT,
+        aged_from   TEXT NOT NULL DEFAULT (date('now')),
+        archived_reason TEXT CHECK(archived_reason IN ('unused','duplicate','superseded','retired','user')),
+        source_key  TEXT
+    )";
+
+/// v12 memory objects: active days, the import key index and the full-text index with
+/// its triggers. Only adds, so it is safe to run on every start.
+const V12_OBJECTS: &str = "
+    CREATE TABLE IF NOT EXISTS memory_active_days (
+        scope TEXT NOT NULL,
+        day   TEXT NOT NULL,
+        PRIMARY KEY (scope, day)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS memories_source_key ON memories(computer_id, source_key)
+        WHERE source_key IS NOT NULL;
+    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text, content='memories', content_rowid='rowid');
+    CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+        INSERT INTO memories_fts(rowid, text) VALUES (new.rowid, new.text);
+    END;
+    CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+    END;
+    CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE OF text ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+        INSERT INTO memories_fts(rowid, text) VALUES (new.rowid, new.text);
+    END;";
+
+fn create_v12_objects(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(V12_OBJECTS)
+}
+
+/// v11 → v12. SQLite can't change a CHECK, so the memories table is rebuilt with the
+/// usage, pending and import columns. Existing memories age from today (no backfill),
+/// retired kinds are archived, and rows already archived are marked as duplicates.
+fn migrate_v11_to_v12(conn: &Connection) -> rusqlite::Result<()> {
+    if table_sql(conn, "memories")?.is_none() || column_exists(conn, "memories", "use_count")? {
+        return Ok(());
+    }
+    // Renaming re-checks every table's references unless legacy mode is on, and a test or
+    // half-migrated database may lack some of them; the rebuild changes no references.
+    conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;")?;
+    let result = migrate_v11_to_v12_in(conn);
+    conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;")?;
+    result
+}
+
+fn migrate_v11_to_v12_in(conn: &Connection) -> rusqlite::Result<()> {
+    let cols = "id, project_id, todo_id, computer_id, tool, session_id, kind, text, text_key, files, confidence, \
+                source, pinned, archived, created_at, updated_at";
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(&format!(
+        "{new};
+         INSERT INTO memories_new ({cols}, aged_from) SELECT {cols}, date('now','localtime') FROM memories;
+         DROP TABLE memories;
+         ALTER TABLE memories_new RENAME TO memories;
+         UPDATE memories SET archived_reason = 'duplicate' WHERE archived = 1;
+         UPDATE memories SET archived = 1, archived_reason = 'retired'
+             WHERE kind IN ('done','files_changed') AND archived = 0;",
+        new = memories_ddl_named("memories_new"),
+    ))?;
+    tx.execute_batch(MEMORY_INDEXES)?;
+    tx.execute_batch(V12_OBJECTS)?;
+    tx.execute_batch("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild');")?;
+    tx.commit()
 }
 
 const V3_INDEXES: &str = "
@@ -285,6 +389,14 @@ const V3_INDEXES: &str = "
     CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project_id);
     CREATE INDEX IF NOT EXISTS sessions_computer ON sessions(computer_id);
     CREATE INDEX IF NOT EXISTS session_days_day ON session_days(day);
+    CREATE INDEX IF NOT EXISTS memories_project ON memories(project_id, archived, created_at);
+    CREATE INDEX IF NOT EXISTS memories_session ON memories(tool, session_id);
+    CREATE INDEX IF NOT EXISTS memories_todo ON memories(todo_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS memories_dedup ON memories(tool, session_id, kind, text_key)
+        WHERE session_id IS NOT NULL;";
+
+/// The memories table's own indexes (also in `V3_INDEXES`), recreated by the v12 rebuild.
+const MEMORY_INDEXES: &str = "
     CREATE INDEX IF NOT EXISTS memories_project ON memories(project_id, archived, created_at);
     CREATE INDEX IF NOT EXISTS memories_session ON memories(tool, session_id);
     CREATE INDEX IF NOT EXISTS memories_todo ON memories(todo_id);
@@ -338,9 +450,11 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v9: reporter event time, rejecting delayed/retried Codex statuses (additive)
 /// - v10: user-turn identity, preserving unread results across offline coalescing (additive)
 /// - v11: todos can be put on hold (additive)
+/// - v12: memories gain usage, pending, import key and archive reason; `memory_active_days`;
+///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -353,6 +467,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if table_sql(conn, "memories")?.is_some_and(|sql| sql.contains("use_count")) {
+        return Ok(12);
     }
     if column_exists(conn, "todos", "on_hold")? {
         return Ok(11);
@@ -483,10 +600,18 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 10 {
         if !backed_up {
             backup_before_migration(conn, db_path, 11)?;
+            backed_up = true;
         }
         if !column_exists(conn, "todos", "on_hold")? {
             conn.execute_batch("ALTER TABLE todos ADD COLUMN on_hold INTEGER NOT NULL DEFAULT 0 CHECK(on_hold IN (0,1));")?;
         }
+        version = 11;
+    }
+    if version == 11 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 12)?;
+        }
+        migrate_v11_to_v12(conn)?;
     }
     Ok(())
 }
@@ -1970,6 +2095,73 @@ mod tests {
         let pool = db.pool();
         assert!(db.backups().is_empty());
         assert_eq!(user_version(&pool.get().unwrap()), SCHEMA_VERSION);
+    }
+
+    /// The v11 memories table: no usage, pending or import columns, two sources.
+    const V11_MEMORIES: &str = "CREATE TABLE memories (
+        id TEXT PRIMARY KEY, project_id TEXT, todo_id TEXT, computer_id TEXT, tool TEXT, session_id TEXT,
+        kind TEXT NOT NULL CHECK(kind IN ('decision','gotcha','open_thread','done','files_changed')),
+        text TEXT NOT NULL, text_key TEXT NOT NULL, files TEXT NOT NULL DEFAULT '[]', confidence REAL,
+        source TEXT NOT NULL DEFAULT 'extracted' CHECK(source IN ('extracted','manual')),
+        pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')))";
+
+    #[test]
+    fn migrates_v11_to_v12_rebuilds_memories() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(&format!(
+            "DROP TRIGGER IF EXISTS memories_fts_ai; DROP TRIGGER IF EXISTS memories_fts_ad; DROP TRIGGER IF EXISTS memories_fts_au;
+             DROP TABLE IF EXISTS memories_fts; DROP TABLE IF EXISTS memory_active_days; DROP TABLE memories; {V11_MEMORIES};
+             INSERT INTO memories (id, kind, text, text_key) VALUES ('m-done', 'done', 'Shipped the thing', 'shipped thing');
+             INSERT INTO memories (id, kind, text, text_key, archived) VALUES ('m-old', 'gotcha', 'Old gotcha', 'old gotcha', 1);
+             INSERT INTO memories (id, kind, text, text_key, created_at) VALUES ('m-live', 'decision', 'Use the zebrafish layout', 'zebrafish', '2026-10-01 10:00:00');
+             PRAGMA user_version = 11;"
+        ))
+        .unwrap();
+        drop(conn);
+
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 12);
+        assert_eq!(db.backups().len(), 1, "migrating backs up first");
+        let row = |id: &str| -> (i64, Option<String>) {
+            conn.query_row("SELECT archived, archived_reason FROM memories WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+        };
+        assert_eq!(row("m-done"), (1, Some("retired".into())));
+        assert_eq!(row("m-old"), (1, Some("duplicate".into())));
+        assert_eq!(row("m-live"), (0, None));
+        let (aged_from, uses, today): (String, i64, String) = conn
+            .query_row("SELECT aged_from, use_count, date('now','localtime') FROM memories WHERE id = 'm-live'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(aged_from, today, "existing memories age from the migration day");
+        assert_eq!(uses, 0);
+        conn.execute("INSERT INTO memories (id, kind, text, text_key, source) VALUES ('m-imp', 'gotcha', 'x', 'x', 'claude-memory')", [])
+            .unwrap();
+        let hit: String = conn
+            .query_row("SELECT m.id FROM memories_fts f JOIN memories m ON m.rowid = f.rowid WHERE memories_fts MATCH 'zebrafish'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hit, "m-live");
+    }
+
+    #[test]
+    fn fresh_database_has_v12_memory_objects() {
+        let db = TestDb::new("migrate");
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert!(table_sql(&conn, "memory_active_days").unwrap().is_some());
+        assert!(table_sql(&conn, "memories_fts").unwrap().is_some());
+        assert!(column_exists(&conn, "memories", "pending").unwrap());
+        conn.execute("INSERT INTO memories (id, kind, text, text_key) VALUES ('a', 'gotcha', 'keychain prompt again', 'k')", []).unwrap();
+        conn.execute("UPDATE memories SET text = 'signing team changed' WHERE id = 'a'", []).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'signing'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "the FTS index follows updates");
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'keychain'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
     }
 
     #[test]
