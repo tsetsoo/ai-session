@@ -12,6 +12,12 @@ GET /api/computers, /api/projects, /api/memories (filters project_id, tool, sess
 pinned, include_archived, since, limit) answer from the state. POST /api/memories/bulk inserts
 into the state (exact project-wide dedup, supersedes) and answers like todo-server.
 POST /api/sessions/stats answers {upserted, sessions}. Paths in folders/cwds expand ~ with $HOME.
+
+Memory upgrade endpoints: GET /api/memories also filters q (any word, substring), global,
+computer_id, pending (default false), include_unused and ids. POST /api/memories creates one
+(manual or agent, maybe pending). POST /api/memories/uses bumps use_count of known ids and
+answers {recorded, unknown, archived: []}. POST /api/memories/import upserts on
+(computer_id, source_key). PATCH /api/memories/<id> merges the body into the row.
 """
 import json
 import os
@@ -75,6 +81,9 @@ class Hub(BaseHTTPRequestHandler):
     def do_POST(self):
         self.handle_request("POST")
 
+    def do_PATCH(self):
+        self.handle_request("PATCH")
+
     def handle_request(self, method):
         parts = urlsplit(self.path)
         path, query = parts.path, parse_qs(parts.query, keep_blank_values=True)
@@ -96,6 +105,14 @@ class Hub(BaseHTTPRequestHandler):
             return self.reply(200, self.memories(state, query))
         if method == "POST" and path == "/api/memories/bulk":
             return self.bulk(state, body)
+        if method == "POST" and path == "/api/memories":
+            return self.create(state, body)
+        if method == "POST" and path == "/api/memories/uses":
+            return self.uses(state, body)
+        if method == "POST" and path == "/api/memories/import":
+            return self.import_(state, body)
+        if method == "PATCH" and path.startswith("/api/memories/"):
+            return self.patch(state, path.rsplit("/", 1)[1], body)
         if method == "POST" and path == "/api/sessions/stats":
             sessions = body.get("sessions", [])
             return self.reply(200, {"upserted": len(sessions), "sessions": [
@@ -108,9 +125,21 @@ class Hub(BaseHTTPRequestHandler):
             return query.get(name, [None])[0]
 
         ms = list(state.get("memories", []))
-        for key in ("project_id", "tool", "session_id", "todo_id"):
+        if q("ids"):
+            wanted = q("ids").split(",")
+            return [m for m in ms if m["id"] in wanted]
+        for key in ("project_id", "tool", "session_id", "todo_id", "computer_id"):
             if q(key) is not None:
                 ms = [m for m in ms if m.get(key) == q(key)]
+        if q("global") == "true":
+            ms = [m for m in ms if not m.get("project_id") and not m.get("todo_id")]
+        ms = [m for m in ms if bool(m.get("pending")) == (q("pending") == "true")]
+        if q("q") is not None:
+            words = [w for w in re.split(r"[^\w]+", q("q").lower()) if w]
+            ms = [m for m in ms if any(w in m["text"].lower() for w in words)]
+            if q("include_unused") == "true":
+                ms = [m for m in ms if not m.get("archived") or m.get("archived_reason") == "unused"]
+                return sorted(ms, key=lambda m: bool(m.get("archived")))[: int(q("limit") or 200)]
         if q("kind"):
             kinds = set(",".join(query["kind"]).split(","))
             ms = [m for m in ms if m["kind"] in kinds]
@@ -151,6 +180,71 @@ class Hub(BaseHTTPRequestHandler):
         save(state)
         self.reply(201, {"inserted": inserted, "duplicates": duplicates, "archived": archived,
                          "project_id": pid, "todo_id": None})
+
+    def next_id(self, state):
+        state["next_id"] = state.get("next_id", 0) + 1
+        return "mem-%d" % state["next_id"]
+
+    def stamp(self, state):
+        return state.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    def create(self, state, req):
+        row = {"id": self.next_id(state), "project_id": req.get("project_id"), "todo_id": req.get("todo_id"),
+               "computer_id": req.get("computer_id"), "tool": None, "session_id": None, "kind": req["kind"],
+               "text": req["text"], "files": req.get("files") or [], "confidence": None,
+               "source": req.get("source") or "manual", "pinned": bool(req.get("pinned")), "archived": False,
+               "pending": bool(req.get("pending")), "use_count": 0, "last_used_at": None,
+               "archived_reason": None, "source_key": None,
+               "created_at": self.stamp(state), "updated_at": self.stamp(state)}
+        state.setdefault("memories", []).append(row)
+        save(state)
+        self.reply(201, row)
+
+    def uses(self, state, req):
+        ids = {m["id"]: m for m in state.get("memories", [])}
+        recorded, unknown = 0, []
+        for u in req.get("uses", []):
+            m = ids.get(u["id"])
+            if m is None:
+                unknown.append(u["id"])
+                continue
+            m["use_count"] = m.get("use_count", 0) + 1
+            if m.get("archived_reason") == "unused":
+                m["archived"], m["archived_reason"] = False, None
+            recorded += 1
+        save(state)
+        self.reply(200, {"recorded": recorded, "unknown": unknown, "archived": []})
+
+    def import_(self, state, req):
+        memories = state.setdefault("memories", [])
+        counts = {"inserted": 0, "updated": 0, "unchanged": 0}
+        for item in req.get("items", []):
+            row = next((m for m in memories if m.get("computer_id") == req["computer_id"]
+                        and m.get("source_key") == item["source_key"]), None)
+            if row is None:
+                memories.append({"id": self.next_id(state), "project_id": item.get("project_id"), "todo_id": None,
+                                 "computer_id": req["computer_id"], "tool": None, "session_id": None,
+                                 "kind": item["kind"], "text": item["text"], "files": [], "confidence": 1.0,
+                                 "source": "claude-memory", "pinned": False, "archived": False, "pending": False,
+                                 "use_count": 0, "last_used_at": None, "archived_reason": None,
+                                 "source_key": item["source_key"],
+                                 "created_at": self.stamp(state), "updated_at": self.stamp(state)})
+                counts["inserted"] += 1
+            elif row["text"] == item["text"]:
+                counts["unchanged"] += 1
+            else:
+                row.update(text=item["text"], kind=item["kind"], project_id=item.get("project_id"))
+                counts["updated"] += 1
+        save(state)
+        self.reply(200, counts)
+
+    def patch(self, state, mid, req):
+        row = next((m for m in state.get("memories", []) if m["id"] == mid), None)
+        if row is None:
+            return self.reply(404, {"error": "Memory not found"})
+        row.update(req or {})
+        save(state)
+        self.reply(200, row)
 
     def log_message(self, *args):
         pass
