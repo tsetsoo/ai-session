@@ -11,8 +11,8 @@ use actix_web::{web, HttpResponse};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
-    BulkMemoriesRequest, BulkMemoriesResponse, CreateMemoryRequest, DeleteResponse, Memory, MemoryKind,
-    UpdateMemoryRequest,
+    BulkMemoriesRequest, BulkMemoriesResponse, CreateMemoryRequest, DeleteResponse, ImportMemoriesRequest,
+    ImportMemoriesResponse, Memory, MemoryKind, UpdateMemoryRequest,
 };
 use uuid::Uuid;
 
@@ -25,6 +25,9 @@ use crate::projects::project_exists;
 use crate::sessions::ensure_session_db;
 
 const MAX_TEXT_CHARS: usize = 400;
+/// Imported Claude memory files keep their whole text, up to this.
+const MAX_IMPORT_CHARS: usize = 8000;
+const MAX_IDS: usize = 100;
 const MAX_FILES: usize = 20;
 /// Fuzzy duplicates: token-set Jaccard at or above this, same kind, within the window.
 const FUZZY_THRESHOLD: f64 = 0.8;
@@ -33,7 +36,7 @@ const DEFAULT_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 1000;
 
 const MEMORY_COLS: &str = "id, project_id, todo_id, computer_id, tool, session_id, kind, text, files, confidence,
-    source, pinned, archived, created_at, updated_at";
+    source, pinned, archived, created_at, updated_at, pending, use_count, last_used_at, archived_reason, source_key";
 
 /// Normalized text for duplicate detection: Unicode NFC, lowercase, every run of characters that are
 /// not alphanumeric (Unicode-aware, so Cyrillic letters stay) becomes one space, trimmed.
@@ -97,6 +100,11 @@ fn row_to_memory(row: &Row) -> rusqlite::Result<Memory> {
         archived: row.get::<_, i64>(12)? != 0,
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
+        pending: row.get::<_, i64>(15)? != 0,
+        use_count: row.get(16)?,
+        last_used_at: row.get(17)?,
+        archived_reason: row.get(18)?,
+        source_key: row.get(19)?,
     })
 }
 
@@ -130,12 +138,30 @@ fn memory_error_response(e: MemoryError) -> HttpResponse {
 
 /// Trimmed text of 1–400 characters (not bytes).
 fn checked_text(text: &str) -> Result<String, MemoryError> {
+    checked_text_up_to(text, MAX_TEXT_CHARS)
+}
+
+fn checked_text_up_to(text: &str, max: usize) -> Result<String, MemoryError> {
     let text = text.trim();
     let chars = text.chars().count();
-    if chars == 0 || chars > MAX_TEXT_CHARS {
-        return Err(MemoryError::BadRequest(format!("text must be 1-{MAX_TEXT_CHARS} characters")));
+    if chars == 0 || chars > max {
+        return Err(MemoryError::BadRequest(format!("text must be 1-{max} characters")));
     }
     Ok(text.to_string())
+}
+
+/// One use of a memory (`relied`, `search`, `user`, `duplicate`): bumps its count and last
+/// use, and brings back a memory that was archived only for being unused. False for an
+/// unknown id.
+pub(crate) fn record_use(conn: &Connection, id: &str, _signal: &str) -> rusqlite::Result<bool> {
+    let changed = conn.execute(
+        "UPDATE memories SET use_count = use_count + 1, last_used_at = datetime('now'),
+             archived = CASE WHEN archived_reason = 'unused' THEN 0 ELSE archived END,
+             archived_reason = CASE WHEN archived_reason = 'unused' THEN NULL ELSE archived_reason END
+         WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(changed > 0)
 }
 
 /// At most 20 file paths, trimmed, empty ones dropped; stored as a JSON array.
@@ -238,8 +264,10 @@ pub(crate) fn insert_bulk_db(conn: &Connection, req: &BulkMemoriesRequest) -> Re
     for (m, (text, files, confidence)) in req.memories.iter().zip(checked) {
         let key = text_key(&text);
         let duplicate_of = find_duplicate(&known, m.kind, &key).map(|k| k.id.clone());
-        if duplicate_of.is_some() {
+        let mut inserted_now: Option<String> = None;
+        if let Some(target) = duplicate_of.as_deref() {
             duplicates += 1;
+            record_use(&tx, target, "duplicate")?;
         } else {
             let id = Uuid::new_v4().to_string();
             // The unique (tool, session_id, kind, text_key) index is a backstop: a clash is a duplicate.
@@ -253,6 +281,7 @@ pub(crate) fn insert_bulk_db(conn: &Connection, req: &BulkMemoriesRequest) -> Re
                 duplicates += 1;
             } else {
                 known.push(Known { id: id.clone(), kind: m.kind, key, recent: true });
+                inserted_now = Some(id.clone());
                 inserted_ids.push(id);
             }
         }
@@ -264,12 +293,22 @@ pub(crate) fn insert_bulk_db(conn: &Connection, req: &BulkMemoriesRequest) -> Re
                     continue;
                 }
                 let changed = tx.execute(
-                    "UPDATE memories SET archived = 1, updated_at = datetime('now')
+                    "UPDATE memories SET archived = 1, archived_reason = 'superseded', updated_at = datetime('now')
                      WHERE id = ?1 AND project_id = ?2 AND pinned = 0 AND archived = 0",
                     params![target, project_id],
                 )?;
                 if changed > 0 {
                     archived.push(target.clone());
+                    // The new memory carries on the old one's usefulness.
+                    if let Some(new_id) = inserted_now.as_deref() {
+                        tx.execute(
+                            "UPDATE memories SET
+                                 use_count = use_count + (SELECT use_count FROM memories WHERE id = ?2),
+                                 last_used_at = (SELECT MAX(x) FROM (SELECT last_used_at AS x FROM memories WHERE id IN (?1, ?2)))
+                             WHERE id = ?1",
+                            params![new_id, target],
+                        )?;
+                    }
                 }
             }
         }
@@ -289,10 +328,20 @@ pub(crate) fn create_memory_db(conn: &Connection, req: &CreateMemoryRequest) -> 
     let files = checked_files(req.files.as_deref().unwrap_or_default())?;
     let project_id = req.project_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let todo_id = req.todo_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    if project_id.is_none() && todo_id.is_none() {
-        return Err(MemoryError::BadRequest("project_id or todo_id is required".into()));
+    let computer_id = req.computer_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if project_id.is_none() && todo_id.is_none() && computer_id.is_none() {
+        return Err(MemoryError::BadRequest("project_id, todo_id or computer_id is required".into()));
+    }
+    let source = req.source.as_deref().unwrap_or("manual");
+    if !matches!(source, "manual" | "agent") {
+        return Err(MemoryError::BadRequest("source must be manual or agent".into()));
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    if let Some(computer_id) = computer_id {
+        if get_computer(&tx, computer_id)?.is_none() {
+            return Err(MemoryError::NotFound("Computer not found"));
+        }
+    }
     let todo_project = match todo_id {
         Some(todo_id) => tx
             .query_row("SELECT project_id FROM todos WHERE id = ?1", params![todo_id], |r| r.get::<_, Option<String>>(0))
@@ -308,9 +357,21 @@ pub(crate) fn create_memory_db(conn: &Connection, req: &CreateMemoryRequest) -> 
     let project_id = project_id.map(str::to_string).or(todo_project);
     let id = Uuid::new_v4().to_string();
     tx.execute(
-        "INSERT INTO memories (id, project_id, todo_id, kind, text, text_key, files, source, pinned)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'manual', ?8)",
-        params![id, project_id, todo_id, req.kind.as_str(), text, text_key(&text), files, req.pinned.unwrap_or(false)],
+        "INSERT INTO memories (id, project_id, todo_id, computer_id, kind, text, text_key, files, source, pinned, pending)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            id,
+            project_id,
+            todo_id,
+            computer_id,
+            req.kind.as_str(),
+            text,
+            text_key(&text),
+            files,
+            source,
+            req.pinned.unwrap_or(false),
+            req.pending.unwrap_or(false)
+        ],
     )?;
     let memory = load_memory(&tx, &id)?.ok_or(MemoryError::NotFound("Memory not found"))?;
     tx.commit()?;
@@ -342,8 +403,10 @@ pub(crate) fn update_memory_db(conn: &Connection, id: &str, req: &UpdateMemoryRe
             files = COALESCE(?4, files),
             pinned = COALESCE(?5, pinned),
             archived = COALESCE(?6, archived),
+            archived_reason = CASE WHEN ?6 IS NULL THEN archived_reason WHEN ?6 THEN 'user' ELSE NULL END,
             project_id = CASE WHEN ?7 THEN ?8 ELSE project_id END,
             todo_id = CASE WHEN ?9 THEN ?10 ELSE todo_id END,
+            pending = COALESCE(?12, pending),
             updated_at = datetime('now')
          WHERE id = ?11",
         params![
@@ -357,7 +420,8 @@ pub(crate) fn update_memory_db(conn: &Connection, id: &str, req: &UpdateMemoryRe
             req.project_id.clone().flatten(),
             req.todo_id.is_some(),
             req.todo_id.clone().flatten(),
-            id
+            id,
+            req.pending
         ],
     );
     match result {
@@ -367,9 +431,70 @@ pub(crate) fn update_memory_db(conn: &Connection, id: &str, req: &UpdateMemoryRe
         }
         Err(e) => return Err(e.into()),
     }
+    // Pinning, editing or approving is the user finding the memory worth keeping.
+    if req.pinned.is_some() || req.text.is_some() || req.pending == Some(false) {
+        record_use(&tx, id, "user")?;
+    }
     let memory = load_memory(&tx, id)?.ok_or(MemoryError::NotFound("Memory not found"))?;
     tx.commit()?;
     Ok(memory)
+}
+
+/// Imported Claude memory files, upserted on (computer_id, source_key). A changed text
+/// updates the row (and brings back one archived as unused); an unchanged one is left alone.
+pub(crate) fn import_memories_db(conn: &Connection, req: &ImportMemoriesRequest) -> Result<ImportMemoriesResponse, MemoryError> {
+    let computer_id = req.computer_id.trim();
+    let mut checked = Vec::with_capacity(req.items.len());
+    for item in &req.items {
+        let key = item.source_key.trim();
+        if key.is_empty() {
+            return Err(MemoryError::BadRequest("source_key is required".into()));
+        }
+        let project_id = item.project_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        checked.push((key, project_id, checked_text_up_to(&item.text, MAX_IMPORT_CHARS)?, item.kind));
+    }
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    if get_computer(&tx, computer_id)?.is_none() {
+        return Err(MemoryError::NotFound("Computer not found"));
+    }
+    let (mut inserted, mut updated, mut unchanged) = (0, 0, 0);
+    for (key, project_id, text, kind) in checked {
+        if let Some(project_id) = project_id {
+            if !project_exists(&tx, project_id)? {
+                return Err(MemoryError::NotFound("Project not found"));
+            }
+        }
+        let existing: Option<(String, String)> = tx
+            .query_row(
+                "SELECT id, text FROM memories WHERE computer_id = ?1 AND source_key = ?2",
+                params![computer_id, key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match existing {
+            Some((_, old)) if old == text => unchanged += 1,
+            Some((id, _)) => {
+                tx.execute(
+                    "UPDATE memories SET text = ?2, text_key = ?3, kind = ?4, project_id = ?5, updated_at = datetime('now'),
+                         archived = CASE WHEN archived_reason = 'unused' THEN 0 ELSE archived END,
+                         archived_reason = CASE WHEN archived_reason = 'unused' THEN NULL ELSE archived_reason END
+                     WHERE id = ?1",
+                    params![id, text, text_key(&text), kind.as_str(), project_id],
+                )?;
+                updated += 1;
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO memories (id, project_id, computer_id, kind, text, text_key, confidence, source, source_key)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1.0, 'claude-memory', ?7)",
+                    params![Uuid::new_v4().to_string(), project_id, computer_id, kind.as_str(), text, text_key(&text), key],
+                )?;
+                inserted += 1;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(ImportMemoriesResponse { inserted, updated, unchanged })
 }
 
 /// Filters of `GET /api/memories`, parsed from the raw pairs so `kind` can repeat.
@@ -384,6 +509,10 @@ pub(crate) struct MemoryQuery {
     pinned: Option<bool>,
     include_archived: bool,
     limit: usize,
+    pending: bool,
+    computer_id: Option<String>,
+    global: bool,
+    ids: Vec<String>,
 }
 
 fn parse_bool(name: &str, value: &str) -> Result<bool, String> {
@@ -412,6 +541,15 @@ impl MemoryQuery {
                 }
                 "pinned" => q.pinned = Some(parse_bool(name, value)?),
                 "include_archived" => q.include_archived = parse_bool(name, value)?,
+                "pending" => q.pending = parse_bool(name, value)?,
+                "computer_id" => q.computer_id = Some(value.to_string()),
+                "global" => q.global = parse_bool(name, value)?,
+                "ids" => {
+                    q.ids = value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
+                    if q.ids.len() > MAX_IDS {
+                        return Err(format!("ids may list at most {MAX_IDS}"));
+                    }
+                }
                 "limit" => {
                     let limit: usize = value.parse().map_err(|_| "limit must be a number".to_string())?;
                     q.limit = limit.min(MAX_LIMIT);
@@ -430,7 +568,13 @@ pub(crate) fn list_memories_db(conn: &Connection, q: &MemoryQuery) -> Result<Vec
         args.push(value);
         sql.push_str(&clause.replace('?', &format!("?{}", args.len())));
     };
-    for (column, value) in [("project_id", &q.project_id), ("todo_id", &q.todo_id), ("tool", &q.tool), ("session_id", &q.session_id)] {
+    for (column, value) in [
+        ("project_id", &q.project_id),
+        ("todo_id", &q.todo_id),
+        ("tool", &q.tool),
+        ("session_id", &q.session_id),
+        ("computer_id", &q.computer_id),
+    ] {
         if let Some(value) = value {
             add(&format!(" AND {column} = ?"), SqlValue::Text(value.clone()));
         }
@@ -445,11 +589,19 @@ pub(crate) fn list_memories_db(conn: &Connection, q: &MemoryQuery) -> Result<Vec
     if let Some(pinned) = q.pinned {
         add(" AND pinned = ?", SqlValue::Integer(i64::from(pinned)));
     }
+    add(" AND pending = ?", SqlValue::Integer(i64::from(q.pending)));
+    if q.global {
+        sql.push_str(" AND project_id IS NULL AND todo_id IS NULL");
+    }
     if !q.kinds.is_empty() {
         let list = q.kinds.iter().map(|k| format!("'{}'", k.as_str())).collect::<Vec<_>>().join(",");
         sql.push_str(&format!(" AND kind IN ({list})"));
     }
-    if !q.include_archived {
+    if !q.ids.is_empty() {
+        // Asking by id is asking for those rows, archived or not.
+        let marks = q.ids.iter().map(|id| { args.push(SqlValue::Text(id.clone())); format!("?{}", args.len()) }).collect::<Vec<_>>();
+        sql.push_str(&format!(" AND id IN ({})", marks.join(",")));
+    } else if !q.include_archived {
         sql.push_str(" AND archived = 0");
     }
     sql.push_str(&format!(
@@ -511,6 +663,24 @@ pub async fn bulk_memories(
         Ok(resp) => {
             broadcaster.send();
             HttpResponse::Created().json(resp)
+        }
+        Err(e) => memory_error_response(e),
+    }
+}
+
+pub async fn import_memories(
+    pool: web::Data<DbPool>,
+    body: web::Json<ImportMemoriesRequest>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match import_memories_db(&conn, &body) {
+        Ok(resp) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(resp)
         }
         Err(e) => memory_error_response(e),
     }
@@ -598,6 +768,171 @@ mod tests {
     }
 
     const GOTCHA: &str = "The deploy script pulls latest so it must wait for the main pipeline build to finish first";
+
+    fn use_count(conn: &Connection, id: &str) -> i64 {
+        conn.query_row("SELECT use_count FROM memories WHERE id = ?1", params![id], |r| r.get(0)).unwrap()
+    }
+
+    #[actix_web::test]
+    async fn create_global_memory_needs_computer() {
+        let (_db, pool) = pool("mem");
+        seed(&pool.get().unwrap());
+        let (status, _) = post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "No owner at all"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, m) = post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Codbex login uses the AI Session key", "computer_id": "mac"})).await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!((&m["project_id"], &m["todo_id"], &m["computer_id"]), (&Value::Null, &Value::Null, &json!("mac")));
+        let (status, _) = post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "x y z", "computer_id": "nope"})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn create_agent_memory_pending() {
+        let (_db, pool) = pool("mem");
+        seed(&pool.get().unwrap());
+        let (status, m) = post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Agent fact", "project_id": "pa", "source": "agent", "pending": true})).await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!((&m["source"], &m["pending"], &m["use_count"]), (&json!("agent"), &json!(true), &json!(0)));
+        let (status, _) = post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Bad source", "project_id": "pa", "source": "claude-memory"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "only manual or agent can be created here");
+    }
+
+    #[actix_web::test]
+    async fn list_hides_pending_by_default() {
+        let (_db, pool) = pool("mem");
+        seed(&pool.get().unwrap());
+        post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Pending one", "project_id": "pa", "source": "agent", "pending": true})).await;
+        post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Real one", "project_id": "pa"})).await;
+        let (_, all) = get(&pool, "/api/memories?project_id=pa").await;
+        assert_eq!(all.as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap()).collect::<Vec<_>>(), vec!["Real one"]);
+        let (_, pending) = get(&pool, "/api/memories?project_id=pa&pending=true").await;
+        assert_eq!(pending.as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap()).collect::<Vec<_>>(), vec!["Pending one"]);
+    }
+
+    #[actix_web::test]
+    async fn patch_pending_false_approves_and_counts_use() {
+        let (_db, pool) = pool("mem");
+        seed(&pool.get().unwrap());
+        let (_, m) = post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Approve me", "project_id": "pa", "source": "agent", "pending": true})).await;
+        let id = m["id"].as_str().unwrap();
+        let (status, m) = patch(&pool, &format!("/api/memories/{id}"), json!({"pending": false})).await;
+        assert_eq!(status, StatusCode::OK, "{m}");
+        assert_eq!((&m["pending"], &m["use_count"]), (&json!(false), &json!(1)));
+        assert!(m["last_used_at"].is_string());
+        let (_, m) = patch(&pool, &format!("/api/memories/{id}"), json!({"archived": true})).await;
+        assert_eq!(m["use_count"], json!(1), "archiving is not a use");
+        assert_eq!(m["archived_reason"], json!("user"));
+    }
+
+    #[actix_web::test]
+    async fn bulk_duplicate_counts_use() {
+        let (_db, pool) = pool("mem");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let r = insert_bulk_db(&conn, &bulk("mac", "s1", "~/a", vec![mem(MemoryKind::Gotcha, GOTCHA)])).unwrap();
+        let id = r.inserted[0].id.clone();
+        assert_eq!(use_count(&conn, &id), 0);
+        let r = insert_bulk_db(&conn, &bulk("mac", "s2", "~/a", vec![mem(MemoryKind::Gotcha, GOTCHA)])).unwrap();
+        assert_eq!(r.duplicates, 1);
+        assert_eq!(use_count(&conn, &id), 1);
+    }
+
+    #[actix_web::test]
+    async fn bulk_supersede_inherits_usage() {
+        let (_db, pool) = pool("mem");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let r = insert_bulk_db(&conn, &bulk("mac", "s1", "~/a", vec![mem(MemoryKind::OpenThread, "Finish the importer")])).unwrap();
+        let old = r.inserted[0].id.clone();
+        conn.execute("UPDATE memories SET use_count = 3, last_used_at = '2026-10-30 10:00:00' WHERE id = ?1", params![old]).unwrap();
+        let mut new = mem(MemoryKind::Decision, "The importer reads Claude memory files nightly");
+        new.supersedes = vec![old.clone()];
+        let r = insert_bulk_db(&conn, &bulk("mac", "s2", "~/a", vec![new])).unwrap();
+        assert_eq!(r.archived, vec![old.clone()]);
+        let (uses, last): (i64, Option<String>) = conn
+            .query_row("SELECT use_count, last_used_at FROM memories WHERE id = ?1", params![r.inserted[0].id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((uses, last.as_deref()), (3, Some("2026-10-30 10:00:00")));
+        let reason: String = conn.query_row("SELECT archived_reason FROM memories WHERE id = ?1", params![old], |r| r.get(0)).unwrap();
+        assert_eq!(reason, "superseded");
+    }
+
+    #[actix_web::test]
+    async fn bulk_accepts_old_kinds() {
+        let (_db, pool) = pool("mem");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let r = insert_bulk_db(&conn, &bulk("mac", "s1", "~/a", vec![mem(MemoryKind::Done, "Shipped the importer to all hosts")])).unwrap();
+        assert_eq!(r.inserted.len(), 1);
+        assert!(!r.inserted[0].pending);
+    }
+
+    #[actix_web::test]
+    async fn claude_memory_upsert_by_source_key() {
+        let (_db, pool) = pool("mem");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let body = |text: &str| json!({"computer_id": "mac", "items": [
+            {"source_key": "proj/memory/deploy.md", "project_id": "pa", "kind": "gotcha", "text": text},
+            {"source_key": "home/memory/user.md", "project_id": null, "kind": "decision", "text": "Prefers plain words"}]});
+        let (status, r) = post(&pool, "/api/memories/import", body("Deploy over SSH: unlock keychain first")).await;
+        assert_eq!(status, StatusCode::OK, "{r}");
+        assert_eq!((&r["inserted"], &r["updated"]), (&json!(2), &json!(0)));
+        let id: String = conn.query_row("SELECT id FROM memories WHERE source_key = 'proj/memory/deploy.md'", [], |r| r.get(0)).unwrap();
+        conn.execute("UPDATE memories SET archived = 1, archived_reason = 'unused' WHERE id = ?1", params![id]).unwrap();
+        let (_, r) = post(&pool, "/api/memories/import", body("Deploy over SSH: unlock keychain first")).await;
+        assert_eq!((&r["inserted"], &r["updated"]), (&json!(0), &json!(0)), "unchanged text changes nothing");
+        let archived: i64 = conn.query_row("SELECT archived FROM memories WHERE id = ?1", params![id], |r| r.get(0)).unwrap();
+        assert_eq!(archived, 1, "an unchanged file doesn't revive it");
+        let (_, r) = post(&pool, "/api/memories/import", body("Deploy over SSH: unlock the login keychain first")).await;
+        assert_eq!(r["updated"], json!(1));
+        let (count, archived, source, global): (i64, i64, String, Option<String>) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM memories), archived, source,
+                        (SELECT computer_id FROM memories WHERE source_key = 'home/memory/user.md' AND project_id IS NULL)
+                 FROM memories WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((count, archived, source.as_str(), global.as_deref()), (2, 0, "claude-memory", Some("mac")));
+    }
+
+    #[actix_web::test]
+    async fn claude_memory_text_limit_8000() {
+        let (_db, pool) = pool("mem");
+        seed(&pool.get().unwrap());
+        let item = |n: usize| json!({"computer_id": "mac", "items": [{"source_key": format!("k{n}"), "project_id": "pa", "kind": "gotcha", "text": "a".repeat(n)}]});
+        assert_eq!(post(&pool, "/api/memories/import", item(8000)).await.0, StatusCode::OK);
+        assert_eq!(post(&pool, "/api/memories/import", item(8001)).await.0, StatusCode::BAD_REQUEST);
+        let (status, _) = post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "a".repeat(401), "project_id": "pa"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn list_global_for_computer() {
+        let (_db, pool) = pool("mem");
+        seed(&pool.get().unwrap());
+        post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Mac global", "computer_id": "mac"})).await;
+        post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Other global", "computer_id": "spread"})).await;
+        post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Project fact", "project_id": "pa"})).await;
+        let (_, r) = get(&pool, "/api/memories?global=true&computer_id=mac").await;
+        assert_eq!(r.as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap()).collect::<Vec<_>>(), vec!["Mac global"]);
+    }
+
+    #[actix_web::test]
+    async fn list_by_ids() {
+        let (_db, pool) = pool("mem");
+        seed(&pool.get().unwrap());
+        let (_, a) = post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "First", "project_id": "pa"})).await;
+        let (_, b) = post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Second", "project_id": "pa"})).await;
+        post(&pool, "/api/memories", json!({"kind": "gotcha", "text": "Third", "project_id": "pa"})).await;
+        patch(&pool, &format!("/api/memories/{}", b["id"].as_str().unwrap()), json!({"archived": true})).await;
+        let (_, r) = get(&pool, &format!("/api/memories?ids={},{}", a["id"].as_str().unwrap(), b["id"].as_str().unwrap())).await;
+        let mut got = r.as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap()).collect::<Vec<_>>();
+        got.sort();
+        assert_eq!(got, vec!["First", "Second"], "ids include archived rows");
+    }
 
     #[test]
     fn text_key_normalizes_unicode_aware() {

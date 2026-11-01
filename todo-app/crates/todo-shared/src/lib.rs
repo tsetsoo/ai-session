@@ -798,15 +798,30 @@ pub struct Memory {
     #[serde(default)]
     pub files: Vec<String>,
     pub confidence: Option<f64>,
-    /// `extracted` or `manual`
+    /// `extracted`, `manual`, `claude-memory` (imported) or `agent` (saved on purpose)
     pub source: String,
     pub pinned: bool,
     pub archived: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// Proposed by an agent and waiting for the user's OK; hidden from lists unless asked for.
+    #[serde(default)]
+    pub pending: bool,
+    /// Uses: relied on, found by search, touched by the user, or re-extracted.
+    #[serde(default)]
+    pub use_count: i64,
+    #[serde(default)]
+    pub last_used_at: Option<String>,
+    /// Why it was archived: `unused`, `duplicate`, `superseded`, `retired` or `user`.
+    #[serde(default)]
+    pub archived_reason: Option<String>,
+    /// Imported memories: `<claude project dir>/<file>`, unique per computer.
+    #[serde(default)]
+    pub source_key: Option<String>,
 }
 
-/// A manual memory from the app. At least one of `project_id` / `todo_id` is required.
+/// A manual memory from the app, or one an agent saves on purpose (`source: "agent"`,
+/// `pending: true`). It needs a project, a todo, or a computer (a global memory).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateMemoryRequest {
     pub kind: MemoryKind,
@@ -819,6 +834,40 @@ pub struct CreateMemoryRequest {
     pub todo_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned: Option<bool>,
+    /// The computer of a global memory (no project, no todo).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computer_id: Option<String>,
+    /// `manual` (default) or `agent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<bool>,
+}
+
+/// One imported memory file in `POST /api/memories/import`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportMemory {
+    pub source_key: String,
+    /// `null`: a global memory of the posting computer.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub kind: MemoryKind,
+    pub text: String,
+}
+
+/// `POST /api/memories/import`: upserts on (computer_id, source_key).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportMemoriesRequest {
+    pub computer_id: String,
+    #[serde(default)]
+    pub items: Vec<ImportMemory>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportMemoriesResponse {
+    pub inserted: usize,
+    pub updated: usize,
+    pub unchanged: usize,
 }
 
 /// One extracted memory in `POST /api/memories/bulk`.
@@ -868,6 +917,9 @@ pub struct UpdateMemoryRequest {
     pub pinned: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<bool>,
+    /// `false` approves a pending memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<bool>,
     /// `null` makes the memory project-less.
     #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<Option<String>>,

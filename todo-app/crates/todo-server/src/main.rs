@@ -101,6 +101,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/memories", web::post().to(memories::create_memory))
         // Before /api/memories/{id}.
         .route("/api/memories/bulk", web::post().to(memories::bulk_memories))
+        .route("/api/memories/import", web::post().to(memories::import_memories))
         .route("/api/memories/{id}", web::patch().to(memories::update_memory))
         .route("/api/memories/{id}", web::delete().to(memories::delete_memory))
         // Sessions and stats
