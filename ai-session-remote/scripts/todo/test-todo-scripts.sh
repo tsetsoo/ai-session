@@ -2283,6 +2283,60 @@ out="$(printf '{"session_id":"%s","cwd":"%s"}' "$S1" "$M_APP" | mem session-star
 [[ -z "$out" ]] || fail "session-start printed with AI_TODO_MEMORY_DIGEST off: $out"
 pass "session_start_noop_under_memory_run (and silent on bad input or with delivery switched off)"
 
+# --- ai-todo-memory: import Claude memory files -----------------------------------------------
+
+enc() { python3 -c 'import re, sys; print(re.sub(r"[^A-Za-z0-9]", "-", sys.argv[1]))' "$1"; }
+IM_APP="${HOME}/.claude/projects/$(enc "$M_APP")/memory"
+IM_ELSE="${HOME}/.claude/projects/$(enc "${HOME}/work/elsewhere")/memory"
+IM_GONE="${HOME}/.claude/projects/$(enc "${HOME}/work/deleted-folder")/memory"
+mkdir -p "$IM_APP" "$IM_ELSE" "$IM_GONE"
+printf -- '---\nname: deploy\ndescription: Deploying over SSH needs the keychain unlocked\nmetadata:\n  type: project\n---\n\nRun security unlock-keychain first.\n' >"${IM_APP}/deploy.md"
+printf -- '---\nname: worktrees\ndescription: Use worktrees for builds\nmetadata:\n  type: feedback\n---\n\nThe shared checkout is used by other sessions.\n' >"${IM_APP}/worktrees.md"
+printf -- '- [Deploy](deploy.md) — index line\n' >"${IM_APP}/MEMORY.md"
+printf 'bad \xff\xfe utf8\n' >"${IM_APP}/broken.md"
+printf -- '---\nname: tone\ndescription: Prefers plain words\nmetadata:\n  type: user\n---\n\nToken LocalTok3n_Value9 must never leak.\n' >"${IM_ELSE}/tone.md"
+printf -- '---\ndescription: From a folder that is gone\n---\nx\n' >"${IM_GONE}/gone.md"
+MY_SERVICE_TOKEN=LocalTok3n_Value9 mem import >"${SANDBOX}/import.out" || fail "import failed: $(cat "${SANDBOX}/import.out")"
+last_body POST /api/memories/import | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+items = {i["source_key"].rsplit("/", 1)[1]: i for i in b["items"]}
+assert set(items) == {"deploy.md", "worktrees.md", "tone.md"}, sorted(items)
+assert (items["deploy.md"]["kind"], items["deploy.md"]["project_id"]) == ("gotcha", "proj-app"), items["deploy.md"]
+assert items["deploy.md"]["text"].startswith("Deploying over SSH needs the keychain unlocked\n"), items["deploy.md"]
+assert "unlock-keychain" in items["deploy.md"]["text"]
+assert (items["worktrees.md"]["kind"], items["worktrees.md"]["project_id"]) == ("decision", "proj-app"), items["worktrees.md"]
+assert (items["tone.md"]["kind"], items["tone.md"]["project_id"]) == ("decision", None), items["tone.md"]
+assert "LocalTok3n_Value9" not in json.dumps(b), b
+assert b["computer_id"] == "comp-1" and b.get("remove_keys", []) == [], b
+' || fail "import body wrong: $(last_body POST /api/memories/import)"
+pass "import_maps_project_and_kind"
+pass "import_global_when_no_project"
+pass "import_redacts_secret"
+pass "import_skips_memory_md_and_bad_utf8 (and folders that no longer exist)"
+mem import >/dev/null || fail "second import failed"
+python3 - "$M_HUB_STATE" <<'PY' || fail "re-import duplicated rows"
+import json, sys
+rows = [m for m in json.load(open(sys.argv[1]))["memories"] if m.get("source") == "claude-memory"]
+assert len(rows) == 3, [m["source_key"] for m in rows]
+PY
+pass "import_upserts_unchanged_key"
+rm "${IM_APP}/worktrees.md"
+mem import >/dev/null || fail "import after a delete failed"
+last_body POST /api/memories/import | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert [k.rsplit("/", 1)[1] for k in b["remove_keys"]] == ["worktrees.md"], b
+' || fail "deleted file not removed: $(last_body POST /api/memories/import)"
+pass "import_archives_deleted_file"
+before=$(requests POST /api/memories/import)
+mem nightly >/dev/null 2>&1 || true
+[[ $(requests POST /api/memories/import) -gt $before ]] || fail "nightly did not import"
+pass "nightly_imports_claude_memory_files"
+hub_edit "s['memories'] = [m for m in s['memories'] if m.get('source') != 'claude-memory']"
+rm -rf "${HOME}/.claude/projects/$(enc "${HOME}/work/elsewhere")" "${HOME}/.claude/projects/$(enc "${HOME}/work/deleted-folder")" "$IM_APP"
+rm -f "${M_STATE}/imports.json"
+
 # --- ai-todo-memory: digest -----------------------------------------------------------------
 
 unset XDG_CONFIG_HOME GIT_CONFIG_GLOBAL

@@ -17,6 +17,7 @@
 #   ai-todo-memory add "<text>" [--kind gotcha|decision] [--global] [--cwd PATH]
 #   ai-todo-memory list --global
 #   ai-todo-memory refresh                                                  # rebuild the cache
+#   ai-todo-memory import [--dry-run]         # Claude's memory files to the hub (nightly does it too)
 #   ai-todo-memory session-start [--codex]     # SessionStart hook (Claude, Codex): the index as context
 #
 # index    The session-start index (2048 bytes): pinned memories, then about 512 bytes of new
@@ -1909,6 +1910,11 @@ def cmd_nightly(args):
                     break
                 process_session(ctx, tool, sid, "nightly", hint=transcript)
         # Digests are no longer written: the session-start index replaces them.
+        try:
+            import_claude_memories(ctx)
+        except HubError as e:
+            Log.write("error", step="import", error=e)
+            ctx.errors += 1
         refresh_cache(ctx)
         nightly["last_run"] = started
         nightly["last_errors"] = ctx.errors
@@ -2247,6 +2253,133 @@ def cmd_refresh(args):
     sys.exit(0 if ok else 1)
 
 
+# --- Import Claude's curated memory files ---------------------------------------------
+
+IMPORT_BATCH = 40
+MAX_IMPORT_CHARS = 8000
+IMPORT_KINDS = {"user": "decision", "feedback": "decision", "project": "gotcha", "reference": "gotcha"}
+
+
+def decode_claude_dir(name):
+    """The folder a ~/.claude/projects/<name> directory stands for. Claude turns every character
+    that is not a letter or digit into '-', so each '-' is tried as '/', '-', '.', '_' or ' ',
+    keeping only spellings that exist on disk. None when no existing folder matches."""
+    if not name.startswith("-"):
+        return None
+    tokens = name[1:].split("-")
+    listing = {}
+
+    def entries(d):
+        if d not in listing:
+            try:
+                listing[d] = os.listdir(d)
+            except OSError:
+                listing[d] = []
+        return listing[d]
+
+    def walk(i, d, part):
+        if part and not any(e.startswith(part) for e in entries(d)):
+            return None
+        full = os.path.join(d, part)
+        if i == len(tokens):
+            return full if part and os.path.isdir(full) else None
+        if part and os.path.isdir(full):
+            found = walk(i + 1, full, tokens[i])
+            if found:
+                return found
+        for sep in "-._ ":
+            found = walk(i + 1, d, part + sep + tokens[i])
+            if found:
+                return found
+        return None
+
+    return walk(1, "/", tokens[0])
+
+
+def parse_memory_file(text):
+    """(description, type, body) of a Claude memory file with optional YAML frontmatter."""
+    desc, mtype, body = "", "", text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            for line in text[3:end].splitlines():
+                m = re.match(r"\s*(description|type)\s*:\s*(.*)$", line)
+                if m:
+                    value = m.group(2).strip().strip("'\"")
+                    if m.group(1) == "description":
+                        desc = value
+                    else:
+                        mtype = value
+            body = text[end + 4:]
+    return desc, mtype, body.strip()
+
+
+def imports_path():
+    return os.path.join(STATE_DIR, "imports.json")
+
+
+def import_claude_memories(ctx, dry=False):
+    """Upsert every ~/.claude/projects/*/memory/*.md (not MEMORY.md) on the hub, keyed by
+    "<dir>/<file>", and archive the ones whose file is gone. Returns the number of items."""
+    projects = ctx.load_projects()
+    redact = ctx.redactor()
+    items, skipped = [], 0
+    for memdir in sorted(glob.glob(os.path.join(CLAUDE_PROJECTS, "*", "memory"))):
+        dirname = os.path.basename(os.path.dirname(memdir))
+        folder = decode_claude_dir(dirname)
+        if not folder:
+            skipped += 1
+            continue
+        project = projects.match(folder)
+        for path in sorted(glob.glob(os.path.join(memdir, "*.md"))):
+            if os.path.basename(path) == "MEMORY.md":
+                continue
+            try:
+                with open(path, "rb") as f:
+                    text = f.read().decode("utf-8")
+            except (OSError, UnicodeDecodeError):
+                skipped += 1
+                continue
+            desc, mtype, body = parse_memory_file(text)
+            full = redact((desc + "\n" + body) if desc else body).strip()[:MAX_IMPORT_CHARS].strip()
+            if not full:
+                continue
+            items.append({"source_key": dirname + "/" + os.path.basename(path),
+                          "project_id": project["id"] if project else None,
+                          "kind": IMPORT_KINDS.get(mtype, "gotcha"), "text": full})
+    previous = set((load_json(imports_path(), {}) or {}).get("keys") or [])
+    current = {i["source_key"] for i in items}
+    removed = sorted(previous - current)
+    if dry:
+        print(json.dumps({"items": items, "remove_keys": removed}, indent=1, ensure_ascii=False))
+        return len(items)
+    batches = [items[i:i + IMPORT_BATCH] for i in range(0, len(items), IMPORT_BATCH)] or [[]]
+    for n, batch in enumerate(batches):
+        body = {"computer_id": ctx.computer_id, "items": batch}
+        if n == len(batches) - 1:
+            body["remove_keys"] = removed
+        ctx.hub.request("POST", "/api/memories/import", body=body)
+    ensure_state_dir()
+    save_json(imports_path(), {"keys": sorted(current), "last_import": now()})
+    Log.write("import", items=len(items), removed=len(removed), skipped=skipped)
+    return len(items)
+
+
+def cmd_import(args):
+    if args not in ([], ["--dry-run"]):
+        die("usage: ai-todo-memory import [--dry-run]", 64)
+    conf = Config()
+    ctx = light_context(conf)
+    try:
+        n = import_claude_memories(ctx, dry=bool(args))
+    except HubError as e:
+        Log.write("error", step="import", error=e)
+        die("ai-todo-memory: import failed (%s)" % e, 1)
+    if not args:
+        refresh_cache(ctx)
+        print("imported %d Claude memory file(s)" % n)
+
+
 def spawn_refresh():
     """Start `ai-todo-memory refresh` in the background; never wait for it."""
     try:
@@ -2293,7 +2426,8 @@ def main(argv):
     command, rest = argv[0], list(argv[1:])
     commands = {"run": cmd_run, "trigger": cmd_trigger, "nightly": cmd_nightly, "digest": cmd_digest,
                 "status": cmd_status, "index": cmd_index, "search": cmd_search, "add": cmd_add,
-                "list": cmd_list, "refresh": cmd_refresh, "session-start": cmd_session_start}
+                "list": cmd_list, "refresh": cmd_refresh, "session-start": cmd_session_start,
+                "import": cmd_import}
     if command not in commands:
         die("unknown command: %s" % command, 64)
     try:

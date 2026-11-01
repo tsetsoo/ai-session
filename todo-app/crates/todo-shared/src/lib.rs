@@ -861,6 +861,9 @@ pub struct ImportMemoriesRequest {
     pub computer_id: String,
     #[serde(default)]
     pub items: Vec<ImportMemory>,
+    /// Keys of files that are gone: their memories are archived (reason `retired`).
+    #[serde(default)]
+    pub remove_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -868,6 +871,8 @@ pub struct ImportMemoriesResponse {
     pub inserted: usize,
     pub updated: usize,
     pub unchanged: usize,
+    #[serde(default)]
+    pub removed: usize,
 }
 
 /// One extracted memory in `POST /api/memories/bulk`.

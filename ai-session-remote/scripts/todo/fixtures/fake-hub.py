@@ -235,6 +235,12 @@ class Hub(BaseHTTPRequestHandler):
             else:
                 row.update(text=item["text"], kind=item["kind"], project_id=item.get("project_id"))
                 counts["updated"] += 1
+        counts["removed"] = 0
+        for key in req.get("remove_keys", []):
+            for m in memories:
+                if m.get("computer_id") == req["computer_id"] and m.get("source_key") == key and not m.get("archived"):
+                    m["archived"], m["archived_reason"] = True, "retired"
+                    counts["removed"] += 1
         save(state)
         self.reply(200, counts)
 

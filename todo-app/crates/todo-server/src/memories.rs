@@ -493,8 +493,16 @@ pub(crate) fn import_memories_db(conn: &Connection, req: &ImportMemoriesRequest)
             }
         }
     }
+    let mut removed = 0;
+    for key in req.remove_keys.iter().map(|k| k.trim()).filter(|k| !k.is_empty()) {
+        removed += tx.execute(
+            "UPDATE memories SET archived = 1, archived_reason = 'retired', updated_at = datetime('now')
+             WHERE computer_id = ?1 AND source_key = ?2 AND archived = 0",
+            params![computer_id, key],
+        )?;
+    }
     tx.commit()?;
-    Ok(ImportMemoriesResponse { inserted, updated, unchanged })
+    Ok(ImportMemoriesResponse { inserted, updated, unchanged, removed })
 }
 
 /// Filters of `GET /api/memories`, parsed from the raw pairs so `kind` can repeat.
@@ -931,6 +939,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!((count, archived, source.as_str(), global.as_deref()), (2, 0, "claude-memory", Some("mac")));
+    }
+
+    #[actix_web::test]
+    async fn import_remove_keys_archives() {
+        let (_db, pool) = pool("mem");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        post(&pool, "/api/memories/import", json!({"computer_id": "mac", "items": [
+            {"source_key": "d/a.md", "project_id": "pa", "kind": "gotcha", "text": "File a"},
+            {"source_key": "d/b.md", "project_id": "pa", "kind": "gotcha", "text": "File b"}]})).await;
+        post(&pool, "/api/memories/import", json!({"computer_id": "spread", "items": [
+            {"source_key": "d/a.md", "project_id": null, "kind": "gotcha", "text": "Spread's file a"}]})).await;
+        let (status, r) = post(&pool, "/api/memories/import", json!({"computer_id": "mac", "items": [], "remove_keys": ["d/a.md"]})).await;
+        assert_eq!(status, StatusCode::OK, "{r}");
+        assert_eq!(r["removed"], json!(1));
+        let rows = texts(&conn, "SELECT text || ':' || archived || ':' || COALESCE(archived_reason, '') FROM memories ORDER BY text");
+        assert_eq!(rows, vec!["File a:1:retired", "File b:0:", "Spread's file a:0:"]);
     }
 
     #[actix_web::test]
