@@ -513,6 +513,22 @@ pub(crate) struct MemoryQuery {
     computer_id: Option<String>,
     global: bool,
     ids: Vec<String>,
+    /// Words to search for; `Some("")` when given but nothing searchable is left.
+    q: Option<String>,
+    include_unused: bool,
+}
+
+/// An FTS5 query for words typed by a person or an agent: each word becomes a quoted prefix
+/// term and any of them may match (ranking puts the best first). Everything except letters
+/// and digits is dropped, so no FTS syntax gets through. Empty when no word is left.
+pub(crate) fn fts_query(words: &str) -> String {
+    words
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .take(20)
+        .map(|w| format!("\"{w}\"*"))
+        .collect::<Vec<_>>()
+        .join(" OR ")
 }
 
 fn parse_bool(name: &str, value: &str) -> Result<bool, String> {
@@ -544,6 +560,8 @@ impl MemoryQuery {
                 "pending" => q.pending = parse_bool(name, value)?,
                 "computer_id" => q.computer_id = Some(value.to_string()),
                 "global" => q.global = parse_bool(name, value)?,
+                "q" => q.q = Some(fts_query(value)),
+                "include_unused" => q.include_unused = parse_bool(name, value)?,
                 "ids" => {
                     q.ids = value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
                     if q.ids.len() > MAX_IDS {
@@ -562,6 +580,9 @@ impl MemoryQuery {
 }
 
 pub(crate) fn list_memories_db(conn: &Connection, q: &MemoryQuery) -> Result<Vec<Memory>, MemoryError> {
+    if q.q.as_deref() == Some("") {
+        return Ok(Vec::new());
+    }
     let mut sql = format!("SELECT {MEMORY_COLS} FROM memories WHERE 1 = 1");
     let mut args: Vec<SqlValue> = Vec::new();
     let mut add = |clause: &str, value: SqlValue| {
@@ -601,11 +622,25 @@ pub(crate) fn list_memories_db(conn: &Connection, q: &MemoryQuery) -> Result<Vec
         // Asking by id is asking for those rows, archived or not.
         let marks = q.ids.iter().map(|id| { args.push(SqlValue::Text(id.clone())); format!("?{}", args.len()) }).collect::<Vec<_>>();
         sql.push_str(&format!(" AND id IN ({})", marks.join(",")));
+    } else if q.include_unused && !q.include_archived {
+        sql.push_str(" AND (archived = 0 OR archived_reason = 'unused')");
     } else if !q.include_archived {
         sql.push_str(" AND archived = 0");
     }
+    // Search: matching rows only; live ones first, then by FTS rank (best first).
+    let order = match &q.q {
+        Some(fts) => {
+            args.push(SqlValue::Text(fts.clone()));
+            let n = args.len();
+            sql.push_str(&format!(" AND rowid IN (SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?{n})"));
+            format!(
+                "archived ASC, (SELECT rank FROM memories_fts WHERE memories_fts MATCH ?{n} AND memories_fts.rowid = memories.rowid) ASC"
+            )
+        }
+        None => "pinned DESC, created_at DESC, rowid DESC".to_string(),
+    };
     sql.push_str(&format!(
-        " ORDER BY pinned DESC, created_at DESC, rowid DESC LIMIT {}",
+        " ORDER BY {order} LIMIT {}",
         i64::try_from(q.limit).unwrap_or(i64::MAX)
     ));
     let mut stmt = conn.prepare(&sql)?;
