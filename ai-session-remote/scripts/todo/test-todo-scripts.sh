@@ -2968,6 +2968,60 @@ runner status --json | python3 -c 'import json, sys; s = json.load(sys.stdin); a
 pass "runner_log_has_no_prompt (and status --json reports the last tick)"
 runs_reset
 
+# --- ai-todo-idea --------------------------------------------------------------------------
+# Reuses the memory sections' fake hub and HOME.
+
+IDEA="${SCRIPT_DIR}/ai-todo-idea"
+idea() { AI_TODO_HUB_CONF="$M_CONF" "$IDEA" "$@"; }
+last_idea_post() { last_body POST /api/ideas; }
+
+idea add "Try Hermes as a third tool" --notes "Compare with Codex." --cwd "${M_APP}/src" >"${SANDBOX}/idea.out" || fail "idea add failed"
+grep -qx "Idea saved." "${SANDBOX}/idea.out" || fail "idea add printed: $(cat "${SANDBOX}/idea.out")"
+last_idea_post | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert (b["project_id"], b["title"], b["notes"], b["source"], b.get("pending", False)) == ("proj-app", "Try Hermes as a third tool", "Compare with Codex.", "agent", False), b
+' || fail "idea add body wrong: $(last_idea_post)"
+pass "idea_add_posts_agent_idea_for_cwd_project"
+
+mkdir -p "${HOME}/.ai-remote/worktrees/proj-app/run1/sub"
+idea add "From a worktree" --cwd "${HOME}/.ai-remote/worktrees/proj-app/run1/sub" >/dev/null || fail "idea add from a worktree failed"
+last_idea_post | python3 -c 'import json, sys; b = json.load(sys.stdin); assert b["project_id"] == "proj-app", b' || fail "worktree not mapped to its project: $(last_idea_post)"
+pass "idea_add_from_worktree_maps_project"
+
+idea add "Maybe later" --pending --cwd "$M_APP" >"${SANDBOX}/idea.out" || fail "idea add --pending failed"
+grep -qx "Idea saved for approval in the app." "${SANDBOX}/idea.out" && last_idea_post | grep -q '"pending": true' || fail "pending idea wrong: $(last_idea_post)"
+pass "idea_add_pending"
+
+MY_SERVICE_TOKEN=LocalTok3n_Value9 idea add "Use token LocalTok3n_Value9" --notes "LocalTok3n_Value9 again" --cwd "$M_APP" >/dev/null || fail "idea add with a secret failed"
+! last_idea_post | grep -q "LocalTok3n_Value9" || fail "a secret left the Mac: $(last_idea_post)"
+pass "idea_add_redacts_secret"
+
+if idea add "Nowhere" --cwd "${HOME}/work/elsewhere" >/dev/null 2>&1; then fail "an idea outside any project was accepted"; else [[ $? -eq 65 ]] || fail "outside a project should exit 65"; fi
+pass "idea_add_outside_project_exits_65"
+
+hub_edit "s['ideas'] = [dict(id='idea-00000001-aaaa', project_id='proj-app', title='Try Hermes', notes='', status='researching', starred=False, pending=False, findings=None, todo_id=None, run_id=None, source='manual', created_at='x', updated_at='x')]"
+printf 'Hermes works.\nIt needs a plugin.\n' | MY_SERVICE_TOKEN=LocalTok3n_Value9 idea findings idea-00000001-aaaa - >"${SANDBOX}/idea.out" || fail "findings failed"
+grep -qx "Findings saved." "${SANDBOX}/idea.out" || fail "findings printed: $(cat "${SANDBOX}/idea.out")"
+last_body PATCH /api/ideas/idea-00000001-aaaa | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert b == {"findings": "Hermes works.\nIt needs a plugin."}, b
+' || fail "findings body wrong: $(last_body PATCH /api/ideas/idea-00000001-aaaa)"
+pass "idea_findings_from_stdin"
+
+idea list --cwd "$M_APP" >"${SANDBOX}/idea-list.out" || fail "idea list failed"
+grep -qx "idea-000 \[researching\] Try Hermes" "${SANDBOX}/idea-list.out" || fail "idea list printed: $(cat "${SANDBOX}/idea-list.out")"
+pass "idea_list_prints_ids"
+
+runs_reset
+due_run r-resrch01 proj-app '{"mode":"always"}'
+hub_edit "s['due_runs'][0]['job']['action']['kind'] = 'research'"
+runner tick || fail "tick failed"
+posts_to finish | grep '"id": "r-resrch01"' | grep -q '"state": "done"' || fail "a research run did not start: $(posts_to finish)"
+pass "runner_starts_research_run"
+runs_reset
+
 # --- end of the ai-todo-memory sections -------------------------------------------------
 export HOME="$SAVED_HOME"
 

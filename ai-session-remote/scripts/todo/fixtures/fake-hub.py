@@ -123,6 +123,21 @@ class Hub(BaseHTTPRequestHandler):
             return self.reply(200, {"settings": state.get("scheduler_settings") or
                                     {"five_hour": 60, "weekly": 80, "pause_waiting": False},
                                     "runs": state.get("due_runs", [])})
+        if method == "GET" and path == "/api/ideas":
+            ideas = [i for i in state.get("ideas", []) if query.get("project_id", [None])[0] in (None, i["project_id"])]
+            return self.reply(200, ideas)
+        if method == "POST" and path == "/api/ideas":
+            row = dict(body, id="idea-new-%d" % (len(state.get("ideas", [])) + 1), status="new")
+            state.setdefault("ideas", []).append(row)
+            save(state)
+            return self.reply(201, row)
+        if method == "PATCH" and path.startswith("/api/ideas/"):
+            row = next((i for i in state.get("ideas", []) if i["id"] == path.rsplit("/", 1)[1]), None)
+            if row is None:
+                return self.reply(404, {"error": "Idea not found"})
+            row.update(body or {})
+            save(state)
+            return self.reply(200, row)
         if method == "PUT" and path.endswith("/conversation/session"):
             return self.reply(200, {"ok": True})
         if method == "POST" and path.startswith("/api/runs/"):

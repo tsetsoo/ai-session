@@ -1,0 +1,210 @@
+#!/bin/sh
+# Ideas for a project, for agents: save one, list them, or save research findings.
+#
+# Usage:
+#   ai-todo-idea add "<title>" [--notes "<text>"] [--pending] [--cwd PATH]
+#   ai-todo-idea list [--status new|researching|researched|dropped] [--cwd PATH]
+#   ai-todo-idea findings <idea id> <text|->       # - reads the findings from stdin
+#
+# The project is this computer's deepest project whose folder holds the cwd (a scheduled
+# worktree, ~/.ai-remote/worktrees/<project id>/..., is its project). Title, notes and findings
+# are redacted (ai_todo_redact.py) before they leave this computer. `add` saves directly when
+# the user asked for the idea; --pending marks a proposal that waits for the user's OK.
+#
+# Exit codes: 64 bad arguments, 65 no project / config, 1 todo-server error, 90 missing tools.
+AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_LIB_DIR
+ai_path=
+ai_ifs=$IFS
+IFS=:
+set -f
+for ai_dir in /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin /usr/local/bin "$HOME/.local/bin" /usr/sbin /sbin $PATH; do
+  [ -n "$ai_dir" ] || continue
+  case "$ai_dir" in /home/*) if [ -d /System ]; then continue; fi ;; esac
+  case ":$ai_path:" in *":$ai_dir:"*) continue ;; esac
+  ai_path=${ai_path:+$ai_path:}$ai_dir
+done
+set +f
+IFS=$ai_ifs
+export PATH="$ai_path"
+unset ai_path ai_ifs ai_dir
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+# Python reads its program from stdin below, so findings piped in are handed over here.
+if [ "${1:-}" = findings ] && [ "${3:-}" = - ]; then
+  AI_TODO_IDEA_STDIN=$(cat)
+  export AI_TODO_IDEA_STDIN
+fi
+exec python3 - "$@" <<'PY'
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+HOME = os.path.expanduser("~")
+LIB_DIR = os.environ.get("AI_TODO_LIB_DIR") or os.path.join(HOME, ".ai-remote", "bin")
+AI_DIR = os.path.join(HOME, ".ai-remote")
+TREES = os.path.join(AI_DIR, "worktrees")
+MAX_TITLE, MAX_NOTES, MAX_FINDINGS = 200, 4000, 20000
+
+
+def die(message, code):
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+def config():
+    path = os.environ.get("AI_TODO_HUB_CONF") or os.path.join(AI_DIR, "todo-hub.conf")
+    values = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                m = re.match(r"\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$", line.rstrip("\n"))
+                if m:
+                    raw = m.group(2).strip()
+                    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+                        raw = raw[1:-1]
+                    values[m.group(1)] = raw
+    except OSError:
+        pass
+    if not values.get("TODO_HUB_URL"):
+        die("ai-todo-idea: no TODO_HUB_URL in %s" % path, 65)
+    return values
+
+
+def request(conf, method, path, query=None, body=None):
+    url = conf["TODO_HUB_URL"].rstrip("/") + path + ("?" + urllib.parse.urlencode(query) if query else "")
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method=method)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    if conf.get("TODO_API_TOKEN"):
+        req.add_header("Authorization", "Bearer " + conf["TODO_API_TOKEN"])
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as e:
+        die("ai-todo-idea: %s %s answered HTTP %s" % (method, path, e.code), 1)
+    except (urllib.error.URLError, OSError) as e:
+        die("ai-todo-idea: could not reach todo-server (%s)" % type(e).__name__, 1)
+    return json.loads(raw) if raw else None
+
+
+def redactor(conf):
+    sys.path.insert(0, LIB_DIR)
+    sys.dont_write_bytecode = True
+    try:
+        import ai_todo_redact
+    except ImportError:
+        die("ai_todo_redact.py not found in %s; refusing to send anything" % LIB_DIR, 90)
+    secrets = ai_todo_redact.secret_values_from_env(os.environ)
+    if conf.get("TODO_API_TOKEN"):
+        secrets.append(conf["TODO_API_TOKEN"])
+    return lambda text: ai_todo_redact.redact(text, secrets)
+
+
+def expand(folder):
+    folder = folder or ""
+    if folder == "~" or folder.startswith("~/"):
+        folder = HOME + folder[1:]
+    return os.path.realpath(folder) if folder else ""
+
+
+def within(path, folder):
+    return path == folder or path.startswith(folder.rstrip("/") + "/")
+
+
+def project_for(conf, cwd):
+    """The project id for cwd, or None."""
+    cwd = os.path.realpath(cwd)
+    trees = os.path.realpath(TREES)
+    if within(cwd, trees) and cwd != trees:
+        return os.path.relpath(cwd, trees).split(os.sep)[0]
+    computer = conf.get("TODO_COMPUTER_ID")
+    best, best_len = None, -1
+    for p in request(conf, "GET", "/api/projects") or []:
+        if not isinstance(p, dict):
+            continue
+        owner = (p.get("computer") or {}).get("id") if isinstance(p.get("computer"), dict) else p.get("computer_id")
+        if computer and owner and owner != computer:
+            continue
+        folder = expand(p.get("folder"))
+        if folder and within(cwd, folder) and len(folder) > best_len:
+            best, best_len = p.get("id"), len(folder)
+    return best
+
+
+def take(args, flag, has_value=True):
+    if flag not in args:
+        return None
+    i = args.index(flag)
+    if not has_value:
+        del args[i]
+        return True
+    if i + 1 >= len(args):
+        die("%s needs a value" % flag, 64)
+    value = args[i + 1]
+    del args[i:i + 2]
+    return value
+
+
+def cmd_add(args):
+    notes = take(args, "--notes") or ""
+    pending = bool(take(args, "--pending", has_value=False))
+    cwd = take(args, "--cwd") or os.getcwd()
+    title = " ".join(args).strip()
+    if not title:
+        die('usage: ai-todo-idea add "<title>" [--notes "<text>"] [--pending] [--cwd PATH]', 64)
+    conf = config()
+    project = project_for(conf, cwd)
+    if not project:
+        die("ai-todo-idea: %s is not in a project of this computer" % cwd, 65)
+    redact = redactor(conf)
+    body = {"project_id": project, "title": redact(" ".join(title.split()))[:MAX_TITLE].strip(),
+            "notes": redact(notes.strip())[:MAX_NOTES].strip(), "source": "agent"}
+    if pending:
+        body["pending"] = True
+    request(conf, "POST", "/api/ideas", body=body)
+    print("Idea saved for approval in the app." if pending else "Idea saved.")
+
+
+def cmd_list(args):
+    status = take(args, "--status")
+    cwd = take(args, "--cwd") or os.getcwd()
+    if args:
+        die("usage: ai-todo-idea list [--status S] [--cwd PATH]", 64)
+    conf = config()
+    project = project_for(conf, cwd)
+    if not project:
+        die("ai-todo-idea: %s is not in a project of this computer" % cwd, 65)
+    query = {"project_id": project}
+    if status:
+        query["status"] = status
+    for idea in request(conf, "GET", "/api/ideas", query=query) or []:
+        print("%s [%s] %s" % (idea["id"][:8], idea.get("status"), idea.get("title")))
+
+
+def cmd_findings(args):
+    if len(args) != 2:
+        die("usage: ai-todo-idea findings <idea id> <text|->", 64)
+    idea_id, text = args
+    if text == "-":
+        text = os.environ.get("AI_TODO_IDEA_STDIN", "")
+    text = text.strip()
+    if not text or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", idea_id):
+        die("usage: ai-todo-idea findings <idea id> <text|->", 64)
+    conf = config()
+    request(conf, "PATCH", "/api/ideas/%s" % idea_id, body={"findings": redactor(conf)(text)[:MAX_FINDINGS].strip()})
+    print("Findings saved.")
+
+
+def main(argv):
+    commands = {"add": cmd_add, "list": cmd_list, "findings": cmd_findings}
+    if not argv or argv[0] not in commands:
+        die("usage: ai-todo-idea add|list|findings ... (see the header of this script)", 64)
+    commands[argv[0]](list(argv[1:]))
+
+
+main(sys.argv[1:])
+PY
