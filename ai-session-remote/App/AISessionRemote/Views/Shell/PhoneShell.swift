@@ -220,6 +220,15 @@ struct PhoneShell: View {
             notConfigured
         } else {
             ProjectsList(store: store, route: Route.project) { projectsPath.append(.project($0)) }
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        NavigationLink {
+                            JobsView(store: store)
+                        } label: {
+                            Label("Jobs", systemImage: "clock.arrow.circlepath")
+                        }
+                    }
+                }
         }
     }
 

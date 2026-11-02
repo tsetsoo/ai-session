@@ -12,6 +12,8 @@ struct TodoRow: View {
     let canToggle: Bool
     /// The todo's project, in lists not already filtered by project.
     var projectName: String?
+    /// "Scheduled · <job>" for a todo a scheduler job created.
+    var scheduledLabel: String?
     let onToggle: () -> Void
 
     private static let toolIconSide: CGFloat = 20
@@ -47,6 +49,12 @@ struct TodoRow: View {
                     .strikethrough(todo.completed)
                     .foregroundStyle(todo.completed ? .secondary : .primary)
                     .lineLimit(1)
+                if let scheduledLabel {
+                    Label(scheduledLabel, systemImage: "clock.arrow.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 if conversation != nil || projectName != nil {
                     TodoSubtitleLabel(conversation: conversation, status: status, projectName: projectName)
                 }

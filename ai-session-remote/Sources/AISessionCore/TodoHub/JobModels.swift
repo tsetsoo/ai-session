@@ -210,3 +210,19 @@ public struct SchedulerSettings: Codable, Equatable, Hashable, Sendable {
         self.pauseWaiting = pauseWaiting
     }
 }
+
+/// Labels for scheduled todos and jobs.
+public enum ScheduledMarker {
+    /// "Scheduled · <job name>" on a scheduled todo; "Scheduled" when the job is unknown.
+    public static func text(jobName: String?) -> String {
+        guard let name = jobName?.trimmingCharacters(in: .whitespaces), !name.isEmpty else { return "Scheduled" }
+        return "Scheduled · \(name)"
+    }
+
+    public static func triggerSummary(_ trigger: JobTrigger) -> String {
+        switch trigger {
+        case let .cron(expr): "Cron \(expr)"
+        case .manual: "Manual"
+        }
+    }
+}

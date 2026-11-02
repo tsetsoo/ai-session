@@ -41,6 +41,7 @@ struct ConversationListView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var actions = ConversationRowActions()
+    @AppStorage("showScheduledTodos") private var showScheduled = true
 
     init(filter: Binding<Filter>, showsFilterPicker: Bool = true, showsShortcuts: Bool = false,
          query: String = "", selection: Binding<String?>? = nil, onOpen: @escaping (Todo) -> Void) {
@@ -60,6 +61,7 @@ struct ConversationListView: View {
         let filtered = filter.conversations(board)
         let conversations = filtered.filter { conversation in
             let todo = todos[conversation.todoId]
+            if !showScheduled, todo?.scheduledJobId != nil { return false }
             return ListSearch.matches(query, todo?.title,
                                       RowText.conversationSearchText(conversation, section: todo?.section),
                                       conversation.statusMessage)

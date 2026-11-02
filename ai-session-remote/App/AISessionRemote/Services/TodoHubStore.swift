@@ -26,6 +26,8 @@ final class TodoHubStore {
     /// Memories agents proposed (`ai-todo-memory add`) that wait for an OK, on every project
     /// and computer. Shown as a badge on Projects.
     private(set) var pendingMemoryCount = 0
+    /// Scheduler jobs. Empty on a hub from before the scheduler.
+    private(set) var jobs: [SchedulerJob] = []
     /// True while showing the cached snapshot because the hub could not be reached.
     private(set) var isOffline = false
     private(set) var cachedAt: Date?
@@ -200,8 +202,9 @@ final class TodoHubStore {
             async let suggestions = try? client.projectSuggestions()
             // Optional too: a hub from before pending memories ignores the filter.
             async let pending = try? client.listMemories(MemoryQuery(limit: 1000, pending: true))
+            async let loadedJobs = try? client.listJobs()
             let (t, c, m, comps) = try await (todos, conversations, mappings, computers)
-            let (p, sugg, pend) = await (projects, suggestions, pending)
+            let (p, sugg, pend, jobList) = await (projects, suggestions, pending, loadedJobs)
             // A refresh that started later has newer data; don't overwrite it.
             guard generation == refreshGeneration else { return }
             guard changesAtStart == localChanges else { return }
@@ -211,6 +214,7 @@ final class TodoHubStore {
                 trigger: trigger
             )
             if let pend { pendingMemoryCount = pend.filter(\.pending).count }
+            if let jobList { jobs = jobList }
             if wantsLiveUpdates && eventsTask == nil { startEventsTask() }
         } catch TodoHubError.unreachable {
             guard generation == refreshGeneration else { return }
@@ -968,6 +972,42 @@ final class TodoHubStore {
         ))
         // A hub from before pending memories ignores the filter: show nothing rather than everything.
         return memories.filter(\.pending)
+    }
+
+    // MARK: Scheduler
+
+    /// "Scheduled · <job>" for a scheduled todo, nil for any other.
+    func scheduledLabel(for todo: Todo) -> String? {
+        guard let id = todo.scheduledJobId else { return nil }
+        return ScheduledMarker.text(jobName: jobs.first { $0.id == id }?.name)
+    }
+
+    func createJob(_ request: CreateJobRequest) async throws {
+        try await perform { client in _ = try await client.createJob(request) }
+    }
+
+    func updateJob(_ job: SchedulerJob, _ request: UpdateJobRequest) async throws {
+        try await perform { client in _ = try await client.updateJob(id: job.id, request) }
+    }
+
+    func deleteJob(_ job: SchedulerJob) async throws {
+        try await perform { client in try await client.deleteJob(id: job.id) }
+    }
+
+    func runJob(_ job: SchedulerJob) async throws {
+        try await perform { client in _ = try await client.runJob(id: job.id) }
+    }
+
+    func jobRuns(_ job: SchedulerJob) async throws -> [JobRun] {
+        try await requireClient().jobRuns(id: job.id, limit: 50)
+    }
+
+    func schedulerSettings() async throws -> SchedulerSettings {
+        try await requireClient().schedulerSettings()
+    }
+
+    func updateSchedulerSettings(_ settings: SchedulerSettings) async throws {
+        try await perform { client in _ = try await client.updateSchedulerSettings(settings) }
     }
 
     func createMemory(_ request: CreateMemoryRequest) async throws {

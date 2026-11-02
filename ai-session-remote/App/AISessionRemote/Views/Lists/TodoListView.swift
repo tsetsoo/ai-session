@@ -18,6 +18,8 @@ struct TodoListView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var actions = ConversationRowActions()
+    /// Scheduled todos (made by scheduler jobs) shown or hidden, kept per device.
+    @AppStorage("showScheduledTodos") private var showScheduled = true
     @State private var linkTarget: Todo?
     /// Delete Todo… asks first.
     @State private var deleteTarget: Todo?
@@ -39,6 +41,9 @@ struct TodoListView: View {
         let board = model.board
         SelectableList(selection: selection) {
             ListStatusBanner(store: store)
+            if store.todos.contains(where: { $0.scheduledJobId != nil }) {
+                Toggle("Show scheduled", isOn: $showScheduled)
+            }
             if let grouping {
                 Section {
                     Picker("Group by", selection: grouping) {
@@ -97,10 +102,11 @@ struct TodoListView: View {
     }
 
     private func isInMainList(_ todo: Todo) -> Bool {
+        guard showScheduled || todo.scheduledJobId == nil else { return false }
         #if os(macOS)
-        !todo.onHold
+        return !todo.onHold
         #else
-        true
+        return true
         #endif
     }
 
@@ -191,6 +197,7 @@ struct TodoListView: View {
             isBusy: actions.inFlight.contains(todo.id),
             canToggle: canChange,
             projectName: store.project(id: todo.projectId)?.name,
+            scheduledLabel: store.scheduledLabel(for: todo),
             onToggle: { toggle(todo) }
         )
         .tag(todo.id)

@@ -154,6 +154,7 @@ struct ProjectDetailView: View {
                     status: model.board.status(forTodo: todo.id),
                     isBusy: false,
                     canToggle: !store.isOffline,
+                    scheduledLabel: store.scheduledLabel(for: todo),
                     onToggle: { Task { await store.toggle(todo) } }
                 )
                 .rowTap { open(todo) }

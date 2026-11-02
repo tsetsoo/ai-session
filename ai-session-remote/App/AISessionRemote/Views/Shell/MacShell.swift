@@ -193,6 +193,8 @@ struct MacShell: View {
                                  onOpen: { open($0) })
         case let .section(section):
             TodoListView(sections: [section], query: query, selection: selection, onOpen: { open($0) })
+        case .jobs:
+            JobsView(store: store)
         case .projects:
             ProjectsList(store: store, selection: Binding(
                 get: { model.selectedProjectID },
@@ -1161,6 +1163,7 @@ extension AppModel.SidebarItem {
         case "review": self = .review
         case "working", "running": self = .working
         case "projects": self = .projects
+        case "jobs": self = .jobs
         default:
             if let section = TodoSection(rawValue: demoArgument) {
                 self = .section(section)
