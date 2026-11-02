@@ -135,6 +135,8 @@ pub enum PushKind {
     Waiting,
     Done { minutes: u32 },
     Test,
+    /// A scheduler push job: the alert's subtitle carries the job's body text.
+    Scheduled,
 }
 
 impl PushKind {
@@ -143,6 +145,7 @@ impl PushKind {
             PushKind::Waiting => "waiting",
             PushKind::Done { .. } => "done",
             PushKind::Test => "test",
+            PushKind::Scheduled => "scheduled",
         }
     }
 
@@ -151,6 +154,7 @@ impl PushKind {
             PushKind::Waiting => "Needs you".into(),
             PushKind::Done { minutes } => format!("Done after {minutes} min"),
             PushKind::Test => "Test notification".into(),
+            PushKind::Scheduled => "Scheduled".into(),
         }
     }
 }

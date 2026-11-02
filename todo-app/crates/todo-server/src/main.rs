@@ -17,6 +17,7 @@ mod models;
 mod paths;
 mod projects;
 mod push;
+mod scheduler;
 mod sessions;
 #[cfg(test)]
 mod test_support;
@@ -163,6 +164,18 @@ async fn main() -> std::io::Result<()> {
         }
     };
     let notifier = push::PushNotifier::start(pool.clone(), apns, presence.clone());
+
+    // The scheduler clock: one tick a minute (cron runs, push and todo jobs, missed runs).
+    {
+        let (pool, broadcaster, notifier) = (pool.clone(), broadcaster.clone(), notifier.clone());
+        actix_web::rt::spawn(async move {
+            let mut every = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                every.tick().await;
+                scheduler::run_tick(&pool, &broadcaster, &notifier).await;
+            }
+        });
+    }
 
     println!("Starting server at http://{}", args.addr);
 
