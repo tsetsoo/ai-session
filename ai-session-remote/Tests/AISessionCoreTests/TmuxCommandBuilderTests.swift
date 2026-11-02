@@ -2,6 +2,12 @@ import XCTest
 @testable import AISessionCore
 
 final class TmuxCommandBuilderTests: XCTestCase {
+    func testPersistentShellReattachesWithoutResettingItsDirectory() {
+        let command = TmuxCommandBuilder.persistentShell(tmuxName: "remote-shell-o'hare")
+        XCTAssertTrue(command.contains("exec tmux -u new-session -A -s 'remote-shell-o'\"'\"'hare' -c \"$HOME\""))
+        XCTAssertFalse(command.contains("kill-session"))
+    }
+
     func testEnsureTmuxInstalledCheck() {
         let cmd = TmuxCommandBuilder.ensureTmuxInstalledCheck()
         XCTAssertTrue(cmd.contains("command -v tmux"))

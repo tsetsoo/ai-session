@@ -54,7 +54,7 @@ struct SessionsListView: View {
         }
         .navigationTitle(hostTitle)
         .navigationBarTitleDisplayMode(.large)
-        .searchable(text: $query, prompt: "Search sessions")
+        .pageSearch(text: $query, prompt: "Search sessions")
         .refreshable { await loadSessions() }
         // `.onAppear` (not `.task`) so returning from `TerminalScreen` — after a kill, a detach,
         // or the session simply exiting — refreshes the list every time this view becomes

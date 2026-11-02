@@ -61,7 +61,7 @@ struct RemoteConversationPicker: View {
                 }
             }
         }
-        .searchable(text: $search, prompt: "Search title or folder")
+        .pageSearch(text: $search, prompt: "Search title or folder")
         .refreshable { await reload() }
         .task { if conversations == nil { await reload() } }
         .disabled(isWorking)

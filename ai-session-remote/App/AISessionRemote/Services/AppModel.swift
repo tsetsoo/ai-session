@@ -66,6 +66,8 @@ final class AppModel {
         case needsYou, review, working, section(TodoSection), projects, jobs, computer(String)
     }
 
+    let shells = ShellWorkspace()
+
     let store: TodoHubStore
     /// computerID to its tmux session names. A computer that is absent is unknown (its hub
     /// status is kept).

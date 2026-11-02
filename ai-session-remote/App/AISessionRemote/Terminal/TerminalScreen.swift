@@ -569,6 +569,7 @@ struct TerminalScreen: View {
     let mode: TerminalMode
     let title: String
     let onKill: () async throws -> Void
+    private let onDetach: (() -> Void)?
     private let makeTransport: (HostConnectionConfig, TerminalMode) -> any TerminalTransport
 
     @Environment(\.dismiss) private var dismiss
@@ -585,6 +586,7 @@ struct TerminalScreen: View {
         mode: TerminalMode,
         title: String,
         onKill: @escaping () async throws -> Void,
+        onDetach: (() -> Void)? = nil,
         makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
             SSHTerminalSession(config: $0, mode: $1)
         }
@@ -593,7 +595,12 @@ struct TerminalScreen: View {
         self.mode = mode
         self.title = title
         self.onKill = onKill
+        self.onDetach = onDetach
         self.makeTransport = makeTransport
+    }
+
+    private func detach() {
+        if let onDetach { onDetach() } else { dismiss() }
     }
 
     private var palette: TerminalPalette {
@@ -605,7 +612,7 @@ struct TerminalScreen: View {
             config: hostConfig,
             mode: mode,
             handle: terminal,
-            onDetach: { dismiss() },
+            onDetach: { detach() },
             disconnectedMessage: "The SSH connection was closed.",
             onConnectionFailed: { error in errorMessage = TerminalCoordinator.message(for: error) },
             makeTransport: makeTransport
@@ -653,7 +660,7 @@ struct TerminalScreen: View {
                         }
                     }
                     Button {
-                        dismiss()
+                        detach()
                     } label: {
                         Label("Detach", systemImage: "arrow.uturn.left")
                     }

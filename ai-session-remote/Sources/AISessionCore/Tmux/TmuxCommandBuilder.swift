@@ -38,6 +38,12 @@ public enum TmuxCommandBuilder {
         wrap("tmux -u attach -t \(shellQuote(tmuxName))")
     }
 
+    /// Attach to the same shell on every visit, creating it only on the first connection.
+    /// Detaching SSH leaves its directory, jobs and shell variables alive in tmux.
+    public static func persistentShell(tmuxName: String) -> String {
+        wrap("exec tmux -u new-session -A -s \(shellQuote(tmuxName)) -c \"$HOME\"")
+    }
+
     public static func killSession(tmuxName: String) -> String {
         wrap("tmux kill-session -t \(shellQuote(tmuxName))")
     }
