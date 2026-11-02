@@ -4,6 +4,7 @@
 mod auth;
 mod broadcast;
 mod conversations;
+mod cron;
 mod daily;
 mod db;
 mod describe;
