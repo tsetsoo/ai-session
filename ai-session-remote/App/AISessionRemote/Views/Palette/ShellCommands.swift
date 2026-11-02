@@ -15,6 +15,8 @@ struct ShellCommands {
     let openConversation: (Int) -> Void
     /// ⌘N; `nil` while new todos can't be added (offline, no server).
     let newTodo: (() -> Void)?
+    /// Only the conversation visible in this scene can be popped out.
+    var popOutConversation: (() -> Void)? = nil
 }
 
 /// ⌘⏎ and ⌘⌫ for the todo selected in the list column. Published with `focusedValue` from

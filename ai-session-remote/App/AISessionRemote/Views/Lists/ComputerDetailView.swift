@@ -123,7 +123,8 @@ struct ComputerDetailView: View {
                         }
                     }
                 } footer: {
-                    Text("Other sessions run here without a todo. On This Computer lists conversations you can link to a todo or turn into a new one.")
+                    Text("Manage other sessions, link conversations to todos, or open a shell that keeps running when you leave.")
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             #if os(macOS)
@@ -215,18 +216,71 @@ struct ComputerDetailView: View {
     }
 }
 
-/// A plain shell on the computer, outside tmux.
+/// On compact screens, returning to Open Shell reattaches the saved shell and offers more.
 struct ShellScreen: View {
     let host: HostEntity
+    @Environment(AppModel.self) private var model
+    @State private var selectedID: UUID?
+
+    private var shells: [WorkspaceShell] { model.shells.shells.filter { $0.hostID == host.id } }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Picker("Shell", selection: $selectedID) {
+                    ForEach(shells) { shell in Text(shell.title).tag(Optional(shell.id)) }
+                }
+                Button("New Shell", systemImage: "plus") { create() }
+            }
+            .padding()
+            if let shell = shells.first(where: { $0.id == selectedID }) {
+                PersistentShellTerminal(shell: shell, host: host)
+                    .id(shell.id)
+            }
+        }
+        .onAppear {
+            if shells.isEmpty {
+                create()
+            } else {
+                selectedID = model.shells.selection(for: host.id, current: selectedID)
+            }
+        }
+        .onChange(of: selectedID) { _, id in model.shells.rememberSelection(id, for: host.id) }
+        .onChange(of: shells.map(\.id)) { _, _ in
+            selectedID = model.shells.selection(for: host.id, current: selectedID)
+        }
+    }
+
+    private func create() {
+        selectedID = model.shells.create(hostID: host.id, computerName: host.displayName).id
+    }
+}
+
+struct PersistentShellTerminal: View {
+    let shell: WorkspaceShell
+    let host: HostEntity
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         if let connection = try? SessionServiceFactory().make(for: host) {
-            TerminalScreen(hostConfig: connection.config, mode: .plainShell, title: "Shell", onKill: {})
+            TerminalScreen(
+                hostConfig: connection.config,
+                mode: .attach(TmuxCommandBuilder.persistentShell(tmuxName: shell.tmuxName)),
+                title: shell.label,
+                onKill: {
+                    try await connection.service.killSession(config: connection.config, tmuxName: shell.tmuxName)
+                    model.shells.forget(shell)
+                },
+                onDetach: {
+                    model.shells.selectedID = nil
+                    dismiss()
+                }
+            )
         } else {
             ContentUnavailableView(
-                "Shell Unavailable",
-                systemImage: "exclamationmark.triangle",
-                description: Text("This device can't reach \(host.displayName) yet. Set up access in Settings.")
+                "Shell Unavailable", systemImage: "exclamationmark.triangle",
+                description: Text("Set up access to \(shell.computerName) in Settings.")
             )
         }
     }

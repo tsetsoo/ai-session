@@ -5,6 +5,47 @@ import SwiftUI
 import AppKit
 #endif
 
+/// The detail and list resolve the same active destination. A computer page can remain
+/// underneath a shell as its Back destination, but must not keep the list selected meanwhile.
+enum ShellDestination: Equatable {
+    case shell(UUID)
+    case projects
+    case computerPage(ComputerPage)
+    case conversation(String?)
+
+    static func resolve(sidebar: AppModel.SidebarItem?, page: ComputerPage?, shellID: UUID?,
+                        todoID: String?) -> Self {
+        if let shellID { return .shell(shellID) }
+        if sidebar == .projects { return .projects }
+        if case .computer = sidebar, let page { return .computerPage(page) }
+        return .conversation(todoID)
+    }
+
+    var listTag: String? {
+        switch self {
+        case .shell: ComputerPage.shell.tag
+        case .projects: nil
+        case let .computerPage(page): page.tag
+        case let .conversation(id): id
+        }
+    }
+
+    var todoID: String? {
+        if case let .conversation(id) = self { return id }
+        return nil
+    }
+
+    func popOutAction(_ perform: @escaping (String) -> Void) -> (() -> Void)? {
+        guard let todoID else { return nil }
+        return { perform(todoID) }
+    }
+
+    var showsConversation: Bool {
+        if case .conversation = self { return true }
+        return false
+    }
+}
+
 /// The Mac app, and iPad in regular width: sidebar, list column and the selected todo's
 /// conversation frame, like the Claude desktop app.
 struct MacShell: View {
@@ -101,6 +142,10 @@ struct MacShell: View {
         .onChange(of: model.sidebarSelection) { _, _ in
             query = ""
             computerPage = nil
+            model.shells.selectedID = nil
+        }
+        .onChange(of: model.selectedTodoID) { _, id in
+            if id != nil { model.shells.selectedID = nil }
         }
         .onAppear(perform: applyInitialSelection)
         // A tapped "needs you" notification (routed by AppModel): select it only. The
@@ -108,6 +153,7 @@ struct MacShell: View {
         .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
             guard let todoID, let todo = store.todos.first(where: { $0.id == todoID }) else { return }
             model.pendingOpenTodoID = nil
+            model.shells.selectedID = nil
             model.sidebarSelection = Self.sidebarTarget(showing: todo, from: sidebarItem, board: model.board)
             computerPage = nil
             model.selectedConversationID = store.conversationToOpen(forTodo: todo.id)
@@ -251,7 +297,8 @@ struct MacShell: View {
             newTodo: canAdd ? {
                 showingPalette = false
                 showingAdd = true
-            } : nil
+            } : nil,
+            popOutConversation: popOutConversation
         )
     }
 
@@ -266,10 +313,20 @@ struct MacShell: View {
         )
     }
 
-    /// The todo whose conversation the detail column shows.
-    private var visibleTodoID: String? {
-        guard sidebarItem != .projects, computerPage == nil else { return nil }
-        return model.selectedTodoID
+    private var destination: ShellDestination {
+        ShellDestination.resolve(sidebar: model.sidebarSelection, page: computerPage,
+                                 shellID: model.shells.selectedID, todoID: model.selectedTodoID)
+    }
+
+    /// The todo whose conversation the detail column shows, also used by scene commands.
+    private var visibleTodoID: String? { destination.todoID }
+
+    private var popOutConversation: (() -> Void)? {
+        #if os(macOS)
+        return destination.popOutAction { model.popOut($0, openWindow: openWindow) }
+        #else
+        return nil
+        #endif
     }
 
     /// A palette row: ⏎ opens it here, ⌘⏎ a conversation or todo in its own window.
@@ -370,22 +427,32 @@ struct MacShell: View {
 
     /// Todo ids, and a computer's pages by `ComputerPage.tag`.
     private var selection: Binding<String?> {
-        Binding(get: { computerPage?.tag ?? model.selectedTodoID }, set: { tag in
+        Binding(get: { destination.listTag }, set: { tag in
             if let page = ComputerPage(tag: tag) {
-                computerPage = page
-                model.selectedTodoID = nil
+                model.shells.selectedID = nil
+                if page == .shell, case let .computer(id) = sidebarItem,
+                   let computer = store.computers.first(where: { $0.id == id }),
+                   let host = HostLookup.host(for: computer, in: hosts) {
+                    model.shells.create(hostID: host.id, computerName: computer.name)
+                    computerPage = nil
+                } else {
+                    computerPage = page
+                }
+                if page != .shell { model.selectedTodoID = nil }
             } else if let conversation = store.conversations.values.first(where: { $0.listKey == tag }) {
+                model.shells.selectedID = nil
                 computerPage = nil
                 model.selectedConversationID = conversation.listKey
                 model.selectedTodoID = conversation.todoId
             } else {
+                model.shells.selectedID = nil
                 computerPage = nil
                 model.selectedConversationID = tag.flatMap { store.conversationToOpen(forTodo: $0) }
                 model.selectedTodoID = tag
             }
             // A click lands keyboard focus in the terminal; arrowing through the list keeps it
             // in the list. A terminal still connecting focuses itself when it connects.
-            if Self.selectionIsClick, let todoID = model.selectedTodoID {
+            if Self.selectionIsClick, model.shells.selectedID == nil, computerPage == nil, let todoID = model.selectedTodoID {
                 model.requestTerminalFocus(todoID: todoID)
             }
         })
@@ -407,6 +474,7 @@ struct MacShell: View {
     /// "Open" from a row's context menu: select it and start (or resume) `conversation`, or the
     /// todo's most urgent one.
     private func open(_ todo: Todo, conversation: Conversation? = nil) {
+        model.shells.selectedID = nil
         computerPage = nil
         model.selectedConversationID = conversation?.listKey ?? store.conversationToOpen(forTodo: todo.id)
         model.selectedTodoID = todo.id
@@ -508,30 +576,99 @@ private struct ShellDetail: View {
 
     private var store: TodoHubStore { model.store }
 
-    private var showsConversation: Bool {
-        model.sidebarSelection != .projects && computerPage == nil
+    private var destination: ShellDestination {
+        ShellDestination.resolve(sidebar: model.sidebarSelection, page: computerPage,
+                                 shellID: model.shells.selectedID, todoID: model.selectedTodoID)
     }
 
     var body: some View {
         ZStack {
-            ConversationColumn(request: $frameRequest, showsConversation: showsConversation)
-            if model.sidebarSelection == .projects {
-                projectDetail
-            } else if let page = computerPage, case let .computer(id) = model.sidebarSelection,
-                      let computer = store.computers.first(where: { $0.id == id }),
-                      let host = HostLookup.host(for: computer, in: hosts) {
-                NavigationStack {
-                    page.destination(computer: computer, host: host)
+            ConversationColumn(request: $frameRequest, showsConversation: destination.showsConversation)
+            switch destination {
+            case let .shell(id):
+                if let shell = model.shells.shells.first(where: { $0.id == id }) {
+                    shellDetail(shell)
                 }
-                .id("\(id)|\(page.rawValue)")
-            } else if showsConversation, model.selectedTodoID == nil {
+            case .projects:
+                projectDetail
+            case let .computerPage(page):
+                if case let .computer(id) = model.sidebarSelection,
+                   let computer = store.computers.first(where: { $0.id == id }),
+                   let host = HostLookup.host(for: computer, in: hosts) {
+                    NavigationStack {
+                        page.destination(computer: computer, host: host)
+                    }
+                    .id("\(id)|\(page.rawValue)")
+                }
+            case .conversation(nil):
                 ContentUnavailableView {
                     Label("Select a conversation", systemImage: "bubble.left.and.bubble.right")
                 } description: {
                     Text("⌘K to jump · ⌘N new todo")
                 }
+            case .conversation:
+                EmptyView()
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !model.shells.shells.isEmpty { shellSwitcher }
+        }
+    }
+
+    @ViewBuilder
+    private func shellDetail(_ shell: WorkspaceShell) -> some View {
+        if let host = hosts.first(where: { $0.id == shell.hostID }) {
+            NavigationStack {
+                PersistentShellTerminal(shell: shell, host: host)
+            }
+            .id(shell.id)
+        } else {
+            ContentUnavailableView("Shell Unavailable", systemImage: "terminal",
+                                   description: Text("Set up access to \(shell.computerName) in Settings."))
+        }
+    }
+
+    private var shellSwitcher: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: DS.spacing.s) {
+                if model.shells.selectedID != nil {
+                    Button("Back", systemImage: "arrow.uturn.left") {
+                        model.shells.selectedID = nil
+                    }
+                }
+                ForEach(model.shells.shells) { shell in
+                    Button {
+                        model.shells.selectedID = shell.id
+                    } label: {
+                        Label(shell.label, systemImage: "terminal")
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(model.shells.selectedID == shell.id ? DS.accent.opacity(0.2) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.borderless)
+                    .contextMenu {
+                        Button("New Shell on \(shell.computerName)", systemImage: "plus") {
+                            model.shells.create(hostID: shell.hostID, computerName: shell.computerName)
+                        }
+                        Button("Remove Shortcut", systemImage: "xmark") { model.shells.forget(shell) }
+                    }
+                }
+                Menu {
+                    ForEach(hosts) { host in
+                        Button(host.displayName) {
+                            model.shells.create(hostID: host.id, computerName: host.displayName)
+                        }
+                    }
+                } label: {
+                    Label("New Shell", systemImage: "plus")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            .padding(8)
+        }
+        .background(.bar)
     }
 
     /// The selected project's page. Opening one of its todos selects that todo in its section

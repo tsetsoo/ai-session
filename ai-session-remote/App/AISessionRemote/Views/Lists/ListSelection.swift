@@ -41,3 +41,30 @@ enum ListSearch {
         return fields.contains { $0?.localizedStandardContains(query) ?? false }
     }
 }
+
+/// Detail pages share the window toolbar with the list column. AppKit allows only one
+/// SwiftUI search item per toolbar, so their Mac search lives inside the page.
+extension View {
+    func pageSearch(text: Binding<String>, prompt: String) -> some View {
+        #if os(macOS)
+        safeAreaInset(edge: .top, spacing: 0) {
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField(prompt, text: text)
+                    .textFieldStyle(.roundedBorder)
+                if !text.wrappedValue.isEmpty {
+                    Button { text.wrappedValue = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            .padding(12)
+            .background(.bar)
+        }
+        #else
+        searchable(text: text, prompt: prompt)
+        #endif
+    }
+}

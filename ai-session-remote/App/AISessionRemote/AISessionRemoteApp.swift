@@ -65,7 +65,7 @@ struct AISessionRemoteApp: App {
                 ShellCommandItems()
                 #if os(macOS)
                 Divider()
-                PopOutButton(model: model)
+                PopOutButton()
                 Divider()
                 // Plain ⌘= is handled by a key monitor (TextSizeShortcuts), since ⌘+ needs Shift.
                 Button("Bigger Text") { TextSizeShortcuts.step(by: 1) }
@@ -102,15 +102,12 @@ struct AISessionRemoteApp: App {
 #if os(macOS)
 /// Conversation ▸ Open in New Window (⇧⌘O) for the main window's selected conversation.
 private struct PopOutButton: View {
-    let model: AppModel
-    @Environment(\.openWindow) private var openWindow
+    @FocusedValue(\.shellCommands) private var shell
 
     var body: some View {
-        Button("Open in New Window") {
-            if let id = model.selectedTodoID { model.popOut(id, openWindow: openWindow) }
-        }
-        .keyboardShortcut("o", modifiers: [.command, .shift])
-        .disabled(model.selectedTodoID == nil)
+        Button("Open in New Window") { shell?.popOutConversation?() }
+            .keyboardShortcut("o", modifiers: [.command, .shift])
+            .disabled(shell?.popOutConversation == nil)
     }
 }
 #endif

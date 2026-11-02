@@ -101,6 +101,7 @@ struct InlineTodoAdd: View {
                     .foregroundStyle(DS.error)
             }
         }
+        .selectionDisabled()
         .disabled(store.isOffline)
         .focusedValue(\.isEditingTodoText, isExpanded ? true : nil)
         .onAppear {
@@ -229,6 +230,8 @@ struct TodoTitleField: View {
                     .lineLimit(minLines...max(minLines, 8))
                     .focused(focused)
                     .onSubmit(onSubmit)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: .infinity, minHeight: 28)
                 #if os(iOS)
                 dictateButton
                 #endif
