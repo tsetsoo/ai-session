@@ -376,30 +376,70 @@ struct MemoryPanelSnapshot {
 struct MemoriesPanel: View {
     let todoId: String
     let store: TodoHubStore
-    /// Fallback until the store has the conversation.
-    let initialConversation: Conversation
+    /// The conversation on screen (not the todo's most urgent one): "This conversation" and
+    /// the cache follow it. The presenter gives the panel a new identity when it changes.
+    let conversation: Conversation
 
-    @State private var mine: [Memory] = []
+    @State private var mine: [Memory]
     @State private var page: MemoryPage?
-    @State private var limit = MemoryPage.pageSize
-    @State private var pending: [Memory] = []
+    @State private var limit: Int
+    @State private var pending: [Memory]
     @State private var showsImported = false
     @State private var imported: MemoryPage?
     @State private var importedLimit = MemoryPage.pageSize
     @State private var loadError: String?
+    @State private var importedError: String?
     @State private var showArchived = false
     @State private var actions = MemoryActions()
 
     private static let mineLimit = 200
 
-    private var conversation: Conversation { store.mostUrgent(forTodo: todoId) ?? initialConversation }
+    /// Starts from what this conversation showed last time, so switching back is instant.
+    /// Restoring here, before the load task starts, keeps that task from running twice.
+    init(todoId: String, store: TodoHubStore, conversation: Conversation) {
+        self.todoId = todoId
+        self.store = store
+        self.conversation = conversation
+        let key = Self.cacheKey(todoId: todoId, store: store, conversation: conversation, showArchived: false)
+        let snapshot = store.cachedMemoryPanel(key)
+        _mine = State(initialValue: snapshot?.mine ?? [])
+        _page = State(initialValue: snapshot?.page)
+        _limit = State(initialValue: snapshot?.limit ?? MemoryPage.pageSize)
+        _pending = State(initialValue: snapshot?.pending ?? [])
+    }
 
-    private var projectId: String? {
+    private static func projectId(todoId: String, store: TodoHubStore, conversation: Conversation) -> String? {
         conversation.projectId ?? store.todos.first { $0.id == todoId }?.projectId
     }
 
+    private static func cacheKey(todoId: String, store: TodoHubStore, conversation: Conversation,
+                                 showArchived: Bool) -> String {
+        let project = projectId(todoId: todoId, store: store, conversation: conversation) ?? ""
+        return "\(todoId)|\(conversation.id)|\(conversation.sessionId)|\(project)|\(showArchived)"
+    }
+
+    private var projectId: String? {
+        Self.projectId(todoId: todoId, store: store, conversation: conversation)
+    }
+
     private var cacheKey: String {
-        "\(todoId)|\(projectId ?? "")|\(conversation.sessionId)|\(showArchived)"
+        Self.cacheKey(todoId: todoId, store: store, conversation: conversation, showArchived: showArchived)
+    }
+
+    /// Changes the archived filter and, in the same update, swaps in that view's cached rows
+    /// (or clears them) with a fresh limit, so the old rows never pose as the new result and
+    /// the load task starts once.
+    private var showArchivedBinding: Binding<Bool> {
+        Binding(get: { showArchived }, set: { value in
+            showArchived = value
+            let snapshot = store.cachedMemoryPanel(cacheKey)
+            mine = snapshot?.mine ?? []
+            page = snapshot?.page
+            limit = snapshot?.limit ?? MemoryPage.pageSize
+            pending = snapshot?.pending ?? []
+            imported = nil
+            importedLimit = MemoryPage.pageSize
+        })
     }
 
     /// The project's memories, or the todo's when there is no project.
@@ -425,7 +465,7 @@ struct MemoriesPanel: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                    Toggle("Show archived", isOn: $showArchived)
+                    Toggle("Show archived", isOn: showArchivedBinding)
                     Button {
                         actions.editing = .new(projectId: projectId, todoId: todoId)
                     } label: {
@@ -447,7 +487,6 @@ struct MemoriesPanel: View {
         }
         .navigationTitle("Memories")
         .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: cacheKey, initial: true) { _, key in restore(key) }
         .task(id: "\(cacheKey)|\(store.revision)|\(limit)") { await load() }
         .task(id: "\(cacheKey)|\(store.revision)|\(showsImported)|\(importedLimit)") {
             if showsImported { await loadImported() }
@@ -500,6 +539,11 @@ struct MemoriesPanel: View {
             .font(.footnote)
             .foregroundStyle(.secondary)
         if showsImported {
+            if let importedError {
+                Label(importedError, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(DS.warning)
+            }
             if let imported {
                 if imported.memories.isEmpty {
                     Text("No imported memory files.").foregroundStyle(.secondary)
@@ -511,19 +555,10 @@ struct MemoriesPanel: View {
                 if imported.hasMore {
                     Button("Show More") { importedLimit = MemoryPage.nextLimit(after: importedLimit) }
                 }
-            } else {
+            } else if importedError == nil {
                 ProgressView().frame(maxWidth: .infinity)
             }
         }
-    }
-
-    /// Shows what this conversation last loaded while `load` refetches.
-    private func restore(_ key: String) {
-        guard let snapshot = store.cachedMemoryPanel(key) else { return }
-        mine = snapshot.mine
-        page = snapshot.page
-        limit = snapshot.limit
-        pending = snapshot.pending
     }
 
     private func load() async {
@@ -536,8 +571,11 @@ struct MemoriesPanel: View {
                 sessionId: sessionId, includeArchived: showArchived, limit: Self.mineLimit,
                 excludeSources: [MemoryPage.importedSource]
             ))
+            // This conversation's memories have their own section: leaving them out here keeps
+            // them from filling the project's page (and its "Show More") with hidden rows.
             async let pageRows = store.memories(scoped(MemoryQuery(
-                limit: limit + 1, excludeSources: [MemoryPage.importedSource]
+                limit: limit + 1, excludeSources: [MemoryPage.importedSource],
+                excludeSessionId: sessionId.isEmpty ? nil : sessionId
             )))
             async let pendingRows: [Memory] = projectId == nil
                 ? [] : ((try? await store.pendingMemories(projectId: projectId)) ?? [])
@@ -567,9 +605,10 @@ struct MemoriesPanel: View {
             )))
             guard !Task.isCancelled else { return }
             imported = MemoryPage(fetched: rows, limit: limit, onlyImported: true)
+            importedError = nil
         } catch {
             guard !Task.isCancelled else { return }
-            loadError = TodoHubStore.message(for: error)
+            importedError = TodoHubStore.message(for: error)
         }
     }
 }
