@@ -18,6 +18,11 @@ computer_id, pending (default false), include_unused and ids. POST /api/memories
 (manual or agent, maybe pending). POST /api/memories/uses bumps use_count of known ids and
 answers {recorded, unknown, archived: []}. POST /api/memories/import upserts on
 (computer_id, source_key). PATCH /api/memories/<id> merges the body into the row.
+
+Scheduler runner: GET /api/runner/due answers {"settings": state["scheduler_settings"] (or the
+defaults), "runs": state["due_runs"]}. POST /api/runs/<id>/claim answers 409 when the id is in
+state["claimed"] (else adds it and answers the due run). /wait, /finish answer {"ok": true};
+/start answers state["start_response"] or a default (todo t-sched, tmux ai/claude/todo-sched1).
 """
 import json
 import os
@@ -111,6 +116,12 @@ class Hub(BaseHTTPRequestHandler):
             return self.uses(state, body)
         if method == "POST" and path == "/api/memories/import":
             return self.import_(state, body)
+        if method == "GET" and path == "/api/runner/due":
+            return self.reply(200, {"settings": state.get("scheduler_settings") or
+                                    {"five_hour": 60, "weekly": 80, "pause_waiting": False},
+                                    "runs": state.get("due_runs", [])})
+        if method == "POST" and path.startswith("/api/runs/"):
+            return self.runs(state, path.split("/")[3], path.split("/")[4], body)
         if method == "PATCH" and path.startswith("/api/memories/"):
             return self.patch(state, path.rsplit("/", 1)[1], body)
         if method == "POST" and path == "/api/sessions/stats":
@@ -252,6 +263,23 @@ class Hub(BaseHTTPRequestHandler):
         row.update(req or {})
         save(state)
         self.reply(200, row)
+
+    def runs(self, state, rid, verb, body):
+        due = next((d for d in state.get("due_runs", []) if d["run"]["id"] == rid), None)
+        if verb == "claim":
+            claimed = state.setdefault("claimed", [])
+            if rid in claimed or due is None:
+                return self.reply(409, {"error": "Run is not due"})
+            claimed.append(rid)
+            save(state)
+            return self.reply(200, dict(due, run=dict(due["run"], state="running")))
+        if verb == "start":
+            tool = (due or {}).get("job", {}).get("action", {}).get("tool", "claude")
+            return self.reply(200, state.get("start_response") or {
+                "todo_id": "t-sched", "tmux_name": "ai/%s/todo-sched1" % tool,
+                "session_id": "5e55a0de-0000-4000-8000-000000000001" if tool == "claude" else "",
+                "tool": tool, "prompt": "PREAMBLE for %s\n\nDo the thing." % body.get("cwd")})
+        return self.reply(200, {"ok": True})
 
     def log_message(self, *args):
         pass

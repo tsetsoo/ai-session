@@ -2757,6 +2757,146 @@ cmp -s "${SANDBOX}/agents.nightly" "${M_APP}/AGENTS.md" || fail "the digest chan
 write_conf "AI_TODO_MEMORY_DIGEST='on'"
 pass "hub_down_keeps_offsets: nightly, run and trigger with the hub unreachable advance nothing and keep the digest"
 
+# --- ai-todo-runner ------------------------------------------------------------------------
+# Reuses the memory sections' fake hub and HOME.
+
+RUNNER="${SCRIPT_DIR}/ai-todo-runner"
+R_STATE="${HOME}/.ai-remote/runner-state"
+R_TREES="${HOME}/.ai-remote/worktrees"
+R_OPEN_LOG="${SANDBOX}/runner-open.log"
+R_OPEN="${SANDBOX}/bin/fake-runner-open"
+cat >"$R_OPEN" <<FAKE
+#!/bin/sh
+# Records argv (one per line, then ---) and the prompt file's text; exits \${FAKE_OPEN_EXIT:-0}.
+for a in "\$@"; do printf '%s\n' "\$a"; done >>"$R_OPEN_LOG"
+echo --- >>"$R_OPEN_LOG"
+while [ "\$#" -gt 0 ]; do
+  if [ "\$1" = --prompt-file ]; then cat "\$2" >"${SANDBOX}/runner-prompt.txt"; rm -f "\$2"; fi
+  shift
+done
+[ "\${FAKE_OPEN_EXIT:-0}" = 0 ] && echo created
+exit "\${FAKE_OPEN_EXIT:-0}"
+FAKE
+R_LIMITS="${SANDBOX}/bin/fake-limits"
+cat >"$R_LIMITS" <<'FAKE'
+#!/bin/sh
+[ -n "${FAKE_LIMITS_SLEEP:-}" ] && sleep "$FAKE_LIMITS_SLEEP"
+[ "${FAKE_LIMITS_EXIT:-0}" = 0 ] || exit "$FAKE_LIMITS_EXIT"
+printf '{"tool":"claude","windows":[{"kind":"5h","used_percent":%s},{"kind":"weekly","used_percent":%s}]}\n' "${FAKE_5H:-10}" "${FAKE_WEEK:-10}"
+FAKE
+chmod +x "$R_OPEN" "$R_LIMITS"
+runner() {
+  AI_TODO_HUB_CONF="$M_CONF" AI_TODO_OPEN_BIN="$R_OPEN" AI_TODO_LIMITS_BIN="$R_LIMITS" AI_TODO_LIMITS_TIMEOUT=2 "$RUNNER" "$@"
+}
+R_REPO="${HOME}/work/app"
+if [[ ! -d "${R_REPO}/.git" ]]; then
+  git -C "$R_REPO" init -q -b main && git -C "$R_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+fi
+R_PLAIN="${HOME}/work/plain"
+mkdir -p "$R_PLAIN"
+hub_edit "s['projects'].append(dict(id='proj-plain', name='plain', computer=dict(id='comp-1', name='test-mac'), folder='~/work/plain', repo_url=None, digest_enabled=True))"
+due_run() { # <run id> <project id> <limit json> [wait_runs_24h] [tool]
+  python3 - "$M_HUB_STATE" "$@" <<'PY'
+import json, sys
+p, rid, project, limit = sys.argv[1:5]
+waits = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+tool = sys.argv[6] if len(sys.argv) > 6 else "claude"
+s = json.load(open(p))
+s.setdefault("due_runs", []).append({"wait_runs_24h": waits,
+  "run": {"id": rid, "job_id": "job-" + rid, "due_at": "2026-11-02 07:00:00", "state": "due"},
+  "job": {"id": "job-" + rid, "name": "Nightly Research!", "enabled": True, "trigger": {"kind": "manual"},
+          "max_runs_per_day": 4, "action": {"kind": "conversation", "project_id": project, "computer_id": None,
+          "tool": tool, "folder": None, "prompt": "x", "priority": "background", "limit": json.loads(limit)}}})
+json.dump(s, open(p, "w"))
+PY
+}
+runs_reset() { hub_edit "s['due_runs'] = []; s['claimed'] = []; s.pop('scheduler_settings', None)"; : >"$R_OPEN_LOG"; R_MARK=$(wc -l <"$M_HUB_LOG"); }
+posts_to() { # <verb>: bodies of POST /api/runs/*/<verb> since the last runs_reset, one JSON per line
+  tail -n +"$((R_MARK + 1))" "$M_HUB_LOG" | python3 -c '
+import json, sys
+for l in sys.stdin:
+    r = json.loads(l)
+    if r["method"] == "POST" and r["path"].startswith("/api/runs/") and r["path"].endswith("/" + sys.argv[1]):
+        print(json.dumps({"id": r["path"].split("/")[3], "body": r["body"]}))' "$1"
+}
+WAIT_DEFAULT='{"mode":"wait","five_hour":null,"weekly":null}'
+
+runs_reset
+due_run r-git00001 proj-app '{"mode":"always"}'
+runner tick || fail "runner tick failed"
+BR=$(git -C "$R_REPO" branch --list 'scheduled/*' | tr -d ' *+')
+[[ "$BR" == "scheduled/nightly-research-$(date +%Y%m%d)-r-git000" ]] || fail "worktree branch wrong: '$BR'"
+[[ -d "${R_TREES}/proj-app/r-git00001" ]] || fail "worktree not created"
+[[ "$(git -C "${R_TREES}/proj-app/r-git00001" rev-parse --abbrev-ref HEAD)" == "$BR" ]] || fail "worktree not on its branch"
+[[ "$(git -C "$R_REPO" rev-parse --abbrev-ref HEAD)" == main ]] || fail "the live checkout's branch changed"
+args="$(sed -n '1,/^---$/p' "$R_OPEN_LOG")"
+[[ "$args" == "--detached"$'\n'"--auto-approve"$'\n'"--prompt-file"$'\n'*$'\n'"ai/claude/todo-sched1"$'\n'"~/.ai-remote/worktrees/proj-app/r-git00001"$'\n'"5e55a0de-0000-4000-8000-000000000001"$'\n'"claude"$'\n'"---" ]] \
+  || fail "ai-todo-open argv wrong: $args"
+[[ "$(cat "${SANDBOX}/runner-prompt.txt")" == "PREAMBLE for ~/.ai-remote/worktrees/proj-app/r-git00001"$'\n\n'"Do the thing." ]] || fail "prompt wrong: $(cat "${SANDBOX}/runner-prompt.txt")"
+posts_to start | grep -q '"cwd": "~/.ai-remote/worktrees/proj-app/r-git00001", "is_git": true' || fail "start body wrong: $(posts_to start)"
+posts_to finish | grep -q '"state": "done"' || fail "finish not posted: $(posts_to finish)"
+pass "runner_starts_due_run_in_worktree"
+
+runs_reset
+due_run r-wait0001 proj-app '{"mode":"wait","five_hour":40,"weekly":null}'
+FAKE_5H=45 runner tick || fail "tick failed"
+posts_to wait | grep -q '"reason": "5h 45% > 40%"' || fail "no wait with the reason: $(posts_to wait)"
+! posts_to claim | grep -q r-wait0001 || fail "a run over its threshold was claimed"
+pass "runner_waits_when_over_threshold"
+
+runs_reset
+due_run r-alwy0001 proj-plain '{"mode":"always"}'
+FAKE_5H=99 FAKE_WEEK=99 runner tick || fail "tick failed"
+posts_to claim | grep -q r-alwy0001 || fail "an always-run job waited"
+pass "runner_always_mode_ignores_limits"
+posts_to start | grep '"id": "r-alwy0001"' | grep -q '"cwd": "~/work/plain", "is_git": false' || fail "non-git start wrong: $(posts_to start)"
+[[ ! -e "${R_TREES}/proj-plain" ]] || fail "a worktree was made for a non-git folder"
+pass "runner_non_git_runs_in_place"
+
+runs_reset
+due_run r-cap00002 proj-plain "$WAIT_DEFAULT" 2
+due_run r-cap00003 proj-plain "$WAIT_DEFAULT" 3
+FAKE_LIMITS_EXIT=75 runner tick || fail "tick failed"
+posts_to claim | grep -q r-cap00002 || fail "with 2 runs in 24h and no reading the run should start"
+posts_to wait | grep '"id": "r-cap00003"' | grep -q 'no usage reading; 3 runs in 24h' || fail "with 3 runs in 24h it should wait: $(posts_to wait)"
+runs_reset
+due_run r-slow0001 proj-plain "$WAIT_DEFAULT" 3
+start=$(date +%s)
+FAKE_LIMITS_SLEEP=10 runner tick || fail "tick failed"
+[[ $(( $(date +%s) - start )) -le 6 ]] || fail "a hanging ai-todo-limits blocked the tick"
+posts_to wait | grep -q r-slow0001 || fail "a hanging reader should count as no reading"
+pass "runner_limits_failure_uses_daily_cap"
+
+runs_reset
+due_run r-taken001 proj-plain '{"mode":"always"}'
+hub_edit "s['claimed'] = ['r-taken001']"
+runner tick || fail "tick failed"
+[[ ! -s "$R_OPEN_LOG" ]] && ! posts_to start | grep -q r-taken001 || fail "a run claimed elsewhere was started"
+pass "runner_claim_conflict_skips"
+
+R_NOORIGIN="${HOME}/work/noorigin"
+mkdir -p "$R_NOORIGIN" && git -C "$R_NOORIGIN" init -q -b trunk && git -C "$R_NOORIGIN" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+hub_edit "s['projects'].append(dict(id='proj-noorigin', name='noorigin', computer=dict(id='comp-1', name='test-mac'), folder='~/work/noorigin', repo_url=None, digest_enabled=True))"
+rm -f "${HOME}/.ai-remote/runner-state/projects.json"
+runs_reset
+due_run r-head0001 proj-noorigin '{"mode":"always"}'
+runner tick || fail "tick failed"
+[[ "$(git -C "${R_TREES}/proj-noorigin/r-head0001" rev-parse HEAD)" == "$(git -C "$R_NOORIGIN" rev-parse HEAD)" ]] || fail "worktree not based on HEAD"
+pass "runner_worktree_without_origin_uses_head"
+
+runs_reset
+due_run r-fail0001 proj-app '{"mode":"always"}'
+FAKE_OPEN_EXIT=94 runner tick || fail "tick failed"
+posts_to finish | grep '"id": "r-fail0001"' | grep -q '"state": "failed"' || fail "a failed start was not reported: $(posts_to finish)"
+[[ ! -e "${R_TREES}/proj-app/r-fail0001" ]] || fail "the worktree of a failed start was kept"
+! git -C "$R_REPO" branch --list 'scheduled/*' | grep -q r-fail00 || fail "the branch of a failed start was kept"
+pass "runner_start_failure_reports_and_cleans_worktree"
+
+! grep -q "Do the thing" "${R_STATE}/runner.log" && grep -q "started" "${R_STATE}/runner.log" || fail "runner.log missing or holds prompt text"
+runner status --json | python3 -c 'import json, sys; s = json.load(sys.stdin); assert s["last_tick"] and "started_24h" in s, s' || fail "runner status wrong"
+pass "runner_log_has_no_prompt (and status --json reports the last tick)"
+runs_reset
+
 # --- end of the ai-todo-memory sections -------------------------------------------------
 export HOME="$SAVED_HOME"
 
