@@ -188,7 +188,7 @@ struct JobDetailPane: View {
         }
         .formStyle(.grouped)
         .navigationTitle(job.name)
-        .task(id: "\(job.id)|\(store.revision)") {
+        .task(id: "\(job.id)|\(store.revision)|\(job.lastRun?.id ?? "")|\(job.lastRun?.state ?? "")") {
             runs = try? await store.jobRuns(job)
         }
         .confirmationDialog("Delete \(job.name)?", isPresented: $confirmingDelete) {
@@ -284,6 +284,9 @@ struct JobFormPane: View {
                         #endif
                         .autocorrectionDisabled()
                 }
+                if let saved = savedScheduleText {
+                    Label(saved, systemImage: "calendar").font(.callout).foregroundStyle(.secondary)
+                }
                 Stepper("At most \(draft.maxRuns) runs a day", value: $draft.maxRuns, in: 1...96)
             } header: {
                 Text("When")
@@ -356,11 +359,15 @@ struct JobFormPane: View {
         }
         .formStyle(.grouped)
         .navigationTitle(job == nil ? "New Job" : "Edit \(job?.name ?? "")")
-        .onAppear {
-            if job == nil && draft.projectId.isEmpty, let first = store.projects.first {
-                draft.projectId = first.id
-            }
-        }
+
+    }
+
+    /// The saved job's schedule in words (and next run) while the cron field still holds it.
+    private var savedScheduleText: String? {
+        guard let job, case let .cron(expr) = job.trigger, draft.usesCron,
+              expr == draft.cron.trimmingCharacters(in: .whitespaces) else { return nil }
+        let next = job.nextFireAt.flatMap(HubDates.date(from:)).map { " · next \($0.formatted(date: .abbreviated, time: .shortened))" } ?? ""
+        return ScheduleLabel.text(for: job) + next
     }
 
     private func save() {

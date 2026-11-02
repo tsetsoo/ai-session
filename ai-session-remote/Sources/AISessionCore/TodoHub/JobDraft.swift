@@ -104,3 +104,13 @@ public struct JobDraft: Equatable, Sendable {
         UpdateJobRequest(name: name, trigger: trigger, action: action, maxRunsPerDay: maxRuns)
     }
 }
+
+public extension JobDraft {
+    /// A new job's form with its project already chosen, so taking it as the "original" leaves
+    /// an untouched form clean.
+    static func new(defaultProjectID: String?) -> JobDraft {
+        var draft = JobDraft()
+        draft.projectId = defaultProjectID ?? ""
+        return draft
+    }
+}

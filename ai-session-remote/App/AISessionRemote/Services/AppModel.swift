@@ -139,7 +139,7 @@ final class AppModel {
     }
 
     /// Whether a terminal may take keyboard focus by itself now.
-    var allowsTerminalAutoFocus: Bool { !isPaletteOpen }
+    var allowsTerminalAutoFocus: Bool { !isPaletteOpen && appMode == .sessions }
 
     func requestTerminalFocus(todoID: String) {
         terminalFocusRequest = TerminalFocusRequest(todoID: todoID, serial: (terminalFocusRequest?.serial ?? 0) + 1)

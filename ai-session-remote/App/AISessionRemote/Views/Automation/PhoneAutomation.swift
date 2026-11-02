@@ -106,7 +106,7 @@ private struct PhoneJobForm: View {
         .onAppear {
             guard !loaded else { return }
             loaded = true
-            draft = job.map(JobDraft.init(job:)) ?? JobDraft()
+            draft = job.map(JobDraft.init(job:)) ?? JobDraft.new(defaultProjectID: store.projects.first?.id)
             original = draft
         }
     }
@@ -201,7 +201,7 @@ private struct PhoneActivityList: View {
                 if runs.isEmpty { Text("No runs yet.").foregroundStyle(.secondary) }
                 ForEach(runs) { recent in
                     NavigationLink {
-                        ActivityDetail(store: store, runID: recent.id, onOpenJob: { _ in }, onOpenTodo: onOpenTodo)
+                        ActivityDetail(store: store, runID: recent.id, onOpenJob: nil, onOpenTodo: onOpenTodo)
                     } label: {
                         RunRow(run: recent.run, store: store, jobName: recent.jobName, onOpenTodo: onOpenTodo)
                     }

@@ -63,6 +63,13 @@ final class AutomationModelTests: XCTestCase {
         XCTAssertFalse(JobDraft().isDirty(comparedTo: JobDraft()))
     }
 
+    func testNewDraftWithDefaultProjectIsClean() {
+        let fresh = JobDraft.new(defaultProjectID: "p1")
+        XCTAssertEqual(fresh.projectId, "p1")
+        XCTAssertFalse(fresh.isDirty(comparedTo: fresh), "an untouched new form has nothing to lose")
+        XCTAssertEqual(JobDraft.new(defaultProjectID: nil).projectId, "")
+    }
+
     func testJobDraftRoundTripsResearchJob() throws {
         var draft = JobDraft()
         draft.name = "Research"

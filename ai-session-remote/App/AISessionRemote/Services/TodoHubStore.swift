@@ -221,6 +221,8 @@ final class TodoHubStore {
             )
             if let pend { pendingMemoryCount = pend.filter(\.pending).count }
             if let jobList { jobs = jobList }
+            // Ideas (and the pending badge) follow every refresh, like jobs.
+            await loadAllIdeas()
             if wantsLiveUpdates && eventsTask == nil { startEventsTask() }
         } catch TodoHubError.unreachable {
             guard generation == refreshGeneration else { return }
@@ -1028,6 +1030,8 @@ final class TodoHubStore {
 
     func researchIdea(_ idea: Idea) async throws {
         try await perform { client in _ = try await client.researchIdea(id: idea.id) }
+        await loadAllIdeas()
+        await loadRecentRuns()
     }
 
     /// Reloads `recentRuns`; nil when the hub has no `/api/runs` yet.
@@ -1053,6 +1057,7 @@ final class TodoHubStore {
 
     func runJob(_ job: SchedulerJob) async throws {
         try await perform { client in _ = try await client.runJob(id: job.id) }
+        await loadRecentRuns()
     }
 
     func jobRuns(_ job: SchedulerJob) async throws -> [JobRun] {
@@ -1078,14 +1083,17 @@ final class TodoHubStore {
 
     func createIdea(_ request: CreateIdeaRequest) async throws {
         try await perform { client in _ = try await client.createIdea(request) }
+        await loadAllIdeas()
     }
 
     func updateIdea(_ idea: Idea, _ request: UpdateIdeaRequest) async throws {
         try await perform { client in _ = try await client.updateIdea(id: idea.id, request) }
+        await loadAllIdeas()
     }
 
     func deleteIdea(_ idea: Idea) async throws {
         try await perform { client in try await client.deleteIdea(id: idea.id) }
+        await loadAllIdeas()
     }
 
     /// The new todo's id.

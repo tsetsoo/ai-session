@@ -106,7 +106,7 @@ struct MacShell: View {
         } content: {
             Group {
                 if model.appMode == .automation {
-                    AutomationListColumn()
+                    AutomationListColumn(onOpenTodo: openTodoFromAutomation)
                 } else {
                     contentColumn
                 }
@@ -186,6 +186,7 @@ struct MacShell: View {
         .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
             guard let todoID, let todo = store.todos.first(where: { $0.id == todoID }) else { return }
             model.pendingOpenTodoID = nil
+            model.appMode = .sessions
             model.shells.selectedID = nil
             model.sidebarSelection = Self.sidebarTarget(showing: todo, from: sidebarItem, board: model.board)
             computerPage = nil
@@ -312,7 +313,7 @@ struct MacShell: View {
 
     /// For the Conversation menu; none while one of the shell's sheets is up.
     private var shellCommands: ShellCommands? {
-        guard settings == nil, !showingAdd, !showingNewFromConversation, linkTarget == nil else { return nil }
+        guard model.appMode == .sessions, settings == nil, !showingAdd, !showingNewFromConversation, linkTarget == nil else { return nil }
         let canAdd = model.isConfigured && !store.isOffline
         return ShellCommands(
             goTo: { showingPalette = true },
@@ -753,7 +754,9 @@ private struct ConversationColumn: View {
     @State private var showingMemories = false
 
     private var frontmostID: String? {
-        guard showsConversation else { return nil }
+        // In Automation the conversation pane is hidden: nothing in it is frontmost, so its
+        // terminal gives up keyboard focus and its title and toolbar step aside.
+        guard showsConversation, model.appMode == .sessions else { return nil }
         return model.selectedTodoID
     }
 
@@ -792,7 +795,9 @@ private struct ConversationColumn: View {
             },
             store: model.store
         ))
-        .toolbar { columnToolbar }
+        .toolbar {
+            if model.appMode == .sessions { columnToolbar }
+        }
         .onChange(of: model.selectedTodoID, initial: true) { _, id in syncSelection(id) }
         .onChange(of: model.store.todos.map(\.id)) { _, ids in
             let alive = Set(ids)
@@ -812,7 +817,7 @@ private struct ConversationColumn: View {
     /// The column owns the window title: each mounted frame would otherwise publish its own.
     @ViewBuilder
     private var windowTitle: some View {
-        if showsConversation, let id = model.selectedTodoID,
+        if showsConversation, model.appMode == .sessions, let id = model.selectedTodoID,
            let todo = model.store.todos.first(where: { $0.id == id }) {
             Color.clear
                 .frame(width: 0, height: 0)

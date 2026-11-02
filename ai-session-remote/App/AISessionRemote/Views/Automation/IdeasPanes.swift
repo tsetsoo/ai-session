@@ -370,13 +370,14 @@ struct ShapeIdeaPane: View {
 struct ActivityList: View {
     let store: TodoHubStore
     @Binding var selection: String?
+    let onOpenTodo: (String) -> Void
 
     var body: some View {
         List(selection: $selection) {
             if let runs = store.recentRuns {
                 if runs.isEmpty { Text("No runs yet.").font(.callout).foregroundStyle(.secondary) }
                 ForEach(runs) { recent in
-                    RunRow(run: recent.run, store: store, jobName: recent.jobName, onOpenTodo: { _ in }).tag(recent.id)
+                    RunRow(run: recent.run, store: store, jobName: recent.jobName, onOpenTodo: onOpenTodo).tag(recent.id)
                 }
             } else {
                 Text("Activity needs a newer hub.").font(.callout).foregroundStyle(.secondary)
@@ -391,7 +392,8 @@ struct ActivityList: View {
 struct ActivityDetail: View {
     let store: TodoHubStore
     let runID: String?
-    let onOpenJob: (String) -> Void
+    /// nil where a job can't be opened from here (the phone).
+    let onOpenJob: ((String) -> Void)?
     let onOpenTodo: (String) -> Void
 
     var body: some View {
@@ -414,7 +416,9 @@ struct ActivityDetail: View {
                     if let result = run.result { LabeledContent("Result", value: result) }
                 }
                 Section {
-                    Button("Open Job", systemImage: "clock.arrow.circlepath") { onOpenJob(run.jobId) }
+                    if let onOpenJob {
+                        Button("Open Job", systemImage: "clock.arrow.circlepath") { onOpenJob(run.jobId) }
+                    }
                     if let todoId = run.todoId {
                         Button("Open Its Todo", systemImage: "arrow.up.forward.app") { onOpenTodo(todoId) }
                     }

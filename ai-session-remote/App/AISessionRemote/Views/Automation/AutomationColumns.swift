@@ -23,6 +23,7 @@ struct AutomationSidebar: View {
 /// Automation's list column for the chosen sidebar item.
 struct AutomationListColumn: View {
     @Environment(AppModel.self) private var model
+    let onOpenTodo: (String) -> Void
 
     var body: some View {
         @Bindable var model = model
@@ -33,7 +34,7 @@ struct AutomationListColumn: View {
         case .ideas:
             IdeasList(store: model.store, target: $model.automationIdeas)
         case .activity:
-            ActivityList(store: model.store, selection: $model.automationRunID)
+            ActivityList(store: model.store, selection: $model.automationRunID, onOpenTodo: onOpenTodo)
         }
     }
 
@@ -41,8 +42,11 @@ struct AutomationListColumn: View {
     private func setJobs(_ target: JobsPaneTarget?) {
         switch target {
         case .new:
-            model.jobDraft = JobDraft()
-            model.jobDraftOriginal = JobDraft()
+            // The default project goes in before the original is taken, so an untouched
+            // form isn't "unsaved".
+            let fresh = JobDraft.new(defaultProjectID: model.store.projects.first?.id)
+            model.jobDraft = fresh
+            model.jobDraftOriginal = fresh
         case let .edit(id):
             if let job = model.store.jobs.first(where: { $0.id == id }) {
                 model.jobDraft = JobDraft(job: job)
@@ -111,9 +115,13 @@ struct AutomationDetailColumn: View {
         model.automationJobs = .edit(job.id)
     }
 
+    /// Activity's "Open Job". With an unsaved job form, that form is shown instead (nothing
+    /// is dropped); the user can leave it from the Jobs list, which asks first.
     private func openJob(_ id: String) {
         model.automationItem = .jobs
-        model.automationJobs = .job(id)
+        if !model.jobDraftIsDirty {
+            model.automationJobs = .job(id)
+        }
     }
 }
 
