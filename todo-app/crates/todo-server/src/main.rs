@@ -115,6 +115,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/jobs/{id}", web::delete().to(jobs::delete_job))
         .route("/api/jobs/{id}/run", web::post().to(jobs::run_job))
         .route("/api/jobs/{id}/runs", web::get().to(jobs::job_runs))
+        .route("/api/runs", web::get().to(jobs::recent_runs))
         .route("/api/scheduler/settings", web::get().to(jobs::get_settings))
         .route("/api/scheduler/settings", web::put().to(jobs::put_settings))
         .route("/api/ideas", web::get().to(ideas::list_ideas))

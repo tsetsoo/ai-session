@@ -95,6 +95,10 @@ fn row_to_job(row: &Row) -> rusqlite::Result<(Job, String)> {
             name: row.get(1)?,
             enabled,
             next_fire_at: next_fire_at(enabled, &trigger),
+            schedule_text: Some(match &trigger {
+                JobTrigger::Cron { cron } => cron::describe(cron),
+                JobTrigger::Manual => "Manual".to_string(),
+            }),
             trigger,
             action,
             max_runs_per_day: row.get::<_, i64>(5)?.max(0) as u32,
@@ -255,6 +259,30 @@ pub(crate) fn job_runs_db(conn: &Connection, id: &str, limit: usize) -> rusqlite
     ))?;
     let rows = stmt.query_map(params![id, limit.min(MAX_RUNS) as i64], row_to_run)?;
     rows.collect()
+}
+
+/// The newest runs across all jobs, with each job's name.
+pub(crate) fn recent_runs_db(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<todo_shared::RecentRun>> {
+    let cols = RUN_COLS.split(", ").map(|c| format!("r.{c}")).collect::<Vec<_>>().join(", ");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {cols}, j.name FROM job_runs r JOIN jobs j ON j.id = r.job_id ORDER BY r.due_at DESC, r.rowid DESC LIMIT ?1"
+    ))?;
+    let rows = stmt.query_map(params![limit.min(MAX_RUNS) as i64], |row| {
+        Ok(todo_shared::RecentRun { run: row_to_run(row)?, job_name: row.get(12)? })
+    })?;
+    rows.collect()
+}
+
+pub async fn recent_runs(pool: web::Data<DbPool>, query: web::Query<std::collections::HashMap<String, String>>) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    let limit = query.get("limit").and_then(|l| l.parse().ok()).unwrap_or(50);
+    match recent_runs_db(&conn, limit) {
+        Ok(runs) => HttpResponse::Ok().json(runs),
+        Err(e) => server_error(e),
+    }
 }
 
 pub(crate) fn settings_db(conn: &Connection) -> rusqlite::Result<SchedulerSettings> {
@@ -518,6 +546,36 @@ mod tests {
         crate::scheduler::tick_db(&conn, chrono::Utc::now()).unwrap();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM job_runs", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0, "a new cron starts from now");
+    }
+
+    #[actix_web::test]
+    async fn jobs_include_schedule_text() {
+        let (_db, pool) = pool("jobs");
+        seed(&pool.get().unwrap());
+        let (_, job) = post(&pool, "/api/jobs", conversation_job("R", json!({"kind": "cron", "cron": "0 9 * * 1-5"}))).await;
+        assert_eq!(job["schedule_text"], "Weekdays at 09:00");
+        let (_, job) = post(&pool, "/api/jobs", conversation_job("M", json!({"kind": "manual"}))).await;
+        assert_eq!(job["schedule_text"], "Manual");
+    }
+
+    #[actix_web::test]
+    async fn runs_list_newest_across_jobs() {
+        let (_db, pool) = pool("jobs");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (_, a) = post(&pool, "/api/jobs", conversation_job("Alpha", json!({"kind": "manual"}))).await;
+        let (_, b) = post(&pool, "/api/jobs", conversation_job("Beta", json!({"kind": "manual"}))).await;
+        conn.execute_batch(&format!(
+            "INSERT INTO job_runs (id, job_id, due_at, state) VALUES
+                 ('r1', '{a}', '2026-11-01 08:00:00', 'done'), ('r2', '{b}', '2026-11-02 08:00:00', 'failed'),
+                 ('r3', '{a}', '2026-11-03 08:00:00', 'due');",
+            a = a["id"].as_str().unwrap(), b = b["id"].as_str().unwrap()
+        ))
+        .unwrap();
+        let (status, runs) = get(&pool, "/api/runs?limit=2").await;
+        assert_eq!(status, StatusCode::OK, "{runs}");
+        let got: Vec<(&str, &str)> = runs.as_array().unwrap().iter().map(|r| (r["id"].as_str().unwrap(), r["job_name"].as_str().unwrap())).collect();
+        assert_eq!(got, vec![("r3", "Alpha"), ("r2", "Beta")]);
     }
 
     #[actix_web::test]

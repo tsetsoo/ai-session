@@ -1319,6 +1319,17 @@ pub struct Job {
     /// Next cron fire time (RFC 3339 UTC); `None` for manual or disabled jobs.
     #[serde(default)]
     pub next_fire_at: Option<String>,
+    /// The schedule in plain words ("Weekdays at 09:00", "Manual").
+    #[serde(default)]
+    pub schedule_text: Option<String>,
+}
+
+/// A run with its job's name, for the list of recent runs across jobs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecentRun {
+    #[serde(flatten)]
+    pub run: JobRun,
+    pub job_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
