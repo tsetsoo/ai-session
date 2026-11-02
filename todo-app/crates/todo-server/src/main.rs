@@ -17,6 +17,7 @@ mod models;
 mod paths;
 mod projects;
 mod push;
+mod runner_api;
 mod scheduler;
 mod sessions;
 #[cfg(test)]
@@ -115,6 +116,11 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/jobs/{id}/runs", web::get().to(jobs::job_runs))
         .route("/api/scheduler/settings", web::get().to(jobs::get_settings))
         .route("/api/scheduler/settings", web::put().to(jobs::put_settings))
+        .route("/api/runner/due", web::get().to(runner_api::due))
+        .route("/api/runs/{id}/claim", web::post().to(runner_api::claim))
+        .route("/api/runs/{id}/wait", web::post().to(runner_api::wait))
+        .route("/api/runs/{id}/start", web::post().to(runner_api::start))
+        .route("/api/runs/{id}/finish", web::post().to(runner_api::finish))
         .route("/api/memories/{id}", web::patch().to(memories::update_memory))
         .route("/api/memories/{id}", web::delete().to(memories::delete_memory))
         // Sessions and stats

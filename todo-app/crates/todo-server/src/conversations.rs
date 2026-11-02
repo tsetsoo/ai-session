@@ -428,7 +428,7 @@ fn pick_tmux_name(
 /// `false` when no name is free. Any other constraint error is returned as is, for the
 /// caller to report: names are checked first, so it is never mistaken for a name clash.
 #[allow(clippy::too_many_arguments)]
-fn insert_conversation(
+pub(crate) fn insert_conversation(
     conn: &Connection,
     todo_id: &str,
     computer_id: &str,
