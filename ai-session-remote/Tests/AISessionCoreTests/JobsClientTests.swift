@@ -99,6 +99,23 @@ final class JobsClientTests: XCTestCase {
         XCTAssertEqual(body["pause_waiting"] as? Bool, true)
     }
 
+    func testJobDecodesResearchAction() throws {
+        let action = try TodoHubClient.makeDecoder().decode(JobAction.self, from: Data(
+            #"{"kind":"research","project_id":"p","computer_id":null,"tool":"claude","folder":null,"prompt":"","priority":"background","limit":{"mode":"always"}}"#.utf8))
+        guard case let .research(parts) = action else { return XCTFail("\(action)") }
+        XCTAssertEqual(parts.projectId, "p")
+        XCTAssertEqual(parts.limit, .always)
+    }
+
+    func testJobListSkipsUnknownActionKind() throws {
+        let json = "[" + Self.conversationJobJSON + "," + Self.conversationJobJSON
+            .replacingOccurrences(of: #""id":"j1""#, with: #""id":"j2""#)
+            .replacingOccurrences(of: #""kind":"conversation""#, with: #""kind":"watcher""#) + "]"
+        let jobs = try TodoHubClient.makeDecoder().decode([SchedulerJob].self, from: Data(json.utf8))
+        XCTAssertEqual(jobs.count, 2)
+        XCTAssertEqual(jobs[1].action, .unsupported(kind: "watcher"))
+    }
+
     func testTodoDecodesScheduledMarker() throws {
         let json = """
         [{"id":"t1","section":"Si","title":"Research · 2026-11-02","completed":false,"importance":"medium","created_at":"x",

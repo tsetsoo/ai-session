@@ -408,6 +408,37 @@ public struct TodoHubClient: Sendable {
         try await decode(SchedulerSettings.self, send("PUT", "/api/scheduler/settings", body: settings))
     }
 
+    // MARK: Ideas
+
+    /// Starred first, then by status, then newest. Pending (agent-proposed) ones only with `pending`.
+    public func listIdeas(projectId: String, pending: Bool = false) async throws -> [Idea] {
+        var query = [URLQueryItem(name: "project_id", value: projectId)]
+        if pending { query.append(URLQueryItem(name: "pending", value: "true")) }
+        return try await decode([Idea].self, send("GET", "/api/ideas", query: query))
+    }
+
+    public func createIdea(_ request: CreateIdeaRequest) async throws -> Idea {
+        try await decode(Idea.self, send("POST", "/api/ideas", body: request))
+    }
+
+    public func updateIdea(id: String, _ request: UpdateIdeaRequest) async throws -> Idea {
+        try await decode(Idea.self, send("PATCH", "/api/ideas/\(escape(id))", body: request))
+    }
+
+    public func deleteIdea(id: String) async throws {
+        _ = try await send("DELETE", "/api/ideas/\(escape(id))")
+    }
+
+    /// A todo in the idea's project; returns its id.
+    public func ideaToTodo(id: String) async throws -> String {
+        try await decode(IdeaTodoResponse.self, send("POST", "/api/ideas/\(escape(id))/todo")).todoId
+    }
+
+    /// Starts a conversation that helps shape an idea from `hint`; it appears in Needs you.
+    public func shapeIdea(projectId: String, hint: String) async throws -> JobRun {
+        try await decode(JobRun.self, send("POST", "/api/ideas/shape", body: ShapeIdeaRequest(projectId: projectId, hint: hint)))
+    }
+
     // MARK: Transport
 
     static func makeDecoder() -> JSONDecoder {

@@ -97,14 +97,23 @@ public struct ConversationJobAction: Codable, Equatable, Hashable, Sendable {
 /// What a job does.
 public enum JobAction: Codable, Equatable, Hashable, Sendable {
     case conversation(ConversationJobAction)
+    /// Research the project's next idea; the prompt holds optional extra instructions.
+    case research(ConversationJobAction)
     case push(title: String, body: String)
     case todo(title: String, projectId: String?, section: String?)
+    /// A kind this app doesn't know yet (a newer hub). Shown, never sent back.
+    case unsupported(kind: String)
 
     private enum CodingKeys: String, CodingKey { case kind, title, body, projectId, section }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        switch try c.decode(String.self, forKey: .kind) {
+        let kind = try c.decode(String.self, forKey: .kind)
+        switch kind {
+        case "conversation":
+            self = .conversation(try ConversationJobAction(from: decoder))
+        case "research":
+            self = .research(try ConversationJobAction(from: decoder))
         case "push":
             self = .push(title: try c.decode(String.self, forKey: .title), body: try c.decodeIfPresent(String.self, forKey: .body) ?? "")
         case "todo":
@@ -112,7 +121,7 @@ public enum JobAction: Codable, Equatable, Hashable, Sendable {
                          projectId: try c.decodeIfPresent(String.self, forKey: .projectId),
                          section: try c.decodeIfPresent(String.self, forKey: .section))
         default:
-            self = .conversation(try ConversationJobAction(from: decoder))
+            self = .unsupported(kind: kind)
         }
     }
 
@@ -122,6 +131,12 @@ public enum JobAction: Codable, Equatable, Hashable, Sendable {
         case let .conversation(action):
             try c.encode("conversation", forKey: .kind)
             try action.encode(to: encoder)
+        case let .research(action):
+            try c.encode("research", forKey: .kind)
+            try action.encode(to: encoder)
+        case let .unsupported(kind):
+            throw EncodingError.invalidValue(kind, .init(codingPath: encoder.codingPath,
+                                                         debugDescription: "This app can't edit \(kind) jobs"))
         case let .push(title, body):
             try c.encode("push", forKey: .kind)
             try c.encode(title, forKey: .title)
@@ -148,6 +163,8 @@ public struct JobRun: Codable, Equatable, Hashable, Identifiable, Sendable {
     public var startedAt: String?
     public var createdAt: String
     public var updatedAt: String
+    /// The hint of "shape an idea", or other run-specific text.
+    public var note: String?
 }
 
 public struct SchedulerJob: Codable, Equatable, Hashable, Identifiable, Sendable {
