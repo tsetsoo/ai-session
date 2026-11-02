@@ -2173,8 +2173,8 @@ import sys
 raw = open(sys.argv[1], "rb").read()
 assert len(raw) <= 2048, len(raw)
 lines = raw.decode().rstrip("\n").split("\n")
-assert lines[-2:] == ["More: ai-todo-memory search <words>",
-                      'Save a fact: ai-todo-memory add "<text>" (the user approves it)'], lines[-2:]
+assert lines[-2:] == ["More: ~/.ai-remote/bin/ai-todo-memory search <words>",
+                      'Save a fact: ~/.ai-remote/bin/ai-todo-memory add "<text>" (the user approves it)'], lines[-2:]
 PY
 pass "index_budget_and_hints: at most 2048 bytes, ending with the search and add hints"
 python3 - "${SANDBOX}/index.out" "$I_LONG_PINNED" <<'PY' || fail "index order wrong: $(cat "${SANDBOX}/index.out")"

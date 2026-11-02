@@ -2048,8 +2048,9 @@ GRACE_DAYS = 7
 PINNED_CUT = 200
 SEARCH_LIMIT = 8
 SEARCH_TIMEOUT = 3
-INDEX_HINTS = ("More: ai-todo-memory search <words>",
-               'Save a fact: ai-todo-memory add "<text>" (the user approves it)')
+# The full installed path: ~/.ai-remote/bin is not on an agent's PATH.
+INDEX_HINTS = ("More: ~/.ai-remote/bin/ai-todo-memory search <words>",
+               'Save a fact: ~/.ai-remote/bin/ai-todo-memory add "<text>" (the user approves it)')
 
 
 def cache_path():
