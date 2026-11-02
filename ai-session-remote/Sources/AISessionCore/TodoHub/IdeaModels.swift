@@ -91,3 +91,48 @@ public enum IdeaEdit {
         return changed ? request : nil
     }
 }
+
+/// The filter chips of the Ideas list. "All" leaves out dropped ideas and ones waiting for OK.
+public enum IdeaFilter: String, CaseIterable, Hashable, Sendable {
+    case all, new, researching, researched, waiting, dropped
+
+    public var label: String {
+        switch self {
+        case .all: "All"
+        case .new: "New"
+        case .researching: "Researching"
+        case .researched: "Researched"
+        case .waiting: "Waiting for OK"
+        case .dropped: "Dropped"
+        }
+    }
+
+    public func matches(_ idea: Idea) -> Bool {
+        switch self {
+        case .waiting: idea.pending
+        case .all: !idea.pending && idea.status != .dropped
+        case .new: !idea.pending && idea.status == .new
+        case .researching: !idea.pending && idea.status == .researching
+        case .researched: !idea.pending && idea.status == .researched
+        case .dropped: !idea.pending && idea.status == .dropped
+        }
+    }
+}
+
+public enum IdeaGrouping {
+    /// Groups in project-name order; ideas of an unknown project come last. Order within a
+    /// group is kept as given (the hub's: starred, then by status, then newest).
+    public static func byProject(_ ideas: [Idea], projects: [Project]) -> [(project: Project?, ideas: [Idea])] {
+        let byId = Dictionary(projects.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var order: [String] = []
+        var groups: [String: [Idea]] = [:]
+        for idea in ideas {
+            if groups[idea.projectId] == nil { order.append(idea.projectId) }
+            groups[idea.projectId, default: []].append(idea)
+        }
+        let known = order.filter { byId[$0] != nil }
+            .sorted { byId[$0]!.name.localizedCaseInsensitiveCompare(byId[$1]!.name) == .orderedAscending }
+        let unknown = order.filter { byId[$0] == nil }
+        return (known + unknown).map { (project: byId[$0], ideas: groups[$0] ?? []) }
+    }
+}
