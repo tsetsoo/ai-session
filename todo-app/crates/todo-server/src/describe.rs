@@ -410,6 +410,8 @@ fn memory_endpoints() -> Vec<Value> {
                 {"name": "session_id", "in": "query", "required": false, "type": "string"},
                 {"name": "pinned", "in": "query", "required": false, "type": "boolean"},
                 {"name": "include_archived", "in": "query", "required": false, "type": "boolean", "description": "Default false"},
+                {"name": "source", "in": "query", "required": false, "type": "string", "description": "Only these sources (extracted | manual | agent | claude-memory), comma-separated"},
+                {"name": "exclude_source", "in": "query", "required": false, "type": "string", "description": "None of these sources, comma-separated"},
                 {"name": "limit", "in": "query", "required": false, "type": "integer", "description": "Default 200, at most 1000"}
             ]
         }),
