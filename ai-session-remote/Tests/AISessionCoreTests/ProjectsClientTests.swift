@@ -382,6 +382,12 @@ final class ProjectsClientTests: XCTestCase {
         ))
         XCTAssertEqual(queryItems(), ["todo_id": "t1", "since": "2026-10-01", "tool": "claude", "session_id": "s1", "pinned": "true"])
 
+        _ = try await client().listMemories(MemoryQuery(
+            projectId: "p1", limit: 51, sources: ["claude-memory"], excludeSources: ["agent", "manual"]
+        ))
+        XCTAssertEqual(queryItems(), ["project_id": "p1", "limit": "51", "source": "claude-memory",
+                                      "exclude_source": "agent,manual"])
+
         _ = try await client().listMemories(MemoryQuery())
         XCTAssertNil(lastRequest.url?.query)
     }

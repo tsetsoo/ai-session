@@ -14,7 +14,14 @@ struct ProjectDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
     @State private var sessions: [HubSession]?
-    @State private var memories: [Memory]?
+    /// The newest extracted memories, a page at a time: a project can hold hundreds, and a
+    /// List lays out every row it is given.
+    @State private var memoryPage: MemoryPage?
+    @State private var memoryLimit = MemoryPage.pageSize
+    /// Imported Claude memory files: long and search-only, loaded when their section opens.
+    @State private var showsImported = false
+    @State private var imported: MemoryPage?
+    @State private var importedLimit = MemoryPage.pageSize
     @State private var pendingMemories: [Memory] = []
     @State private var loadError: String?
     @State private var showArchived = false
@@ -39,7 +46,10 @@ struct ProjectDetailView: View {
         }
         .navigationTitle(project?.name ?? "Project")
         .toolbar { toolbar }
-        .task(id: "\(projectId)|\(store.revision)|\(showArchived)") { await load() }
+        .task(id: "\(projectId)|\(store.revision)|\(showArchived)|\(memoryLimit)") { await load() }
+        .task(id: "\(projectId)|\(store.revision)|\(showArchived)|\(showsImported)|\(importedLimit)") {
+            if showsImported { await loadImported() }
+        }
         .memoryActions(memoryActions, store: store)
         .sheet(item: $editor) { mode in
             ProjectEditorSheet(mode: mode, store: store)
@@ -227,7 +237,7 @@ struct ProjectDetailView: View {
                 Label("Add Memory", systemImage: "plus")
             }
             .disabled(store.isOffline)
-            if let memories, memories.isEmpty {
+            if let memoryPage, memoryPage.memories.isEmpty {
                 Text(showArchived ? "No memories" : "No memories yet. They appear after conversations in this folder go idle.")
                     .foregroundStyle(.secondary)
             }
@@ -235,23 +245,79 @@ struct ProjectDetailView: View {
             Text("Memories")
         }
         PendingMemoriesSection(memories: pendingMemories, store: store)
-        if let memories {
-            MemoryGroupSections(memories: memories, actions: memoryActions, store: store)
+        if let memoryPage {
+            MemoryGroupSections(memories: memoryPage.memories, actions: memoryActions, store: store)
+            if memoryPage.hasMore {
+                Section {
+                    Button("Show More Memories") { memoryLimit = MemoryPage.nextLimit(after: memoryLimit) }
+                }
+            }
+        }
+        importedSection
+    }
+
+    private var importedSection: some View {
+        Section {
+            Button {
+                showsImported.toggle()
+            } label: {
+                Label(showsImported ? "Hide" : "Show", systemImage: showsImported ? "chevron.down" : "chevron.right")
+            }
+            if showsImported {
+                if let imported {
+                    if imported.memories.isEmpty {
+                        Text("No imported memory files.").foregroundStyle(.secondary)
+                    }
+                    ForEach(imported.memories) { memory in
+                        MemoryActionRow(memory: memory, actions: memoryActions, store: store,
+                                        showsKind: true, lineLimit: 2)
+                    }
+                    if imported.hasMore {
+                        Button("Show More") { importedLimit = MemoryPage.nextLimit(after: importedLimit) }
+                    }
+                } else {
+                    ProgressView().frame(maxWidth: .infinity)
+                }
+            }
+        } header: {
+            Text("Imported memory files")
+        } footer: {
+            Text("Claude's own memory files, imported for search. Agents look them up; they aren't in the session index.")
         }
     }
 
     // MARK: Loading
 
     private func load() async {
+        let limit = memoryLimit
         async let loadedSessions = store.sessions(projectId: projectId)
-        async let loadedMemories = store.memories(projectId: projectId, includeArchived: showArchived)
+        async let loadedMemories = store.memories(MemoryQuery(
+            projectId: projectId, includeArchived: showArchived, limit: limit + 1,
+            excludeSources: [MemoryPage.importedSource]
+        ))
         async let loadedPending = try? store.pendingMemories(projectId: projectId)
         do {
             let (s, m) = try await (loadedSessions, loadedMemories)
             sessions = s
-            memories = m
+            // A hub from before `exclude_source` returns imported files anyway.
+            memoryPage = MemoryPage(fetched: m, limit: limit, excludingImported: true)
             pendingMemories = await loadedPending ?? []
             loadError = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            loadError = TodoHubStore.message(for: error)
+        }
+    }
+
+    private func loadImported() async {
+        let limit = importedLimit
+        do {
+            let rows = try await store.memories(MemoryQuery(
+                projectId: projectId, includeArchived: showArchived, limit: limit + 1,
+                sources: [MemoryPage.importedSource]
+            ))
+            guard !Task.isCancelled else { return }
+            imported = MemoryPage(fetched: rows, limit: limit, onlyImported: true)
         } catch {
             guard !Task.isCancelled else { return }
             loadError = TodoHubStore.message(for: error)

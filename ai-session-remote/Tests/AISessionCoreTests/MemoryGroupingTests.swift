@@ -90,3 +90,41 @@ final class MemoryGroupingTests: XCTestCase {
         XCTAssertEqual(StatsFormat.tokens(9_123_456), "9.1M")
     }
 }
+
+final class MemoryPageTests: XCTestCase {
+    private func memory(_ id: String, source: String = "extracted") -> Memory {
+        Memory(id: id, projectId: "p1", kind: .gotcha, text: id, source: source, createdAt: "2026-11-01 09:00:00")
+    }
+
+    func testExtraRowMeansMore() {
+        let page = MemoryPage(fetched: ["a", "b", "c"].map { memory($0) }, limit: 2)
+        XCTAssertEqual(page.memories.map(\.id), ["a", "b"])
+        XCTAssertTrue(page.hasMore)
+
+        let last = MemoryPage(fetched: ["a", "b"].map { memory($0) }, limit: 2)
+        XCTAssertEqual(last.memories.map(\.id), ["a", "b"])
+        XCTAssertFalse(last.hasMore)
+    }
+
+    func testExcludingImportedDropsThemButKeepsMore() {
+        // A hub from before `exclude_source` returns imported files anyway.
+        let fetched = [memory("a"), memory("i1", source: MemoryPage.importedSource), memory("b"), memory("c")]
+        let page = MemoryPage(fetched: fetched, limit: 3, excludingImported: true)
+        XCTAssertEqual(page.memories.map(\.id), ["a", "b"])
+        XCTAssertTrue(page.hasMore, "the hub had more rows than the limit")
+    }
+
+    func testOnlyImportedKeepsImported() {
+        // The same old hub ignores `source=claude-memory` too.
+        let fetched = [memory("a"), memory("i1", source: MemoryPage.importedSource)]
+        let page = MemoryPage(fetched: fetched, limit: 50, onlyImported: true)
+        XCTAssertEqual(page.memories.map(\.id), ["i1"])
+        XCTAssertFalse(page.hasMore)
+    }
+
+    func testNextLimitGrowsByAPage() {
+        XCTAssertEqual(MemoryPage.pageSize, 50)
+        XCTAssertEqual(MemoryPage.nextLimit(after: 50), 100)
+        XCTAssertEqual(MemoryPage.nextLimit(after: 980), 999, "a fetch asks for one more, and the hub caps at 1000")
+    }
+}

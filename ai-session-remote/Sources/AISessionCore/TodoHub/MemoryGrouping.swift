@@ -42,6 +42,40 @@ public enum MemoryGrouping {
     }
 }
 
+/// One page of a memory list, fetched with `limit + 1`: the extra row only says more exist.
+/// The panel next to a conversation shows a page at a time, since a project can hold
+/// hundreds of memories and laying out all of them stalls the window.
+public struct MemoryPage: Equatable, Sendable {
+    /// Imported Claude memory files: long, search-only, shown apart from extracted facts.
+    public static let importedSource = "claude-memory"
+    public static let pageSize = 50
+    /// The hub returns at most 1000 rows, and a fetch asks for one more than it shows.
+    static let maxLimit = 999
+
+    public var memories: [Memory]
+    public var hasMore: Bool
+
+    /// `fetched` came from a query with limit `limit + 1`. A hub from before `source` and
+    /// `exclude_source` ignores them, so imported files are filtered here as well.
+    public init(fetched: [Memory], limit: Int, excludingImported: Bool = false, onlyImported: Bool = false) {
+        hasMore = fetched.count > limit
+        var rows = Array(fetched.prefix(limit))
+        if excludingImported { rows.removeAll { $0.source == Self.importedSource } }
+        if onlyImported { rows.removeAll { $0.source != Self.importedSource } }
+        memories = rows
+    }
+
+    public init(memories: [Memory] = [], hasMore: Bool = false) {
+        self.memories = memories
+        self.hasMore = hasMore
+    }
+
+    /// The limit after "Show more".
+    public static func nextLimit(after limit: Int) -> Int {
+        min(limit + pageSize, maxLimit)
+    }
+}
+
 /// Week arithmetic for `GET /api/stats/weekly`, whose weeks run Monday to Sunday.
 public enum WeekMath {
     /// The Monday on or before `date` in `calendar`'s time zone, as `YYYY-MM-DD`.

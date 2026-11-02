@@ -95,6 +95,8 @@ struct MemoryRow: View {
     let memory: Memory
     /// Show the kind's icon (in lists that aren't grouped by kind).
     var showsKind = false
+    /// Clamp the text (imported memory files run to thousands of characters).
+    var lineLimit: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -112,6 +114,7 @@ struct MemoryRow: View {
                         .accessibilityLabel(memory.kind.label)
                 }
                 Text(memory.text)
+                    .lineLimit(lineLimit)
                     .foregroundStyle(memory.archived ? .secondary : .primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -149,9 +152,10 @@ struct MemoryActionRow: View {
     let actions: MemoryActions
     let store: TodoHubStore
     var showsKind = false
+    var lineLimit: Int?
 
     var body: some View {
-        MemoryRow(memory: memory, showsKind: showsKind)
+        MemoryRow(memory: memory, showsKind: showsKind, lineLimit: lineLimit)
             .contentShape(Rectangle())
             .onTapGesture { actions.editing = .edit(memory) }
             .contextMenu { menuItems }
@@ -333,20 +337,60 @@ struct MemoryEditorSheet: View {
     }
 }
 
+/// A section title in the memories panel's lazy stack.
+private struct PanelSectionHeader: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.top, 12)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+private extension View {
+    /// A row or group in the memories panel, drawn like a grouped list cell.
+    func panelCard() -> some View {
+        padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// What the memories panel last showed for a conversation (`TodoHubStore.cachedMemoryPanel`).
+struct MemoryPanelSnapshot {
+    var mine: [Memory]
+    var page: MemoryPage
+    var limit: Int
+    var pending: [Memory]
+}
+
 /// The memories panel next to a conversation's terminal (an inspector on the Mac, a sheet on
-/// iOS): the project's memories with this conversation's first. Without a project it shows
-/// the todo's memories.
+/// iOS): this conversation's memories first, then the project's newest extracted ones a page
+/// at a time. Without a project it shows the todo's memories. Imported Claude memory files are
+/// long and search-only: they load only when their section is opened, clamped to two lines.
+/// A project can hold hundreds of memories, and laying all of them out stalled the window.
 struct MemoriesPanel: View {
     let todoId: String
     let store: TodoHubStore
     /// Fallback until the store has the conversation.
     let initialConversation: Conversation
 
-    @State private var memories: [Memory]?
+    @State private var mine: [Memory] = []
+    @State private var page: MemoryPage?
+    @State private var limit = MemoryPage.pageSize
     @State private var pending: [Memory] = []
+    @State private var showsImported = false
+    @State private var imported: MemoryPage?
+    @State private var importedLimit = MemoryPage.pageSize
     @State private var loadError: String?
     @State private var showArchived = false
     @State private var actions = MemoryActions()
+
+    private static let mineLimit = 200
 
     private var conversation: Conversation { store.mostUrgent(forTodo: todoId) ?? initialConversation }
 
@@ -354,67 +398,175 @@ struct MemoriesPanel: View {
         conversation.projectId ?? store.todos.first { $0.id == todoId }?.projectId
     }
 
+    private var cacheKey: String {
+        "\(todoId)|\(projectId ?? "")|\(conversation.sessionId)|\(showArchived)"
+    }
+
+    /// The project's memories, or the todo's when there is no project.
+    private func scoped(_ query: MemoryQuery) -> MemoryQuery {
+        var query = query
+        query.projectId = projectId
+        query.todoId = projectId == nil ? todoId : nil
+        query.includeArchived = showArchived
+        return query
+    }
+
     var body: some View {
-        List {
-            Section {
-                if let project = store.project(id: projectId) {
-                    LabeledContent("Project", value: project.name)
-                } else {
-                    Text("This conversation isn't in a project. Showing its todo's memories.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+        // A lazy stack, not a List: on the Mac a List is a table that builds and measures every
+        // row when it is filled, and the panel is refilled on every conversation switch. Here
+        // only the rows on screen are built. Rows are direct children so they stay lazy.
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let project = store.project(id: projectId) {
+                        LabeledContent("Project", value: project.name)
+                    } else {
+                        Text("This conversation isn't in a project. Showing its todo's memories.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Toggle("Show archived", isOn: $showArchived)
+                    Button {
+                        actions.editing = .new(projectId: projectId, todoId: todoId)
+                    } label: {
+                        Label("Add Memory", systemImage: "plus")
+                    }
+                    .disabled(store.isOffline)
+                    if let loadError {
+                        Label(loadError, systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(DS.warning)
+                    }
                 }
-                Toggle("Show archived", isOn: $showArchived)
-                Button {
-                    actions.editing = .new(projectId: projectId, todoId: todoId)
-                } label: {
-                    Label("Add Memory", systemImage: "plus")
-                }
-                .disabled(store.isOffline)
-                if let loadError {
-                    Label(loadError, systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
-                        .foregroundStyle(DS.warning)
-                }
+                .panelCard()
+                PendingMemoriesSection(memories: pending, store: store)
+                content
+                importedSection
             }
-            PendingMemoriesSection(memories: pending, store: store)
-            content
+            .padding(12)
         }
-        .listStyle(.insetGrouped)
         .navigationTitle("Memories")
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: "\(projectId ?? "")|\(store.revision)|\(showArchived)") { await load() }
+        .onChange(of: cacheKey, initial: true) { _, key in restore(key) }
+        .task(id: "\(cacheKey)|\(store.revision)|\(limit)") { await load() }
+        .task(id: "\(cacheKey)|\(store.revision)|\(showsImported)|\(importedLimit)") {
+            if showsImported { await loadImported() }
+        }
         .memoryActions(actions, store: store)
     }
 
     @ViewBuilder
     private var content: some View {
-        if let memories {
-            let ordered = MemoryGrouping.forConversation(memories, sessionId: conversation.sessionId)
-            let mine = ordered.filter { $0.sessionId == conversation.sessionId }
-            let others = ordered.filter { $0.sessionId != conversation.sessionId }
-            if memories.isEmpty {
+        if let page {
+            let mineIDs = Set(mine.map(\.id))
+            let others = page.memories.filter { !mineIDs.contains($0.id) && $0.sessionId != conversation.sessionId }
+            if mine.isEmpty && others.isEmpty {
                 Text("No memories yet. They're extracted after the conversation goes idle.")
                     .foregroundStyle(.secondary)
+                    .padding(.top, 8)
             }
             if !mine.isEmpty {
-                Section("This conversation") {
-                    ForEach(mine) { memory in
-                        MemoryActionRow(memory: memory, actions: actions, store: store, showsKind: true)
-                    }
+                PanelSectionHeader(title: "This conversation", systemImage: "bubble.left")
+                ForEach(mine) { memory in
+                    MemoryActionRow(memory: memory, actions: actions, store: store, showsKind: true)
+                        .panelCard()
                 }
             }
-            MemoryGroupSections(memories: others, actions: actions, store: store)
+            ForEach(MemoryGrouping.grouped(others)) { group in
+                PanelSectionHeader(title: group.kind.title, systemImage: group.kind.systemImage)
+                ForEach(group.memories) { memory in
+                    MemoryActionRow(memory: memory, actions: actions, store: store)
+                        .panelCard()
+                }
+            }
+            if page.hasMore {
+                Button("Show More") { limit = MemoryPage.nextLimit(after: limit) }
+                    .padding(.top, 4)
+            }
         } else if loadError == nil {
-            ProgressView().frame(maxWidth: .infinity)
+            ProgressView().frame(maxWidth: .infinity).padding(.top, 8)
         }
     }
 
+    @ViewBuilder
+    private var importedSection: some View {
+        PanelSectionHeader(title: "Imported memory files", systemImage: "doc.text")
+        Button {
+            showsImported.toggle()
+        } label: {
+            Label(showsImported ? "Hide" : "Show", systemImage: showsImported ? "chevron.down" : "chevron.right")
+        }
+        Text("Claude's own memory files, imported for search. Agents look them up; they aren't in the session index.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        if showsImported {
+            if let imported {
+                if imported.memories.isEmpty {
+                    Text("No imported memory files.").foregroundStyle(.secondary)
+                }
+                ForEach(imported.memories) { memory in
+                    MemoryActionRow(memory: memory, actions: actions, store: store, showsKind: true, lineLimit: 2)
+                        .panelCard()
+                }
+                if imported.hasMore {
+                    Button("Show More") { importedLimit = MemoryPage.nextLimit(after: importedLimit) }
+                }
+            } else {
+                ProgressView().frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    /// Shows what this conversation last loaded while `load` refetches.
+    private func restore(_ key: String) {
+        guard let snapshot = store.cachedMemoryPanel(key) else { return }
+        mine = snapshot.mine
+        page = snapshot.page
+        limit = snapshot.limit
+        pending = snapshot.pending
+    }
+
     private func load() async {
+        let sessionId = conversation.sessionId
+        let projectId = projectId
+        let key = cacheKey
+        let limit = limit
         do {
-            memories = try await store.memories(projectId: projectId, todoId: todoId, includeArchived: showArchived)
-            pending = projectId == nil ? [] : (try? await store.pendingMemories(projectId: projectId)) ?? []
+            async let mineRows: [Memory] = sessionId.isEmpty ? [] : store.memories(MemoryQuery(
+                sessionId: sessionId, includeArchived: showArchived, limit: Self.mineLimit,
+                excludeSources: [MemoryPage.importedSource]
+            ))
+            async let pageRows = store.memories(scoped(MemoryQuery(
+                limit: limit + 1, excludeSources: [MemoryPage.importedSource]
+            )))
+            async let pendingRows: [Memory] = projectId == nil
+                ? [] : ((try? await store.pendingMemories(projectId: projectId)) ?? [])
+            // A hub from before `exclude_source` returns imported files anyway.
+            let fetchedMine = try await mineRows.filter { $0.source != MemoryPage.importedSource }
+            let fetchedPage = MemoryPage(fetched: try await pageRows, limit: limit, excludingImported: true)
+            let fetchedPending = await pendingRows
+            guard !Task.isCancelled else { return }
+            mine = MemoryGrouping.sorted(fetchedMine)
+            page = fetchedPage
+            pending = fetchedPending
             loadError = nil
+            store.cacheMemoryPanel(
+                MemoryPanelSnapshot(mine: mine, page: fetchedPage, limit: limit, pending: fetchedPending), for: key
+            )
+        } catch {
+            guard !Task.isCancelled else { return }
+            loadError = TodoHubStore.message(for: error)
+        }
+    }
+
+    private func loadImported() async {
+        let limit = importedLimit
+        do {
+            let rows = try await store.memories(scoped(MemoryQuery(
+                limit: limit + 1, sources: [MemoryPage.importedSource]
+            )))
+            guard !Task.isCancelled else { return }
+            imported = MemoryPage(fetched: rows, limit: limit, onlyImported: true)
         } catch {
             guard !Task.isCancelled else { return }
             loadError = TodoHubStore.message(for: error)
