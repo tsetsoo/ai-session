@@ -9,6 +9,7 @@ mod daily;
 mod db;
 mod describe;
 mod handlers;
+mod jobs;
 mod limits;
 mod memories;
 mod memory_usage;
@@ -105,6 +106,14 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/memories/bulk", web::post().to(memories::bulk_memories))
         .route("/api/memories/import", web::post().to(memories::import_memories))
         .route("/api/memories/uses", web::post().to(memory_usage::record_uses))
+        .route("/api/jobs", web::get().to(jobs::list_jobs))
+        .route("/api/jobs", web::post().to(jobs::create_job))
+        .route("/api/jobs/{id}", web::patch().to(jobs::update_job))
+        .route("/api/jobs/{id}", web::delete().to(jobs::delete_job))
+        .route("/api/jobs/{id}/run", web::post().to(jobs::run_job))
+        .route("/api/jobs/{id}/runs", web::get().to(jobs::job_runs))
+        .route("/api/scheduler/settings", web::get().to(jobs::get_settings))
+        .route("/api/scheduler/settings", web::put().to(jobs::put_settings))
         .route("/api/memories/{id}", web::patch().to(memories::update_memory))
         .route("/api/memories/{id}", web::delete().to(memories::delete_memory))
         // Sessions and stats
