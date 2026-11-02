@@ -349,6 +349,15 @@ def start_run(hub, computer_id, due, folders):
                 os.remove(prompt_file)
         if p.returncode != 0:
             raise RuntimeError("ai-todo-open exit %d: %s" % (p.returncode, (p.stderr or "").strip()[:200]))
+        # A new Codex (or Cursor) conversation gets its id only once it starts; ai-todo-open
+        # prints "created <id>". The hub needs it to match the conversation's status.
+        words = (p.stdout or "").strip().split()
+        if sid == "-" and len(words) == 2 and words[0] == "created" and started.get("todo_id"):
+            try:
+                hub.request("PUT", "/api/todos/%s/conversation/session" % started["todo_id"],
+                            body={"session_id": words[1]})
+            except HubError as e:
+                log("session_report_failed", run=run["id"], error=e)
     except Exception as e:
         if is_git and "timed out" not in str(e):
             remove_worktree(folder, path, branch)

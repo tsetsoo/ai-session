@@ -2775,7 +2775,7 @@ while [ "\$#" -gt 0 ]; do
   shift
 done
 [ -n "\${FAKE_OPEN_SLEEP:-}" ] && sleep "\$FAKE_OPEN_SLEEP"
-[ "\${FAKE_OPEN_EXIT:-0}" = 0 ] && echo created
+[ "\${FAKE_OPEN_EXIT:-0}" = 0 ] && echo "created\${FAKE_OPEN_ID:+ \$FAKE_OPEN_ID}"
 exit "\${FAKE_OPEN_EXIT:-0}"
 FAKE
 R_LIMITS="${SANDBOX}/bin/fake-limits"
@@ -2951,6 +2951,17 @@ runner tick || fail "cleanup tick failed"
 [[ ! -e "${R_TREES}/proj-app/r-old00001" ]] && ! git -C "$R_REPO" branch --list 'scheduled/*' | grep -q r-old000 || fail "an old unused worktree was kept"
 [[ -d "${R_TREES}/proj-app/r-work0001" ]] || fail "a worktree with scheduled work was removed"
 pass "runner_cleans_old_unused_worktrees (keeps ones with commits or changes)"
+
+runs_reset
+due_run r-codex001 proj-app '{"mode":"always"}' 0 codex
+FAKE_OPEN_ID=01a1cccc-0000-7000-8000-00000000c0de runner tick || fail "tick failed"
+python3 - "$M_HUB_LOG" "$R_MARK" <<'PY' || fail "the Codex conversation id was not reported: $(tail -n 5 "$M_HUB_LOG")"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]).readlines()[int(sys.argv[2]):]]
+puts = [r for r in rows if r["method"] == "PUT" and r["path"] == "/api/todos/t-sched/conversation/session"]
+assert puts and puts[-1]["body"] == {"session_id": "01a1cccc-0000-7000-8000-00000000c0de"}, puts
+PY
+pass "runner_reports_new_codex_session_id"
 
 ! grep -q "Do the thing" "${R_STATE}/runner.log" && grep -q "started" "${R_STATE}/runner.log" || fail "runner.log missing or holds prompt text"
 runner status --json | python3 -c 'import json, sys; s = json.load(sys.stdin); assert s["last_tick"] and "started_24h" in s, s' || fail "runner status wrong"

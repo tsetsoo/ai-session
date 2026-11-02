@@ -89,6 +89,9 @@ class Hub(BaseHTTPRequestHandler):
     def do_PATCH(self):
         self.handle_request("PATCH")
 
+    def do_PUT(self):
+        self.handle_request("PUT")
+
     def handle_request(self, method):
         parts = urlsplit(self.path)
         path, query = parts.path, parse_qs(parts.query, keep_blank_values=True)
@@ -120,6 +123,8 @@ class Hub(BaseHTTPRequestHandler):
             return self.reply(200, {"settings": state.get("scheduler_settings") or
                                     {"five_hour": 60, "weekly": 80, "pause_waiting": False},
                                     "runs": state.get("due_runs", [])})
+        if method == "PUT" and path.endswith("/conversation/session"):
+            return self.reply(200, {"ok": True})
         if method == "POST" and path.startswith("/api/runs/"):
             return self.runs(state, path.split("/")[3], path.split("/")[4], body)
         if method == "PATCH" and path.startswith("/api/memories/"):
