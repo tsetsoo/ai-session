@@ -9,6 +9,7 @@ mod daily;
 mod db;
 mod describe;
 mod handlers;
+mod ideas;
 mod jobs;
 mod limits;
 mod memories;
@@ -116,6 +117,11 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/jobs/{id}/runs", web::get().to(jobs::job_runs))
         .route("/api/scheduler/settings", web::get().to(jobs::get_settings))
         .route("/api/scheduler/settings", web::put().to(jobs::put_settings))
+        .route("/api/ideas", web::get().to(ideas::list_ideas))
+        .route("/api/ideas", web::post().to(ideas::create_idea))
+        .route("/api/ideas/{id}", web::patch().to(ideas::update_idea))
+        .route("/api/ideas/{id}", web::delete().to(ideas::delete_idea))
+        .route("/api/ideas/{id}/todo", web::post().to(ideas::idea_to_todo))
         .route("/api/runner/due", web::get().to(runner_api::due))
         .route("/api/runs/{id}/claim", web::post().to(runner_api::claim))
         .route("/api/runs/{id}/wait", web::post().to(runner_api::wait))
