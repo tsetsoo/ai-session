@@ -161,7 +161,7 @@ python3 - "$CLAUDE_LOG" "$HOME" "$U_SID" <<'PY' || fail "unattended claude argv 
 import sys
 log, home, sid = sys.argv[1:4]
 text = open(log).read()
-want = "%s/programming --session-id %s --permission-mode bypassPermissions Research the parser.\nKeep it short." % (home, sid)
+want = "%s/programming --session-id %s --permission-mode auto Research the parser.\nKeep it short." % (home, sid)
 assert text.rstrip("\n").endswith(want), repr(text[-300:])
 PY
 [[ ! -e "$U_PROMPT" ]] || fail "the prompt file was not removed"
@@ -183,7 +183,7 @@ lines_before=$(wc -l <"$CLAUDE_LOG")
 out="$("$OPEN" --auto-approve --mcp '' --detached "$U2_NAME" '~/programming' "$U2_SID")" || fail "options in another order failed"
 [[ "$out" == created ]] || fail "options in another order printed '$out'"
 wait_for_log_lines $((lines_before + 1))
-tail -n 1 "$CLAUDE_LOG" | grep -q -- "--permission-mode bypassPermissions" || fail "--auto-approve lost with --mcp: $(tail -n 1 "$CLAUDE_LOG")"
+tail -n 1 "$CLAUDE_LOG" | grep -q -- "--permission-mode auto" || fail "--auto-approve lost with --mcp: $(tail -n 1 "$CLAUDE_LOG")"
 tmux -L "$SOCK" kill-session -t "=$U2_NAME"
 if "$OPEN" --mcp a --mcp b --detached "$U2_NAME" '~/programming' "$U2_SID" >/dev/null 2>&1; then fail "two --mcp were accepted"; fi
 pass "open_options_any_order_with_mcp"

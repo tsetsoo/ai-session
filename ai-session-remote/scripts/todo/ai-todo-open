@@ -27,9 +27,11 @@
 # --detached        Start (or find) the tmux session and return; never attach.
 # --prompt-file F   On a new conversation, F's text is the tool's first message (claude
 #                   and codex take it as an argument); ignored on a resume. F is deleted.
-# --auto-approve    Claude starts with --permission-mode bypassPermissions (scheduled
-#                   conversations run unattended in their own worktree); Codex already
-#                   auto-approves.
+# --auto-approve    Claude starts in auto mode (--permission-mode auto: a safety check
+#                   approves routine actions and blocks risky ones), for scheduled
+#                   conversations in their own worktree. Claude asks once whether to trust a
+#                   new folder; trusting ~/.ai-remote/worktrees once covers every worktree.
+#                   Codex already auto-approves.
 # --mcp <names>     Comma-separated MCP servers from ~/.ai-remote/mcp (see ai-todo-mcp);
 #                   '' = managed, none. Only as the first argument: older versions of this
 #                   script exit 64 for it, and the app then retries without it. It applies
@@ -449,7 +451,7 @@ else
   else
     mode=created
     set -- "$claude_bin" --session-id "$sid"
-    [ "$auto_approve" = 1 ] && set -- "$@" --permission-mode bypassPermissions
+    [ "$auto_approve" = 1 ] && set -- "$@" --permission-mode auto
     [ -n "$first_prompt" ] && set -- "$@" "$first_prompt"
   fi
 fi
