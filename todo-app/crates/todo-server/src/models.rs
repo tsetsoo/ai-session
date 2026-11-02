@@ -35,5 +35,7 @@ pub fn row_to_todo(row: &Row) -> rusqlite::Result<Todo> {
         completed_at,
         conversation_status,
         project_id,
+        scheduled_job_id: row.get("scheduled_job_id")?,
+        scheduled_run_id: row.get("scheduled_run_id")?,
     })
 }

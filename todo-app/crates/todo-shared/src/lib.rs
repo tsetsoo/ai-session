@@ -137,6 +137,12 @@ pub struct Todo {
     /// The project this todo belongs to, if any
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// Created by this scheduler job (a scheduled todo)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_job_id: Option<String>,
+    /// The run that created it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_run_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1130,8 +1136,144 @@ pub struct PushTestResult {
     pub reason: Option<String>,
 }
 
+// --- Scheduler -----------------------------------------------------------------------
+
+/// When a job runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JobTrigger {
+    /// 5-field cron in Europe/Sofia.
+    Cron { cron: String },
+    /// Only "Run now".
+    Manual,
+}
+
+/// A conversation job's usage limit setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum LimitSetting {
+    /// Starts whatever the usage.
+    Always,
+    /// Waits while usage is above these thresholds (percent), or the global ones when unset.
+    Wait { five_hour: Option<u8>, weekly: Option<u8> },
+}
+
+/// Only decides notifications: background scheduled todos are push-muted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Priority {
+    Urgent,
+    Background,
+}
+
+/// What a job does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JobAction {
+    /// A scheduled conversation on a Mac, started by its runner.
+    Conversation {
+        project_id: String,
+        /// `None`: the computer of the project's section.
+        computer_id: Option<String>,
+        tool: String,
+        /// `None`: the project folder.
+        folder: Option<String>,
+        prompt: String,
+        priority: Priority,
+        limit: LimitSetting,
+    },
+    /// A push, sent by the hub.
+    Push { title: String, body: String },
+    /// A todo, created by the hub.
+    Todo { title: String, project_id: Option<String>, section: Option<Section> },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobRun {
+    pub id: String,
+    pub job_id: String,
+    pub due_at: String,
+    /// `due`, `waiting`, `running`, `done`, `failed`, `skipped` or `missed`
+    pub state: String,
+    pub computer_id: Option<String>,
+    pub todo_id: Option<String>,
+    pub waiting_reason: Option<String>,
+    pub result: Option<String>,
+    pub started_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Job {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub trigger: JobTrigger,
+    pub action: JobAction,
+    pub max_runs_per_day: u32,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub last_run: Option<JobRun>,
+    /// Next cron fire time (RFC 3339 UTC); `None` for manual or disabled jobs.
+    #[serde(default)]
+    pub next_fire_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateJobRequest {
+    pub name: String,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    pub trigger: JobTrigger,
+    pub action: JobAction,
+    #[serde(default)]
+    pub max_runs_per_day: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateJobRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<JobTrigger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<JobAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_runs_per_day: Option<u32>,
+}
+
+/// Global limit-guard settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchedulerSettings {
+    pub five_hour: u8,
+    pub weekly: u8,
+    pub pause_waiting: bool,
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn job_action_round_trips_json() {
+        let json = r#"{"kind":"conversation","project_id":"p","computer_id":null,"tool":"claude","folder":null,"prompt":"x","priority":"background","limit":{"mode":"wait","five_hour":40,"weekly":null}}"#;
+        let action: JobAction = serde_json::from_str(json).unwrap();
+        match &action {
+            JobAction::Conversation { project_id, priority, limit, .. } => {
+                assert_eq!(project_id, "p");
+                assert_eq!(*priority, Priority::Background);
+                assert_eq!(*limit, LimitSetting::Wait { five_hour: Some(40), weekly: None });
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        let trigger: JobTrigger = serde_json::from_str(r#"{"kind":"cron","cron":"0 8 * * *"}"#).unwrap();
+        assert_eq!(trigger, JobTrigger::Cron { cron: "0 8 * * *".into() });
+        assert_eq!(serde_json::to_string(&JobTrigger::Manual).unwrap(), r#"{"kind":"manual"}"#);
+    }
+
     use super::*;
 
     fn todo() -> Todo {
@@ -1150,6 +1292,8 @@ mod tests {
             completed_at: None,
             conversation_status: None,
             project_id: None,
+            scheduled_job_id: None,
+            scheduled_run_id: None,
         }
     }
 

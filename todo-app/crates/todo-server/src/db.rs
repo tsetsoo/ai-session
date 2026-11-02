@@ -114,6 +114,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v3_objects(&conn).expect("Failed to create project, session and memory tables");
     create_v4_objects(&conn).expect("Failed to create push notification tables");
     create_v12_objects(&conn).expect("Failed to create memory usage and search objects");
+    create_v13_objects(&conn).expect("Failed to create scheduler objects");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -349,6 +350,55 @@ fn create_v12_objects(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V12_OBJECTS)
 }
 
+/// v13: scheduler jobs, their runs, the global limit-guard settings and the scheduled
+/// marker on todos. Only adds, so it is safe to run on every start.
+const V13_OBJECTS: &str = "
+    CREATE TABLE IF NOT EXISTS jobs (
+        id               TEXT PRIMARY KEY,
+        name             TEXT NOT NULL,
+        enabled          INTEGER NOT NULL DEFAULT 1,
+        trigger          TEXT NOT NULL,
+        action           TEXT NOT NULL,
+        max_runs_per_day INTEGER NOT NULL DEFAULT 4,
+        last_slot_at     TEXT,
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS job_runs (
+        id             TEXT PRIMARY KEY,
+        job_id         TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        due_at         TEXT NOT NULL,
+        state          TEXT NOT NULL CHECK(state IN ('due','waiting','running','done','failed','skipped','missed')),
+        computer_id    TEXT,
+        todo_id        TEXT REFERENCES todos(id) ON DELETE SET NULL,
+        tool           TEXT,
+        limit_mode     TEXT,
+        waiting_reason TEXT,
+        result         TEXT,
+        started_at     TEXT,
+        created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS job_runs_job ON job_runs(job_id, due_at);
+    CREATE INDEX IF NOT EXISTS job_runs_state ON job_runs(state);
+    CREATE TABLE IF NOT EXISTS scheduler_settings (
+        id            INTEGER PRIMARY KEY CHECK(id = 1),
+        five_hour     INTEGER NOT NULL DEFAULT 60,
+        weekly        INTEGER NOT NULL DEFAULT 80,
+        pause_waiting INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT OR IGNORE INTO scheduler_settings (id) VALUES (1);";
+
+fn create_v13_objects(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(V13_OBJECTS)?;
+    for column in ["scheduled_job_id", "scheduled_run_id"] {
+        if !column_exists(conn, "todos", column)? {
+            conn.execute_batch(&format!("ALTER TABLE todos ADD COLUMN {column} TEXT;"))?;
+        }
+    }
+    Ok(())
+}
+
 /// v11 → v12. SQLite can't change a CHECK, so the memories table is rebuilt with the
 /// usage, pending and import columns. Existing memories age from today (no backfill),
 /// retired kinds are archived, and rows already archived are marked as duplicates.
@@ -450,11 +500,13 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v9: reporter event time, rejecting delayed/retried Codex statuses (additive)
 /// - v10: user-turn identity, preserving unread results across offline coalescing (additive)
 /// - v11: todos can be put on hold (additive)
+/// - v13: scheduler `jobs`, `job_runs`, `scheduler_settings`; `todos.scheduled_job_id` and
+///   `scheduled_run_id` (additive)
 /// - v12: memories gain usage, pending, import key and archive reason; `memory_active_days`;
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -467,6 +519,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if table_sql(conn, "jobs")?.is_some() {
+        return Ok(13);
     }
     if table_sql(conn, "memories")?.is_some_and(|sql| sql.contains("use_count")) {
         return Ok(12);
@@ -610,8 +665,16 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 11 {
         if !backed_up {
             backup_before_migration(conn, db_path, 12)?;
+            backed_up = true;
         }
         migrate_v11_to_v12(conn)?;
+        version = 12;
+    }
+    if version == 12 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 13)?;
+        }
+        create_v13_objects(conn)?;
     }
     Ok(())
 }
@@ -2124,7 +2187,7 @@ mod tests {
 
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 12);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert_eq!(db.backups().len(), 1, "migrating backs up first");
         let row = |id: &str| -> (i64, Option<String>) {
             conn.query_row("SELECT archived, archived_reason FROM memories WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -2162,6 +2225,51 @@ mod tests {
         assert_eq!(n, 1, "the FTS index follows updates");
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'keychain'", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn migrates_v12_to_v13_adds_scheduler_tables() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS job_runs; DROP TABLE IF EXISTS jobs; DROP TABLE IF EXISTS scheduler_settings;
+             PRAGMA user_version = 12;",
+        )
+        .unwrap();
+        // A v12 todos table has no scheduled columns.
+        if column_exists(&conn, "todos", "scheduled_job_id").unwrap() {
+            conn.execute_batch("ALTER TABLE todos DROP COLUMN scheduled_job_id; ALTER TABLE todos DROP COLUMN scheduled_run_id;").unwrap();
+        }
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 13);
+        assert_eq!(db.backups().len(), 1, "migrating backs up first");
+        for table in ["jobs", "job_runs", "scheduler_settings"] {
+            assert!(table_sql(&conn, table).unwrap().is_some(), "{table}");
+        }
+        let settings: (i64, i64, i64) = conn
+            .query_row("SELECT five_hour, weekly, pause_waiting FROM scheduler_settings WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(settings, (60, 80, 0));
+        assert!(column_exists(&conn, "todos", "scheduled_job_id").unwrap());
+        assert!(column_exists(&conn, "todos", "scheduled_run_id").unwrap());
+    }
+
+    #[test]
+    fn fresh_database_has_v13_objects() {
+        let db = TestDb::new("migrate");
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert!(table_sql(&conn, "jobs").unwrap().is_some());
+        assert!(table_sql(&conn, "job_runs").unwrap().is_some());
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM scheduler_settings", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        assert!(column_exists(&conn, "todos", "scheduled_run_id").unwrap());
     }
 
     #[test]

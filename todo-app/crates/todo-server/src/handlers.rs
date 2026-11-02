@@ -7,7 +7,7 @@ use crate::broadcast::Broadcaster;
 use crate::db::DbPool;
 use crate::models::row_to_todo;
 
-pub(crate) const SELECT_COLS: &str = "id, section, title, completed, on_hold, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, project_id, \
+pub(crate) const SELECT_COLS: &str = "id, section, title, completed, on_hold, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, project_id, scheduled_job_id, scheduled_run_id, \
     (SELECT status FROM conversations WHERE conversations.todo_id = todos.id \
         ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'busy' THEN 1 \
             WHEN 'idle' THEN 2 WHEN 'unknown' THEN 2 WHEN 'closed' THEN 3 ELSE 4 END, \
