@@ -35,8 +35,6 @@ struct SidebarView: View {
             Section {
                 SidebarRow(title: "Projects", systemImage: "folder", count: store.pendingMemoryCount)
                     .tag(AppModel.SidebarItem.projects)
-                SidebarRow(title: "Jobs", systemImage: "clock.arrow.circlepath", count: 0)
-                    .tag(AppModel.SidebarItem.jobs)
             }
             if !counts.computers.isEmpty {
                 Section("Computers") {

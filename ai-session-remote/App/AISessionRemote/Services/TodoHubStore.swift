@@ -28,6 +28,12 @@ final class TodoHubStore {
     private(set) var pendingMemoryCount = 0
     /// Scheduler jobs. Empty on a hub from before the scheduler.
     private(set) var jobs: [SchedulerJob] = []
+    /// Ideas of every project for Automation → Ideas (pending ones included), loaded on demand.
+    private(set) var allIdeas: [Idea] = []
+    /// Ideas agents proposed that wait for an OK, on every project. Badge on Automation → Ideas.
+    var pendingIdeaCount: Int { allIdeas.filter(\.pending).count }
+    /// The newest runs across jobs for Automation → Activity; nil on a hub without `/api/runs`.
+    private(set) var recentRuns: [RecentRun]? = []
     /// True while showing the cached snapshot because the hub could not be reached.
     private(set) var isOffline = false
     private(set) var cachedAt: Date?
@@ -998,6 +1004,43 @@ final class TodoHubStore {
 
     func createJob(_ request: CreateJobRequest) async throws {
         try await perform { client in _ = try await client.createJob(request) }
+    }
+
+    /// Creates the job and returns its id once `jobs` has it.
+    func createJobReturningID(_ request: CreateJobRequest) async throws -> String {
+        var id = ""
+        try await perform { client in id = try await client.createJob(request).id }
+        await refresh()
+        return id
+    }
+
+    /// Reloads `allIdeas` (approved and pending, every project).
+    func loadAllIdeas() async {
+        #if DEBUG
+        if demo != nil { return }
+        #endif
+        guard let client = try? requireClient() else { return }
+        async let approved = try? client.listIdeas(projectId: nil)
+        async let pending = try? client.listIdeas(projectId: nil, pending: true)
+        let (a, p) = await (approved, pending)
+        if let a { allIdeas = a + (p ?? []).filter(\.pending) }
+    }
+
+    func researchIdea(_ idea: Idea) async throws {
+        try await perform { client in _ = try await client.researchIdea(id: idea.id) }
+    }
+
+    /// Reloads `recentRuns`; nil when the hub has no `/api/runs` yet.
+    func loadRecentRuns() async {
+        #if DEBUG
+        if demo != nil { return }
+        #endif
+        guard let client = try? requireClient() else { return }
+        do {
+            recentRuns = try await client.recentRuns(limit: 100)
+        } catch TodoHubError.notFound {
+            recentRuns = nil
+        } catch {}
     }
 
     func updateJob(_ job: SchedulerJob, _ request: UpdateJobRequest) async throws {
