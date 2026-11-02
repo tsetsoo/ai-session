@@ -134,6 +134,12 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
         )?;
         out.missed = stmt.query_map(params![stamp, cutoff], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     }
+    // An idea reserved by a run that will never start goes back to the queue.
+    tx.execute(
+        "UPDATE ideas SET status = 'new', run_id = NULL, todo_id = NULL, updated_at = ?1
+         WHERE status = 'researching' AND run_id IN (SELECT id FROM job_runs WHERE state IN ('missed','skipped'))",
+        params![stamp],
+    )?;
     // A run claimed but never started (runner killed, hub unreachable mid-start) fails after
     // 15 minutes instead of staying `running` forever.
     tx.execute(
@@ -437,6 +443,23 @@ mod tests {
         conn.execute("INSERT INTO ideas (id, project_id, title, pending) VALUES ('i1', 'pa', 'Unapproved', 1)", []).unwrap();
         tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
         assert_eq!(runs(&conn, "r")[0].1, "skipped");
+    }
+
+    #[test]
+    fn missed_research_now_returns_idea() {
+        let (_db, pool) = pool("sched");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "rn", "0 9 1 1 *", RESEARCH, "2026-11-01 00:00:00");
+        conn.execute_batch(
+            "INSERT INTO job_runs (id, job_id, due_at, state, note) VALUES ('old', 'rn', '2026-11-01 06:00:00', 'due', 'idea:i1');
+             INSERT INTO ideas (id, project_id, title, status, run_id) VALUES ('i1', 'pa', 'Waiting too long', 'researching', 'old');",
+        )
+        .unwrap();
+        tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
+        let (status, run_id): (String, Option<String>) =
+            conn.query_row("SELECT status, run_id FROM ideas WHERE id = 'i1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((status.as_str(), run_id), ("new", None));
     }
 
     #[test]

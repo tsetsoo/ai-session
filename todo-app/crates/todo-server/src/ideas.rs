@@ -27,6 +27,7 @@ pub(crate) const IDEA_COLS: &str =
 pub(crate) enum IdeaError {
     BadRequest(String),
     NotFound(&'static str),
+    Conflict(&'static str),
     Db(rusqlite::Error),
 }
 
@@ -40,6 +41,7 @@ fn respond(e: IdeaError) -> HttpResponse {
     match e {
         IdeaError::BadRequest(m) => bad_request(&m),
         IdeaError::NotFound(m) => not_found(m),
+        IdeaError::Conflict(m) => crate::conversations::conflict(m),
         IdeaError::Db(e) => server_error(e),
     }
 }
@@ -147,45 +149,89 @@ pub(crate) fn shape_db(conn: &Connection, req: &ShapeRequest) -> Result<todo_sha
         .query_row("SELECT name FROM projects WHERE id = ?1", params![req.project_id], |r| r.get(0))
         .optional()?
         .ok_or(IdeaError::NotFound("Project not found"))?;
-    let job_name = format!("Shape an idea · {name}");
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT id FROM jobs WHERE name = ?1 AND json_extract(action, '$.project_id') = ?2",
-            params![job_name, req.project_id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let job_id = match existing {
-        Some(id) => id,
-        None => {
-            let request = CreateJobRequest {
-                name: job_name,
-                enabled: Some(true),
-                trigger: JobTrigger::Manual,
-                action: JobAction::Conversation {
-                    project_id: req.project_id.clone(),
-                    computer_id: None,
-                    tool: "claude".into(),
-                    folder: None,
-                    prompt: SHAPE_PROMPT.into(),
-                    priority: Priority::Urgent,
-                    limit: LimitSetting::Always,
-                },
-                max_runs_per_day: Some(20),
-            };
-            match crate::jobs::create_job_db(conn, &request) {
-                Ok(job) => job.id,
-                Err(crate::jobs::JobError::Db(e)) => return Err(IdeaError::Db(e)),
-                Err(_) => return Err(IdeaError::BadRequest("could not create the shape job".into())),
-            }
-        }
-    };
+    let job_id = ensure_project_job(
+        conn,
+        &req.project_id,
+        &format!("Shape an idea · {name}"),
+        JobAction::Conversation {
+            project_id: req.project_id.clone(),
+            computer_id: None,
+            tool: "claude".into(),
+            folder: None,
+            prompt: SHAPE_PROMPT.into(),
+            priority: Priority::Urgent,
+            limit: LimitSetting::Always,
+        },
+    )?;
     let run_id = Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO job_runs (id, job_id, due_at, state, note) VALUES (?1, ?2, datetime('now'), 'due', ?3)",
         params![run_id, job_id, hint],
     )?;
     crate::jobs::load_run(conn, &run_id)?.ok_or(IdeaError::NotFound("Run not found"))
+}
+
+/// The id of the project's manual job with this name, created on first use.
+fn ensure_project_job(conn: &Connection, project_id: &str, job_name: &str, action: JobAction) -> Result<String, IdeaError> {
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM jobs WHERE name = ?1 AND json_extract(action, '$.project_id') = ?2",
+            params![job_name, project_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    let request = CreateJobRequest {
+        name: job_name.to_string(),
+        enabled: Some(true),
+        trigger: JobTrigger::Manual,
+        action,
+        max_runs_per_day: Some(20),
+    };
+    match crate::jobs::create_job_db(conn, &request) {
+        Ok(job) => Ok(job.id),
+        Err(crate::jobs::JobError::Db(e)) => Err(IdeaError::Db(e)),
+        Err(_) => Err(IdeaError::BadRequest("could not create the job".into())),
+    }
+}
+
+/// Research this idea now: a run of the project's "Research now" job (always run, no pushes)
+/// that carries the idea, which is reserved as researching at once.
+pub(crate) fn research_now_db(conn: &Connection, id: &str) -> Result<todo_shared::JobRun, IdeaError> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let idea = load_idea(&tx, id)?.ok_or(IdeaError::NotFound("Idea not found"))?;
+    if idea.status != "new" || idea.pending {
+        return Err(IdeaError::Conflict("Only a new, approved idea can be researched now"));
+    }
+    let name: String = tx.query_row("SELECT name FROM projects WHERE id = ?1", params![idea.project_id], |r| r.get(0))?;
+    let job_id = ensure_project_job(
+        &tx,
+        &idea.project_id,
+        &format!("Research now · {name}"),
+        JobAction::Research {
+            project_id: idea.project_id.clone(),
+            computer_id: None,
+            tool: "claude".into(),
+            folder: None,
+            prompt: String::new(),
+            priority: Priority::Background,
+            limit: LimitSetting::Always,
+        },
+    )?;
+    let run_id = Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO job_runs (id, job_id, due_at, state, note) VALUES (?1, ?2, datetime('now'), 'due', ?3)",
+        params![run_id, job_id, format!("idea:{id}")],
+    )?;
+    tx.execute(
+        "UPDATE ideas SET status = 'researching', run_id = ?2, updated_at = datetime('now') WHERE id = ?1",
+        params![id, run_id],
+    )?;
+    let run = crate::jobs::load_run(&tx, &run_id)?.ok_or(IdeaError::NotFound("Run not found"))?;
+    tx.commit()?;
+    Ok(run)
 }
 
 #[derive(Debug, Serialize)]
@@ -273,6 +319,17 @@ pub async fn delete_idea(pool: web::Data<DbPool>, path: web::Path<String>, broad
 pub async fn shape_idea(pool: web::Data<DbPool>, body: web::Json<ShapeRequest>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
     let conn = conn!(pool);
     match shape_db(&conn, &body) {
+        Ok(run) => {
+            broadcaster.send();
+            HttpResponse::Created().json(run)
+        }
+        Err(e) => respond(e),
+    }
+}
+
+pub async fn research_idea(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
+    let conn = conn!(pool);
+    match research_now_db(&conn, &path) {
         Ok(run) => {
             broadcaster.send();
             HttpResponse::Created().json(run)
@@ -440,6 +497,65 @@ mod tests {
         seed(&pool.get().unwrap());
         assert_eq!(post(&pool, "/api/ideas/shape", json!({"project_id": "pa", "hint": " "})).await.0, StatusCode::BAD_REQUEST);
         assert_eq!(post(&pool, "/api/ideas/shape", json!({"project_id": "nope", "hint": "x"})).await.0, StatusCode::NOT_FOUND);
+    }
+
+    async fn research_now(pool: &crate::db::DbPool, id: &str) -> (StatusCode, Value) {
+        post(pool, &format!("/api/ideas/{id}/research"), json!({})).await
+    }
+
+    fn idea_state(conn: &Connection, id: &str) -> (String, Option<String>) {
+        conn.query_row("SELECT status, run_id FROM ideas WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+    }
+
+    #[actix_web::test]
+    async fn research_now_reserves_idea_and_runs() {
+        let (_db, pool) = pool("ideas");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let i = idea(&pool, "Try Hermes").await;
+        let id = i["id"].as_str().unwrap();
+        let (status, run) = research_now(&pool, id).await;
+        assert_eq!(status, StatusCode::CREATED, "{run}");
+        assert_eq!((&run["state"], &run["note"]), (&json!("due"), &json!(format!("idea:{id}"))));
+        assert_eq!(idea_state(&conn, id), ("researching".to_string(), Some(run["id"].as_str().unwrap().to_string())));
+        let (name, action): (String, String) = conn.query_row("SELECT name, action FROM jobs", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(name, "Research now · app");
+        let action: Value = serde_json::from_str(&action).unwrap();
+        assert_eq!((&action["kind"], &action["limit"]["mode"], &action["priority"]), (&json!("research"), &json!("always"), &json!("background")));
+    }
+
+    #[actix_web::test]
+    async fn research_now_twice_conflicts() {
+        let (_db, pool) = pool("ideas");
+        seed(&pool.get().unwrap());
+        let i = idea(&pool, "Once").await;
+        assert_eq!(research_now(&pool, i["id"].as_str().unwrap()).await.0, StatusCode::CREATED);
+        assert_eq!(research_now(&pool, i["id"].as_str().unwrap()).await.0, StatusCode::CONFLICT);
+    }
+
+    #[actix_web::test]
+    async fn research_now_pending_or_researched_conflicts() {
+        let (_db, pool) = pool("ideas");
+        seed(&pool.get().unwrap());
+        let (_, p) = post(&pool, "/api/ideas", json!({"project_id": "pa", "title": "Proposed", "pending": true, "source": "agent"})).await;
+        assert_eq!(research_now(&pool, p["id"].as_str().unwrap()).await.0, StatusCode::CONFLICT);
+        let r = idea(&pool, "Done already").await;
+        patch(&pool, &format!("/api/ideas/{}", r["id"].as_str().unwrap()), json!({"findings": "x"})).await;
+        assert_eq!(research_now(&pool, r["id"].as_str().unwrap()).await.0, StatusCode::CONFLICT);
+        assert_eq!(research_now(&pool, "nope").await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn research_now_job_created_once() {
+        let (_db, pool) = pool("ideas");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        for t in ["One", "Two"] {
+            let i = idea(&pool, t).await;
+            research_now(&pool, i["id"].as_str().unwrap()).await;
+        }
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 
     #[actix_web::test]

@@ -255,7 +255,21 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         .ok_or(RunError::NotFound("Project not found"))?;
     let date = local_date(Utc::now());
     // A research run takes the project's next idea: starred first, then the oldest.
-    let idea: Option<(String, String, String)> = if job.action.is_research() {
+    let chosen = run.note.as_deref().and_then(|n| n.strip_prefix("idea:")).map(str::to_string);
+    let idea: Option<(String, String, String)> = if let (true, Some(idea_id)) = (job.action.is_research(), chosen) {
+        // Research now: this run carries its idea, reserved for it when it was queued.
+        let reserved = tx
+            .query_row(
+                "SELECT id, title, notes FROM ideas WHERE id = ?1 AND status = 'researching' AND run_id = ?2",
+                params![idea_id, run.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if reserved.is_none() {
+            return Err(RunError::Conflict("Idea no longer available"));
+        }
+        reserved
+    } else if job.action.is_research() {
         let picked = tx
             .query_row(
                 "SELECT id, title, notes FROM ideas WHERE project_id = ?1 AND status = 'new' AND pending = 0
@@ -801,6 +815,39 @@ mod tests {
         post(&pool, &format!("/api/runs/{run_id}/claim"), json!({"computer_id": "mac"})).await;
         let (_, v) = post(&pool, &format!("/api/runs/{run_id}/start"), json!({"cwd": "~/w", "is_git": true})).await;
         assert!(v["prompt"].as_str().unwrap().contains("My starting point: faster startup"), "{}", v["prompt"]);
+    }
+
+    #[actix_web::test]
+    async fn start_research_now_takes_that_idea() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute_batch(
+            "INSERT INTO ideas (id, project_id, title, starred) VALUES ('star', 'pa', 'Starred idea', 1), ('mine', 'pa', 'Chosen idea', 0);",
+        )
+        .unwrap();
+        let (_, run) = post(&pool, "/api/ideas/mine/research", json!({})).await;
+        let run_id = run["id"].as_str().unwrap();
+        post(&pool, &format!("/api/runs/{run_id}/claim"), json!({"computer_id": "mac"})).await;
+        let (status, v) = post(&pool, &format!("/api/runs/{run_id}/start"), json!({"cwd": "~/w", "is_git": true})).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert!(v["prompt"].as_str().unwrap().contains("\"Chosen idea\""), "{}", v["prompt"]);
+        let starred: String = conn.query_row("SELECT status FROM ideas WHERE id = 'star'", [], |r| r.get(0)).unwrap();
+        assert_eq!(starred, "new", "the starred idea is left alone");
+    }
+
+    #[actix_web::test]
+    async fn failed_research_now_returns_idea() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("INSERT INTO ideas (id, project_id, title) VALUES ('mine', 'pa', 'Chosen')", []).unwrap();
+        let (_, run) = post(&pool, "/api/ideas/mine/research", json!({})).await;
+        let run_id = run["id"].as_str().unwrap();
+        post(&pool, &format!("/api/runs/{run_id}/claim"), json!({"computer_id": "mac"})).await;
+        post(&pool, &format!("/api/runs/{run_id}/finish"), json!({"state": "failed", "result": "x"})).await;
+        let status: String = conn.query_row("SELECT status FROM ideas WHERE id = 'mine'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "new");
     }
 
     #[actix_web::test]

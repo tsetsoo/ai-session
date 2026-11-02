@@ -124,6 +124,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/ideas/{id}", web::patch().to(ideas::update_idea))
         .route("/api/ideas/{id}", web::delete().to(ideas::delete_idea))
         .route("/api/ideas/{id}/todo", web::post().to(ideas::idea_to_todo))
+        .route("/api/ideas/{id}/research", web::post().to(ideas::research_idea))
         .route("/api/runner/due", web::get().to(runner_api::due))
         .route("/api/runs/{id}/claim", web::post().to(runner_api::claim))
         .route("/api/runs/{id}/wait", web::post().to(runner_api::wait))
