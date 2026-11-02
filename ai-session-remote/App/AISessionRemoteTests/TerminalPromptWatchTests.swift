@@ -1,5 +1,6 @@
 import AISessionCore
 import SwiftTerm
+import SwiftUI
 import UIKit
 import XCTest
 @testable import AISessionRemote
@@ -115,6 +116,70 @@ final class TerminalPromptWatchTests: XCTestCase {
         handle.connectionChanged(to: .failed)
         XCTAssertNil(handle.prompt)
         XCTAssertTrue(handle.screenTail.isEmpty)
+    }
+
+    func testFallbackKeepsTheWholeScreenIncludingLongApprovalOptions() {
+        let lines = (1...30).map { "Approval warning line \($0)" } + [
+            "Do you want to proceed?", "❯ 1. Yes", "  2. Always allow", "  3. No",
+        ]
+        let handle = TerminalHandle()
+        handle.screenChanged(lines)
+        XCTAssertEqual(handle.screenTail, lines)
+        handle.screenChanged(lines.map { $0.replacingOccurrences(of: "❯ 1.", with: "  1.").replacingOccurrences(of: "  3.", with: "❯ 3.") })
+        XCTAssertEqual(handle.screenTail.last, "❯ 3. No")
+    }
+
+    func testLongFallbackCanScrollVerticallyAndHorizontally() async throws {
+        let lines = (1...30).map { "Warning \($0): " + String(repeating: "long command ", count: 12) } + [
+            "Do you want to proceed?", "❯ 1. Yes", "  2. Always allow", "  3. No",
+        ]
+        let handle = TerminalHandle()
+        handle.screenChanged(lines)
+        let host = UIHostingController(rootView: FallbackPromptTestView(terminal: handle))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 260))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        host.view.layoutIfNeeded()
+
+        func scrollViews(in view: UIView) -> [UIScrollView] {
+            (view as? UIScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews(in: $0) }
+        }
+        let scroll = try XCTUnwrap(scrollViews(in: host.view).first)
+        XCTAssertGreaterThan(scroll.contentSize.width, scroll.bounds.width)
+        XCTAssertGreaterThan(scroll.contentSize.height, scroll.bounds.height + 100,
+                             "The options must remain below the warning in scrollable content, never truncated")
+        XCTAssertGreaterThan(scroll.contentOffset.y, 0, "The highlighted option should be revealed on first display")
+        XCTAssertLessThanOrEqual(scroll.contentOffset.x, 8, "Scrolling may consume the padding, but must keep each option's start visible")
+
+        // Inspecting the warning is allowed; the next menu repaint must reveal its new cursor.
+        scroll.setContentOffset(.zero, animated: false)
+        try await Task.sleep(for: .milliseconds(100))
+        let moved = lines.map { $0.replacingOccurrences(of: "❯ 1.", with: "  1.").replacingOccurrences(of: "  2.", with: "❯ 2.") }
+        handle.screenChanged(moved)
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        host.view.layoutIfNeeded()
+        // Flush the hosting view's rendering before inspecting the updated scroll position.
+        let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+        let updatedScroll = try XCTUnwrap(scrollViews(in: host.view).first)
+        XCTAssertGreaterThan(updatedScroll.contentOffset.y, 0, "Arrow navigation should reveal the newly highlighted option")
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Long approval prompt in a compact card"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}
+
+private struct FallbackPromptTestView: View {
+    let terminal: TerminalHandle
+
+    var body: some View {
+        ChatScreenFallbackCard(lines: terminal.screenTail, onKey: { _ in }, onOpenTerminal: {})
     }
 }
 
