@@ -716,14 +716,17 @@ public struct MemoryQuery: Equatable, Sendable {
     public var sources: [String]
     /// `exclude_source=`: none of these sources. A hub from before it ignores it.
     public var excludeSources: [String]
+    /// `exclude_session_id=`: leave out one conversation's memories.
+    public var excludeSessionId: String?
 
     public init(projectId: String? = nil, todoId: String? = nil, kinds: [MemoryKind] = [], since: String? = nil,
                 tool: String? = nil, sessionId: String? = nil, pinned: Bool? = nil,
                 includeArchived: Bool = false, limit: Int? = nil, pending: Bool? = nil,
                 computerId: String? = nil, global: Bool? = nil,
-                sources: [String] = [], excludeSources: [String] = []) {
+                sources: [String] = [], excludeSources: [String] = [], excludeSessionId: String? = nil) {
         self.sources = sources
         self.excludeSources = excludeSources
+        self.excludeSessionId = excludeSessionId
         self.pending = pending
         self.computerId = computerId
         self.global = global
@@ -757,6 +760,7 @@ public struct MemoryQuery: Equatable, Sendable {
         add("global", global.map { $0 ? "true" : "false" })
         if !sources.isEmpty { add("source", sources.joined(separator: ",")) }
         if !excludeSources.isEmpty { add("exclude_source", excludeSources.joined(separator: ",")) }
+        add("exclude_session_id", excludeSessionId)
         return items
     }
 }

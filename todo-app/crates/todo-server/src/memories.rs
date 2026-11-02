@@ -527,6 +527,9 @@ pub(crate) struct MemoryQuery {
     /// `source=`: only these sources. `exclude_source=`: none of these.
     sources: Vec<String>,
     excluded_sources: Vec<String>,
+    /// `exclude_session_id=`: leave out one conversation's memories (the panel shows them
+    /// in their own section, so they would only crowd the project's page).
+    excluded_session: Option<String>,
 }
 
 fn comma_list(value: &str) -> Vec<String> {
@@ -579,6 +582,7 @@ impl MemoryQuery {
                 "include_unused" => q.include_unused = parse_bool(name, value)?,
                 "source" => q.sources.extend(comma_list(value)),
                 "exclude_source" => q.excluded_sources.extend(comma_list(value)),
+                "exclude_session_id" if !value.is_empty() => q.excluded_session = Some(value.to_string()),
                 "ids" => {
                     q.ids = value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
                     if q.ids.len() > MAX_IDS {
@@ -626,6 +630,9 @@ pub(crate) fn list_memories_db(conn: &Connection, q: &MemoryQuery) -> Result<Vec
     }
     if let Some(pinned) = q.pinned {
         add(" AND pinned = ?", SqlValue::Integer(i64::from(pinned)));
+    }
+    if let Some(session) = &q.excluded_session {
+        add(" AND (session_id IS NULL OR session_id != ?)", SqlValue::Text(session.clone()));
     }
     add(" AND pending = ?", SqlValue::Integer(i64::from(q.pending)));
     if q.global {
@@ -1325,6 +1332,24 @@ mod tests {
         assert_eq!(list("&exclude_source=claude-memory,manual").await, vec!["x"]);
         assert_eq!(list("&source=extracted&exclude_source=extracted").await, Vec::<String>::new());
         assert_eq!(list("&exclude_source=").await, vec!["m", "i", "x"], "an empty list filters nothing");
+    }
+
+    #[actix_web::test]
+    async fn list_excludes_one_session() {
+        let (_db, pool) = pool("mem");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute_batch(
+            "INSERT INTO memories (id, project_id, kind, text, text_key, session_id, created_at) VALUES
+                 ('mine', 'pa', 'gotcha', 'Mine.', 'mine', 's1', '2026-10-01 10:00:00'),
+                 ('other', 'pa', 'gotcha', 'Other.', 'other', 's2', '2026-10-02 10:00:00'),
+                 ('none', 'pa', 'decision', 'No session.', 'no session', NULL, '2026-10-03 10:00:00');",
+        )
+        .unwrap();
+        let (status, body) = get(&pool, "/api/memories?project_id=pa&exclude_session_id=s1").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let ids: Vec<&str> = body.as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["none", "other"], "a memory without a session is kept");
     }
 
     #[actix_web::test]

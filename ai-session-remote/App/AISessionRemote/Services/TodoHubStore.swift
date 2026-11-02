@@ -290,6 +290,8 @@ final class TodoHubStore {
 
     /// Call after the hub settings change.
     func reconnect() async {
+        // Another hub's memories must not show while the panel refetches.
+        memoryPanelCache.removeAll()
         startNewBaseline()
         stopLiveUpdates()
         await refresh()
@@ -952,6 +954,7 @@ final class TodoHubStore {
                 (query.projectId == nil || $0.projectId == query.projectId)
                     && (query.todoId == nil || $0.todoId == query.todoId)
                     && (query.sessionId == nil || $0.sessionId == query.sessionId)
+                    && (query.excludeSessionId == nil || $0.sessionId != query.excludeSessionId)
                     && (query.includeArchived || !$0.archived)
                     && (query.sources.isEmpty || query.sources.contains($0.source))
                     && !query.excludeSources.contains($0.source)

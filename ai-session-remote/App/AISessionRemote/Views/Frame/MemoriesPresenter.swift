@@ -41,8 +41,10 @@ struct MemoriesPresenter: ViewModifier {
     @ViewBuilder
     private var panel: some View {
         if let conversation {
-            MemoriesPanel(todoId: todoID, store: store, initialConversation: conversation)
-                .id(todoID)
+            // A fresh panel per conversation on screen, including between two conversations
+            // of one todo: its rows start from that conversation's cache.
+            MemoriesPanel(todoId: todoID, store: store, conversation: conversation)
+                .id("\(todoID)|\(conversation.id)|\(conversation.sessionId)")
         } else {
             ContentUnavailableView("No conversation yet", systemImage: "lightbulb")
         }
