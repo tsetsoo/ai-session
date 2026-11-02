@@ -30,8 +30,9 @@ final class TodoHubStore {
     private(set) var jobs: [SchedulerJob] = []
     /// Ideas of every project for Automation → Ideas (pending ones included), loaded on demand.
     private(set) var allIdeas: [Idea] = []
-    /// Ideas agents proposed that wait for an OK, on every project. Badge on Automation → Ideas.
-    var pendingIdeaCount: Int { allIdeas.filter(\.pending).count }
+    /// Ideas agents proposed that wait for an OK, on every project. Badge on Automation → Ideas;
+    /// one hub call per refresh keeps it current even before the Ideas list is opened.
+    private(set) var pendingIdeaCount = 0
     /// The newest runs across jobs for Automation → Activity; nil on a hub without `/api/runs`.
     private(set) var recentRuns: [RecentRun]? = []
     /// True while showing the cached snapshot because the hub could not be reached.
@@ -209,8 +210,9 @@ final class TodoHubStore {
             // Optional too: a hub from before pending memories ignores the filter.
             async let pending = try? client.listMemories(MemoryQuery(limit: 1000, pending: true))
             async let loadedJobs = try? client.listJobs()
+            async let pendingIdeasList = try? client.listIdeas(projectId: nil, pending: true)
             let (t, c, m, comps) = try await (todos, conversations, mappings, computers)
-            let (p, sugg, pend, jobList) = await (projects, suggestions, pending, loadedJobs)
+            let (p, sugg, pend, jobList, pendIdeas) = await (projects, suggestions, pending, loadedJobs, pendingIdeasList)
             // A refresh that started later has newer data; don't overwrite it.
             guard generation == refreshGeneration else { return }
             guard changesAtStart == localChanges else { return }
@@ -221,8 +223,7 @@ final class TodoHubStore {
             )
             if let pend { pendingMemoryCount = pend.filter(\.pending).count }
             if let jobList { jobs = jobList }
-            // Ideas (and the pending badge) follow every refresh, like jobs.
-            await loadAllIdeas()
+            if let pendIdeas { pendingIdeaCount = pendIdeas.filter(\.pending).count }
             if wantsLiveUpdates && eventsTask == nil { startEventsTask() }
         } catch TodoHubError.unreachable {
             guard generation == refreshGeneration else { return }
@@ -1026,6 +1027,7 @@ final class TodoHubStore {
         async let pending = try? client.listIdeas(projectId: nil, pending: true)
         let (a, p) = await (approved, pending)
         if let a { allIdeas = a + (p ?? []).filter(\.pending) }
+        if let p { pendingIdeaCount = p.filter(\.pending).count }
     }
 
     func researchIdea(_ idea: Idea) async throws {
