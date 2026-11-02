@@ -58,7 +58,8 @@ This is the second of three projects. The first (memory upgrade, shipped 2026-11
     - tool (claude, codex)
     - folder (defaults to the project folder)
     - prompt template
-    - priority (`urgent` or `background`)
+    - priority (`urgent` or `background`): only decides notifications (section 3a)
+    - **usage limit setting** (section 3): `always run`, or `wait for headroom` with optional thresholds of its own
   - `push`: a title and body template
   - `todo`: create a todo with a title template
   - `builtin`: one of the ready-made jobs in section 7, with its settings
@@ -102,14 +103,23 @@ This is the second of three projects. The first (memory upgrade, shipped 2026-11
   - The prompt preamble states this, and the scheduled branch name makes the work easy to find.
 - **Cleanup:** a worktree is removed once its todo is completed or closed and its branch has no unpushed commits. Otherwise it's kept, and the stale sweep lists it.
 
-### 3. Limit guard
+### 3. Limit guard (per-job setting, user's decision)
 
-- The hub's limit readings are in memory only and refreshed only while the app is open. So the **runner** reads usage itself before starting a `background` conversation, with `ai-todo-limits` for the job's tool on that Mac, and reports it with the run.
-- **The run waits when:** the 5-hour window is above 60%, or the weekly window is above 80%. Both thresholds are settings.
-- **No reading** (the tool can't report usage, as with Codex today, or the read fails): the run goes ahead only if fewer than 3 background runs of that tool have started in the last 24 hours. Otherwise it waits.
-- **When it runs again:** a waiting run is retried on every runner tick, and is `missed` after 24 hours.
-- `urgent` runs ignore the guard.
-- A global "pause background jobs" switch in the app holds every background run.
+Every conversation job has a **usage limit setting**, edited in the app:
+
+- **Always run:** starts whatever the usage. Meant for things like watcher debugging or a failed nightly health check.
+- **Wait for headroom** (the default for new jobs):
+  - The job waits while usage is above its thresholds.
+  - The defaults are 60% of the 5-hour window and 80% of the weekly window, and both are global settings in the app.
+  - A job can set its own thresholds instead, for example research only below 40%.
+
+How the check works:
+
+- **Who reads usage:** the hub's limit readings are in memory only and refreshed only while the app is open, so the **runner** reads usage itself before starting a waiting-type run (with `ai-todo-limits` for the job's tool on that Mac) and reports it with the run.
+- **No reading** (the tool can't report usage, as with Codex today, or the read fails): a "wait for headroom" run goes ahead only if fewer than 3 such runs of that tool started in the last 24 hours.
+- **Retrying:** a waiting run is retried on every runner tick, and is `missed` after 24 hours.
+- **Pause switch:** a global "pause waiting jobs" switch in the app holds every "wait for headroom" run.
+- **Ready-made jobs' defaults (section 8):** nightly health's debugging conversation and watcher debugging always run; everything else waits for headroom. All of them can be changed.
 
 ### 3a. Notifications
 
@@ -209,9 +219,10 @@ Built and shipped in this order, each usable on its own:
 - **Re-ping:** only for conversations marked "keep going", capped at 5 nudges.
 - **Overlap:** a job's next run is blocked only while its previous conversation is still working, not while it waits for review.
 - **Limit guard:**
-  - The runner reads usage on the Mac (the hub's readings aren't reliable enough).
-  - It waits above 60% of the 5-hour window or 80% of the weekly window.
-  - With no reading, at most 3 background runs per tool per 24 hours.
+  - Each job has a usage limit setting (user's decision): always run, or wait for headroom with global or per-job thresholds.
+  - The defaults are 60% of the 5-hour window and 80% of the weekly window.
+  - The runner reads usage on the Mac.
+  - With no reading, at most 3 waiting-type runs per tool per 24 hours.
 - **Notifications:** scheduled conversations don't push (the briefing collects them) unless urgent. Reminders wait for the end of quiet hours.
 - **Release watch:** starts with Pi health only; the App Store and backups part waits for details at stage 5.
 - **Default computer:** a project's default computer is its section's computer.
