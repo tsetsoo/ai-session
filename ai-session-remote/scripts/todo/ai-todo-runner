@@ -66,6 +66,9 @@ OPEN_BIN = os.environ.get("AI_TODO_OPEN_BIN") or os.path.join(LIB_DIR, "ai-todo-
 LIMITS_BIN = os.environ.get("AI_TODO_LIMITS_BIN") or os.path.join(LIB_DIR, "ai-todo-limits")
 LIMITS_TIMEOUT = float(os.environ.get("AI_TODO_LIMITS_TIMEOUT") or 20)
 MAX_STARTS = 3
+OPEN_TIMEOUT = float(os.environ.get("AI_TODO_OPEN_TIMEOUT") or 180)
+# A worktree older than this with no changes and no commits of its own is removed.
+CLEANUP_AFTER = 3 * 86400
 NO_READING_CAP = 3
 PROJECTS_TTL = 600
 LOG_MAX = 1 << 20
@@ -206,8 +209,11 @@ def read_usage(tool):
         windows = json.loads(p.stdout).get("windows") or []
     except (ValueError, AttributeError):
         return None
-    reading = {w.get("kind"): float(w.get("used_percent")) for w in windows
-               if isinstance(w, dict) and isinstance(w.get("used_percent"), (int, float))}
+    reading = {}
+    for w in windows:
+        if isinstance(w, dict) and isinstance(w.get("used_percent"), (int, float)):
+            # A model-scoped window (weekly opus/sonnet) never hides a fuller account window.
+            reading[w.get("kind")] = max(reading.get(w.get("kind"), 0.0), float(w["used_percent"]))
     return reading or None
 
 
@@ -215,24 +221,26 @@ def pct(value):
     return ("%g" % value) + "%"
 
 
-def wait_reason(due, settings):
-    """None when the run may start; else why it waits for headroom."""
+def wait_reason(due, settings, started_now):
+    """(reason or None, no_reading). started_now: no-reading starts per tool in this tick."""
     action = due["job"]["action"]
     limit = action.get("limit") or {}
     if limit.get("mode") != "wait":
-        return None
+        return None, False
     five = limit.get("five_hour") or settings.get("five_hour") or 60
     weekly = limit.get("weekly") or settings.get("weekly") or 80
-    reading = read_usage(action.get("tool") or "claude")
+    tool = action.get("tool") or "claude"
+    reading = read_usage(tool)
     if reading is None:
-        if int(due.get("wait_runs_24h") or 0) >= NO_READING_CAP:
-            return "no usage reading; %d runs in 24h" % int(due["wait_runs_24h"])
-        return None
+        count = int(due.get("wait_runs_24h") or 0) + started_now.get(tool, 0)
+        if count >= NO_READING_CAP:
+            return "no usage reading; %d runs in 24h" % count, True
+        return None, True
     if reading.get("5h") is not None and reading["5h"] > five:
-        return "5h %s > %s" % (pct(reading["5h"]), pct(five))
+        return "5h %s > %s" % (pct(reading["5h"]), pct(five)), False
     if reading.get("weekly") is not None and reading["weekly"] > weekly:
-        return "weekly %s > %s" % (pct(reading["weekly"]), pct(weekly))
-    return None
+        return "weekly %s > %s" % (pct(reading["weekly"]), pct(weekly)), False
+    return None, False
 
 
 # --- Worktrees ----------------------------------------------------------------------
@@ -260,10 +268,18 @@ def make_worktree(folder, project_id, run_id, job_name):
     branch = "scheduled/%s-%s-%s" % (slug(job_name), time.strftime("%Y%m%d"), run_id[:8])
     path = os.path.join(TREES, project_id, run_id)
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    base_sha = git(folder, "rev-parse", base)[1]
     code, _, err = git(folder, "worktree", "add", "-b", branch, path, base)
     if code != 0:
         raise RuntimeError("git worktree add failed: %s" % err[:200])
+    registry = load_json(registry_path(), {}) or {}
+    registry[run_id] = {"path": path, "folder": folder, "branch": branch, "base": base_sha, "created": now()}
+    save_json(registry_path(), registry)
     return path, True, branch
+
+
+def registry_path():
+    return os.path.join(STATE_DIR, "worktrees.json")
 
 
 def remove_worktree(folder, path, branch):
@@ -272,14 +288,43 @@ def remove_worktree(folder, path, branch):
         git(folder, "branch", "-D", branch)
 
 
+def cleanup_worktrees():
+    """Remove scheduled worktrees older than 3 days that hold nothing: no uncommitted changes
+    and no commits beyond the base they started from. Any with work in them are kept."""
+    registry = load_json(registry_path(), {}) or {}
+    changed = False
+    for run_id, entry in list(registry.items()):
+        if now() - float(entry.get("created") or now()) < CLEANUP_AFTER:
+            continue
+        path, folder = entry.get("path") or "", entry.get("folder") or ""
+        if not os.path.isdir(path):
+            registry.pop(run_id)
+            changed = True
+            continue
+        dirty = git(path, "status", "--porcelain")
+        ahead = git(path, "rev-list", "--count", "%s..HEAD" % entry.get("base")) if entry.get("base") else (1, "", "")
+        if dirty[0] == 0 and not dirty[1] and ahead[0] == 0 and ahead[1] == "0":
+            remove_worktree(folder, path, entry.get("branch"))
+            registry.pop(run_id)
+            changed = True
+            log("cleaned", run=run_id)
+    if changed:
+        save_json(registry_path(), registry)
+
+
 # --- Tick ---------------------------------------------------------------------------
 
 def start_run(hub, computer_id, due, folders):
     run, job = due["run"], due["job"]
     action = job["action"]
-    folder = expand(action.get("folder") or folders.get(action.get("project_id")))
-    if not folder or not os.path.isdir(folder):
+    project_folder = expand(folders.get(action.get("project_id")))
+    folder = expand(action.get("folder")) if action.get("folder") else project_folder
+    if not project_folder or not folder or not os.path.isdir(folder):
         raise RuntimeError("project folder not found on this computer")
+    # The hub only names folders inside a project this computer knows: a job can't point a
+    # conversation at an arbitrary place.
+    if folder != project_folder and not folder.startswith(project_folder.rstrip("/") + "/"):
+        raise RuntimeError("folder is outside the project")
     path, is_git, branch = make_worktree(folder, action["project_id"], run["id"], job.get("name") or "job")
     try:
         started = hub.request("POST", "/api/runs/%s/start" % run["id"], body={"cwd": tilde(path), "is_git": is_git})
@@ -287,16 +332,25 @@ def start_run(hub, computer_id, due, folders):
         fd, prompt_file = tempfile.mkstemp(dir=STATE_DIR, prefix="prompt.")
         with os.fdopen(fd, "w") as f:
             f.write(started.get("prompt") or "")
+        if not isinstance(started, dict) or not started.get("tmux_name"):
+            raise RuntimeError("the hub's start answer is empty")
         sid = started.get("session_id") or "-"
-        argv = [OPEN_BIN, "--detached", "--auto-approve", "--prompt-file", prompt_file,
-                started["tmux_name"], tilde(path), sid, started.get("tool") or action.get("tool") or "claude"]
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
-        if os.path.exists(prompt_file):
-            os.remove(prompt_file)
+        # Auto-approve only inside a scheduled git worktree, never in a folder used in place.
+        argv = [OPEN_BIN, "--detached"] + (["--auto-approve"] if is_git else []) + [
+            "--prompt-file", prompt_file, started["tmux_name"], tilde(path), sid,
+            started.get("tool") or action.get("tool") or "claude"]
+        try:
+            p = subprocess.run(argv, capture_output=True, text=True, timeout=OPEN_TIMEOUT, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            # The conversation may be running in the worktree already: keep it.
+            raise RuntimeError("ai-todo-open timed out; the worktree is kept")
+        finally:
+            if os.path.exists(prompt_file):
+                os.remove(prompt_file)
         if p.returncode != 0:
             raise RuntimeError("ai-todo-open exit %d: %s" % (p.returncode, (p.stderr or "").strip()[:200]))
-    except Exception:
-        if is_git:
+    except Exception as e:
+        if is_git and "timed out" not in str(e):
             remove_worktree(folder, path, branch)
         raise
     return "started %s in %s" % (started.get("tool") or action.get("tool"), tilde(path))
@@ -316,6 +370,7 @@ def cmd_tick(args):
     status = load_json(status_path, {}) or {}
     status["last_tick"] = now()
     started = 0
+    no_reading_started = {}
     try:
         due = hub.request("GET", "/api/runner/due", query={"computer_id": computer_id}) or {}
         settings = due.get("settings") or {}
@@ -325,13 +380,17 @@ def cmd_tick(args):
             if started >= MAX_STARTS:
                 break
             rid = item["run"]["id"]
-            reason = wait_reason(item, settings)
+            tool = item["job"]["action"].get("tool") or "claude"
+            reason, no_reading = wait_reason(item, settings, no_reading_started)
             if reason:
                 hub.request("POST", "/api/runs/%s/wait" % rid, body={"reason": reason})
                 log("wait", run=rid)
                 continue
             try:
-                hub.request("POST", "/api/runs/%s/claim" % rid, body={"computer_id": computer_id})
+                claim = {"computer_id": computer_id}
+                if no_reading:
+                    claim["no_reading"] = True
+                hub.request("POST", "/api/runs/%s/claim" % rid, body=claim)
             except HubError as e:
                 if e.status == 409:
                     log("claim_lost", run=rid)
@@ -341,9 +400,11 @@ def cmd_tick(args):
                 result = start_run(hub, computer_id, item, folders)
                 hub.request("POST", "/api/runs/%s/finish" % rid, body={"state": "done", "result": result})
                 started += 1
+                if no_reading:
+                    no_reading_started[tool] = no_reading_started.get(tool, 0) + 1
                 status.setdefault("started", []).append(now())
                 log("started", run=rid, tool=item["job"]["action"].get("tool"))
-            except (RuntimeError, HubError, KeyError, OSError, subprocess.TimeoutExpired) as e:
+            except Exception as e:  # every claimed run gets a finish, whatever went wrong
                 message = str(e) or type(e).__name__
                 status["last_error"] = message
                 log("failed", run=rid, error=message)
@@ -354,6 +415,7 @@ def cmd_tick(args):
     except HubError as e:
         status["last_error"] = str(e)
         log("error", error=e)
+    cleanup_worktrees()
     status["started"] = [t for t in status.get("started", []) if t > now() - 86400]
     save_json(status_path, status)
 

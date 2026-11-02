@@ -32,7 +32,14 @@ pub struct DueResponse {
 #[derive(Debug, Deserialize)]
 pub struct ClaimRequest {
     pub computer_id: String,
+    /// The runner has no usage reading: the claim is refused once 3 "wait for headroom" runs
+    /// of the tool started in the last 24 hours (checked here, so every Mac shares the cap).
+    #[serde(default)]
+    pub no_reading: bool,
 }
+
+/// "Wait for headroom" runs without a usage reading allowed per tool per 24 hours.
+const NO_READING_CAP: i64 = 3;
 
 #[derive(Debug, Deserialize)]
 pub struct WaitRequest {
@@ -93,6 +100,15 @@ fn previous_still_working(conn: &Connection, job_id: &str, run_id: &str) -> rusq
     )
 }
 
+/// A run of this job is claimed but its conversation doesn't exist yet.
+fn being_started(conn: &Connection, job_id: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM job_runs WHERE job_id = ?1 AND state = 'running' AND todo_id IS NULL)",
+        params![job_id],
+        |r| r.get(0),
+    )
+}
+
 pub(crate) fn due_db(conn: &Connection, computer_id: &str) -> rusqlite::Result<DueResponse> {
     let settings = settings_db(conn)?;
     let jobs = list_jobs_db(conn)?;
@@ -101,9 +117,14 @@ pub(crate) fn due_db(conn: &Connection, computer_id: &str) -> rusqlite::Result<D
         "SELECT id FROM job_runs WHERE state IN ('due','waiting') ORDER BY due_at, rowid",
     )?;
     let ids: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let mut seen_jobs = std::collections::HashSet::new();
     for id in ids {
         let Some(run) = load_run(conn, &id)? else { continue };
         let Some(job) = jobs.iter().find(|j| j.id == run.job_id) else { continue };
+        // One run per job at a time, and none while another of its runs is being started.
+        if !seen_jobs.insert(job.id.clone()) || being_started(conn, &job.id)? {
+            continue;
+        }
         let JobAction::Conversation { tool, limit, .. } = &job.action else { continue };
         if resolved_computer(conn, &job.action)?.as_deref() != Some(computer_id) {
             continue;
@@ -149,7 +170,27 @@ fn respond(e: RunError) -> HttpResponse {
     }
 }
 
-fn claim_db(conn: &Connection, run_id: &str, computer_id: &str) -> Result<DueRun, RunError> {
+fn claim_db(conn: &Connection, run_id: &str, computer_id: &str, no_reading: bool) -> Result<DueRun, RunError> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    if no_reading {
+        let run = load_run(&tx, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
+        if let Some(JobAction::Conversation { tool, .. }) = load_job(&tx, &run.job_id)?.map(|j| j.action) {
+            let started: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM job_runs WHERE limit_mode = 'wait' AND tool = ?1 AND started_at >= datetime('now', '-24 hours')",
+                params![tool],
+                |r| r.get(0),
+            )?;
+            if started >= NO_READING_CAP {
+                return Err(RunError::Conflict("No usage reading and 3 runs in 24 hours"));
+            }
+        }
+    }
+    let result = claim_in(&tx, run_id, computer_id)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+fn claim_in(conn: &Connection, run_id: &str, computer_id: &str) -> Result<DueRun, RunError> {
     let changed = conn.execute(
         "UPDATE job_runs SET state = 'running', computer_id = ?2, updated_at = datetime('now')
          WHERE id = ?1 AND state IN ('due','waiting')",
@@ -283,7 +324,7 @@ pub async fn claim(
     body: web::Json<ClaimRequest>,
     broadcaster: web::Data<Broadcaster>,
 ) -> HttpResponse {
-    with_conn!(pool, broadcaster, |c: &Connection| claim_db(c, &path, body.computer_id.trim()), |v| HttpResponse::Ok().json(v))
+    with_conn!(pool, broadcaster, |c: &Connection| claim_db(c, &path, body.computer_id.trim(), body.no_reading), |v| HttpResponse::Ok().json(v))
 }
 
 pub async fn wait(
@@ -545,6 +586,40 @@ mod tests {
             conn.query_row("SELECT state, result FROM job_runs WHERE id = 'r'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((state.as_str(), result.as_str()), ("failed", "tmux failed"));
         assert_eq!(post(&pool, "/api/runs/r/finish", json!({"state": "running", "result": "x"})).await.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn due_returns_one_run_per_job_and_skips_running() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "j", "pa", Some("mac"), "background", ALWAYS);
+        job(&conn, "k", "pa", Some("mac"), "background", ALWAYS);
+        run(&conn, "j1", "j", "due");
+        run(&conn, "j2", "j", "due");
+        run(&conn, "k-run", "k", "running");
+        run(&conn, "k-due", "k", "due");
+        assert_eq!(due_ids(&get(&pool, "/api/runner/due?computer_id=mac").await.1), vec!["j1"]);
+    }
+
+    #[actix_web::test]
+    async fn claim_refuses_over_no_reading_cap() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "jw", "pa", Some("mac"), "background", WAIT);
+        conn.execute_batch(
+            "INSERT INTO job_runs (id, job_id, due_at, state, tool, limit_mode, started_at) VALUES
+                 ('a', 'jw', datetime('now'), 'done', 'claude', 'wait', datetime('now', '-1 hours')),
+                 ('b', 'jw', datetime('now'), 'done', 'claude', 'wait', datetime('now', '-2 hours')),
+                 ('c', 'jw', datetime('now'), 'done', 'claude', 'wait', datetime('now', '-3 hours'));",
+        )
+        .unwrap();
+        run(&conn, "r", "jw", "due");
+        let (status, _) = post(&pool, "/api/runs/r/claim", json!({"computer_id": "mac", "no_reading": true})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "3 wait runs without a reading in 24h");
+        let (status, _) = post(&pool, "/api/runs/r/claim", json!({"computer_id": "mac"})).await;
+        assert_eq!(status, StatusCode::OK, "with a reading the cap doesn't apply");
     }
 
     #[actix_web::test]

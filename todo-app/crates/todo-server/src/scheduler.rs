@@ -17,6 +17,8 @@ use crate::push::PushNotifier;
 const MISSED_AFTER_HOURS: i64 = 24;
 /// Slots further back than this are not looked at (a hub that was down for days).
 const LOOKBACK_DAYS: i64 = 2;
+/// A claimed run with no todo yet after this long is failed.
+const STUCK_RUNNING_MINUTES: i64 = 15;
 
 #[derive(Debug, Default)]
 pub(crate) struct TickOutcome {
@@ -128,6 +130,13 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
         )?;
         out.missed = stmt.query_map(params![stamp, cutoff], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     }
+    // A run claimed but never started (runner killed, hub unreachable mid-start) fails after
+    // 15 minutes instead of staying `running` forever.
+    tx.execute(
+        "UPDATE job_runs SET state = 'failed', result = 'the runner never started it', updated_at = ?1
+         WHERE state = 'running' AND todo_id IS NULL AND updated_at < ?2",
+        params![stamp, sql_time(now - Duration::minutes(STUCK_RUNNING_MINUTES))],
+    )?;
 
     let jobs: Vec<(String, String, String, String, i64, Option<String>, String)> = {
         let mut stmt = tx.prepare(
@@ -165,6 +174,13 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
             out.created.push(run_id);
             continue;
         }
+        // One pending run per job: a newer slot replaces one still waiting for a runner, so a
+        // Mac that slept through several slots starts the job once.
+        tx.execute(
+            "UPDATE job_runs SET state = 'skipped', result = 'superseded by a later slot', updated_at = ?2
+             WHERE job_id = ?1 AND state IN ('due','waiting')",
+            params![id, stamp],
+        )?;
         tx.execute(
             "INSERT INTO job_runs (id, job_id, due_at, state) VALUES (?1, ?2, ?3, 'due')",
             params![run_id, id, sql_time(slot)],
@@ -271,9 +287,11 @@ mod tests {
         conn.execute("UPDATE jobs SET max_runs_per_day = 2", []).unwrap();
         for m in [15, 30, 45] {
             tick_db(&conn, at(2026, 11, 2, 6, m)).unwrap();
+            // A runner picks each run up before the next slot.
+            conn.execute("UPDATE job_runs SET state = 'done' WHERE state = 'due'", []).unwrap();
         }
         let states: Vec<String> = runs(&conn, "j").into_iter().map(|(_, s)| s).collect();
-        assert_eq!(states, vec!["due", "due", "skipped"]);
+        assert_eq!(states, vec!["done", "done", "skipped"]);
     }
 
     #[test]
@@ -335,6 +353,42 @@ mod tests {
         .unwrap();
         tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
         assert!(runs(&conn, "off").is_empty() && runs(&conn, "man").is_empty());
+    }
+
+    #[test]
+    fn tick_supersedes_pending_run() {
+        let (_db, pool) = pool("sched");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "j", "0 * * * *", CONVERSATION, "2026-11-02 08:00:00");
+        for h in [9, 10, 11] {
+            tick_db(&conn, at(2026, 11, 2, h, 0)).unwrap();
+        }
+        let rows = runs(&conn, "j");
+        let states: Vec<&str> = rows.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(states, vec!["skipped", "skipped", "due"], "only the newest slot stays pending: {rows:?}");
+        let result: String = conn.query_row("SELECT result FROM job_runs WHERE job_id = 'j' AND due_at = '2026-11-02 09:00:00'", [], |r| r.get(0)).unwrap();
+        assert_eq!(result, "superseded by a later slot");
+    }
+
+    #[test]
+    fn tick_fails_stuck_running_runs() {
+        let (_db, pool) = pool("sched");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "j", "0 9 1 1 *", CONVERSATION, "2026-11-01 00:00:00");
+        conn.execute_batch(
+            "INSERT INTO job_runs (id, job_id, due_at, state, updated_at) VALUES
+                 ('stuck', 'j', '2026-11-02 06:00:00', 'running', '2026-11-02 06:40:00'),
+                 ('fresh', 'j', '2026-11-02 06:50:00', 'running', '2026-11-02 06:55:00');
+             INSERT INTO todos (id, section, title) VALUES ('t', 'Si', 'x');
+             INSERT INTO job_runs (id, job_id, due_at, state, todo_id, updated_at) VALUES
+                 ('started', 'j', '2026-11-02 06:00:00', 'running', 't', '2026-11-02 06:00:00');",
+        )
+        .unwrap();
+        tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
+        let state = |id: &str| -> String { conn.query_row("SELECT state FROM job_runs WHERE id = ?1", params![id], |r| r.get(0)).unwrap() };
+        assert_eq!((state("stuck"), state("fresh"), state("started")), ("failed".into(), "running".into(), "running".into()));
     }
 
     #[test]

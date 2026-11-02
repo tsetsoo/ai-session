@@ -2774,6 +2774,7 @@ while [ "\$#" -gt 0 ]; do
   if [ "\$1" = --prompt-file ]; then cat "\$2" >"${SANDBOX}/runner-prompt.txt"; rm -f "\$2"; fi
   shift
 done
+[ -n "\${FAKE_OPEN_SLEEP:-}" ] && sleep "\$FAKE_OPEN_SLEEP"
 [ "\${FAKE_OPEN_EXIT:-0}" = 0 ] && echo created
 exit "\${FAKE_OPEN_EXIT:-0}"
 FAKE
@@ -2782,6 +2783,7 @@ cat >"$R_LIMITS" <<'FAKE'
 #!/bin/sh
 [ -n "${FAKE_LIMITS_SLEEP:-}" ] && sleep "$FAKE_LIMITS_SLEEP"
 [ "${FAKE_LIMITS_EXIT:-0}" = 0 ] || exit "$FAKE_LIMITS_EXIT"
+[ -n "${FAKE_LIMITS_JSON:-}" ] && { printf '%s\n' "$FAKE_LIMITS_JSON"; exit 0; }
 printf '{"tool":"claude","windows":[{"kind":"5h","used_percent":%s},{"kind":"weekly","used_percent":%s}]}\n' "${FAKE_5H:-10}" "${FAKE_WEEK:-10}"
 FAKE
 chmod +x "$R_OPEN" "$R_LIMITS"
@@ -2795,22 +2797,23 @@ fi
 R_PLAIN="${HOME}/work/plain"
 mkdir -p "$R_PLAIN"
 hub_edit "s['projects'].append(dict(id='proj-plain', name='plain', computer=dict(id='comp-1', name='test-mac'), folder='~/work/plain', repo_url=None, digest_enabled=True))"
-due_run() { # <run id> <project id> <limit json> [wait_runs_24h] [tool]
+due_run() { # <run id> <project id> <limit json> [wait_runs_24h] [tool] [folder]
   python3 - "$M_HUB_STATE" "$@" <<'PY'
 import json, sys
 p, rid, project, limit = sys.argv[1:5]
 waits = int(sys.argv[5]) if len(sys.argv) > 5 else 0
 tool = sys.argv[6] if len(sys.argv) > 6 else "claude"
+folder = sys.argv[7] if len(sys.argv) > 7 else None
 s = json.load(open(p))
 s.setdefault("due_runs", []).append({"wait_runs_24h": waits,
   "run": {"id": rid, "job_id": "job-" + rid, "due_at": "2026-11-02 07:00:00", "state": "due"},
   "job": {"id": "job-" + rid, "name": "Nightly Research!", "enabled": True, "trigger": {"kind": "manual"},
           "max_runs_per_day": 4, "action": {"kind": "conversation", "project_id": project, "computer_id": None,
-          "tool": tool, "folder": None, "prompt": "x", "priority": "background", "limit": json.loads(limit)}}})
+          "tool": tool, "folder": folder, "prompt": "x", "priority": "background", "limit": json.loads(limit)}}})
 json.dump(s, open(p, "w"))
 PY
 }
-runs_reset() { hub_edit "s['due_runs'] = []; s['claimed'] = []; s.pop('scheduler_settings', None)"; : >"$R_OPEN_LOG"; R_MARK=$(wc -l <"$M_HUB_LOG"); }
+runs_reset() { hub_edit "s['due_runs'] = []; s['claimed'] = []; s.pop('scheduler_settings', None); s.pop('start_response', None)"; : >"$R_OPEN_LOG"; R_MARK=$(wc -l <"$M_HUB_LOG"); }
 posts_to() { # <verb>: bodies of POST /api/runs/*/<verb> since the last runs_reset, one JSON per line
   tail -n +"$((R_MARK + 1))" "$M_HUB_LOG" | python3 -c '
 import json, sys
@@ -2851,14 +2854,15 @@ posts_to claim | grep -q r-alwy0001 || fail "an always-run job waited"
 pass "runner_always_mode_ignores_limits"
 posts_to start | grep '"id": "r-alwy0001"' | grep -q '"cwd": "~/work/plain", "is_git": false' || fail "non-git start wrong: $(posts_to start)"
 [[ ! -e "${R_TREES}/proj-plain" ]] || fail "a worktree was made for a non-git folder"
-pass "runner_non_git_runs_in_place"
+! grep -qx -- "--auto-approve" "$R_OPEN_LOG" || fail "a non-git folder got --auto-approve: $(cat "$R_OPEN_LOG")"
+pass "runner_non_git_runs_in_place (and without --auto-approve)"
 
 runs_reset
 due_run r-cap00002 proj-plain "$WAIT_DEFAULT" 2
 due_run r-cap00003 proj-plain "$WAIT_DEFAULT" 3
 FAKE_LIMITS_EXIT=75 runner tick || fail "tick failed"
 posts_to claim | grep -q r-cap00002 || fail "with 2 runs in 24h and no reading the run should start"
-posts_to wait | grep '"id": "r-cap00003"' | grep -q 'no usage reading; 3 runs in 24h' || fail "with 3 runs in 24h it should wait: $(posts_to wait)"
+posts_to wait | grep '"id": "r-cap00003"' | grep -q 'no usage reading; [0-9]* runs in 24h' || fail "with 3 runs in 24h it should wait: $(posts_to wait)"
 runs_reset
 due_run r-slow0001 proj-plain "$WAIT_DEFAULT" 3
 start=$(date +%s)
@@ -2891,6 +2895,62 @@ posts_to finish | grep '"id": "r-fail0001"' | grep -q '"state": "failed"' || fai
 [[ ! -e "${R_TREES}/proj-app/r-fail0001" ]] || fail "the worktree of a failed start was kept"
 ! git -C "$R_REPO" branch --list 'scheduled/*' | grep -q r-fail00 || fail "the branch of a failed start was kept"
 pass "runner_start_failure_reports_and_cleans_worktree"
+
+runs_reset
+due_run r-nr000001 proj-plain "$WAIT_DEFAULT" 2
+due_run r-nr000002 proj-plain "$WAIT_DEFAULT" 2
+hub_edit "s['due_runs'][1]['job']['id'] = 'job-other'"
+FAKE_LIMITS_EXIT=75 runner tick || fail "tick failed"
+posts_to claim | grep '"id": "r-nr000001"' | grep -q '"no_reading": true' || fail "a claim without a reading must say so: $(posts_to claim)"
+posts_to wait | grep '"id": "r-nr000002"' | grep -q 'no usage reading; 3 runs in 24h' || fail "the second no-reading run in one tick should wait: $(posts_to wait)"
+pass "runner_no_reading_cap_counts_within_tick"
+
+runs_reset
+due_run r-wk000001 proj-plain "$WAIT_DEFAULT"
+FAKE_LIMITS_JSON='{"tool":"claude","windows":[{"kind":"5h","used_percent":10},{"kind":"weekly","used_percent":85},{"kind":"weekly","scope":"sonnet","used_percent":30}]}' runner tick || fail "tick failed"
+posts_to wait | grep -q '"reason": "weekly 85% > 80%"' || fail "a scoped weekly window hid the account one: $(posts_to wait)"
+pass "runner_weekly_takes_max_window"
+
+runs_reset
+due_run r-null0001 proj-plain '{"mode":"always"}'
+hub_edit "s['start_response'] = None"
+runner tick || fail "tick crashed on an empty start reply"
+posts_to finish | grep '"id": "r-null0001"' | grep -q '"state": "failed"' || fail "an empty start reply left the run unfinished: $(posts_to finish)"
+pass "runner_bad_start_reply_reports_failed"
+
+runs_reset
+due_run r-slowopen proj-app '{"mode":"always"}'
+FAKE_OPEN_SLEEP=4 AI_TODO_OPEN_TIMEOUT=1 runner tick || fail "tick failed"
+posts_to finish | grep '"id": "r-slowopen"' | grep -q '"state": "failed"' || fail "a timed-out start was not reported"
+[[ -d "${R_TREES}/proj-app/r-slowopen" ]] || fail "a timed-out start removed a worktree a conversation may be using"
+pass "runner_open_timeout_keeps_worktree"
+
+runs_reset
+due_run r-outside1 proj-app '{"mode":"always"}' 0 claude '~/work/elsewhere'
+runner tick || fail "tick failed"
+posts_to finish | grep '"id": "r-outside1"' | grep -q 'outside the project' || fail "a folder outside the project was accepted: $(posts_to finish)"
+! posts_to start | grep -q r-outside1 || fail "a folder outside the project was started"
+pass "runner_refuses_folder_outside_project"
+
+runs_reset
+due_run r-old00001 proj-app '{"mode":"always"}'
+due_run r-work0001 proj-app '{"mode":"always"}'
+hub_edit "s['due_runs'][1]['job']['id'] = 'job-other2'"
+runner tick || fail "tick failed"
+git -C "${R_TREES}/proj-app/r-work0001" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "scheduled work"
+python3 - "${R_STATE}/worktrees.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+for run in ("r-old00001", "r-work0001"):
+    d[run]["created"] -= 4 * 86400
+json.dump(d, open(p, "w"))
+PY
+runs_reset
+runner tick || fail "cleanup tick failed"
+[[ ! -e "${R_TREES}/proj-app/r-old00001" ]] && ! git -C "$R_REPO" branch --list 'scheduled/*' | grep -q r-old000 || fail "an old unused worktree was kept"
+[[ -d "${R_TREES}/proj-app/r-work0001" ]] || fail "a worktree with scheduled work was removed"
+pass "runner_cleans_old_unused_worktrees (keeps ones with commits or changes)"
 
 ! grep -q "Do the thing" "${R_STATE}/runner.log" && grep -q "started" "${R_STATE}/runner.log" || fail "runner.log missing or holds prompt text"
 runner status --json | python3 -c 'import json, sys; s = json.load(sys.stdin); assert s["last_tick"] and "started_24h" in s, s' || fail "runner status wrong"

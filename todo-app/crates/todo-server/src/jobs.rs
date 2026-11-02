@@ -208,6 +208,9 @@ pub(crate) fn create_job_db(conn: &Connection, req: &CreateJobRequest) -> Result
 
 pub(crate) fn update_job_db(conn: &Connection, id: &str, req: &UpdateJobRequest) -> Result<Job, JobError> {
     let job = load_job(conn, id)?.ok_or(JobError::NotFound("Job not found"))?;
+    // Switched back on, or a new schedule: start counting slots from now, so no slot from
+    // the past fires at once.
+    let restart = (req.enabled == Some(true) && !job.enabled) || req.trigger.as_ref().is_some_and(|t| *t != job.trigger);
     let name = req.name.clone().unwrap_or(job.name);
     let trigger = req.trigger.clone().unwrap_or(job.trigger);
     let action = req.action.clone().unwrap_or(job.action);
@@ -224,6 +227,9 @@ pub(crate) fn update_job_db(conn: &Connection, id: &str, req: &UpdateJobRequest)
             req.max_runs_per_day.unwrap_or(job.max_runs_per_day).clamp(1, 96)
         ],
     )?;
+    if restart {
+        conn.execute("UPDATE jobs SET last_slot_at = datetime('now') WHERE id = ?1", params![id])?;
+    }
     load_job(conn, id)?.ok_or(JobError::NotFound("Job not found"))
 }
 
@@ -489,6 +495,26 @@ mod tests {
         for bad in [json!({"five_hour": 0, "weekly": 90, "pause_waiting": false}), json!({"five_hour": 40, "weekly": 101, "pause_waiting": false})] {
             assert_eq!(put(&pool, "/api/scheduler/settings", bad).await.0, StatusCode::BAD_REQUEST);
         }
+    }
+
+    #[actix_web::test]
+    async fn reenable_or_new_cron_does_not_backfire() {
+        let (_db, pool) = pool("jobs");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (_, job) = post(&pool, "/api/jobs", conversation_job("R", json!({"kind": "cron", "cron": "* * * * *"}))).await;
+        let id = job["id"].as_str().unwrap();
+        patch(&pool, &format!("/api/jobs/{id}"), json!({"enabled": false})).await;
+        conn.execute("UPDATE jobs SET last_slot_at = datetime('now', '-1 day') WHERE id = ?1", rusqlite::params![id]).unwrap();
+        patch(&pool, &format!("/api/jobs/{id}"), json!({"enabled": true})).await;
+        crate::scheduler::tick_db(&conn, chrono::Utc::now()).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM job_runs", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "re-enabling starts from now");
+        conn.execute("UPDATE jobs SET last_slot_at = datetime('now', '-1 day') WHERE id = ?1", rusqlite::params![id]).unwrap();
+        patch(&pool, &format!("/api/jobs/{id}"), json!({"trigger": {"kind": "cron", "cron": "*/2 * * * *"}})).await;
+        crate::scheduler::tick_db(&conn, chrono::Utc::now()).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM job_runs", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "a new cron starts from now");
     }
 
     #[actix_web::test]

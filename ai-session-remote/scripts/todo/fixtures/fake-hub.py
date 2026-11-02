@@ -275,7 +275,9 @@ class Hub(BaseHTTPRequestHandler):
             return self.reply(200, dict(due, run=dict(due["run"], state="running")))
         if verb == "start":
             tool = (due or {}).get("job", {}).get("action", {}).get("tool", "claude")
-            return self.reply(200, state.get("start_response") or {
+            if "start_response" in state:
+                return self.reply(200, state["start_response"])
+            return self.reply(200, {
                 "todo_id": "t-sched", "tmux_name": "ai/%s/todo-sched1" % tool,
                 "session_id": "5e55a0de-0000-4000-8000-000000000001" if tool == "claude" else "",
                 "tool": tool, "prompt": "PREAMBLE for %s\n\nDo the thing." % body.get("cwd")})
