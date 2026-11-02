@@ -72,6 +72,12 @@ pub struct FinishRequest {
 
 const PREAMBLE_GIT: &str = "This is a scheduled conversation (\"{job}\", {date}). You work in your own git worktree at {folder}. \
      Do not push, merge, deploy or change anything outside this worktree; leave results here for review.";
+/// The research job's prompt for one idea.
+const RESEARCH_PROMPT: &str = "Research this idea for the project {project}: \"{title}\".\n{notes}\n\n\
+Investigate it (code, docs, the web if useful), then write findings: what you learned, options with trade-offs, \
+and a recommended next step. Save them with:\n~/.ai-remote/bin/ai-todo-idea findings {id} -\n\
+(pipe the findings text on stdin). Then stop.";
+
 const PREAMBLE_PLAIN: &str = "This is a scheduled conversation (\"{job}\", {date}). You work in {folder}, which is not a git repository: \
      do not modify files. Do not push, merge, deploy or change anything outside this worktree; leave results here for review.";
 
@@ -247,8 +253,34 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         .optional()?
         .ok_or(RunError::NotFound("Project not found"))?;
     let date = local_date(Utc::now());
-    let title = format!("{} · {date}", job.name);
+    // A research run takes the project's next idea: starred first, then the oldest.
+    let idea: Option<(String, String, String)> = if job.action.is_research() {
+        let picked = tx
+            .query_row(
+                "SELECT id, title, notes FROM ideas WHERE project_id = ?1 AND status = 'new' AND pending = 0
+                 ORDER BY starred DESC, created_at ASC, rowid ASC LIMIT 1",
+                params![project_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if picked.is_none() {
+            return Err(RunError::Conflict("No new ideas"));
+        }
+        picked
+    } else {
+        None
+    };
+    let title = match &idea {
+        Some((_, idea_title, _)) => format!("Research: {idea_title}"),
+        None => format!("{} · {date}", job.name),
+    };
     let todo_id = insert_scheduled_todo(&tx, &section, &title, Some(project_id), &job.id, &run.id)?;
+    if let Some((idea_id, _, _)) = &idea {
+        tx.execute(
+            "UPDATE ideas SET status = 'researching', run_id = ?2, todo_id = ?3, updated_at = datetime('now') WHERE id = ?1",
+            params![idea_id, run.id, todo_id],
+        )?;
+    }
     if *priority == Priority::Background {
         tx.execute("INSERT OR IGNORE INTO push_muted_todos (todo_id) VALUES (?1)", params![todo_id])?;
     }
@@ -265,9 +297,26 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         "UPDATE job_runs SET todo_id = ?2, tool = ?3, limit_mode = ?4, started_at = ?5, updated_at = ?5 WHERE id = ?1",
         params![run.id, todo_id, tool, limit_mode, sql_time(Utc::now())],
     )?;
-    let vars = [("job", job.name.as_str()), ("date", date.as_str()), ("folder", cwd), ("project", project_name.as_str())];
+    let note = run.note.clone().unwrap_or_default();
+    let vars = [
+        ("job", job.name.as_str()),
+        ("date", date.as_str()),
+        ("folder", cwd),
+        ("project", project_name.as_str()),
+        ("note", note.as_str()),
+    ];
     let preamble = render(if req.is_git { PREAMBLE_GIT } else { PREAMBLE_PLAIN }, &vars);
-    let prompt = format!("{preamble}\n\n{}", render(prompt, &vars));
+    let body = match &idea {
+        Some((idea_id, idea_title, notes)) => {
+            let research = render(
+                RESEARCH_PROMPT,
+                &[("project", project_name.as_str()), ("title", idea_title.as_str()), ("notes", notes.as_str()), ("id", idea_id.as_str())],
+            );
+            if prompt.trim().is_empty() { research } else { format!("{research}\n\n{}", render(prompt, &vars)) }
+        }
+        None => render(prompt, &vars),
+    };
+    let prompt = format!("{preamble}\n\n{body}");
     tx.commit()?;
     Ok(StartResponse {
         todo_id,
@@ -624,6 +673,85 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT, "3 wait runs without a reading in 24h");
         let (status, _) = post(&pool, "/api/runs/r/claim", json!({"computer_id": "mac"})).await;
         assert_eq!(status, StatusCode::OK, "with a reading the cap doesn't apply");
+    }
+
+    fn research_job(conn: &Connection, id: &str, extra: &str) {
+        let action = json!({"kind": "research", "project_id": "pa", "computer_id": "mac", "tool": "claude", "folder": null,
+            "prompt": extra, "priority": "background", "limit": {"mode": "always"}});
+        conn.execute(
+            "INSERT INTO jobs (id, name, trigger, action) VALUES (?1, ?2, '{\"kind\":\"manual\"}', ?3)",
+            params![id, format!("Research {id}"), action.to_string()],
+        )
+        .unwrap();
+    }
+
+    async fn start_run(pool: &crate::db::DbPool, conn: &Connection, run_id: &str, job: &str) -> (StatusCode, Value) {
+        run(conn, run_id, job, "due");
+        post(pool, &format!("/api/runs/{run_id}/claim"), json!({"computer_id": "mac"})).await;
+        post(pool, &format!("/api/runs/{run_id}/start"), json!({"cwd": "~/w", "is_git": true})).await
+    }
+
+    #[actix_web::test]
+    async fn start_research_picks_starred_then_oldest() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        research_job(&conn, "rj", "Keep it under a page.");
+        conn.execute_batch(
+            "INSERT INTO ideas (id, project_id, title, notes, created_at) VALUES
+                 ('old', 'pa', 'Oldest idea', 'Some notes', '2026-10-01 00:00:00'),
+                 ('star', 'pa', 'Starred idea', '', '2026-10-05 00:00:00'),
+                 ('new2', 'pa', 'Newer idea', '', '2026-10-09 00:00:00');
+             UPDATE ideas SET starred = 1 WHERE id = 'star';",
+        )
+        .unwrap();
+        let (status, v) = start_run(&pool, &conn, "r1", "rj").await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let prompt = v["prompt"].as_str().unwrap();
+        assert!(prompt.contains("\n\nResearch this idea for the project app: \"Starred idea\".\n"), "{prompt}");
+        assert!(prompt.contains("~/.ai-remote/bin/ai-todo-idea findings star -"), "{prompt}");
+        assert!(prompt.ends_with("Then stop.\n\nKeep it under a page."), "{prompt}");
+        let (status_, run_id, todo_id): (String, String, String) =
+            conn.query_row("SELECT status, run_id, todo_id FROM ideas WHERE id = 'star'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((status_.as_str(), run_id.as_str(), todo_id.as_str()), ("researching", "r1", v["todo_id"].as_str().unwrap()));
+        let title: String = conn.query_row("SELECT title FROM todos WHERE id = ?1", params![todo_id], |r| r.get(0)).unwrap();
+        assert_eq!(title, "Research: Starred idea");
+        let (_, v) = start_run(&pool, &conn, "r2", "rj").await;
+        assert!(v["prompt"].as_str().unwrap().contains("\"Oldest idea\".\nSome notes\n"), "then the oldest: {}", v["prompt"]);
+    }
+
+    #[actix_web::test]
+    async fn start_research_picks_distinct_ideas() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        research_job(&conn, "a", "");
+        research_job(&conn, "b", "");
+        conn.execute_batch("INSERT INTO ideas (id, project_id, title) VALUES ('i1', 'pa', 'One'), ('i2', 'pa', 'Two');").unwrap();
+        run(&conn, "ra", "a", "due");
+        run(&conn, "rb", "b", "due");
+        post(&pool, "/api/runs/ra/claim", json!({"computer_id": "mac"})).await;
+        post(&pool, "/api/runs/rb/claim", json!({"computer_id": "mac"})).await;
+        post(&pool, "/api/runs/ra/start", json!({"cwd": "~/w1", "is_git": true})).await;
+        post(&pool, "/api/runs/rb/start", json!({"cwd": "~/w2", "is_git": true})).await;
+        let picked: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT run_id FROM ideas ORDER BY id").unwrap();
+            stmt.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+        };
+        assert_eq!(picked, vec!["ra", "rb"]);
+    }
+
+    #[actix_web::test]
+    async fn start_research_without_ideas_conflicts() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        research_job(&conn, "rj", "");
+        conn.execute("INSERT INTO ideas (id, project_id, title, pending) VALUES ('p', 'pa', 'Unapproved', 1)", []).unwrap();
+        let (status, _) = start_run(&pool, &conn, "r1", "rj").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "no todo without an idea");
     }
 
     #[actix_web::test]

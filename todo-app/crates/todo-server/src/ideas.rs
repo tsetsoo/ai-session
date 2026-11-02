@@ -4,7 +4,11 @@
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
-use todo_shared::{CreateIdeaRequest, DeleteResponse, Idea, UpdateIdeaRequest};
+use serde::Deserialize;
+use todo_shared::{
+    CreateIdeaRequest, CreateJobRequest, DeleteResponse, Idea, JobAction, JobTrigger, LimitSetting, Priority,
+    UpdateIdeaRequest,
+};
 use uuid::Uuid;
 
 use crate::broadcast::Broadcaster;
@@ -124,6 +128,65 @@ pub(crate) fn update_idea_db(conn: &Connection, id: &str, req: &UpdateIdeaReques
     load_idea(conn, id)?.ok_or(IdeaError::NotFound("Idea not found"))
 }
 
+/// "Shape an idea with an agent": the project's shape job runs once with the user's hint.
+const SHAPE_PROMPT: &str = "Help me shape a new idea for the project {project}. My starting point: {note}\n\n\
+Ask me short questions, one at a time, until the idea is clear. Then save it with:\n\
+~/.ai-remote/bin/ai-todo-idea add \"<title>\" --notes \"<two or three sentences>\"\nand tell me it is saved.";
+const MAX_HINT: usize = 1000;
+
+#[derive(Debug, Deserialize)]
+pub struct ShapeRequest {
+    pub project_id: String,
+    pub hint: String,
+}
+
+pub(crate) fn shape_db(conn: &Connection, req: &ShapeRequest) -> Result<todo_shared::JobRun, IdeaError> {
+    let hint = checked(&req.hint, MAX_HINT, "hint", true)?;
+    let name: String = conn
+        .query_row("SELECT name FROM projects WHERE id = ?1", params![req.project_id], |r| r.get(0))
+        .optional()?
+        .ok_or(IdeaError::NotFound("Project not found"))?;
+    let job_name = format!("Shape an idea · {name}");
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM jobs WHERE name = ?1 AND json_extract(action, '$.project_id') = ?2",
+            params![job_name, req.project_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let job_id = match existing {
+        Some(id) => id,
+        None => {
+            let request = CreateJobRequest {
+                name: job_name,
+                enabled: Some(true),
+                trigger: JobTrigger::Manual,
+                action: JobAction::Conversation {
+                    project_id: req.project_id.clone(),
+                    computer_id: None,
+                    tool: "claude".into(),
+                    folder: None,
+                    prompt: SHAPE_PROMPT.into(),
+                    priority: Priority::Urgent,
+                    limit: LimitSetting::Always,
+                },
+                max_runs_per_day: Some(20),
+            };
+            match crate::jobs::create_job_db(conn, &request) {
+                Ok(job) => job.id,
+                Err(crate::jobs::JobError::Db(e)) => return Err(IdeaError::Db(e)),
+                Err(_) => return Err(IdeaError::BadRequest("could not create the shape job".into())),
+            }
+        }
+    };
+    let run_id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO job_runs (id, job_id, due_at, state, note) VALUES (?1, ?2, datetime('now'), 'due', ?3)",
+        params![run_id, job_id, hint],
+    )?;
+    crate::jobs::load_run(conn, &run_id)?.ok_or(IdeaError::NotFound("Run not found"))
+}
+
 #[derive(Debug, Serialize)]
 pub struct IdeaTodo {
     pub idea: Idea,
@@ -203,6 +266,17 @@ pub async fn delete_idea(pool: web::Data<DbPool>, path: web::Path<String>, broad
             HttpResponse::Ok().json(DeleteResponse { deleted: path.into_inner() })
         }
         Err(e) => server_error(e),
+    }
+}
+
+pub async fn shape_idea(pool: web::Data<DbPool>, body: web::Json<ShapeRequest>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
+    let conn = conn!(pool);
+    match shape_db(&conn, &body) {
+        Ok(run) => {
+            broadcaster.send();
+            HttpResponse::Created().json(run)
+        }
+        Err(e) => respond(e),
     }
 }
 
@@ -337,6 +411,34 @@ mod tests {
         let path = format!("/api/ideas/{}", i["id"].as_str().unwrap());
         assert_eq!(delete(&pool, &path).await.0, StatusCode::OK);
         assert_eq!(delete(&pool, &path).await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn shape_creates_job_once_and_runs_with_note() {
+        let (_db, pool) = pool("ideas");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (status, run) = post(&pool, "/api/ideas/shape", json!({"project_id": "pa", "hint": "faster startup"})).await;
+        assert_eq!(status, StatusCode::CREATED, "{run}");
+        assert_eq!((&run["state"], &run["note"]), (&json!("due"), &json!("faster startup")));
+        post(&pool, "/api/ideas/shape", json!({"project_id": "pa", "hint": "a second one"})).await;
+        let (jobs, runs): (i64, i64) = conn
+            .query_row("SELECT (SELECT COUNT(*) FROM jobs), (SELECT COUNT(*) FROM job_runs)", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((jobs, runs), (1, 2));
+        let (name, action): (String, String) = conn.query_row("SELECT name, action FROM jobs", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(name, "Shape an idea · app");
+        let action: Value = serde_json::from_str(&action).unwrap();
+        assert_eq!((&action["priority"], &action["limit"]["mode"], &action["tool"]), (&json!("urgent"), &json!("always"), &json!("claude")));
+        assert!(action["prompt"].as_str().unwrap().contains("My starting point: {note}"));
+    }
+
+    #[actix_web::test]
+    async fn shape_validation() {
+        let (_db, pool) = pool("ideas");
+        seed(&pool.get().unwrap());
+        assert_eq!(post(&pool, "/api/ideas/shape", json!({"project_id": "pa", "hint": " "})).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(post(&pool, "/api/ideas/shape", json!({"project_id": "nope", "hint": "x"})).await.0, StatusCode::NOT_FOUND);
     }
 
     #[actix_web::test]

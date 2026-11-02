@@ -119,6 +119,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/scheduler/settings", web::put().to(jobs::put_settings))
         .route("/api/ideas", web::get().to(ideas::list_ideas))
         .route("/api/ideas", web::post().to(ideas::create_idea))
+        .route("/api/ideas/shape", web::post().to(ideas::shape_idea))
         .route("/api/ideas/{id}", web::patch().to(ideas::update_idea))
         .route("/api/ideas/{id}", web::delete().to(ideas::delete_idea))
         .route("/api/ideas/{id}/todo", web::post().to(ideas::idea_to_todo))

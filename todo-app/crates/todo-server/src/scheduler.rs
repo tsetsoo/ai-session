@@ -165,6 +165,22 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
         tx.execute("UPDATE jobs SET last_slot_at = ?2 WHERE id = ?1", params![id, sql_time(slot)])?;
 
         let run_id = Uuid::new_v4().to_string();
+        // A research slot with nothing to research is recorded, not queued.
+        if let (true, Some(parts)) = (action.is_research(), action.conversation_parts()) {
+            let has_idea: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM ideas WHERE project_id = ?1 AND status = 'new' AND pending = 0)",
+                params![parts.project_id],
+                |r| r.get(0),
+            )?;
+            if !has_idea {
+                tx.execute(
+                    "INSERT INTO job_runs (id, job_id, due_at, state, result) VALUES (?1, ?2, ?3, 'skipped', 'no new ideas')",
+                    params![run_id, id, sql_time(slot)],
+                )?;
+                out.created.push(run_id);
+                continue;
+            }
+        }
         let today_runs: i64 = tx.query_row(
             "SELECT COUNT(*) FROM job_runs WHERE job_id = ?1 AND due_at >= ?2 AND state != 'skipped'",
             params![id, day_start],
@@ -393,6 +409,34 @@ mod tests {
         tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
         let state = |id: &str| -> String { conn.query_row("SELECT state FROM job_runs WHERE id = ?1", params![id], |r| r.get(0)).unwrap() };
         assert_eq!((state("stuck"), state("fresh"), state("started")), ("failed".into(), "running".into(), "running".into()));
+    }
+
+    const RESEARCH: &str = r#"{"kind":"research","project_id":"pa","computer_id":null,"tool":"claude","folder":null,"prompt":"","priority":"background","limit":{"mode":"always"}}"#;
+
+    #[test]
+    fn tick_skips_research_without_ideas() {
+        let (_db, pool) = pool("sched");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "r", "0 9 * * *", RESEARCH, "2026-11-01 08:00:00");
+        tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
+        let (state, result): (String, String) =
+            conn.query_row("SELECT state, result FROM job_runs WHERE job_id = 'r'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((state.as_str(), result.as_str()), ("skipped", "no new ideas"));
+        conn.execute("INSERT INTO ideas (id, project_id, title) VALUES ('i1', 'pa', 'Try Hermes')", []).unwrap();
+        tick_db(&conn, at(2026, 11, 3, 7, 0)).unwrap();
+        assert_eq!(runs(&conn, "r").last().unwrap().1, "due", "with an idea the run is due");
+    }
+
+    #[test]
+    fn research_skips_pending_ideas() {
+        let (_db, pool) = pool("sched");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "r", "0 9 * * *", RESEARCH, "2026-11-01 08:00:00");
+        conn.execute("INSERT INTO ideas (id, project_id, title, pending) VALUES ('i1', 'pa', 'Unapproved', 1)", []).unwrap();
+        tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
+        assert_eq!(runs(&conn, "r")[0].1, "skipped");
     }
 
     #[test]
