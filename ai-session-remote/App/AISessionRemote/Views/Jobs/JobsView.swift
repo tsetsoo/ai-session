@@ -156,8 +156,11 @@ private struct JobRow: View {
         let what: String = switch job.action {
         case let .conversation(action):
             "\(action.tool.capitalized) in \(store.project(id: action.projectId)?.name ?? "a project")"
+        case let .research(action):
+            "Research ideas in \(store.project(id: action.projectId)?.name ?? "a project")"
         case .push: "Push"
         case .todo: "Todo"
+        case let .unsupported(kind): "\(kind.capitalized) job (needs a newer app)"
         }
         var parts = [what, ScheduledMarker.triggerSummary(job.trigger)]
         if let next = job.nextFireAt.flatMap(HubDates.date(from:)) {

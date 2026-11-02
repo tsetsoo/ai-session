@@ -1010,6 +1010,38 @@ final class TodoHubStore {
         try await perform { client in _ = try await client.updateSchedulerSettings(settings) }
     }
 
+    // MARK: Ideas
+
+    func ideas(projectId: String, pending: Bool = false) async throws -> [Idea] {
+        #if DEBUG
+        if demo != nil { return [] }
+        #endif
+        return try await requireClient().listIdeas(projectId: projectId, pending: pending)
+    }
+
+    func createIdea(_ request: CreateIdeaRequest) async throws {
+        try await perform { client in _ = try await client.createIdea(request) }
+    }
+
+    func updateIdea(_ idea: Idea, _ request: UpdateIdeaRequest) async throws {
+        try await perform { client in _ = try await client.updateIdea(id: idea.id, request) }
+    }
+
+    func deleteIdea(_ idea: Idea) async throws {
+        try await perform { client in try await client.deleteIdea(id: idea.id) }
+    }
+
+    /// The new todo's id.
+    func ideaToTodo(_ idea: Idea) async throws -> String {
+        var todoId = ""
+        try await perform { client in todoId = try await client.ideaToTodo(id: idea.id) }
+        return todoId
+    }
+
+    func shapeIdea(projectId: String, hint: String) async throws {
+        try await perform { client in _ = try await client.shapeIdea(projectId: projectId, hint: hint) }
+    }
+
     func createMemory(_ request: CreateMemoryRequest) async throws {
         try await perform { client in _ = try await client.createMemory(request) }
     }

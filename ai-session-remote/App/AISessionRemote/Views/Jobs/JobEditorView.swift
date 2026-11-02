@@ -22,7 +22,7 @@ struct JobEditorView: View {
     @Environment(\.dismiss) private var dismiss
 
     private enum Kind: String, CaseIterable, Identifiable {
-        case conversation = "Conversation", push = "Push", todo = "Todo"
+        case conversation = "Conversation", research = "Research ideas", push = "Push", todo = "Todo"
         var id: String { rawValue }
     }
 
@@ -43,6 +43,8 @@ struct JobEditorView: View {
     @State private var pushBody = ""
     @State private var maxRuns = 4
     @State private var saving = false
+    /// A job kind this app doesn't know (a newer hub): shown, not editable.
+    @State private var unsupportedKind: String?
     @State private var errorMessage: String?
 
     var body: some View {
@@ -62,12 +64,15 @@ struct JobEditorView: View {
             } footer: {
                 Text(usesCron ? "Sofia time. Example: 0 8 * * 1-5 is weekdays at 08:00." : "Runs only when you press Run now.")
             }
+            if let unsupportedKind {
+                Label("This is a \(unsupportedKind) job. Update the app to edit it.", systemImage: "info.circle")
+            }
             Section("Does") {
                 Picker("Action", selection: $kind) {
                     ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }
                 }
                 switch kind {
-                case .conversation: conversationFields
+                case .conversation, .research: conversationFields
                 case .push:
                     TextField("Title", text: $title)
                     TextField("Body", text: $pushBody)
@@ -76,7 +81,7 @@ struct JobEditorView: View {
                     projectPicker(optional: true)
                 }
             }
-            if kind == .conversation {
+            if kind == .conversation || kind == .research {
                 Section {
                     Picker("Usage limits", selection: $waits) {
                         Text("Wait for headroom").tag(true)
@@ -105,7 +110,7 @@ struct JobEditorView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") { save() }.disabled(saving || !canSave)
+                Button("Save") { save() }.disabled(saving || !canSave || unsupportedKind != nil)
             }
         }
         .onAppear(perform: load)
@@ -123,7 +128,7 @@ struct JobEditorView: View {
             Text("Codex").tag("codex")
         }
         VStack(alignment: .leading) {
-            Text("Prompt").font(.caption).foregroundStyle(.secondary)
+            Text(kind == .research ? "Extra instructions (optional)" : "Prompt").font(.caption).foregroundStyle(.secondary)
             TextEditor(text: $prompt).frame(minHeight: 120)
         }
     }
@@ -145,6 +150,7 @@ struct JobEditorView: View {
         if usesCron && cron.trimmingCharacters(in: .whitespaces).isEmpty { return false }
         switch kind {
         case .conversation: return !projectId.isEmpty && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .research: return !projectId.isEmpty
         case .push, .todo: return !title.trimmingCharacters(in: .whitespaces).isEmpty
         }
     }
@@ -153,14 +159,18 @@ struct JobEditorView: View {
         usesCron ? .cron(cron.trimmingCharacters(in: .whitespaces)) : .manual
     }
 
+    private var conversationAction: ConversationJobAction {
+        ConversationJobAction(
+            projectId: projectId, computerId: computerId.isEmpty ? nil : computerId, tool: tool, folder: nil,
+            prompt: prompt, priority: priority,
+            limit: waits ? .wait(fiveHour: ownThresholds ? fiveHour : nil, weekly: ownThresholds ? weekly : nil) : .always
+        )
+    }
+
     private var action: JobAction {
         switch kind {
-        case .conversation:
-            .conversation(ConversationJobAction(
-                projectId: projectId, computerId: computerId.isEmpty ? nil : computerId, tool: tool, folder: nil,
-                prompt: prompt, priority: priority,
-                limit: waits ? .wait(fiveHour: ownThresholds ? fiveHour : nil, weekly: ownThresholds ? weekly : nil) : .always
-            ))
+        case .conversation: .conversation(conversationAction)
+        case .research: .research(conversationAction)
         case .push: .push(title: title, body: pushBody)
         case .todo: .todo(title: title, projectId: projectId.isEmpty ? nil : projectId, section: nil)
         }
@@ -178,8 +188,8 @@ struct JobEditorView: View {
         case .manual: usesCron = false
         }
         switch job.action {
-        case let .conversation(a):
-            kind = .conversation
+        case let .conversation(a), let .research(a):
+            if case .research = job.action { kind = .research } else { kind = .conversation }
             projectId = a.projectId
             computerId = a.computerId ?? ""
             tool = a.tool
@@ -197,6 +207,8 @@ struct JobEditorView: View {
             kind = .push; title = t; pushBody = b
         case let .todo(t, p, _):
             kind = .todo; title = t; projectId = p ?? ""
+        case let .unsupported(k):
+            unsupportedKind = k
         }
     }
 

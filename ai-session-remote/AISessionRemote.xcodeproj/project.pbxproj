@@ -37,6 +37,7 @@
 		19C8B2ADB49568C98E8EE5A5 /* RemoteConversations.swift in Sources */ = {isa = PBXBuildFile; fileRef = B24103E63B65EE5783B9E334 /* RemoteConversations.swift */; };
 		1A857ECC035AA702F05AE617 /* TerminalReconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA8B20C587DEA3DCF7492AD7 /* TerminalReconnectTests.swift */; };
 		2010BBF69DDB52210D4DAB2F /* ConversationRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E36AD351C0A22DEC339CAE5 /* ConversationRow.swift */; };
+		20C4315B8360F97A83A0136C /* IdeaViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AF3B7CCFCF6FD47C24BBA09 /* IdeaViews.swift */; };
 		211FB7AE45A3D3197F1AA0BF /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0002157EA5ADE38E9ADEDD3E /* SidebarView.swift */; };
 		21AA7F7C909E4283BEFDDDFD /* TerminalSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B1150B78937B45875C56973 /* TerminalSelectionTests.swift */; };
 		221D767F06B05BE1A5E982FD /* SSHConnectionPoolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */; };
@@ -253,6 +254,7 @@
 		E7262818704634E6B9AEE94B /* NotificationSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D37845B7FF254EEC7823E4C /* NotificationSettingsView.swift */; };
 		E7BD92818C64611AE62AA149 /* TerminalTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D417529F6E6B990D79BF81 /* TerminalTransport.swift */; };
 		EACD9032F907D8FAFA651A6C /* ProjectDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FD185A20B04E7AD8AE4F055 /* ProjectDetailView.swift */; };
+		EB4B2EF0D48C5BAC3BC7ACC5 /* IdeaViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AF3B7CCFCF6FD47C24BBA09 /* IdeaViews.swift */; };
 		EB6822F143F473431F7E86B7 /* ListActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BFD9EB6DE7519501FD14139 /* ListActions.swift */; };
 		EC0EC66AF6A143704EC053CD /* FrameStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6DF7A48AF9E2D3EED9528A2 /* FrameStateView.swift */; };
 		EC8DE2B3AD15449D17F823F3 /* ConversationRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E36AD351C0A22DEC339CAE5 /* ConversationRow.swift */; };
@@ -342,6 +344,7 @@
 		45650CE5B948BA331E385B8B /* TerminalResizeDebouncerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalResizeDebouncerTests.swift; sourceTree = "<group>"; };
 		45685B58CE2C40C0BCC9C856 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4968C45BBA0F9D47DF734624 /* KeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBar.swift; sourceTree = "<group>"; };
+		4AF3B7CCFCF6FD47C24BBA09 /* IdeaViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdeaViews.swift; sourceTree = "<group>"; };
 		53D5D88DD06CE9F165F49EF2 /* TerminalClipboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalClipboard.swift; sourceTree = "<group>"; };
 		5450C6574280A263EC927973 /* TerminalTouchScrollTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTouchScrollTests.swift; sourceTree = "<group>"; };
 		555A99A04217936E4F1645AD /* ConversationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListView.swift; sourceTree = "<group>"; };
@@ -607,6 +610,7 @@
 		2BC1D06126A1AF02F7A49295 /* Projects */ = {
 			isa = PBXGroup;
 			children = (
+				4AF3B7CCFCF6FD47C24BBA09 /* IdeaViews.swift */,
 				94877436C6D2727F5D498710 /* MemoryViews.swift */,
 				6FD185A20B04E7AD8AE4F055 /* ProjectDetailView.swift */,
 				97B7A594C8A26491ACD55735 /* ProjectEditorSheet.swift */,
@@ -1063,6 +1067,7 @@
 				3538D4106650FB5DD44CE028 /* HostRepository.swift in Sources */,
 				4057411C78160E1D7CD4628D /* HostStore.swift in Sources */,
 				47C0DBE7DC069BCC5F022E48 /* HostsListView.swift in Sources */,
+				20C4315B8360F97A83A0136C /* IdeaViews.swift in Sources */,
 				62BF5DE110162E7CAB151ADD /* InlineTodoAdd.swift in Sources */,
 				848F2EC5D7EB8DAECA29A693 /* JobEditorView.swift in Sources */,
 				047CCB41147CAD60A38574D4 /* JobRunsView.swift in Sources */,
@@ -1180,6 +1185,7 @@
 				DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */,
 				DE709355ECEEA8775AB8E62E /* HostStore.swift in Sources */,
 				73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */,
+				EB4B2EF0D48C5BAC3BC7ACC5 /* IdeaViews.swift in Sources */,
 				F30EFD6029FB33BB5973773B /* InlineTodoAdd.swift in Sources */,
 				17A77E2337BAECE9AB32D8B1 /* JobEditorView.swift in Sources */,
 				F7514C9898F48A0FD1423C07 /* JobRunsView.swift in Sources */,

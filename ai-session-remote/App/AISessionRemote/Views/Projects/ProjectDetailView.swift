@@ -15,6 +15,8 @@ struct ProjectDetailView: View {
     @Environment(AppModel.self) private var model
     @State private var sessions: [HubSession]?
     @State private var memories: [Memory]?
+    @State private var ideas: [Idea] = []
+    @State private var pendingIdeas: [Idea] = []
     @State private var pendingMemories: [Memory] = []
     @State private var loadError: String?
     @State private var showArchived = false
@@ -93,6 +95,9 @@ struct ProjectDetailView: View {
             }
             todosSection(project)
             conversationsSection(project)
+            IdeasSection(project: project, store: store, ideas: ideas, pending: pendingIdeas) { todoId in
+                if let todo = store.todos.first(where: { $0.id == todoId }) { open(todo) }
+            }
             memoriesSections(project)
         }
         .listStyle(.insetGrouped)
@@ -246,11 +251,15 @@ struct ProjectDetailView: View {
         async let loadedSessions = store.sessions(projectId: projectId)
         async let loadedMemories = store.memories(projectId: projectId, includeArchived: showArchived)
         async let loadedPending = try? store.pendingMemories(projectId: projectId)
+        async let loadedIdeas = try? store.ideas(projectId: projectId)
+        async let loadedPendingIdeas = try? store.ideas(projectId: projectId, pending: true)
         do {
             let (s, m) = try await (loadedSessions, loadedMemories)
             sessions = s
             memories = m
             pendingMemories = await loadedPending ?? []
+            ideas = await loadedIdeas ?? []
+            pendingIdeas = await loadedPendingIdeas ?? []
             loadError = nil
         } catch {
             guard !Task.isCancelled else { return }
