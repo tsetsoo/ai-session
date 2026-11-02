@@ -20,6 +20,10 @@ const LOOKBACK_DAYS: i64 = 2;
 /// A claimed run with no todo yet after this long is failed.
 const STUCK_RUNNING_MINUTES: i64 = 15;
 
+/// An enabled job as the clock reads it: id, name, trigger JSON, action JSON, daily cap,
+/// last slot, created at.
+type JobRow = (String, String, String, String, i64, Option<String>, String);
+
 #[derive(Debug, Default)]
 pub(crate) struct TickOutcome {
     /// Runs created (any action).
@@ -138,7 +142,7 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
         params![stamp, sql_time(now - Duration::minutes(STUCK_RUNNING_MINUTES))],
     )?;
 
-    let jobs: Vec<(String, String, String, String, i64, Option<String>, String)> = {
+    let jobs: Vec<JobRow> = {
         let mut stmt = tx.prepare(
             "SELECT id, name, trigger, action, max_runs_per_day, last_slot_at, created_at FROM jobs WHERE enabled = 1",
         )?;
