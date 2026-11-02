@@ -525,7 +525,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
     func scrolled(source: TerminalView, position: Double) {}
 
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
-        guard let url = URL(string: link) else { return }
+        guard let url = TerminalLink.url(for: link) else { return }
         PlatformSupport.open(url)
     }
 
