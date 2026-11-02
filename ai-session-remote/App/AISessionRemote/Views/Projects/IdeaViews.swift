@@ -163,7 +163,7 @@ private struct ShapeIdeaSheet: View {
     var body: some View {
         Form {
             if started {
-                Label("Started. It will appear in Needs you within a minute or two; answer its questions there.",
+                Label("Started. Within a minute or two it shows up in Ready for review with its first question; answer there.",
                       systemImage: "checkmark.circle")
             } else {
                 Section {
