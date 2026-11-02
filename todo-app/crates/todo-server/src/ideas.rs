@@ -131,7 +131,8 @@ pub(crate) fn update_idea_db(conn: &Connection, id: &str, req: &UpdateIdeaReques
 /// "Shape an idea with an agent": the project's shape job runs once with the user's hint.
 const SHAPE_PROMPT: &str = "Help me shape a new idea for the project {project}. My starting point: {note}\n\n\
 Ask me short questions, one at a time, until the idea is clear. Then save it with:\n\
-~/.ai-remote/bin/ai-todo-idea add \"<title>\" --notes \"<two or three sentences>\"\nand tell me it is saved.";
+~/.ai-remote/bin/ai-todo-idea add \"<title>\" --notes \"<two or three sentences>\"\n\
+and tell me it is saved and waits for my OK in the app.";
 const MAX_HINT: usize = 1000;
 
 #[derive(Debug, Deserialize)]

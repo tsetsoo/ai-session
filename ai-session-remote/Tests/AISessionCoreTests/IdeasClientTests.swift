@@ -76,6 +76,19 @@ final class IdeasClientTests: XCTestCase {
         XCTAssertEqual(try lastBody() as? [String: String], ["project_id": "p", "hint": "faster startup"])
     }
 
+    func testIdeaEditSendsOnlyChangedFields() throws {
+        var idea = try TodoHubClient.makeDecoder().decode(Idea.self, from: Data(Self.ideaJSON.utf8))
+        idea.status = .new
+        XCTAssertNil(IdeaEdit.request(original: idea, title: idea.title, notes: idea.notes, status: .new, starred: true == idea.starred))
+        let starOnly = try XCTUnwrap(IdeaEdit.request(original: idea, title: idea.title, notes: idea.notes, status: .new, starred: false))
+        XCTAssertEqual(starOnly.starred, false)
+        XCTAssertNil(starOnly.status, "an unchanged status is not sent, so a research run that started meanwhile isn't undone")
+        XCTAssertNil(starOnly.title)
+        let dropped = try XCTUnwrap(IdeaEdit.request(original: idea, title: "  New title ", notes: idea.notes, status: .dropped, starred: true))
+        XCTAssertEqual(dropped.status, .dropped)
+        XCTAssertEqual(dropped.title, "New title")
+    }
+
     func testIdeaStatusLabel() {
         XCTAssertEqual(IdeaStatus.new.label, "New")
         XCTAssertEqual(IdeaStatus.researching.label, "Researching")

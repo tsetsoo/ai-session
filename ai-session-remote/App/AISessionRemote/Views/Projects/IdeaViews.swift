@@ -258,7 +258,9 @@ struct IdeaDetailView: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     act {
-                        try await store.updateIdea(idea, UpdateIdeaRequest(title: title, notes: notes, status: status, starred: starred))
+                        if let request = IdeaEdit.request(original: idea, title: title, notes: notes, status: status, starred: starred) {
+                            try await store.updateIdea(idea, request)
+                        }
                         dismiss()
                     }
                 }

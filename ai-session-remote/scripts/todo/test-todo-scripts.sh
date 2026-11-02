@@ -2986,8 +2986,8 @@ pass "idea_add_posts_agent_idea_for_cwd_project"
 
 mkdir -p "${HOME}/.ai-remote/worktrees/proj-app/run1/sub"
 idea add "From a worktree" --cwd "${HOME}/.ai-remote/worktrees/proj-app/run1/sub" >/dev/null || fail "idea add from a worktree failed"
-last_idea_post | python3 -c 'import json, sys; b = json.load(sys.stdin); assert b["project_id"] == "proj-app", b' || fail "worktree not mapped to its project: $(last_idea_post)"
-pass "idea_add_from_worktree_maps_project"
+last_idea_post | python3 -c 'import json, sys; b = json.load(sys.stdin); assert b["project_id"] == "proj-app" and b.get("pending") is True, b' || fail "a worktree idea must map to its project and wait for approval: $(last_idea_post)"
+pass "idea_add_from_worktree_maps_project (and is always pending: a scheduled run can't feed the next one unreviewed)"
 
 idea add "Maybe later" --pending --cwd "$M_APP" >"${SANDBOX}/idea.out" || fail "idea add --pending failed"
 grep -qx "Idea saved for approval in the app." "${SANDBOX}/idea.out" && last_idea_post | grep -q '"pending": true' || fail "pending idea wrong: $(last_idea_post)"
@@ -3009,6 +3009,9 @@ b = json.load(sys.stdin)
 assert b == {"findings": "Hermes works.\nIt needs a plugin."}, b
 ' || fail "findings body wrong: $(last_body PATCH /api/ideas/idea-00000001-aaaa)"
 pass "idea_findings_from_stdin"
+printf 'The key is LocalTok3n_Value9.\n' | MY_SERVICE_TOKEN=LocalTok3n_Value9 idea findings idea-00000001-aaaa - >/dev/null || fail "findings with a secret failed"
+! last_body PATCH /api/ideas/idea-00000001-aaaa | grep -q "LocalTok3n_Value9" || fail "a secret in findings left the Mac"
+pass "idea_findings_redacts_secret"
 
 idea list --cwd "$M_APP" >"${SANDBOX}/idea-list.out" || fail "idea list failed"
 grep -qx "idea-000 \[researching\] Try Hermes" "${SANDBOX}/idea-list.out" || fail "idea list printed: $(cat "${SANDBOX}/idea-list.out")"

@@ -9,7 +9,9 @@
 # The project is this computer's deepest project whose folder holds the cwd (a scheduled
 # worktree, ~/.ai-remote/worktrees/<project id>/..., is its project). Title, notes and findings
 # are redacted (ai_todo_redact.py) before they leave this computer. `add` saves directly when
-# the user asked for the idea; --pending marks a proposal that waits for the user's OK.
+# the user asked for the idea; --pending marks a proposal that waits for the user's OK. Ideas
+# added from a scheduled worktree always wait for the OK (an unattended run must not feed the
+# next research run unreviewed).
 #
 # Exit codes: 64 bad arguments, 65 no project / config, 1 todo-server error, 90 missing tools.
 AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_LIB_DIR
@@ -115,6 +117,12 @@ def within(path, folder):
     return path == folder or path.startswith(folder.rstrip("/") + "/")
 
 
+def in_worktree(cwd):
+    """cwd is inside a scheduled conversation's worktree."""
+    cwd, trees = os.path.realpath(cwd), os.path.realpath(TREES)
+    return within(cwd, trees) and cwd != trees
+
+
 def project_for(conf, cwd):
     """The project id for cwd, or None."""
     cwd = os.path.realpath(cwd)
@@ -156,6 +164,9 @@ def cmd_add(args):
     title = " ".join(args).strip()
     if not title:
         die('usage: ai-todo-idea add "<title>" [--notes "<text>"] [--pending] [--cwd PATH]', 64)
+    # A scheduled, unattended conversation can't add ideas that the next research run would
+    # read as its prompt without the user seeing them first.
+    pending = pending or in_worktree(cwd)
     conf = config()
     project = project_for(conf, cwd)
     if not project:

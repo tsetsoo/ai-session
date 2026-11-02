@@ -1035,6 +1035,8 @@ final class TodoHubStore {
     func ideaToTodo(_ idea: Idea) async throws -> String {
         var todoId = ""
         try await perform { client in todoId = try await client.ideaToTodo(id: idea.id) }
+        // The caller opens the new todo next, so it must be in `todos` already.
+        await refresh()
         return todoId
     }
 

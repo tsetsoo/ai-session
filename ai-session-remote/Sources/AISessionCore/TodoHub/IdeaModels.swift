@@ -74,3 +74,20 @@ struct IdeaTodoResponse: Decodable, Sendable {
     var idea: Idea
     var todoId: String
 }
+
+/// What saving the idea editor sends: only the fields the user changed, so a status a research
+/// run set meanwhile isn't overwritten with the editor's stale copy. Nil when nothing changed.
+public enum IdeaEdit {
+    public static func request(original: Idea, title: String, notes: String, status: IdeaStatus,
+                               starred: Bool) -> UpdateIdeaRequest? {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        var request = UpdateIdeaRequest()
+        if title != original.title { request.title = title }
+        if notes != original.notes { request.notes = notes }
+        if status != original.status { request.status = status }
+        if starred != original.starred { request.starred = starred }
+        let changed = request.title != nil || request.notes != nil || request.status != nil || request.starred != nil
+        return changed ? request : nil
+    }
+}
