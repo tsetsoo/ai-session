@@ -146,6 +146,48 @@ else
 fi
 pass "open exits 93 when the cwd does not exist"
 
+# Unattended starts (the scheduler runner): --detached, --prompt-file, --auto-approve.
+U_NAME=ai/claude/todo-unattended1
+U_SID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+U_PROMPT="${SANDBOX}/prompt.txt"
+printf 'Research the parser.\nKeep it short.' >"$U_PROMPT"
+lines_before=$(wc -l <"$CLAUDE_LOG")
+out="$("$OPEN" --detached --auto-approve --prompt-file "$U_PROMPT" "$U_NAME" '~/programming' "$U_SID" claude)" \
+  || fail "unattended open failed"
+[[ "$out" == created ]] || fail "unattended open printed '$out'"
+pass "open_detached_does_not_attach: --detached starts the session and returns"
+wait_for_log_lines $((lines_before + 1))
+python3 - "$CLAUDE_LOG" "$HOME" "$U_SID" <<'PY' || fail "unattended claude argv wrong: $(tail -n 2 "$CLAUDE_LOG")"
+import sys
+log, home, sid = sys.argv[1:4]
+text = open(log).read()
+want = "%s/programming --session-id %s --permission-mode bypassPermissions Research the parser.\nKeep it short." % (home, sid)
+assert text.rstrip("\n").endswith(want), repr(text[-300:])
+PY
+[[ ! -e "$U_PROMPT" ]] || fail "the prompt file was not removed"
+pass "open_prompt_file_becomes_initial_prompt_claude"
+pass "open_auto_approve_claude_flag"
+tmux -L "$SOCK" kill-session -t "=$U_NAME"
+mkdir -p "${HOME}/.claude/projects/-home-programming" && touch "${HOME}/.claude/projects/-home-programming/${U_SID}.jsonl"
+printf 'Ignored on resume' >"$U_PROMPT"
+lines_before=$(wc -l <"$CLAUDE_LOG")
+out="$("$OPEN" --detached --prompt-file "$U_PROMPT" "$U_NAME" '~/programming' "$U_SID" claude)"
+[[ "$out" == resumed ]] || fail "unattended resume printed '$out'"
+wait_for_log_lines $((lines_before + 1))
+[[ "$(tail -n 1 "$CLAUDE_LOG")" == "${HOME}/programming --resume ${U_SID}" ]] || fail "resume got the prompt: $(tail -n 1 "$CLAUDE_LOG")"
+tmux -L "$SOCK" kill-session -t "=$U_NAME"
+pass "open_prompt_ignored_on_resume"
+U2_NAME=ai/claude/todo-unattended2
+U2_SID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+lines_before=$(wc -l <"$CLAUDE_LOG")
+out="$("$OPEN" --auto-approve --mcp '' --detached "$U2_NAME" '~/programming' "$U2_SID")" || fail "options in another order failed"
+[[ "$out" == created ]] || fail "options in another order printed '$out'"
+wait_for_log_lines $((lines_before + 1))
+tail -n 1 "$CLAUDE_LOG" | grep -q -- "--permission-mode bypassPermissions" || fail "--auto-approve lost with --mcp: $(tail -n 1 "$CLAUDE_LOG")"
+tmux -L "$SOCK" kill-session -t "=$U2_NAME"
+if "$OPEN" --mcp a --mcp b --detached "$U2_NAME" '~/programming' "$U2_SID" >/dev/null 2>&1; then fail "two --mcp were accepted"; fi
+pass "open_options_any_order_with_mcp"
+
 # --- ai-todo-sessions + Codex in ai-todo-open ----------------------------------
 
 SESSIONS="${SCRIPT_DIR}/ai-todo-sessions"
@@ -539,6 +581,25 @@ EOF
 chmod +x "$FRESH_CODEX"
 out="$(AI_TODO_CODEX_BIN="$FRESH_CODEX" AI_TODO_OPEN_DETACH=1 "$OPEN" "ai/codex/todo-new1" '~/programming' - codex)"
 [[ "$out" == "created NEWCODX" ]] || fail "fresh codex printed '$out'"
+tmux -L "$SOCK" kill-session -t "=ai/codex/todo-new1" 2>/dev/null || true
+rm -f "$HOME"/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-NEWCODX.jsonl
+PROMPT_CODEX="${SANDBOX}/bin/codex-prompt"
+cat >"$PROMPT_CODEX" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" >"${SANDBOX}/codex-prompt.args"
+[ "\$1" = --approve-for-me ] || exit 99
+mkdir -p "\$HOME/.codex/sessions/2026/10/20"
+echo '$META_CLI' > "\$HOME/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-PROMPTCX.jsonl"
+exec sleep 300
+EOF
+chmod +x "$PROMPT_CODEX"
+printf 'Codex, look at the logs.' >"${SANDBOX}/codex-prompt.txt"
+out="$(AI_TODO_CODEX_BIN="$PROMPT_CODEX" "$OPEN" --detached --auto-approve --prompt-file "${SANDBOX}/codex-prompt.txt" "ai/codex/todo-prompt1" '~/programming' - codex)"
+[[ "$out" == "created PROMPTCX" ]] || fail "codex with a prompt printed '$out'"
+[[ "$(cat "${SANDBOX}/codex-prompt.args")" == "--approve-for-me"$'\n'"Codex, look at the logs." ]] || fail "codex prompt argv: $(cat "${SANDBOX}/codex-prompt.args")"
+tmux -L "$SOCK" kill-session -t "=ai/codex/todo-prompt1" 2>/dev/null || true
+rm -f "$HOME"/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-PROMPTCX.jsonl
+pass "open_prompt_file_becomes_initial_prompt_codex"
 
 # Codex 0.163 writes the rollout only after the first message. At startup its TUI marks
 # the thread under tui-thread-reference-capabilities.
