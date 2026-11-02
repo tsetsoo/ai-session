@@ -258,7 +258,9 @@ struct ConversationFrame: View {
             )
         }
         .modifier(MemoriesPresenter(
-            isPresented: Binding(get: { isFrontmost && showingMemories }, set: { showingMemories = $0 }),
+            // A frame in the shared column leaves this to the column's single inspector.
+            isPresented: Binding(get: { !sharesColumn && isFrontmost && showingMemories },
+                                 set: { showingMemories = $0 }),
             todoID: todo.id, conversation: conversation, store: store
         ))
         // The conversation on screen is never alerted about, on any device.

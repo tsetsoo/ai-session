@@ -712,11 +712,18 @@ public struct MemoryQuery: Equatable, Sendable {
     public var computerId: String?
     /// `true`: only memories with no project and no todo.
     public var global: Bool?
+    /// `source=`: only these sources. A hub from before it ignores it.
+    public var sources: [String]
+    /// `exclude_source=`: none of these sources. A hub from before it ignores it.
+    public var excludeSources: [String]
 
     public init(projectId: String? = nil, todoId: String? = nil, kinds: [MemoryKind] = [], since: String? = nil,
                 tool: String? = nil, sessionId: String? = nil, pinned: Bool? = nil,
                 includeArchived: Bool = false, limit: Int? = nil, pending: Bool? = nil,
-                computerId: String? = nil, global: Bool? = nil) {
+                computerId: String? = nil, global: Bool? = nil,
+                sources: [String] = [], excludeSources: [String] = []) {
+        self.sources = sources
+        self.excludeSources = excludeSources
         self.pending = pending
         self.computerId = computerId
         self.global = global
@@ -748,6 +755,8 @@ public struct MemoryQuery: Equatable, Sendable {
         add("pending", pending.map { $0 ? "true" : "false" })
         add("computer_id", computerId)
         add("global", global.map { $0 ? "true" : "false" })
+        if !sources.isEmpty { add("source", sources.joined(separator: ",")) }
+        if !excludeSources.isEmpty { add("exclude_source", excludeSources.joined(separator: ",")) }
         return items
     }
 }

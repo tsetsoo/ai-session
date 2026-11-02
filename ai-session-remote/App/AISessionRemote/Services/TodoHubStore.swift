@@ -944,21 +944,32 @@ final class TodoHubStore {
         return try await requireClient().weeklyStats(weekStart: weekStart, projectId: projectId)
     }
 
-    /// A project's memories, or a todo's when `projectId` is nil.
-    func memories(projectId: String?, todoId: String? = nil, includeArchived: Bool = false) async throws -> [Memory] {
+    /// Any memory query: the panel next to a conversation asks for pages and sources.
+    func memories(_ query: MemoryQuery) async throws -> [Memory] {
         #if DEBUG
         if let demo {
-            return demo.memories.filter {
-                (projectId == nil || $0.projectId == projectId)
-                    && (todoId == nil || $0.todoId == todoId)
-                    && (includeArchived || !$0.archived)
+            let rows = demo.memories.filter {
+                (query.projectId == nil || $0.projectId == query.projectId)
+                    && (query.todoId == nil || $0.todoId == query.todoId)
+                    && (query.sessionId == nil || $0.sessionId == query.sessionId)
+                    && (query.includeArchived || !$0.archived)
+                    && (query.sources.isEmpty || query.sources.contains($0.source))
+                    && !query.excludeSources.contains($0.source)
             }
+            return Array(MemoryGrouping.sorted(rows).prefix(query.limit ?? rows.count))
         }
         #endif
-        return try await requireClient().listMemories(MemoryQuery(
-            projectId: projectId, todoId: projectId == nil ? todoId : nil,
-            includeArchived: includeArchived, limit: 1000
-        ))
+        return try await requireClient().listMemories(query)
+    }
+
+    /// The memories panel's last result for each conversation, so switching back to one
+    /// shows it at once while it refetches. Not observed: only the panel reads it.
+    @ObservationIgnored private var memoryPanelCache: [String: MemoryPanelSnapshot] = [:]
+
+    func cachedMemoryPanel(_ key: String) -> MemoryPanelSnapshot? { memoryPanelCache[key] }
+
+    func cacheMemoryPanel(_ snapshot: MemoryPanelSnapshot, for key: String) {
+        memoryPanelCache[key] = snapshot
     }
 
     /// Memories waiting for approval: a project's, or a computer's global ones.

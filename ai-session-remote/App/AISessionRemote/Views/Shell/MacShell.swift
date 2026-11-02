@@ -717,6 +717,9 @@ private struct ConversationColumn: View {
     @State private var toolbarRequest: ConversationToolbarRequest?
     /// The frontmost frame's terminal, for enabling Reconnect / Copy / Paste.
     @State private var terminalState: ConversationTerminalState?
+    /// One Memories inspector for the column. It follows the conversation in front, so a
+    /// switch swaps its contents instead of closing it and opening another frame's.
+    @State private var showingMemories = false
 
     private var frontmostID: String? {
         guard showsConversation else { return nil }
@@ -750,6 +753,14 @@ private struct ConversationColumn: View {
         }
         .background { windowTitle }
         .onPreferenceChange(ConversationTerminalStateKey.self) { terminalState = $0 }
+        .modifier(MemoriesPresenter(
+            isPresented: Binding(get: { showingMemories && frontmostID != nil }, set: { showingMemories = $0 }),
+            todoID: frontmostID ?? "",
+            conversation: frontmostID.flatMap {
+                model.store.displayed(forTodo: $0, selectedKey: model.selectedConversationID)
+            },
+            store: model.store
+        ))
         .toolbar { columnToolbar }
         .onChange(of: model.selectedTodoID, initial: true) { _, id in syncSelection(id) }
         .onChange(of: model.store.todos.map(\.id)) { _, ids in
@@ -877,6 +888,10 @@ private struct ConversationColumn: View {
     }
 
     private func send(_ command: ConversationToolbarCommand, for todoID: String) {
+        if case .memories = command {
+            showingMemories = true
+            return
+        }
         toolbarRequest = ConversationToolbarRequest(command: command, todoID: todoID)
     }
 

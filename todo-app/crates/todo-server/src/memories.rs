@@ -524,6 +524,13 @@ pub(crate) struct MemoryQuery {
     /// Words to search for; `Some("")` when given but nothing searchable is left.
     q: Option<String>,
     include_unused: bool,
+    /// `source=`: only these sources. `exclude_source=`: none of these.
+    sources: Vec<String>,
+    excluded_sources: Vec<String>,
+}
+
+fn comma_list(value: &str) -> Vec<String> {
+    value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
 }
 
 /// An FTS5 query for words typed by a person or an agent: each word becomes a quoted prefix
@@ -570,6 +577,8 @@ impl MemoryQuery {
                 "global" => q.global = parse_bool(name, value)?,
                 "q" => q.q = Some(fts_query(value)),
                 "include_unused" => q.include_unused = parse_bool(name, value)?,
+                "source" => q.sources.extend(comma_list(value)),
+                "exclude_source" => q.excluded_sources.extend(comma_list(value)),
                 "ids" => {
                     q.ids = value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
                     if q.ids.len() > MAX_IDS {
@@ -623,6 +632,13 @@ pub(crate) fn list_memories_db(conn: &Connection, q: &MemoryQuery) -> Result<Vec
         // Global means made global on purpose: imported, added by an agent, or by hand. An
         // extracted memory whose project was deleted or unlinked is an orphan, not a global.
         sql.push_str(" AND project_id IS NULL AND todo_id IS NULL AND source IN ('manual','agent','claude-memory')");
+    }
+    for (values, op) in [(&q.sources, "IN"), (&q.excluded_sources, "NOT IN")] {
+        if values.is_empty() {
+            continue;
+        }
+        let marks = values.iter().map(|v| { args.push(SqlValue::Text(v.clone())); format!("?{}", args.len()) }).collect::<Vec<_>>();
+        sql.push_str(&format!(" AND source {op} ({})", marks.join(",")));
     }
     if !q.kinds.is_empty() {
         let list = q.kinds.iter().map(|k| format!("'{}'", k.as_str())).collect::<Vec<_>>().join(",");
@@ -1279,6 +1295,36 @@ mod tests {
         .unwrap();
         assert_eq!(list("?limit=5000").await.len(), 1000);
         assert_eq!(list("").await.len(), 200, "default limit");
+    }
+
+    #[actix_web::test]
+    async fn list_filters_by_source() {
+        let (_db, pool) = pool("mem");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute_batch(
+            "INSERT INTO memories (id, project_id, kind, text, text_key, source, created_at) VALUES
+                 ('x', 'pa', 'gotcha', 'Extracted.', 'extracted', 'extracted', '2026-10-01 10:00:00'),
+                 ('i', 'pa', 'gotcha', 'Imported.', 'imported', 'claude-memory', '2026-10-02 10:00:00'),
+                 ('m', 'pa', 'decision', 'Manual.', 'manual', 'manual', '2026-10-03 10:00:00');",
+        )
+        .unwrap();
+        let list = |query: &str| {
+            let pool = pool.clone();
+            let uri = format!("/api/memories?project_id=pa{query}");
+            async move {
+                let (status, body) = get(&pool, &uri).await;
+                assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+                body.as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(list("").await, vec!["m", "i", "x"]);
+        assert_eq!(list("&source=claude-memory").await, vec!["i"]);
+        assert_eq!(list("&source=extracted,manual").await, vec!["m", "x"]);
+        assert_eq!(list("&exclude_source=claude-memory").await, vec!["m", "x"]);
+        assert_eq!(list("&exclude_source=claude-memory,manual").await, vec!["x"]);
+        assert_eq!(list("&source=extracted&exclude_source=extracted").await, Vec::<String>::new());
+        assert_eq!(list("&exclude_source=").await, vec!["m", "i", "x"], "an empty list filters nothing");
     }
 
     #[actix_web::test]

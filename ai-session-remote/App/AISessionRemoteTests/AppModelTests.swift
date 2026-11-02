@@ -53,7 +53,7 @@ final class AppModelTests: XCTestCase {
         try? await store.closeConversation(conversation, config: DemoFixtures.config)
         try? await store.deleteConversation(conversation, config: DemoFixtures.config)
         _ = try? await store.sessions(projectId: "p1")
-        _ = try? await store.memories(projectId: "p1")
+        _ = try? await store.memories(MemoryQuery(projectId: "p1"))
         _ = try? await store.weekly(projectId: nil, weekStart: nil)
         XCTAssertEqual(built, 0)
         XCTAssertNil(store.errorMessage)
