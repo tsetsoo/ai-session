@@ -38,6 +38,10 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
     public var conversationStatus: ConversationStatus?
     /// Absent when the todo has no project (and from servers before projects existed).
     public var projectId: String?
+    /// Created by this scheduler job (a scheduled todo).
+    public var scheduledJobId: String?
+    /// The run that created it.
+    public var scheduledRunId: String?
 
     public init(
         id: String,
@@ -73,7 +77,7 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, section, title, completed, onHold, importance, dueDate, dailyDate, carriedFrom
-        case createdAt, updatedAt, completedAt, conversationStatus, projectId
+        case createdAt, updatedAt, completedAt, conversationStatus, projectId, scheduledJobId, scheduledRunId
     }
 
     public init(from decoder: Decoder) throws {
@@ -93,6 +97,8 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
         completedAt = try c.decodeIfPresent(String.self, forKey: .completedAt)
         conversationStatus = try c.decodeIfPresent(ConversationStatus.self, forKey: .conversationStatus)
         projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
+        scheduledJobId = try c.decodeIfPresent(String.self, forKey: .scheduledJobId)
+        scheduledRunId = try c.decodeIfPresent(String.self, forKey: .scheduledRunId)
     }
 }
 

@@ -371,6 +371,43 @@ public struct TodoHubClient: Sendable {
         _ = try await send("DELETE", "/api/memories/\(escape(id))")
     }
 
+    // MARK: Scheduler jobs
+
+    public func listJobs() async throws -> [SchedulerJob] {
+        try await decode([SchedulerJob].self, send("GET", "/api/jobs"))
+    }
+
+    public func createJob(_ request: CreateJobRequest) async throws -> SchedulerJob {
+        try await decode(SchedulerJob.self, send("POST", "/api/jobs", body: request))
+    }
+
+    public func updateJob(id: String, _ request: UpdateJobRequest) async throws -> SchedulerJob {
+        try await decode(SchedulerJob.self, send("PATCH", "/api/jobs/\(escape(id))", body: request))
+    }
+
+    public func deleteJob(id: String) async throws {
+        _ = try await send("DELETE", "/api/jobs/\(escape(id))")
+    }
+
+    /// "Run now": a due run, also for a disabled job.
+    public func runJob(id: String) async throws -> JobRun {
+        try await decode(JobRun.self, send("POST", "/api/jobs/\(escape(id))/run"))
+    }
+
+    /// Newest first.
+    public func jobRuns(id: String, limit: Int = 20) async throws -> [JobRun] {
+        try await decode([JobRun].self, send("GET", "/api/jobs/\(escape(id))/runs",
+                                             query: [URLQueryItem(name: "limit", value: String(limit))]))
+    }
+
+    public func schedulerSettings() async throws -> SchedulerSettings {
+        try await decode(SchedulerSettings.self, send("GET", "/api/scheduler/settings"))
+    }
+
+    public func updateSchedulerSettings(_ settings: SchedulerSettings) async throws -> SchedulerSettings {
+        try await decode(SchedulerSettings.self, send("PUT", "/api/scheduler/settings", body: settings))
+    }
+
     // MARK: Transport
 
     static func makeDecoder() -> JSONDecoder {
