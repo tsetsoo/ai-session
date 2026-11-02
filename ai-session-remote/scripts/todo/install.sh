@@ -19,6 +19,8 @@
 #   ~/.codex/hooks.json              hooks merged in (Codex 0.163+), then trusted through
 #                                    `codex app-server`, which writes hooks.state in config.toml
 #   ~/Library/LaunchAgents/com.ai-remote.todo-memory.plist  `ai-todo-memory nightly` at 03:30 (macOS)
+#   ~/Library/LaunchAgents/com.ai-remote.todo-runner.plist  `ai-todo-runner tick` every 60 s (macOS)
+#   ~/.ai-remote/worktrees/          scheduled conversations' git worktrees (mode 700; kept on uninstall)
 #
 # Usage:
 #   install.sh [--hub-url URL] [--token TOKEN] [--computer-id ID] [--chain-codex-notify]
@@ -66,6 +68,9 @@ LAUNCH_LABEL='com.ai-remote.todo-memory'
 PLIST="${HOME}/Library/LaunchAgents/${LAUNCH_LABEL}.plist"
 STATUS_LABEL='com.ai-remote.todo-status'
 STATUS_PLIST="${HOME}/Library/LaunchAgents/${STATUS_LABEL}.plist"
+RUNNER_LABEL='com.ai-remote.todo-runner'
+RUNNER_PLIST="${HOME}/Library/LaunchAgents/${RUNNER_LABEL}.plist"
+WORKTREES_DIR="${AI_DIR}/worktrees"
 
 hub_url=""
 token=""
@@ -627,6 +632,46 @@ PY
   fi
 }
 
+# The scheduler runner: `ai-todo-runner tick` every 60 s (macOS LaunchAgent).
+install_runner_agent() {
+  if [[ $dry_run -eq 1 ]]; then
+    say "would install ${RUNNER_PLIST} (scheduled conversations, every 60 s)"
+    return
+  fi
+  mkdir -p "$WORKTREES_DIR" "${AI_DIR}/runner-state"
+  chmod 700 "$WORKTREES_DIR" "${AI_DIR}/runner-state"
+  if [[ "$(uname -s)" != Darwin ]]; then
+    say "scheduler runner: no launchd here; run '${BIN_DIR}/ai-todo-runner tick' every minute (cron) yourself"
+    return
+  fi
+  mkdir -p "$(dirname "$RUNNER_PLIST")"
+  python3 - "$RUNNER_PLIST" "$RUNNER_LABEL" "$BIN_DIR" "$AI_DIR" <<'PY'
+import plistlib, sys
+path, label, bin_dir, ai_dir = sys.argv[1:]
+with open(path, "wb") as handle:
+    plistlib.dump({"Label": label, "ProgramArguments": [bin_dir + "/ai-todo-runner", "tick"],
+                   "StartInterval": 60, "RunAtLoad": True, "ProcessType": "Background",
+                   "StandardOutPath": ai_dir + "/runner-state/launchd.log",
+                   "StandardErrorPath": ai_dir + "/runner-state/launchd.log"}, handle)
+PY
+  launchctl bootout "gui/$(id -u)/${RUNNER_LABEL}" >/dev/null 2>&1 || true
+  if launchctl bootstrap "gui/$(id -u)" "$RUNNER_PLIST"; then
+    say "scheduler runner: loaded (ai-todo-runner tick every 60 s)"
+  else
+    say "scheduler runner: launchctl bootstrap failed for ${RUNNER_PLIST}"
+  fi
+}
+
+remove_runner_agent() {
+  [[ "$(uname -s)" == Darwin ]] || return 0
+  if [[ $dry_run -eq 1 ]]; then
+    say "would remove ${RUNNER_PLIST}"
+    return
+  fi
+  launchctl bootout "gui/$(id -u)/${RUNNER_LABEL}" >/dev/null 2>&1 || true
+  [[ ! -e "$RUNNER_PLIST" ]] || rm -f "$RUNNER_PLIST"
+}
+
 remove_status_agent() {
   [[ "$(uname -s)" == Darwin ]] || return 0
   if [[ $dry_run -eq 1 ]]; then
@@ -704,6 +749,7 @@ do_install() {
   merge_codex_hooks install
   install_launch_agent
   install_status_agent
+  install_runner_agent
   # The session-start hook replaces the AGENTS.md digests: remove the ones written before.
   if [[ $dry_run -eq 0 && -f "${STATE_DIR}/digests.json" ]]; then
     "${BIN_DIR}/ai-todo-memory" digest --remove-all >/dev/null 2>&1 \
@@ -731,6 +777,7 @@ do_uninstall() {
   fi
   remove_launch_agent
   remove_status_agent
+  remove_runner_agent
 
   # Put Codex's own notify back before its program disappears.
   merge_codex_notify uninstall

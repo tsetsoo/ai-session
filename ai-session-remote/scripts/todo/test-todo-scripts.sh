@@ -3060,10 +3060,23 @@ assert p["ProgramArguments"] == [ai + "/bin/ai-todo-memory", "nightly"], p
 assert p["StartCalendarInterval"] == {"Hour": 3, "Minute": 30}, p
 assert p["StandardOutPath"] == p["StandardErrorPath"] == ai + "/memory-state/launchd.log", p
 PY
-  expected="bootout ${GUI}/com.ai-remote.todo-memory"$'\n'"bootstrap ${GUI} ${PLIST}"$'\n'"bootout ${GUI}/com.ai-remote.todo-status"$'\n'"bootstrap ${GUI} ${HOME}/Library/LaunchAgents/com.ai-remote.todo-status.plist"
+  expected="bootout ${GUI}/com.ai-remote.todo-memory"$'\n'"bootstrap ${GUI} ${PLIST}"$'\n'"bootout ${GUI}/com.ai-remote.todo-status"$'\n'"bootstrap ${GUI} ${HOME}/Library/LaunchAgents/com.ai-remote.todo-status.plist"$'\n'"bootout ${GUI}/com.ai-remote.todo-runner"$'\n'"bootstrap ${GUI} ${HOME}/Library/LaunchAgents/com.ai-remote.todo-runner.plist"
   [[ "$(cat "$LAUNCHCTL_LOG")" == "${expected}"$'\n'"${expected}" ]] || fail "launchctl calls wrong: $(cat "$LAUNCHCTL_LOG")"
 fi
 pass "install_memory_and_launchd: ai-todo-memory + ai_todo_redact.py installed, memory-state 700, plist (03:30, nightly) booted out then bootstrapped"
+if on_mac; then
+  python3 - "${HOME}/Library/LaunchAgents/com.ai-remote.todo-runner.plist" "${HOME}/.ai-remote" <<'PY' || fail "runner plist wrong: $(cat "${HOME}/Library/LaunchAgents/com.ai-remote.todo-runner.plist")"
+import plistlib, sys
+p = plistlib.load(open(sys.argv[1], "rb"))
+ai = sys.argv[2]
+assert p["Label"] == "com.ai-remote.todo-runner", p
+assert p["ProgramArguments"] == [ai + "/bin/ai-todo-runner", "tick"], p
+assert p["StartInterval"] == 60 and p["RunAtLoad"] is True, p
+assert p["StandardOutPath"] == p["StandardErrorPath"] == ai + "/runner-state/launchd.log", p
+PY
+fi
+[[ "$(stat -f '%Lp' "${HOME}/.ai-remote/worktrees" 2>/dev/null || stat -c '%a' "${HOME}/.ai-remote/worktrees")" == 700 ]] || fail "worktrees dir is not 700"
+pass "install_runner_agent: ai-todo-runner tick every 60 s, worktrees dir 700"
 
 python3 - "$INSTALL" "$HOME" <<'PY' || fail "status-only update changed unrelated settings or jobs"
 import os, pathlib, plistlib, subprocess, sys
@@ -3257,7 +3270,9 @@ grep -q "kept ${HOME}/.ai-remote/memory-state" "${SANDBOX}/uninstall.out" || fai
 grep -q "kept ${HOME}/.ai-remote/mcp" "${SANDBOX}/uninstall.out" || fail "uninstall did not print the mcp path"
 if on_mac; then
   [[ ! -e "$PLIST" && "$(cat "$LAUNCHCTL_LOG")" == "bootout ${GUI}/com.ai-remote.todo-memory"* ]] || fail "uninstall did not boot out the job: $(cat "$LAUNCHCTL_LOG")"
+  [[ ! -e "${HOME}/Library/LaunchAgents/com.ai-remote.todo-runner.plist" ]] && grep -q "bootout ${GUI}/com.ai-remote.todo-runner" "$LAUNCHCTL_LOG" || fail "uninstall left the runner agent"
 fi
+[[ -d "${HOME}/.ai-remote/worktrees" ]] || fail "uninstall removed the worktrees"
 pass "uninstall_removes_job_keeps_state: bootout, plist and ai-todo-memory removed, memory-state kept and printed"
 
 "$INSTALL" >/dev/null
