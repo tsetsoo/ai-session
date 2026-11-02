@@ -15,7 +15,7 @@ use crate::cron;
 use crate::db::DbPool;
 use crate::projects::project_exists;
 
-const RUN_COLS: &str = "id, job_id, due_at, state, computer_id, todo_id, waiting_reason, result, started_at, created_at, updated_at";
+const RUN_COLS: &str = "id, job_id, due_at, state, computer_id, todo_id, waiting_reason, result, started_at, created_at, updated_at, note";
 const DEFAULT_RUNS: usize = 20;
 const MAX_RUNS: usize = 200;
 const TOOLS: [&str; 2] = ["claude", "codex"];
@@ -53,6 +53,7 @@ pub(crate) fn row_to_run(row: &Row) -> rusqlite::Result<JobRun> {
         started_at: row.get(8)?,
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
+        note: row.get(11)?,
     })
 }
 
@@ -146,11 +147,13 @@ fn validate(conn: &Connection, name: &str, trigger: &JobTrigger, action: &JobAct
         cron::parse(cron).map_err(JobError::BadRequest)?;
     }
     match action {
-        JobAction::Conversation { project_id, computer_id, tool, prompt, limit, .. } => {
-            if !TOOLS.contains(&tool.as_str()) {
+        JobAction::Conversation { .. } | JobAction::Research { .. } => {
+            let parts = action.conversation_parts().expect("conversation-like action");
+            let (project_id, computer_id, tool, prompt, limit) = (parts.project_id, parts.computer_id, parts.tool, parts.prompt, &parts.limit);
+            if !TOOLS.contains(&tool) {
                 return Err(JobError::BadRequest("tool must be claude or codex".into()));
             }
-            if prompt.trim().is_empty() {
+            if !action.is_research() && prompt.trim().is_empty() {
                 return Err(JobError::BadRequest("prompt is required".into()));
             }
             if let LimitSetting::Wait { five_hour, weekly } = limit {

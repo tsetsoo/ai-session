@@ -78,11 +78,13 @@ const PREAMBLE_PLAIN: &str = "This is a scheduled conversation (\"{job}\", {date
 /// The computer a conversation action runs on: its own, else the project's section's.
 fn resolved_computer(conn: &Connection, action: &JobAction) -> rusqlite::Result<Option<String>> {
     match action {
-        JobAction::Conversation { computer_id: Some(c), .. } => Ok(Some(c.clone())),
-        JobAction::Conversation { project_id, .. } => conn
+        action if action.conversation_parts().and_then(|p| p.computer_id).is_some() => {
+            Ok(action.conversation_parts().and_then(|p| p.computer_id).map(str::to_string))
+        }
+        action if action.conversation_parts().is_some() => conn
             .query_row(
                 "SELECT sc.computer_id FROM projects p JOIN section_computers sc ON sc.section = p.section WHERE p.id = ?1",
-                params![project_id],
+                params![action.conversation_parts().map(|p| p.project_id)],
                 |r| r.get(0),
             )
             .optional(),
@@ -125,7 +127,8 @@ pub(crate) fn due_db(conn: &Connection, computer_id: &str) -> rusqlite::Result<D
         if !seen_jobs.insert(job.id.clone()) || being_started(conn, &job.id)? {
             continue;
         }
-        let JobAction::Conversation { tool, limit, .. } = &job.action else { continue };
+        let Some(parts) = job.action.conversation_parts() else { continue };
+        let (tool, limit) = (parts.tool, &parts.limit);
         if resolved_computer(conn, &job.action)?.as_deref() != Some(computer_id) {
             continue;
         }
@@ -174,7 +177,7 @@ fn claim_db(conn: &Connection, run_id: &str, computer_id: &str, no_reading: bool
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     if no_reading {
         let run = load_run(&tx, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
-        if let Some(JobAction::Conversation { tool, .. }) = load_job(&tx, &run.job_id)?.map(|j| j.action) {
+        if let Some(tool) = load_job(&tx, &run.job_id)?.and_then(|j| j.action.conversation_parts().map(|p| p.tool.to_string())) {
             let started: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM job_runs WHERE limit_mode = 'wait' AND tool = ?1 AND started_at >= datetime('now', '-24 hours')",
                 params![tool],
@@ -235,9 +238,10 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
     }
     let computer_id = run.computer_id.clone().ok_or(RunError::Conflict("Run is not claimed"))?;
     let job = load_job(&tx, &run.job_id)?.ok_or(RunError::NotFound("Job not found"))?;
-    let JobAction::Conversation { project_id, tool, prompt, priority, limit, .. } = &job.action else {
+    let Some(parts) = job.action.conversation_parts() else {
         return Err(RunError::BadRequest("Not a conversation job"));
     };
+    let (project_id, tool, prompt, priority, limit) = (parts.project_id, parts.tool, parts.prompt, &parts.priority, &parts.limit);
     let (project_name, section): (String, String) = tx
         .query_row("SELECT name, section FROM projects WHERE id = ?1", params![project_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?
@@ -269,7 +273,7 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         todo_id,
         tmux_name: conversation.tmux_name,
         session_id: conversation.session_id,
-        tool: tool.clone(),
+        tool: tool.to_string(),
         prompt,
     })
 }

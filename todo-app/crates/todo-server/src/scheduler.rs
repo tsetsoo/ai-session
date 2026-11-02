@@ -218,7 +218,7 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
                 )?;
                 out.todos.push(todo);
             }
-            JobAction::Conversation { .. } => {}
+            JobAction::Conversation { .. } | JobAction::Research { .. } => {}
         }
     }
     tx.commit()?;

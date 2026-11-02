@@ -115,6 +115,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v4_objects(&conn).expect("Failed to create push notification tables");
     create_v12_objects(&conn).expect("Failed to create memory usage and search objects");
     create_v13_objects(&conn).expect("Failed to create scheduler objects");
+    create_v14_objects(&conn).expect("Failed to create idea objects");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -389,6 +390,33 @@ const V13_OBJECTS: &str = "
     );
     INSERT OR IGNORE INTO scheduler_settings (id) VALUES (1);";
 
+/// v14: ideas per project and a note on runs. Only adds, so it is safe on every start.
+const V14_OBJECTS: &str = "
+    CREATE TABLE IF NOT EXISTS ideas (
+        id         TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        title      TEXT NOT NULL,
+        notes      TEXT NOT NULL DEFAULT '',
+        status     TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','researching','researched','dropped')),
+        starred    INTEGER NOT NULL DEFAULT 0,
+        pending    INTEGER NOT NULL DEFAULT 0,
+        findings   TEXT,
+        todo_id    TEXT REFERENCES todos(id) ON DELETE SET NULL,
+        run_id     TEXT,
+        source     TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','agent')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS ideas_project ON ideas(project_id, status);";
+
+fn create_v14_objects(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(V14_OBJECTS)?;
+    if table_sql(conn, "job_runs")?.is_some() && !column_exists(conn, "job_runs", "note")? {
+        conn.execute_batch("ALTER TABLE job_runs ADD COLUMN note TEXT;")?;
+    }
+    Ok(())
+}
+
 fn create_v13_objects(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V13_OBJECTS)?;
     for column in ["scheduled_job_id", "scheduled_run_id"] {
@@ -500,13 +528,14 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v9: reporter event time, rejecting delayed/retried Codex statuses (additive)
 /// - v10: user-turn identity, preserving unread results across offline coalescing (additive)
 /// - v11: todos can be put on hold (additive)
+/// - v14: `ideas`; `job_runs.note` (additive)
 /// - v13: scheduler `jobs`, `job_runs`, `scheduler_settings`; `todos.scheduled_job_id` and
 ///   `scheduled_run_id` (additive)
 /// - v12: memories gain usage, pending, import key and archive reason; `memory_active_days`;
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -519,6 +548,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if table_sql(conn, "ideas")?.is_some() {
+        return Ok(14);
     }
     if table_sql(conn, "jobs")?.is_some() {
         return Ok(13);
@@ -673,8 +705,16 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 12 {
         if !backed_up {
             backup_before_migration(conn, db_path, 13)?;
+            backed_up = true;
         }
         create_v13_objects(conn)?;
+        version = 13;
+    }
+    if version == 13 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 14)?;
+        }
+        create_v14_objects(conn)?;
     }
     Ok(())
 }
@@ -2244,7 +2284,7 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 13);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert_eq!(db.backups().len(), 1, "migrating backs up first");
         for table in ["jobs", "job_runs", "scheduler_settings"] {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table}");
@@ -2270,6 +2310,34 @@ mod tests {
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM scheduler_settings", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
         assert!(column_exists(&conn, "todos", "scheduled_run_id").unwrap());
+    }
+
+    #[test]
+    fn migrates_v13_to_v14_adds_ideas() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch("DROP TABLE IF EXISTS ideas; PRAGMA user_version = 13;").unwrap();
+        if column_exists(&conn, "job_runs", "note").unwrap() {
+            conn.execute_batch("ALTER TABLE job_runs DROP COLUMN note;").unwrap();
+        }
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 14);
+        assert_eq!(db.backups().len(), 1);
+        assert!(table_sql(&conn, "ideas").unwrap().is_some());
+        assert!(column_exists(&conn, "job_runs", "note").unwrap());
+    }
+
+    #[test]
+    fn fresh_database_has_v14_objects() {
+        let db = TestDb::new("migrate");
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert!(table_sql(&conn, "ideas").unwrap().is_some());
+        assert!(column_exists(&conn, "job_runs", "note").unwrap());
     }
 
     #[test]

@@ -1182,10 +1182,107 @@ pub enum JobAction {
         priority: Priority,
         limit: LimitSetting,
     },
+    /// A research run: the hub picks the project's next idea and builds the prompt;
+    /// `prompt` holds optional extra instructions.
+    Research {
+        project_id: String,
+        computer_id: Option<String>,
+        tool: String,
+        folder: Option<String>,
+        prompt: String,
+        priority: Priority,
+        limit: LimitSetting,
+    },
     /// A push, sent by the hub.
     Push { title: String, body: String },
     /// A todo, created by the hub.
     Todo { title: String, project_id: Option<String>, section: Option<Section> },
+}
+
+/// The fields shared by conversation and research actions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConversationParts<'a> {
+    pub project_id: &'a str,
+    pub computer_id: Option<&'a str>,
+    pub tool: &'a str,
+    pub folder: Option<&'a str>,
+    pub prompt: &'a str,
+    pub priority: Priority,
+    pub limit: LimitSetting,
+}
+
+impl JobAction {
+    /// The conversation a conversation or research action starts; `None` for push and todo.
+    #[must_use]
+    pub fn conversation_parts(&self) -> Option<ConversationParts<'_>> {
+        match self {
+            JobAction::Conversation { project_id, computer_id, tool, folder, prompt, priority, limit }
+            | JobAction::Research { project_id, computer_id, tool, folder, prompt, priority, limit } => Some(ConversationParts {
+                project_id,
+                computer_id: computer_id.as_deref(),
+                tool,
+                folder: folder.as_deref(),
+                prompt,
+                priority: *priority,
+                limit: *limit,
+            }),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_research(&self) -> bool {
+        matches!(self, JobAction::Research { .. })
+    }
+}
+
+/// An idea on a project: `new`, `researching`, `researched` or `dropped`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Idea {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub notes: String,
+    pub status: String,
+    pub starred: bool,
+    /// Proposed by an agent; waits for the user's OK and is never researched before.
+    pub pending: bool,
+    pub findings: Option<String>,
+    /// The research todo, or the todo it was turned into.
+    pub todo_id: Option<String>,
+    pub run_id: Option<String>,
+    /// `manual` or `agent`
+    pub source: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateIdeaRequest {
+    pub project_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub pending: Option<bool>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateIdeaRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starred: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub findings: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1202,6 +1299,9 @@ pub struct JobRun {
     pub started_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Extra text for this run's prompt (`{note}`), e.g. the hint of "shape an idea".
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1256,6 +1356,17 @@ pub struct SchedulerSettings {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn research_action_round_trips_json() {
+        let json = r#"{"kind":"research","project_id":"p","computer_id":null,"tool":"claude","folder":null,"prompt":"","priority":"background","limit":{"mode":"always"}}"#;
+        let action: JobAction = serde_json::from_str(json).unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        let parts = action.conversation_parts().unwrap();
+        assert_eq!((parts.project_id, parts.tool, parts.prompt), ("p", "claude", ""));
+        let push = JobAction::Push { title: "t".into(), body: "b".into() };
+        assert!(push.conversation_parts().is_none());
+    }
+
     #[test]
     fn job_action_round_trips_json() {
         let json = r#"{"kind":"conversation","project_id":"p","computer_id":null,"tool":"claude","folder":null,"prompt":"x","priority":"background","limit":{"mode":"wait","five_hour":40,"weekly":null}}"#;
