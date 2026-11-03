@@ -126,7 +126,7 @@ final class JobTemplateTests: XCTestCase {
         let templates = try TodoHubClient.makeDecoder().decode([JobTemplate].self, from: Data(Self.json.utf8))
         let projects: [(id: String, name: String)] = [("p1", "programming"), ("p2", "ai-session")]
         let gardener = JobDraft(template: templates[0], projects: projects)
-        XCTAssertEqual(gardener.name, "Memory gardener")
+        XCTAssertEqual(gardener.name, "Memory gardener · ai-session")
         XCTAssertEqual(gardener.kind, .conversation)
         XCTAssertEqual(gardener.cron, "0 3 * * 0")
         XCTAssertEqual(gardener.projectId, "p2", "the manifest's default project")
@@ -137,6 +137,14 @@ final class JobTemplateTests: XCTestCase {
         XCTAssertTrue(gardener.canSave)
         let upkeep = JobDraft(template: templates[1], projects: projects)
         XCTAssertEqual(upkeep.projectId, "", "choose: the user picks")
+        XCTAssertEqual(upkeep.computerId, "", "choose: the chosen project's own computer, not whichever Mac reported the template")
+        XCTAssertEqual(upkeep.name, "Weekly upkeep")
+        var named = upkeep
+        named.chooseProject("p1", name: "programming")
+        XCTAssertEqual(named.name, "Weekly upkeep · programming")
+        named.name = "My own name"
+        named.chooseProject("p2", name: "ai-session")
+        XCTAssertEqual(named.name, "My own name", "a name the user typed stays")
         XCTAssertFalse(upkeep.canSave)
         XCTAssertFalse(upkeep.waits)
         XCTAssertEqual(upkeep.priority, .urgent)

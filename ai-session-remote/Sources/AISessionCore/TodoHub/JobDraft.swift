@@ -30,6 +30,8 @@ public struct JobDraft: Equatable, Sendable {
     public var debugTool = "claude"
     /// A conversation's model (from a job template); nil: the tool's default.
     public var model: String?
+    /// The template's title, while the name is still the one made from it.
+    public var templateTitle: String?
     /// A watch job's usual schedule.
     public static let watchCron = "*/10 * * * *"
     /// A kind this app can't edit (a newer hub).
@@ -127,7 +129,9 @@ public extension JobDraft {
     /// project; `choose` leaves it for the user.
     init(template: JobTemplate, projects: [(id: String, name: String)]) {
         self.init()
-        name = template.title.isEmpty ? template.name : template.title
+        let title = template.title.isEmpty ? template.name : template.title
+        templateTitle = title
+        name = title
         kind = .conversation
         usesCron = true
         cron = template.cron
@@ -136,10 +140,23 @@ public extension JobDraft {
         prompt = template.prompt
         priority = template.priority == "urgent" ? .urgent : .background
         waits = template.limit != "always"
-        computerId = template.computerId ?? ""
-        if template.project != "choose" {
-            projectId = projects.first { $0.name == template.project }?.id ?? ""
+        if template.project == "choose" {
+            // The chosen project's own computer, not whichever Mac reported the template.
+            computerId = ""
+        } else {
+            computerId = template.computerId ?? ""
+            if let project = projects.first(where: { $0.name == template.project }) {
+                projectId = project.id
+                name = "\(title) · \(project.name)"
+            }
         }
+    }
+
+    /// Picks the project; a name still made from the template follows it ("Weekly upkeep · app").
+    mutating func chooseProject(_ id: String, name projectName: String) {
+        projectId = id
+        guard let title = templateTitle, name == title || name.hasPrefix(title + " · ") else { return }
+        name = "\(title) · \(projectName)"
     }
 
     /// A new job's form with its project already chosen, so taking it as the "original" leaves

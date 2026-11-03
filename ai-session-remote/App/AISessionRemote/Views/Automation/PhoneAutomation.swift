@@ -60,7 +60,7 @@ private struct PhoneJobsList: View {
         .navigationTitle("Jobs")
         .navigationDestination(isPresented: $creatingJob) { PhoneJobForm(store: store, job: nil) }
         .navigationDestination(item: $creatingFrom) { PhoneJobForm(store: store, job: nil, template: $0) }
-        .task(id: store.revision) { await store.loadJobTemplates() }
+        .task { await store.loadJobTemplates() }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 // Buttons, not links: a NavigationLink inside a toolbar Menu doesn't push on iOS.

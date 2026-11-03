@@ -53,7 +53,7 @@ struct JobsList: View {
                 .disabled(store.isOffline)
             }
         }
-        .task(id: store.revision) { await store.loadJobTemplates() }
+        .task { await store.loadJobTemplates() }
         .confirmationDialog("Discard the unsaved job?", isPresented: $confirmingDiscard) {
             Button("Discard Changes", role: .destructive) {
                 if let pending { target = pending }
@@ -296,6 +296,11 @@ struct JobFormPane: View {
                     ForEach(JobDraft.Kind.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .task(id: "\(draft.kind.rawValue)|\(draft.computerId)") { if draft.kind == .watch { await store.loadWatchers(computerId: draft.computerId) } }
+                .onChange(of: draft.projectId) { _, new in
+                    // A job made from a template is named after its project ("Weekly upkeep · app").
+                    guard draft.templateTitle != nil, let project = store.project(id: new) else { return }
+                    draft.chooseProject(new, name: project.name)
+                }
                 .onChange(of: draft.kind) { old, new in
                     // A new watch job checks every 10 minutes unless the cron was changed.
                     if new == .watch, job == nil, draft.cron == JobDraft().cron { draft.cron = JobDraft.watchCron }
@@ -337,6 +342,8 @@ struct JobFormPane: View {
                     Picker("Tool", selection: $draft.tool) {
                         Text("Claude").tag("claude")
                         Text("Codex").tag("codex")
+                        // The Today assistant's job: the runner picks by weekly headroom.
+                        if draft.tool == "auto" { Text("Auto (more weekly headroom)").tag("auto") }
                     }
                     VStack(alignment: .leading) {
                         Text(draft.kind == .research ? "Extra instructions (optional)" : "Prompt")

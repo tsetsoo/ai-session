@@ -182,14 +182,24 @@ struct ReminderDueRow: View {
 struct TodaySettingsPane: View {
     let store: TodoHubStore
     @State private var error: String?
+    /// The picker's time; saved once it stops changing (typing a time doesn't save each digit).
+    @State private var briefingTime: Date?
+    @State private var pendingSave: Task<Void, Never>?
 
     var body: some View {
         Form {
             if let s = store.todaySettings {
                 Section {
                     Toggle("Morning briefing", isOn: Binding(get: { s.briefingEnabled }, set: { on in save(TodaySettingsUpdate(briefingEnabled: on)) }))
-                    DatePicker("At", selection: Binding(get: { time(s.briefingTime) }, set: { save(TodaySettingsUpdate(briefingTime: hhmm($0))) }),
-                               displayedComponents: .hourAndMinute)
+                    DatePicker("At", selection: Binding(get: { briefingTime ?? time(s.briefingTime) }, set: { new in
+                        briefingTime = new
+                        pendingSave?.cancel()
+                        pendingSave = Task {
+                            try? await Task.sleep(for: .seconds(1.5))
+                            guard !Task.isCancelled, hhmm(new) != s.briefingTime else { return }
+                            save(TodaySettingsUpdate(briefingTime: hhmm(new)))
+                        }
+                    }), displayedComponents: .hourAndMinute)
                         .disabled(!s.briefingEnabled)
                 } header: {
                     Text("Briefing")

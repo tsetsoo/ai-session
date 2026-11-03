@@ -43,14 +43,18 @@ Stage 5 of the scheduler (`2026-11-02-scheduler-design.md`, section 8), narrowed
 - Sunday 03:00, background, waits for headroom, Claude; project default `ai-session` (memories
   of all projects are in scope).
 - `ai-todo-memory` gains:
-  - `garden [--json]`: from the local cache (refreshed first): groups of near-duplicates within a
-    project (word overlap ≥ 0.6 on normalized text), and per project the memories never used
-    and older than 60 days. Never lists pinned, manual or archived ones.
+  - `garden [--json]`: from the hub (every project, paged past its 1000-row cap): groups of
+    near-duplicates within a project, where every member has word overlap ≥ 0.6 with the group's
+    first (no chains), and the memories never used and older than 60 days. Never lists pinned,
+    hand-written (`manual`), imported (`claude-memory`) or archived ones.
   - `retire <id>... --reason duplicate|retired`: archives them with that reason (the hub's
     `archived_reason`; the user's own archives are `user`). Refuses pinned and manual ones.
   - `edit <id> "<text>"`: replaces a memory's text (for a merge, the one kept absorbs the
     others' details). Refuses manual ones. Redacted.
-- The hub's memory update accepts `archived_reason: duplicate|retired` with `archived: true`.
+- The hub's memory update accepts `archived_reason: duplicate|retired` with `archived: true`,
+  and `by_gardener: true`: then it refuses pinned, manual and imported memories in the same
+  statement, and marks an archive `archived_by = gardener` (so a bad run can be found).
+- `retire` takes at most 25 ids; the prompt says at most 25 per run.
 - Prompt: run `garden`; for each duplicate group keep the best one (edit it to include
   anything only the others say), retire the rest as `duplicate`; retire memories that are
   outdated or contradicted by newer ones as `retired`; when unsure, leave it; end with a list
