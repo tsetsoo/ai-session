@@ -762,6 +762,19 @@ do_install() {
   else
     say "watchers: no watcher plugins found beside scripts/todo; installed watchers kept as they are (copy with: tar -C ai-session-remote -czf - scripts/todo watchers)"
   fi
+  # Job plugins: ai-session-remote/jobs/<name>/{job.json,prompt.md}.
+  local jobs_src="${SRC_DIR}/../../jobs"
+  if compgen -G "${jobs_src}/*/job.json" >/dev/null; then
+    for dir in "$jobs_src"/*/; do
+      [[ -f "${dir}job.json" && -f "${dir}prompt.md" ]] || continue
+      name=$(basename "$dir")
+      run mkdir -p "${AI_DIR}/jobs/${name}"
+      run install -m 644 "${dir}job.json" "${AI_DIR}/jobs/${name}/job.json"
+      run install -m 644 "${dir}prompt.md" "${AI_DIR}/jobs/${name}/prompt.md"
+    done
+  else
+    say "jobs: no job plugins found beside scripts/todo; installed ones kept (copy with: tar -czf - scripts/todo watchers jobs)"
+  fi
   install_assistant_folder
   for file in "${MODULES[@]}"; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   resolve_codex_for_hooks

@@ -1,0 +1,11 @@
+{
+  "name": "memory-gardener",
+  "title": "Memory gardener",
+  "description": "Every Sunday at 03:00: merges duplicate memories and archives outdated ones, across all projects. Archived memories can be restored in the app. Never touches pinned or hand-written memories.",
+  "cron": "0 3 * * 0",
+  "tool": "claude",
+  "model": null,
+  "priority": "background",
+  "limit": "wait",
+  "project": "ai-session"
+}

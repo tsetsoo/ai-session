@@ -1,0 +1,11 @@
+{
+  "name": "weekly-upkeep",
+  "title": "Weekly upkeep",
+  "description": "Every Sunday at 10:00: checks the project's dependencies for updates and security advisories, applies the safe ones on a branch with the tests passing, and lists what's left for you. Never pushes.",
+  "cron": "0 10 * * 0",
+  "tool": "claude",
+  "model": null,
+  "priority": "background",
+  "limit": "wait",
+  "project": "choose"
+}

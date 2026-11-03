@@ -71,6 +71,7 @@ TREES = os.environ.get("AI_TODO_RUNNER_WORKTREES") or os.path.join(AI_DIR, "work
 OPEN_BIN = os.environ.get("AI_TODO_OPEN_BIN") or os.path.join(LIB_DIR, "ai-todo-open")
 LIMITS_BIN = os.environ.get("AI_TODO_LIMITS_BIN") or os.path.join(LIB_DIR, "ai-todo-limits")
 WATCHERS = os.environ.get("AI_TODO_WATCHERS_DIR") or os.path.join(AI_DIR, "watchers")
+JOBS = os.environ.get("AI_TODO_JOBS_DIR") or os.path.join(AI_DIR, "jobs")
 WATCH_TIMEOUT = 60
 LIMITS_TIMEOUT = float(os.environ.get("AI_TODO_LIMITS_TIMEOUT") or 20)
 MAX_STARTS = 3
@@ -466,6 +467,55 @@ def report_watchers(hub, computer_id):
         log("watchers_state_failed", error=type(e).__name__)
 
 
+def job_templates_report():
+    """The installed job plugins: <jobs>/<name>/job.json with a prompt.md beside it."""
+    out = []
+    try:
+        names = sorted(os.listdir(JOBS))
+    except OSError:
+        return out
+    for name in names:
+        manifest = load_json(os.path.join(JOBS, name, "job.json"))
+        try:
+            with open(os.path.join(JOBS, name, "prompt.md")) as f:
+                prompt = f.read()
+        except OSError:
+            continue
+        if not isinstance(manifest, dict) or not manifest.get("cron"):
+            continue
+        out.append({"name": str(manifest.get("name") or name), "title": str(manifest.get("title") or name),
+                    "description": str(manifest.get("description") or ""), "cron": str(manifest["cron"]),
+                    "tool": str(manifest.get("tool") or "claude"),
+                    "model": manifest.get("model") if isinstance(manifest.get("model"), str) else None,
+                    "priority": str(manifest.get("priority") or "background"), "limit": str(manifest.get("limit") or "wait"),
+                    "project": str(manifest.get("project") or "choose"), "prompt": prompt[:20000]})
+    return out
+
+
+def report_job_templates(hub, computer_id):
+    """PUT the job plugins when they changed or a day passed; an old hub (404) hourly."""
+    path = os.path.join(STATE_DIR, "job-templates.json")
+    report = job_templates_report()
+    digest = json.dumps(report, sort_keys=True)
+    state = load_json(path, {}) or {}
+    if now() - float(state.get("unsupported_at") or 0) < WATCHERS_RETRY_UNSUPPORTED:
+        return
+    if state.get("digest") == digest and now() - float(state.get("at") or 0) < WATCHERS_REPORT_EVERY:
+        return
+    try:
+        hub.request("PUT", "/api/computers/%s/job-templates" % urllib.parse.quote(computer_id, safe=""), body=report)
+        state = {"digest": digest, "at": now()}
+    except HubError as e:
+        if e.status != 404:
+            log("job_templates_report_failed", error=e)
+            return
+        state = {"unsupported_at": now()}
+    try:
+        save_json(path, state)
+    except OSError as e:
+        log("job_templates_state_failed", error=type(e).__name__)
+
+
 def do_resolves(hub, resolves):
     env = None
     for item in resolves or []:
@@ -626,6 +676,7 @@ def cmd_tick(args):
                     pass
         do_resolves(hub, due.get("resolves"))
         report_watchers(hub, computer_id)
+        report_job_templates(hub, computer_id)
     except HubError as e:
         status["last_error"] = str(e)
         log("error", error=e)

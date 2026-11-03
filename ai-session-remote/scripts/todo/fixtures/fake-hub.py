@@ -135,6 +135,8 @@ class Hub(BaseHTTPRequestHandler):
                 state.setdefault(key, []).append(row)
                 save(state)
                 return self.reply(state.get("today_status", 200), row)
+        if method == "PUT" and path.startswith("/api/computers/") and path.endswith("/job-templates"):
+            return self.reply(state.get("watchers_status", 200), {"ok": True})
         if method == "PUT" and path.startswith("/api/computers/") and path.endswith("/watchers"):
             return self.reply(state.get("watchers_status", 200), {"ok": True})
         if method == "POST" and path.startswith("/api/watch/"):

@@ -2349,6 +2349,72 @@ assert (b["source"], b["pending"], b["kind"], b.get("project_id")) == ("agent", 
 assert "LocalTok3n_Value9" not in json.dumps(b), b
 ' || fail "add body wrong: $(last_body POST /api/memories)"
 pass "add_posts_pending_agent"
+
+# --- ai-todo-memory garden / retire / edit (the memory gardener) --------------------------
+python3 - "$M_HUB_STATE" <<'PY'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["_saved_memories"] = s.get("memories", [])
+def m(i, text, project="proj-app", **kw):
+    row = dict(id=i, project_id=project, todo_id=None, computer_id="comp-1", kind="gotcha", text=text, source="extracted",
+               pinned=False, archived=False, pending=False, use_count=1, last_used_at="2026-10-30 10:00:00",
+               created_at="2026-10-30 10:00:00", updated_at="2026-10-30 10:00:00")
+    row.update(kw)
+    return row
+s["memories"] = [
+    m("d1", "Pushing to main runs the Pi deploy workflow with clippy warnings as errors."),
+    m("d2", "Pushing to main runs the Pi deploy workflow, clippy with warnings as errors."),
+    m("d3", "Pushing to main runs the Pi deploy workflow; clippy treats warnings as errors.", pinned=True),
+    m("d4", "Pushing to main runs the Pi deploy workflow with clippy warnings as errors!", source="manual"),
+    m("other", "The iPhone build needs team 233QTK6KCL on the command line."),
+    m("stale", "Spread laptop used to need a VPN for the hub.", use_count=0, last_used_at=None, created_at="2026-07-01 10:00:00"),
+    m("young", "Brand new fact nobody used yet.", use_count=0, last_used_at=None, created_at="2026-10-31 10:00:00"),
+    m("gone", "Archived already, pushing to main runs the Pi deploy workflow with clippy.", archived=True),
+]
+json.dump(s, open(p, "w"))
+PY
+mem garden --json >"${SANDBOX}/garden.json" || fail "garden failed"
+python3 - "${SANDBOX}/garden.json" <<'PY' || fail "garden output: $(cat "${SANDBOX}/garden.json")"
+import json, sys
+g = json.load(open(sys.argv[1]))
+groups = [sorted(x["id"] for x in grp["memories"]) for grp in g["duplicates"]]
+assert groups == [["d1", "d2"]], groups
+assert [x["id"] for x in g["stale"]] == ["stale"], g["stale"]
+assert g["duplicates"][0]["project"] == "app", g["duplicates"][0]
+PY
+mem garden | grep -q "d1" || fail "garden text output: $(mem garden)"
+pass "garden_lists_duplicates_and_stale (never pinned, manual or archived)"
+
+: >"$M_HUB_LOG"
+mem retire d2 --reason duplicate >/dev/null || fail "retire failed"
+python3 - "$M_HUB_LOG" <<'PY' || fail "retire request: $(cat "$M_HUB_LOG")"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+patches = [r for r in rows if r["method"] == "PATCH"]
+assert len(patches) == 1 and patches[0]["path"] == "/api/memories/d2", patches
+assert patches[0]["body"] == {"archived": True, "archived_reason": "duplicate"}, patches[0]
+PY
+for refused in "d3" "d4"; do
+  status=0; mem retire "$refused" --reason duplicate >/dev/null 2>&1 || status=$?
+  [[ $status -eq 65 ]] || fail "retire $refused (pinned or manual) exit $status"
+done
+status=0; mem retire d1 --reason unused >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "retire with a bad reason exit $status"
+pass "retire_archives_with_reason (refuses pinned and manual)"
+
+: >"$M_HUB_LOG"
+MY_SERVICE_TOKEN=LocalTok3n_Value9 mem edit d1 "Pushing to main deploys to the Pi; clippy -D warnings must pass (token LocalTok3n_Value9)." >/dev/null || fail "edit failed"
+python3 - "$M_HUB_LOG" <<'PY' || fail "edit request: $(cat "$M_HUB_LOG")"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if json.loads(l)["method"] == "PATCH"]
+assert rows[0]["path"] == "/api/memories/d1" and rows[0]["body"]["text"].startswith("Pushing to main deploys"), rows
+assert "LocalTok3n_Value9" not in rows[0]["body"]["text"], rows
+PY
+status=0; mem edit d4 "x" >/dev/null 2>&1 || status=$?
+[[ $status -eq 65 ]] || fail "edit of a manual memory exit $status"
+hub_edit "s['memories'] = s.pop('_saved_memories', [])"
+pass "edit_rewrites_text_redacted (refuses manual)"
 pass "add_redacts_secret"
 mem add "Codbex login needs the AI Session key" --global --kind decision --cwd "$M_APP" >/dev/null || fail "add --global failed"
 last_body POST /api/memories | python3 -c '
@@ -3254,6 +3320,36 @@ hub_edit "s.pop('watchers_status', None)"
 wrunner tick || fail "tick failed"
 [[ -n "$(watchers_puts)" ]] || fail "an hour after a 404 the runner did not try again (a hub updated later waits a day)"
 pass "runner_watchers_report_404_is_quiet"
+
+J_DIR="${SANDBOX}/jobs"
+mkdir -p "${J_DIR}/upkeep" "${J_DIR}/broken" "${J_DIR}/noprompt"
+printf '{"name":"upkeep","title":"Weekly upkeep","description":"Deps.","cron":"0 10 * * 0","project":"choose"}' >"${J_DIR}/upkeep/job.json"
+printf 'Check the dependencies.\n' >"${J_DIR}/upkeep/prompt.md"
+printf 'not json' >"${J_DIR}/broken/job.json"; printf 'x' >"${J_DIR}/broken/prompt.md"
+printf '{"name":"noprompt","cron":"0 1 * * *"}' >"${J_DIR}/noprompt/job.json"
+templates_puts() {
+  tail -n +"$((R_MARK + 1))" "$M_HUB_LOG" | python3 -c '
+import json, sys
+for l in sys.stdin:
+    r = json.loads(l)
+    if r["method"] == "PUT" and r["path"].endswith("/job-templates"):
+        print(json.dumps({"path": r["path"], "body": r["body"]}))'
+}
+runs_reset
+rm -f "${R_STATE}/job-templates.json"
+AI_TODO_JOBS_DIR="$J_DIR" wrunner tick || fail "tick failed"
+templates_puts | python3 -c '
+import json, sys
+rows = [json.loads(l) for l in sys.stdin]
+assert len(rows) == 1 and rows[0]["path"] == "/api/computers/comp-1/job-templates", rows
+body = rows[0]["body"]
+assert [t["name"] for t in body] == ["upkeep"], body
+assert body[0]["prompt"] == "Check the dependencies.\n" and body[0]["cron"] == "0 10 * * 0" and body[0]["title"] == "Weekly upkeep", body
+' || fail "job templates report: $(templates_puts)"
+runs_reset
+AI_TODO_JOBS_DIR="$J_DIR" wrunner tick || fail "tick failed"
+[[ -z "$(templates_puts)" ]] || fail "unchanged job templates were sent again"
+pass "runner_reports_job_plugins (manifest + prompt; skips broken ones; once until changed)"
 rm -f "${W_DIR}/broken" "${W_DIR}/broken.json" "${W_DIR}/orphan.json"
 
 WATCH="${SCRIPT_DIR}/ai-todo-watch"
@@ -3463,6 +3559,11 @@ cp "$LAUNCHCTL_LOG" "${SANDBOX}/launchctl.keep3"
 cp "${SANDBOX}/launchctl.keep3" "$LAUNCHCTL_LOG"
 [[ $(git -C "$A_DIR" rev-list --count HEAD) -eq 1 ]] || fail "a re-install added commits to the assistant repo"
 pass "install_creates_assistant_folder (a git repo, once)"
+for j in weekly-upkeep memory-gardener; do
+  python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["name"] == sys.argv[2] and m["cron"], m' "${HOME}/.ai-remote/jobs/${j}/job.json" "$j" \
+    && [[ -s "${HOME}/.ai-remote/jobs/${j}/prompt.md" ]] || fail "job plugin ${j} not installed"
+done
+pass "install_places_job_plugins"
 # A Mac whose git signs every commit (no gpg here), and a folder left half-made by that failure.
 rm -rf "${A_DIR}/.git"
 git -C "$A_DIR" init -q -b main
