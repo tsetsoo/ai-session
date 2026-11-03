@@ -99,8 +99,12 @@ final class WatchTests: XCTestCase {
         XCTAssertEqual(fixed.nextSteps(resolveLabel: "Resolve in Sentry"), [
             "Review the fix in the conversation.",
             "Merge the branch and deploy it yourself. Nothing was merged, pushed or deployed.",
-            "Then press Resolve in Sentry.",
+            "Then press Resolve in Sentry. If the fix didn't hold, press Try Again.",
         ])
+        XCTAssertEqual(fixed.nextSteps(resolveLabel: nil).last, "If the fix didn't hold, press Try Again.",
+                       "a watcher that can't resolve gets no Resolve step")
+        XCTAssertFalse(try issue(taken: "r1", outcome: "cant_fix").nextSteps(resolveLabel: nil).joined().contains("Resolve"))
+        XCTAssertTrue(fixed.canRetry, "a fix that didn't hold can be tried again")
         XCTAssertEqual(try issue(taken: "r1", outcome: "needs_you").nextSteps(resolveLabel: "Resolve").first,
                        "Answer the question in the conversation.")
         XCTAssertEqual(try issue(taken: "r1", outcome: "cant_fix").outcomeText, "Can't be fixed in code")

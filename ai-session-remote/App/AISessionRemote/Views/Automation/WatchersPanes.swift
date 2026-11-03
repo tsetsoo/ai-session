@@ -179,7 +179,7 @@ struct WatchIssueDetail: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    let steps = issue.nextSteps(resolveLabel: resolveLabel(issue))
+                    let steps = issue.nextSteps(resolveLabel: store.watcherInfo(for: issue)?.resolve == false ? nil : resolveLabel(issue))
                     if !steps.isEmpty {
                         section("Next") {
                             ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
