@@ -98,6 +98,18 @@ def runtime_status(status):
     return None
 
 
+URGENCY = {"waiting": 2, "busy": 1, "idle": 0}
+
+
+def merge_state(result, sid, state):
+    """One conversation can be reported twice (Claude lists a background copy beside the
+    interactive one; two Codex runtimes can load one thread). Keep the most urgent, so a
+    copy waiting on you is never hidden by an idle one."""
+    current = result.get(sid)
+    if current is None or URGENCY[state[0]] > URGENCY[current[0]]:
+        result[sid] = state
+
+
 def fresh_runtime_state(sid, tool="codex"):
     snapshot = read_json(root() / ("claude-runtime.json" if tool == "claude" else "runtime.json"), {})
     observed = snapshot.get("observed_ns", 0)
@@ -720,7 +732,8 @@ class RuntimePool:
             try:
                 if path not in self.clients:
                     self.clients[path] = RuntimeSocket(path)
-                result.update(self.clients[path].states())
+                for sid, state in self.clients[path].states().items():
+                    merge_state(result, sid, state)
                 connected += 1
             except (OSError, ValueError, EOFError, TimeoutError):
                 client = self.clients.pop(path, None)
@@ -790,8 +803,15 @@ class ClaudeRuntime:
                 continue
             state = claude_status(row)
             if state:
-                result[sid] = state
+                merge_state(result, sid, state)
         return result
+
+
+# A Claude conversation gone from `claude agents` has no process left, so a turn it was
+# running has ended. It is settled as idle once it stays gone this long (two polls at least),
+# so a missed listing can't end a live turn. Codex is never settled this way: an unloaded
+# thread may be running in another runtime.
+VANISHED_NS = 3_000_000_000
 
 
 def poll_runtime(client, previous, try_send=True, tool="codex"):
@@ -800,6 +820,7 @@ def poll_runtime(client, previous, try_send=True, tool="codex"):
     effective = {}
     for sid, state in states.items():
         prior = previous.setdefault(sid, {})
+        prior.pop("missing_since_ns", None)
         if state[0] == "idle":
             idle_since = prior.setdefault("idle_since_ns", observed)
             if observed - idle_since < 1_000_000_000:
@@ -818,7 +839,14 @@ def poll_runtime(client, previous, try_send=True, tool="codex"):
             publish({"session_id": sid, "tool": tool, "status": state[0], "message": state[1], "attended": False}, observed, source="runtime", try_send=try_send)
             prior.update(state=state, reported_ns=observed)
     for sid in set(previous) - set(states):
-        previous.pop(sid)
+        prior = previous[sid]
+        if tool != "claude" or tuple(prior.get("state", ("idle",)))[0] == "idle":
+            previous.pop(sid)
+            continue
+        missing_since = prior.setdefault("missing_since_ns", observed)
+        if observed - missing_since >= VANISHED_NS:
+            publish({"session_id": sid, "tool": tool, "status": "idle", "message": None, "attended": False}, observed, source="runtime", try_send=try_send)
+            previous.pop(sid)
     return len(effective)
 
 

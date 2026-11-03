@@ -415,6 +415,90 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(status.ClaudeRuntime().states(), {"full-id": ("idle", None)})
             self.assertEqual(command.call_args.args[0], ["/claude", "agents", "--json", "--all"])
 
+    def test_claude_duplicate_rows_keep_the_most_urgent_state(self):
+        # One conversation can be listed twice (a background copy and the interactive one).
+        rows = [{"sessionId": "dup", "state": "blocked", "kind": "background"},
+                {"sessionId": "dup", "status": "idle", "kind": "interactive"},
+                {"sessionId": "work", "status": "busy"}, {"sessionId": "work", "state": "done"}]
+        with patch.object(status, "find_claude", return_value="/claude"), patch.object(status.subprocess, "run") as command:
+            command.return_value = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
+            states = status.ClaudeRuntime().states()
+        self.assertEqual(states["dup"][0], "waiting")
+        self.assertEqual(states["work"], ("busy", None))
+
+    def test_codex_runtimes_reporting_one_thread_keep_the_most_urgent_state(self):
+        class Socket:
+            def __init__(self, value):
+                self.value = value
+            def states(self):
+                return {"t": self.value}
+            def close(self):
+                pass
+
+        pool = status.RuntimePool()
+        first, second = status.socket_path(), status.root() / "r" / "app.sock"
+        pool.clients = {first: Socket(("waiting", "Codex needs approval")), second: Socket(("idle", None))}
+        with patch.object(status, "socket_path", return_value=first), \
+             patch.object(Path, "glob", return_value=[second.with_suffix(".json")]):
+            self.assertEqual(pool.states()["t"][0], "waiting")
+
+    def test_vanished_claude_conversation_is_settled_once_confirmed(self):
+        class Client:
+            value = {"a": ("busy", None), "b": ("idle", None)}
+            def states(self):
+                return dict(self.value)
+
+        client, previous, now = Client(), {}, time.time_ns()
+        with patch.object(status.time, "time_ns", return_value=now):
+            status.poll_runtime(client, previous, tool="claude")
+        self.assertEqual(self.requests[-1]["status"], "busy")
+        client.value = {}
+        with patch.object(status.time, "time_ns", return_value=now + 1_000_000_000):
+            status.poll_runtime(client, previous, tool="claude")
+        self.assertEqual(self.requests[-1]["status"], "busy", "one missing poll is not proof the process ended")
+        sent = len(self.requests)
+        with patch.object(status.time, "time_ns", return_value=now + 5_000_000_000):
+            status.poll_runtime(client, previous, tool="claude")
+        settled = [r for r in self.requests[sent:] if r["session_id"] == "a"]
+        self.assertEqual([r["status"] for r in settled], ["idle"])
+        self.assertFalse([r for r in self.requests[sent:] if r["session_id"] == "b"], "an idle conversation needs no report")
+        with patch.object(status.time, "time_ns", return_value=now + 9_000_000_000):
+            status.poll_runtime(client, previous, tool="claude")
+        self.assertEqual(len(self.requests), sent + 1)
+        self.assertEqual(previous, {})
+
+    def test_vanished_claude_conversation_that_returns_is_not_settled(self):
+        class Client:
+            value = {"a": ("busy", None)}
+            def states(self):
+                return dict(self.value)
+
+        client, previous, now = Client(), {}, time.time_ns()
+        with patch.object(status.time, "time_ns", return_value=now):
+            status.poll_runtime(client, previous, tool="claude")
+        client.value = {}
+        with patch.object(status.time, "time_ns", return_value=now + 1_000_000_000):
+            status.poll_runtime(client, previous, tool="claude")
+        client.value = {"a": ("busy", None)}
+        with patch.object(status.time, "time_ns", return_value=now + 5_000_000_000):
+            status.poll_runtime(client, previous, tool="claude")
+        self.assertNotIn("idle", [r["status"] for r in self.requests])
+
+    def test_unloaded_codex_thread_is_never_settled(self):
+        class Client:
+            value = {"a": ("busy", None)}
+            def states(self):
+                return dict(self.value)
+
+        client, previous, now = Client(), {}, time.time_ns()
+        with patch.object(status.time, "time_ns", return_value=now):
+            status.poll_runtime(client, previous)
+        client.value = {}
+        for step in (1, 5, 9):
+            with patch.object(status.time, "time_ns", return_value=now + step * 1_000_000_000):
+                status.poll_runtime(client, previous)
+        self.assertNotIn("idle", [r["status"] for r in self.requests], "another Codex runtime may own it")
+
     def test_runtime_waiting_keeps_the_hooks_prompt_identity(self):
         legacy = self.home / ".ai-remote/hook-state/thread-1"
         legacy.parent.mkdir(parents=True)
