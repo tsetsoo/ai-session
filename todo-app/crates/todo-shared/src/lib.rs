@@ -1197,6 +1197,16 @@ pub enum JobAction {
     Push { title: String, body: String },
     /// A todo, created by the hub.
     Todo { title: String, project_id: Option<String>, section: Option<Section> },
+    /// A watcher check on one computer; new problems push, and with a debug tool open problems
+    /// are taken by debugging conversations (runs of the hidden "Debug · <job>" job).
+    Watch {
+        project_id: String,
+        computer_id: String,
+        watcher: String,
+        debug_tool: Option<String>,
+        /// Extra instructions for the debugging conversations.
+        prompt: String,
+    },
 }
 
 /// The fields shared by conversation and research actions.
@@ -1234,6 +1244,60 @@ impl JobAction {
     pub fn is_research(&self) -> bool {
         matches!(self, JobAction::Research { .. })
     }
+    #[must_use]
+    pub fn is_watch(&self) -> bool {
+        matches!(self, JobAction::Watch { .. })
+    }
+}
+
+/// One problem in a watcher's check output.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchProblem {
+    pub key: String,
+    pub title: String,
+    #[serde(default)]
+    pub details: String,
+    #[serde(default)]
+    pub url: String,
+    /// The repo, relative to the project folder, a debugging conversation works in.
+    #[serde(default)]
+    pub folder: Option<String>,
+}
+
+/// A watcher's check output: every problem open right now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchReport {
+    pub problems: Vec<WatchProblem>,
+    /// The list may be incomplete: nothing is cleared.
+    #[serde(default)]
+    pub partial: bool,
+}
+
+/// A watcher problem on the hub, per watcher and key. `state`: `open`, `resolving`, `cleared`;
+/// `outcome`: `fixed`, `needs_you`, `cant_fix`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchIssue {
+    pub id: String,
+    pub watcher: String,
+    pub key: String,
+    pub job_id: Option<String>,
+    pub project_id: String,
+    pub title: String,
+    pub details: String,
+    pub url: String,
+    pub folder: Option<String>,
+    pub state: String,
+    /// The debugging run that took it.
+    pub taken_run_id: Option<String>,
+    /// That run's todo (its conversation).
+    pub todo_id: Option<String>,
+    pub outcome: Option<String>,
+    pub outcome_note: Option<String>,
+    pub resolve_error: Option<String>,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub cleared_at: Option<String>,
+    pub updated_at: String,
 }
 
 /// An idea on a project: `new`, `researching`, `researched` or `dropped`.
@@ -1367,6 +1431,18 @@ pub struct SchedulerSettings {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn watch_action_round_trips_json() {
+        let json = r#"{"kind":"watch","project_id":"p","computer_id":"c","watcher":"sentry","debug_tool":"claude","prompt":""}"#;
+        let action: JobAction = serde_json::from_str(json).unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        assert!(action.conversation_parts().is_none());
+        assert!(action.is_watch());
+        let report: WatchReport = serde_json::from_str(r#"{"problems":[{"key":"k","title":"t"}]}"#).unwrap();
+        assert!(!report.partial);
+        assert_eq!((report.problems[0].details.as_str(), report.problems[0].folder.as_deref()), ("", None));
+    }
+
     #[test]
     fn research_action_round_trips_json() {
         let json = r#"{"kind":"research","project_id":"p","computer_id":null,"tool":"claude","folder":null,"prompt":"","priority":"background","limit":{"mode":"always"}}"#;

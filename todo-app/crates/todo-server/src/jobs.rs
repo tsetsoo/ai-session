@@ -187,6 +187,22 @@ fn validate(conn: &Connection, name: &str, trigger: &JobTrigger, action: &JobAct
             }
         }
         JobAction::Push { .. } => {}
+        JobAction::Watch { project_id, computer_id, watcher, debug_tool, .. } => {
+            if watcher.is_empty() || !watcher.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) || watcher.starts_with('.') {
+                return Err(JobError::BadRequest("watcher must be a file name in ~/.ai-remote/watchers".into()));
+            }
+            if let Some(tool) = debug_tool {
+                if !TOOLS.contains(&tool.as_str()) {
+                    return Err(JobError::BadRequest("debug tool must be claude or codex".into()));
+                }
+            }
+            if !project_exists(conn, project_id)? {
+                return Err(JobError::NotFound("Project not found"));
+            }
+            if get_computer(conn, computer_id)?.is_none() {
+                return Err(JobError::NotFound("Computer not found"));
+            }
+        }
     }
     Ok(())
 }
@@ -443,6 +459,24 @@ mod tests {
         assert_eq!(list.len(), 2);
         let manual = list.iter().find(|j| j["name"] == "Manual one").unwrap();
         assert_eq!((&manual["next_fire_at"], &manual["last_run"]), (&Value::Null, &Value::Null));
+    }
+
+    fn watch_job(computer: &str, watcher: &str, tool: Value) -> Value {
+        json!({"name": "Sentry", "trigger": {"kind": "cron", "cron": "*/10 * * * *"}, "action": {"kind": "watch",
+            "project_id": "pa", "computer_id": computer, "watcher": watcher, "debug_tool": tool, "prompt": ""}})
+    }
+
+    #[actix_web::test]
+    async fn watch_job_validation() {
+        let (_db, pool) = pool("jobs");
+        seed(&pool.get().unwrap());
+        assert_eq!(post(&pool, "/api/jobs", watch_job("nope", "sentry", json!("claude"))).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(post(&pool, "/api/jobs", watch_job("mac", "", json!("claude"))).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(post(&pool, "/api/jobs", watch_job("mac", "../x", json!("claude"))).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(post(&pool, "/api/jobs", watch_job("mac", "sentry", json!("cursor"))).await.0, StatusCode::BAD_REQUEST);
+        let (status, job) = post(&pool, "/api/jobs", watch_job("mac", "sentry", Value::Null)).await;
+        assert_eq!(status, StatusCode::CREATED, "{job}");
+        assert_eq!(job["action"]["kind"], "watch");
     }
 
     #[actix_web::test]

@@ -116,6 +116,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v12_objects(&conn).expect("Failed to create memory usage and search objects");
     create_v13_objects(&conn).expect("Failed to create scheduler objects");
     create_v14_objects(&conn).expect("Failed to create idea objects");
+    create_v15_objects(&conn).expect("Failed to create watch objects");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -417,6 +418,42 @@ fn create_v14_objects(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v15: watcher problems and the once-a-day "overwhelmed" marker. Only adds.
+const V15_OBJECTS: &str = "
+    CREATE TABLE IF NOT EXISTS watch_issues (
+        id                   TEXT PRIMARY KEY,
+        watcher              TEXT NOT NULL,
+        key                  TEXT NOT NULL,
+        job_id               TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+        project_id           TEXT NOT NULL,
+        title                TEXT NOT NULL,
+        details              TEXT NOT NULL DEFAULT '',
+        url                  TEXT NOT NULL DEFAULT '',
+        folder               TEXT,
+        state                TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','resolving','cleared')),
+        taken_run_id         TEXT,
+        outcome              TEXT CHECK(outcome IS NULL OR outcome IN ('fixed','needs_you','cant_fix')),
+        outcome_note         TEXT,
+        resolve_error        TEXT,
+        resolve_requested_at TEXT,
+        resolved_at          TEXT,
+        first_seen           TEXT NOT NULL DEFAULT (datetime('now')),
+        last_seen            TEXT NOT NULL DEFAULT (datetime('now')),
+        cleared_at           TEXT,
+        updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(watcher, key)
+    );
+    CREATE INDEX IF NOT EXISTS watch_issues_state ON watch_issues(watcher, state);
+    CREATE TABLE IF NOT EXISTS watch_alerts (
+        job_id TEXT NOT NULL,
+        day    TEXT NOT NULL,
+        PRIMARY KEY (job_id, day)
+    );";
+
+fn create_v15_objects(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(V15_OBJECTS)
+}
+
 fn create_v13_objects(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V13_OBJECTS)?;
     for column in ["scheduled_job_id", "scheduled_run_id"] {
@@ -529,13 +566,14 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v10: user-turn identity, preserving unread results across offline coalescing (additive)
 /// - v11: todos can be put on hold (additive)
 /// - v14: `ideas`; `job_runs.note` (additive)
+/// - v15: `watch_issues`, `watch_alerts` (additive)
 /// - v13: scheduler `jobs`, `job_runs`, `scheduler_settings`; `todos.scheduled_job_id` and
 ///   `scheduled_run_id` (additive)
 /// - v12: memories gain usage, pending, import key and archive reason; `memory_active_days`;
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -548,6 +586,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if table_sql(conn, "watch_issues")?.is_some() {
+        return Ok(15);
     }
     if table_sql(conn, "ideas")?.is_some() {
         return Ok(14);
@@ -713,8 +754,16 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 13 {
         if !backed_up {
             backup_before_migration(conn, db_path, 14)?;
+            backed_up = true;
         }
         create_v14_objects(conn)?;
+        version = 14;
+    }
+    if version == 14 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 15)?;
+        }
+        create_v15_objects(conn)?;
     }
     Ok(())
 }
@@ -2324,10 +2373,24 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 14);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert_eq!(db.backups().len(), 1);
         assert!(table_sql(&conn, "ideas").unwrap().is_some());
         assert!(column_exists(&conn, "job_runs", "note").unwrap());
+    }
+
+    #[test]
+    fn v14_database_migrates_to_v15_with_watch_tables() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch("DROP TABLE IF EXISTS watch_issues; DROP TABLE IF EXISTS watch_alerts; PRAGMA user_version = 14;").unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 15);
+        assert!(table_sql(&conn, "watch_issues").unwrap().is_some());
+        assert!(table_sql(&conn, "watch_alerts").unwrap().is_some());
     }
 
     #[test]
