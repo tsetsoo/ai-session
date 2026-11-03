@@ -607,13 +607,13 @@ chmod +x "$PROMPT_CODEX"
 printf 'Codex, look at the logs.' >"${SANDBOX}/codex-prompt.txt"
 out="$(AI_TODO_CODEX_BIN="$PROMPT_CODEX" "$OPEN" --detached --auto-approve --prompt-file "${SANDBOX}/codex-prompt.txt" "ai/codex/todo-prompt1" '~/programming' - codex)"
 [[ "$out" == "created PROMPTCX" ]] || fail "codex with a prompt printed '$out'"
-[[ "$(cat "${SANDBOX}/codex-prompt.args")" == "--approve-for-me"$'\n'"Codex, look at the logs." ]] || fail "codex prompt argv: $(cat "${SANDBOX}/codex-prompt.args")"
+[[ "$(cat "${SANDBOX}/codex-prompt.args")" == "--approve-for-me"$'\n'"-c"$'\n'"sandbox_workspace_write.network_access=true"$'\n'"Codex, look at the logs." ]] || fail "codex prompt argv: $(cat "${SANDBOX}/codex-prompt.args")"
 tmux -L "$SOCK" kill-session -t "=ai/codex/todo-prompt1" 2>/dev/null || true
 rm -f "$HOME"/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-PROMPTCX.jsonl
 pass "open_prompt_file_becomes_initial_prompt_codex"
 printf 'Codex, add it.' >"${SANDBOX}/codex-prompt.txt"
 out="$(AI_TODO_CODEX_BIN="$PROMPT_CODEX" "$OPEN" --detached --auto-approve --model gpt-6.1-terra --prompt-file "${SANDBOX}/codex-prompt.txt" "ai/codex/todo-prompt2" '~/programming' - codex)"
-[[ "$(cat "${SANDBOX}/codex-prompt.args")" == "--approve-for-me"$'\n'"-m"$'\n'"gpt-6.1-terra"$'\n'"Codex, add it." ]] || fail "codex -m argv: $(cat "${SANDBOX}/codex-prompt.args")"
+[[ "$(cat "${SANDBOX}/codex-prompt.args")" == "--approve-for-me"$'\n'"-c"$'\n'"sandbox_workspace_write.network_access=true"$'\n'"-m"$'\n'"gpt-6.1-terra"$'\n'"Codex, add it." ]] || fail "codex -m argv (unattended runs reach the hub: network on): $(cat "${SANDBOX}/codex-prompt.args")"
 tmux -L "$SOCK" kill-session -t "=ai/codex/todo-prompt2" 2>/dev/null || true
 rm -f "$HOME"/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-PROMPTCX.jsonl
 pass "open_passes_model_to_codex"

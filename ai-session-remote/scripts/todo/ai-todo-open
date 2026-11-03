@@ -28,7 +28,8 @@
 # --prompt-file F   On a new conversation, F's text is the tool's first message (claude
 #                   and codex take it as an argument); ignored on a resume. F is deleted.
 # --model ID        On a new conversation, the tool's model (claude --model ID, codex -m ID).
-# --auto-approve    Claude starts in auto mode (--permission-mode auto: a safety check
+# --auto-approve    Codex gets network access in its sandbox (scheduled runs call the hub).
+#                   Claude starts in auto mode (--permission-mode auto: a safety check
 #                   approves routine actions and blocks risky ones), for scheduled
 #                   conversations in their own worktree. Claude asks once whether to trust a
 #                   new folder; trusting ~/.ai-remote/worktrees once covers every worktree.
@@ -395,6 +396,9 @@ if [ "$tool" = codex ]; then
   if [ "$fresh" = 1 ]; then
     mode=created
     set -- "$codex_bin" --approve-for-me
+    # Unattended runs call the hub (ai-todo-remind, ai-todo-watch, ai-todo-idea), which the
+    # workspace sandbox blocks by default; Claude's auto mode already allows it.
+    [ "$auto_approve" = 1 ] && set -- "$@" -c sandbox_workspace_write.network_access=true
     [ -n "$model" ] && set -- "$@" -m "$model"
     [ -n "$first_prompt" ] && set -- "$@" "$first_prompt"
   elif [ -z "$(find "$HOME/.codex/sessions" -name "rollout-*-$sid.jsonl" -print 2>/dev/null | head -n 1)" ]; then
