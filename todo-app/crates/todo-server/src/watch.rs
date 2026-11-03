@@ -424,7 +424,8 @@ pub(crate) fn list_issues_db(conn: &Connection, which: &str, now: DateTime<Utc>)
     let filter = if which == "recent" { "i.state = 'cleared' AND i.cleared_at >= ?1" } else { "i.state != 'cleared' AND ?1 IS NOT NULL" };
     let mut stmt = conn.prepare(&format!(
         "SELECT i.id, i.watcher, i.key, i.job_id, i.project_id, i.title, i.details, i.url, i.folder, i.state, i.taken_run_id,
-                r.todo_id, i.outcome, i.outcome_note, i.resolve_error, i.first_seen, i.last_seen, i.cleared_at, i.updated_at
+                r.todo_id, i.outcome, i.outcome_note, i.resolve_error, i.first_seen, i.last_seen, i.cleared_at, i.updated_at,
+                r.branch, (SELECT c.cwd FROM conversations c WHERE c.todo_id = r.todo_id ORDER BY c.created_at LIMIT 1), i.commits
          FROM watch_issues i LEFT JOIN job_runs r ON r.id = i.taken_run_id
          WHERE {filter} ORDER BY i.last_seen DESC, i.rowid DESC LIMIT 500"
     ))?;
@@ -449,6 +450,9 @@ pub(crate) fn list_issues_db(conn: &Connection, which: &str, now: DateTime<Utc>)
             last_seen: r.get(16)?,
             cleared_at: r.get(17)?,
             updated_at: r.get(18)?,
+            branch: r.get(19)?,
+            worktree: r.get(20)?,
+            commits: r.get::<_, Option<String>>(21)?.and_then(|c| serde_json::from_str(&c).ok()).unwrap_or_default(),
         })
     })?;
     rows.collect()
@@ -516,6 +520,9 @@ pub struct OutcomeRequest {
     pub outcome: String,
     #[serde(default)]
     pub note: String,
+    /// The fix's commits (hex, 7-40 characters, at most 20).
+    #[serde(default)]
+    pub commits: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -534,10 +541,16 @@ pub(crate) fn outcome_db(conn: &Connection, run_id: &str, req: &OutcomeRequest, 
     if !OUTCOMES.contains(&req.outcome.as_str()) {
         return Err(WatchError::BadRequest("outcome must be fixed, needs_you or cant_fix"));
     }
+    let commits: Vec<String> = req.commits.iter().map(|c| c.trim().to_ascii_lowercase()).collect();
+    if commits.len() > 20 || commits.iter().any(|c| !(7..=40).contains(&c.len()) || !c.chars().all(|ch| ch.is_ascii_hexdigit())) {
+        return Err(WatchError::BadRequest("commits must be up to 20 hex shas"));
+    }
     let note: String = req.note.trim().chars().take(500).collect();
     let changed = conn.execute(
-        "UPDATE watch_issues SET outcome = ?3, outcome_note = ?4, updated_at = ?5 WHERE taken_run_id = ?1 AND key = ?2",
-        params![run_id, req.key.trim(), req.outcome, note, sql_time(now)],
+        "UPDATE watch_issues SET outcome = ?3, outcome_note = ?4, updated_at = ?5,
+             commits = CASE WHEN ?6 = '[]' THEN commits ELSE ?6 END
+         WHERE taken_run_id = ?1 AND key = ?2",
+        params![run_id, req.key.trim(), req.outcome, note, sql_time(now), serde_json::to_string(&commits).unwrap_or_default()],
     )?;
     if changed == 0 {
         return Err(WatchError::NotFound("Issue not taken by this run"));
@@ -590,6 +603,25 @@ pub(crate) fn overwhelmed_target(conn: &Connection, run_id: &str) -> Result<Opti
     };
     let first = conn.execute("INSERT OR IGNORE INTO watch_alerts (job_id, day) VALUES (?1, 'agent')", params![format!("run:{run_id}")])?;
     Ok((first > 0).then_some((name, run.todo_id)))
+}
+
+/// The watchers installed on a computer, as its runner last reported them.
+pub(crate) fn watchers_db(conn: &Connection, computer_id: &str) -> Result<Vec<todo_shared::WatcherInfo>, WatchError> {
+    let raw: Option<Option<String>> =
+        conn.query_row("SELECT watchers FROM computers WHERE id = ?1", params![computer_id], |r| r.get(0)).optional()?;
+    let raw = raw.ok_or(WatchError::NotFound("Computer not found"))?;
+    Ok(raw.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default())
+}
+
+pub(crate) fn set_watchers_db(conn: &Connection, computer_id: &str, watchers: &[todo_shared::WatcherInfo]) -> Result<(), WatchError> {
+    let changed = conn.execute(
+        "UPDATE computers SET watchers = ?2 WHERE id = ?1",
+        params![computer_id, serde_json::to_string(watchers).unwrap_or_default()],
+    )?;
+    if changed == 0 {
+        return Err(WatchError::NotFound("Computer not found"));
+    }
+    Ok(())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -746,6 +778,24 @@ pub async fn run_overwhelmed(
         Ok(None) => HttpResponse::Ok().json(serde_json::json!({"ok": true, "sent": false})),
         Err(e) => respond(e),
     }
+}
+
+pub async fn get_watchers(pool: web::Data<DbPool>, path: web::Path<String>) -> HttpResponse {
+    let conn = conn!(pool);
+    match watchers_db(&conn, &path) {
+        Ok(v) => HttpResponse::Ok().json(v),
+        Err(e) => respond(e),
+    }
+}
+
+pub async fn put_watchers(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<Vec<todo_shared::WatcherInfo>>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = conn!(pool);
+    done(set_watchers_db(&conn, &path, &body).map(|_| serde_json::json!({"ok": true})), &broadcaster)
 }
 
 #[cfg(test)]
@@ -1250,6 +1300,63 @@ pub(crate) mod tests {
         taken(&conn, "mine", "r1", None);
         assert!(overwhelmed_target(&conn, "r1").ok().unwrap().is_some());
         assert!(overwhelmed_target(&conn, "r1").ok().unwrap().is_none(), "a second overwhelmed push from one run is dropped");
+    }
+
+    #[actix_web::test]
+    async fn outcome_keeps_commits_and_rejects_bad_sha() {
+        use crate::test_support::post;
+        use actix_web::http::StatusCode;
+        use serde_json::json;
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        debug_run_with_conversation(&conn, "r1", "busy", true);
+        taken(&conn, "mine", "r1", None);
+        let bad = json!({"key": "mine", "outcome": "fixed", "note": "x", "commits": ["not-a-sha"]});
+        assert_eq!(post(&pool, "/api/watch/runs/r1/outcome", bad).await.0, StatusCode::BAD_REQUEST);
+        let good = json!({"key": "mine", "outcome": "fixed", "note": "x", "commits": ["5c36409e", "435b0cd5aa"]});
+        assert_eq!(post(&pool, "/api/watch/runs/r1/outcome", good).await.0, StatusCode::OK);
+        let listed = list_issues_db(&conn, "open", now()).unwrap();
+        assert_eq!(listed[0].commits, vec!["5c36409e".to_string(), "435b0cd5aa".to_string()]);
+    }
+
+    #[test]
+    fn issue_lists_branch_worktree_commits() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        debug_run_with_conversation(&conn, "r1", "idle", true);
+        conn.execute("UPDATE job_runs SET branch = 'scheduled/debug-sentry-x' WHERE id = 'r1'", []).unwrap();
+        taken(&conn, "mine", "r1", Some("fixed"));
+        conn.execute("UPDATE watch_issues SET commits = '[\"abc1234\"]'", []).unwrap();
+        let i = &list_issues_db(&conn, "open", now()).unwrap()[0];
+        assert_eq!((i.branch.as_deref(), i.worktree.as_deref()), (Some("scheduled/debug-sentry-x"), Some("~/w")));
+        assert_eq!(i.commits, vec!["abc1234".to_string()]);
+    }
+
+    #[test]
+    fn issue_lists_without_conversation() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        taken(&conn, "orphan", "gone-run", Some("fixed"));
+        let i = &list_issues_db(&conn, "open", now()).unwrap()[0];
+        assert_eq!((i.branch.as_deref(), i.worktree.as_deref(), i.commits.len()), (None, None, 0));
+    }
+
+    #[actix_web::test]
+    async fn watchers_report_round_trips() {
+        use crate::test_support::{get, put};
+        use actix_web::http::StatusCode;
+        use serde_json::json;
+        let (_db, pool) = pool("watch");
+        seed_watch(&pool.get().unwrap(), None);
+        assert_eq!(get(&pool, "/api/computers/mac/watchers").await.1, json!([]));
+        let report = json!([{"name": "sentry", "title": "Sentry", "description": "Unresolved issues", "resolve": true,
+            "resolve_label": "Resolve in Sentry", "settings": [{"key": "SENTRY_TOKEN", "label": "Token", "secret": true, "set": true}]}]);
+        assert_eq!(put(&pool, "/api/computers/mac/watchers", report.clone()).await.0, StatusCode::OK);
+        assert_eq!(get(&pool, "/api/computers/mac/watchers").await.1, report);
+        assert_eq!(put(&pool, "/api/computers/nope/watchers", report).await.0, StatusCode::NOT_FOUND);
     }
 
     #[test]

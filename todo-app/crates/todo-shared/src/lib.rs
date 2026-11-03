@@ -1298,6 +1298,42 @@ pub struct WatchIssue {
     pub last_seen: String,
     pub cleared_at: Option<String>,
     pub updated_at: String,
+    /// The branch of the conversation that took it (where a fix is committed).
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// That conversation's folder (its worktree).
+    #[serde(default)]
+    pub worktree: Option<String>,
+    /// The fix's commits, as the agent reported them.
+    #[serde(default)]
+    pub commits: Vec<String>,
+}
+
+/// A watcher installed on a computer, from its manifest; settings say only whether they are set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatcherInfo {
+    pub name: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub settings: Vec<WatcherSetting>,
+    #[serde(default)]
+    pub resolve: bool,
+    #[serde(default)]
+    pub resolve_label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatcherSetting {
+    pub key: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub secret: bool,
+    #[serde(default)]
+    pub set: bool,
 }
 
 /// An idea on a project: `new`, `researching`, `researched` or `dropped`.

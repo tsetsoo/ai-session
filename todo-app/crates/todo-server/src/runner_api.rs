@@ -61,6 +61,9 @@ pub struct StartRequest {
     /// `~` form.
     pub cwd: String,
     pub is_git: bool,
+    /// The worktree's branch (newer runners).
+    #[serde(default)]
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,7 +100,8 @@ const FIX_PROMPT: &str = "Fix these {name} issues in {folder}. They are listed b
 ISSUES {nonce}>>>
 
 Group issues that share a cause. For each one: find the cause, write a fix with a test where you can, and commit it on this worktree's branch. Report each issue's outcome:
-~/.ai-remote/bin/ai-todo-watch outcome <key> fixed|needs_you|cant_fix \"<one-line note>\"
+~/.ai-remote/bin/ai-todo-watch outcome <key> fixed|needs_you|cant_fix \"<one-line note>\" [--commit <sha>]...
+For a fix, name its commits with --commit, so the user can find them.
 If there are more issues than you can handle well, or the work is bigger than a fix you can verify, run
 ~/.ai-remote/bin/ai-todo-watch overwhelmed \"<why>\"
 and give back what you won't do: ~/.ai-remote/bin/ai-todo-watch release <key>...
@@ -408,8 +412,15 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         LimitSetting::Wait { .. } => "wait",
     };
     tx.execute(
-        "UPDATE job_runs SET todo_id = ?2, tool = ?3, limit_mode = ?4, started_at = ?5, updated_at = ?5 WHERE id = ?1",
-        params![run.id, todo_id, tool, limit_mode, sql_time(Utc::now())],
+        "UPDATE job_runs SET todo_id = ?2, tool = ?3, limit_mode = ?4, started_at = ?5, updated_at = ?5, branch = ?6 WHERE id = ?1",
+        params![
+            run.id,
+            todo_id,
+            tool,
+            limit_mode,
+            sql_time(Utc::now()),
+            req.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()).map(|b| b.chars().take(200).collect::<String>())
+        ],
     )?;
     let note = run.note.clone().unwrap_or_default();
     let vars = [
@@ -1089,6 +1100,26 @@ mod watch_runner_tests {
         let body = json!({"cwd": "~/w", "is_git": true});
         assert_eq!(post(&pool, &format!("/api/runs/{first}/start"), body.clone()).await.0, StatusCode::OK);
         assert_eq!(post(&pool, "/api/runs/second/start", body).await.0, StatusCode::CONFLICT);
+    }
+
+    #[actix_web::test]
+    async fn start_stores_branch() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        report_db(&conn, &running_check(&conn, "c1"), &report_of(vec![problem("b1", "B1", Some("backend")), problem("w1", "W1", Some("webapp"))]), now())
+            .ok()
+            .unwrap();
+        let runs = debug_runs(&conn);
+        for run in &runs {
+            post(&pool, &format!("/api/runs/{run}/claim"), json!({"computer_id": "mac"})).await;
+        }
+        let with = json!({"cwd": "~/w", "is_git": true, "branch": "scheduled/debug-sentry-1"});
+        assert_eq!(post(&pool, &format!("/api/runs/{}/start", runs[0]), with).await.0, StatusCode::OK);
+        assert_eq!(post(&pool, &format!("/api/runs/{}/start", runs[1]), json!({"cwd": "~/w2", "is_git": true})).await.0, StatusCode::OK);
+        let branch = |id: &str| -> Option<String> { conn.query_row("SELECT branch FROM job_runs WHERE id = ?1", params![id], |r| r.get(0)).unwrap() };
+        assert_eq!(branch(&runs[0]).as_deref(), Some("scheduled/debug-sentry-1"));
+        assert_eq!(branch(&runs[1]), None, "an older runner sends no branch");
     }
 
     #[actix_web::test]

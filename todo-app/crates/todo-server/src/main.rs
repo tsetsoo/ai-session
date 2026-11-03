@@ -63,6 +63,8 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         // AI conversations
         .route("/api/computers", web::get().to(conversations::list_computers))
         .route("/api/computers", web::post().to(conversations::create_computer))
+        .route("/api/computers/{id}/watchers", web::get().to(watch::get_watchers))
+        .route("/api/computers/{id}/watchers", web::put().to(watch::put_watchers))
         .route("/api/computers/{id}", web::patch().to(conversations::update_computer))
         .route("/api/computers/{id}", web::delete().to(conversations::delete_computer))
         .route("/api/sections/computers", web::get().to(conversations::list_section_computers))

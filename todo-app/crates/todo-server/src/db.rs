@@ -117,6 +117,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v13_objects(&conn).expect("Failed to create scheduler objects");
     create_v14_objects(&conn).expect("Failed to create idea objects");
     create_v15_objects(&conn).expect("Failed to create watch objects");
+    create_v16_objects(&conn).expect("Failed to add watch columns");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -451,6 +452,16 @@ const V15_OBJECTS: &str = "
         PRIMARY KEY (job_id, day)
     );";
 
+/// v16: a run's branch, an issue's commits, a computer's installed watchers. Only adds.
+fn create_v16_objects(conn: &Connection) -> rusqlite::Result<()> {
+    for (table, column) in [("job_runs", "branch"), ("watch_issues", "commits"), ("computers", "watchers")] {
+        if table_sql(conn, table)?.is_some() && !column_exists(conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT;"))?;
+        }
+    }
+    Ok(())
+}
+
 fn create_v15_objects(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V15_OBJECTS)?;
     // A watcher's hidden "Debug" job: the watcher it serves (not its name, which can change).
@@ -573,13 +584,14 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v11: todos can be put on hold (additive)
 /// - v14: `ideas`; `job_runs.note` (additive)
 /// - v15: `watch_issues`, `watch_alerts` (additive)
+/// - v16: `job_runs.branch`, `watch_issues.commits`, `computers.watchers` (additive)
 /// - v13: scheduler `jobs`, `job_runs`, `scheduler_settings`; `todos.scheduled_job_id` and
 ///   `scheduled_run_id` (additive)
 /// - v12: memories gain usage, pending, import key and archive reason; `memory_active_days`;
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -594,6 +606,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
         return Ok(0);
     }
     if table_sql(conn, "watch_issues")?.is_some() {
+        if column_exists(conn, "computers", "watchers")? {
+            return Ok(16);
+        }
         return Ok(15);
     }
     if table_sql(conn, "ideas")?.is_some() {
@@ -768,8 +783,16 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 14 {
         if !backed_up {
             backup_before_migration(conn, db_path, 15)?;
+            backed_up = true;
         }
         create_v15_objects(conn)?;
+        version = 15;
+    }
+    if version == 15 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 16)?;
+        }
+        create_v16_objects(conn)?;
     }
     Ok(())
 }
@@ -2394,9 +2417,25 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 15);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(table_sql(&conn, "watch_issues").unwrap().is_some());
         assert!(table_sql(&conn, "watch_alerts").unwrap().is_some());
+    }
+
+    #[test]
+    fn v15_migrates_to_v16_adding_columns() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch("ALTER TABLE job_runs DROP COLUMN branch; ALTER TABLE watch_issues DROP COLUMN commits;
+             ALTER TABLE computers DROP COLUMN watchers; PRAGMA user_version = 15;").unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 16);
+        assert!(column_exists(&conn, "job_runs", "branch").unwrap());
+        assert!(column_exists(&conn, "watch_issues", "commits").unwrap());
+        assert!(column_exists(&conn, "computers", "watchers").unwrap());
     }
 
     #[test]
