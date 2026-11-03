@@ -96,6 +96,8 @@ enum JobText {
         case .push: "Push"
         case let .todo(_, projectId, _):
             "Todo" + (projectId.flatMap { store.project(id: $0)?.name }.map { " · \($0)" } ?? "")
+        case let .watch(w):
+            "Watch · \(w.watcher) · \(store.project(id: w.projectId)?.name ?? "a project")"
         case let .unsupported(kind): "\(kind.capitalized) job (needs a newer app)"
         }
     }
@@ -117,6 +119,12 @@ enum JobText {
             return "\(what) in \(project?.name ?? "a project") with \(a.tool.capitalized) on \(computer), in its own worktree. \(limit) \(pushes)"
         case let .push(title, body): return "Sends a push: “\(title)”" + (body.isEmpty ? "" : " — \(body)")
         case let .todo(title, _, _): return "Creates the todo “\(title)”."
+        case let .watch(w):
+            let computer = store.computers.first { $0.id == w.computerId }?.name ?? "its computer"
+            let project = store.project(id: w.projectId)?.name ?? "a project"
+            let debug = w.debugTool.map { "Open problems are fixed by \($0.capitalized) conversations in \(project), at most 2 at once." }
+                ?? "Push only: no conversations."
+            return "Runs the \(w.watcher) watcher on \(computer). New problems push. \(debug)"
         case let .unsupported(kind): return "A \(kind) job. Update the app to see and edit it."
         }
     }
@@ -273,6 +281,11 @@ struct JobFormPane: View {
                 Picker("Does", selection: $draft.kind) {
                     ForEach(JobDraft.Kind.allCases) { Text($0.rawValue).tag($0) }
                 }
+                .onChange(of: draft.kind) { old, new in
+                    // A new watch job checks every 10 minutes unless the cron was changed.
+                    if new == .watch, job == nil, draft.cron == JobDraft().cron { draft.cron = JobDraft.watchCron }
+                    if old == .watch, job == nil, draft.cron == JobDraft.watchCron { draft.cron = JobDraft().cron }
+                }
             }
             Section {
                 Toggle("On a schedule", isOn: $draft.usesCron)
@@ -287,7 +300,9 @@ struct JobFormPane: View {
                 if let saved = savedScheduleText {
                     Label(saved, systemImage: "calendar").font(.callout).foregroundStyle(.secondary)
                 }
-                Stepper("At most \(draft.maxRuns) runs a day", value: $draft.maxRuns, in: 1...96)
+                if draft.kind != .watch {
+                    Stepper("At most \(draft.maxRuns) runs a day", value: $draft.maxRuns, in: 1...96)
+                }
             } header: {
                 Text("When")
             } footer: {
@@ -335,6 +350,38 @@ struct JobFormPane: View {
                 Section("Push") {
                     TextField("Title", text: $draft.title)
                     TextField("Body", text: $draft.pushBody)
+                }
+            case .watch:
+                Section {
+                    TextField("Watcher", text: $draft.watcher)
+                        .font(.body.monospaced())
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                        .autocorrectionDisabled()
+                    Picker("Computer", selection: $draft.computerId) {
+                        if draft.computerId.isEmpty { Text("Choose…").tag("") }
+                        ForEach(store.computers, id: \.id) { Text($0.name).tag($0.id) }
+                    }
+                    Picker("Project", selection: $draft.projectId) {
+                        if draft.projectId.isEmpty { Text("Choose…").tag("") }
+                        ForEach(store.projects, id: \.id) { Text($0.name).tag($0.id) }
+                    }
+                    Picker("Fix with", selection: $draft.debugTool) {
+                        Text("Claude").tag("claude")
+                        Text("Codex").tag("codex")
+                        Text("Nobody (push only)").tag("")
+                    }
+                    if !draft.debugTool.isEmpty {
+                        VStack(alignment: .leading) {
+                            Text("Extra instructions (optional)").font(.caption).foregroundStyle(.secondary)
+                            TextEditor(text: $draft.prompt).frame(minHeight: 100).font(.body)
+                        }
+                    }
+                } header: {
+                    Text("Watch")
+                } footer: {
+                    Text("The watcher is a file in ~/.ai-remote/watchers on that computer; its secrets stay in ~/.ai-remote/watchers/env there.")
                 }
             case .todo:
                 Section("Todo") {

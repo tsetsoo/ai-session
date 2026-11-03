@@ -33,6 +33,12 @@ final class TodoHubStore {
     /// Ideas agents proposed that wait for an OK, on every project. Badge on Automation → Ideas;
     /// one hub call per refresh keeps it current even before the Ideas list is opened.
     private(set) var pendingIdeaCount = 0
+    /// Watcher issues still open (or resolving). Loaded with every refresh: badge on
+    /// Automation → Watchers.
+    private(set) var openWatchIssues: [WatchIssue] = []
+    /// Watcher issues cleared in the last 7 days, loaded on demand.
+    private(set) var recentWatchIssues: [WatchIssue] = []
+    var openWatchIssueCount: Int { openWatchIssues.count }
     /// The newest runs across jobs for Automation → Activity; nil on a hub without `/api/runs`.
     private(set) var recentRuns: [RecentRun]? = []
     /// True while showing the cached snapshot because the hub could not be reached.
@@ -211,8 +217,10 @@ final class TodoHubStore {
             async let pending = try? client.listMemories(MemoryQuery(limit: 1000, pending: true))
             async let loadedJobs = try? client.listJobs()
             async let pendingIdeasList = try? client.listIdeas(projectId: nil, pending: true)
+            async let watchIssues = try? client.listWatchIssues(state: "open")
             let (t, c, m, comps) = try await (todos, conversations, mappings, computers)
             let (p, sugg, pend, jobList, pendIdeas) = await (projects, suggestions, pending, loadedJobs, pendingIdeasList)
+            let openIssues = await watchIssues
             // A refresh that started later has newer data; don't overwrite it.
             guard generation == refreshGeneration else { return }
             guard changesAtStart == localChanges else { return }
@@ -224,6 +232,7 @@ final class TodoHubStore {
             if let pend { pendingMemoryCount = pend.filter(\.pending).count }
             if let jobList { jobs = jobList }
             if let pendIdeas { pendingIdeaCount = pendIdeas.filter(\.pending).count }
+            if let openIssues { openWatchIssues = openIssues }
             if wantsLiveUpdates && eventsTask == nil { startEventsTask() }
         } catch TodoHubError.unreachable {
             guard generation == refreshGeneration else { return }
@@ -1034,6 +1043,31 @@ final class TodoHubStore {
         try await perform { client in _ = try await client.researchIdea(id: idea.id) }
         await loadAllIdeas()
         await loadRecentRuns()
+    }
+
+    /// Reloads open and recently cleared watcher issues.
+    func loadWatchIssues() async {
+        #if DEBUG
+        if demo != nil { return }
+        #endif
+        guard let client = try? requireClient() else { return }
+        async let open = try? client.listWatchIssues(state: "open")
+        async let recent = try? client.listWatchIssues(state: "recent")
+        let (o, r) = await (open, recent)
+        if let o { openWatchIssues = o }
+        if let r { recentWatchIssues = r }
+    }
+
+    /// Resolve at the source; the watcher's computer does it within a minute.
+    func resolveWatchIssue(_ issue: WatchIssue) async throws {
+        try await perform { client in try await client.resolveWatchIssue(id: issue.id) }
+        await loadWatchIssues()
+    }
+
+    /// Hand a needs-you or can't-fix issue to a new conversation.
+    func retryWatchIssue(_ issue: WatchIssue) async throws {
+        try await perform { client in try await client.retryWatchIssue(id: issue.id) }
+        await loadWatchIssues()
     }
 
     /// Reloads `recentRuns`; nil when the hub has no `/api/runs` yet.

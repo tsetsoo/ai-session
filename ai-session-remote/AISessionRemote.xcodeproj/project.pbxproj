@@ -159,6 +159,7 @@
 		93BB67AB83C83B09CE1C55B2 /* TodoListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3C31BAE70EEEAC4E0643FB /* TodoListView.swift */; };
 		9406089777419F1CC417A885 /* DuplicateInMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF89B193750522EEAD51834C /* DuplicateInMenu.swift */; };
 		9457E33FBF3D6F5F05EAD86F /* HostEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99B0F4154BA389FF80D827AE /* HostEditorView.swift */; };
+		94E5EF07291C54BCF762A5BE /* WatchersPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCE24CED81E2D0F51FE59940 /* WatchersPanes.swift */; };
 		962ADDED4007BC69B8EB2B10 /* UsageLimitsBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = CACA4D506127E0997E071460 /* UsageLimitsBar.swift */; };
 		96B9226636789798183809C4 /* ComputerListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 739BB066C50D554FBFA92B3C /* ComputerListView.swift */; };
 		96BC86AE987F12B6E6A0FCAD /* ProjectEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97B7A594C8A26491ACD55735 /* ProjectEditorSheet.swift */; };
@@ -187,6 +188,7 @@
 		A4969E70C98FC8113339AE7A /* MacCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 244B79FA4458DBBC91C4A9BA /* MacCompatibility.swift */; };
 		A698ABD1647F3AEBF7A07835 /* TodoConversationScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D950090C7A69096F9F3FF813 /* TodoConversationScreen.swift */; };
 		A7F52FFAC413E96F08E0561B /* IdeasPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 137F28FB6F0222F70DE53BCF /* IdeasPanes.swift */; };
+		A833E425DF3BF7260B05B895 /* WatchersPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCE24CED81E2D0F51FE59940 /* WatchersPanes.swift */; };
 		A9EDC3100C97630A41581C4E /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
 		AB02466B94B11418B991DFCD /* ShellCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F1B1C90764CF03BCFD9E812 /* ShellCommands.swift */; };
 		ABC66F9CB4F38FE59C4A6954 /* ConversationFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87495E95B7CCFE26E721047A /* ConversationFrame.swift */; };
@@ -455,6 +457,7 @@
 		FA4DD29F996099D82C6D7514 /* HostEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEntity.swift; sourceTree = "<group>"; };
 		FC52BED04F49AD7A7B30B16E /* MCPStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStoreTests.swift; sourceTree = "<group>"; };
 		FC6FD9E3610549559A6206B4 /* PhoneAutomation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneAutomation.swift; sourceTree = "<group>"; };
+		FCE24CED81E2D0F51FE59940 /* WatchersPanes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchersPanes.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -631,6 +634,7 @@
 				137F28FB6F0222F70DE53BCF /* IdeasPanes.swift */,
 				1EE350274D8FBBAD33BC7718 /* JobsPanes.swift */,
 				FC6FD9E3610549559A6206B4 /* PhoneAutomation.swift */,
+				FCE24CED81E2D0F51FE59940 /* WatchersPanes.swift */,
 			);
 			path = Automation;
 			sourceTree = "<group>";
@@ -1143,6 +1147,7 @@
 				F2E7CD434C69783BD0D1B0EF /* TransientValue.swift in Sources */,
 				62EE3364D3A7193767345B7E /* UsageLimitsBar.swift in Sources */,
 				737E82EA63D17DED7D7A1E5E /* VisiblePresence.swift in Sources */,
+				A833E425DF3BF7260B05B895 /* WatchersPanes.swift in Sources */,
 				7676E04E635A23C1677E618F /* WeeklyStatsCard.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1263,6 +1268,7 @@
 				47BA8BDD90F1E015257BC3BE /* TransientValue.swift in Sources */,
 				962ADDED4007BC69B8EB2B10 /* UsageLimitsBar.swift in Sources */,
 				80A8F55A26E2FCA12D648A3E /* VisiblePresence.swift in Sources */,
+				94E5EF07291C54BCF762A5BE /* WatchersPanes.swift in Sources */,
 				5BA3E1B8237FDA5412EAC38D /* WeeklyStatsCard.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

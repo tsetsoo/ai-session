@@ -1,7 +1,7 @@
 import AISessionCore
 import SwiftUI
 
-/// Automation's sidebar: Jobs, Ideas, Activity.
+/// Automation's sidebar: Jobs, Ideas, Watchers, Activity.
 struct AutomationSidebar: View {
     @Environment(AppModel.self) private var model
 
@@ -10,7 +10,7 @@ struct AutomationSidebar: View {
         List(selection: Binding<AutomationItem?>(get: { model.automationItem }, set: { if let item = $0 { model.automationItem = item } })) {
             ForEach(AutomationItem.allCases) { item in
                 Label(item.title, systemImage: item.systemImage)
-                    .badge(item == .ideas ? pendingIdeas : 0)
+                    .badge(item == .ideas ? pendingIdeas : item == .watchers ? model.store.openWatchIssueCount : 0)
                     .tag(item)
             }
         }
@@ -33,6 +33,8 @@ struct AutomationListColumn: View {
                      isDirty: model.jobDraftIsDirty)
         case .ideas:
             IdeasList(store: model.store, target: $model.automationIdeas)
+        case .watchers:
+            WatchersList(store: model.store, selection: $model.automationWatchIssue)
         case .activity:
             ActivityList(store: model.store, selection: $model.automationRunID, onOpenTodo: onOpenTodo)
         }
@@ -72,6 +74,7 @@ struct AutomationDetailColumn: View {
             case .jobs: jobsPane
             case .ideas: IdeasDetail(store: model.store, target: Binding(get: { model.automationIdeas }, set: { model.automationIdeas = $0 }),
                                      onOpenTodo: onOpenTodo)
+            case .watchers: WatchIssueDetail(store: model.store, issueID: model.automationWatchIssue, onOpenTodo: onOpenTodo)
             case .activity: ActivityDetail(store: model.store, runID: model.automationRunID, onOpenJob: openJob, onOpenTodo: onOpenTodo)
             }
         }

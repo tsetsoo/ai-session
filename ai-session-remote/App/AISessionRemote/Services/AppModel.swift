@@ -103,6 +103,8 @@ final class AppModel {
     var automationJobs: JobsPaneTarget?
     var automationIdeas: IdeasPaneTarget?
     var automationRunID: String?
+    /// Automation → Watchers: the issue in the big pane.
+    var automationWatchIssue: String?
     /// The job form's draft and what it started from; dirty when they differ.
     var jobDraft: JobDraft?
     var jobDraftOriginal: JobDraft?

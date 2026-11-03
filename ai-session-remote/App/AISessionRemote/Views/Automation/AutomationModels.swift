@@ -10,13 +10,14 @@ enum AppMode: String, CaseIterable, Identifiable {
 
 /// Automation's sidebar.
 enum AutomationItem: String, CaseIterable, Identifiable, Hashable {
-    case jobs, ideas, activity
+    case jobs, ideas, watchers, activity
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .jobs: "Jobs"
         case .ideas: "Ideas"
+        case .watchers: "Watchers"
         case .activity: "Activity"
         }
     }
@@ -25,6 +26,7 @@ enum AutomationItem: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .jobs: "clock.arrow.circlepath"
         case .ideas: "lightbulb"
+        case .watchers: "exclamationmark.triangle"
         case .activity: "list.bullet.rectangle"
         }
     }
