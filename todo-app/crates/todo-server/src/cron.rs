@@ -80,6 +80,49 @@ pub(crate) fn parse(expr: &str) -> Result<Cron, String> {
     })
 }
 
+/// A cron expression in plain words for the common shapes ("Weekdays at 09:00"); anything
+/// else is "Cron: <expr>".
+pub(crate) fn describe(expr: &str) -> String {
+    let fallback = || format!("Cron: {}", expr.trim());
+    if parse(expr).is_err() {
+        return fallback();
+    }
+    let f: Vec<&str> = expr.split_whitespace().collect();
+    let (min, hour, dom, mon, dow) = (f[0], f[1], f[2], f[3], f[4]);
+    let num = |s: &str| s.parse::<u32>().ok();
+    let every = |s: &str| s.strip_prefix("*/").and_then(|n| n.parse::<u32>().ok());
+    if let (Some(n), "*", "*", "*", "*") = (every(min), hour, dom, mon, dow) {
+        return if n == 1 { "Every minute".into() } else { format!("Every {n} minutes") };
+    }
+    if min == "*" && hour == "*" && dom == "*" && mon == "*" && dow == "*" {
+        return "Every minute".into();
+    }
+    if let (Some(m), Some(n), "*", "*", "*") = (num(min), every(hour), dom, mon, dow) {
+        let base = if n == 1 { "Every hour".to_string() } else { format!("Every {n} hours") };
+        return if m == 0 { base } else { format!("{base} at :{m:02}") };
+    }
+    let (Some(m), Some(h)) = (num(min), num(hour)) else { return fallback() };
+    let at = format!("{h:02}:{m:02}");
+    if mon != "*" {
+        return fallback();
+    }
+    const DAYS: [&str; 7] = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
+    match (dom, dow) {
+        ("*", "*") => format!("Every day at {at}"),
+        ("*", "1-5") => format!("Weekdays at {at}"),
+        ("*", "0,6") | ("*", "6,0") | ("*", "6,7") => format!("Weekends at {at}"),
+        ("*", d) => match num(d) {
+            Some(d) if d <= 7 => format!("{} at {at}", DAYS[(d % 7) as usize]),
+            _ => fallback(),
+        },
+        (d, "*") => match num(d) {
+            Some(d) => format!("Monthly on day {d} at {at}"),
+            None => fallback(),
+        },
+        _ => fallback(),
+    }
+}
+
 impl Cron {
     fn day_matches(&self, date: NaiveDate) -> bool {
         if self.months & (1 << date.month()) == 0 {
@@ -139,6 +182,21 @@ mod tests {
 
     fn sofia(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
         TZ.with_ymd_and_hms(y, mo, d, h, mi, 0).single().unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn describe_common_schedules() {
+        for (expr, text) in [
+            ("*/15 * * * *", "Every 15 minutes"),
+            ("0 9 * * *", "Every day at 09:00"),
+            ("0 9 * * 1-5", "Weekdays at 09:00"),
+            ("30 8 * * 1", "Mondays at 08:30"),
+            ("0 */2 * * *", "Every 2 hours"),
+            ("0 9 1 * *", "Monthly on day 1 at 09:00"),
+            ("5 4 * 2 3", "Cron: 5 4 * 2 3"),
+        ] {
+            assert_eq!(describe(expr), text, "{expr}");
+        }
     }
 
     #[test]

@@ -821,7 +821,9 @@ final class TodoHubRefreshTests: XCTestCase {
 
         clock.advance()
         _ = await (first, second)
-        XCTAssertEqual(HubRefreshStub.hits, 6, "six hub calls, once for the burst")
+        // One refresh: todos, conversations, section computers, computers, projects,
+        // suggestions, pending memories and jobs.
+        XCTAssertEqual(HubRefreshStub.hits, 9, "one refresh's hub calls (with pending ideas), once for the burst")
         XCTAssertNil(store.errorMessage)
         XCTAssertNil(store.backgroundIssue)
         XCTAssertEqual(store.todos.count, DemoFixtures.todos.count)
@@ -855,7 +857,7 @@ final class TodoHubRefreshTests: XCTestCase {
         let clock = ManualRefreshClock()
         let store = try makeStore(sleep: { try await clock.sleep($0) })
         await store.refresh(trigger: .user)
-        XCTAssertEqual(HubRefreshStub.hits, 6)
+        XCTAssertEqual(HubRefreshStub.hits, 9, "one refresh's hub calls (with pending ideas)")
         XCTAssertTrue(clock.recordedDurations.isEmpty)
         XCTAssertNil(store.errorMessage)
     }

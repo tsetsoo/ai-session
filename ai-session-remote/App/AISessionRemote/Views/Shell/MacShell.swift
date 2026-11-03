@@ -83,17 +83,50 @@ struct MacShell: View {
 
     private var store: TodoHubStore { model.store }
 
+    /// A todo linked from Automation (a run's or an idea's): back to Sessions, then open it.
+    private func openTodoFromAutomation(_ todoID: String) {
+        model.appMode = .sessions
+        model.pendingOpenTodoID = todoID
+    }
+
     var body: some View {
         @Bindable var model = model
         NavigationSplitView {
-            SidebarView(selection: $model.sidebarSelection) { settings = SettingsRequest(initial: nil) }
-                .navigationSplitViewColumnWidth(min: 200, ideal: 232, max: 320)
+            VStack(spacing: 0) {
+                ModeSwitch(mode: $model.appMode)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                if model.appMode == .automation {
+                    AutomationSidebar()
+                } else {
+                    SidebarView(selection: $model.sidebarSelection) { settings = SettingsRequest(initial: nil) }
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 200, ideal: 232, max: 320)
         } content: {
-            contentColumn
-                .navigationSplitViewColumnWidth(min: 300, ideal: 352, max: 520)
+            Group {
+                if model.appMode == .automation {
+                    AutomationListColumn(onOpenTodo: openTodoFromAutomation)
+                } else {
+                    contentColumn
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 300, ideal: 352, max: 520)
         } detail: {
-            // Its own view, so choosing a conversation does not rebuild the list column.
-            ShellDetail(frameRequest: $frameRequest, computerPage: computerPage, onOpen: { open($0) })
+            // Its own view, so choosing a conversation does not rebuild the list column. It
+            // stays mounted under Automation, so live terminals aren't torn down.
+            ZStack {
+                ShellDetail(frameRequest: $frameRequest, computerPage: computerPage, onOpen: { open($0) })
+                    .opacity(model.appMode == .sessions ? 1 : 0)
+                    .allowsHitTesting(model.appMode == .sessions)
+                    .accessibilityHidden(model.appMode != .sessions)
+                if model.appMode == .automation {
+                    NavigationStack {
+                        AutomationDetailColumn(onOpenTodo: openTodoFromAutomation)
+                    }
+                    .background(.background)
+                }
+            }
         }
         .tint(DS.accent)
         .environment(\.openAppSettings) { settings = SettingsRequest(initial: $0) }
@@ -153,6 +186,7 @@ struct MacShell: View {
         .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
             guard let todoID, let todo = store.todos.first(where: { $0.id == todoID }) else { return }
             model.pendingOpenTodoID = nil
+            model.appMode = .sessions
             model.shells.selectedID = nil
             model.sidebarSelection = Self.sidebarTarget(showing: todo, from: sidebarItem, board: model.board)
             computerPage = nil
@@ -239,8 +273,6 @@ struct MacShell: View {
                                  onOpen: { open($0) })
         case let .section(section):
             TodoListView(sections: [section], query: query, selection: selection, onOpen: { open($0) })
-        case .jobs:
-            JobsView(store: store)
         case .projects:
             ProjectsList(store: store, selection: Binding(
                 get: { model.selectedProjectID },
@@ -281,7 +313,7 @@ struct MacShell: View {
 
     /// For the Conversation menu; none while one of the shell's sheets is up.
     private var shellCommands: ShellCommands? {
-        guard settings == nil, !showingAdd, !showingNewFromConversation, linkTarget == nil else { return nil }
+        guard model.appMode == .sessions, settings == nil, !showingAdd, !showingNewFromConversation, linkTarget == nil else { return nil }
         let canAdd = model.isConfigured && !store.isOffline
         return ShellCommands(
             goTo: { showingPalette = true },
@@ -722,7 +754,9 @@ private struct ConversationColumn: View {
     @State private var showingMemories = false
 
     private var frontmostID: String? {
-        guard showsConversation else { return nil }
+        // In Automation the conversation pane is hidden: nothing in it is frontmost, so its
+        // terminal gives up keyboard focus and its title and toolbar step aside.
+        guard showsConversation, model.appMode == .sessions else { return nil }
         return model.selectedTodoID
     }
 
@@ -761,7 +795,9 @@ private struct ConversationColumn: View {
             },
             store: model.store
         ))
-        .toolbar { columnToolbar }
+        .toolbar {
+            if model.appMode == .sessions { columnToolbar }
+        }
         .onChange(of: model.selectedTodoID, initial: true) { _, id in syncSelection(id) }
         .onChange(of: model.store.todos.map(\.id)) { _, ids in
             let alive = Set(ids)
@@ -781,7 +817,7 @@ private struct ConversationColumn: View {
     /// The column owns the window title: each mounted frame would otherwise publish its own.
     @ViewBuilder
     private var windowTitle: some View {
-        if showsConversation, let id = model.selectedTodoID,
+        if showsConversation, model.appMode == .sessions, let id = model.selectedTodoID,
            let todo = model.store.todos.first(where: { $0.id == id }) {
             Color.clear
                 .frame(width: 0, height: 0)
@@ -1315,7 +1351,6 @@ extension AppModel.SidebarItem {
         case "review": self = .review
         case "working", "running": self = .working
         case "projects": self = .projects
-        case "jobs": self = .jobs
         default:
             if let section = TodoSection(rawValue: demoArgument) {
                 self = .section(section)

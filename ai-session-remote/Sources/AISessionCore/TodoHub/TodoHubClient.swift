@@ -411,8 +411,10 @@ public struct TodoHubClient: Sendable {
     // MARK: Ideas
 
     /// Starred first, then by status, then newest. Pending (agent-proposed) ones only with `pending`.
-    public func listIdeas(projectId: String, pending: Bool = false) async throws -> [Idea] {
-        var query = [URLQueryItem(name: "project_id", value: projectId)]
+    /// `projectId` nil: every project's ideas.
+    public func listIdeas(projectId: String?, pending: Bool = false) async throws -> [Idea] {
+        var query: [URLQueryItem] = []
+        if let projectId { query.append(URLQueryItem(name: "project_id", value: projectId)) }
         if pending { query.append(URLQueryItem(name: "pending", value: "true")) }
         return try await decode([Idea].self, send("GET", "/api/ideas", query: query))
     }
@@ -432,6 +434,16 @@ public struct TodoHubClient: Sendable {
     /// A todo in the idea's project; returns its id.
     public func ideaToTodo(id: String) async throws -> String {
         try await decode(IdeaTodoResponse.self, send("POST", "/api/ideas/\(escape(id))/todo")).todoId
+    }
+
+    /// Research this idea now (it becomes researching at once); returns the queued run.
+    public func researchIdea(id: String) async throws -> JobRun {
+        try await decode(JobRun.self, send("POST", "/api/ideas/\(escape(id))/research"))
+    }
+
+    /// The newest runs across all jobs.
+    public func recentRuns(limit: Int = 50) async throws -> [RecentRun] {
+        try await decode([RecentRun].self, send("GET", "/api/runs", query: [URLQueryItem(name: "limit", value: String(limit))]))
     }
 
     /// Starts a conversation that helps shape an idea from `hint`; it appears in Needs you.

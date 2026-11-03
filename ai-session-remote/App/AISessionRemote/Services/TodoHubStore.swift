@@ -28,6 +28,13 @@ final class TodoHubStore {
     private(set) var pendingMemoryCount = 0
     /// Scheduler jobs. Empty on a hub from before the scheduler.
     private(set) var jobs: [SchedulerJob] = []
+    /// Ideas of every project for Automation → Ideas (pending ones included), loaded on demand.
+    private(set) var allIdeas: [Idea] = []
+    /// Ideas agents proposed that wait for an OK, on every project. Badge on Automation → Ideas;
+    /// one hub call per refresh keeps it current even before the Ideas list is opened.
+    private(set) var pendingIdeaCount = 0
+    /// The newest runs across jobs for Automation → Activity; nil on a hub without `/api/runs`.
+    private(set) var recentRuns: [RecentRun]? = []
     /// True while showing the cached snapshot because the hub could not be reached.
     private(set) var isOffline = false
     private(set) var cachedAt: Date?
@@ -203,8 +210,9 @@ final class TodoHubStore {
             // Optional too: a hub from before pending memories ignores the filter.
             async let pending = try? client.listMemories(MemoryQuery(limit: 1000, pending: true))
             async let loadedJobs = try? client.listJobs()
+            async let pendingIdeasList = try? client.listIdeas(projectId: nil, pending: true)
             let (t, c, m, comps) = try await (todos, conversations, mappings, computers)
-            let (p, sugg, pend, jobList) = await (projects, suggestions, pending, loadedJobs)
+            let (p, sugg, pend, jobList, pendIdeas) = await (projects, suggestions, pending, loadedJobs, pendingIdeasList)
             // A refresh that started later has newer data; don't overwrite it.
             guard generation == refreshGeneration else { return }
             guard changesAtStart == localChanges else { return }
@@ -215,6 +223,7 @@ final class TodoHubStore {
             )
             if let pend { pendingMemoryCount = pend.filter(\.pending).count }
             if let jobList { jobs = jobList }
+            if let pendIdeas { pendingIdeaCount = pendIdeas.filter(\.pending).count }
             if wantsLiveUpdates && eventsTask == nil { startEventsTask() }
         } catch TodoHubError.unreachable {
             guard generation == refreshGeneration else { return }
@@ -1000,6 +1009,46 @@ final class TodoHubStore {
         try await perform { client in _ = try await client.createJob(request) }
     }
 
+    /// Creates the job and returns its id once `jobs` has it.
+    func createJobReturningID(_ request: CreateJobRequest) async throws -> String {
+        var id = ""
+        try await perform { client in id = try await client.createJob(request).id }
+        await refresh()
+        return id
+    }
+
+    /// Reloads `allIdeas` (approved and pending, every project).
+    func loadAllIdeas() async {
+        #if DEBUG
+        if demo != nil { return }
+        #endif
+        guard let client = try? requireClient() else { return }
+        async let approved = try? client.listIdeas(projectId: nil)
+        async let pending = try? client.listIdeas(projectId: nil, pending: true)
+        let (a, p) = await (approved, pending)
+        if let a { allIdeas = a + (p ?? []).filter(\.pending) }
+        if let p { pendingIdeaCount = p.filter(\.pending).count }
+    }
+
+    func researchIdea(_ idea: Idea) async throws {
+        try await perform { client in _ = try await client.researchIdea(id: idea.id) }
+        await loadAllIdeas()
+        await loadRecentRuns()
+    }
+
+    /// Reloads `recentRuns`; nil when the hub has no `/api/runs` yet.
+    func loadRecentRuns() async {
+        #if DEBUG
+        if demo != nil { return }
+        #endif
+        guard let client = try? requireClient() else { return }
+        do {
+            recentRuns = try await client.recentRuns(limit: 100)
+        } catch TodoHubError.notFound {
+            recentRuns = nil
+        } catch {}
+    }
+
     func updateJob(_ job: SchedulerJob, _ request: UpdateJobRequest) async throws {
         try await perform { client in _ = try await client.updateJob(id: job.id, request) }
     }
@@ -1010,6 +1059,7 @@ final class TodoHubStore {
 
     func runJob(_ job: SchedulerJob) async throws {
         try await perform { client in _ = try await client.runJob(id: job.id) }
+        await loadRecentRuns()
     }
 
     func jobRuns(_ job: SchedulerJob) async throws -> [JobRun] {
@@ -1035,14 +1085,17 @@ final class TodoHubStore {
 
     func createIdea(_ request: CreateIdeaRequest) async throws {
         try await perform { client in _ = try await client.createIdea(request) }
+        await loadAllIdeas()
     }
 
     func updateIdea(_ idea: Idea, _ request: UpdateIdeaRequest) async throws {
         try await perform { client in _ = try await client.updateIdea(id: idea.id, request) }
+        await loadAllIdeas()
     }
 
     func deleteIdea(_ idea: Idea) async throws {
         try await perform { client in try await client.deleteIdea(id: idea.id) }
+        await loadAllIdeas()
     }
 
     /// The new todo's id.

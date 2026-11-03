@@ -179,6 +179,29 @@ public struct SchedulerJob: Codable, Equatable, Hashable, Identifiable, Sendable
     public var lastRun: JobRun?
     /// RFC 3339 UTC; nil for manual or disabled jobs.
     public var nextFireAt: String?
+    /// The schedule in plain words, from the hub ("Weekdays at 09:00"); nil on an older hub.
+    public var scheduleText: String?
+}
+
+/// A run with its job's name (`GET /api/runs`).
+public struct RecentRun: Decodable, Equatable, Hashable, Identifiable, Sendable {
+    public var run: JobRun
+    public var jobName: String
+    public var id: String { run.id }
+
+    private enum CodingKeys: String, CodingKey { case jobName }
+
+    public init(from decoder: Decoder) throws {
+        run = try JobRun(from: decoder)
+        jobName = try decoder.container(keyedBy: CodingKeys.self).decode(String.self, forKey: .jobName)
+    }
+}
+
+public enum ScheduleLabel {
+    /// The hub's words when it sent them, else the trigger summary.
+    public static func text(for job: SchedulerJob) -> String {
+        job.scheduleText ?? ScheduledMarker.triggerSummary(job.trigger)
+    }
 }
 
 public struct CreateJobRequest: Encodable, Sendable {

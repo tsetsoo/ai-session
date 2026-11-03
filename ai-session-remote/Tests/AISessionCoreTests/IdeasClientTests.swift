@@ -89,6 +89,20 @@ final class IdeasClientTests: XCTestCase {
         XCTAssertEqual(dropped.title, "New title")
     }
 
+    func testResearchIdeaPath() async throws {
+        respond(#"{"id":"r","job_id":"j","due_at":"x","state":"due","computer_id":null,"todo_id":null,"waiting_reason":null,"result":null,"started_at":null,"created_at":"x","updated_at":"x","note":"idea:i1"}"#, status: 201)
+        let run = try await client().researchIdea(id: "i1")
+        XCTAssertEqual(run.note, "idea:i1")
+        XCTAssertEqual(lastRequest.httpMethod, "POST")
+        XCTAssertEqual(lastRequest.url?.path, "/api/ideas/i1/research")
+    }
+
+    func testListIdeasAllProjectsHasNoProjectQuery() async throws {
+        respond("[]")
+        _ = try await client().listIdeas(projectId: nil)
+        XCTAssertNil(lastRequest.url?.query)
+    }
+
     func testIdeaStatusLabel() {
         XCTAssertEqual(IdeaStatus.new.label, "New")
         XCTAssertEqual(IdeaStatus.researching.label, "Researching")

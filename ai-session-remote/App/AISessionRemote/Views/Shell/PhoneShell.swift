@@ -13,7 +13,7 @@ import SwiftUI
 /// survives the swap to and from `MacShell` (see `reopenSelection`).
 struct PhoneShell: View {
     enum Tab: String, Hashable {
-        case todos, conversations, projects, computers
+        case todos, conversations, projects, automation, computers
     }
 
     enum Route: Hashable {
@@ -45,6 +45,8 @@ struct PhoneShell: View {
     @State private var conversationsPath: [Route] = []
     @State private var projectsPath: [Route] = []
     @State private var computersPath: [Route] = []
+    /// Unused (Automation pushes views, not routes); keeps `currentPath` total.
+    @State private var automationPath: [Route] = []
     @State private var filter = ConversationListView.Filter.review
     /// Once the filter is picked by hand it stays; until then it follows the default rule.
     @State private var filterChosen = false
@@ -86,6 +88,7 @@ struct PhoneShell: View {
             case .conversations: _conversationsPath = State(initialValue: [.todo(todoID)])
             case .projects: _projectsPath = State(initialValue: [.todo(todoID)])
             case .computers: _computersPath = State(initialValue: [.todo(todoID)])
+            case .automation: break
             }
         }
         #endif
@@ -122,6 +125,20 @@ struct PhoneShell: View {
             .badge(store.pendingMemoryCount)
             .tag(Tab.projects)
 
+            NavigationStack {
+                Group {
+                    if isConfigured {
+                        PhoneAutomationRoot(store: store, onOpenTodo: openTodoFromAutomation)
+                    } else {
+                        notConfigured
+                    }
+                }
+                .phoneTab("Automation", openSettings: openSettings)
+            }
+            .tabItem { Label("Automation", systemImage: "bolt.horizontal.circle") }
+            .badge(store.pendingIdeaCount)
+            .tag(Tab.automation)
+
             NavigationStack(path: $computersPath) {
                 computersRoot
                     .phoneTab("Computers", openSettings: openSettings)
@@ -131,6 +148,12 @@ struct PhoneShell: View {
             .tag(Tab.computers)
         }
         .tint(DS.accent)
+        .onChange(of: model.appMode) { _, mode in
+            if mode == .automation {
+                tab = .automation
+                model.appMode = .sessions
+            }
+        }
         .environment(\.openAppSettings) { openSettings($0) }
         .sheet(item: $settings) { request in
             SettingsView(initial: request.initial)
@@ -220,15 +243,6 @@ struct PhoneShell: View {
             notConfigured
         } else {
             ProjectsList(store: store, route: Route.project) { projectsPath.append(.project($0)) }
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        NavigationLink {
-                            JobsView(store: store)
-                        } label: {
-                            Label("Jobs", systemImage: "clock.arrow.circlepath")
-                        }
-                    }
-                }
         }
     }
 
@@ -299,6 +313,13 @@ struct PhoneShell: View {
         }
     }
 
+    /// A todo linked from Automation: shown on the Todos tab.
+    private func openTodoFromAutomation(_ todoID: String) {
+        model.selectedConversationID = store.conversationToOpen(forTodo: todoID)
+        tab = .todos
+        todosPath = [.todo(todoID)]
+    }
+
     /// A notification tap shows the conversation on the Conversations tab, in place of what
     /// that tab had open. It attaches only if the conversation runs, never starts one.
     private func openFromNotification(_ todoID: String) {
@@ -317,6 +338,7 @@ struct PhoneShell: View {
         case .conversations: $conversationsPath
         case .projects: $projectsPath
         case .computers: $computersPath
+        case .automation: $automationPath
         }
     }
 

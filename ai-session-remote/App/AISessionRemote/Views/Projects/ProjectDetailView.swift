@@ -105,8 +105,12 @@ struct ProjectDetailView: View {
             }
             todosSection(project)
             conversationsSection(project)
-            IdeasSection(project: project, store: store, ideas: ideas, pending: pendingIdeas) { todoId in
-                if let todo = store.todos.first(where: { $0.id == todoId }) { open(todo) }
+            Section {
+                Button {
+                    model.openIdeas(projectId: project.id)
+                } label: {
+                    Label(ideasLinkText, systemImage: "lightbulb")
+                }
             }
             memoriesSections(project)
         }
@@ -228,6 +232,13 @@ struct ProjectDetailView: View {
     /// computer this device can't reach yet) and the terminal itself.
     private func open(_ todo: Todo) {
         onOpenTodo(todo)
+    }
+
+    private var ideasLinkText: String {
+        let new = ideas.filter { $0.status == .new }.count
+        var text = "Ideas: \(new) new"
+        if !pendingIdeas.isEmpty { text += " · \(pendingIdeas.count) waiting for OK" }
+        return text
     }
 
     // MARK: Memories

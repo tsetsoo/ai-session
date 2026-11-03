@@ -141,6 +141,15 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
          WHERE state = 'running' AND todo_id IS NULL AND updated_at < ?2",
         params![stamp, sql_time(now - Duration::minutes(STUCK_RUNNING_MINUTES))],
     )?;
+    // An idea reserved by a run that will never start (missed, skipped, failed before its
+    // conversation existed, or deleted with its job) goes back to the queue.
+    tx.execute(
+        "UPDATE ideas SET status = 'new', run_id = NULL, todo_id = NULL, updated_at = ?1
+         WHERE status = 'researching' AND todo_id IS NULL AND run_id IS NOT NULL
+           AND (run_id NOT IN (SELECT id FROM job_runs)
+                OR run_id IN (SELECT id FROM job_runs WHERE state IN ('missed','skipped','failed')))",
+        params![stamp],
+    )?;
 
     let jobs: Vec<JobRow> = {
         let mut stmt = tx.prepare(
@@ -437,6 +446,57 @@ mod tests {
         conn.execute("INSERT INTO ideas (id, project_id, title, pending) VALUES ('i1', 'pa', 'Unapproved', 1)", []).unwrap();
         tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
         assert_eq!(runs(&conn, "r")[0].1, "skipped");
+    }
+
+    #[test]
+    fn missed_research_now_returns_idea() {
+        let (_db, pool) = pool("sched");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "rn", "0 9 1 1 *", RESEARCH, "2026-11-01 00:00:00");
+        conn.execute_batch(
+            "INSERT INTO job_runs (id, job_id, due_at, state, note) VALUES ('old', 'rn', '2026-11-01 06:00:00', 'due', 'idea:i1');
+             INSERT INTO ideas (id, project_id, title, status, run_id) VALUES ('i1', 'pa', 'Waiting too long', 'researching', 'old');",
+        )
+        .unwrap();
+        tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
+        let (status, run_id): (String, Option<String>) =
+            conn.query_row("SELECT status, run_id FROM ideas WHERE id = 'i1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((status.as_str(), run_id), ("new", None));
+    }
+
+    #[test]
+    fn stuck_claimed_research_now_returns_idea() {
+        let (_db, pool) = pool("sched");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "rn", "0 9 1 1 *", RESEARCH, "2026-11-01 00:00:00");
+        conn.execute_batch(
+            "INSERT INTO job_runs (id, job_id, due_at, state, note, updated_at)
+                 VALUES ('stuck', 'rn', '2026-11-02 06:30:00', 'running', 'idea:i1', '2026-11-02 06:30:00');
+             INSERT INTO ideas (id, project_id, title, status, run_id) VALUES ('i1', 'pa', 'Claimed then lost', 'researching', 'stuck');",
+        )
+        .unwrap();
+        tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
+        let status: String = conn.query_row("SELECT status FROM ideas WHERE id = 'i1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "new", "a run the stuck sweep failed gives its idea back");
+    }
+
+    #[test]
+    fn deleted_job_returns_reserved_idea() {
+        let (_db, pool) = pool("sched");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "rn", "0 9 1 1 *", RESEARCH, "2026-11-01 00:00:00");
+        conn.execute_batch(
+            "INSERT INTO job_runs (id, job_id, due_at, state, note) VALUES ('r', 'rn', '2026-11-02 06:50:00', 'due', 'idea:i1');
+             INSERT INTO ideas (id, project_id, title, status, run_id) VALUES ('i1', 'pa', 'Orphaned', 'researching', 'r');
+             DELETE FROM jobs WHERE id = 'rn';",
+        )
+        .unwrap();
+        tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
+        let status: String = conn.query_row("SELECT status FROM ideas WHERE id = 'i1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "new", "an idea whose run is gone goes back to the queue");
     }
 
     #[test]

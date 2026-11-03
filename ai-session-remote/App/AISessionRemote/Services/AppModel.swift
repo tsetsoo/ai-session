@@ -63,7 +63,7 @@ final class AppModel {
     typealias TmuxListing = @Sendable (Computer) async throws -> Set<String>
 
     enum SidebarItem: Hashable {
-        case needsYou, review, working, section(TodoSection), projects, jobs, computer(String)
+        case needsYou, review, working, section(TodoSection), projects, computer(String)
     }
 
     let shells = ShellWorkspace()
@@ -93,6 +93,28 @@ final class AppModel {
     private(set) var relistRequests = 0
 
     var sidebarSelection: SidebarItem?
+    /// Automation mode: which list, and what fills the big pane. Kept while in Sessions mode, so
+    /// switching back returns to the same place (an unsaved job form included).
+    /// Sessions or Automation (the Mac's mode switch; the phone selects its Automation tab).
+    var appMode: AppMode = .sessions
+    var automationItem: AutomationItem = .jobs
+    /// Automation → Ideas showing only this project (from a project page's ideas link).
+    var automationIdeasProject: String?
+    var automationJobs: JobsPaneTarget?
+    var automationIdeas: IdeasPaneTarget?
+    var automationRunID: String?
+    /// The job form's draft and what it started from; dirty when they differ.
+    var jobDraft: JobDraft?
+    var jobDraftOriginal: JobDraft?
+    /// A project page's "Ideas" link: Automation → Ideas, only that project.
+    func openIdeas(projectId: String) {
+        automationIdeasProject = projectId
+        automationItem = .ideas
+        automationIdeas = nil
+        appMode = .automation
+    }
+
+    var jobDraftIsDirty: Bool { jobDraft.map { $0.isDirty(comparedTo: jobDraftOriginal ?? JobDraft()) } ?? false }
     var selectedTodoID: String?
     /// The conversation row that is selected. Opening a todo sets this to its most urgent conversation.
     var selectedConversationID: String?
@@ -117,7 +139,7 @@ final class AppModel {
     }
 
     /// Whether a terminal may take keyboard focus by itself now.
-    var allowsTerminalAutoFocus: Bool { !isPaletteOpen }
+    var allowsTerminalAutoFocus: Bool { !isPaletteOpen && appMode == .sessions }
 
     func requestTerminalFocus(todoID: String) {
         terminalFocusRequest = TerminalFocusRequest(todoID: todoID, serial: (terminalFocusRequest?.serial ?? 0) + 1)
