@@ -108,18 +108,23 @@ public struct WatchIssue: Codable, Equatable, Hashable, Identifiable, Sendable {
         }
     }
 
-    /// What the user does next, in order. `resolveLabel`: the watcher's button ("Resolve in Sentry").
-    public func nextSteps(resolveLabel: String) -> [String] {
+    /// What the user does next, in order. `resolveLabel`: the watcher's button ("Resolve in
+    /// Sentry"); nil for a watcher that can't resolve.
+    public func nextSteps(resolveLabel: String?) -> [String] {
         if state == "cleared" { return [] }
         switch group {
         case .fixed:
+            let last = resolveLabel.map { "Then press \($0). If the fix didn't hold, press Try Again." }
+                ?? "If the fix didn't hold, press Try Again."
             return ["Review the fix in the conversation.",
                     "Merge the branch and deploy it yourself. Nothing was merged, pushed or deployed.",
-                    "Then press \(resolveLabel)."]
+                    last]
         case .needsYou:
-            return ["Answer the question in the conversation.", "Then press Try Again, or \(resolveLabel) if it's settled."]
+            return ["Answer the question in the conversation.",
+                    resolveLabel.map { "Then press Try Again, or \($0) if it's settled." } ?? "Then press Try Again."]
         case .cantFix:
-            return ["Read why in the note.", "If it was a one-off, press \(resolveLabel); otherwise Try Again."]
+            return ["Read why in the note.",
+                    resolveLabel.map { "If it was a one-off, press \($0); otherwise Try Again." } ?? "If you want another attempt, press Try Again."]
         case .waiting:
             return ["A conversation takes it on the next check (at most 2 work at once)."]
         case .working:
@@ -139,8 +144,8 @@ public struct WatchIssue: Codable, Equatable, Hashable, Identifiable, Sendable {
         }
     }
 
-    /// Needs-you and can't-fix issues can be handed to a new conversation.
-    public var canRetry: Bool { group == .needsYou || group == .cantFix }
+    /// Issues a conversation reported on can be handed to a new one (a fix that didn't hold too).
+    public var canRetry: Bool { group == .needsYou || group == .cantFix || group == .fixed }
 }
 
 public enum WatchIssueGroup: String, CaseIterable, Hashable, Sendable {

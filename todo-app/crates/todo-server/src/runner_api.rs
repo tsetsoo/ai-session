@@ -554,9 +554,28 @@ pub async fn finish(
     path: web::Path<String>,
     body: web::Json<FinishRequest>,
     broadcaster: web::Data<Broadcaster>,
+    notifier: web::Data<crate::push::PushNotifier>,
 ) -> HttpResponse {
-    with_conn!(pool, broadcaster, |c: &Connection| finish_db(c, &path, &body), |_| HttpResponse::Ok()
-        .json(serde_json::json!({"ok": true})))
+    // A watcher whose checks keep failing tells the user (once a day).
+    let finished = pool.get().map_err(server_error).and_then(|c| {
+        finish_db(&c, &path, &body).map_err(respond)?;
+        let alert = if body.state == "failed" {
+            load_run(&c, &path).ok().flatten().and_then(|run| crate::watch::failed_checks_alert(&c, &run.job_id, Utc::now()).ok().flatten())
+        } else {
+            None
+        };
+        Ok(alert)
+    });
+    match finished {
+        Ok(alert) => {
+            broadcaster.send();
+            if let Some((title, why)) = alert {
+                crate::watch::push_now(&pool, &notifier, title, why, None).await;
+            }
+            HttpResponse::Ok().json(serde_json::json!({"ok": true}))
+        }
+        Err(response) => response,
+    }
 }
 
 #[cfg(test)]

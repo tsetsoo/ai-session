@@ -354,6 +354,37 @@ fn overwhelmed(conn: &Connection, job: &Job, watcher: &str, now: DateTime<Utc>) 
     }))
 }
 
+/// Checks failing in a row before the user is told (a revoked token, Sentry down).
+const FAILED_CHECKS_PUSH: usize = 3;
+
+/// The "<job> can't check" push when a watch job's last 3 finished checks all failed; at most
+/// once a day per job.
+pub(crate) fn failed_checks_alert(conn: &Connection, job_id: &str, now: DateTime<Utc>) -> rusqlite::Result<Option<(String, String)>> {
+    let Some(job) = load_job(conn, job_id)? else { return Ok(None) };
+    if !job.action.is_watch() {
+        return Ok(None);
+    }
+    let last: Vec<(String, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT state, result FROM job_runs WHERE job_id = ?1 AND state IN ('done','failed') ORDER BY due_at DESC, rowid DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![job_id, FAILED_CHECKS_PUSH as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    if last.len() < FAILED_CHECKS_PUSH || last.iter().any(|(state, _)| state != "failed") {
+        return Ok(None);
+    }
+    let added = conn.execute(
+        "INSERT OR IGNORE INTO watch_alerts (job_id, day) VALUES (?1, ?2)",
+        params![job_id, format!("failed:{}", local_date(now))],
+    )?;
+    if added == 0 {
+        return Ok(None);
+    }
+    let why: String = last[0].1.clone().unwrap_or_default().chars().take(200).collect();
+    Ok(Some((format!("{} can't check", job.name), format!("{FAILED_CHECKS_PUSH} checks in a row failed: {why}"))))
+}
+
 /// "Sentry" from "sentry".
 pub(crate) fn display_name(watcher: &str) -> String {
     let mut chars = watcher.chars();
@@ -486,11 +517,11 @@ pub(crate) fn retry_db(conn: &Connection, id: &str, now: DateTime<Utc>) -> Resul
     }
     let changed = tx.execute(
         "UPDATE watch_issues SET taken_run_id = NULL, outcome = NULL, outcome_note = NULL, takes = 0, updated_at = ?2
-         WHERE id = ?1 AND state = 'open' AND outcome IN ('needs_you','cant_fix')",
+         WHERE id = ?1 AND state = 'open' AND outcome IN ('needs_you','cant_fix','fixed')",
         params![id, sql_time(now)],
     )?;
     if changed == 0 {
-        return Err(missing_or(&tx, id, "Only an issue that needs you or can't be fixed can be tried again")?);
+        return Err(missing_or(&tx, id, "Only an issue a conversation reported on can be tried again")?);
     }
     requeue_for_issue(&tx, "id = ?1", id, now)?;
     tx.commit()?;
@@ -1358,6 +1389,44 @@ pub(crate) mod tests {
         assert_eq!(put(&pool, "/api/computers/mac/watchers", report.clone()).await.0, StatusCode::OK);
         assert_eq!(get(&pool, "/api/computers/mac/watchers").await.1, report);
         assert_eq!(put(&pool, "/api/computers/nope/watchers", report).await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn three_failed_checks_push_once_a_day() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, None);
+        let failed = |id: &str, minutes: i64| {
+            conn.execute(
+                "INSERT INTO job_runs (id, job_id, due_at, state, result) VALUES (?1, 'w', ?2, 'failed', 'watcher exit 1: Sentry: HTTP 401')",
+                params![id, sql_time(now() - Duration::minutes(minutes))],
+            )
+            .unwrap();
+        };
+        conn.execute("INSERT INTO job_runs (id, job_id, due_at, state, result) VALUES ('ok', 'w', ?1, 'done', 'quiet')", params![sql_time(now() - Duration::minutes(40))]).unwrap();
+        failed("f1", 20);
+        failed("f2", 10);
+        assert!(failed_checks_alert(&conn, "w", now()).unwrap().is_none(), "two failures in a row are not enough");
+        failed("f3", 0);
+        let (title, body) = failed_checks_alert(&conn, "w", now()).unwrap().expect("third failure pushes");
+        assert_eq!(title, "Sigma Sentry can't check");
+        assert!(body.contains("HTTP 401"), "{body}");
+        failed("f4", -1);
+        assert!(failed_checks_alert(&conn, "w", now()).unwrap().is_none(), "once a day");
+    }
+
+    #[actix_web::test]
+    async fn retry_allowed_for_fixed_issue_that_stays_open() {
+        use crate::test_support::post;
+        use actix_web::http::StatusCode;
+        use serde_json::json;
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        debug_run_with_conversation(&conn, "r1", "idle", true);
+        taken(&conn, "didnt-hold", "r1", Some("fixed"));
+        assert_eq!(post(&pool, "/api/watch/issues/didnt-hold/retry", json!({})).await.0, StatusCode::OK);
+        assert_eq!(issue(&conn, "didnt-hold"), ("open".into(), None, None));
     }
 
     #[test]
