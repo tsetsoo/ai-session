@@ -441,6 +441,21 @@ public struct TodoHubClient: Sendable {
         try await decode(JobRun.self, send("POST", "/api/ideas/\(escape(id))/research"))
     }
 
+    /// Watcher issues: `open` (open or resolving) or `recent` (cleared in the last 7 days).
+    public func listWatchIssues(state: String) async throws -> [WatchIssue] {
+        try await decode([WatchIssue].self, send("GET", "/api/watch/issues", query: [URLQueryItem(name: "state", value: state)]))
+    }
+
+    /// Resolve at the source (Sentry); the watcher's computer does it on its next tick.
+    public func resolveWatchIssue(id: String) async throws {
+        _ = try await send("POST", "/api/watch/issues/\(escape(id))/resolve")
+    }
+
+    /// Hand a needs-you or can't-fix issue to a new conversation.
+    public func retryWatchIssue(id: String) async throws {
+        _ = try await send("POST", "/api/watch/issues/\(escape(id))/retry")
+    }
+
     /// The newest runs across all jobs.
     public func recentRuns(limit: Int = 50) async throws -> [RecentRun] {
         try await decode([RecentRun].self, send("GET", "/api/runs", query: [URLQueryItem(name: "limit", value: String(limit))]))
