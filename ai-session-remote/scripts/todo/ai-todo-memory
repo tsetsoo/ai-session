@@ -2417,7 +2417,7 @@ def cmd_garden(args):
     try:
         found = garden_candidates(ctx)
     except HubError as e:
-        die("ai-todo-memory: could not reach todo-server (%s)" % e, 1)
+        die("ai-todo-memory: todo-server: %s" % e, 1)
     Log.write("garden", duplicates=len(found["duplicates"]), stale=len(found["stale"]))
     if args:
         print(json.dumps(found))
@@ -2463,7 +2463,7 @@ def cmd_retire(args):
             ctx.hub.request("PATCH", "/api/memories/%s" % urllib.parse.quote(i, safe=""),
                             body={"archived": True, "archived_reason": reason, "by_gardener": True})
     except HubError as e:
-        die("ai-todo-memory: could not reach todo-server (%s)" % e, 1)
+        die("ai-todo-memory: todo-server: %s" % e, 1)
     Log.write("retire", count=len(ids), reason=reason)
     print("Archived %d (%s). They can be restored in the app." % (len(ids), reason))
 
@@ -2478,7 +2478,7 @@ def cmd_edit(args):
         fetch_gardenable(ctx, [args[0]])
         ctx.hub.request("PATCH", "/api/memories/%s" % urllib.parse.quote(args[0], safe=""), body={"text": text, "by_gardener": True})
     except HubError as e:
-        die("ai-todo-memory: could not reach todo-server (%s)" % e, 1)
+        die("ai-todo-memory: todo-server: %s" % e, 1)
     Log.write("edit")
     print("Updated.")
 

@@ -765,6 +765,12 @@ do_install() {
   # Job plugins: ai-session-remote/jobs/<name>/{job.json,prompt.md}.
   local jobs_src="${SRC_DIR}/../../jobs"
   if compgen -G "${jobs_src}/*/job.json" >/dev/null; then
+    # A plugin removed from the repo goes from here too (the folder holds only our files).
+    for dir in "${AI_DIR}/jobs"/*/; do
+      [[ -d "$dir" ]] || continue
+      name=$(basename "$dir")
+      if [[ ! -f "${jobs_src}/${name}/job.json" ]]; then run rm -rf "${AI_DIR}/jobs/${name}"; fi
+    done
     for dir in "$jobs_src"/*/; do
       [[ -f "${dir}job.json" && -f "${dir}prompt.md" ]] || continue
       name=$(basename "$dir")

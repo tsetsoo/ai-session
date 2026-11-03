@@ -2429,6 +2429,11 @@ assert "LocalTok3n_Value9" not in rows[0]["body"]["text"], rows
 PY
 status=0; mem edit d4 "x" >/dev/null 2>&1 || status=$?
 [[ $status -eq 65 ]] || fail "edit of a manual memory exit $status"
+hub_edit "s['patch_status'] = 409"
+status=0; mem edit d1 "Merged text" >/dev/null 2>"${SANDBOX}/edit409.err" || status=$?
+hub_edit "s.pop('patch_status', None)"
+[[ $status -eq 1 ]] && grep -q "HTTP 409" "${SANDBOX}/edit409.err" && ! grep -q "could not reach" "${SANDBOX}/edit409.err" \
+  || fail "a hub refusal reads as unreachable: $status $(cat "${SANDBOX}/edit409.err")"
 hub_edit "s['memories'] = s.pop('_saved_memories', []); s['projects'] = [p for p in s['projects'] if p['id'] != 'proj-big']"
 pass "edit_rewrites_text_redacted (refuses manual)"
 pass "add_redacts_secret"
@@ -3269,6 +3274,14 @@ assert bad["ok"] is False and "HTTP 403" in bad["message"] and "secret123" not i
 pass "runner_resolves_and_reports_result"
 
 runs_reset
+watch_due w-check09
+hub_edit "s['claim_status'] = 500; s['resolves'] = [{'issue_id': 'i9', 'watcher': 'fakew', 'key': 'good'}]"
+wrunner tick || fail "tick failed"
+hub_edit "s.pop('claim_status', None); s['resolves'] = []"
+watch_posts | grep -q '/api/watch/issues/i9/resolve-result' || fail "a hub error earlier in the tick skipped the resolves: $(watch_posts)"
+pass "runner_resolves_even_after_an_earlier_hub_error"
+
+runs_reset
 due_run r-dbgplain proj-plain '{"mode":"always"}'
 hub_edit "s['due_runs'][0]['run']['note'] = 'watch:'"
 runner tick || fail "tick failed"
@@ -3579,7 +3592,14 @@ for j in weekly-upkeep memory-gardener; do
   python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["name"] == sys.argv[2] and m["cron"], m' "${HOME}/.ai-remote/jobs/${j}/job.json" "$j" \
     && [[ -s "${HOME}/.ai-remote/jobs/${j}/prompt.md" ]] || fail "job plugin ${j} not installed"
 done
-pass "install_places_job_plugins"
+mkdir -p "${HOME}/.ai-remote/jobs/removed-job"
+printf '{"name":"removed-job","cron":"0 1 * * *"}' >"${HOME}/.ai-remote/jobs/removed-job/job.json"
+cp "$LAUNCHCTL_LOG" "${SANDBOX}/launchctl.keep5"
+"$INSTALL" >/dev/null
+cp "${SANDBOX}/launchctl.keep5" "$LAUNCHCTL_LOG"
+[[ ! -e "${HOME}/.ai-remote/jobs/removed-job" ]] || fail "a job plugin no longer in the repo was kept"
+[[ -s "${HOME}/.ai-remote/jobs/weekly-upkeep/prompt.md" ]] || fail "the cleanup removed a current plugin"
+pass "install_places_job_plugins (and removes ones no longer in the repo)"
 # A Mac whose git signs every commit (no gpg here), and a folder left half-made by that failure.
 rm -rf "${A_DIR}/.git"
 git -C "$A_DIR" init -q -b main

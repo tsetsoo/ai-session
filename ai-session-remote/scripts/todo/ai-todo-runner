@@ -613,6 +613,7 @@ def cmd_tick(args):
     status["last_tick"] = now()
     started = 0
     no_reading_started = {}
+    due = None
     try:
         due = hub.request("GET", "/api/runner/due", query={"computer_id": computer_id}) or {}
         settings = due.get("settings") or {}
@@ -674,12 +675,14 @@ def cmd_tick(args):
                     hub.request("POST", "/api/runs/%s/finish" % rid, body={"state": "failed", "result": message})
                 except HubError:
                     pass
-        do_resolves(hub, due.get("resolves"))
-        report_watchers(hub, computer_id)
-        report_job_templates(hub, computer_id)
     except HubError as e:
         status["last_error"] = str(e)
         log("error", error=e)
+    # Each catches its own hub errors: one failed run above doesn't skip them.
+    if due is not None:
+        do_resolves(hub, due.get("resolves"))
+        report_watchers(hub, computer_id)
+        report_job_templates(hub, computer_id)
     cleanup_worktrees()
     status["started"] = [t for t in status.get("started", []) if t > now() - 86400]
     save_json(status_path, status)

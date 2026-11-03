@@ -296,6 +296,8 @@ class Hub(BaseHTTPRequestHandler):
         self.reply(200, counts)
 
     def patch(self, state, mid, req):
+        if state.get("patch_status"):
+            return self.reply(state["patch_status"], {"error": "refused"})
         row = next((m for m in state.get("memories", []) if m["id"] == mid), None)
         if row is None:
             return self.reply(404, {"error": "Memory not found"})
@@ -306,6 +308,8 @@ class Hub(BaseHTTPRequestHandler):
     def runs(self, state, rid, verb, body):
         due = next((d for d in state.get("due_runs", []) if d["run"]["id"] == rid), None)
         if verb == "claim":
+            if state.get("claim_status"):
+                return self.reply(state["claim_status"], {"error": "boom"})
             claimed = state.setdefault("claimed", [])
             if rid in claimed or due is None:
                 return self.reply(409, {"error": "Run is not due"})
