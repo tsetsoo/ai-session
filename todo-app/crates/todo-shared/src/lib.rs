@@ -931,6 +931,10 @@ pub struct UpdateMemoryRequest {
     /// With `archived: true`: `duplicate` or `retired` (the memory gardener); default `user`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_reason: Option<String>,
+    /// The memory gardener's change: refused for pinned, hand-written and imported memories,
+    /// and an archive is marked as the gardener's (so a bad run can be found and undone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_gardener: Option<bool>,
     /// `false` approves a pending memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<bool>,

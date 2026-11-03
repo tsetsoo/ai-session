@@ -379,6 +379,7 @@ pub(crate) fn create_memory_db(conn: &Connection, req: &CreateMemoryRequest) -> 
 }
 
 pub(crate) fn update_memory_db(conn: &Connection, id: &str, req: &UpdateMemoryRequest) -> Result<Memory, MemoryError> {
+    let gardener = req.by_gardener == Some(true);
     if let Some(reason) = &req.archived_reason {
         if req.archived != Some(true) || !matches!(reason.as_str(), "duplicate" | "retired") {
             return Err(MemoryError::BadRequest("archived_reason is duplicate or retired, with archived: true".into()));
@@ -409,11 +410,12 @@ pub(crate) fn update_memory_db(conn: &Connection, id: &str, req: &UpdateMemoryRe
             pinned = COALESCE(?5, pinned),
             archived = COALESCE(?6, archived),
             archived_reason = CASE WHEN ?6 IS NULL THEN archived_reason WHEN ?6 THEN COALESCE(?13, 'user') ELSE NULL END,
+            archived_by = CASE WHEN ?6 IS NULL THEN archived_by WHEN ?6 AND ?14 THEN 'gardener' ELSE NULL END,
             project_id = CASE WHEN ?7 THEN ?8 ELSE project_id END,
             todo_id = CASE WHEN ?9 THEN ?10 ELSE todo_id END,
             pending = COALESCE(?12, pending),
             updated_at = datetime('now')
-         WHERE id = ?11",
+         WHERE id = ?11 AND (NOT ?14 OR (pinned = 0 AND source NOT IN ('manual','claude-memory')))",
         params![
             text,
             text.as_deref().map(text_key),
@@ -427,10 +429,14 @@ pub(crate) fn update_memory_db(conn: &Connection, id: &str, req: &UpdateMemoryRe
             req.todo_id.clone().flatten(),
             id,
             req.pending,
-            req.archived_reason
+            req.archived_reason,
+            gardener
         ],
     );
     match result {
+        // The gardener's change matched nothing: pinned, hand-written or imported (perhaps
+        // just now): checked in the same statement, so there's no race.
+        Ok(0) if gardener => return Err(MemoryError::Conflict("The gardener leaves pinned, hand-written and imported memories alone")),
         Ok(_) => {}
         Err(e) if is_constraint_violation(&e) => {
             return Err(MemoryError::Conflict("Another memory of this conversation already says this"));
@@ -523,6 +529,7 @@ pub(crate) struct MemoryQuery {
     pinned: Option<bool>,
     include_archived: bool,
     limit: usize,
+    offset: usize,
     pending: bool,
     computer_id: Option<String>,
     global: bool,
@@ -598,6 +605,9 @@ impl MemoryQuery {
                 "limit" => {
                     let limit: usize = value.parse().map_err(|_| "limit must be a number".to_string())?;
                     q.limit = limit.min(MAX_LIMIT);
+                }
+                "offset" => {
+                    q.offset = value.parse().map_err(|_| "offset must be a number".to_string())?;
                 }
                 _ => {}
             }
@@ -679,8 +689,9 @@ pub(crate) fn list_memories_db(conn: &Connection, q: &MemoryQuery) -> Result<Vec
         None => "pinned DESC, created_at DESC, rowid DESC".to_string(),
     };
     sql.push_str(&format!(
-        " ORDER BY {order} LIMIT {}",
-        i64::try_from(q.limit).unwrap_or(i64::MAX)
+        " ORDER BY {order} LIMIT {} OFFSET {}",
+        i64::try_from(q.limit).unwrap_or(i64::MAX),
+        i64::try_from(q.offset).unwrap_or(0)
     ));
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(args), row_to_memory)?;
@@ -986,6 +997,51 @@ mod tests {
         assert_eq!((&m["archived"], &m["archived_reason"]), (&json!(false), &Value::Null));
         let (_, m) = patch(&pool, &format!("/api/memories/{id}"), json!({"archived": true})).await;
         assert_eq!(m["archived_reason"], json!("user"), "the user's own archive");
+    }
+
+    #[actix_web::test]
+    async fn memory_list_pages_with_offset() {
+        let (_db, pool) = pool("memories");
+        seed(&pool.get().unwrap());
+        for t in ["One fact about deploys", "Two fact about builds", "Three fact about pushes"] {
+            post(&pool, "/api/memories", json!({"kind": "gotcha", "text": t, "project_id": "pa"})).await;
+        }
+        let page = |q: &'static str| {
+            let pool = pool.clone();
+            async move { get(&pool, &format!("/api/memories?project_id=pa&{q}")).await.1.as_array().unwrap().len() }
+        };
+        assert_eq!(page("limit=2").await, 2);
+        assert_eq!(page("limit=2&offset=2").await, 1);
+        assert_eq!(get(&pool, "/api/memories?offset=x").await.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn gardener_cannot_touch_pinned_manual_or_imported() {
+        let (_db, pool) = pool("memories");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute_batch(
+            "INSERT INTO memories (id, project_id, kind, text, text_key, source, pinned) VALUES
+               ('pin', 'pa', 'gotcha', 'Pinned one', 'pinned one', 'extracted', 1),
+               ('hand', 'pa', 'gotcha', 'By hand', 'by hand', 'manual', 0),
+               ('imp', 'pa', 'gotcha', 'Imported', 'imported', 'claude-memory', 0),
+               ('ok', 'pa', 'gotcha', 'Extracted one', 'extracted one', 'extracted', 0);",
+        )
+        .unwrap();
+        for id in ["pin", "hand", "imp"] {
+            let archive = json!({"archived": true, "archived_reason": "duplicate", "by_gardener": true});
+            assert_eq!(patch(&pool, &format!("/api/memories/{id}"), archive).await.0, StatusCode::CONFLICT, "{id}");
+            let edit = json!({"text": "Merged", "by_gardener": true});
+            assert_eq!(patch(&pool, &format!("/api/memories/{id}"), edit).await.0, StatusCode::CONFLICT, "{id}");
+        }
+        let (status, m) = patch(&pool, "/api/memories/ok", json!({"archived": true, "archived_reason": "retired", "by_gardener": true})).await;
+        assert_eq!(status, StatusCode::OK, "{m}");
+        let by: Option<String> = conn.query_row("SELECT archived_by FROM memories WHERE id = 'ok'", [], |r| r.get(0)).unwrap();
+        assert_eq!(by.as_deref(), Some("gardener"));
+        patch(&pool, "/api/memories/ok", json!({"archived": false})).await;
+        let by: Option<String> = conn.query_row("SELECT archived_by FROM memories WHERE id = 'ok'", [], |r| r.get(0)).unwrap();
+        assert_eq!(by, None, "restored: no longer the gardener's");
+        assert_eq!(patch(&pool, "/api/memories/hand", json!({"text": "The user may edit it"})).await.0, StatusCode::OK, "the app's edits are not the gardener's");
     }
 
     #[actix_web::test]

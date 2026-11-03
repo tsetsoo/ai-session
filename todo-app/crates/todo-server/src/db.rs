@@ -510,6 +510,10 @@ fn create_v18_objects(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch(&format!("ALTER TABLE computers ADD COLUMN {column} TEXT;"))?;
         }
     }
+    // Who archived a memory, when it was the memory gardener (so a bad run can be undone).
+    if table_sql(conn, "memories")?.is_some() && !column_exists(conn, "memories", "archived_by")? {
+        conn.execute_batch("ALTER TABLE memories ADD COLUMN archived_by TEXT;")?;
+    }
     Ok(())
 }
 
