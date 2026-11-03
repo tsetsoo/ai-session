@@ -49,13 +49,13 @@ final class ChatDraftEditorHandle {
     }
 }
 
-/// Paste with a photo on the clipboard hands the photo over instead of doing nothing.
-/// Text on the clipboard still pastes as text.
+/// Paste with a photo on the clipboard hands the photo over instead of doing nothing. A photo
+/// wins over text copied with it (Safari's Copy Image adds the link); text alone pastes as text.
 final class PhotoPasteTextView: UITextView {
     var onPastePhoto: ((UIImage) -> Void)?
 
     private var pastesPhoto: Bool {
-        onPastePhoto != nil && UIPasteboard.general.hasImages && !UIPasteboard.general.hasStrings
+        onPastePhoto != nil && UIPasteboard.general.hasImages
     }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {

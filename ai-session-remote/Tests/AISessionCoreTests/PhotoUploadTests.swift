@@ -49,8 +49,9 @@ final class PhotoUploadTests: XCTestCase {
         for command in commands { XCTAssertLessThan(command.utf8.count, 128 * 1024) }
     }
 
-    func testRoundTripsThroughShAndZsh() async throws {
-        for shell in ["/bin/sh", "/bin/zsh"] {
+    func testRoundTripsWhateverTheLoginShell() async throws {
+        // sshd runs the command with the login shell; the script itself always runs under sh.
+        for shell in ["/bin/sh", "/bin/zsh", "/bin/csh"] where FileManager.default.isExecutableFile(atPath: shell) {
             let data = photo(bytes: 300_000)
             let name = "\(UUID().uuidString.lowercased()).jpg"
             let path = try await PhotoUpload.upload(
@@ -64,17 +65,30 @@ final class PhotoUploadTests: XCTestCase {
         }
     }
 
-    func testDeletesTheUploadAfterItsTime() async throws {
+    func testThePathIsTheLastLineAfterShellStartupOutput() async throws {
+        let base = LocalShell(shell: "/bin/sh")
+        let noisy = PrefixedOutput(base: base, prefix: "Welcome to the computer\n")
         let path = try await PhotoUpload.upload(
-            photo(bytes: 1000), name: "soon.jpg", config: config, ssh: LocalShell(shell: "/bin/sh"),
-            directory: quotedDir, keepSeconds: 1
+            photo(bytes: 100), name: "noisy.jpg", config: config, ssh: noisy, directory: quotedDir
         )
-        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
-        try await Task.sleep(for: .seconds(3))
+        XCTAssertTrue(path.hasPrefix("/") && path.hasSuffix("/noisy.jpg"))
+    }
+
+    func testTheDeleteRunsOnlyOnceTheMessageIsSent() async throws {
+        let shell = LocalShell(shell: "/bin/sh")
+        let path = try await PhotoUpload.upload(
+            photo(bytes: 1000), name: "soon.jpg", config: config, ssh: shell, directory: quotedDir
+        )
+        XCTAssertFalse(PhotoUpload.commands(data: Data([1]), name: "a.jpg").joined().contains("sleep"), "no timer before the send")
+
+        _ = try await shell.exec(config, command: PhotoUpload.deleteCommand(paths: [path], keepSeconds: 1))
+        for _ in 0..<30 where FileManager.default.fileExists(atPath: path) {
+            try await Task.sleep(for: .milliseconds(100))
+        }
         XCTAssertFalse(FileManager.default.fileExists(atPath: path))
     }
 
-    func testAFailedCommandStopsTheUpload() async throws {
+    func testAFailedCommandStopsTheUploadAndCleansUp() async throws {
         let ssh = FakeSSHExecutor(defaultResult: SSHExecResult(exitCode: 1, stdout: "", stderr: "disk full"))
         do {
             _ = try await PhotoUpload.upload(photo(bytes: 10), name: "x.jpg", config: config, ssh: ssh)
@@ -82,6 +96,25 @@ final class PhotoUploadTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? PhotoUpload.Failure, .failed("disk full"))
         }
-        XCTAssertEqual(ssh.recordedCommands.count, 1)
+        for _ in 0..<20 where ssh.recordedCommands.count < 2 { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(ssh.recordedCommands.count, 2)
+        XCTAssertTrue(ssh.recordedCommands[1].contains("rm -f"))
+    }
+
+    func testFindsTheUploadsAMessageMentions() {
+        let uploaded = ["/u/a.jpg", "/u/b.jpg"]
+        XCTAssertEqual(PhotoUpload.paths(in: "look at /u/b.jpg please", from: uploaded), ["/u/b.jpg"])
+    }
+}
+
+/// A login shell whose startup prints a line before the command's own output.
+private struct PrefixedOutput: SSHExecuting {
+    let base: SSHExecuting
+    let prefix: String
+
+    func exec(_ config: HostConnectionConfig, command: String) async throws -> SSHExecResult {
+        var result = try await base.exec(config, command: command)
+        result.stdout = prefix + result.stdout
+        return result
     }
 }
