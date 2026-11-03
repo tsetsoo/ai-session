@@ -36,7 +36,7 @@ struct ChatMessageView: View {
                 Button { ReadAloud.shared.stop() } label: {
                     Label("Stop Reading", systemImage: "stop.circle")
                 }
-            } else {
+            } else if !ReadAloud.shared.isDictating {
                 Button { ReadAloud.shared.read(id: message.id, markdown: message.text) } label: {
                     Label("Read Aloud", systemImage: "speaker.wave.2")
                 }

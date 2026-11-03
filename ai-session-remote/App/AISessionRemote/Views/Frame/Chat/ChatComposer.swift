@@ -99,6 +99,8 @@ struct ChatComposer: View {
         .padding(.top, 8)
         .padding(.bottom, 10)
         .background(.bar)
+        .onChange(of: dictation.isRunning) { _, running in ReadAloud.shared.isDictating = running }
+        .onDisappear { ReadAloud.shared.isDictating = false }
         .onChange(of: dictation.transcript) { _, transcript in
             draft = QuickAdd.text(typed: typedBeforeDictation, dictated: transcript)
         }

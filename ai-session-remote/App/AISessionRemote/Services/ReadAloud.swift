@@ -22,6 +22,11 @@ final class ReadAloud {
 
     private(set) var speakingID: String?
     var isSpeaking: Bool { speakingID != nil }
+    /// Set by the composer while dictation runs: the microphone owns the audio session then,
+    /// so Read Aloud is hidden and `read` does nothing.
+    var isDictating = false {
+        didSet { if isDictating { stop() } }
+    }
 
     @ObservationIgnored private let output: SpeechOutput
 
@@ -33,6 +38,7 @@ final class ReadAloud {
 
     /// Reads one message, replacing whatever is being read.
     func read(id: String, markdown: String) {
+        guard !isDictating else { return }
         let text = SpokenText.make(markdown)
         output.stop()
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -62,6 +68,15 @@ final class SynthesizerOutput: NSObject, SpeechOutput, AVSpeechSynthesizerDelega
     override init() {
         super.init()
         synthesizer.delegate = self
+        // A call or another app taking audio ends the reading; the Stop button must go too.
+        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            guard (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.began.rawValue else { return }
+            MainActor.assumeIsolated {
+                guard let self, self.current != nil else { return }
+                self.stop()
+                self.onFinish?()
+            }
+        }
     }
 
     func speak(_ text: String, language: String?) {
@@ -69,33 +84,51 @@ final class SynthesizerOutput: NSObject, SpeechOutput, AVSpeechSynthesizerDelega
         try? audio.setCategory(.playback, mode: .spokenAudio, options: .duckOthers)
         try? audio.setActive(true)
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = language.flatMap { AVSpeechSynthesisVoice(language: $0) }
-            ?? AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
+        utterance.voice = Self.voice(for: language)
         current = utterance
         synthesizer.speak(utterance)
     }
 
+    /// The audio session is given back from the delegate once the synthesizer has really
+    /// stopped: deactivating right after `stopSpeaking` can fail while its output still runs.
     func stop() {
         current = nil
         synthesizer.stopSpeaking(at: .immediate)
-        release()
     }
 
-    private func release() {
-        // Dictation sets its own category when it starts; only give the session back otherwise.
+    /// NaturalLanguage names some languages differently from the voices ("zh-Hans").
+    static func voice(for language: String?) -> AVSpeechSynthesisVoice? {
+        let fallback = AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
+        guard let language else { return fallback }
+        let aliases = ["zh-Hans": "zh-CN", "zh-Hant": "zh-TW", "nb": "nb-NO"]
+        let base = String(language.prefix { $0 != "-" })
+        let wanted = [language, aliases[language], base].compactMap { $0 }
+        for code in wanted {
+            if let voice = AVSpeechSynthesisVoice(language: code) { return voice }
+        }
+        return AVSpeechSynthesisVoice.speechVoices().first { $0.language.hasPrefix(base + "-") } ?? fallback
+    }
+
+    private func releaseIfIdle() {
+        // Something new is being read, or dictation has taken the session: leave it alone.
         let audio = AVAudioSession.sharedInstance()
-        guard audio.category == .playback else { return }
+        guard current == nil, !synthesizer.isSpeaking, audio.category == .playback else { return }
         try? audio.setActive(false, options: .notifyOthersOnDeactivation)
         try? audio.setCategory(.soloAmbient, mode: .default, options: [])
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor in
-            guard utterance === self.current else { return }
-            self.current = nil
-            self.release()
-            self.onFinish?()
+            if utterance === self.current {
+                self.current = nil
+                self.onFinish?()
+            }
+            self.releaseIfIdle()
         }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in self.releaseIfIdle() }
     }
 }
 #endif

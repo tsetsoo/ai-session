@@ -43,6 +43,20 @@ final class ReadAloudTests: XCTestCase {
         XCTAssertFalse(reader.isSpeaking)
     }
 
+    func testNothingIsReadWhileDictating() {
+        let fake = FakeOutput()
+        let reader = ReadAloud(output: fake)
+        reader.read(id: "m1", markdown: "first message here")
+        reader.isDictating = true
+        XCTAssertNil(reader.speakingID, "dictation starting stops the reading")
+        reader.read(id: "m2", markdown: "second message here")
+        XCTAssertNil(reader.speakingID)
+        XCTAssertEqual(fake.spoken.count, 1)
+        reader.isDictating = false
+        reader.read(id: "m2", markdown: "second message here")
+        XCTAssertEqual(reader.speakingID, "m2")
+    }
+
     func testStopWhenNothingIsReadDoesNothing() {
         let fake = FakeOutput()
         let reader = ReadAloud(output: fake)

@@ -86,6 +86,8 @@ struct PhoneConversationView<TerminalContent: View>: View {
             if !front { reviewedOnOpen = false; sendTask?.cancel(); photoUploads.cancelAll(); composing = false; ReadAloud.shared.stop() }
         }
         .onDisappear { sendTask?.cancel(); photoUploads.cancelAll(); ReadAloud.shared.stop() }
+        // No background audio: speech stops when the app leaves the foreground, so does the button.
+        .onChange(of: scenePhase) { _, phase in if phase != .active { ReadAloud.shared.stop() } }
         #if DEBUG
         .task {
             // Screenshots: `-uiDemoCompose` focuses the message field, so the keyboard layout shows.
