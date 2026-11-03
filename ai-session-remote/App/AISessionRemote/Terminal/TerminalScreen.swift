@@ -325,10 +325,32 @@ final class TerminalCoordinator: TerminalViewDelegate {
         }
     }
 
-    /// The rows on screen now, trailing spaces trimmed.
+    /// The live screen's rows, trailing spaces trimmed, even while the view is scrolled back
+    /// (`getLine` reads the scrolled view, so a prompt was missed then).
     func screenLines() -> [String] {
         guard let terminal = terminalView?.getTerminal() else { return [] }
-        return (0..<terminal.rows).map { terminal.getLine(row: $0)?.translateToString(trimRight: true) ?? "" }
+        let top = Self.liveTop(terminal)
+        return (0..<terminal.rows).map { terminal.getScrollInvariantLine(row: top + $0)?.translateToString(trimRight: true) ?? "" }
+    }
+
+    /// The scroll-invariant row of the live screen's top: the last `rows` lines of the buffer.
+    /// SwiftTerm keeps the line count internal, so the last line is found by searching.
+    static func liveTop(_ terminal: Terminal) -> Int {
+        let exists = { (row: Int) in terminal.getScrollInvariantLine(row: row) != nil }
+        var low = terminal.buffer.totalLinesTrimmed + terminal.buffer.yDisp
+        guard exists(low) else { return low }
+        var step = max(terminal.rows, 1)
+        var high = low + step
+        while exists(high) {
+            low = high
+            step *= 2
+            high = low + step
+        }
+        while high - low > 1 {
+            let middle = (low + high) / 2
+            if exists(middle) { low = middle } else { high = middle }
+        }
+        return max(low - terminal.rows + 1, terminal.buffer.totalLinesTrimmed)
     }
 
     func currentPrompt() -> TerminalPrompt? {

@@ -79,13 +79,15 @@ struct PhoneConversationView<TerminalContent: View>: View {
         }
         .onChange(of: showsChat, initial: true) { _, chat in
             if chat { terminal.resignFocus() }
-            if !chat { reviewedOnOpen = false }
+            if !chat { reviewedOnOpen = false; ReadAloud.shared.stop() }
             composing = false
         }
         .onChange(of: isFrontmost) { _, front in
-            if !front { reviewedOnOpen = false; sendTask?.cancel(); photoUploads.cancelAll(); composing = false }
+            if !front { reviewedOnOpen = false; sendTask?.cancel(); photoUploads.cancelAll(); composing = false; ReadAloud.shared.stop() }
         }
-        .onDisappear { sendTask?.cancel(); photoUploads.cancelAll() }
+        .onDisappear { sendTask?.cancel(); photoUploads.cancelAll(); ReadAloud.shared.stop() }
+        // No background audio: speech stops when the app leaves the foreground, so does the button.
+        .onChange(of: scenePhase) { _, phase in if phase != .active { ReadAloud.shared.stop() } }
         #if DEBUG
         .task {
             // Screenshots: `-uiDemoCompose` focuses the message field, so the keyboard layout shows.
@@ -159,6 +161,17 @@ struct PhoneConversationView<TerminalContent: View>: View {
             }
             if let sendError {
                 Text(sendError).font(.footnote).foregroundStyle(.red).padding(.horizontal)
+            }
+            if ReadAloud.shared.isSpeaking {
+                Button { ReadAloud.shared.stop() } label: {
+                    Label("Stop Reading", systemImage: "stop.circle.fill")
+                        .font(.subheadline.weight(.medium))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.thinMaterial, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.bottom, 4)
             }
             ChatComposer(
                 draft: $draft, focused: $composing, mode: $composerMode, editor: draftEditor,

@@ -4,7 +4,7 @@ import SwiftUI
 
 /// One message, laid out like the Claude app: the user's in an accent bubble on the right, the
 /// assistant's full width with rendered markdown. Long-press for Copy, Copy as plain text,
-/// Select text and Share. Long replies fold behind "Show more".
+/// Select text, Read Aloud and Share. Long replies fold behind "Show more".
 struct ChatMessageView: View {
     let message: ConversationMessage
     let toolName: String
@@ -14,6 +14,7 @@ struct ChatMessageView: View {
     @State private var selecting = false
 
     private var isUser: Bool { message.role == .user }
+    private var isReading: Bool { ReadAloud.shared.speakingID == message.id }
     private var isLong: Bool { ChatMarkdown.isLong(message.text) }
     private var shownText: String { isLong && !expanded ? ChatMarkdown.preview(message.text) : message.text }
 
@@ -30,6 +31,15 @@ struct ChatMessageView: View {
             }
             Button { selecting = true } label: {
                 Label("Select Text", systemImage: "selection.pin.in.out")
+            }
+            if isReading {
+                Button { ReadAloud.shared.stop() } label: {
+                    Label("Stop Reading", systemImage: "stop.circle")
+                }
+            } else if !ReadAloud.shared.isDictating {
+                Button { ReadAloud.shared.read(id: message.id, markdown: message.text) } label: {
+                    Label("Read Aloud", systemImage: "speaker.wave.2")
+                }
             }
             ShareLink(item: message.text) {
                 Label("Share", systemImage: "square.and.arrow.up")

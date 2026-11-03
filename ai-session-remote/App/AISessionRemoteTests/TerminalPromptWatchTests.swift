@@ -43,6 +43,18 @@ final class TerminalPromptWatchTests: XCTestCase {
         XCTAssertEqual(coordinator.currentPrompt()?.question, "Do you want to proceed?")
     }
 
+    func testPromptIsFoundWhileTheTerminalIsScrolledBack() async throws {
+        let filler = (1...200).map { "line \($0)" }.joined(separator: "\r\n") + "\r\n"
+        transport.onOutput?(Array(filler.utf8))
+        let rows = TerminalPromptFixtures.claudeBash.components(separatedBy: "\n").joined(separator: "\r\n")
+        transport.onOutput?(Array(rows.utf8))
+        try await Task.sleep(for: .milliseconds(400))
+        let terminal = view.getTerminal()
+        terminal.buffer.yDisp = 0
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "line 1", "scrolled to the top")
+        XCTAssertEqual(coordinator.currentPrompt()?.question, "Do you want to proceed?")
+    }
+
     func testAnswerSendsArrowsAndEnter() async throws {
         try await show(TerminalPromptFixtures.claudeBash)
         let prompt = try XCTUnwrap(coordinator.currentPrompt())
