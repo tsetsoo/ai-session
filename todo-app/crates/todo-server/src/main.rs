@@ -21,6 +21,7 @@ mod push;
 mod runner_api;
 mod scheduler;
 mod sessions;
+mod watch;
 #[cfg(test)]
 mod test_support;
 
@@ -130,6 +131,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/runs/{id}/wait", web::post().to(runner_api::wait))
         .route("/api/runs/{id}/start", web::post().to(runner_api::start))
         .route("/api/runs/{id}/finish", web::post().to(runner_api::finish))
+        .route("/api/runs/{id}/report", web::post().to(watch::report))
         .route("/api/memories/{id}", web::patch().to(memories::update_memory))
         .route("/api/memories/{id}", web::delete().to(memories::delete_memory))
         // Sessions and stats
