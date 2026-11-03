@@ -34,6 +34,9 @@ struct PhoneConversationView<TerminalContent: View>: View {
     @State private var promptChanged = false
     /// How many of the newest items the chat draws; "Show earlier messages" raises it.
     @State private var windowLimit = ChatTimeline.windowSize
+    /// "Uploading photo…" while a pasted photo goes to the computer, or why it didn't.
+    @State private var photoStatus: String?
+    @State private var photoTask: Task<Void, Never>?
 
     private var needsApproval: Bool { status == .waiting }
     /// The question on screen, read from the live terminal behind the chat.
@@ -81,7 +84,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
         .onChange(of: isFrontmost) { _, front in
             if !front { reviewedOnOpen = false; sendTask?.cancel(); composing = false }
         }
-        .onDisappear { sendTask?.cancel() }
+        .onDisappear { sendTask?.cancel(); photoTask?.cancel() }
         #if DEBUG
         .task {
             // Screenshots: `-uiDemoCompose` focuses the message field, so the keyboard layout shows.
@@ -159,7 +162,8 @@ struct PhoneConversationView<TerminalContent: View>: View {
             ChatComposer(
                 draft: $draft, focused: $composing, mode: $composerMode, editor: draftEditor,
                 connected: terminal.isConnected, promptShowing: prompt != nil || showsFallback,
-                isSending: isSending, onSend: send, onQuickReply: { send($0, clearsDraft: false) }
+                isSending: isSending, onPastePhoto: pastePhoto,
+                onSend: send, onQuickReply: { send($0, clearsDraft: false) }, photoStatus: photoStatus
             )
         }
         .background(Color(uiColor: .systemGroupedBackground))
@@ -241,6 +245,45 @@ struct PhoneConversationView<TerminalContent: View>: View {
             }
         }
         isLoading = false
+    }
+
+    /// Copies the photo to the conversation's computer over SSH and puts its path in the draft
+    /// at the caret, so the agent reads it when the message is sent.
+    private func pastePhoto(_ image: UIImage) {
+        guard photoTask == nil else { return }
+        guard let data = Self.jpeg(image) else {
+            photoStatus = "Couldn’t read that photo."
+            return
+        }
+        photoStatus = "Uploading photo…"
+        let name = "\(UUID().uuidString.lowercased()).jpg"
+        photoTask = Task { @MainActor in
+            defer { photoTask = nil }
+            do {
+                let path = try await PhotoUpload.upload(data, name: name, config: config, ssh: NIOSSHClient())
+                photoStatus = nil
+                draftEditor.insert(path + " ")
+            } catch is CancellationError {
+                photoStatus = nil
+            } catch {
+                photoStatus = "Couldn’t copy the photo to \(conversation.computer.name). Try pasting it again."
+            }
+        }
+    }
+
+    /// The model scales images down to about this long edge anyway, so a bigger one only
+    /// costs upload time.
+    private static func jpeg(_ image: UIImage, longEdge: CGFloat = 1568) -> Data? {
+        let size = image.size
+        let scale = min(1, longEdge / max(size.width, size.height, 1))
+        let target = CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let resized = UIGraphicsImageRenderer(size: target, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: target))
+        }
+        return resized.jpegData(compressionQuality: 0.85)
     }
 
     private func send() {
