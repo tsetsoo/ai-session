@@ -461,6 +461,67 @@ public struct TodoHubClient: Sendable {
         _ = try await send("POST", "/api/watch/issues/\(escape(id))/retry")
     }
 
+    // --- Today -------------------------------------------------------------------------
+
+    public func listReminders() async throws -> [Reminder] {
+        try await decode([Reminder].self, send("GET", "/api/reminders"))
+    }
+
+    public func createReminder(_ body: ReminderRequestBody) async throws -> Reminder {
+        try await decode(Reminder.self, send("POST", "/api/reminders", body: body))
+    }
+
+    public func updateReminder(id: String, _ body: ReminderRequestBody) async throws -> Reminder {
+        try await decode(Reminder.self, send("PATCH", "/api/reminders/\(escape(id))", body: body))
+    }
+
+    public func deleteReminder(id: String) async throws {
+        _ = try await send("DELETE", "/api/reminders/\(escape(id))")
+    }
+
+    public func doneReminder(id: String) async throws -> Reminder {
+        try await decode(Reminder.self, send("POST", "/api/reminders/\(escape(id))/done"))
+    }
+
+    /// `until`: Sofia wall time, `YYYY-MM-DD HH:MM`.
+    public func snoozeReminder(id: String, until: String) async throws -> Reminder {
+        try await decode(Reminder.self, send("POST", "/api/reminders/\(escape(id))/snooze", body: SnoozeBody(until: until)))
+    }
+
+    public func listPeople() async throws -> [Person] {
+        try await decode([Person].self, send("GET", "/api/people"))
+    }
+
+    public func createPerson(_ body: PersonRequestBody) async throws -> Person {
+        try await decode(Person.self, send("POST", "/api/people", body: body))
+    }
+
+    public func updatePerson(id: String, _ body: PersonRequestBody) async throws -> Person {
+        try await decode(Person.self, send("PATCH", "/api/people/\(escape(id))", body: body))
+    }
+
+    public func deletePerson(id: String) async throws {
+        _ = try await send("DELETE", "/api/people/\(escape(id))")
+    }
+
+    /// The briefing, live.
+    public func today() async throws -> Briefing {
+        try await decode(Briefing.self, send("GET", "/api/today"))
+    }
+
+    public func todaySettings() async throws -> TodaySettings {
+        try await decode(TodaySettings.self, send("GET", "/api/today/settings"))
+    }
+
+    public func updateTodaySettings(_ update: TodaySettingsUpdate) async throws -> TodaySettings {
+        try await decode(TodaySettings.self, send("PUT", "/api/today/settings", body: update))
+    }
+
+    /// "Add with an agent": a short conversation on the cheap model; returns its queued run.
+    public func startAssistant(text: String, kind: String?) async throws -> JobRun {
+        try await decode(JobRun.self, send("POST", "/api/today/assistant", body: AssistantRequestBody(text: text, kind: kind)))
+    }
+
     /// The newest runs across all jobs.
     public func recentRuns(limit: Int = 50) async throws -> [RecentRun] {
         try await decode([RecentRun].self, send("GET", "/api/runs", query: [URLQueryItem(name: "limit", value: String(limit))]))

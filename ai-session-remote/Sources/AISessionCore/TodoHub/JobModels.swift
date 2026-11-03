@@ -81,9 +81,13 @@ public struct ConversationJobAction: Codable, Equatable, Hashable, Sendable {
     public var prompt: String
     public var priority: JobPriority
     public var limit: LimitSetting
+    /// The tool's model (`haiku`); nil: its default. `tool` may be `auto` (the runner picks).
+    public var model: String?
 
     public init(projectId: String, computerId: String? = nil, tool: String = "claude", folder: String? = nil,
-                prompt: String, priority: JobPriority = .background, limit: LimitSetting = .wait(fiveHour: nil, weekly: nil)) {
+                prompt: String, priority: JobPriority = .background, limit: LimitSetting = .wait(fiveHour: nil, weekly: nil),
+                model: String? = nil) {
+        self.model = model
         self.projectId = projectId
         self.computerId = computerId
         self.tool = tool
