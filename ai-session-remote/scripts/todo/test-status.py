@@ -410,13 +410,34 @@ class StatusTests(unittest.TestCase):
     def test_claude_status_command_uses_full_ids_and_metadata_only(self):
         rows = [{"id": "short", "sessionId": "full-id", "state": "done", "name": "private text"},
                 {"id": "not-a-full-id", "state": "working"}, {"sessionId": "../bad", "status": "busy"}]
-        with patch.object(status, "find_claude", return_value="/claude"), patch.object(status.subprocess, "run") as command:
+        with patch.object(status, "find_claude", return_value="/claude"), patch.object(status, "run_group") as command:
             command.return_value = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
             self.assertEqual(status.ClaudeRuntime().states(), {"full-id": ("idle", None)})
             self.assertEqual(command.call_args.args[0], ["/claude", "agents", "--json", "--all"])
 
+    def test_timed_out_command_takes_its_children_with_it(self):
+        # `claude agents` starts keychain lookups; killing only claude left them running.
+        marker = self.home / "grandchild.pid"
+        script = f"sleep 30 & echo $! > {marker}; wait"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            status.run_group(["/bin/sh", "-c", script], timeout=0.5)
+        grandchild = int(marker.read_text())
+        for _ in range(20):
+            try:
+                os.kill(grandchild, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(grandchild, 9)
+            self.fail("the timed-out command's child was left running")
+
+    def test_run_group_returns_output_and_exit_code(self):
+        result = status.run_group(["/bin/sh", "-c", "echo out; exit 3"], timeout=5)
+        self.assertEqual((result.returncode, result.stdout), (3, "out\n"))
+
     def claude_rows(self, rows):
-        with patch.object(status, "find_claude", return_value="/claude"), patch.object(status.subprocess, "run") as command:
+        with patch.object(status, "find_claude", return_value="/claude"), patch.object(status, "run_group") as command:
             command.return_value = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
             runtime = status.ClaudeRuntime()
             return runtime.states(), runtime.listed

@@ -472,6 +472,24 @@ def tmux_sessions():
     return {line for line in listed.stdout.split("\n") if line}
 
 
+def run_group(args, timeout, env=None):
+    """subprocess.run in its own process group. On timeout the whole group is killed:
+    `claude agents` starts keychain lookups (`security`) that outlive a killed claude,
+    and those left behind made the next calls time out too (2026-11-03)."""
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                               env=env, start_new_session=True)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
 def stop_process_group(pid):
     """SIGTERM a backend's process group, then SIGKILL if it is still there after 5 s."""
     os.killpg(pid, signal.SIGTERM)
@@ -745,7 +763,7 @@ def find_claude():
             continue
         env = dict(os.environ, PATH=str(Path(candidate).parent) + os.pathsep + os.environ.get("PATH", ""))
         try:
-            check = subprocess.run([candidate, "--version"], capture_output=True, text=True, timeout=4, env=env)
+            check = run_group([candidate, "--version"], timeout=10, env=env)
             if check.returncode == 0:
                 return candidate
         except (OSError, subprocess.TimeoutExpired):
@@ -776,7 +794,8 @@ class ClaudeRuntime:
 
     def states(self):
         env = dict(os.environ, PATH=str(Path(self.cli).parent) + os.pathsep + os.environ.get("PATH", ""))
-        response = subprocess.run([self.cli, "agents", "--json", "--all"], capture_output=True, text=True, timeout=5, env=env)
+        # Under launchd (Background) this takes 1-2 s, not 0.2 s: leave room for a busy moment.
+        response = run_group([self.cli, "agents", "--json", "--all"], timeout=10, env=env)
         if response.returncode:
             raise OSError("Claude status command failed")
         rows = json.loads(response.stdout)
