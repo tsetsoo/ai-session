@@ -723,7 +723,8 @@ do_install_claude_status() {
 # in its own throwaway worktree with the usual auto-approve. Created once; never rewritten.
 install_assistant_folder() {
   local dir="${AI_DIR}/assistant"
-  [[ -d "${dir}/.git" ]] && return 0
+  # Done once it has a commit (a failed first try can leave an empty repo behind).
+  [[ -d "${dir}/.git" ]] && git -C "$dir" rev-parse --verify -q HEAD >/dev/null 2>&1 && return 0
   if [[ $dry_run -eq 1 ]]; then
     say "would create ${dir} (the Today assistant's folder)"
     return 0
@@ -732,9 +733,11 @@ install_assistant_folder() {
   local text='You add reminders and people'"'"'s dates for the user with ~/.ai-remote/bin/ai-todo-remind (list, add, person). Do nothing else here.'
   printf '%s\n' "$text" >"${dir}/AGENTS.md"
   printf '%s\n' "$text" >"${dir}/CLAUDE.md"
-  git -C "$dir" init -q -b main
+  [[ -d "${dir}/.git" ]] || git -C "$dir" init -q -b main
   git -C "$dir" add AGENTS.md CLAUDE.md
-  git -C "$dir" -c user.name="AI Session" -c user.email="ai-session@localhost" commit -q -m "Today assistant"
+  # Never signed: a Mac whose git signs every commit may have no gpg (or a locked key).
+  git -C "$dir" -c user.name="AI Session" -c user.email="ai-session@localhost" -c commit.gpgsign=false \
+    commit -q -m "Today assistant"
   say "assistant: created ${dir}"
 }
 

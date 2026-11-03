@@ -3463,6 +3463,15 @@ cp "$LAUNCHCTL_LOG" "${SANDBOX}/launchctl.keep3"
 cp "${SANDBOX}/launchctl.keep3" "$LAUNCHCTL_LOG"
 [[ $(git -C "$A_DIR" rev-list --count HEAD) -eq 1 ]] || fail "a re-install added commits to the assistant repo"
 pass "install_creates_assistant_folder (a git repo, once)"
+# A Mac whose git signs every commit (no gpg here), and a folder left half-made by that failure.
+rm -rf "${A_DIR}/.git"
+git -C "$A_DIR" init -q -b main
+printf '[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /nonexistent/gpg\n' >"${SANDBOX}/gpg-gitconfig"
+cp "$LAUNCHCTL_LOG" "${SANDBOX}/launchctl.keep4"
+GIT_CONFIG_GLOBAL="${SANDBOX}/gpg-gitconfig" "$INSTALL" >"${SANDBOX}/gpg-install.out" 2>&1 || fail "install failed with commit signing on: $(tail -3 "${SANDBOX}/gpg-install.out")"
+cp "${SANDBOX}/launchctl.keep4" "$LAUNCHCTL_LOG"
+git -C "$A_DIR" rev-parse --verify -q HEAD >/dev/null || fail "the half-made assistant repo was not finished"
+pass "install_assistant_folder_survives_commit_signing (and finishes a half-made repo)"
 "$INSTALL" >/dev/null
 check_installed() {
   python3 - "$SETTINGS" "${HOME}/.ai-remote/bin" <<'PY'
