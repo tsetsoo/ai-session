@@ -47,7 +47,7 @@ final class WatchTests: XCTestCase {
         XCTAssertEqual(try issue(taken: "r1", outcome: "fixed").group, .fixed)
         XCTAssertEqual(try issue(state: "resolving", taken: "r1", outcome: "fixed").group, .resolving)
         XCTAssertEqual(try issue(taken: "r1").todoId, "t-r1")
-        XCTAssertEqual(WatchIssueGroup.fixed.title, "Fixed · deploy, then resolve")
+        XCTAssertEqual(WatchIssueGroup.fixed.title, "Fixed on a branch · waiting for your merge")
     }
 
     func testGroupingDropsEmptyGroupsInOrder() throws {
@@ -78,6 +78,49 @@ final class WatchTests: XCTestCase {
         XCTAssertEqual(back.computerId, "mac")
         XCTAssertEqual(back.debugTool, "")
         XCTAssertEqual(JobDraft.watchCron, "*/10 * * * *")
+    }
+
+    func testIssueDecodesNewFieldsAndOldHub() throws {
+        let old = try issue(taken: "r1", outcome: "fixed")
+        XCTAssertNil(old.branch)
+        XCTAssertEqual(old.commits, [])
+        var json = Self.issueJSON(taken: "r1", outcome: "fixed")
+        json.removeLast()
+        json += #","branch":"scheduled/debug-sentry-x","worktree":"~/.ai-remote/worktrees/p/r1","commits":["5c36409e"]}"#
+        let new = try TodoHubClient.makeDecoder().decode(WatchIssue.self, from: Data(json.utf8))
+        XCTAssertEqual(new.branch, "scheduled/debug-sentry-x")
+        XCTAssertEqual(new.worktree, "~/.ai-remote/worktrees/p/r1")
+        XCTAssertEqual(new.commits, ["5c36409e"])
+    }
+
+    func testOutcomeTextAndNextStepsPerGroup() throws {
+        let fixed = try issue(taken: "r1", outcome: "fixed")
+        XCTAssertEqual(fixed.outcomeText, "Fixed by the conversation")
+        XCTAssertEqual(fixed.nextSteps(resolveLabel: "Resolve in Sentry"), [
+            "Review the fix in the conversation.",
+            "Merge the branch and deploy it yourself. Nothing was merged, pushed or deployed.",
+            "Then press Resolve in Sentry.",
+        ])
+        XCTAssertEqual(try issue(taken: "r1", outcome: "needs_you").nextSteps(resolveLabel: "Resolve").first,
+                       "Answer the question in the conversation.")
+        XCTAssertEqual(try issue(taken: "r1", outcome: "cant_fix").outcomeText, "Can't be fixed in code")
+        XCTAssertEqual(try issue().outcomeText, "Waiting for a conversation")
+        XCTAssertEqual(try issue(taken: "r1").outcomeText, "Being worked on")
+        XCTAssertEqual(try issue(state: "cleared").outcomeText, "Cleared")
+    }
+
+    func testWatcherInfoMissingSettings() throws {
+        let json = #"{"name":"sentry","title":"Sentry","description":"d","resolve":true,"resolve_label":"Resolve in Sentry","settings":[{"key":"SENTRY_TOKEN","label":"Token","secret":true,"set":true},{"key":"SENTRY_ORG","label":"Org","secret":false,"set":false}]}"#
+        let info = try TodoHubClient.makeDecoder().decode(WatcherInfo.self, from: Data(json.utf8))
+        XCTAssertEqual(info.missingSettings.map(\.key), ["SENTRY_ORG"])
+        XCTAssertEqual(info.resolveLabel, "Resolve in Sentry")
+    }
+
+    func testClientListsWatchers() async throws {
+        StubURLProtocol.handler = { _ in .init(status: 200, body: #"[{"name":"sentry","title":"Sentry","description":"","settings":[],"resolve":false,"resolve_label":null}]"#) }
+        let watchers = try await client().listWatchers(computerId: "mac")
+        XCTAssertEqual(watchers.map(\.name), ["sentry"])
+        XCTAssertEqual(StubURLProtocol.requests.last?.url?.path, "/api/computers/mac/watchers")
     }
 
     func testClientListsResolvesAndRetriesWatchIssues() async throws {

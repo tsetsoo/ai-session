@@ -57,6 +57,77 @@ public struct WatchIssue: Codable, Equatable, Hashable, Identifiable, Sendable {
     public var lastSeen: String
     public var clearedAt: String?
     public var updatedAt: String
+    /// The branch of the conversation that took it, where a fix is committed (newer hubs).
+    public var branch: String?
+    /// That conversation's folder (its worktree).
+    public var worktree: String?
+    /// The fix's commits, as the agent reported them; [] on an older hub.
+    public var commits: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, watcher, key, jobId, projectId, title, details, url, folder, state, takenRunId, todoId, outcome, outcomeNote
+        case resolveError, firstSeen, lastSeen, clearedAt, updatedAt, branch, worktree, commits
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        watcher = try c.decode(String.self, forKey: .watcher)
+        key = try c.decode(String.self, forKey: .key)
+        jobId = try c.decodeIfPresent(String.self, forKey: .jobId)
+        projectId = try c.decode(String.self, forKey: .projectId)
+        title = try c.decode(String.self, forKey: .title)
+        details = try c.decodeIfPresent(String.self, forKey: .details) ?? ""
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        folder = try c.decodeIfPresent(String.self, forKey: .folder)
+        state = try c.decode(String.self, forKey: .state)
+        takenRunId = try c.decodeIfPresent(String.self, forKey: .takenRunId)
+        todoId = try c.decodeIfPresent(String.self, forKey: .todoId)
+        outcome = try c.decodeIfPresent(String.self, forKey: .outcome)
+        outcomeNote = try c.decodeIfPresent(String.self, forKey: .outcomeNote)
+        resolveError = try c.decodeIfPresent(String.self, forKey: .resolveError)
+        firstSeen = try c.decode(String.self, forKey: .firstSeen)
+        lastSeen = try c.decode(String.self, forKey: .lastSeen)
+        clearedAt = try c.decodeIfPresent(String.self, forKey: .clearedAt)
+        updatedAt = try c.decode(String.self, forKey: .updatedAt)
+        branch = try c.decodeIfPresent(String.self, forKey: .branch)
+        worktree = try c.decodeIfPresent(String.self, forKey: .worktree)
+        commits = try c.decodeIfPresent([String].self, forKey: .commits) ?? []
+    }
+
+    /// What became of it, in words.
+    public var outcomeText: String {
+        if state == "cleared" { return "Cleared" }
+        switch group {
+        case .waiting: return "Waiting for a conversation"
+        case .working: return "Being worked on"
+        case .needsYou: return "Needs your decision"
+        case .cantFix: return "Can't be fixed in code"
+        case .fixed: return "Fixed by the conversation"
+        case .resolving: return "Resolving…"
+        }
+    }
+
+    /// What the user does next, in order. `resolveLabel`: the watcher's button ("Resolve in Sentry").
+    public func nextSteps(resolveLabel: String) -> [String] {
+        if state == "cleared" { return [] }
+        switch group {
+        case .fixed:
+            return ["Review the fix in the conversation.",
+                    "Merge the branch and deploy it yourself. Nothing was merged, pushed or deployed.",
+                    "Then press \(resolveLabel)."]
+        case .needsYou:
+            return ["Answer the question in the conversation.", "Then press Try Again, or \(resolveLabel) if it's settled."]
+        case .cantFix:
+            return ["Read why in the note.", "If it was a one-off, press \(resolveLabel); otherwise Try Again."]
+        case .waiting:
+            return ["A conversation takes it on the next check (at most 2 work at once)."]
+        case .working:
+            return ["Watch the conversation; it reports back here."]
+        case .resolving:
+            return ["This Mac resolves it within a minute."]
+        }
+    }
 
     public var group: WatchIssueGroup {
         if state == "resolving" { return .resolving }
@@ -81,7 +152,7 @@ public enum WatchIssueGroup: String, CaseIterable, Hashable, Sendable {
         case .working: "Being worked on"
         case .needsYou: "Needs you"
         case .cantFix: "Can't fix"
-        case .fixed: "Fixed · deploy, then resolve"
+        case .fixed: "Fixed on a branch · waiting for your merge"
         case .resolving: "Resolving"
         }
     }
@@ -95,4 +166,24 @@ public enum WatchIssueGrouping {
             return members.isEmpty ? nil : (group, members)
         }
     }
+}
+
+/// A watcher installed on a computer (its manifest); settings say only whether they are set.
+public struct WatcherInfo: Codable, Equatable, Hashable, Identifiable, Sendable {
+    public var name: String
+    public var title: String
+    public var description: String
+    public var settings: [WatcherSetting]
+    public var resolve: Bool
+    public var resolveLabel: String?
+    public var id: String { name }
+
+    public var missingSettings: [WatcherSetting] { settings.filter { !$0.set } }
+}
+
+public struct WatcherSetting: Codable, Equatable, Hashable, Sendable {
+    public var key: String
+    public var label: String
+    public var secret: Bool
+    public var set: Bool
 }

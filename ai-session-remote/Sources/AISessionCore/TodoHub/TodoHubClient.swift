@@ -451,6 +451,11 @@ public struct TodoHubClient: Sendable {
         _ = try await send("POST", "/api/watch/issues/\(escape(id))/resolve")
     }
 
+    /// The watchers installed on a computer, as its runner last reported them.
+    public func listWatchers(computerId: String) async throws -> [WatcherInfo] {
+        try await decode([WatcherInfo].self, send("GET", "/api/computers/\(escape(computerId))/watchers"))
+    }
+
     /// Hand a needs-you or can't-fix issue to a new conversation.
     public func retryWatchIssue(id: String) async throws {
         _ = try await send("POST", "/api/watch/issues/\(escape(id))/retry")
