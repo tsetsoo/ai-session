@@ -126,6 +126,15 @@ class Hub(BaseHTTPRequestHandler):
                                     {"five_hour": 60, "weekly": 80, "pause_waiting": False},
                                     "runs": state.get("due_runs", []),
                                     "resolves": state.get("resolves", [])})
+        if path in ("/api/reminders", "/api/people"):
+            key = path.rsplit("/", 1)[1]
+            if method == "GET":
+                return self.reply(200, state.get(key, []))
+            if method == "POST":
+                row = dict(body, id="%s-%d" % (key, len(state.get(key, [])) + 1))
+                state.setdefault(key, []).append(row)
+                save(state)
+                return self.reply(state.get("today_status", 200), row)
         if method == "PUT" and path.startswith("/api/computers/") and path.endswith("/watchers"):
             return self.reply(state.get("watchers_status", 200), {"ok": True})
         if method == "POST" and path.startswith("/api/watch/"):

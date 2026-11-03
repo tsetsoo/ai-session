@@ -49,7 +49,7 @@ BIN_DIR="${AI_DIR}/bin"
 HUB_CONF="${AI_DIR}/todo-hub.conf"
 TMUX_SNIPPET="${AI_DIR}/tmux.conf"
 # Every helper copied to BIN_DIR, for install and uninstall alike. Programs are 755, modules 644.
-HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status ai-todo-runner ai-todo-idea ai-todo-watch)
+HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status ai-todo-runner ai-todo-idea ai-todo-watch ai-todo-remind)
 MODULES=(ai_todo_redact.py ai_todo_status.py)
 TMUX_CONF="${HOME}/.tmux.conf"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
@@ -719,6 +719,25 @@ do_install_claude_status() {
   say "Claude status updated; Codex settings, hub config and nightly jobs kept"
 }
 
+# The Today assistant's folder: a tiny git repo, so each "Add with an agent" conversation runs
+# in its own throwaway worktree with the usual auto-approve. Created once; never rewritten.
+install_assistant_folder() {
+  local dir="${AI_DIR}/assistant"
+  [[ -d "${dir}/.git" ]] && return 0
+  if [[ $dry_run -eq 1 ]]; then
+    say "would create ${dir} (the Today assistant's folder)"
+    return 0
+  fi
+  mkdir -p "$dir"
+  local text='You add reminders and people'"'"'s dates for the user with ~/.ai-remote/bin/ai-todo-remind (list, add, person). Do nothing else here.'
+  printf '%s\n' "$text" >"${dir}/AGENTS.md"
+  printf '%s\n' "$text" >"${dir}/CLAUDE.md"
+  git -C "$dir" init -q -b main
+  git -C "$dir" add AGENTS.md CLAUDE.md
+  git -C "$dir" -c user.name="AI Session" -c user.email="ai-session@localhost" commit -q -m "Today assistant"
+  say "assistant: created ${dir}"
+}
+
 do_install() {
   run mkdir -p "$BIN_DIR"
   local file
@@ -740,6 +759,7 @@ do_install() {
   else
     say "watchers: no watcher plugins found beside scripts/todo; installed watchers kept as they are (copy with: tar -C ai-session-remote -czf - scripts/todo watchers)"
   fi
+  install_assistant_folder
   for file in "${MODULES[@]}"; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   resolve_codex_for_hooks
   run install -m 644 "${SRC_DIR}/tmux.conf" "$TMUX_SNIPPET"

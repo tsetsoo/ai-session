@@ -1,0 +1,183 @@
+#!/bin/sh
+# Reminders and people's dates on the hub, for the Today assistant (and anyone).
+#
+# Usage:
+#   ai-todo-remind list
+#   ai-todo-remind add "<title>" --at "YYYY-MM-DD HH:MM" [--repeat none|daily|weekdays|weekly|monthly|yearly] [--notes "<text>"]
+#   ai-todo-remind person "<name>" [--kind birthday|anniversary|other] --date MM-DD [--year YYYY] [--notes "<text>"]
+#
+# Times are Europe/Sofia. Items are saved directly (the user asked for them), marked as added
+# by an agent. Titles and notes are redacted (ai_todo_redact.py) before they leave this computer.
+#
+# Exit codes: 64 bad arguments, 65 no config, 1 todo-server error, 90 missing tools.
+AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_LIB_DIR
+ai_path=
+ai_ifs=$IFS
+IFS=:
+set -f
+for ai_dir in /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin /usr/local/bin "$HOME/.local/bin" /usr/sbin /sbin $PATH; do
+  [ -n "$ai_dir" ] || continue
+  case "$ai_dir" in /home/*) if [ -d /System ]; then continue; fi ;; esac
+  case ":$ai_path:" in *":$ai_dir:"*) continue ;; esac
+  ai_path=${ai_path:+$ai_path:}$ai_dir
+done
+set +f
+IFS=$ai_ifs
+export PATH="$ai_path"
+unset ai_path ai_ifs ai_dir
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+exec python3 - "$@" <<'PY'
+import datetime
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.request
+
+HOME = os.path.expanduser("~")
+LIB_DIR = os.environ.get("AI_TODO_LIB_DIR") or os.path.join(HOME, ".ai-remote", "bin")
+AI_DIR = os.path.join(HOME, ".ai-remote")
+REPEATS = ("none", "daily", "weekdays", "weekly", "monthly", "yearly")
+KINDS = ("birthday", "anniversary", "other")
+USAGE = """usage: ai-todo-remind list
+       ai-todo-remind add "<title>" --at "YYYY-MM-DD HH:MM" [--repeat none|daily|weekdays|weekly|monthly|yearly] [--notes "<text>"]
+       ai-todo-remind person "<name>" [--kind birthday|anniversary|other] --date MM-DD [--year YYYY] [--notes "<text>"]"""
+
+
+def die(message, code):
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+def config():
+    path = os.environ.get("AI_TODO_HUB_CONF") or os.path.join(AI_DIR, "todo-hub.conf")
+    values = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                m = re.match(r"\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$", line.rstrip("\n"))
+                if m:
+                    raw = m.group(2).strip()
+                    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+                        raw = raw[1:-1]
+                    values[m.group(1)] = raw
+    except OSError:
+        pass
+    if not values.get("TODO_HUB_URL"):
+        die("ai-todo-remind: no TODO_HUB_URL in %s" % path, 65)
+    return values
+
+
+def request(conf, method, path, body=None):
+    url = conf["TODO_HUB_URL"].rstrip("/") + path
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method=method)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    if conf.get("TODO_API_TOKEN"):
+        req.add_header("Authorization", "Bearer " + conf["TODO_API_TOKEN"])
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = json.loads(e.read()).get("error") or ""
+        except Exception:
+            pass
+        die("ai-todo-remind: %s %s answered HTTP %s %s" % (method, path, e.code, detail), 1)
+    except (urllib.error.URLError, OSError) as e:
+        die("ai-todo-remind: could not reach todo-server (%s)" % type(e).__name__, 1)
+    return json.loads(raw) if raw else None
+
+
+def redactor(conf):
+    sys.path.insert(0, LIB_DIR)
+    sys.dont_write_bytecode = True
+    try:
+        import ai_todo_redact
+    except ImportError:
+        die("ai_todo_redact.py not found in %s; refusing to send anything" % LIB_DIR, 90)
+    secrets = ai_todo_redact.secret_values_from_env(os.environ)
+    if conf.get("TODO_API_TOKEN"):
+        secrets.append(conf["TODO_API_TOKEN"])
+    return lambda text: ai_todo_redact.redact(text, secrets)
+
+
+def options(args, allowed):
+    """(positional, {option: value}); exits 64 on anything unexpected."""
+    positional, opts = [], {}
+    while args:
+        a = args.pop(0)
+        if a.startswith("--"):
+            if a not in allowed or not args or a in opts:
+                die(USAGE, 64)
+            opts[a] = args.pop(0)
+        else:
+            positional.append(a)
+    return positional, opts
+
+
+def cmd_list(conf, args):
+    if args:
+        die(USAGE, 64)
+    reminders = request(conf, "GET", "/api/reminders") or []
+    people = request(conf, "GET", "/api/people") or []
+    print("Reminders:" if reminders else "Reminders: none")
+    for r in reminders:
+        if r.get("state") == "done":
+            continue
+        repeat = r.get("repeat") or "none"
+        print("- %s · %s%s" % (r.get("at") or "", r.get("title") or "", "" if repeat == "none" else " (" + repeat + ")"))
+    print("People & dates:" if people else "People & dates: none")
+    for p in people:
+        year = " %s" % p["year"] if p.get("year") else ""
+        print("- %s · %s · %02d-%02d%s" % (p.get("name") or "", p.get("kind") or "", int(p.get("month") or 0), int(p.get("day") or 0), year))
+
+
+def cmd_add(conf, args):
+    positional, opts = options(list(args), ("--at", "--repeat", "--notes"))
+    if len(positional) != 1 or not positional[0].strip() or "--at" not in opts:
+        die(USAGE, 64)
+    try:
+        at = datetime.datetime.strptime(opts["--at"].strip(), "%Y-%m-%d %H:%M").strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        die(USAGE, 64)
+    repeat = opts.get("--repeat", "none")
+    if repeat not in REPEATS:
+        die(USAGE, 64)
+    redact = redactor(conf)
+    body = {"title": redact(" ".join(positional[0].split()))[:200], "at": at, "repeat": repeat,
+            "notes": redact(opts.get("--notes", "").strip())[:2000], "source": "agent"}
+    r = request(conf, "POST", "/api/reminders", body) or {}
+    print("Added reminder: %s at %s%s." % (r.get("title") or body["title"], at, "" if repeat == "none" else ", " + repeat))
+
+
+def cmd_person(conf, args):
+    positional, opts = options(list(args), ("--kind", "--date", "--year", "--notes"))
+    if len(positional) != 1 or not positional[0].strip() or "--date" not in opts:
+        die(USAGE, 64)
+    kind = opts.get("--kind", "birthday")
+    m = re.fullmatch(r"(\d{2})-(\d{2})", opts["--date"].strip())
+    if kind not in KINDS or not m:
+        die(USAGE, 64)
+    year = opts.get("--year")
+    if year is not None and not re.fullmatch(r"\d{4}", year.strip()):
+        die(USAGE, 64)
+    redact = redactor(conf)
+    body = {"name": redact(" ".join(positional[0].split()))[:200], "kind": kind, "month": int(m.group(1)), "day": int(m.group(2)),
+            "year": int(year) if year else None, "notes": redact(opts.get("--notes", "").strip())[:2000], "source": "agent"}
+    request(conf, "POST", "/api/people", body)
+    print("Added %s: %s on %s%s." % (kind, body["name"], opts["--date"].strip(), " (%s)" % year if year else ""))
+
+
+def main(argv):
+    commands = {"list": cmd_list, "add": cmd_add, "person": cmd_person}
+    if not argv or argv[0] not in commands:
+        die(USAGE, 64)
+    commands[argv[0]](config(), argv[1:])
+
+
+main(sys.argv[1:])
+PY

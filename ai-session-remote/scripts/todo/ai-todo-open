@@ -27,6 +27,7 @@
 # --detached        Start (or find) the tmux session and return; never attach.
 # --prompt-file F   On a new conversation, F's text is the tool's first message (claude
 #                   and codex take it as an argument); ignored on a resume. F is deleted.
+# --model ID        On a new conversation, the tool's model (claude --model ID, codex -m ID).
 # --auto-approve    Claude starts in auto mode (--permission-mode auto: a safety check
 #                   approves routine actions and blocks risky ones), for scheduled
 #                   conversations in their own worktree. Claude asks once whether to trust a
@@ -93,6 +94,7 @@ mcp_given=0
 mcp_names=
 prompt_file=
 auto_approve=0
+model=
 # Leading options, in any order. Older versions of this script only take --mcp, first.
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -104,6 +106,14 @@ while [ "$#" -gt 0 ]; do
       ;;
     --detached) AI_TODO_OPEN_DETACH=1; shift ;;
     --auto-approve) auto_approve=1; shift ;;
+    --model)
+      [ "$#" -ge 2 ] || usage
+      case "$2" in
+        ''|*[!A-Za-z0-9._-]*) usage ;;
+      esac
+      model=$2
+      shift 2
+      ;;
     --prompt-file)
       [ "$#" -ge 2 ] || usage
       prompt_file=$2
@@ -385,6 +395,7 @@ if [ "$tool" = codex ]; then
   if [ "$fresh" = 1 ]; then
     mode=created
     set -- "$codex_bin" --approve-for-me
+    [ -n "$model" ] && set -- "$@" -m "$model"
     [ -n "$first_prompt" ] && set -- "$@" "$first_prompt"
   elif [ -z "$(find "$HOME/.codex/sessions" -name "rollout-*-$sid.jsonl" -print 2>/dev/null | head -n 1)" ]; then
     # Started but never sent a message: Codex 0.163+ keeps no rollout for it and
@@ -452,6 +463,7 @@ else
     mode=created
     set -- "$claude_bin" --session-id "$sid"
     [ "$auto_approve" = 1 ] && set -- "$@" --permission-mode auto
+    [ -n "$model" ] && set -- "$@" --model "$model"
     [ -n "$first_prompt" ] && set -- "$@" "$first_prompt"
   fi
 fi

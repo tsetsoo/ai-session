@@ -188,6 +188,17 @@ tmux -L "$SOCK" kill-session -t "=$U2_NAME"
 if "$OPEN" --mcp a --mcp b --detached "$U2_NAME" '~/programming' "$U2_SID" >/dev/null 2>&1; then fail "two --mcp were accepted"; fi
 pass "open_options_any_order_with_mcp"
 
+U3_NAME=ai/claude/todo-model1
+U3_SID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+lines_before=$(wc -l <"$CLAUDE_LOG")
+out="$("$OPEN" --detached --model haiku "$U3_NAME" '~/programming' "$U3_SID" claude)" || fail "open --model failed"
+wait_for_log_lines $((lines_before + 1))
+[[ "$(tail -n 1 "$CLAUDE_LOG")" == "${HOME}/programming --session-id ${U3_SID} --model haiku" ]] || fail "claude --model argv: $(tail -n 1 "$CLAUDE_LOG")"
+tmux -L "$SOCK" kill-session -t "=$U3_NAME"
+status=0; "$OPEN" --detached --model 'x;rm' "$U3_NAME" '~/programming' "$U3_SID" claude >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "a bad model id exit $status"
+pass "open_passes_model_to_claude (and refuses a bad id)"
+
 # --- ai-todo-sessions + Codex in ai-todo-open ----------------------------------
 
 SESSIONS="${SCRIPT_DIR}/ai-todo-sessions"
@@ -600,6 +611,12 @@ out="$(AI_TODO_CODEX_BIN="$PROMPT_CODEX" "$OPEN" --detached --auto-approve --pro
 tmux -L "$SOCK" kill-session -t "=ai/codex/todo-prompt1" 2>/dev/null || true
 rm -f "$HOME"/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-PROMPTCX.jsonl
 pass "open_prompt_file_becomes_initial_prompt_codex"
+printf 'Codex, add it.' >"${SANDBOX}/codex-prompt.txt"
+out="$(AI_TODO_CODEX_BIN="$PROMPT_CODEX" "$OPEN" --detached --auto-approve --model gpt-6.1-terra --prompt-file "${SANDBOX}/codex-prompt.txt" "ai/codex/todo-prompt2" '~/programming' - codex)"
+[[ "$(cat "${SANDBOX}/codex-prompt.args")" == "--approve-for-me"$'\n'"-m"$'\n'"gpt-6.1-terra"$'\n'"Codex, add it." ]] || fail "codex -m argv: $(cat "${SANDBOX}/codex-prompt.args")"
+tmux -L "$SOCK" kill-session -t "=ai/codex/todo-prompt2" 2>/dev/null || true
+rm -f "$HOME"/.codex/sessions/2026/10/20/rollout-2026-10-20T00-00-00-PROMPTCX.jsonl
+pass "open_passes_model_to_codex"
 
 # Codex 0.163 writes the rollout only after the first message. At startup its TUI marks
 # the thread under tui-thread-reference-capabilities.
@@ -2784,6 +2801,12 @@ cat >"$R_LIMITS" <<'FAKE'
 [ -n "${FAKE_LIMITS_SLEEP:-}" ] && sleep "$FAKE_LIMITS_SLEEP"
 [ "${FAKE_LIMITS_EXIT:-0}" = 0 ] || exit "$FAKE_LIMITS_EXIT"
 [ -n "${FAKE_LIMITS_JSON:-}" ] && { printf '%s\n' "$FAKE_LIMITS_JSON"; exit 0; }
+if [ "${2:-}" = codex ]; then
+  [ -n "${FAKE_CODEX_EXIT:-}" ] && exit "$FAKE_CODEX_EXIT"
+  printf '{"tool":"codex","windows":[{"kind":"5h","used_percent":%s},{"kind":"weekly","used_percent":%s}]}\n' "${FAKE_5H:-10}" "${FAKE_CODEX_WEEK:-${FAKE_WEEK:-10}}"
+  exit 0
+fi
+[ -n "${FAKE_CLAUDE_EXIT:-}" ] && exit "$FAKE_CLAUDE_EXIT"
 printf '{"tool":"claude","windows":[{"kind":"5h","used_percent":%s},{"kind":"weekly","used_percent":%s}]}\n' "${FAKE_5H:-10}" "${FAKE_WEEK:-10}"
 FAKE
 chmod +x "$R_OPEN" "$R_LIMITS"
@@ -3030,6 +3053,33 @@ posts_to finish | grep '"id": "r-resrch01"' | grep -q '"state": "done"' || fail 
 pass "runner_starts_research_run"
 runs_reset
 
+auto_run() { # <run id>: an assistant run whose tool is auto
+  due_run "$1" proj-app '{"mode":"always"}' 0 auto
+  hub_edit "s['due_runs'][-1]['run']['note'] = 'assistant:reminder:dentist'; s['start_response'] = None; s.pop('start_response')"
+}
+auto_tool() { posts_to start | python3 -c 'import json,sys; print(json.loads(sys.stdin.readline())["body"].get("tool"))'; }
+auto_run ra1-0001
+FAKE_WEEK=70 FAKE_CODEX_WEEK=20 runner tick || fail "tick failed"
+[[ "$(auto_tool)" == codex ]] || fail "more codex headroom did not pick codex: $(posts_to start)"
+pass "runner_auto_picks_more_weekly_headroom"
+runs_reset
+auto_run ra2-0002
+FAKE_CLAUDE_EXIT=75 FAKE_CODEX_EXIT=75 runner tick || fail "tick failed"
+[[ "$(auto_tool)" == claude ]] || fail "no readings did not fall back to claude: $(posts_to start) $(tail -3 "${R_STATE}/runner.log")"
+runs_reset
+auto_run ra3-0003
+FAKE_CODEX_EXIT=75 FAKE_WEEK=85 runner tick || fail "tick failed"
+[[ "$(auto_tool)" == codex ]] || fail "claude over 80% with no codex reading did not pick codex: $(posts_to start)"
+pass "runner_auto_without_readings_uses_claude (one reading: that tool unless over 80%)"
+runs_reset
+due_run r-model001 proj-app '{"mode":"always"}'
+hub_edit "s['start_response'] = {'todo_id': 't-m', 'tmux_name': 'ai/codex/todo-m1', 'session_id': '', 'tool': 'codex', 'prompt': 'P', 'model': 'gpt-6.1-terra'}"
+runner tick || fail "tick failed"
+grep -qx -- "--model" "$R_OPEN_LOG" && grep -qx -- "gpt-6.1-terra" "$R_OPEN_LOG" || fail "the start's model did not reach ai-todo-open: $(cat "$R_OPEN_LOG")"
+[[ "$(sed -n '/^---$/{x;p;};h' "$R_OPEN_LOG" | tail -1)" == codex ]] || fail "the start's tool was not used: $(cat "$R_OPEN_LOG")"
+pass "runner_start_sends_chosen_tool_and_model"
+runs_reset
+
 # --- ai-todo-runner: watchers ------------------------------------------------------------
 W_DIR="${SANDBOX}/watchers"
 mkdir -p "$W_DIR"
@@ -3240,6 +3290,38 @@ status=0
 hub_edit "s.pop('watch_status', None)"
 [[ $status -eq 1 ]] || fail "hub refusal exit $status"
 pass "watch_helper_outside_worktree_exits_65 (and a hub refusal exits 1)"
+
+# --- ai-todo-remind ---------------------------------------------------------------------
+REMIND="${SCRIPT_DIR}/ai-todo-remind"
+remind() { AI_TODO_HUB_CONF="$M_CONF" "$REMIND" "$@"; }
+last_post() { # <path>: the last POST body to it
+  python3 - "$M_HUB_LOG" "$1" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+print(json.dumps([r["body"] for r in rows if r["method"] == "POST" and r["path"] == sys.argv[2]][-1]))
+PY
+}
+remind add "Call the accountant" --at "2026-11-06 10:00" --repeat weekly --notes "About VAT, password=hunter2xyz" >/dev/null || fail "remind add failed"
+last_post /api/reminders | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert (b["title"], b["at"], b["repeat"], b["source"]) == ("Call the accountant", "2026-11-06 10:00", "weekly", "agent"), b
+assert "hunter2xyz" not in b["notes"], b
+' || fail "remind add body: $(last_post /api/reminders)"
+pass "remind_add_posts_reminder"
+remind person "Maria" --kind birthday --date 03-14 --year 1991 >/dev/null || fail "remind person failed"
+last_post /api/people | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+assert (b["name"], b["kind"], b["month"], b["day"], b["year"], b["source"]) == ("Maria", "birthday", 3, 14, 1991, "agent"), b
+' || fail "remind person body: $(last_post /api/people)"
+remind list | grep -q "Call the accountant" && remind list | grep -q "Maria" || fail "remind list: $(remind list)"
+pass "remind_person_posts_person (and list shows both)"
+for bad in 'add' 'add x --at tomorrow' 'add x --at "2026-11-06 10:00" --repeat hourly' 'person y --kind pet --date 03-14' 'person y --date 3/14' 'nope'; do
+  status=0; eval "remind $bad" >/dev/null 2>&1 || status=$?
+  [[ $status -eq 64 ]] || fail "remind $bad exit $status"
+done
+pass "remind_bad_args_exit_64"
 runs_reset
 
 # --- end of the ai-todo-memory sections -------------------------------------------------
@@ -3366,6 +3448,15 @@ cp "${SANDBOX}/launchctl.keep2" "$LAUNCHCTL_LOG"
 grep -q "no watcher plugins found" "${SANDBOX}/only-scripts.out" || fail "install did not warn about missing watcher plugins: $(cat "${SANDBOX}/only-scripts.out")"
 [[ -x "${HOME}/.ai-remote/watchers/sentry" ]] || fail "install without plugins removed the installed watcher"
 pass "install_places_sentry_watcher_keeps_env (and warns when a tarball carries no plugins)"
+A_DIR="${HOME}/.ai-remote/assistant"
+[[ -x "${HOME}/.ai-remote/bin/ai-todo-remind" ]] || fail "ai-todo-remind not installed"
+git -C "$A_DIR" rev-parse --verify -q HEAD >/dev/null || fail "the assistant folder is not a git repo with a commit"
+grep -q "ai-todo-remind" "${A_DIR}/AGENTS.md" && grep -q "ai-todo-remind" "${A_DIR}/CLAUDE.md" || fail "the assistant folder's instructions are missing"
+cp "$LAUNCHCTL_LOG" "${SANDBOX}/launchctl.keep3"
+"$INSTALL" >/dev/null
+cp "${SANDBOX}/launchctl.keep3" "$LAUNCHCTL_LOG"
+[[ $(git -C "$A_DIR" rev-list --count HEAD) -eq 1 ]] || fail "a re-install added commits to the assistant repo"
+pass "install_creates_assistant_folder (a git repo, once)"
 "$INSTALL" >/dev/null
 check_installed() {
   python3 - "$SETTINGS" "${HOME}/.ai-remote/bin" <<'PY'

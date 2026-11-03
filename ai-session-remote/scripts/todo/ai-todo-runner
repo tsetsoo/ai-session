@@ -229,6 +229,27 @@ def pct(value):
     return ("%g" % value) + "%"
 
 
+AUTO_WEEKLY_CAP = 80
+
+
+def choose_tool():
+    """For a job whose tool is `auto` (the assistant): the tool with more weekly headroom.
+    No reading for either: claude. One reading: that tool unless it's above 80% weekly."""
+    weekly = {}
+    for tool in ("claude", "codex"):
+        reading = read_usage(tool)
+        if reading is not None and reading.get("weekly") is not None:
+            weekly[tool] = reading["weekly"]
+    if len(weekly) == 2:
+        return "codex" if weekly["codex"] < weekly["claude"] else "claude"
+    if len(weekly) == 1:
+        (tool, used), = weekly.items()
+        if used <= AUTO_WEEKLY_CAP:
+            return tool
+        return "codex" if tool == "claude" else "claude"
+    return "claude"
+
+
 def wait_reason(due, settings, started_now):
     """(reason or None, no_reading). started_now: no-reading starts per tool in this tick."""
     action = due["job"]["action"]
@@ -485,6 +506,8 @@ def start_run(hub, computer_id, due, folders):
         body = {"cwd": tilde(path), "is_git": is_git}
         if branch:
             body["branch"] = branch
+        if action.get("tool") == "auto":
+            body["tool"] = choose_tool()
         started = hub.request("POST", "/api/runs/%s/start" % run["id"], body=body)
         ensure_state()
         fd, prompt_file = tempfile.mkstemp(dir=STATE_DIR, prefix="prompt.")
@@ -494,9 +517,11 @@ def start_run(hub, computer_id, due, folders):
             raise RuntimeError("the hub's start answer is empty")
         sid = started.get("session_id") or "-"
         # Auto-approve only inside a scheduled git worktree, never in a folder used in place.
-        argv = [OPEN_BIN, "--detached"] + (["--auto-approve"] if is_git else []) + [
+        model = started.get("model") if isinstance(started.get("model"), str) else None
+        argv = [OPEN_BIN, "--detached"] + (["--auto-approve"] if is_git else []) + (
+            ["--model", model] if model and re.fullmatch(r"[A-Za-z0-9._-]+", model) else []) + [
             "--prompt-file", prompt_file, started["tmux_name"], tilde(path), sid,
-            started.get("tool") or action.get("tool") or "claude"]
+            started.get("tool") or body.get("tool") or action.get("tool") or "claude"]
         try:
             p = subprocess.run(argv, capture_output=True, text=True, timeout=OPEN_TIMEOUT, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
