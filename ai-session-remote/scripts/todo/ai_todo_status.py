@@ -98,18 +98,6 @@ def runtime_status(status):
     return None
 
 
-URGENCY = {"waiting": 2, "busy": 1, "idle": 0}
-
-
-def merge_state(result, sid, state):
-    """One conversation can be reported twice (Claude lists a background copy beside the
-    interactive one; two Codex runtimes can load one thread). Keep the most urgent, so a
-    copy waiting on you is never hidden by an idle one."""
-    current = result.get(sid)
-    if current is None or URGENCY[state[0]] > URGENCY[current[0]]:
-        result[sid] = state
-
-
 def fresh_runtime_state(sid, tool="codex"):
     snapshot = read_json(root() / ("claude-runtime.json" if tool == "claude" else "runtime.json"), {})
     observed = snapshot.get("observed_ns", 0)
@@ -732,8 +720,7 @@ class RuntimePool:
             try:
                 if path not in self.clients:
                     self.clients[path] = RuntimeSocket(path)
-                for sid, state in self.clients[path].states().items():
-                    merge_state(result, sid, state)
+                result.update(self.clients[path].states())
                 connected += 1
             except (OSError, ValueError, EOFError, TimeoutError):
                 client = self.clients.pop(path, None)
@@ -785,6 +772,7 @@ def claude_status(row):
 class ClaudeRuntime:
     def __init__(self):
         self.cli = find_claude()
+        self.listed = set()
 
     def states(self):
         env = dict(os.environ, PATH=str(Path(self.cli).parent) + os.pathsep + os.environ.get("PATH", ""))
@@ -794,23 +782,35 @@ class ClaudeRuntime:
         rows = json.loads(response.stdout)
         if not isinstance(rows, list):
             raise ValueError("invalid Claude status response")
-        result = {}
+        # --all keeps finished background copies, so one conversation can be listed twice:
+        # an old background copy still marked blocked beside the terminal that resumed it.
+        # The copy started last is the one running now.
+        newest = {}
         for row in rows:
             if not isinstance(row, dict):
                 continue
             sid = row.get("sessionId")
             if not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", sid):
                 continue
+            started = row.get("startedAt")
+            started = started if isinstance(started, (int, float)) else 0
+            if sid not in newest or started >= newest[sid][0]:
+                newest[sid] = (started, row)
+        # Listed with a status we can't read is still listed: poll_runtime must not settle it.
+        self.listed = set(newest)
+        result = {}
+        for sid, (_, row) in newest.items():
             state = claude_status(row)
             if state:
-                merge_state(result, sid, state)
+                result[sid] = state
         return result
 
 
 # A Claude conversation gone from `claude agents` has no process left, so a turn it was
 # running has ended. It is settled as idle once it stays gone this long (two polls at least),
-# so a missed listing can't end a live turn. Codex is never settled this way: an unloaded
-# thread may be running in another runtime.
+# so a missed listing can't end a live turn. An empty listing (Claude restarting) settles
+# nothing, and neither does a newer hook report. Codex is never settled this way: an
+# unloaded thread may be running in another runtime.
 VANISHED_NS = 3_000_000_000
 
 
@@ -838,15 +838,24 @@ def poll_runtime(client, previous, try_send=True, tool="codex"):
         if tuple(prior.get("state", ())) != tuple(state) or observed - prior.get("reported_ns", 0) >= 30_000_000_000:
             publish({"session_id": sid, "tool": tool, "status": state[0], "message": state[1], "attended": False}, observed, source="runtime", try_send=try_send)
             prior.update(state=state, reported_ns=observed)
+    listed = getattr(client, "listed", None) or set(states)
     for sid in set(previous) - set(states):
         prior = previous[sid]
-        if tool != "claude" or tuple(prior.get("state", ("idle",)))[0] == "idle":
+        if sid in listed:
+            continue  # Still running, in a state we can't read: keep what was reported.
+        if tool != "claude" or prior.get("state", ("idle",))[0] == "idle":
             previous.pop(sid)
+            continue
+        if not listed:
+            prior.pop("missing_since_ns", None)
             continue
         missing_since = prior.setdefault("missing_since_ns", observed)
         if observed - missing_since >= VANISHED_NS:
-            publish({"session_id": sid, "tool": tool, "status": "idle", "message": None, "attended": False}, observed, source="runtime", try_send=try_send)
             previous.pop(sid)
+            record = read_json(root() / f"claude.{sid}.json", {})
+            if record.get("source") != "runtime" and record.get("body", {}).get("event_timestamp_ns", 0) >= missing_since:
+                continue  # A hook reported after the listing lost it; that report stands.
+            publish({"session_id": sid, "tool": tool, "status": "idle", "message": None, "attended": False}, observed, source="runtime", try_send=try_send)
     return len(effective)
 
 
