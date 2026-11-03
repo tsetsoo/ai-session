@@ -1353,7 +1353,8 @@ pub(crate) mod tests {
         seed_watch(&pool.get().unwrap(), None);
         assert_eq!(get(&pool, "/api/computers/mac/watchers").await.1, json!([]));
         let report = json!([{"name": "sentry", "title": "Sentry", "description": "Unresolved issues", "resolve": true,
-            "resolve_label": "Resolve in Sentry", "settings": [{"key": "SENTRY_TOKEN", "label": "Token", "secret": true, "set": true}]}]);
+            "resolve_label": "Resolve in Sentry", "settings": [{"key": "SENTRY_TOKEN", "label": "Token", "secret": true, "set": true, "optional": false},
+                         {"key": "SENTRY_API", "label": "API", "secret": false, "set": false, "optional": true}]}]);
         assert_eq!(put(&pool, "/api/computers/mac/watchers", report.clone()).await.0, StatusCode::OK);
         assert_eq!(get(&pool, "/api/computers/mac/watchers").await.1, report);
         assert_eq!(put(&pool, "/api/computers/nope/watchers", report).await.0, StatusCode::NOT_FOUND);

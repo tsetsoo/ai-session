@@ -1334,6 +1334,9 @@ pub struct WatcherSetting {
     pub secret: bool,
     #[serde(default)]
     pub set: bool,
+    /// The watcher works without it (a default, or an extra).
+    #[serde(default)]
+    pub optional: bool,
 }
 
 /// An idea on a project: `new`, `researching`, `researched` or `dropped`.

@@ -178,7 +178,8 @@ public struct WatcherInfo: Codable, Equatable, Hashable, Identifiable, Sendable 
     public var resolveLabel: String?
     public var id: String { name }
 
-    public var missingSettings: [WatcherSetting] { settings.filter { !$0.set } }
+    /// Required settings not in the env file (optional ones have defaults).
+    public var missingSettings: [WatcherSetting] { settings.filter { !$0.set && !$0.optional } }
 }
 
 public struct WatcherSetting: Codable, Equatable, Hashable, Sendable {
@@ -186,4 +187,17 @@ public struct WatcherSetting: Codable, Equatable, Hashable, Sendable {
     public var label: String
     public var secret: Bool
     public var set: Bool
+    /// The watcher works without it; false on an older hub.
+    public var optional: Bool
+
+    private enum CodingKeys: String, CodingKey { case key, label, secret, set, optional }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        secret = try c.decodeIfPresent(Bool.self, forKey: .secret) ?? false
+        set = try c.decodeIfPresent(Bool.self, forKey: .set) ?? false
+        optional = try c.decodeIfPresent(Bool.self, forKey: .optional) ?? false
+    }
 }

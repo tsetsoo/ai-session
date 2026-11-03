@@ -383,6 +383,8 @@ def check_watch(hub, run, job):
 
 
 WATCHERS_REPORT_EVERY = 86400
+# A hub without the watchers route (404) is asked again after this: it may be updated soon.
+WATCHERS_RETRY_UNSUPPORTED = 3600
 
 
 def watchers_report():
@@ -408,7 +410,8 @@ def watchers_report():
         for s in manifest.get("settings") or []:
             if isinstance(s, dict) and s.get("key"):
                 settings.append({"key": str(s["key"]), "label": str(s.get("label") or ""),
-                                 "secret": bool(s.get("secret")), "set": bool(env.get(str(s["key"])))})
+                                 "secret": bool(s.get("secret")), "set": bool(env.get(str(s["key"]))),
+                                 "optional": bool(s.get("optional"))})
         out.append({"name": name, "title": str(manifest.get("title") or name),
                     "description": str(manifest.get("description") or ""), "settings": settings,
                     "resolve": bool(manifest.get("resolve")),
@@ -423,16 +426,23 @@ def report_watchers(hub, computer_id):
     report = watchers_report()
     digest = json.dumps(report, sort_keys=True)
     state = load_json(path, {}) or {}
+    if now() - float(state.get("unsupported_at") or 0) < WATCHERS_RETRY_UNSUPPORTED:
+        return
     if state.get("digest") == digest and now() - float(state.get("at") or 0) < WATCHERS_REPORT_EVERY:
         return
     try:
         hub.request("PUT", "/api/computers/%s/watchers" % urllib.parse.quote(computer_id, safe=""), body=report)
+        state = {"digest": digest, "at": now()}
     except HubError as e:
         if e.status != 404:
             log("watchers_report_failed", error=e)
             return
         log("watchers_report_unsupported")
-    save_json(path, {"digest": digest, "at": now()})
+        state = {"unsupported_at": now()}
+    try:
+        save_json(path, state)
+    except OSError as e:
+        log("watchers_state_failed", error=type(e).__name__)
 
 
 def do_resolves(hub, resolves):

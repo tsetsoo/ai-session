@@ -726,16 +726,20 @@ do_install() {
   # Watchers live beside their secrets (watchers/env, written by the user, never by us).
   run mkdir -p "${AI_DIR}/watchers"
   run chmod 700 "${AI_DIR}/watchers"
-  # Plugins: ai-session-remote/watchers/<name>/{watcher,watcher.json} in the repo (a helper
-  # tarball carries the folder beside scripts/todo).
+  # Plugins: ai-session-remote/watchers/<name>/{watcher,watcher.json} in the repo. A helper
+  # tarball must carry them: tar -C ai-session-remote -czf - scripts/todo watchers.
   local watchers_src="${SRC_DIR}/../../watchers" dir name
   [[ -d "$watchers_src" ]] || watchers_src="${SRC_DIR}/watchers"
-  for dir in "$watchers_src"/*/; do
-    [[ -f "${dir}watcher" && -f "${dir}watcher.json" ]] || continue
-    name=$(basename "$dir")
-    run install -m 755 "${dir}watcher" "${AI_DIR}/watchers/${name}"
-    run install -m 644 "${dir}watcher.json" "${AI_DIR}/watchers/${name}.json"
-  done
+  if compgen -G "${watchers_src}/*/watcher.json" >/dev/null; then
+    for dir in "$watchers_src"/*/; do
+      [[ -f "${dir}watcher" && -f "${dir}watcher.json" ]] || continue
+      name=$(basename "$dir")
+      run install -m 755 "${dir}watcher" "${AI_DIR}/watchers/${name}"
+      run install -m 644 "${dir}watcher.json" "${AI_DIR}/watchers/${name}.json"
+    done
+  else
+    say "watchers: no watcher plugins found beside scripts/todo; installed watchers kept as they are (copy with: tar -C ai-session-remote -czf - scripts/todo watchers)"
+  fi
   for file in "${MODULES[@]}"; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   resolve_codex_for_hooks
   run install -m 644 "${SRC_DIR}/tmux.conf" "$TMUX_SNIPPET"

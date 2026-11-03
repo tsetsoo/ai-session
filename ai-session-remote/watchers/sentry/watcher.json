@@ -5,10 +5,28 @@
   "resolve": true,
   "resolve_label": "Resolve in Sentry",
   "settings": [
-    {"key": "SENTRY_TOKEN", "label": "Auth token (event:read, event:write, project:read, org:read)", "secret": true},
-    {"key": "SENTRY_ORG", "label": "Organization slug"},
-    {"key": "SENTRY_PROJECTS", "label": "Project slugs, comma-separated"},
-    {"key": "SENTRY_FOLDERS", "label": "Repo folder per project: slug=folder,…"},
-    {"key": "SENTRY_API", "label": "API base (default https://de.sentry.io/api/0)"}
+    {
+      "key": "SENTRY_TOKEN",
+      "label": "Auth token (event:read, event:write, project:read, org:read)",
+      "secret": true
+    },
+    {
+      "key": "SENTRY_ORG",
+      "label": "Organization slug"
+    },
+    {
+      "key": "SENTRY_PROJECTS",
+      "label": "Project slugs, comma-separated"
+    },
+    {
+      "key": "SENTRY_FOLDERS",
+      "label": "Repo folder per project: slug=folder,\u2026",
+      "optional": true
+    },
+    {
+      "key": "SENTRY_API",
+      "label": "API base (default https://de.sentry.io/api/0)",
+      "optional": true
+    }
   ]
 }

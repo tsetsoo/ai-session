@@ -110,7 +110,7 @@ final class WatchTests: XCTestCase {
     }
 
     func testWatcherInfoMissingSettings() throws {
-        let json = #"{"name":"sentry","title":"Sentry","description":"d","resolve":true,"resolve_label":"Resolve in Sentry","settings":[{"key":"SENTRY_TOKEN","label":"Token","secret":true,"set":true},{"key":"SENTRY_ORG","label":"Org","secret":false,"set":false}]}"#
+        let json = #"{"name":"sentry","title":"Sentry","description":"d","resolve":true,"resolve_label":"Resolve in Sentry","settings":[{"key":"SENTRY_TOKEN","label":"Token","secret":true,"set":true},{"key":"SENTRY_ORG","label":"Org","secret":false,"set":false},{"key":"SENTRY_API","label":"API","secret":false,"set":false,"optional":true},{"key":"OLD","label":"Old hub","secret":false,"set":true}]}"#
         let info = try TodoHubClient.makeDecoder().decode(WatcherInfo.self, from: Data(json.utf8))
         XCTAssertEqual(info.missingSettings.map(\.key), ["SENTRY_ORG"])
         XCTAssertEqual(info.resolveLabel, "Resolve in Sentry")

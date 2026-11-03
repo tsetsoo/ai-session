@@ -3143,7 +3143,7 @@ assert len(rows) == 1 and rows[0]["body"]["state"] == "failed" and "git" in rows
 pass "runner_debug_run_needs_git_repo (ai-todo-watch can only report from a worktree)"
 
 # Watcher plugins: the runner reports manifests (and which settings are set, never values).
-printf '{"name":"fakew","title":"Fake","description":"Test watcher","resolve":true,"resolve_label":"Resolve in Fake","settings":[{"key":"SENTRY_TOKEN","label":"Token","secret":true},{"key":"MISSING_ONE","label":"Missing"}]}' >"${W_DIR}/fakew.json"
+printf '{"name":"fakew","title":"Fake","description":"Test watcher","resolve":true,"resolve_label":"Resolve in Fake","settings":[{"key":"SENTRY_TOKEN","label":"Token","secret":true},{"key":"MISSING_ONE","label":"Missing"},{"key":"OPTIONAL_ONE","label":"Optional","optional":true}]}' >"${W_DIR}/fakew.json"
 printf 'not json' >"${W_DIR}/broken.json"
 printf '#!/bin/sh\nexit 0\n' >"${W_DIR}/broken" && chmod +x "${W_DIR}/broken"
 printf '{"name":"orphan"}' >"${W_DIR}/orphan.json"
@@ -3166,6 +3166,7 @@ body = rows[0]["body"]
 assert [w["name"] for w in body] == ["fakew"], body
 s = {x["key"]: x for x in body[0]["settings"]}
 assert s["SENTRY_TOKEN"]["set"] is True and s["MISSING_ONE"]["set"] is False, s
+assert s["OPTIONAL_ONE"]["optional"] is True and s["MISSING_ONE"]["optional"] is False, s
 assert body[0]["resolve_label"] == "Resolve in Fake" and body[0]["description"] == "Test watcher", body
 ' || fail "watchers report: $(watchers_puts)"
 ! watchers_puts | grep -q secret123 || fail "a setting value was reported"
@@ -3185,6 +3186,17 @@ hub_edit "s['watchers_status'] = 404"
 wrunner tick || fail "tick failed on an old hub"
 hub_edit "s.pop('watchers_status', None)"
 ! grep -q 'watchers' <<<"$(wrunner status --json)" || fail "an old hub's 404 became an error: $(wrunner status --json)"
+runs_reset
+hub_edit "s['watchers_status'] = 404"
+wrunner tick || fail "tick failed"
+[[ -z "$(watchers_puts)" ]] || fail "an old hub was asked again within the hour"
+python3 - "${R_STATE}/watchers.json" <<'PY'
+import json, sys
+p = sys.argv[1]; s = json.load(open(p)); s["unsupported_at"] -= 3700; json.dump(s, open(p, "w"))
+PY
+hub_edit "s.pop('watchers_status', None)"
+wrunner tick || fail "tick failed"
+[[ -n "$(watchers_puts)" ]] || fail "an hour after a 404 the runner did not try again (a hub updated later waits a day)"
 pass "runner_watchers_report_404_is_quiet"
 rm -f "${W_DIR}/broken" "${W_DIR}/broken.json" "${W_DIR}/orphan.json"
 
@@ -3345,7 +3357,15 @@ cp "$LAUNCHCTL_LOG" "${SANDBOX}/launchctl.keep" 2>/dev/null || : >"${SANDBOX}/la
 "$INSTALL" >/dev/null
 cp "${SANDBOX}/launchctl.keep" "$LAUNCHCTL_LOG"
 [[ "$(cat "${HOME}/.ai-remote/watchers/env")" == "SENTRY_TOKEN='mine'" ]] || fail "install touched watchers/env"
-pass "install_places_sentry_watcher_keeps_env"
+# A tarball of scripts/todo alone carries no watcher plugins: say so, keep what is installed.
+ONLY_SCRIPTS="${SANDBOX}/only-scripts/x/y"
+mkdir -p "$ONLY_SCRIPTS" && cp -R "${SCRIPT_DIR}/." "$ONLY_SCRIPTS/"
+cp "$LAUNCHCTL_LOG" "${SANDBOX}/launchctl.keep2"
+"${ONLY_SCRIPTS}/install.sh" >"${SANDBOX}/only-scripts.out" 2>&1 || fail "install without watchers failed: $(cat "${SANDBOX}/only-scripts.out")"
+cp "${SANDBOX}/launchctl.keep2" "$LAUNCHCTL_LOG"
+grep -q "no watcher plugins found" "${SANDBOX}/only-scripts.out" || fail "install did not warn about missing watcher plugins: $(cat "${SANDBOX}/only-scripts.out")"
+[[ -x "${HOME}/.ai-remote/watchers/sentry" ]] || fail "install without plugins removed the installed watcher"
+pass "install_places_sentry_watcher_keeps_env (and warns when a tarball carries no plugins)"
 "$INSTALL" >/dev/null
 check_installed() {
   python3 - "$SETTINGS" "${HOME}/.ai-remote/bin" <<'PY'
