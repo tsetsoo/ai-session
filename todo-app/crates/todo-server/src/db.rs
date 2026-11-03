@@ -432,6 +432,7 @@ const V15_OBJECTS: &str = "
         folder               TEXT,
         state                TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','resolving','cleared')),
         taken_run_id         TEXT,
+        takes                INTEGER NOT NULL DEFAULT 0,
         outcome              TEXT CHECK(outcome IS NULL OR outcome IN ('fixed','needs_you','cant_fix')),
         outcome_note         TEXT,
         resolve_error        TEXT,
