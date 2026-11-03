@@ -3,9 +3,35 @@ import SwiftUI
 
 /// The window's two modes: working with conversations, or with jobs, ideas and activity.
 enum AppMode: String, CaseIterable, Identifiable {
-    case sessions, automation
+    case sessions, automation, today
     var id: String { rawValue }
-    var title: String { self == .sessions ? "Sessions" : "Automation" }
+    var title: String {
+        switch self {
+        case .sessions: "Sessions"
+        case .automation: "Automation"
+        case .today: "Today"
+        }
+    }
+}
+
+/// Today mode's sidebar.
+enum TodayItem: String, CaseIterable, Identifiable, Hashable {
+    case today, reminders, people
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .today: "Today"
+        case .reminders: "Reminders"
+        case .people: "People & Dates"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .today: "sun.max"
+        case .reminders: "bell"
+        case .people: "person.2"
+        }
+    }
 }
 
 /// Automation's sidebar.
@@ -95,6 +121,7 @@ struct ModeSwitch: View {
             Group {
                 Button("Sessions") { mode = .sessions }.keyboardShortcut("1", modifiers: [.control, .command])
                 Button("Automation") { mode = .automation }.keyboardShortcut("2", modifiers: [.control, .command])
+                Button("Today") { mode = .today }.keyboardShortcut("3", modifiers: [.control, .command])
             }
             .opacity(0)
             .accessibilityHidden(true)

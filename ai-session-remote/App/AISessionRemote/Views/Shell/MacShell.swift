@@ -98,6 +98,8 @@ struct MacShell: View {
                     .padding(.vertical, 6)
                 if model.appMode == .automation {
                     AutomationSidebar()
+                } else if model.appMode == .today {
+                    TodaySidebar()
                 } else {
                     SidebarView(selection: $model.sidebarSelection) { settings = SettingsRequest(initial: nil) }
                 }
@@ -107,6 +109,8 @@ struct MacShell: View {
             Group {
                 if model.appMode == .automation {
                     AutomationListColumn(onOpenTodo: openTodoFromAutomation)
+                } else if model.appMode == .today {
+                    TodayListColumn(onOpenTodo: openTodoFromAutomation)
                 } else {
                     contentColumn
                 }
@@ -123,6 +127,12 @@ struct MacShell: View {
                 if model.appMode == .automation {
                     NavigationStack {
                         AutomationDetailColumn(onOpenTodo: openTodoFromAutomation)
+                    }
+                    .background(.background)
+                }
+                if model.appMode == .today {
+                    NavigationStack {
+                        TodayDetailColumn()
                     }
                     .background(.background)
                 }

@@ -17,6 +17,11 @@ public struct PushPayload: Equatable, Sendable {
     /// Other alerts ("done") leave the Chat/Terminal choice as it is.
     public var opensChat: Bool { kind == "waiting" }
 
+    /// A reminder, date or briefing push (no todo): opening it shows Today.
+    public static func isToday(userInfo: [AnyHashable: Any]) -> Bool {
+        (userInfo["kind"] as? String) == "today"
+    }
+
     public init?(userInfo: [AnyHashable: Any]) {
         guard let todoId = userInfo["todo_id"] as? String, !todoId.isEmpty else { return nil }
         self.init(todoId: todoId, sessionId: userInfo["session_id"] as? String, kind: userInfo["kind"] as? String)

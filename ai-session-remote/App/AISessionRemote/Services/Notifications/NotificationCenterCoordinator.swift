@@ -63,6 +63,25 @@ final class NotificationCenterCoordinator {
         onOpenTodo(todoId)
     }
 
+    /// Shows Today (a reminder, date or briefing push). A tap that launched the app is replayed.
+    var onOpenToday: (() -> Void)? {
+        didSet {
+            if pendingToday, let onOpenToday {
+                pendingToday = false
+                onOpenToday()
+            }
+        }
+    }
+
+    func openToday() {
+        guard let onOpenToday else {
+            pendingToday = true
+            return
+        }
+        onOpenToday()
+    }
+
+    @ObservationIgnored private var pendingToday = false
     @ObservationIgnored private var pendingOpen: PushPayload?
     @ObservationIgnored fileprivate var presence = PresenceTracker()
     @ObservationIgnored private var registration = PushRegistrationState(
@@ -446,7 +465,12 @@ private final class DelegateProxy: NSObject, UNUserNotificationCenterDelegate {
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let action = response.actionIdentifier
-        let payload = PushPayload(userInfo: response.notification.request.content.userInfo)
+        let userInfo = response.notification.request.content.userInfo
+        if PushPayload.isToday(userInfo: userInfo), action == UNNotificationDefaultActionIdentifier {
+            await MainActor.run { NotificationCenterCoordinator.shared.openToday() }
+            return
+        }
+        let payload = PushPayload(userInfo: userInfo)
         await NotificationCenterCoordinator.shared.handle(action: action, payload: payload)
     }
 }

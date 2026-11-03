@@ -65,7 +65,7 @@ pub(crate) async fn run_tick(pool: &DbPool, broadcaster: &Broadcaster, notifier:
                 broadcaster.send();
             }
             for (title, body) in pushes {
-                let alert = Alert { todo_id: None, session_id: None, title, subtitle: body, kind: PushKind::Scheduled, passive: false };
+                let alert = Alert { todo_id: None, session_id: None, title, subtitle: body, kind: PushKind::Today, passive: false };
                 notifier.send_to_devices(pool, &alert, None).await;
             }
         }

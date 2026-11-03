@@ -137,6 +137,8 @@ pub enum PushKind {
     Test,
     /// A scheduler push job: the alert's subtitle carries the job's body text.
     Scheduled,
+    /// A reminder, a date or the morning briefing: opens Today in the app.
+    Today,
 }
 
 impl PushKind {
@@ -146,6 +148,7 @@ impl PushKind {
             PushKind::Done { .. } => "done",
             PushKind::Test => "test",
             PushKind::Scheduled => "scheduled",
+            PushKind::Today => "today",
         }
     }
 
@@ -155,6 +158,7 @@ impl PushKind {
             PushKind::Done { minutes } => format!("Done after {minutes} min"),
             PushKind::Test => "Test notification".into(),
             PushKind::Scheduled => "Scheduled".into(),
+            PushKind::Today => "Today".into(),
         }
     }
 }

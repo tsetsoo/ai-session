@@ -13,7 +13,7 @@ import SwiftUI
 /// survives the swap to and from `MacShell` (see `reopenSelection`).
 struct PhoneShell: View {
     enum Tab: String, Hashable {
-        case todos, conversations, projects, automation, computers
+        case today, todos, conversations, projects, automation, computers
     }
 
     enum Route: Hashable {
@@ -88,7 +88,7 @@ struct PhoneShell: View {
             case .conversations: _conversationsPath = State(initialValue: [.todo(todoID)])
             case .projects: _projectsPath = State(initialValue: [.todo(todoID)])
             case .computers: _computersPath = State(initialValue: [.todo(todoID)])
-            case .automation: break
+            case .automation, .today: break
             }
         }
         #endif
@@ -139,6 +139,20 @@ struct PhoneShell: View {
             .badge(store.pendingIdeaCount)
             .tag(Tab.automation)
 
+            NavigationStack {
+                Group {
+                    if isConfigured {
+                        PhoneTodayRoot(store: store, onOpenTodo: openTodoFromAutomation)
+                    } else {
+                        notConfigured
+                    }
+                }
+                .phoneTab("Today", openSettings: openSettings)
+            }
+            .tabItem { Label("Today", systemImage: "sun.max") }
+            .badge(store.dueReminderCount)
+            .tag(Tab.today)
+
             NavigationStack(path: $computersPath) {
                 computersRoot
                     .phoneTab("Computers", openSettings: openSettings)
@@ -151,6 +165,9 @@ struct PhoneShell: View {
         .onChange(of: model.appMode) { _, mode in
             if mode == .automation {
                 tab = .automation
+                model.appMode = .sessions
+            } else if mode == .today {
+                tab = .today
                 model.appMode = .sessions
             }
         }
@@ -338,7 +355,7 @@ struct PhoneShell: View {
         case .conversations: $conversationsPath
         case .projects: $projectsPath
         case .computers: $computersPath
-        case .automation: $automationPath
+        case .automation, .today: $automationPath
         }
     }
 

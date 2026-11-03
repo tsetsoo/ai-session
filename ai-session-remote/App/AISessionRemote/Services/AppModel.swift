@@ -103,6 +103,9 @@ final class AppModel {
     var automationJobs: JobsPaneTarget?
     var automationIdeas: IdeasPaneTarget?
     var automationRunID: String?
+    /// Today mode: which list, and the reminder or person in the big pane ("new" for a form).
+    var todayItem: TodayItem = .today
+    var todaySelection: String?
     /// Automation → Watchers: the issue in the big pane.
     var automationWatchIssue: String?
     /// The job form's draft and what it started from; dirty when they differ.
@@ -328,6 +331,9 @@ final class AppModel {
     func installSystemEntryPoints() {
         NotificationCenterCoordinator.shared.onOpenTodo = { [weak self] todoId in
             Task { await self?.openFromNotification(todoId) }
+        }
+        NotificationCenterCoordinator.shared.onOpenToday = { [weak self] in
+            self?.appMode = .today
         }
         #if os(iOS)
         AppDelegate.onShortcutItem = { [weak self] item in

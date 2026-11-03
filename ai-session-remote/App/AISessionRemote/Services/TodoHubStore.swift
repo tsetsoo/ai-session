@@ -1060,6 +1060,82 @@ final class TodoHubStore {
         if let r { recentWatchIssues = r }
     }
 
+    // --- Today ---------------------------------------------------------------------------
+
+    private(set) var briefing: Briefing?
+    private(set) var reminders: [Reminder] = []
+    private(set) var people: [Person] = []
+    private(set) var todaySettings: TodaySettings?
+    var dueReminderCount: Int { reminders.filter(\.isDue).count }
+
+    /// Reloads the briefing, reminders, people and settings (each optional on an older hub).
+    func loadToday() async {
+        #if DEBUG
+        if demo != nil { return }
+        #endif
+        guard let client = try? requireClient() else { return }
+        async let b = try? client.today()
+        async let r = try? client.listReminders()
+        async let p = try? client.listPeople()
+        async let s = try? client.todaySettings()
+        let (briefing, reminders, people, settings) = await (b, r, p, s)
+        if let briefing { self.briefing = briefing }
+        if let reminders { self.reminders = reminders }
+        if let people { self.people = people }
+        if let settings { todaySettings = settings }
+    }
+
+    func saveReminder(id: String?, _ body: ReminderRequestBody) async throws -> String {
+        var saved = ""
+        try await perform { client in
+            saved = try await (id == nil ? client.createReminder(body) : client.updateReminder(id: id!, body)).id
+        }
+        await loadToday()
+        return saved
+    }
+
+    func deleteReminder(id: String) async throws {
+        try await perform { client in try await client.deleteReminder(id: id) }
+        await loadToday()
+    }
+
+    func doneReminder(id: String) async throws {
+        try await perform { client in _ = try await client.doneReminder(id: id) }
+        await loadToday()
+    }
+
+    func snoozeReminder(id: String, _ option: SnoozeOption) async throws {
+        try await perform { client in _ = try await client.snoozeReminder(id: id, until: option.until()) }
+        await loadToday()
+    }
+
+    func savePerson(id: String?, _ body: PersonRequestBody) async throws -> String {
+        var saved = ""
+        try await perform { client in
+            saved = try await (id == nil ? client.createPerson(body) : client.updatePerson(id: id!, body)).id
+        }
+        await loadToday()
+        return saved
+    }
+
+    func deletePerson(id: String) async throws {
+        try await perform { client in try await client.deletePerson(id: id) }
+        await loadToday()
+    }
+
+    func updateTodaySettings(_ update: TodaySettingsUpdate) async throws {
+        try await perform { client in
+            let s = try await client.updateTodaySettings(update)
+            await MainActor.run { self.todaySettings = s }
+        }
+    }
+
+    /// "Add with an agent": queues the short conversation; it starts within a minute.
+    func startAssistant(text: String, kind: String?) async throws {
+        try await perform { client in _ = try await client.startAssistant(text: text, kind: kind) }
+        await refresh()
+    }
+
     /// Reloads only the recently cleared issues: every refresh already brings the open ones.
     func loadRecentWatchIssues() async {
         #if DEBUG
