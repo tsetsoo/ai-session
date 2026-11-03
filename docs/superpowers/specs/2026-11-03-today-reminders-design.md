@@ -54,8 +54,16 @@ must be easy: by hand, or by telling a cheap agent loosely and letting it ask wh
 
 - A button in Reminders and People ("Add with an agent") opens a sheet for a starting text,
   then starts a short conversation, like "Shape an idea".
-- It runs with **Claude Haiku** (`claude --model haiku`). *My call:* the cheap model the user
-  asked for; one setting on the hub if it needs changing.
+- **Its model is the user's choice** (a setting in Today, user's decision 2026-11-03):
+  - **Auto** (default): when the conversation starts, the runner on that Mac reads each tool's
+    weekly usage (as the usage guard does) and picks the one with more weekly headroom left:
+    **Claude Haiku** (`claude --model haiku`) or **GPT-6.1 Terra** (`codex -m gpt-6.1-terra`).
+    With no reading for either, it uses Claude Haiku; with one reading, that tool unless it's
+    above 80% weekly.
+  - **Claude Haiku** always, or **GPT-6.1 Terra** always.
+  - The model ids live in that setting, so a newer cheap model is a settings change.
+  - Jobs gain an optional model; a job whose tool is `auto` lets the runner say which tool it
+    chose when it starts the conversation.
 - Where: a hub project **Personal** in section P (this Mac), folder `~/.ai-remote/assistant`
   (created by install.sh, not a git repo). The conversation runs there in place.
   `install.sh` writes `~/.ai-remote/assistant/.claude/settings.json` allowing only
