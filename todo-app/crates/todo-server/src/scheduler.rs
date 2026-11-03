@@ -46,11 +46,12 @@ impl TickOutcome {
 /// One clock tick against the real database: create runs, then send the push jobs' pushes
 /// (quiet, without sound, during quiet hours). Errors are logged; the clock keeps going.
 pub(crate) async fn run_tick(pool: &DbPool, broadcaster: &Broadcaster, notifier: &PushNotifier) {
+    // A failed scheduler tick doesn't stop reminders, dates and the briefing below.
     let outcome = match pool.get().map_err(|e| e.to_string()).and_then(|c| tick_db(&c, Utc::now()).map_err(|e| e.to_string())) {
         Ok(outcome) => outcome,
         Err(e) => {
             println!("scheduler: tick failed: {e}");
-            return;
+            TickOutcome::default()
         }
     };
     if outcome.changed() {

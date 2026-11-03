@@ -658,8 +658,8 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v14: `ideas`; `job_runs.note` (additive)
 /// - v15: `watch_issues`, `watch_alerts` (additive)
 /// - v16: `job_runs.branch`, `watch_issues.commits`, `computers.watchers` (additive)
-/// - v18: `computers.job_templates`, `computers.job_templates_at` (additive)
 /// - v17: `reminders`, `people`, `people_pushes`, `today_settings`, `job_runs.chosen_tool` (additive)
+/// - v18: `computers.job_templates`, `computers.job_templates_at`, `memories.archived_by` (additive)
 /// - v13: scheduler `jobs`, `job_runs`, `scheduler_settings`; `todos.scheduled_job_id` and
 ///   `scheduled_run_id` (additive)
 /// - v12: memories gain usage, pending, import key and archive reason; `memory_active_days`;

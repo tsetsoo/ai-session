@@ -753,6 +753,14 @@ pub(crate) fn today_tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::
     if quiet_now(conn, now) {
         return Ok(Vec::new());
     }
+    // One transaction: a failure part way marks nothing as sent (it's tried again next minute).
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let pushes = today_tick_in(&tx, now)?;
+    tx.commit()?;
+    Ok(pushes)
+}
+
+fn today_tick_in(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<Vec<(String, String)>> {
     let mut pushes = Vec::new();
     let stamp = sql_time(now);
     // Reminders: once, when due.
@@ -782,7 +790,9 @@ pub(crate) fn today_tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::
             let added =
                 conn.execute("INSERT OR IGNORE INTO people_pushes (person_id, date, kind) VALUES (?1, ?2, ?3)", params![p.id, p.next_date, kind])?;
             if added > 0 {
-                pushes.push((date_text(&p, today), p.notes.lines().next().unwrap_or("").to_string()));
+                // An "other" date already says its note in the title.
+                let body = if p.kind == "other" { String::new() } else { p.notes.lines().next().unwrap_or("").to_string() };
+                pushes.push((date_text(&p, today), body));
             }
         }
     }
@@ -793,7 +803,9 @@ pub(crate) fn today_tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::
     let due_time = chrono::NaiveTime::parse_from_str(&settings.briefing_time, "%H:%M").unwrap_or(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap_or_default());
     let day = today.format("%Y-%m-%d").to_string();
     if settings.briefing_enabled && sofia_time(now) >= due_time && last_on.as_deref() != Some(day.as_str()) {
-        let since = last_at.as_deref().and_then(parse_sql_time).unwrap_or(now - Duration::hours(24));
+        // At most a day back: after days with the briefing off, it isn't a backlog.
+        let day_ago = now - Duration::hours(24);
+        let since = last_at.as_deref().and_then(parse_sql_time).map_or(day_ago, |t| t.max(day_ago));
         let briefing = briefing_db(conn, now, since)?;
         conn.execute("UPDATE today_settings SET last_briefing_on = ?1, last_briefing_at = ?2 WHERE id = 1", params![day, stamp])?;
         if !briefing.is_empty() {
@@ -1219,6 +1231,36 @@ pub(crate) mod tests {
                 "Watchers: 1 fixed, waiting for your merge, 1 waiting".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn briefing_after_days_off_covers_one_day() {
+        let (_db, pool) = pool("today");
+        let conn = pool.get().unwrap();
+        crate::test_support::seed_computers(&conn);
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, section, folder) VALUES ('p', 'app', 'Si', '~/a');
+             INSERT INTO jobs (id, name, trigger, action) VALUES ('j', 'Nightly', '{\"kind\":\"manual\"}', '{\"kind\":\"push\",\"title\":\"t\",\"body\":\"\"}');
+             INSERT INTO todos (id, section, title, project_id, scheduled_job_id) VALUES ('old', 'Si', 'Old run', 'p', 'j');
+             INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, status, status_updated_at)
+               VALUES ('c1', 'old', 'mac', '~/a', 'claude', 'ai/claude/old', 's1', 'idle', '2026-11-03 03:00:00');
+             UPDATE today_settings SET last_briefing_on = '2026-11-01', last_briefing_at = '2026-11-01 06:00:00';",
+        )
+        .unwrap();
+        // Off for days: the 7 Nov briefing doesn't list what finished on the 3rd.
+        assert!(today_tick_db(&conn, at_sofia("2026-11-07 08:00")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn other_date_push_says_its_note_once() {
+        let (_db, pool) = pool("today");
+        let conn = pool.get().unwrap();
+        conn.execute("UPDATE today_settings SET briefing_enabled = 0", []).unwrap();
+        let req = PersonRequest { name: Some("Car".into()), kind: Some("other".into()), month: Some(11), day: Some(7), year: None,
+                                  notes: Some("MOT due".into()), source: None };
+        create_person_db(&conn, &req, at_sofia("2026-11-01 10:00")).ok().unwrap();
+        let pushes = today_tick_db(&conn, at_sofia("2026-11-07 09:00")).unwrap();
+        assert_eq!(pushes, vec![("Today: Car (MOT due)".to_string(), String::new())]);
     }
 
     #[actix_web::test]
