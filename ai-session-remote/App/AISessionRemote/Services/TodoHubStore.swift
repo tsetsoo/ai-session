@@ -39,6 +39,8 @@ final class TodoHubStore {
     /// Watcher issues cleared in the last 7 days, loaded on demand.
     private(set) var recentWatchIssues: [WatchIssue] = []
     var openWatchIssueCount: Int { openWatchIssues.count }
+    /// Watchers installed per computer (from their runners), loaded on demand.
+    private(set) var watchersByComputer: [String: [WatcherInfo]] = [:]
     /// The newest runs across jobs for Automation → Activity; nil on a hub without `/api/runs`.
     private(set) var recentRuns: [RecentRun]? = []
     /// True while showing the cached snapshot because the hub could not be reached.
@@ -1065,6 +1067,20 @@ final class TodoHubStore {
         #endif
         guard let client = try? requireClient() else { return }
         if let r = try? await client.listWatchIssues(state: "recent") { recentWatchIssues = r }
+    }
+
+    func loadWatchers(computerId: String) async {
+        #if DEBUG
+        if demo != nil { return }
+        #endif
+        guard !computerId.isEmpty, let client = try? requireClient() else { return }
+        if let list = try? await client.listWatchers(computerId: computerId) { watchersByComputer[computerId] = list }
+    }
+
+    /// The installed watcher behind an issue (via its watch job's computer), if reported.
+    func watcherInfo(for issue: WatchIssue) -> WatcherInfo? {
+        guard let job = jobs.first(where: { $0.id == issue.jobId }), case let .watch(w) = job.action else { return nil }
+        return watchersByComputer[w.computerId]?.first { $0.name == issue.watcher }
     }
 
     /// Resolve at the source; the watcher's computer does it within a minute.

@@ -281,6 +281,7 @@ struct JobFormPane: View {
                 Picker("Does", selection: $draft.kind) {
                     ForEach(JobDraft.Kind.allCases) { Text($0.rawValue).tag($0) }
                 }
+                .task(id: "\(draft.kind.rawValue)|\(draft.computerId)") { if draft.kind == .watch { await store.loadWatchers(computerId: draft.computerId) } }
                 .onChange(of: draft.kind) { old, new in
                     // A new watch job checks every 10 minutes unless the cron was changed.
                     if new == .watch, job == nil, draft.cron == JobDraft().cron { draft.cron = JobDraft.watchCron }
@@ -353,15 +354,33 @@ struct JobFormPane: View {
                 }
             case .watch:
                 Section {
-                    TextField("Watcher", text: $draft.watcher)
-                        .font(.body.monospaced())
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .autocorrectionDisabled()
                     Picker("Computer", selection: $draft.computerId) {
                         if draft.computerId.isEmpty { Text("Choose…").tag("") }
                         ForEach(store.computers, id: \.id) { Text($0.name).tag($0.id) }
+                    }
+                    let installed = store.watchersByComputer[draft.computerId] ?? []
+                    if installed.isEmpty {
+                        TextField("Watcher", text: $draft.watcher)
+                            .font(.body.monospaced())
+                            #if os(iOS)
+                            .textInputAutocapitalization(.never)
+                            #endif
+                            .autocorrectionDisabled()
+                    } else {
+                        Picker("Watcher", selection: $draft.watcher) {
+                            if !installed.contains(where: { $0.name == draft.watcher }) { Text(draft.watcher.isEmpty ? "Choose…" : draft.watcher).tag(draft.watcher) }
+                            ForEach(installed) { Text($0.title.isEmpty ? $0.name : $0.title).tag($0.name) }
+                        }
+                    }
+                    if let info = installed.first(where: { $0.name == draft.watcher }) {
+                        if !info.description.isEmpty { Text(info.description).font(.callout).foregroundStyle(.secondary) }
+                        if info.missingSettings.isEmpty {
+                            Label("Its settings are set on that computer.", systemImage: "checkmark.circle").font(.callout).foregroundStyle(.secondary)
+                        } else {
+                            Label("Missing in ~/.ai-remote/watchers/env: " + info.missingSettings.map(\.key).joined(separator: ", "),
+                                  systemImage: "exclamationmark.triangle")
+                                .font(.callout).foregroundStyle(DS.warning)
+                        }
                     }
                     Picker("Project", selection: $draft.projectId) {
                         if draft.projectId.isEmpty { Text("Choose…").tag("") }

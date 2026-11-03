@@ -34,7 +34,7 @@ struct AutomationListColumn: View {
         case .ideas:
             IdeasList(store: model.store, target: $model.automationIdeas)
         case .watchers:
-            WatchersList(store: model.store, selection: $model.automationWatchIssue)
+            WatchersList(store: model.store, selection: $model.automationWatchIssue, onOpenTodo: onOpenTodo)
         case .activity:
             ActivityList(store: model.store, selection: $model.automationRunID, onOpenTodo: onOpenTodo)
         }

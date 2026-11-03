@@ -228,7 +228,7 @@ private struct PhoneWatchersList: View {
             NavigationLink {
                 WatchIssueDetail(store: store, issueID: issue.id, onOpenTodo: onOpenTodo)
             } label: {
-                WatchIssueRow(issue: issue, store: store)
+                WatchIssueRow(issue: issue, store: store, onOpenTodo: onOpenTodo)
             }
         }
         .navigationTitle("Watchers")

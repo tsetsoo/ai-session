@@ -1,6 +1,17 @@
 import AISessionCore
 import SwiftUI
 
+/// Puts text on the clipboard.
+@MainActor
+func copyToClipboard(_ text: String) {
+    #if os(macOS)
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+    #else
+    UIPasteboard.general.string = text
+    #endif
+}
+
 /// "5 min ago" for a hub time.
 @MainActor
 private func ago(_ hubTime: String?) -> String {
@@ -74,14 +85,33 @@ private struct WatchJobStatus: View {
 struct WatchIssueRow: View {
     let issue: WatchIssue
     let store: TodoHubStore
+    /// Opens the conversation that took it; nil hides the button.
+    var onOpenTodo: ((String) -> Void)?
 
     var body: some View {
+        HStack(alignment: .top) {
+            details
+            Spacer(minLength: 4)
+            if let todo = issue.todoId, let onOpenTodo {
+                Button { onOpenTodo(todo) } label: { Image(systemName: "bubble.left.and.text.bubble.right") }
+                    .buttonStyle(.borderless)
+                    .help("Open the conversation that took it")
+                    .accessibilityLabel("Open Conversation")
+            }
+        }
+        .contextMenu {
+            if let todo = issue.todoId, let onOpenTodo {
+                Button("Open Conversation") { onOpenTodo(todo) }
+            }
+        }
+    }
+
+    private var details: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(issue.title).lineLimit(2)
             HStack(spacing: 6) {
                 if let folder = issue.folder { Text(folder) }
                 Text("first \(ago(issue.firstSeen)) · last \(ago(issue.lastSeen))")
-                if issue.todoId != nil { Image(systemName: "bubble.left").accessibilityLabel("Has a conversation") }
             }
             .font(.caption).foregroundStyle(.secondary)
             if let error = issue.resolveError {
@@ -95,10 +125,11 @@ struct WatchIssueRow: View {
 struct WatchersList: View {
     let store: TodoHubStore
     @Binding var selection: String?
+    let onOpenTodo: (String) -> Void
 
     var body: some View {
         WatchersListContent(store: store, selection: $selection) { issue in
-            WatchIssueRow(issue: issue, store: store).tag(issue.id)
+            WatchIssueRow(issue: issue, store: store, onOpenTodo: onOpenTodo).tag(issue.id)
         }
         .navigationTitle("Watchers")
     }
@@ -133,8 +164,28 @@ struct WatchIssueDetail: View {
                         if let folder = issue.folder { Text(folder).font(.caption).foregroundStyle(.secondary) }
                         Text("first seen \(ago(issue.firstSeen)) · last \(ago(issue.lastSeen))").font(.caption).foregroundStyle(.secondary)
                     }
-                    if let note = issue.outcomeNote, !note.isEmpty {
-                        Label(note, systemImage: "text.bubble").textSelection(.enabled)
+                    section("What happened") {
+                        Text(issue.outcomeText).font(.callout.weight(.medium))
+                        if let note = issue.outcomeNote, !note.isEmpty {
+                            Text(note).textSelection(.enabled)
+                        }
+                    }
+                    if issue.branch != nil || !issue.commits.isEmpty || issue.worktree != nil {
+                        section("Where the fix is") {
+                            if let branch = issue.branch { copyRow("Branch", branch) }
+                            if let worktree = issue.worktree { copyRow("Folder", worktree) }
+                            ForEach(issue.commits, id: \.self) { copyRow("Commit", $0) }
+                            Text("Only on this branch on the Mac: nothing was merged, pushed or deployed.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    let steps = issue.nextSteps(resolveLabel: resolveLabel(issue))
+                    if !steps.isEmpty {
+                        section("Next") {
+                            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                                Text("\(index + 1). \(step)")
+                            }
+                        }
                     }
                     if let error = issue.resolveError {
                         Label("Resolve failed: \(error)", systemImage: "exclamationmark.triangle").foregroundStyle(DS.warning)
@@ -152,7 +203,12 @@ struct WatchIssueDetail: View {
                 .padding()
             }
             .navigationTitle(issue.key)
-            .confirmationDialog("Resolve “\(issue.title)” in \(issue.watcher.capitalized)?", isPresented: $confirmingResolve) {
+            .task(id: issue.jobId) {
+                if let job = store.jobs.first(where: { $0.id == issue.jobId }), case let .watch(w) = job.action {
+                    await store.loadWatchers(computerId: w.computerId)
+                }
+            }
+            .confirmationDialog("\(resolveLabel(issue)): “\(issue.title)”?", isPresented: $confirmingResolve) {
                 Button("Resolve") { run { try await store.resolveWatchIssue(issue) } }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -172,8 +228,8 @@ struct WatchIssueDetail: View {
             if let todo = issue.todoId {
                 Button { onOpenTodo(todo) } label: { Label("Open Conversation", systemImage: "bubble.left") }
             }
-            if issue.state == "open" {
-                Button { confirmingResolve = true } label: { Label("Resolve in \(issue.watcher.capitalized)", systemImage: "checkmark.circle") }
+            if issue.state == "open" && store.watcherInfo(for: issue)?.resolve != false {
+                Button { confirmingResolve = true } label: { Label(resolveLabel(issue), systemImage: "checkmark.circle") }
             }
             if issue.state == "resolving" {
                 Label("Resolving… this Mac does it within a minute", systemImage: "hourglass").foregroundStyle(.secondary)
@@ -187,6 +243,28 @@ struct WatchIssueDetail: View {
         #else
         VStack(alignment: .leading, spacing: 10) { buttons }.disabled(working || store.isOffline)
         #endif
+    }
+
+    private func resolveLabel(_ issue: WatchIssue) -> String {
+        store.watcherInfo(for: issue)?.resolveLabel ?? "Resolve in \(issue.watcher.capitalized)"
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func copyRow(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 56, alignment: .leading)
+            Text(value).font(.callout.monospaced()).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+            Button { copyToClipboard(value) } label: { Image(systemName: "doc.on.doc") }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Copy \(label)")
+        }
     }
 
     private func run(_ action: @escaping () async throws -> Void) {
