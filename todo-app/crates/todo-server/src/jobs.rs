@@ -281,7 +281,9 @@ pub(crate) fn job_runs_db(conn: &Connection, id: &str, limit: usize) -> rusqlite
 pub(crate) fn recent_runs_db(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<todo_shared::RecentRun>> {
     let cols = RUN_COLS.split(", ").map(|c| format!("r.{c}")).collect::<Vec<_>>().join(", ");
     let mut stmt = conn.prepare(&format!(
-        "SELECT {cols}, j.name FROM job_runs r JOIN jobs j ON j.id = r.job_id ORDER BY r.due_at DESC, r.rowid DESC LIMIT ?1"
+        "SELECT {cols}, j.name FROM job_runs r JOIN jobs j ON j.id = r.job_id
+         WHERE NOT (r.result IS 'quiet' AND json_extract(j.action, '$.kind') = 'watch')
+         ORDER BY r.due_at DESC, r.rowid DESC LIMIT ?1"
     ))?;
     let rows = stmt.query_map(params![limit.min(MAX_RUNS) as i64], |row| {
         Ok(todo_shared::RecentRun { run: row_to_run(row)?, job_name: row.get(12)? })

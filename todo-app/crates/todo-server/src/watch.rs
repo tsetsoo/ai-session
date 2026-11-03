@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use actix_web::{web, HttpResponse};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use todo_shared::{CreateJobRequest, Job, JobAction, JobTrigger, LimitSetting, Priority, WatchReport};
+use todo_shared::{CreateJobRequest, Job, JobAction, JobTrigger, LimitSetting, Priority, WatchIssue, WatchReport};
 use uuid::Uuid;
 
 use crate::broadcast::Broadcaster;
@@ -27,6 +27,10 @@ const RESOLVE_GRACE_MINUTES: i64 = 15;
 /// "Overwhelmed": more untaken open issues than this, or one waiting longer than a day.
 const OVERWHELMED_COUNT: i64 = 20;
 const OVERWHELMED_HOURS: i64 = 24;
+/// A resolve the watcher's Mac never answered reopens after this.
+const RESOLVE_TIMEOUT_MINUTES: i64 = 30;
+/// Check runs that found nothing new are deleted after this.
+const QUIET_RUNS_KEPT_DAYS: i64 = 2;
 /// The Debug job's prompt when the watch job has no extra instructions.
 pub(crate) const DEBUG_DEFAULT_PROMPT: &str = "Fix the open problems this run lists.";
 
@@ -120,13 +124,19 @@ fn ensure_debug_job(conn: &Connection, watch: &WatchParts, tool: &str) -> Result
 
 /// Debug runs at work: queued, being started, or with a conversation busy, waiting on the
 /// user, or just started (no status yet). `except` leaves one run out.
+/// SQL: run `r` is at work. `?G` is the grace cutoff for a conversation still starting
+/// (no status yet, or idle before its first turn).
+const AT_WORK: &str = "(r.state IN ('due','waiting')
+     OR (r.state = 'running' AND r.todo_id IS NULL)
+     OR (r.todo_id IS NOT NULL AND EXISTS (SELECT 1 FROM conversations c WHERE c.todo_id = r.todo_id
+           AND (c.status IN ('busy','waiting')
+                OR (c.status = 'unknown' AND c.created_at >= ?G)
+                OR (c.status = 'idle' AND c.status_turn_ns IS NULL AND c.created_at >= ?G)))))";
+
 pub(crate) fn at_work_count(conn: &Connection, debug_job_id: &str, now: DateTime<Utc>, except: Option<&str>) -> rusqlite::Result<usize> {
+    let sql = format!("SELECT COUNT(*) FROM job_runs r WHERE r.job_id = ?1 AND (?2 IS NULL OR r.id != ?2) AND {}", AT_WORK.replace("?G", "?3"));
     let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM job_runs r WHERE r.job_id = ?1 AND (?2 IS NULL OR r.id != ?2) AND (
-             r.state IN ('due','waiting')
-             OR (r.state = 'running' AND r.todo_id IS NULL)
-             OR (r.todo_id IS NOT NULL AND EXISTS (SELECT 1 FROM conversations c WHERE c.todo_id = r.todo_id
-                   AND (c.status IN ('busy','waiting') OR (c.status = 'unknown' AND c.created_at >= ?3)))))",
+        &sql,
         params![debug_job_id, except, sql_time(now - Duration::minutes(UNKNOWN_GRACE_MINUTES))],
         |r| r.get(0),
     )?;
@@ -344,6 +354,194 @@ fn new_issues_push(out: &ReportOutcome) -> Option<(String, String)> {
     }
 }
 
+/// Clock upkeep: issues held by a run that's no longer at work and gave no outcome go back
+/// to the queue; resolves this Mac never answered reopen after 30 minutes; quiet checks older
+/// than 2 days are deleted. True when anything changed.
+pub(crate) fn watch_upkeep(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<bool> {
+    let stamp = sql_time(now);
+    let released = conn.execute(
+        &format!(
+            "UPDATE watch_issues SET taken_run_id = NULL, updated_at = ?1
+             WHERE taken_run_id IS NOT NULL AND outcome IS NULL
+               AND NOT EXISTS (SELECT 1 FROM job_runs r WHERE r.id = watch_issues.taken_run_id AND {})",
+            AT_WORK.replace("?G", "?2")
+        ),
+        params![stamp, sql_time(now - Duration::minutes(UNKNOWN_GRACE_MINUTES))],
+    )?;
+    let reopened = conn.execute(
+        "UPDATE watch_issues SET state = 'open', resolve_error = 'this Mac didn''t answer', updated_at = ?1
+         WHERE state = 'resolving' AND resolve_requested_at < ?2",
+        params![stamp, sql_time(now - Duration::minutes(RESOLVE_TIMEOUT_MINUTES))],
+    )?;
+    let pruned = conn.execute(
+        "DELETE FROM job_runs WHERE state = 'done' AND result = 'quiet' AND due_at < ?1
+           AND job_id IN (SELECT id FROM jobs WHERE json_extract(action, '$.kind') = 'watch')",
+        params![sql_time(now - Duration::days(QUIET_RUNS_KEPT_DAYS))],
+    )?;
+    Ok(released + reopened + pruned > 0)
+}
+
+/// Issues for the app: `open` (open or resolving) or `recent` (cleared in the last 7 days).
+pub(crate) fn list_issues_db(conn: &Connection, which: &str, now: DateTime<Utc>) -> rusqlite::Result<Vec<WatchIssue>> {
+    let filter = if which == "recent" { "i.state = 'cleared' AND i.cleared_at >= ?1" } else { "i.state != 'cleared' AND ?1 IS NOT NULL" };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT i.id, i.watcher, i.key, i.job_id, i.project_id, i.title, i.details, i.url, i.folder, i.state, i.taken_run_id,
+                r.todo_id, i.outcome, i.outcome_note, i.resolve_error, i.first_seen, i.last_seen, i.cleared_at, i.updated_at
+         FROM watch_issues i LEFT JOIN job_runs r ON r.id = i.taken_run_id
+         WHERE {filter} ORDER BY i.last_seen DESC, i.rowid DESC LIMIT 500"
+    ))?;
+    let rows = stmt.query_map(params![sql_time(now - Duration::days(7))], |r| {
+        Ok(WatchIssue {
+            id: r.get(0)?,
+            watcher: r.get(1)?,
+            key: r.get(2)?,
+            job_id: r.get(3)?,
+            project_id: r.get(4)?,
+            title: r.get(5)?,
+            details: r.get(6)?,
+            url: r.get(7)?,
+            folder: r.get(8)?,
+            state: r.get(9)?,
+            taken_run_id: r.get(10)?,
+            todo_id: r.get(11)?,
+            outcome: r.get(12)?,
+            outcome_note: r.get(13)?,
+            resolve_error: r.get(14)?,
+            first_seen: r.get(15)?,
+            last_seen: r.get(16)?,
+            cleared_at: r.get(17)?,
+            updated_at: r.get(18)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// The user's "Resolve in Sentry": the watcher's computer does it on its next tick.
+pub(crate) fn request_resolve_db(conn: &Connection, id: &str, now: DateTime<Utc>) -> Result<(), WatchError> {
+    let changed = conn.execute(
+        "UPDATE watch_issues SET state = 'resolving', resolve_requested_at = ?2, resolve_error = NULL, updated_at = ?2
+         WHERE id = ?1 AND state = 'open'",
+        params![id, sql_time(now)],
+    )?;
+    if changed == 0 {
+        return Err(missing_or(conn, id, "Only an open issue can be resolved")?);
+    }
+    Ok(())
+}
+
+/// "Try again" for an issue a conversation couldn't fix or left for the user: back in the
+/// queue, and a conversation is queued if there's room.
+pub(crate) fn retry_db(conn: &Connection, id: &str, now: DateTime<Utc>) -> Result<(), WatchError> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let changed = tx.execute(
+        "UPDATE watch_issues SET taken_run_id = NULL, outcome = NULL, outcome_note = NULL, updated_at = ?2
+         WHERE id = ?1 AND state = 'open' AND outcome IN ('needs_you','cant_fix')",
+        params![id, sql_time(now)],
+    )?;
+    if changed == 0 {
+        return Err(missing_or(&tx, id, "Only an issue that needs you or can't be fixed can be tried again")?);
+    }
+    requeue_for_issue(&tx, "id = ?1", id, now)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn missing_or(conn: &Connection, id: &str, conflict: &'static str) -> rusqlite::Result<WatchError> {
+    let exists: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM watch_issues WHERE id = ?1)", params![id], |r| r.get(0))?;
+    Ok(if exists { WatchError::Conflict(conflict) } else { WatchError::NotFound("Issue not found") })
+}
+
+/// Queue debug runs for the watch job of the issue matching `filter` (one `?1` parameter).
+fn requeue_for_issue(conn: &Connection, filter: &str, value: &str, now: DateTime<Utc>) -> Result<(), WatchError> {
+    let job_id: Option<String> =
+        conn.query_row(&format!("SELECT job_id FROM watch_issues WHERE {filter} LIMIT 1"), params![value], |r| r.get(0)).optional()?.flatten();
+    if let Some(job) = job_id.map(|j| load_job(conn, &j)).transpose()?.flatten() {
+        queue_debug_runs(conn, &job, now)?;
+    }
+    Ok(())
+}
+
+pub(crate) const OUTCOMES: [&str; 3] = ["fixed", "needs_you", "cant_fix"];
+
+#[derive(Debug, serde::Deserialize)]
+pub struct OutcomeRequest {
+    pub key: String,
+    pub outcome: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ReleaseRequest {
+    pub keys: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct OverwhelmedRequest {
+    #[serde(default)]
+    pub why: String,
+}
+
+/// The agent's outcome for one issue its run took.
+pub(crate) fn outcome_db(conn: &Connection, run_id: &str, req: &OutcomeRequest, now: DateTime<Utc>) -> Result<(), WatchError> {
+    if !OUTCOMES.contains(&req.outcome.as_str()) {
+        return Err(WatchError::BadRequest("outcome must be fixed, needs_you or cant_fix"));
+    }
+    let note: String = req.note.trim().chars().take(500).collect();
+    let changed = conn.execute(
+        "UPDATE watch_issues SET outcome = ?3, outcome_note = ?4, updated_at = ?5 WHERE taken_run_id = ?1 AND key = ?2",
+        params![run_id, req.key.trim(), req.outcome, note, sql_time(now)],
+    )?;
+    if changed == 0 {
+        return Err(WatchError::NotFound("Issue not taken by this run"));
+    }
+    Ok(())
+}
+
+/// The agent gives issues back; a conversation is queued for them if there's room.
+pub(crate) fn release_db(conn: &Connection, run_id: &str, req: &ReleaseRequest, now: DateTime<Utc>) -> Result<usize, WatchError> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let mut released = 0;
+    for key in &req.keys {
+        released += tx.execute(
+            "UPDATE watch_issues SET taken_run_id = NULL, outcome = NULL, outcome_note = NULL, updated_at = ?3
+             WHERE taken_run_id = ?1 AND key = ?2",
+            params![run_id, key.trim(), sql_time(now)],
+        )?;
+    }
+    if released > 0 {
+        // The run still holds others or is at work: requeue from any issue of the same watcher.
+        let watcher: Option<String> = tx
+            .query_row("SELECT watcher FROM watch_issues WHERE key = ?1", params![req.keys.first().map(|k| k.trim()).unwrap_or_default()], |r| r.get(0))
+            .optional()?;
+        if let Some(watcher) = watcher {
+            requeue_for_issue(&tx, "watcher = ?1 AND job_id IS NOT NULL", &watcher, now)?;
+        }
+    }
+    tx.commit()?;
+    Ok(released)
+}
+
+/// The "<watch job> needs you" push for a debugging run, with its todo.
+pub(crate) fn overwhelmed_target(conn: &Connection, run_id: &str) -> Result<(String, Option<String>), WatchError> {
+    let run = load_run(conn, run_id)?.ok_or(WatchError::NotFound("Run not found"))?;
+    let name: Option<String> = conn
+        .query_row(
+            "SELECT j.name FROM watch_issues i JOIN jobs j ON j.id = i.job_id WHERE i.taken_run_id = ?1 LIMIT 1",
+            params![run_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let name = match name {
+        Some(n) => n,
+        None if run.note.as_deref().is_some_and(|n| n.starts_with("watch:")) => {
+            load_job(conn, &run.job_id)?.map(|j| j.name).unwrap_or_else(|| "A watcher".into())
+        }
+        None => return Err(WatchError::NotFound("Not a debugging run")),
+    };
+    Ok((name, run.todo_id))
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct ResolveResult {
     pub ok: bool,
@@ -415,6 +613,84 @@ pub async fn resolve_result(
     match resolve_result_db(&conn, &path, &body, Utc::now()) {
         Ok(()) => {
             broadcaster.send();
+            HttpResponse::Ok().json(serde_json::json!({"ok": true}))
+        }
+        Err(e) => respond(e),
+    }
+}
+
+macro_rules! conn {
+    ($pool:expr) => {
+        match $pool.get() {
+            Ok(c) => c,
+            Err(e) => return server_error(e),
+        }
+    };
+}
+
+fn done(result: Result<impl serde::Serialize, WatchError>, broadcaster: &Broadcaster) -> HttpResponse {
+    match result {
+        Ok(v) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(v)
+        }
+        Err(e) => respond(e),
+    }
+}
+
+pub async fn list_issues(pool: web::Data<DbPool>, query: web::Query<std::collections::HashMap<String, String>>) -> HttpResponse {
+    let conn = conn!(pool);
+    let which = query.get("state").map(String::as_str).unwrap_or("open");
+    match list_issues_db(&conn, which, Utc::now()) {
+        Ok(v) => HttpResponse::Ok().json(v),
+        Err(e) => server_error(e),
+    }
+}
+
+pub async fn resolve_issue(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
+    let conn = conn!(pool);
+    done(request_resolve_db(&conn, &path, Utc::now()).map(|_| serde_json::json!({"ok": true})), &broadcaster)
+}
+
+pub async fn retry_issue(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
+    let conn = conn!(pool);
+    done(retry_db(&conn, &path, Utc::now()).map(|_| serde_json::json!({"ok": true})), &broadcaster)
+}
+
+pub async fn run_outcome(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<OutcomeRequest>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = conn!(pool);
+    done(outcome_db(&conn, &path, &body, Utc::now()).map(|_| serde_json::json!({"ok": true})), &broadcaster)
+}
+
+pub async fn run_release(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<ReleaseRequest>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = conn!(pool);
+    done(release_db(&conn, &path, &body, Utc::now()).map(|n| serde_json::json!({"released": n})), &broadcaster)
+}
+
+pub async fn run_overwhelmed(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<OverwhelmedRequest>,
+    notifier: web::Data<PushNotifier>,
+) -> HttpResponse {
+    let target = {
+        let conn = conn!(pool);
+        overwhelmed_target(&conn, &path)
+    };
+    match target {
+        Ok((name, todo_id)) => {
+            let why: String = body.why.trim().chars().take(300).collect();
+            push_now(&pool, &notifier, format!("{name} needs you"), why, todo_id).await;
             HttpResponse::Ok().json(serde_json::json!({"ok": true}))
         }
         Err(e) => respond(e),
@@ -609,6 +885,144 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(matches!(report_db(&conn, "pr", &report_of(vec![]), now()), Err(WatchError::Conflict(_))));
+    }
+
+    fn debug_run_with_conversation(conn: &Connection, run: &str, status: &str, turned: bool) {
+        conn.execute("INSERT INTO todos (id, section, title) VALUES (?1, 'Si', 'fix')", params![format!("t-{run}")]).unwrap();
+        conn.execute(
+            "INSERT INTO job_runs (id, job_id, due_at, state, todo_id, note) VALUES (?1, 'w', datetime('now'), 'done', ?2, 'watch:backend')",
+            params![run, format!("t-{run}")],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, status, status_turn_ns)
+             VALUES (?1, ?2, 'mac', '~/w', 'claude', ?3, ?1, ?4, ?5)",
+            params![format!("c-{run}"), format!("t-{run}"), format!("ai/claude/{run}"), status, turned.then_some(1_i64)],
+        )
+        .unwrap();
+    }
+
+    fn taken(conn: &Connection, key: &str, run: &str, outcome: Option<&str>) {
+        conn.execute(
+            "INSERT INTO watch_issues (id, watcher, key, job_id, project_id, title, folder, taken_run_id, outcome)
+             VALUES (?1, 'sentry', ?1, 'w', 'ps', ?1, 'backend', ?2, ?3)",
+            params![key, run, outcome],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn finished_conversation_releases_unreported_issues() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        debug_run_with_conversation(&conn, "r1", "idle", true);
+        taken(&conn, "open-one", "r1", None);
+        taken(&conn, "fixed-one", "r1", Some("fixed"));
+        assert!(watch_upkeep(&conn, Utc::now()).unwrap());
+        assert_eq!(issue(&conn, "open-one").1, None);
+        assert_eq!(issue(&conn, "fixed-one").1.as_deref(), Some("r1"));
+    }
+
+    #[test]
+    fn busy_conversation_keeps_issues() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        debug_run_with_conversation(&conn, "r1", "busy", true);
+        debug_run_with_conversation(&conn, "r2", "idle", false);
+        taken(&conn, "a", "r1", None);
+        taken(&conn, "b", "r2", None);
+        watch_upkeep(&conn, Utc::now()).unwrap();
+        assert_eq!(issue(&conn, "a").1.as_deref(), Some("r1"));
+        assert_eq!(issue(&conn, "b").1.as_deref(), Some("r2"), "idle before its first turn is still starting");
+    }
+
+    #[test]
+    fn stale_resolving_reopens_after_30_minutes() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, None);
+        conn.execute(
+            "INSERT INTO watch_issues (id, watcher, key, project_id, title, state, resolve_requested_at) VALUES
+               ('i1', 'sentry', 'old', 'ps', 'O', 'resolving', ?1), ('i2', 'sentry', 'new', 'ps', 'N', 'resolving', ?2)",
+            params![sql_time(now() - Duration::minutes(31)), sql_time(now() - Duration::minutes(5))],
+        )
+        .unwrap();
+        watch_upkeep(&conn, now()).unwrap();
+        let error: Option<String> = conn.query_row("SELECT resolve_error FROM watch_issues WHERE id = 'i1'", [], |r| r.get(0)).unwrap();
+        assert_eq!((issue(&conn, "old").0.as_str(), error.as_deref()), ("open", Some("this Mac didn't answer")));
+        assert_eq!(issue(&conn, "new").0, "resolving");
+    }
+
+    #[test]
+    fn quiet_watch_runs_pruned_and_hidden() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, None);
+        conn.execute(
+            "INSERT INTO job_runs (id, job_id, due_at, state, result) VALUES
+               ('old', 'w', ?1, 'done', 'quiet'), ('fresh', 'w', ?2, 'done', 'quiet'), ('loud', 'w', ?2, 'done', '1 new')",
+            params![sql_time(now() - Duration::days(3)), sql_time(now())],
+        )
+        .unwrap();
+        let ids: Vec<String> = crate::jobs::recent_runs_db(&conn, 50).unwrap().into_iter().map(|r| r.run.id).collect();
+        assert_eq!(ids, vec!["loud".to_string()]);
+        watch_upkeep(&conn, now()).unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM job_runs", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 2);
+    }
+
+    #[actix_web::test]
+    async fn issue_endpoints_list_resolve_and_retry() {
+        use crate::test_support::{get, post};
+        use actix_web::http::StatusCode;
+        use serde_json::json;
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        debug_run_with_conversation(&conn, "r1", "busy", true);
+        taken(&conn, "stuck", "r1", Some("cant_fix"));
+        taken(&conn, "working", "r1", None);
+        conn.execute("INSERT INTO watch_issues (id, watcher, key, project_id, title, state, cleared_at) VALUES ('gone', 'sentry', 'gone', 'ps', 'G', 'cleared', datetime('now'))", []).unwrap();
+        let (status, open) = get(&pool, "/api/watch/issues?state=open").await;
+        assert_eq!(status, StatusCode::OK, "{open}");
+        assert_eq!(open.as_array().unwrap().len(), 2);
+        assert!(open.as_array().unwrap().iter().all(|i| i["todo_id"] == "t-r1"));
+        assert_eq!(get(&pool, "/api/watch/issues?state=recent").await.1.as_array().unwrap().len(), 1);
+        assert_eq!(post(&pool, "/api/watch/issues/working/retry", json!({})).await.0, StatusCode::CONFLICT);
+        assert_eq!(post(&pool, "/api/watch/issues/stuck/retry", json!({})).await.0, StatusCode::OK);
+        assert_eq!(issue(&conn, "stuck"), ("open".into(), None, None));
+        assert_eq!(post(&pool, "/api/watch/issues/working/resolve", json!({})).await.0, StatusCode::OK);
+        assert_eq!(issue(&conn, "working").0, "resolving");
+        assert_eq!(post(&pool, "/api/watch/issues/working/resolve", json!({})).await.0, StatusCode::CONFLICT);
+        assert_eq!(post(&pool, "/api/watch/issues/gone/resolve", json!({})).await.0, StatusCode::CONFLICT);
+    }
+
+    #[actix_web::test]
+    async fn agent_endpoints_only_touch_their_run() {
+        use crate::test_support::post;
+        use actix_web::http::StatusCode;
+        use serde_json::json;
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        debug_run_with_conversation(&conn, "r1", "busy", true);
+        debug_run_with_conversation(&conn, "r2", "busy", true);
+        taken(&conn, "mine", "r1", None);
+        taken(&conn, "give-back", "r1", None);
+        taken(&conn, "theirs", "r2", None);
+        let ok = post(&pool, "/api/watch/runs/r1/outcome", json!({"key": "mine", "outcome": "fixed", "note": "nil check"})).await;
+        assert_eq!(ok.0, StatusCode::OK, "{}", ok.1);
+        assert_eq!(issue(&conn, "mine").2.as_deref(), Some("fixed"));
+        assert_eq!(post(&pool, "/api/watch/runs/r1/outcome", json!({"key": "theirs", "outcome": "fixed", "note": ""})).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(post(&pool, "/api/watch/runs/r1/outcome", json!({"key": "mine", "outcome": "done", "note": ""})).await.0, StatusCode::BAD_REQUEST);
+        let (status, v) = post(&pool, "/api/watch/runs/r1/release", json!({"keys": ["give-back", "theirs"]})).await;
+        assert_eq!((status, &v["released"]), (StatusCode::OK, &json!(1)));
+        assert_eq!(issue(&conn, "give-back").1, None);
+        assert_eq!(issue(&conn, "theirs").1.as_deref(), Some("r2"));
+        assert_eq!(post(&pool, "/api/watch/runs/r1/overwhelmed", json!({"why": "too many"})).await.0, StatusCode::OK);
+        assert_eq!(post(&pool, "/api/watch/runs/nope/overwhelmed", json!({"why": "x"})).await.0, StatusCode::NOT_FOUND);
     }
 
     #[test]

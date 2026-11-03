@@ -132,7 +132,13 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/runs/{id}/start", web::post().to(runner_api::start))
         .route("/api/runs/{id}/finish", web::post().to(runner_api::finish))
         .route("/api/runs/{id}/report", web::post().to(watch::report))
+        .route("/api/watch/issues", web::get().to(watch::list_issues))
+        .route("/api/watch/issues/{id}/resolve", web::post().to(watch::resolve_issue))
+        .route("/api/watch/issues/{id}/retry", web::post().to(watch::retry_issue))
         .route("/api/watch/issues/{id}/resolve-result", web::post().to(watch::resolve_result))
+        .route("/api/watch/runs/{id}/outcome", web::post().to(watch::run_outcome))
+        .route("/api/watch/runs/{id}/release", web::post().to(watch::run_release))
+        .route("/api/watch/runs/{id}/overwhelmed", web::post().to(watch::run_overwhelmed))
         .route("/api/memories/{id}", web::patch().to(memories::update_memory))
         .route("/api/memories/{id}", web::delete().to(memories::delete_memory))
         // Sessions and stats

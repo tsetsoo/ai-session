@@ -33,11 +33,13 @@ pub(crate) struct TickOutcome {
     pub pushes: Vec<(String, String)>,
     /// Todos created by todo jobs.
     pub todos: Vec<String>,
+    /// Watch issues released, resolves reopened, or quiet checks pruned.
+    pub watch_changed: bool,
 }
 
 impl TickOutcome {
     pub(crate) fn changed(&self) -> bool {
-        !(self.created.is_empty() && self.missed.is_empty())
+        !(self.created.is_empty() && self.missed.is_empty()) || self.watch_changed
     }
 }
 
@@ -150,6 +152,8 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
                 OR run_id IN (SELECT id FROM job_runs WHERE state IN ('missed','skipped','failed')))",
         params![stamp],
     )?;
+
+    out.watch_changed = crate::watch::watch_upkeep(&tx, now)?;
 
     let jobs: Vec<JobRow> = {
         let mut stmt = tx.prepare(
