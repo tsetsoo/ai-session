@@ -26,16 +26,20 @@ must be easy: by hand, or by telling a cheap agent loosely and letting it ask wh
 
 - Fields: title, notes (optional), next time (date + time, Sofia), repeat: none, daily, weekdays,
   weekly, monthly, yearly.
-- At its time the hub pushes it (silent push held until quiet hours end, if any are set). The
-  reminder then waits as **due** until the user marks it **Done** or **Snoozes** it (1 hour,
-  this evening 18:00, tomorrow 09:00). Done on a repeating reminder moves it to its next time.
-  *My call:* a reminder stays visible until handled, like a todo.
+- At its time the hub pushes it once. The reminder then waits as **due** until the user marks
+  it **Done** or **Snoozes** it (1 hour, this evening 18:00, tomorrow 09:00); it doesn't push
+  again while due. Done on a repeating reminder moves it to its next time **after now** (a daily
+  reminder left 3 days doesn't come back at once). *My call:* a reminder stays visible until
+  handled, like a todo.
+- **Quiet hours** (the push settings' quiet hours, if set): a reminder, date or briefing that
+  comes due during them is held and pushed normally, with sound, when they end. The hub marks
+  what it has sent, so a held push survives a restart without a queue. *My call.*
 - A monthly reminder on the 31st falls on the month's last day.
 
 ### People & dates
 
 - Fields: name, kind (birthday, anniversary, other), month and day, year (optional), notes.
-- Pushes at 09:00 Sofia the day before ("Tomorrow: Maria's birthday") and on the day ("Today:
+- Pushes at 09:00 Sofia (held through quiet hours like reminders) the day before ("Tomorrow: Maria's birthday") and on the day ("Today:
   Maria turns 35" when the year is known). 29 February falls on 28 February in other years.
 
 ### Morning briefing
