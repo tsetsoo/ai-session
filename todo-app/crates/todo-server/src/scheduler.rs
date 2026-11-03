@@ -33,11 +33,13 @@ pub(crate) struct TickOutcome {
     pub pushes: Vec<(String, String)>,
     /// Todos created by todo jobs.
     pub todos: Vec<String>,
+    /// Watch issues released, resolves reopened, or quiet checks pruned.
+    pub watch_changed: bool,
 }
 
 impl TickOutcome {
     pub(crate) fn changed(&self) -> bool {
-        !(self.created.is_empty() && self.missed.is_empty())
+        !(self.created.is_empty() && self.missed.is_empty()) || self.watch_changed
     }
 }
 
@@ -151,6 +153,8 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
         params![stamp],
     )?;
 
+    out.watch_changed = crate::watch::watch_upkeep(&tx, now)?;
+
     let jobs: Vec<JobRow> = {
         let mut stmt = tx.prepare(
             "SELECT id, name, trigger, action, max_runs_per_day, last_slot_at, created_at FROM jobs WHERE enabled = 1",
@@ -195,7 +199,8 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
             params![id, day_start],
             |r| r.get(0),
         )?;
-        if today_runs >= max_per_day {
+        // A watcher checks on its own cron; the daily cap is for conversations.
+        if today_runs >= max_per_day && !action.is_watch() {
             tx.execute(
                 "INSERT INTO job_runs (id, job_id, due_at, state, result) VALUES (?1, ?2, ?3, 'skipped', 'daily run limit reached')",
                 params![run_id, id, sql_time(slot)],
@@ -243,7 +248,8 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
                 )?;
                 out.todos.push(todo);
             }
-            JobAction::Conversation { .. } | JobAction::Research { .. } => {}
+            // Left `due` for the Mac's runner.
+            JobAction::Conversation { .. } | JobAction::Research { .. } | JobAction::Watch { .. } => {}
         }
     }
     tx.commit()?;
@@ -321,6 +327,22 @@ mod tests {
         }
         let states: Vec<String> = runs(&conn, "j").into_iter().map(|(_, s)| s).collect();
         assert_eq!(states, vec!["done", "done", "skipped"]);
+    }
+
+    #[test]
+    fn watch_job_ignores_daily_cap() {
+        let (_db, pool) = pool("sched");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let watch = r#"{"kind":"watch","project_id":"pa","computer_id":"mac","watcher":"sentry","debug_tool":null,"prompt":""}"#;
+        job(&conn, "w", "*/10 * * * *", watch, "2026-11-02 06:00:00");
+        conn.execute("UPDATE jobs SET max_runs_per_day = 1", []).unwrap();
+        for m in [10, 20] {
+            tick_db(&conn, at(2026, 11, 2, 6, m)).unwrap();
+            conn.execute("UPDATE job_runs SET state = 'done' WHERE state = 'due'", []).unwrap();
+        }
+        let states: Vec<String> = runs(&conn, "w").into_iter().map(|(_, s)| s).collect();
+        assert_eq!(states, vec!["done", "done"]);
     }
 
     #[test]

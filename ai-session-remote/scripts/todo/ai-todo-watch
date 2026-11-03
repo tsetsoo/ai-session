@@ -1,0 +1,166 @@
+#!/bin/sh
+# For a debugging conversation started by a watcher: report on the issues it took.
+#
+# Usage:
+#   ai-todo-watch outcome <key> fixed|needs_you|cant_fix "<note>" [--commit <sha>]...
+#   ai-todo-watch release <key>...          # give issues back for another conversation
+#   ai-todo-watch overwhelmed "<why>"       # push the user
+#
+# The run is the scheduled worktree the cwd is in (~/.ai-remote/worktrees/<project>/<run>/...).
+# Notes are redacted (ai_todo_redact.py) before they leave this computer.
+#
+# Exit codes: 64 bad arguments, 65 not in a scheduled worktree / no config, 1 todo-server error,
+# 90 missing tools.
+AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_LIB_DIR
+ai_path=
+ai_ifs=$IFS
+IFS=:
+set -f
+for ai_dir in /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin /usr/local/bin "$HOME/.local/bin" /usr/sbin /sbin $PATH; do
+  [ -n "$ai_dir" ] || continue
+  case "$ai_dir" in /home/*) if [ -d /System ]; then continue; fi ;; esac
+  case ":$ai_path:" in *":$ai_dir:"*) continue ;; esac
+  ai_path=${ai_path:+$ai_path:}$ai_dir
+done
+set +f
+IFS=$ai_ifs
+export PATH="$ai_path"
+unset ai_path ai_ifs ai_dir
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+exec python3 - "$@" <<'PY'
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+HOME = os.path.expanduser("~")
+LIB_DIR = os.environ.get("AI_TODO_LIB_DIR") or os.path.join(HOME, ".ai-remote", "bin")
+AI_DIR = os.path.join(HOME, ".ai-remote")
+TREES = os.environ.get("AI_TODO_RUNNER_WORKTREES") or os.path.join(AI_DIR, "worktrees")
+WATCHERS = os.environ.get("AI_TODO_WATCHERS_DIR") or os.path.join(AI_DIR, "watchers")
+OUTCOMES = ("fixed", "needs_you", "cant_fix")
+USAGE = "usage: ai-todo-watch outcome <key> fixed|needs_you|cant_fix \"<note>\" [--commit <sha>]... | release <key>... | overwhelmed \"<why>\""
+
+
+def die(message, code):
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+def config():
+    path = os.environ.get("AI_TODO_HUB_CONF") or os.path.join(AI_DIR, "todo-hub.conf")
+    values = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                m = re.match(r"\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$", line.rstrip("\n"))
+                if m:
+                    raw = m.group(2).strip()
+                    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+                        raw = raw[1:-1]
+                    values[m.group(1)] = raw
+    except OSError:
+        pass
+    if not values.get("TODO_HUB_URL"):
+        die("ai-todo-watch: no TODO_HUB_URL in %s" % path, 65)
+    return values
+
+
+def request(conf, path, body):
+    url = conf["TODO_HUB_URL"].rstrip("/") + path
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST")
+    req.add_header("Content-Type", "application/json")
+    if conf.get("TODO_API_TOKEN"):
+        req.add_header("Authorization", "Bearer " + conf["TODO_API_TOKEN"])
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as e:
+        die("ai-todo-watch: POST %s answered HTTP %s" % (path, e.code), 1)
+    except (urllib.error.URLError, OSError) as e:
+        die("ai-todo-watch: could not reach todo-server (%s)" % type(e).__name__, 1)
+    return json.loads(raw) if raw else None
+
+
+def redactor(conf):
+    sys.path.insert(0, LIB_DIR)
+    sys.dont_write_bytecode = True
+    try:
+        import ai_todo_redact
+    except ImportError:
+        die("ai_todo_redact.py not found in %s; refusing to send anything" % LIB_DIR, 90)
+    secrets = ai_todo_redact.secret_values_from_env(os.environ)
+    if conf.get("TODO_API_TOKEN"):
+        secrets.append(conf["TODO_API_TOKEN"])
+    # The watchers' secrets (the Sentry token) never leave in a note, whatever the agent read.
+    try:
+        with open(os.path.join(WATCHERS, "env")) as f:
+            for line in f:
+                m = re.match(r"\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=(.*)$", line.rstrip("\n"))
+                if m:
+                    raw = m.group(1).strip()
+                    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+                        raw = raw[1:-1]
+                    if len(raw) >= 4:
+                        secrets.append(raw)
+    except OSError:
+        pass
+    return lambda text: ai_todo_redact.redact(text, secrets)
+
+
+def run_id():
+    """The run of the scheduled worktree the cwd is in."""
+    cwd, trees = os.path.realpath(os.getcwd()), os.path.realpath(TREES)
+    if cwd.startswith(trees.rstrip("/") + "/"):
+        parts = os.path.relpath(cwd, trees).split(os.sep)
+        if len(parts) >= 2 and parts[1]:
+            return parts[1]
+    die("ai-todo-watch: not in a scheduled worktree (%s)" % TREES, 65)
+
+
+def main(argv):
+    if not argv:
+        die(USAGE, 64)
+    command, args = argv[0], argv[1:]
+    commits = []
+    if command == "outcome":
+        rest, args = args[3:], args[:3]
+        while rest:
+            if rest[0] != "--commit" or len(rest) < 2 or not re.fullmatch(r"[0-9A-Fa-f]{7,40}", rest[1]):
+                die(USAGE, 64)
+            commits.append(rest[1])
+            rest = rest[2:]
+        if len(args) != 3 or args[1] not in OUTCOMES or not args[0].strip():
+            die(USAGE, 64)
+    elif command == "release":
+        if not args or not all(a.strip() for a in args):
+            die(USAGE, 64)
+    elif command == "overwhelmed":
+        if len(args) != 1:
+            die(USAGE, 64)
+    else:
+        die(USAGE, 64)
+    run = run_id()
+    conf = config()
+    path = "/api/watch/runs/%s/%s" % (urllib.parse.quote(run, safe=""), command)
+    if command == "outcome":
+        redact = redactor(conf)
+        body = {"key": args[0].strip(), "outcome": args[1], "note": redact(" ".join(args[2].split()))[:500]}
+        if commits:
+            body["commits"] = commits
+        request(conf, path, body)
+        print("Recorded %s: %s." % (args[0].strip(), args[1]))
+    elif command == "release":
+        out = request(conf, path, {"keys": [a.strip() for a in args]}) or {}
+        print("Gave back %s issue(s)." % out.get("released", len(args)))
+    else:
+        redact = redactor(conf)
+        request(conf, path, {"why": redact(" ".join(args[0].split()))[:300]})
+        print("The user was notified.")
+
+
+main(sys.argv[1:])
+PY
