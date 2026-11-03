@@ -585,6 +585,223 @@ pub async fn put_settings(pool: web::Data<DbPool>, body: web::Json<TodaySettings
     reply(update_settings_db(&conn, &body), Some(&b))
 }
 
+
+// --- Pushes and the briefing ------------------------------------------------------------
+
+/// Dates are pushed at this Sofia time, the day before and on the day.
+const DATES_AT: (u32, u32) = (9, 0);
+
+fn sofia_time(now: DateTime<Utc>) -> chrono::NaiveTime {
+    now.with_timezone(&TZ).time()
+}
+
+fn quiet_now(conn: &Connection, now: DateTime<Utc>) -> bool {
+    crate::push::store::load_settings(conn)
+        .ok()
+        .and_then(|s| s.quiet_hours)
+        .is_some_and(|q| crate::push::policy::in_quiet_hours(&q, now))
+}
+
+fn date_text(p: &Person, today: NaiveDate) -> String {
+    let when = if p.next_date == today.format("%Y-%m-%d").to_string() { "Today" } else { "Tomorrow" };
+    match (p.kind.as_str(), p.turns) {
+        ("birthday", Some(n)) if when == "Today" => format!("Today: {} turns {n}", p.name),
+        ("birthday", Some(n)) => format!("Tomorrow: {} turns {n}", p.name),
+        ("birthday", None) => format!("{when}: {}'s birthday", p.name),
+        ("anniversary", Some(n)) => format!("{when}: {} · {n} years", p.name),
+        ("anniversary", None) => format!("{when}: {}'s anniversary", p.name),
+        _ => {
+            let what = p.notes.lines().next().map(str::trim).filter(|l| !l.is_empty()).unwrap_or("date");
+            format!("{when}: {} ({what})", p.name)
+        }
+    }
+}
+
+/// Counts of open watcher issues by group.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct WatchCounts {
+    pub waiting: i64,
+    pub working: i64,
+    pub needs_you: i64,
+    pub cant_fix: i64,
+    pub fixed: i64,
+    pub resolving: i64,
+}
+
+impl WatchCounts {
+    fn is_empty(&self) -> bool {
+        *self == WatchCounts::default()
+    }
+
+    fn text(&self) -> String {
+        let parts: Vec<String> = [
+            (self.fixed, "fixed, waiting for your merge"),
+            (self.needs_you, "need you"),
+            (self.waiting, "waiting"),
+            (self.working, "being worked on"),
+            (self.cant_fix, "can't be fixed"),
+            (self.resolving, "resolving"),
+        ]
+        .iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{n} {what}"))
+        .collect();
+        format!("Watchers: {}", parts.join(", "))
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReadyItem {
+    pub todo_id: String,
+    pub title: String,
+}
+
+/// What the morning briefing (and the Today view) says.
+#[derive(Debug, Clone, Serialize)]
+pub struct Briefing {
+    /// Today's reminders not done, by time: `HH:MM title`.
+    pub reminders: Vec<Reminder>,
+    /// Dates today and tomorrow, in words.
+    pub dates: Vec<String>,
+    pub people: Vec<Person>,
+    /// Scheduled conversations that finished since `since`, not yet reviewed.
+    pub ready_for_review: Vec<ReadyItem>,
+    /// Conversations waiting on the user.
+    pub needs_you: i64,
+    pub watch: WatchCounts,
+}
+
+impl Briefing {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.reminders.is_empty() && self.dates.is_empty() && self.ready_for_review.is_empty() && self.needs_you == 0 && self.watch.is_empty()
+    }
+
+    /// The push body: one line per non-empty section, in order.
+    pub(crate) fn lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if !self.reminders.is_empty() {
+            let items: Vec<String> = self.reminders.iter().map(|r| format!("{} {}", &r.at[11..], r.title)).collect();
+            out.push(format!("Reminders: {}", items.join(" · ")));
+        }
+        out.extend(self.dates.iter().cloned());
+        if !self.ready_for_review.is_empty() {
+            out.push(format!("{} ready for review", self.ready_for_review.len()));
+        }
+        if self.needs_you > 0 {
+            out.push(format!("{} need you", self.needs_you));
+        }
+        if !self.watch.is_empty() {
+            out.push(self.watch.text());
+        }
+        out
+    }
+}
+
+pub(crate) fn briefing_db(conn: &Connection, now: DateTime<Utc>, since: DateTime<Utc>) -> rusqlite::Result<Briefing> {
+    let today = sofia_today(now);
+    let tomorrow = today.succ_opt().unwrap_or(today);
+    let day = today.format("%Y-%m-%d").to_string();
+    let reminders = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {REMINDER_COLS} FROM reminders WHERE state != 'done' AND substr(local_at, 1, 10) <= ?1 ORDER BY local_at"
+        ))?;
+        let rows = stmt.query_map(params![day], row_to_reminder)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let people: Vec<Person> = list_people_db(conn, now)?
+        .into_iter()
+        .filter(|p| p.next_date == day || p.next_date == tomorrow.format("%Y-%m-%d").to_string())
+        .collect();
+    let dates = people.iter().map(|p| date_text(p, today)).collect();
+    let ready_for_review = {
+        let mut stmt = conn.prepare(
+            "SELECT t.id, t.title FROM todos t JOIN conversations c ON c.todo_id = t.id
+             WHERE t.scheduled_job_id IS NOT NULL AND t.completed = 0 AND c.status = 'idle' AND c.reviewed = 0
+               AND COALESCE(c.status_updated_at, c.created_at) >= ?1
+             GROUP BY t.id ORDER BY MAX(COALESCE(c.status_updated_at, c.created_at))",
+        )?;
+        let rows = stmt.query_map(params![sql_time(since)], |r| Ok(ReadyItem { todo_id: r.get(0)?, title: r.get(1)? }))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let needs_you: i64 = conn.query_row("SELECT COUNT(*) FROM conversations WHERE status = 'waiting'", [], |r| r.get(0))?;
+    let watch = conn.query_row(
+        "SELECT
+            COALESCE(SUM(state = 'open' AND taken_run_id IS NULL AND outcome IS NULL), 0),
+            COALESCE(SUM(state = 'open' AND taken_run_id IS NOT NULL AND outcome IS NULL), 0),
+            COALESCE(SUM(state = 'open' AND outcome = 'needs_you'), 0),
+            COALESCE(SUM(state = 'open' AND outcome = 'cant_fix'), 0),
+            COALESCE(SUM(state = 'open' AND outcome = 'fixed'), 0),
+            COALESCE(SUM(state = 'resolving'), 0)
+         FROM watch_issues",
+        [],
+        |r| Ok(WatchCounts { waiting: r.get(0)?, working: r.get(1)?, needs_you: r.get(2)?, cant_fix: r.get(3)?, fixed: r.get(4)?, resolving: r.get(5)? }),
+    )?;
+    Ok(Briefing { reminders, dates, people, ready_for_review, needs_you, watch })
+}
+
+/// The clock's part for Today: pushes due now (title, body). During quiet hours nothing is
+/// sent and nothing is marked, so it all goes out when they end.
+pub(crate) fn today_tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<Vec<(String, String)>> {
+    if quiet_now(conn, now) {
+        return Ok(Vec::new());
+    }
+    let mut pushes = Vec::new();
+    let stamp = sql_time(now);
+    // Reminders: once, when due.
+    {
+        let mut stmt = conn.prepare(
+            "UPDATE reminders SET state = 'due', pushed_at = ?1, updated_at = ?1 WHERE state = 'upcoming' AND next_at <= ?1
+             RETURNING title, notes",
+        )?;
+        let rows = stmt.query_map(params![stamp], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            pushes.push(row?);
+        }
+    }
+    // Dates: 09:00 the day before and on the day.
+    let today = sofia_today(now);
+    let at = chrono::NaiveTime::from_hms_opt(DATES_AT.0, DATES_AT.1, 0).unwrap_or_default();
+    if sofia_time(now) >= at {
+        let tomorrow = today.succ_opt().unwrap_or(today);
+        for p in list_people_db(conn, now)? {
+            let kind = if p.next_date == today.format("%Y-%m-%d").to_string() {
+                "day"
+            } else if p.next_date == tomorrow.format("%Y-%m-%d").to_string() {
+                "eve"
+            } else {
+                continue;
+            };
+            let added =
+                conn.execute("INSERT OR IGNORE INTO people_pushes (person_id, date, kind) VALUES (?1, ?2, ?3)", params![p.id, p.next_date, kind])?;
+            if added > 0 {
+                pushes.push((date_text(&p, today), p.notes.lines().next().unwrap_or("").to_string()));
+            }
+        }
+    }
+    // The briefing, once a day at its time.
+    let settings = settings_db(conn)?;
+    let (last_on, last_at): (Option<String>, Option<String>) =
+        conn.query_row("SELECT last_briefing_on, last_briefing_at FROM today_settings WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let due_time = chrono::NaiveTime::parse_from_str(&settings.briefing_time, "%H:%M").unwrap_or(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap_or_default());
+    let day = today.format("%Y-%m-%d").to_string();
+    if settings.briefing_enabled && sofia_time(now) >= due_time && last_on.as_deref() != Some(day.as_str()) {
+        let since = last_at.as_deref().and_then(parse_sql_time).unwrap_or(now - Duration::hours(24));
+        let briefing = briefing_db(conn, now, since)?;
+        conn.execute("UPDATE today_settings SET last_briefing_on = ?1, last_briefing_at = ?2 WHERE id = 1", params![day, stamp])?;
+        if !briefing.is_empty() {
+            pushes.push(("Good morning".into(), briefing.lines().join("\n")));
+        }
+    }
+    Ok(pushes)
+}
+
+/// The Today view: the briefing, live (ready for review over the last 24 hours).
+pub async fn today_view(pool: web::Data<DbPool>) -> HttpResponse {
+    let conn = conn!(pool);
+    let now = Utc::now();
+    reply(briefing_db(&conn, now, now - Duration::hours(24)).map_err(TodayError::from), None)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -726,5 +943,119 @@ pub(crate) mod tests {
         let (status, s) = put(&pool, "/api/today/settings", json!({"briefing_time": "07:30", "assistant_model": "codex"})).await;
         assert_eq!(status, StatusCode::OK, "{s}");
         assert_eq!((&s["briefing_time"], &s["assistant_model"]), (&json!("07:30"), &json!("codex")));
+    }
+
+    fn at_sofia(s: &str) -> DateTime<Utc> {
+        local_to_utc(local(s))
+    }
+
+    fn add_reminder(conn: &Connection, title: &str, at: &str) -> String {
+        create_reminder_db(conn, &ReminderRequest { title: Some(title.into()), notes: None, at: Some(at.into()), repeat: None, source: None })
+            .ok()
+            .unwrap()
+            .id
+    }
+
+    #[test]
+    fn due_reminder_pushes_once() {
+        let (_db, pool) = pool("today");
+        let conn = pool.get().unwrap();
+        conn.execute("UPDATE today_settings SET briefing_enabled = 0", []).unwrap();
+        add_reminder(&conn, "Call the accountant", "2026-11-06 10:00");
+        assert!(today_tick_db(&conn, at_sofia("2026-11-06 09:59")).unwrap().is_empty());
+        assert_eq!(today_tick_db(&conn, at_sofia("2026-11-06 10:00")).unwrap(), vec![("Call the accountant".to_string(), String::new())]);
+        assert!(today_tick_db(&conn, at_sofia("2026-11-06 10:01")).unwrap().is_empty(), "due: no second push");
+    }
+
+    #[test]
+    fn overdue_reminder_pushes_once() {
+        let (_db, pool) = pool("today");
+        let conn = pool.get().unwrap();
+        conn.execute("UPDATE today_settings SET briefing_enabled = 0", []).unwrap();
+        add_reminder(&conn, "Old", "2026-11-01 10:00");
+        assert_eq!(today_tick_db(&conn, at_sofia("2026-11-06 12:00")).unwrap().len(), 1, "the hub was down; one push when back");
+        assert!(today_tick_db(&conn, at_sofia("2026-11-06 12:01")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn quiet_hours_hold_then_release() {
+        let (_db, pool) = pool("today");
+        let conn = pool.get().unwrap();
+        conn.execute("UPDATE today_settings SET briefing_enabled = 0", []).unwrap();
+        conn.execute("INSERT OR REPLACE INTO push_settings (id, quiet_start, quiet_end, quiet_tz) VALUES (1, '23:00', '07:00', 'Europe/Sofia')", []).unwrap();
+        add_reminder(&conn, "Night", "2026-11-06 23:30");
+        assert!(today_tick_db(&conn, at_sofia("2026-11-06 23:30")).unwrap().is_empty());
+        assert!(today_tick_db(&conn, at_sofia("2026-11-07 06:59")).unwrap().is_empty(), "past midnight, still quiet");
+        assert_eq!(today_tick_db(&conn, at_sofia("2026-11-07 07:00")).unwrap().len(), 1, "sent when quiet hours end");
+    }
+
+    #[test]
+    fn person_eve_and_day_pushes_once() {
+        let (_db, pool) = pool("today");
+        let conn = pool.get().unwrap();
+        conn.execute("UPDATE today_settings SET briefing_enabled = 0", []).unwrap();
+        let req = PersonRequest { name: Some("Maria".into()), kind: None, month: Some(3), day: Some(14), year: Some(Some(1991)), notes: None, source: None };
+        create_person_db(&conn, &req, at_sofia("2027-03-01 10:00")).ok().unwrap();
+        assert!(today_tick_db(&conn, at_sofia("2027-03-13 08:59")).unwrap().is_empty(), "before 09:00");
+        assert_eq!(today_tick_db(&conn, at_sofia("2027-03-13 09:00")).unwrap()[0].0, "Tomorrow: Maria turns 36");
+        assert!(today_tick_db(&conn, at_sofia("2027-03-13 15:00")).unwrap().is_empty());
+        assert_eq!(today_tick_db(&conn, at_sofia("2027-03-14 09:05")).unwrap()[0].0, "Today: Maria turns 36");
+        assert!(today_tick_db(&conn, at_sofia("2027-03-14 10:00")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn briefing_at_time_once_and_empty_sends_nothing() {
+        let (_db, pool) = pool("today");
+        let conn = pool.get().unwrap();
+        assert!(today_tick_db(&conn, at_sofia("2026-11-06 08:00")).unwrap().is_empty(), "nothing to say: no push");
+        add_reminder(&conn, "Dentist", "2026-11-07 15:00");
+        assert!(today_tick_db(&conn, at_sofia("2026-11-06 09:00")).unwrap().is_empty(), "today's briefing already ran");
+        assert!(today_tick_db(&conn, at_sofia("2026-11-07 07:59")).unwrap().is_empty());
+        let pushes = today_tick_db(&conn, at_sofia("2026-11-07 08:00")).unwrap();
+        assert_eq!(pushes, vec![("Good morning".to_string(), "Reminders: 15:00 Dentist".to_string())]);
+        assert!(today_tick_db(&conn, at_sofia("2026-11-07 08:30")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn briefing_sections_in_order() {
+        let (_db, pool) = pool("today");
+        let conn = pool.get().unwrap();
+        crate::test_support::seed_computers(&conn);
+        let now = at_sofia("2026-11-07 08:00");
+        add_reminder(&conn, "Dentist", "2026-11-07 15:00");
+        add_reminder(&conn, "Pills", "2026-11-07 09:00");
+        let req = PersonRequest { name: Some("Ivan".into()), kind: None, month: Some(11), day: Some(8), year: None, notes: None, source: None };
+        create_person_db(&conn, &req, now).ok().unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, section, folder) VALUES ('p', 'app', 'Si', '~/a');
+             INSERT INTO jobs (id, name, trigger, action) VALUES ('j', 'Nightly', '{\"kind\":\"manual\"}', '{\"kind\":\"push\",\"title\":\"t\",\"body\":\"\"}');
+             INSERT INTO todos (id, section, title, project_id, scheduled_job_id) VALUES ('t1', 'Si', 'Nightly · 2026-11-07', 'p', 'j'), ('t2', 'Si', 'Plain', 'p', NULL);
+             INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, status, status_updated_at)
+               VALUES ('c1', 't1', 'mac', '~/a', 'claude', 'ai/claude/t1', 's1', 'idle', '2026-11-07 03:00:00'),
+                      ('c2', 't2', 'mac', '~/a', 'claude', 'ai/claude/t2', 's2', 'waiting', '2026-11-07 03:00:00');
+             INSERT INTO watch_issues (id, watcher, key, project_id, title, state, outcome, taken_run_id) VALUES
+               ('w1', 'sentry', 'a', 'p', 'A', 'open', 'fixed', 'r'), ('w2', 'sentry', 'b', 'p', 'B', 'open', NULL, NULL);",
+        )
+        .unwrap();
+        let b = briefing_db(&conn, now, now - Duration::hours(24)).unwrap();
+        assert_eq!(
+            b.lines(),
+            vec![
+                "Reminders: 09:00 Pills · 15:00 Dentist".to_string(),
+                "Tomorrow: Ivan's birthday".to_string(),
+                "1 ready for review".to_string(),
+                "1 need you".to_string(),
+                "Watchers: 1 fixed, waiting for your merge, 1 waiting".to_string(),
+            ]
+        );
+    }
+
+    #[actix_web::test]
+    async fn today_endpoint_live() {
+        let (_db, pool) = pool("today");
+        let (status, v) = crate::test_support::get(&pool, "/api/today").await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["needs_you"], json!(0));
+        assert!(v["reminders"].as_array().unwrap().is_empty());
     }
 }
