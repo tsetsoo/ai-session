@@ -49,7 +49,7 @@ BIN_DIR="${AI_DIR}/bin"
 HUB_CONF="${AI_DIR}/todo-hub.conf"
 TMUX_SNIPPET="${AI_DIR}/tmux.conf"
 # Every helper copied to BIN_DIR, for install and uninstall alike. Programs are 755, modules 644.
-HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status ai-todo-runner ai-todo-idea)
+HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status ai-todo-runner ai-todo-idea ai-todo-watch)
 MODULES=(ai_todo_redact.py ai_todo_status.py)
 TMUX_CONF="${HOME}/.tmux.conf"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
@@ -723,6 +723,12 @@ do_install() {
   run mkdir -p "$BIN_DIR"
   local file
   for file in "${HELPERS[@]}"; do run install -m 755 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
+  # Watchers live beside their secrets (watchers/env, written by the user, never by us).
+  run mkdir -p "${AI_DIR}/watchers"
+  run chmod 700 "${AI_DIR}/watchers"
+  for file in "${SRC_DIR}"/watchers/*; do
+    if [[ -f "$file" ]]; then run install -m 755 "$file" "${AI_DIR}/watchers/$(basename "$file")"; fi
+  done
   for file in "${MODULES[@]}"; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   resolve_codex_for_hooks
   run install -m 644 "${SRC_DIR}/tmux.conf" "$TMUX_SNIPPET"

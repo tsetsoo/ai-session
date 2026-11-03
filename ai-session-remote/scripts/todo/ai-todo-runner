@@ -23,12 +23,18 @@
 #   6. POST /api/runs/<id>/finish {state: done|failed, result}. A failed start removes the
 #      worktree and branch it made.
 #
+# Watch runs (job action kind "watch"): claim, run ~/.ai-remote/watchers/<watcher> check with
+# the variables of ~/.ai-remote/watchers/env added (60 s at most), then POST
+# /api/runs/<id>/report with its JSON, or finish failed. No usage guard, no worktree. The due
+# answer's "resolves" run `<watcher> resolve <key>` and POST /api/watch/issues/<id>/resolve-result.
+# Watcher output is never logged; error messages have the env file's values redacted.
+#
 # Never prints or logs prompt text. Log: ~/.ai-remote/runner-state/runner.log (ids, counts,
 # errors). Exit 0 except 64 bad arguments, 65 no hub / computer id.
 #
 # Config: ~/.ai-remote/todo-hub.conf (TODO_HUB_URL, TODO_API_TOKEN, TODO_COMPUTER_ID).
 # Test hooks: AI_TODO_HUB_CONF, AI_TODO_OPEN_BIN, AI_TODO_LIMITS_BIN, AI_TODO_LIMITS_TIMEOUT,
-#   AI_TODO_RUNNER_STATE_DIR, AI_TODO_RUNNER_WORKTREES
+#   AI_TODO_RUNNER_STATE_DIR, AI_TODO_RUNNER_WORKTREES, AI_TODO_WATCHERS_DIR
 AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_LIB_DIR
 ai_path=
 ai_ifs=$IFS
@@ -64,6 +70,8 @@ STATE_DIR = os.environ.get("AI_TODO_RUNNER_STATE_DIR") or os.path.join(AI_DIR, "
 TREES = os.environ.get("AI_TODO_RUNNER_WORKTREES") or os.path.join(AI_DIR, "worktrees")
 OPEN_BIN = os.environ.get("AI_TODO_OPEN_BIN") or os.path.join(LIB_DIR, "ai-todo-open")
 LIMITS_BIN = os.environ.get("AI_TODO_LIMITS_BIN") or os.path.join(LIB_DIR, "ai-todo-limits")
+WATCHERS = os.environ.get("AI_TODO_WATCHERS_DIR") or os.path.join(AI_DIR, "watchers")
+WATCH_TIMEOUT = 60
 LIMITS_TIMEOUT = float(os.environ.get("AI_TODO_LIMITS_TIMEOUT") or 20)
 MAX_STARTS = 3
 OPEN_TIMEOUT = float(os.environ.get("AI_TODO_OPEN_TIMEOUT") or 180)
@@ -312,6 +320,87 @@ def cleanup_worktrees():
         save_json(registry_path(), registry)
 
 
+# --- Watchers -----------------------------------------------------------------------
+
+def watcher_env():
+    """The variables of <watchers>/env (KEY=value lines, optional export, quotes stripped)."""
+    values = {}
+    try:
+        with open(os.path.join(WATCHERS, "env")) as f:
+            for line in f:
+                m = re.match(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line.rstrip("\n"))
+                if m:
+                    raw = m.group(2).strip()
+                    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+                        raw = raw[1:-1]
+                    values[m.group(1)] = raw
+    except OSError:
+        pass
+    return values
+
+
+def scrub(text, env):
+    """An error message without any of the env file's values."""
+    text = " ".join((text or "").split())
+    for value in env.values():
+        if len(value) >= 4:
+            text = text.replace(value, "[redacted]")
+    return text[:200]
+
+
+def run_watcher(name, args, env):
+    """(exit code, stdout, stderr) of <watchers>/<name> <args>. Raises RuntimeError when the
+    watcher can't be run."""
+    if not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*", name or ""):
+        raise RuntimeError("bad watcher name")
+    path = os.path.join(WATCHERS, name)
+    if not os.path.isfile(path) or not os.access(path, os.X_OK):
+        raise RuntimeError("watcher %s not found in %s" % (name, tilde(WATCHERS)))
+    try:
+        p = subprocess.run([path] + args, capture_output=True, text=True, timeout=WATCH_TIMEOUT,
+                           stdin=subprocess.DEVNULL, env=dict(os.environ, **env), cwd=WATCHERS)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("watcher timed out after %d s" % WATCH_TIMEOUT)
+    except OSError as e:
+        raise RuntimeError("watcher could not run: %s" % type(e).__name__)
+    return p.returncode, p.stdout, p.stderr
+
+
+def check_watch(hub, run, job):
+    """Runs the check and reports it; raises RuntimeError for a failed check."""
+    env = watcher_env()
+    code, out, err = run_watcher(job["action"].get("watcher"), ["check"], env)
+    if code != 0:
+        raise RuntimeError(scrub("watcher exit %d: %s" % (code, err.strip()), env))
+    try:
+        report = json.loads(out)
+    except ValueError:
+        report = None
+    if not isinstance(report, dict) or not isinstance(report.get("problems"), list):
+        raise RuntimeError("watcher output is not JSON")
+    hub.request("POST", "/api/runs/%s/report" % run["id"], body=report, timeout=60)
+    return len(report["problems"])
+
+
+def do_resolves(hub, resolves):
+    env = None
+    for item in resolves or []:
+        if not isinstance(item, dict) or not item.get("issue_id"):
+            continue
+        env = env if env is not None else watcher_env()
+        try:
+            code, out, err = run_watcher(item.get("watcher"), ["resolve", item.get("key") or ""], env)
+            ok, message = code == 0, (out if code == 0 else err or out or "exit %d" % code)
+        except RuntimeError as e:
+            ok, message = False, str(e)
+        try:
+            hub.request("POST", "/api/watch/issues/%s/resolve-result" % item["issue_id"],
+                        body={"ok": ok, "message": scrub(message, env)})
+            log("resolved" if ok else "resolve_failed", issue=item["issue_id"])
+        except HubError as e:
+            log("resolve_report_failed", issue=item["issue_id"], error=e)
+
+
 # --- Tick ---------------------------------------------------------------------------
 
 def start_run(hub, computer_id, due, folders):
@@ -384,11 +473,31 @@ def cmd_tick(args):
         due = hub.request("GET", "/api/runner/due", query={"computer_id": computer_id}) or {}
         settings = due.get("settings") or {}
         runs = due.get("runs") or []
-        folders = project_folders(hub) if runs else {}
+        folders = project_folders(hub) if any(r["job"]["action"].get("kind") != "watch" for r in runs) else {}
         for item in runs:
             if started >= MAX_STARTS:
                 break
             rid = item["run"]["id"]
+            if item["job"]["action"].get("kind") == "watch":
+                try:
+                    hub.request("POST", "/api/runs/%s/claim" % rid, body={"computer_id": computer_id})
+                except HubError as e:
+                    if e.status == 409:
+                        log("claim_lost", run=rid)
+                        continue
+                    raise
+                try:
+                    count = check_watch(hub, item["run"], item["job"])
+                    log("checked", run=rid, problems=count)
+                except Exception as e:  # every claimed check gets a report or a finish
+                    message = str(e) or type(e).__name__
+                    status["last_error"] = message
+                    log("check_failed", run=rid, error=message)
+                    try:
+                        hub.request("POST", "/api/runs/%s/finish" % rid, body={"state": "failed", "result": message})
+                    except HubError:
+                        pass
+                continue
             tool = item["job"]["action"].get("tool") or "claude"
             reason, no_reading = wait_reason(item, settings, no_reading_started)
             if reason:
@@ -421,6 +530,7 @@ def cmd_tick(args):
                     hub.request("POST", "/api/runs/%s/finish" % rid, body={"state": "failed", "result": message})
                 except HubError:
                     pass
+        do_resolves(hub, due.get("resolves"))
     except HubError as e:
         status["last_error"] = str(e)
         log("error", error=e)

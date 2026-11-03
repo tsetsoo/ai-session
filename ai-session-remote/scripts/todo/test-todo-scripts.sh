@@ -3025,6 +3025,137 @@ posts_to finish | grep '"id": "r-resrch01"' | grep -q '"state": "done"' || fail 
 pass "runner_starts_research_run"
 runs_reset
 
+# --- ai-todo-runner: watchers ------------------------------------------------------------
+W_DIR="${SANDBOX}/watchers"
+mkdir -p "$W_DIR"
+cat >"${W_DIR}/fakew" <<'FAKE'
+#!/bin/sh
+case "$1" in
+  check)
+    echo "token is $SENTRY_TOKEN" >&2
+    [ -n "${FAKEW_EXIT:-}" ] && exit "$FAKEW_EXIT"
+    [ -n "${FAKEW_GARBAGE:-}" ] && { echo "not json"; exit 0; }
+    printf '{"problems":[{"key":"k1","title":"One","folder":"backend"},{"key":"k2","title":"Two"}],"partial":false}\n' ;;
+  resolve)
+    [ "$2" = bad ] && { echo "HTTP 403 for $SENTRY_TOKEN" >&2; exit 1; }
+    echo "resolved $2" ;;
+esac
+FAKE
+chmod +x "${W_DIR}/fakew"
+printf "# Sentry\nexport SENTRY_TOKEN='secret123'\nSENTRY_ORG=sigma\n" >"${W_DIR}/env"
+chmod 600 "${W_DIR}/env"
+wrunner() { AI_TODO_WATCHERS_DIR="$W_DIR" runner "$@"; }
+watch_due() { # <run id> [watcher]
+  python3 - "$M_HUB_STATE" "$1" "${2:-fakew}" <<'PY'
+import json, sys
+p, rid, watcher = sys.argv[1:4]
+s = json.load(open(p))
+s.setdefault("due_runs", []).append({"wait_runs_24h": 0,
+  "run": {"id": rid, "job_id": "job-w", "due_at": "2026-11-03 07:00:00", "state": "due"},
+  "job": {"id": "job-w", "name": "Sigma Sentry", "enabled": True, "trigger": {"kind": "manual"}, "max_runs_per_day": 4,
+          "action": {"kind": "watch", "project_id": "proj-app", "computer_id": "comp-1", "watcher": watcher,
+                     "debug_tool": "claude", "prompt": ""}}})
+json.dump(s, open(p, "w"))
+PY
+}
+watch_posts() { # bodies of POST /api/watch/... since the last runs_reset: {"path", "body"} per line
+  tail -n +"$((R_MARK + 1))" "$M_HUB_LOG" | python3 -c '
+import json, sys
+for l in sys.stdin:
+    r = json.loads(l)
+    if r["method"] == "POST" and r["path"].startswith("/api/watch/"):
+        print(json.dumps({"path": r["path"], "body": r["body"]}))'
+}
+
+runs_reset
+watch_due w-check01
+wrunner tick || fail "watch tick failed"
+posts_to report | python3 -c '
+import json, sys
+rows = [json.loads(l) for l in sys.stdin]
+assert len(rows) == 1 and rows[0]["id"] == "w-check01", rows
+assert [p["key"] for p in rows[0]["body"]["problems"]] == ["k1", "k2"], rows
+' || fail "watch report wrong: $(posts_to report)"
+[[ -z "$(posts_to finish)" ]] || fail "a reported check was also finished: $(posts_to finish)"
+[[ -z "$(posts_to start)" ]] || fail "a watch check started a conversation"
+[[ ! -s "$R_OPEN_LOG" ]] || fail "a watch check opened a terminal"
+pass "runner_watch_check_reports_problems"
+
+! grep -q secret123 "$M_HUB_LOG" || fail "the env file's token reached the hub"
+! grep -rq secret123 "$R_STATE" || fail "the env file's token was logged"
+pass "runner_watch_env_not_in_report"
+
+runs_reset
+watch_due w-check02
+FAKEW_EXIT=3 wrunner tick || fail "tick failed"
+posts_to finish | python3 -c '
+import json, sys
+rows = [json.loads(l) for l in sys.stdin]
+assert len(rows) == 1 and rows[0]["body"]["state"] == "failed", rows
+assert rows[0]["body"]["result"].startswith("watcher exit 3"), rows
+' || fail "failed check: $(posts_to finish)"
+[[ -z "$(posts_to report)" ]] || fail "a failed check reported problems"
+! grep -q secret123 "$M_HUB_LOG" || fail "a failed check's stderr sent the token to the hub"
+pass "runner_watch_check_failure_reports_failed_not_empty"
+
+runs_reset
+watch_due w-check03
+FAKEW_GARBAGE=1 wrunner tick || fail "tick failed"
+posts_to finish | grep -q 'watcher output is not JSON' || fail "bad json: $(posts_to finish)"
+runs_reset
+watch_due w-check04 ../fakew
+wrunner tick || fail "tick failed"
+posts_to finish | grep -q '"state": "failed"' || fail "a watcher outside the folder ran: $(posts_to finish)"
+runs_reset
+watch_due w-check05 missing
+wrunner tick || fail "tick failed"
+posts_to finish | grep -q '"state": "failed"' || fail "a missing watcher: $(posts_to finish)"
+pass "runner_watch_bad_json_fails (and bad or missing watcher names)"
+
+runs_reset
+hub_edit "s['resolves'] = [{'issue_id': 'i1', 'watcher': 'fakew', 'key': 'good'}, {'issue_id': 'i2', 'watcher': 'fakew', 'key': 'bad'}]"
+wrunner tick || fail "tick failed"
+hub_edit "s['resolves'] = []"
+watch_posts | python3 -c '
+import json, sys
+rows = {r["path"]: r["body"] for r in map(json.loads, sys.stdin)}
+assert rows["/api/watch/issues/i1/resolve-result"] == {"ok": True, "message": "resolved good"}, rows
+bad = rows["/api/watch/issues/i2/resolve-result"]
+assert bad["ok"] is False and "HTTP 403" in bad["message"] and "secret123" not in bad["message"], rows
+' || fail "resolves: $(watch_posts)"
+pass "runner_resolves_and_reports_result"
+
+WATCH="${SCRIPT_DIR}/ai-todo-watch"
+W_TREE="${HOME}/.ai-remote/worktrees/proj-app/run-dbg01/src"
+mkdir -p "$W_TREE"
+runs_reset
+(cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" outcome sentry:1 fixed "nil check in Serve") >/dev/null || fail "outcome failed"
+(cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" release sentry:2 sentry:3) >/dev/null || fail "release failed"
+(cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" overwhelmed "40 issues, mostly one cause password=hunter2xyz") >/dev/null || fail "overwhelmed failed"
+watch_posts | python3 -c '
+import json, sys
+rows = [json.loads(l) for l in sys.stdin]
+assert rows[0] == {"path": "/api/watch/runs/run-dbg01/outcome", "body": {"key": "sentry:1", "outcome": "fixed", "note": "nil check in Serve"}}, rows
+assert rows[1] == {"path": "/api/watch/runs/run-dbg01/release", "body": {"keys": ["sentry:2", "sentry:3"]}}, rows
+assert rows[2]["path"] == "/api/watch/runs/run-dbg01/overwhelmed" and "hunter2xyz" not in rows[2]["body"]["why"], rows
+' || fail "watch helper posts: $(watch_posts)"
+status=0
+(cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" outcome sentry:1 done "x") >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "bad outcome exit $status"
+pass "watch_helper_outcome_from_worktree"
+
+status=0
+(cd "$M_APP" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" outcome sentry:1 fixed "x") >/dev/null 2>"${SANDBOX}/watch.err" || status=$?
+[[ $status -eq 65 ]] && grep -q 'not in a scheduled worktree' "${SANDBOX}/watch.err" || fail "outside a worktree: $status $(cat "${SANDBOX}/watch.err")"
+runs_reset
+hub_edit "s['watch_status'] = 404"
+status=0
+(cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" outcome sentry:9 fixed "x") >/dev/null 2>&1 || status=$?
+hub_edit "s.pop('watch_status', None)"
+[[ $status -eq 1 ]] || fail "hub refusal exit $status"
+pass "watch_helper_outside_worktree_exits_65 (and a hub refusal exits 1)"
+runs_reset
+
 # --- end of the ai-todo-memory sections -------------------------------------------------
 export HOME="$SAVED_HOME"
 
@@ -3130,6 +3261,16 @@ printf '{"projects": {"p": {"targets": [{"kind": "codex", "path": "%s/AGENTS.md"
 "$INSTALL" --hub-url http://hub:8080 --token tok >/dev/null
 [[ ! -e "${OLD_DIGEST_DIR}/AGENTS.md" ]] || ! grep -q "old digest line" "${OLD_DIGEST_DIR}/AGENTS.md" || fail "install left an old digest block: $(cat "${OLD_DIGEST_DIR}/AGENTS.md")"
 pass "install_removes_old_digest_blocks"
+[[ -x "${HOME}/.ai-remote/bin/ai-todo-watch" ]] || fail "ai-todo-watch not installed"
+[[ -x "${HOME}/.ai-remote/watchers/sentry" ]] || fail "the sentry watcher not installed"
+[[ "$(stat -f %Lp "${HOME}/.ai-remote/watchers")" == 700 ]] || fail "watchers dir mode $(stat -f %Lp "${HOME}/.ai-remote/watchers")"
+printf "SENTRY_TOKEN='mine'\n" >"${HOME}/.ai-remote/watchers/env"
+# An extra install; the launchd test below counts the calls of the others.
+cp "$LAUNCHCTL_LOG" "${SANDBOX}/launchctl.keep" 2>/dev/null || : >"${SANDBOX}/launchctl.keep"
+"$INSTALL" >/dev/null
+cp "${SANDBOX}/launchctl.keep" "$LAUNCHCTL_LOG"
+[[ "$(cat "${HOME}/.ai-remote/watchers/env")" == "SENTRY_TOKEN='mine'" ]] || fail "install touched watchers/env"
+pass "install_places_sentry_watcher_keeps_env"
 "$INSTALL" >/dev/null
 check_installed() {
   python3 - "$SETTINGS" "${HOME}/.ai-remote/bin" <<'PY'
@@ -4132,6 +4273,132 @@ AI_TODO_CLAUDE_BIN="$MCP_TOOL" AI_TODO_HUB_CONF="$CONF" AI_TODO_OPEN_DETACH=1 \
 [[ $status -eq 64 ]] || fail "ai-todo-mcp exit 64 became $status"
 ! tmux -L "$SOCK" has-session -t "=ai/claude/todo-mcp9" 2>/dev/null || fail "exit 64 still started the tool"
 pass "open_mcp_helper_failure_starts_unmanaged"
+
+# --- watchers/sentry ----------------------------------------------------------------------
+# A fake Sentry: issues per project from <dir>/issues-<project>.json, PAGE per page with Link
+# cursors, latest events from <dir>/event-<id>.json, PUT resolves logged; <dir>/status forces
+# an HTTP error.
+SENTRY="${SCRIPT_DIR}/watchers/sentry"
+SN_DIR="${SANDBOX}/sentry"
+mkdir -p "$SN_DIR"
+python3 - "$SN_DIR" <<'PY' &
+import json, os, sys, urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+d = sys.argv[1]
+class Sentry(BaseHTTPRequestHandler):
+    def reply(self, code, body, headers=None):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
+    def handle_any(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+        u = urllib.parse.urlparse(self.path)
+        with open(os.path.join(d, "log"), "a") as f:
+            f.write(json.dumps({"method": self.command, "path": u.path, "query": u.query,
+                                "auth": self.headers.get("Authorization"), "body": body}) + "\n")
+        status = os.path.join(d, "status")
+        if os.path.exists(status):
+            return self.reply(int(open(status).read()), {"detail": "nope"})
+        parts = u.path.strip("/").split("/")
+        q = urllib.parse.parse_qs(u.query)
+        if parts[:1] == ["projects"] and parts[3:] == ["issues"]:
+            issues = json.load(open(os.path.join(d, "issues-%s.json" % parts[2])))
+            page = int(open(os.path.join(d, "page")).read()) if os.path.exists(os.path.join(d, "page")) else 100
+            start = int((q.get("cursor") or ["0"])[0])
+            more = start + page < len(issues)
+            link = '<http://x/?cursor=%d>; rel="next"; results="%s"; cursor="%d"' % (start + page, "true" if more else "false", start + page)
+            return self.reply(200, issues[start:start + page], {"Link": link})
+        if parts[:1] == ["organizations"] and parts[4:] == ["events", "latest"]:
+            path = os.path.join(d, "event-%s.json" % parts[3])
+            if parts[3] == "13":
+                return self.reply(404, {"detail": "no event"})
+            return self.reply(200, json.load(open(path)) if os.path.exists(path) else {})
+        if self.command == "PUT" and parts[:1] == ["organizations"] and len(parts) == 4:
+            return self.reply(200, {"status": "resolved"})
+        self.reply(404, {})
+    do_GET = handle_any
+    do_PUT = handle_any
+    def log_message(self, *args):
+        pass
+server = HTTPServer(("127.0.0.1", 0), Sentry)
+open(os.path.join(d, "port"), "w").write(str(server.server_port))
+server.serve_forever()
+PY
+EXTRA_PIDS="$EXTRA_PIDS $!"
+for _ in $(seq 1 50); do [[ -s "${SN_DIR}/port" ]] && break; sleep 0.1; done
+sentry_issue() { # <id> <short> <project slug>
+  printf '{"id":"%s","shortId":"%s","title":"boom %s","culprit":"handler.go in Serve","level":"error","count":"36","userCount":2,"firstSeen":"2026-10-01T10:00:00Z","lastSeen":"2026-11-02T09:00:00Z","permalink":"https://sigma.sentry.io/issues/%s/","project":{"slug":"%s"}}' "$1" "$2" "$1" "$1" "$3"
+}
+printf '[%s,%s,%s]' "$(sentry_issue 11 GO-HTTP-9 go-http)" "$(sentry_issue 12 GO-HTTP-N go-http)" "$(sentry_issue 13 GO-HTTP-P go-http)" >"${SN_DIR}/issues-go-http.json"
+printf '[%s]' "$(sentry_issue 21 WEBAPP-1 sigma-revenue-webapp)" >"${SN_DIR}/issues-sigma-revenue-webapp.json"
+cat >"${SN_DIR}/event-11.json" <<'JSON'
+{"message": "", "entries": [{"type": "exception", "data": {"values": [{"type": "*errors.errorString", "value": "serpapi request failed: 429",
+ "stacktrace": {"frames": [{"filename": "runtime/proc.go", "lineNo": 1, "function": "main", "inApp": false},
+                           {"filename": "internal/serp/client.go", "lineNo": 88, "function": "Fetch", "inApp": true}]}}]}}]}
+JSON
+echo 2 >"${SN_DIR}/page"
+sentry() {
+  SENTRY_API="http://127.0.0.1:$(cat "${SN_DIR}/port")" SENTRY_TOKEN=sntrys_secret_token SENTRY_ORG=sigma-revenue \
+    SENTRY_PROJECTS=go-http,sigma-revenue-webapp SENTRY_FOLDERS=go-http=sigma-revenue-backend,sigma-revenue-webapp=sigma-revenue-webapp \
+    AI_TODO_WATCH_STATE_DIR="${SN_DIR}/state" "$SENTRY" "$@"
+}
+
+out=$(sentry check) || fail "sentry check failed"
+python3 - "$out" <<'PY' || fail "sentry check output: $out"
+import json, sys
+r = json.loads(sys.argv[1])
+assert r["partial"] is False, r
+keys = [p["key"] for p in r["problems"]]
+assert keys == ["sentry:11", "sentry:12", "sentry:13", "sentry:21"], keys
+p = r["problems"][0]
+assert p["title"] == "GO-HTTP-9: boom 11", p
+assert p["folder"] == "sigma-revenue-backend" and r["problems"][3]["folder"] == "sigma-revenue-webapp", r
+assert p["url"] == "https://sigma.sentry.io/issues/11/", p
+assert "handler.go in Serve" in p["details"] and "36 events" in p["details"], p["details"]
+assert "serpapi request failed: 429" in p["details"] and "internal/serp/client.go:88 in Fetch" in p["details"], p["details"]
+assert "runtime/proc.go" not in p["details"], p["details"]
+PY
+grep -q '"auth": "Bearer sntrys_secret_token"' "${SN_DIR}/log" || fail "sentry: no token sent"
+grep -q 'is%3Aunresolved' "${SN_DIR}/log" || fail "sentry: not unresolved issues: $(head -1 "${SN_DIR}/log")"
+pass "sentry_check_lists_unresolved_with_folders"
+
+read_events() { grep 'events/latest' "${SN_DIR}/log" | grep -vc 'issues/13/' || true; }
+events_before=$(read_events)
+sentry check >/dev/null || fail "second sentry check failed"
+[[ $(read_events) -eq $events_before ]] || fail "events fetched again"
+[[ $(grep -c 'issues/13/events' "${SN_DIR}/log") -eq 2 ]] || fail "an unreadable event was not tried again"
+rm -rf "${SN_DIR}/state"
+sentry check >/dev/null || fail "a missing event failed the check"
+pass "sentry_events_fetched_once (and a missing event doesn't fail the check)"
+
+python3 -c '
+import json, sys
+print(json.dumps([{"id": str(1000 + i), "shortId": "GO-%d" % i, "title": "t", "project": {"slug": "go-http"}} for i in range(501)]))' >"${SN_DIR}/issues-go-http.json"
+echo 100 >"${SN_DIR}/page"
+mkdir -p "${SN_DIR}/state-big" && out=$(AI_TODO_WATCH_STATE_DIR="${SN_DIR}/state-big" SENTRY_API="http://127.0.0.1:$(cat "${SN_DIR}/port")" SENTRY_TOKEN=x SENTRY_ORG=o SENTRY_PROJECTS=go-http SENTRY_NO_EVENTS=1 "$SENTRY" check) || fail "big check failed"
+python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert r["partial"] is True and len(r["problems"]) == 500, (r["partial"], len(r["problems"]))' "$out" || fail "partial not reported"
+pass "sentry_check_partial_past_500"
+
+: >"${SN_DIR}/log"
+out=$(sentry resolve sentry:11) || fail "resolve failed"
+grep -q '"method": "PUT", "path": "/organizations/sigma-revenue/issues/11/"' "${SN_DIR}/log" || fail "resolve request: $(cat "${SN_DIR}/log")"
+grep -q 'resolved' "${SN_DIR}/log" || fail "resolve body"
+status=0; sentry resolve nonsense >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "bad key exit $status"
+pass "sentry_resolve_puts_resolved"
+
+echo 401 >"${SN_DIR}/status"
+status=0; sentry check >/dev/null 2>"${SN_DIR}/err" || status=$?
+rm -f "${SN_DIR}/status"
+[[ $status -eq 1 ]] || fail "http error exit $status"
+grep -q 'HTTP 401' "${SN_DIR}/err" || fail "error text: $(cat "${SN_DIR}/err")"
+! grep -q sntrys_secret_token "${SN_DIR}/err" || fail "token printed"
+status=0; SENTRY_TOKEN= "$SENTRY" check >/dev/null 2>"${SN_DIR}/err" || status=$?
+[[ $status -eq 65 ]] && grep -q SENTRY_TOKEN "${SN_DIR}/err" || fail "missing token: $status $(cat "${SN_DIR}/err")"
+pass "sentry_http_error_hides_token"
 
 [[ ! -e "${SANDBOX}/guard.log" ]] || fail "a test reached a real binary: $(cat "${SANDBOX}/guard.log")"
 echo "All ${passes} todo script tests passed."

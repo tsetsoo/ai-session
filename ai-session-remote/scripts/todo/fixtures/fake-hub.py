@@ -23,6 +23,8 @@ Scheduler runner: GET /api/runner/due answers {"settings": state["scheduler_sett
 defaults), "runs": state["due_runs"]}. POST /api/runs/<id>/claim answers 409 when the id is in
 state["claimed"] (else adds it and answers the due run). /wait, /finish answer {"ok": true};
 /start answers state["start_response"] or a default (todo t-sched, tmux ai/claude/todo-sched1).
+Watchers: the due answer carries state["resolves"]; /report and POST /api/watch/... answer
+{"ok": true} (the latter with state["watch_status"], default 200).
 """
 import json
 import os
@@ -122,7 +124,10 @@ class Hub(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/runner/due":
             return self.reply(200, {"settings": state.get("scheduler_settings") or
                                     {"five_hour": 60, "weekly": 80, "pause_waiting": False},
-                                    "runs": state.get("due_runs", [])})
+                                    "runs": state.get("due_runs", []),
+                                    "resolves": state.get("resolves", [])})
+        if method == "POST" and path.startswith("/api/watch/"):
+            return self.reply(state.get("watch_status", 200), {"ok": True})
         if method == "GET" and path == "/api/ideas":
             ideas = [i for i in state.get("ideas", []) if query.get("project_id", [None])[0] in (None, i["project_id"])]
             return self.reply(200, ideas)
