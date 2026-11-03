@@ -235,6 +235,7 @@ private struct TerminalContainerView: UIViewRepresentable {
         let view = TouchScrollTerminalView(frame: .zero)
         // The surface docks `KeyBar` instead of SwiftTerm's `TerminalAccessory`.
         view.inputAccessoryView = UIView(frame: .zero)
+        view.onPastePhoto = { [weak coordinator] in coordinator?.pastePhotoFromClipboard() ?? false }
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         coordinator.setPalette(palette)
         view.isUserInteractionEnabled = hitTarget == .grid
@@ -479,6 +480,22 @@ struct TerminalSurface: View {
     private var surface: some View {
         ZStack {
             terminalGrid
+            #if os(iOS)
+            // "Uploading photo…" over the top of the terminal while a pasted photo is on its way.
+            if let photoStatus = coordinator.photoUploads.status {
+                VStack {
+                    Text(photoStatus)
+                        .font(.footnote.weight(.medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.top, 8)
+                    Spacer()
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+            #endif
             if showConnectingOverlay && (connectionState == .connecting || connectionState == .idle) {
                 connectingOverlay
             }
@@ -492,6 +509,9 @@ struct TerminalSurface: View {
             }
             #endif
         }
+        #if os(iOS)
+        .animation(.easeInOut(duration: 0.2), value: coordinator.photoUploads.status)
+        #endif
         .onAppear {
             coordinator.setShown(isFrontmost)
             coordinator.onStateChange = { state in

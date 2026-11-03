@@ -472,6 +472,24 @@ def tmux_sessions():
     return {line for line in listed.stdout.split("\n") if line}
 
 
+def run_group(args, timeout, env=None):
+    """subprocess.run in its own process group. On timeout the whole group is killed:
+    `claude agents` starts keychain lookups (`security`) that outlive a killed claude,
+    and those left behind made the next calls time out too (2026-11-03)."""
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                               env=env, start_new_session=True)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
 def stop_process_group(pid):
     """SIGTERM a backend's process group, then SIGKILL if it is still there after 5 s."""
     os.killpg(pid, signal.SIGTERM)
@@ -745,7 +763,7 @@ def find_claude():
             continue
         env = dict(os.environ, PATH=str(Path(candidate).parent) + os.pathsep + os.environ.get("PATH", ""))
         try:
-            check = subprocess.run([candidate, "--version"], capture_output=True, text=True, timeout=4, env=env)
+            check = run_group([candidate, "--version"], timeout=10, env=env)
             if check.returncode == 0:
                 return candidate
         except (OSError, subprocess.TimeoutExpired):
@@ -772,26 +790,47 @@ def claude_status(row):
 class ClaudeRuntime:
     def __init__(self):
         self.cli = find_claude()
+        self.listed = set()
 
     def states(self):
         env = dict(os.environ, PATH=str(Path(self.cli).parent) + os.pathsep + os.environ.get("PATH", ""))
-        response = subprocess.run([self.cli, "agents", "--json", "--all"], capture_output=True, text=True, timeout=5, env=env)
+        # Under launchd (Background) this takes 1-2 s, not 0.2 s: leave room for a busy moment.
+        response = run_group([self.cli, "agents", "--json", "--all"], timeout=10, env=env)
         if response.returncode:
             raise OSError("Claude status command failed")
         rows = json.loads(response.stdout)
         if not isinstance(rows, list):
             raise ValueError("invalid Claude status response")
-        result = {}
+        # --all keeps finished background copies, so one conversation can be listed twice:
+        # an old background copy still marked blocked beside the terminal that resumed it.
+        # The copy started last is the one running now.
+        newest = {}
         for row in rows:
             if not isinstance(row, dict):
                 continue
             sid = row.get("sessionId")
             if not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", sid):
                 continue
+            started = row.get("startedAt")
+            started = started if isinstance(started, (int, float)) else 0
+            if sid not in newest or started >= newest[sid][0]:
+                newest[sid] = (started, row)
+        # Listed with a status we can't read is still listed: poll_runtime must not settle it.
+        self.listed = set(newest)
+        result = {}
+        for sid, (_, row) in newest.items():
             state = claude_status(row)
             if state:
                 result[sid] = state
         return result
+
+
+# A Claude conversation gone from `claude agents` has no process left, so a turn it was
+# running has ended. It is settled as idle once it stays gone this long (two polls at least),
+# so a missed listing can't end a live turn. An empty listing (Claude restarting) settles
+# nothing, and neither does a newer hook report. Codex is never settled this way: an
+# unloaded thread may be running in another runtime.
+VANISHED_NS = 3_000_000_000
 
 
 def poll_runtime(client, previous, try_send=True, tool="codex"):
@@ -800,6 +839,7 @@ def poll_runtime(client, previous, try_send=True, tool="codex"):
     effective = {}
     for sid, state in states.items():
         prior = previous.setdefault(sid, {})
+        prior.pop("missing_since_ns", None)
         if state[0] == "idle":
             idle_since = prior.setdefault("idle_since_ns", observed)
             if observed - idle_since < 1_000_000_000:
@@ -817,8 +857,24 @@ def poll_runtime(client, previous, try_send=True, tool="codex"):
         if tuple(prior.get("state", ())) != tuple(state) or observed - prior.get("reported_ns", 0) >= 30_000_000_000:
             publish({"session_id": sid, "tool": tool, "status": state[0], "message": state[1], "attended": False}, observed, source="runtime", try_send=try_send)
             prior.update(state=state, reported_ns=observed)
+    listed = getattr(client, "listed", None) or set(states)
     for sid in set(previous) - set(states):
-        previous.pop(sid)
+        prior = previous[sid]
+        if sid in listed:
+            continue  # Still running, in a state we can't read: keep what was reported.
+        if tool != "claude" or prior.get("state", ("idle",))[0] == "idle":
+            previous.pop(sid)
+            continue
+        if not listed:
+            prior.pop("missing_since_ns", None)
+            continue
+        missing_since = prior.setdefault("missing_since_ns", observed)
+        if observed - missing_since >= VANISHED_NS:
+            previous.pop(sid)
+            record = read_json(root() / f"claude.{sid}.json", {})
+            if record.get("source") != "runtime" and record.get("body", {}).get("event_timestamp_ns", 0) >= missing_since:
+                continue  # A hook reported after the listing lost it; that report stands.
+            publish({"session_id": sid, "tool": tool, "status": "idle", "message": None, "attended": False}, observed, source="runtime", try_send=try_send)
     return len(effective)
 
 

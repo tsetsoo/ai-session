@@ -410,10 +410,123 @@ class StatusTests(unittest.TestCase):
     def test_claude_status_command_uses_full_ids_and_metadata_only(self):
         rows = [{"id": "short", "sessionId": "full-id", "state": "done", "name": "private text"},
                 {"id": "not-a-full-id", "state": "working"}, {"sessionId": "../bad", "status": "busy"}]
-        with patch.object(status, "find_claude", return_value="/claude"), patch.object(status.subprocess, "run") as command:
+        with patch.object(status, "find_claude", return_value="/claude"), patch.object(status, "run_group") as command:
             command.return_value = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
             self.assertEqual(status.ClaudeRuntime().states(), {"full-id": ("idle", None)})
             self.assertEqual(command.call_args.args[0], ["/claude", "agents", "--json", "--all"])
+
+    def test_timed_out_command_takes_its_children_with_it(self):
+        # `claude agents` starts keychain lookups; killing only claude left them running.
+        marker = self.home / "grandchild.pid"
+        script = f"sleep 30 & echo $! > {marker}; wait"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            status.run_group(["/bin/sh", "-c", script], timeout=0.5)
+        grandchild = int(marker.read_text())
+        for _ in range(20):
+            try:
+                os.kill(grandchild, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(grandchild, 9)
+            self.fail("the timed-out command's child was left running")
+
+    def test_run_group_returns_output_and_exit_code(self):
+        result = status.run_group(["/bin/sh", "-c", "echo out; exit 3"], timeout=5)
+        self.assertEqual((result.returncode, result.stdout), (3, "out\n"))
+
+    def claude_rows(self, rows):
+        with patch.object(status, "find_claude", return_value="/claude"), patch.object(status, "run_group") as command:
+            command.return_value = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
+            runtime = status.ClaudeRuntime()
+            return runtime.states(), runtime.listed
+
+    def test_claude_duplicate_rows_keep_the_copy_started_last(self):
+        # --all keeps a finished background copy beside the terminal that resumed it.
+        states, _ = self.claude_rows([
+            {"sessionId": "old-bg", "state": "blocked", "kind": "background", "startedAt": 100},
+            {"sessionId": "old-bg", "status": "idle", "kind": "interactive", "startedAt": 200},
+            {"sessionId": "new-bg", "status": "idle", "kind": "interactive", "startedAt": 100},
+            {"sessionId": "new-bg", "state": "blocked", "kind": "background", "startedAt": 200}])
+        self.assertEqual(states["old-bg"], ("idle", None))
+        self.assertEqual(states["new-bg"][0], "waiting")
+
+    def test_claude_unreadable_status_is_listed_but_not_reported(self):
+        states, listed = self.claude_rows([{"sessionId": "a", "status": "compacting"}])
+        self.assertEqual(states, {})
+        self.assertEqual(listed, {"a"})
+
+    class Listing:
+        """A Claude runtime stand-in: `value` is what it reports, `extra` is listed but unreadable."""
+        def __init__(self, value, extra=("other",)):
+            self.value, self.extra = value, set(extra)
+        def states(self):
+            self.listed = set(self.value) | self.extra
+            return dict(self.value)
+
+    def poll_at(self, client, previous, now, seconds, tool="claude"):
+        with patch.object(status.time, "time_ns", return_value=now + int(seconds * 1_000_000_000)):
+            status.poll_runtime(client, previous, tool=tool)
+
+    def test_vanished_claude_conversation_is_settled_once_confirmed(self):
+        client, previous, now = self.Listing({"a": ("busy", None), "b": ("idle", None)}), {}, time.time_ns()
+        self.poll_at(client, previous, now, 0)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+        client.value = {}
+        self.poll_at(client, previous, now, 1)
+        self.assertEqual(self.requests[-1]["status"], "busy", "one missing poll is not proof the process ended")
+        sent = len(self.requests)
+        self.poll_at(client, previous, now, 5)
+        self.assertEqual([r["status"] for r in self.requests[sent:] if r["session_id"] == "a"], ["idle"])
+        self.assertFalse([r for r in self.requests[sent:] if r["session_id"] == "b"], "an idle conversation needs no report")
+        self.poll_at(client, previous, now, 9)
+        self.assertEqual(len(self.requests), sent + 1)
+        self.assertEqual(previous, {})
+
+    def test_vanished_claude_conversation_that_returns_is_not_settled(self):
+        client, previous, now = self.Listing({"a": ("busy", None)}), {}, time.time_ns()
+        self.poll_at(client, previous, now, 0)
+        client.value = {}
+        self.poll_at(client, previous, now, 1)
+        client.value = {"a": ("busy", None)}
+        self.poll_at(client, previous, now, 5)
+        self.assertNotIn("idle", [r["status"] for r in self.requests])
+
+    def test_claude_listed_with_unreadable_status_is_not_settled(self):
+        client, previous, now = self.Listing({"a": ("busy", None)}), {}, time.time_ns()
+        self.poll_at(client, previous, now, 0)
+        client.value, client.extra = {}, {"a"}
+        for step in (1, 5, 9):
+            self.poll_at(client, previous, now, step)
+        self.assertNotIn("idle", [r["status"] for r in self.requests])
+
+    def test_empty_claude_listing_settles_nothing(self):
+        client, previous, now = self.Listing({"a": ("busy", None)}), {}, time.time_ns()
+        self.poll_at(client, previous, now, 0)
+        client.value, client.extra = {}, set()
+        for step in (1, 5, 9):
+            self.poll_at(client, previous, now, step)
+        self.assertNotIn("idle", [r["status"] for r in self.requests], "Claude restarting lists nobody for a moment")
+
+    def test_hook_report_after_vanishing_is_not_overwritten(self):
+        client, previous, now = self.Listing({"a": ("busy", None)}), {}, time.time_ns()
+        self.poll_at(client, previous, now, 0)
+        client.value = {}
+        self.poll_at(client, previous, now, 1)
+        status.publish({"session_id": "a", "tool": "claude", "status": "waiting", "message": "Claude needs approval"},
+                       now + 2_000_000_000)
+        self.poll_at(client, previous, now, 5)
+        self.assertEqual(self.requests[-1]["status"], "waiting")
+        self.assertEqual(status.read_json(status.root() / "claude.a.json")["body"]["status"], "waiting")
+
+    def test_unloaded_codex_thread_is_never_settled(self):
+        client, previous, now = self.Listing({"a": ("busy", None)}), {}, time.time_ns()
+        self.poll_at(client, previous, now, 0, tool="codex")
+        client.value = {}
+        for step in (1, 5, 9):
+            self.poll_at(client, previous, now, step, tool="codex")
+        self.assertNotIn("idle", [r["status"] for r in self.requests], "another Codex runtime may own it")
 
     def test_runtime_waiting_keeps_the_hooks_prompt_identity(self):
         legacy = self.home / ".ai-remote/hook-state/thread-1"

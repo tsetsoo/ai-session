@@ -19,8 +19,12 @@ struct ChatComposer: View {
     let connected: Bool
     let promptShowing: Bool
     let isSending: Bool
+    /// A photo pasted into the field; nil where photos can't be sent.
+    var onPastePhoto: ((PastedPhoto) -> Void)?
     let onSend: () -> Void
     let onQuickReply: (String) -> Void
+    /// "Uploading photo…" or why the last one failed.
+    var photoStatus: String?
 
     @State private var dictation = Dictation()
     @State private var typedBeforeDictation = ""
@@ -61,7 +65,7 @@ struct ChatComposer: View {
                 .foregroundStyle(dictation.isRunning ? DS.accentSolid : .secondary)
                 .accessibilityLabel(dictation.isRunning ? "Stop Dictation" : "Dictate")
 
-                ChatDraftEditor(text: $draft, focused: $focused, handle: editor)
+                ChatDraftEditor(text: $draft, focused: $focused, handle: editor, onPastePhoto: onPastePhoto)
                     .overlay(alignment: .topLeading) {
                         if draft.isEmpty {
                             Text(placeholder).foregroundStyle(.tertiary)
@@ -83,6 +87,9 @@ struct ChatComposer: View {
                     }
                     .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
                     .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.secondary.opacity(0.25)))
+            }
+            if let photoStatus {
+                Text(photoStatus).font(.footnote).foregroundStyle(.secondary)
             }
             if let dictationError {
                 Text(dictationError).font(.footnote).foregroundStyle(.secondary)

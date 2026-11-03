@@ -89,6 +89,10 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// The visible rows, at most every `screenCheckDelay` after output arrives. Set it to watch
     /// for a Claude or Codex question (see `TerminalPrompt`).
     var onScreenChange: (([String]) -> Void)?
+    #if os(iOS)
+    /// Pasted photos on their way to the computer; the surface shows their status.
+    let photoUploads = PhotoUploads()
+    #endif
     private var screenCheckPending = false
     private let screenCheckDelay: TimeInterval = 0.25
     /// The surface is the one on screen. Output for a background conversation is held and fed
@@ -284,6 +288,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
         // cannot fail the session `reconnect()` is about to open.
         sessionGeneration += 1
         resizeDebouncer.cancelPending()
+        #if os(iOS)
+        photoUploads.cancelAll()
+        #endif
         // Drop output held while this surface was hidden, and anything still queued in the
         // coalescer. A drain already scheduled then flushes an empty buffer. `reconnect()`
         // calls this before opening the next session, so that session is not replayed.
@@ -370,10 +377,34 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
     /// Pastes the clipboard the way SwiftTerm's own paste does: bracketed when the program
     /// asked for bracketed paste, so a multi-line paste isn't taken as several Returns.
+    /// A photo on the clipboard is copied to the computer instead (iOS) and its path typed.
     func pasteFromClipboard() {
+        #if os(iOS)
+        if pastePhotoFromClipboard() { return }
+        #endif
         guard let text = PlatformSupport.pasteboardString, !text.isEmpty else { return }
         send(TerminalPaste.bytes(for: text, bracketed: isBracketedPasteMode))
     }
+
+    #if os(iOS)
+    /// True when the clipboard held a photo (and no text) and it is being copied to the
+    /// computer over SSH. Its path is typed at the cursor once it is there, quoted if it needs
+    /// it. The terminal can't tell when that line is sent, so the photo is deleted an hour
+    /// after the paste.
+    func pastePhotoFromClipboard() -> Bool {
+        guard state == .connected, let photo = PastedPhoto.fromClipboard(textWins: true) else { return false }
+        let config = hostConfig
+        photoUploads.start(photo, config: config) { [weak self] path in
+            // Not waited for: the path shouldn't wait on another round trip.
+            let delete = PhotoUpload.deleteCommand(paths: [path])
+            Task.detached { _ = try? await NIOSSHClient().exec(config, command: delete) }
+            guard let self, self.state == .connected else { return }
+            self.send(TerminalPaste.bytes(for: PhotoUpload.typed(path) + " ", bracketed: self.isBracketedPasteMode))
+            self.onUserInput?()
+        }
+        return true
+    }
+    #endif
 
     /// Types `text` as a paste, then Return.
     func submit(_ text: String) {

@@ -113,6 +113,14 @@ struct TerminalWheelAnchor: Equatable {
 /// A trackpad or mouse on iPad keeps SwiftTerm's drag, so it still selects in tmux.
 /// Without mouse reporting the view scrolls its own buffer as usual.
 final class TouchScrollTerminalView: TerminalView {
+    /// The edit menu's Paste with a photo on the clipboard: true when it took the photo.
+    var onPastePhoto: (() -> Bool)?
+
+    override func paste(_ sender: Any?) {
+        if onPastePhoto?() == true { return }
+        super.paste(sender)
+    }
+
     private lazy var scrollPan: UIPanGestureRecognizer = {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handleScrollPan))
         pan.maximumNumberOfTouches = 1

@@ -49,15 +49,32 @@ final class ChatDraftEditorHandle {
     }
 }
 
+/// Paste with a photo on the clipboard hands the photo over instead of doing nothing. A photo
+/// wins over text copied with it (Safari's Copy Image adds the link); text alone pastes as text.
+final class PhotoPasteTextView: UITextView {
+    var onPastePhoto: ((PastedPhoto) -> Void)?
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)), onPastePhoto != nil, UIPasteboard.general.hasImages { return true }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        guard let onPastePhoto, let photo = PastedPhoto.fromClipboard(textWins: false) else { return super.paste(sender) }
+        onPastePhoto(photo)
+    }
+}
+
 struct ChatDraftEditor: UIViewRepresentable {
     @Binding var text: String
     @Binding var focused: Bool
     let handle: ChatDraftEditorHandle
+    var onPastePhoto: ((PastedPhoto) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
+    func makeUIView(context: Context) -> PhotoPasteTextView {
+        let view = PhotoPasteTextView()
         view.delegate = context.coordinator
         view.backgroundColor = .clear
         view.font = .preferredFont(forTextStyle: .body)
@@ -68,20 +85,22 @@ struct ChatDraftEditor: UIViewRepresentable {
         view.smartQuotesType = .no
         view.smartDashesType = .no
         view.smartInsertDeleteType = .no
+        view.onPastePhoto = onPastePhoto
         view.accessibilityLabel = "Message. Return adds a new line."
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         handle.view = view
         return view
     }
 
-    func updateUIView(_ view: UITextView, context: Context) {
+    func updateUIView(_ view: PhotoPasteTextView, context: Context) {
         context.coordinator.parent = self
+        view.onPastePhoto = onPastePhoto
         if view.text != text { view.text = text }
         if focused, !view.isFirstResponder { view.becomeFirstResponder() }
         if !focused, view.isFirstResponder { view.resignFirstResponder() }
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PhotoPasteTextView, context: Context) -> CGSize? {
         guard let width = proposal.width else { return nil }
         let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
         return CGSize(width: width, height: min(180, max(38, size.height)))

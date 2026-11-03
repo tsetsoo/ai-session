@@ -34,6 +34,10 @@ struct PhoneConversationView<TerminalContent: View>: View {
     @State private var promptChanged = false
     /// How many of the newest items the chat draws; "Show earlier messages" raises it.
     @State private var windowLimit = ChatTimeline.windowSize
+    /// Pasted photos on their way to the computer.
+    @State private var photoUploads = PhotoUploads()
+    /// Paths of photos on the computer whose message hasn't been sent yet.
+    @State private var uploadedPhotos: [String] = []
 
     private var needsApproval: Bool { status == .waiting }
     /// The question on screen, read from the live terminal behind the chat.
@@ -79,9 +83,9 @@ struct PhoneConversationView<TerminalContent: View>: View {
             composing = false
         }
         .onChange(of: isFrontmost) { _, front in
-            if !front { reviewedOnOpen = false; sendTask?.cancel(); composing = false }
+            if !front { reviewedOnOpen = false; sendTask?.cancel(); photoUploads.cancelAll(); composing = false }
         }
-        .onDisappear { sendTask?.cancel() }
+        .onDisappear { sendTask?.cancel(); photoUploads.cancelAll() }
         #if DEBUG
         .task {
             // Screenshots: `-uiDemoCompose` focuses the message field, so the keyboard layout shows.
@@ -159,7 +163,9 @@ struct PhoneConversationView<TerminalContent: View>: View {
             ChatComposer(
                 draft: $draft, focused: $composing, mode: $composerMode, editor: draftEditor,
                 connected: terminal.isConnected, promptShowing: prompt != nil || showsFallback,
-                isSending: isSending, onSend: send, onQuickReply: { send($0, clearsDraft: false) }
+                isSending: isSending, onPastePhoto: pastePhoto,
+                onSend: send, onQuickReply: { send($0, clearsDraft: false) },
+                photoStatus: photoUploads.status
             )
         }
         .background(Color(uiColor: .systemGroupedBackground))
@@ -243,6 +249,25 @@ struct PhoneConversationView<TerminalContent: View>: View {
         isLoading = false
     }
 
+    /// Copies the photo to the conversation's computer over SSH and puts its path in the draft
+    /// at the caret, so the agent reads it when the message is sent. Several can be on the way.
+    private func pastePhoto(_ photo: PastedPhoto) {
+        photoUploads.start(photo, config: config, computerName: conversation.computer.name) { path in
+            uploadedPhotos.append(path)
+            draftEditor.insert(path + " ")
+        }
+    }
+
+    /// The photos in a sent message are deleted from the computer an hour from now.
+    private func sent(_ text: String) {
+        photoUploads.clearError()
+        let paths = PhotoUpload.paths(in: text, from: uploadedPhotos)
+        guard !paths.isEmpty else { return }
+        uploadedPhotos.removeAll { paths.contains($0) }
+        let command = PhotoUpload.deleteCommand(paths: paths)
+        Task { _ = try? await NIOSSHClient().exec(config, command: command) }
+    }
+
     private func send() {
         if case let .answering(prompt, option) = composerMode {
             sendAnswer(draft, to: prompt, option: option)
@@ -257,6 +282,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
         sendTask = Task { @MainActor in
             defer { isSending = false }
             if await terminal.answer(prompt, option: option, text: text, tool: conversation.tool) {
+                sent(text)
                 if draft == text { draft = "" }
                 composerMode = .normal
                 answered(prompt, option: option)
@@ -277,6 +303,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
         sendTask = Task { @MainActor in
             defer { isSending = false }
             if await terminal.sendMessage(text) {
+                sent(text)
                 if clearsDraft, draft == text { draft = "" }
                 await refresh()
             } else {
