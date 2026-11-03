@@ -201,7 +201,8 @@ class Hub(BaseHTTPRequestHandler):
             ms = [m for m in ms if m["created_at"] >= q("since")]
         ms.sort(key=lambda m: m["created_at"], reverse=True)
         ms.sort(key=lambda m: not m.get("pinned"))
-        return ms[: min(int(q("limit") or 200), 1000)]
+        start = int(q("offset") or 0)
+        return ms[start: start + min(int(q("limit") or 200), 1000)]
 
     def bulk(self, state, req):
         pid = project_for(state, req["computer_id"], req["cwd"])

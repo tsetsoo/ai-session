@@ -2371,16 +2371,27 @@ s["memories"] = [
     m("stale", "Spread laptop used to need a VPN for the hub.", use_count=0, last_used_at=None, created_at="2026-07-01 10:00:00"),
     m("young", "Brand new fact nobody used yet.", use_count=0, last_used_at=None, created_at="2026-10-31 10:00:00"),
     m("gone", "Archived already, pushing to main runs the Pi deploy workflow with clippy.", archived=True),
-]
+    m("imp", "Pushing to main runs the Pi deploy workflow with clippy warnings as errors.", source="claude-memory"),
+    # A chain: c1 ~ c2 and c2 ~ c3, but c1 and c3 share little. Not one group.
+    m("c1", "alpha bravo charlie delta echo foxtrot golf hotel"),
+    m("c2", "alpha bravo charlie delta echo foxtrot golf india juliet"),
+    m("c3", "charlie delta echo foxtrot golf india juliet kilo lima"),
+] + [m("bulk%04d" % n, "fact%d note%d item%d part%d" % (n, n, n, n), project="proj-big")
+     for n in range(1100)] + [m("old-big", "A very old unused fact in the big project.", project="proj-big", use_count=0,
+                               last_used_at=None, created_at="2026-06-01 10:00:00")]
+s.setdefault("projects", []).append({"id": "proj-big", "name": "big", "computer": {"id": "comp-1", "name": "test-mac"},
+                                     "folder": "~/work/big", "repo_url": None, "digest_enabled": True})
 json.dump(s, open(p, "w"))
 PY
 mem garden --json >"${SANDBOX}/garden.json" || fail "garden failed"
 python3 - "${SANDBOX}/garden.json" <<'PY' || fail "garden output: $(cat "${SANDBOX}/garden.json")"
 import json, sys
 g = json.load(open(sys.argv[1]))
-groups = [sorted(x["id"] for x in grp["memories"]) for grp in g["duplicates"]]
-assert groups == [["d1", "d2"]], groups
-assert [x["id"] for x in g["stale"]] == ["stale"], g["stale"]
+groups = sorted(sorted(x["id"] for x in grp["memories"]) for grp in g["duplicates"])
+assert ["d1", "d2"] in groups, groups
+assert not any("imp" in grp for grp in groups), "imported memories are left alone: %s" % groups
+assert not any({"c1", "c3"} <= set(grp) for grp in groups), "a chain is not one group: %s" % groups
+assert sorted(x["id"] for x in g["stale"]) == ["old-big", "stale"], "paged past 1000: %s" % [x["id"] for x in g["stale"]]
 assert g["duplicates"][0]["project"] == "app", g["duplicates"][0]
 PY
 mem garden | grep -q "d1" || fail "garden text output: $(mem garden)"
@@ -2393,7 +2404,7 @@ import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 patches = [r for r in rows if r["method"] == "PATCH"]
 assert len(patches) == 1 and patches[0]["path"] == "/api/memories/d2", patches
-assert patches[0]["body"] == {"archived": True, "archived_reason": "duplicate"}, patches[0]
+assert patches[0]["body"] == {"archived": True, "archived_reason": "duplicate", "by_gardener": True}, patches[0]
 PY
 for refused in "d3" "d4"; do
   status=0; mem retire "$refused" --reason duplicate >/dev/null 2>&1 || status=$?
@@ -2401,6 +2412,10 @@ for refused in "d3" "d4"; do
 done
 status=0; mem retire d1 --reason unused >/dev/null 2>&1 || status=$?
 [[ $status -eq 64 ]] || fail "retire with a bad reason exit $status"
+status=0; mem retire $(seq -f "bulk%04g" 0 25) --reason retired >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "retiring 26 at once exit $status (at most 25 per call)"
+status=0; mem retire imp --reason duplicate >/dev/null 2>&1 || status=$?
+[[ $status -eq 65 ]] || fail "retire of an imported memory exit $status"
 pass "retire_archives_with_reason (refuses pinned and manual)"
 
 : >"$M_HUB_LOG"
@@ -2409,11 +2424,12 @@ python3 - "$M_HUB_LOG" <<'PY' || fail "edit request: $(cat "$M_HUB_LOG")"
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1]) if json.loads(l)["method"] == "PATCH"]
 assert rows[0]["path"] == "/api/memories/d1" and rows[0]["body"]["text"].startswith("Pushing to main deploys"), rows
+assert rows[0]["body"].get("by_gardener") is True, rows
 assert "LocalTok3n_Value9" not in rows[0]["body"]["text"], rows
 PY
 status=0; mem edit d4 "x" >/dev/null 2>&1 || status=$?
 [[ $status -eq 65 ]] || fail "edit of a manual memory exit $status"
-hub_edit "s['memories'] = s.pop('_saved_memories', [])"
+hub_edit "s['memories'] = s.pop('_saved_memories', []); s['projects'] = [p for p in s['projects'] if p['id'] != 'proj-big']"
 pass "edit_rewrites_text_redacted (refuses manual)"
 pass "add_redacts_secret"
 mem add "Codbex login needs the AI Session key" --global --kind decision --cwd "$M_APP" >/dev/null || fail "add --global failed"

@@ -2336,10 +2336,27 @@ def garden_words(text):
     return {w for w in re.findall(r"[a-z0-9]+", str(text or "").lower()) if len(w) >= 3 and w not in GARDEN_STOPWORDS}
 
 
+GARDEN_MAX_RETIRE = 25
+# Never the gardener's: written by hand, or imported from Claude's memory files (the nightly
+# import would put an edited text back).
+GARDEN_LEAVE_SOURCES = ("manual", "claude-memory")
+
+
 def gardenable(m):
-    """Live, approved memories the gardener may change: never pinned or hand-written."""
+    """Live, approved memories the gardener may change: never pinned, hand-written or imported."""
     return (isinstance(m, dict) and m.get("id") and not m.get("archived") and not m.get("pending")
-            and not m.get("pinned") and m.get("source") != "manual")
+            and not m.get("pinned") and m.get("source") not in GARDEN_LEAVE_SOURCES)
+
+
+def hub_pages(ctx, query):
+    """Every row of a memory list, 1000 at a time (the hub's cap)."""
+    rows, offset = [], 0
+    while True:
+        page = ctx.hub.request("GET", "/api/memories", query=dict(query, limit=1000, offset=offset), timeout=SEARCH_TIMEOUT) or []
+        rows += page
+        if len(page) < 1000:
+            return rows
+        offset += 1000
 
 
 def hub_time(value):
@@ -2354,12 +2371,8 @@ def garden_candidates(ctx):
     projects = {p["id"]: p.get("name") or p["id"] for p in (ctx.hub.request("GET", "/api/projects") or []) if isinstance(p, dict)}
     rows = []
     for pid in list(projects) + [None]:
-        query = {"limit": 1000}
-        if pid:
-            query["project_id"] = pid
-        else:
-            query["global"] = "true"
-        rows += [m for m in (ctx.hub.request("GET", "/api/memories", query=query, timeout=SEARCH_TIMEOUT) or []) if gardenable(m)]
+        query = {"project_id": pid} if pid else {"global": "true"}
+        rows += [m for m in hub_pages(ctx, query) if gardenable(m)]
     seen, memories = set(), []
     for m in rows:
         if m["id"] not in seen and (m.get("project_id") in projects or m.get("project_id") is None):
@@ -2371,24 +2384,22 @@ def garden_candidates(ctx):
     duplicates = []
     for pid, items in by_project.items():
         words = [garden_words(m.get("text")) for m in items]
-        parent = list(range(len(items)))
 
-        def root(i):
-            while parent[i] != i:
-                parent[i] = parent[parent[i]]
-                i = parent[i]
-            return i
+        def alike(i, j):
+            a, b = words[i], words[j]
+            return bool(a and b) and len(a & b) / len(a | b) >= GARDEN_OVERLAP
+        # Every member is alike with every other (no chains: A~B and B~C don't make A~C).
+        taken = set()
         for i in range(len(items)):
+            if i in taken:
+                continue
+            group = [i]
             for j in range(i + 1, len(items)):
-                a, b = words[i], words[j]
-                if a and b and len(a & b) / len(a | b) >= GARDEN_OVERLAP:
-                    parent[root(j)] = root(i)
-        groups = {}
-        for i in range(len(items)):
-            groups.setdefault(root(i), []).append(items[i])
-        for members in groups.values():
-            if len(members) > 1:
-                duplicates.append({"project": projects.get(pid, "global"), "project_id": pid, "memories": members})
+                if j not in taken and all(alike(j, k) for k in group):
+                    group.append(j)
+            if len(group) > 1:
+                taken.update(group)
+                duplicates.append({"project": projects.get(pid, "global"), "project_id": pid, "memories": [items[k] for k in group]})
     cutoff = now() - GARDEN_STALE_DAYS * 86400
     stale = [m for m in memories if not m.get("use_count") and (hub_time(m.get("created_at")) or now()) < cutoff]
     return {"duplicates": duplicates, "stale": stale}
@@ -2429,8 +2440,8 @@ def fetch_gardenable(ctx, ids):
         m = found.get(i)
         if m is None:
             raise Refused("no memory %s" % i)
-        if m.get("pinned") or m.get("source") == "manual":
-            raise Refused("memory %s is pinned or written by hand; the gardener leaves it" % i)
+        if m.get("pinned") or m.get("source") in GARDEN_LEAVE_SOURCES:
+            raise Refused("memory %s is pinned, written by hand or imported; the gardener leaves it" % i)
         if m.get("archived"):
             raise Refused("memory %s is already archived" % i)
     return found
@@ -2443,12 +2454,14 @@ def cmd_retire(args):
     ids = [a for a in args if a.strip()]
     if not ids or reason not in ("duplicate", "retired") or any(a.startswith("--") for a in ids):
         die(usage, 64)
+    if len(ids) > GARDEN_MAX_RETIRE:
+        die("ai-todo-memory: at most %d at a time; a run should archive few" % GARDEN_MAX_RETIRE, 64)
     ctx = light_context(Config())
     try:
         fetch_gardenable(ctx, ids)
         for i in ids:
             ctx.hub.request("PATCH", "/api/memories/%s" % urllib.parse.quote(i, safe=""),
-                            body={"archived": True, "archived_reason": reason})
+                            body={"archived": True, "archived_reason": reason, "by_gardener": True})
     except HubError as e:
         die("ai-todo-memory: could not reach todo-server (%s)" % e, 1)
     Log.write("retire", count=len(ids), reason=reason)
@@ -2463,7 +2476,7 @@ def cmd_edit(args):
     text = ctx.redactor()(one_line(args[1]))[:MAX_ADD_CHARS].strip()
     try:
         fetch_gardenable(ctx, [args[0]])
-        ctx.hub.request("PATCH", "/api/memories/%s" % urllib.parse.quote(args[0], safe=""), body={"text": text})
+        ctx.hub.request("PATCH", "/api/memories/%s" % urllib.parse.quote(args[0], safe=""), body={"text": text, "by_gardener": True})
     except HubError as e:
         die("ai-todo-memory: could not reach todo-server (%s)" % e, 1)
     Log.write("edit")

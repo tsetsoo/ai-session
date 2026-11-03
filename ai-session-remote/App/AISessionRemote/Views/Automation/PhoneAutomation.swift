@@ -31,6 +31,8 @@ struct PhoneAutomationRoot: View {
 private struct PhoneJobsList: View {
     let store: TodoHubStore
     let onOpenTodo: (String) -> Void
+    @State private var creatingJob = false
+    @State private var creatingFrom: JobTemplate?
 
     var body: some View {
         List {
@@ -56,13 +58,16 @@ private struct PhoneJobsList: View {
             }
         }
         .navigationTitle("Jobs")
+        .navigationDestination(isPresented: $creatingJob) { PhoneJobForm(store: store, job: nil) }
+        .navigationDestination(item: $creatingFrom) { PhoneJobForm(store: store, job: nil, template: $0) }
         .task(id: store.revision) { await store.loadJobTemplates() }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                // Buttons, not links: a NavigationLink inside a toolbar Menu doesn't push on iOS.
                 Menu {
-                    NavigationLink { PhoneJobForm(store: store, job: nil) } label: { Text("New Job") }
+                    Button("New Job") { creatingJob = true }
                     ForEach(store.jobTemplates) { t in
-                        NavigationLink { PhoneJobForm(store: store, job: nil, template: t) } label: { Text("From template: \(t.title)") }
+                        Button("From template: \(t.title.isEmpty ? t.name : t.title)") { creatingFrom = t }
                     }
                 } label: { Label("New Job", systemImage: "plus") }
                     .disabled(store.isOffline)
