@@ -1,7 +1,7 @@
 import AISessionCore
 import SwiftUI
 
-/// The phone's Automation tab: Jobs, Ideas and Activity, each pushing the same panes the Mac
+/// The phone's Automation tab: Jobs, Ideas, Watchers and Activity, each pushing the same panes the Mac
 /// shows in its big pane.
 struct PhoneAutomationRoot: View {
     let store: TodoHubStore
@@ -15,6 +15,10 @@ struct PhoneAutomationRoot: View {
             NavigationLink { PhoneIdeasList(store: store, onOpenTodo: onOpenTodo) } label: {
                 Label(AutomationItem.ideas.title, systemImage: AutomationItem.ideas.systemImage)
                     .badge(store.pendingIdeaCount)
+            }
+            NavigationLink { PhoneWatchersList(store: store, onOpenTodo: onOpenTodo) } label: {
+                Label(AutomationItem.watchers.title, systemImage: AutomationItem.watchers.systemImage)
+                    .badge(store.openWatchIssueCount)
             }
             NavigationLink { PhoneActivityList(store: store, onOpenTodo: onOpenTodo) } label: {
                 Label(AutomationItem.activity.title, systemImage: AutomationItem.activity.systemImage)
@@ -212,5 +216,21 @@ private struct PhoneActivityList: View {
         }
         .navigationTitle("Activity")
         .task(id: store.revision) { await store.loadRecentRuns() }
+    }
+}
+
+private struct PhoneWatchersList: View {
+    let store: TodoHubStore
+    let onOpenTodo: (String) -> Void
+
+    var body: some View {
+        WatchersListContent(store: store) { issue in
+            NavigationLink {
+                WatchIssueDetail(store: store, issueID: issue.id, onOpenTodo: onOpenTodo)
+            } label: {
+                WatchIssueRow(issue: issue, store: store, onOpenTodo: onOpenTodo)
+            }
+        }
+        .navigationTitle("Watchers")
     }
 }

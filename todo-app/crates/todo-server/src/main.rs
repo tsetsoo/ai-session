@@ -21,6 +21,7 @@ mod push;
 mod runner_api;
 mod scheduler;
 mod sessions;
+mod watch;
 #[cfg(test)]
 mod test_support;
 
@@ -62,6 +63,8 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         // AI conversations
         .route("/api/computers", web::get().to(conversations::list_computers))
         .route("/api/computers", web::post().to(conversations::create_computer))
+        .route("/api/computers/{id}/watchers", web::get().to(watch::get_watchers))
+        .route("/api/computers/{id}/watchers", web::put().to(watch::put_watchers))
         .route("/api/computers/{id}", web::patch().to(conversations::update_computer))
         .route("/api/computers/{id}", web::delete().to(conversations::delete_computer))
         .route("/api/sections/computers", web::get().to(conversations::list_section_computers))
@@ -130,6 +133,19 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/runs/{id}/wait", web::post().to(runner_api::wait))
         .route("/api/runs/{id}/start", web::post().to(runner_api::start))
         .route("/api/runs/{id}/finish", web::post().to(runner_api::finish))
+        // A check can list up to 1000 issues with 4000 characters of details each.
+        .service(
+            web::resource("/api/runs/{id}/report")
+                .app_data(web::JsonConfig::default().limit(16 << 20))
+                .route(web::post().to(watch::report)),
+        )
+        .route("/api/watch/issues", web::get().to(watch::list_issues))
+        .route("/api/watch/issues/{id}/resolve", web::post().to(watch::resolve_issue))
+        .route("/api/watch/issues/{id}/retry", web::post().to(watch::retry_issue))
+        .route("/api/watch/issues/{id}/resolve-result", web::post().to(watch::resolve_result))
+        .route("/api/watch/runs/{id}/outcome", web::post().to(watch::run_outcome))
+        .route("/api/watch/runs/{id}/release", web::post().to(watch::run_release))
+        .route("/api/watch/runs/{id}/overwhelmed", web::post().to(watch::run_overwhelmed))
         .route("/api/memories/{id}", web::patch().to(memories::update_memory))
         .route("/api/memories/{id}", web::delete().to(memories::delete_memory))
         // Sessions and stats

@@ -101,6 +101,8 @@ public enum JobAction: Codable, Equatable, Hashable, Sendable {
     case research(ConversationJobAction)
     case push(title: String, body: String)
     case todo(title: String, projectId: String?, section: String?)
+    /// A watcher check; open problems are taken by debugging conversations.
+    case watch(WatchJobAction)
     /// A kind this app doesn't know yet (a newer hub). Shown, never sent back.
     case unsupported(kind: String)
 
@@ -114,6 +116,8 @@ public enum JobAction: Codable, Equatable, Hashable, Sendable {
             self = .conversation(try ConversationJobAction(from: decoder))
         case "research":
             self = .research(try ConversationJobAction(from: decoder))
+        case "watch":
+            self = .watch(try WatchJobAction(from: decoder))
         case "push":
             self = .push(title: try c.decode(String.self, forKey: .title), body: try c.decodeIfPresent(String.self, forKey: .body) ?? "")
         case "todo":
@@ -133,6 +137,9 @@ public enum JobAction: Codable, Equatable, Hashable, Sendable {
             try action.encode(to: encoder)
         case let .research(action):
             try c.encode("research", forKey: .kind)
+            try action.encode(to: encoder)
+        case let .watch(action):
+            try c.encode("watch", forKey: .kind)
             try action.encode(to: encoder)
         case let .unsupported(kind):
             throw EncodingError.invalidValue(kind, .init(codingPath: encoder.codingPath,

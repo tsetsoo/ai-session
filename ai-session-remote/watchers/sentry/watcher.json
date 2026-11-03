@@ -1,0 +1,32 @@
+{
+  "name": "sentry",
+  "title": "Sentry",
+  "description": "Unresolved Sentry issues of one organization's projects, with the latest event's stack trace. Resolve marks the issue resolved in Sentry.",
+  "resolve": true,
+  "resolve_label": "Resolve in Sentry",
+  "settings": [
+    {
+      "key": "SENTRY_TOKEN",
+      "label": "Auth token (event:read, event:write, project:read, org:read)",
+      "secret": true
+    },
+    {
+      "key": "SENTRY_ORG",
+      "label": "Organization slug"
+    },
+    {
+      "key": "SENTRY_PROJECTS",
+      "label": "Project slugs, comma-separated"
+    },
+    {
+      "key": "SENTRY_FOLDERS",
+      "label": "Repo folder per project: slug=folder,\u2026",
+      "optional": true
+    },
+    {
+      "key": "SENTRY_API",
+      "label": "API base (default https://de.sentry.io/api/0)",
+      "optional": true
+    }
+  ]
+}

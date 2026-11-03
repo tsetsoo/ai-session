@@ -1,0 +1,243 @@
+#!/bin/sh
+# Watcher: unresolved Sentry issues. The runner (ai-todo-runner) calls it with the variables of
+# ~/.ai-remote/watchers/env in its environment.
+#
+# Usage:
+#   sentry check               # JSON {"problems": [...], "partial": bool} on stdout
+#   sentry resolve sentry:<id> # marks the issue resolved in Sentry
+#
+# Settings (env): SENTRY_TOKEN, SENTRY_ORG, SENTRY_PROJECTS (comma list), SENTRY_API (default
+# https://de.sentry.io/api/0), SENTRY_FOLDERS (comma list of <project slug>=<repo folder>,
+# relative to the hub project's folder). Test hooks: AI_TODO_WATCH_STATE_DIR (event cache,
+# default ~/.ai-remote/watchers/state), SENTRY_NO_EVENTS=1 (skip event details).
+#
+# The latest event of each issue (message, exception, in-app frames) is fetched once and cached.
+# The token is never printed. Exit codes: 0 ok, 1 Sentry error, 64 bad arguments, 65 settings
+# missing, 90 python3 missing.
+ai_path=
+ai_ifs=$IFS
+IFS=:
+set -f
+for ai_dir in /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin /usr/local/bin "$HOME/.local/bin" /usr/sbin /sbin $PATH; do
+  [ -n "$ai_dir" ] || continue
+  case "$ai_dir" in /home/*) if [ -d /System ]; then continue; fi ;; esac
+  case ":$ai_path:" in *":$ai_dir:"*) continue ;; esac
+  ai_path=${ai_path:+$ai_path:}$ai_dir
+done
+set +f
+IFS=$ai_ifs
+export PATH="$ai_path"
+unset ai_path ai_ifs ai_dir
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+exec python3 - "$@" <<'PY'
+import json
+import os
+import re
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+MAX_ISSUES = 500
+PAGE = 100
+MAX_DETAILS = 4000
+MAX_FRAMES = 8
+# Event details fetched per check, and the time spent on them: the runner stops a check at 60 s,
+# so a big backlog fills in over several checks instead of never finishing.
+MAX_EVENTS = int(os.environ.get("SENTRY_MAX_EVENTS") or 20)
+EVENTS_SECONDS = 35
+STATE_DIR = os.environ.get("AI_TODO_WATCH_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".ai-remote", "watchers", "state")
+
+
+def die(message, code):
+    print("sentry: " + message, file=sys.stderr)
+    sys.exit(code)
+
+
+def setting(name, required=True):
+    value = (os.environ.get(name) or "").strip()
+    if required and not value:
+        die("%s is not set (put it in ~/.ai-remote/watchers/env)" % name, 65)
+    return value
+
+
+API = (os.environ.get("SENTRY_API") or "https://de.sentry.io/api/0").rstrip("/")
+
+
+class SentryError(Exception):
+    pass
+
+
+def request(method, path, body=None):
+    """(json, headers); exits on errors, which name the HTTP status, never the token."""
+    try:
+        return try_request(method, path, body)
+    except SentryError as e:
+        die(str(e), 1)
+
+
+def try_request(method, path, body=None):
+    """(json, headers); raises SentryError."""
+    url = path if path.startswith("http") else API + path
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", "Bearer " + setting("SENTRY_TOKEN"))
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read()
+            headers = response.headers
+    except urllib.error.HTTPError as e:
+        raise SentryError("Sentry: HTTP %d on %s" % (e.code, urllib.parse.urlparse(url).path))
+    except (urllib.error.URLError, OSError) as e:
+        raise SentryError("Sentry: %s" % type(getattr(e, "reason", e)).__name__)
+    try:
+        return (json.loads(raw) if raw else None), headers
+    except ValueError:
+        raise SentryError("Sentry: not JSON")
+
+
+def next_cursor(link):
+    """The cursor of a Link header's rel="next" with results, or None."""
+    for part in (link or "").split(","):
+        if 'rel="next"' in part and 'results="true"' in part:
+            m = re.search(r'cursor="([^"]+)"', part)
+            if m:
+                return m.group(1)
+    return None
+
+
+def unresolved(org, project):
+    """(issues, partial)."""
+    issues, cursor = [], None
+    while True:
+        query = {"query": "is:unresolved", "limit": PAGE}
+        if cursor:
+            query["cursor"] = cursor
+        page, headers = request("GET", "/projects/%s/%s/issues/?%s" % (org, project, urllib.parse.urlencode(query)))
+        issues.extend(page or [])
+        if len(issues) >= MAX_ISSUES:
+            return issues[:MAX_ISSUES], len(issues) > MAX_ISSUES or bool(next_cursor(headers.get("Link")))
+        cursor = next_cursor(headers.get("Link"))
+        if not cursor or not page:
+            return issues, False
+
+
+def load_cache():
+    try:
+        with open(os.path.join(STATE_DIR, "sentry-events.json")) as f:
+            cache = json.load(f)
+            return cache if isinstance(cache, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_cache(cache):
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=STATE_DIR, prefix=".sentry.")
+    with os.fdopen(fd, "w") as f:
+        json.dump(cache, f)
+    os.replace(tmp, os.path.join(STATE_DIR, "sentry-events.json"))
+
+
+def event_summary(event):
+    """The latest event's message, exceptions and top in-app frames, as text."""
+    lines = []
+    if not isinstance(event, dict):
+        return ""
+    if event.get("message"):
+        lines.append(str(event["message"]))
+    for entry in event.get("entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        data = entry.get("data") or {}
+        if entry.get("type") == "exception":
+            for value in data.get("values") or []:
+                lines.append("%s: %s" % (value.get("type") or "error", value.get("value") or ""))
+                frames = [f for f in ((value.get("stacktrace") or {}).get("frames") or []) if isinstance(f, dict) and f.get("inApp")]
+                for f in list(reversed(frames))[:MAX_FRAMES]:
+                    lines.append("  %s:%s in %s" % (f.get("filename") or f.get("module") or "?", f.get("lineNo") or "?", f.get("function") or "?"))
+        elif entry.get("type") == "message" and data.get("formatted"):
+            lines.append(str(data["formatted"]))
+    return "\n".join(lines)
+
+
+def folders():
+    out = {}
+    for pair in setting("SENTRY_FOLDERS", required=False).split(","):
+        if "=" in pair:
+            slug, folder = pair.split("=", 1)
+            out[slug.strip()] = folder.strip()
+    return out
+
+
+def cmd_check(args):
+    if args:
+        die("usage: sentry check", 64)
+    setting("SENTRY_TOKEN")
+    org = setting("SENTRY_ORG")
+    projects = [p.strip() for p in setting("SENTRY_PROJECTS").split(",") if p.strip()]
+    where = folders()
+    cache = load_cache()
+    fetched, started = 0, time.monotonic()
+    problems, partial = [], False
+    for project in projects:
+        issues, more = unresolved(org, project)
+        partial = partial or more
+        for issue in issues:
+            if not isinstance(issue, dict) or not issue.get("id"):
+                continue
+            iid = str(issue["id"])
+            if (iid not in cache and not os.environ.get("SENTRY_NO_EVENTS") and fetched < MAX_EVENTS
+                    and time.monotonic() - started < EVENTS_SECONDS):
+                fetched += 1
+                # Details are a bonus: an issue whose event can't be read is still reported,
+                # and tried again on the next check.
+                try:
+                    event, _ = try_request("GET", "/organizations/%s/issues/%s/events/latest/" % (org, iid))
+                    cache[iid] = event_summary(event)
+                    save_cache(cache)
+                except SentryError:
+                    pass
+            slug = ((issue.get("project") or {}).get("slug")) or project
+            details = [
+                issue.get("culprit") or "",
+                "level %s · %s events · %s users" % (issue.get("level") or "?", issue.get("count") or "?", issue.get("userCount") or 0),
+                "first seen %s · last seen %s" % (issue.get("firstSeen") or "?", issue.get("lastSeen") or "?"),
+            ]
+            if cache.get(iid):
+                details += ["", cache[iid]]
+            problem = {
+                "key": "sentry:%s" % iid,
+                "title": "%s: %s" % (issue.get("shortId") or iid, issue.get("title") or ""),
+                "details": "\n".join(d for d in details if d is not None)[:MAX_DETAILS],
+                "url": issue.get("permalink") or "",
+            }
+            if where.get(slug):
+                problem["folder"] = where[slug]
+            problems.append(problem)
+    json.dump({"problems": problems, "partial": partial}, sys.stdout)
+    print()
+
+
+def cmd_resolve(args):
+    if len(args) != 1 or not re.fullmatch(r"sentry:\d+", args[0]):
+        die("usage: sentry resolve sentry:<issue id>", 64)
+    org = setting("SENTRY_ORG")
+    iid = args[0].split(":", 1)[1]
+    request("PUT", "/organizations/%s/issues/%s/" % (org, iid), {"status": "resolved"})
+    print("resolved %s" % args[0])
+
+
+def main(argv):
+    commands = {"check": cmd_check, "resolve": cmd_resolve}
+    if not argv or argv[0] not in commands:
+        die("usage: sentry check | resolve sentry:<id>", 64)
+    commands[argv[0]](argv[1:])
+
+
+main(sys.argv[1:])
+PY

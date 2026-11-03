@@ -4,7 +4,7 @@ import Foundation
 /// compared to tell whether leaving the form would drop changes.
 public struct JobDraft: Equatable, Sendable {
     public enum Kind: String, CaseIterable, Identifiable, Sendable {
-        case conversation = "Conversation", research = "Research ideas", push = "Push", todo = "Todo"
+        case conversation = "Conversation", research = "Research ideas", push = "Push", todo = "Todo", watch = "Watch"
         public var id: String { rawValue }
     }
 
@@ -24,6 +24,12 @@ public struct JobDraft: Equatable, Sendable {
     public var title = ""
     public var pushBody = ""
     public var maxRuns = 4
+    /// Watch: the watcher's file name in ~/.ai-remote/watchers.
+    public var watcher = "sentry"
+    /// Watch: the debugging conversations' tool; "" = push only.
+    public var debugTool = "claude"
+    /// A watch job's usual schedule.
+    public static let watchCron = "*/10 * * * *"
     /// A kind this app can't edit (a newer hub).
     public var unsupportedKind: String?
 
@@ -56,6 +62,9 @@ public struct JobDraft: Equatable, Sendable {
             kind = .push; title = t; pushBody = b
         case let .todo(t, p, _):
             kind = .todo; title = t; projectId = p ?? ""
+        case let .watch(w):
+            kind = .watch; projectId = w.projectId; computerId = w.computerId; watcher = w.watcher
+            debugTool = w.debugTool ?? ""; prompt = w.prompt
         case let .unsupported(k):
             unsupportedKind = k
         }
@@ -72,6 +81,7 @@ public struct JobDraft: Equatable, Sendable {
         case .conversation: return !projectId.isEmpty && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .research: return !projectId.isEmpty
         case .push, .todo: return !title.trimmingCharacters(in: .whitespaces).isEmpty
+        case .watch: return !projectId.isEmpty && !computerId.isEmpty && !watcher.trimmingCharacters(in: .whitespaces).isEmpty
         }
     }
 
@@ -93,6 +103,9 @@ public struct JobDraft: Equatable, Sendable {
         case .research: .research(conversation)
         case .push: .push(title: title, body: pushBody)
         case .todo: .todo(title: title, projectId: projectId.isEmpty ? nil : projectId, section: nil)
+        case .watch: .watch(WatchJobAction(projectId: projectId, computerId: computerId,
+                                           watcher: watcher.trimmingCharacters(in: .whitespaces),
+                                           debugTool: debugTool.isEmpty ? nil : debugTool, prompt: prompt))
         }
     }
 
