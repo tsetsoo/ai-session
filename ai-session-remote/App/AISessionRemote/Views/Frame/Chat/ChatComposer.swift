@@ -132,6 +132,7 @@ struct ChatComposer: View {
             return
         }
         dictationError = nil
+        ReadAloud.shared.stop()
         typedBeforeDictation = draft
         Task {
             do {

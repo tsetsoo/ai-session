@@ -87,8 +87,9 @@ final class TodoHubStore {
     private var mcpListMissing: Set<String> = []
     /// Computers whose `ai-todo-open` rejected `--mcp` (scripts from before MCP support).
     private var mcpFlagUnsupported: Set<String> = []
-    /// Computers whose `ai-todo-transcript` rejected `--activity`; their chat shows messages only.
-    private var transcriptActivityUnsupported: Set<String> = []
+    /// Computers whose `ai-todo-transcript` rejected `--activity`; their chat shows messages only
+    /// until the flag is tried again (the helpers may have been updated meanwhile).
+    private var transcriptActivityUnsupported = RetryAfter()
 
     private let cache: TodoHubCache
     /// Where hub calls get their client (`TodoHubSettings.makeClient` outside tests); see `hubClient()`.
@@ -635,7 +636,7 @@ final class TodoHubStore {
         if DemoFixtures.isEnabled { return DemoFixtures.chatTranscript }
         #endif
         let computer = conversation.computer
-        if !transcriptActivityUnsupported.contains(computer.id) {
+        if !transcriptActivityUnsupported.isBlocked(computer.id) {
             do {
                 let after = conversation.tool == "cursor" ? nil : ConversationMessage.lastLine(of: previous)
                 let output = try await remoteStdout(
@@ -647,7 +648,7 @@ final class TodoHubStore {
                 let fetched = try ConversationMessage.decodeList(Data(output.utf8))
                 return after == nil ? fetched : previous + fetched
             } catch is RemoteConversations.OldHelper {
-                transcriptActivityUnsupported.insert(computer.id)
+                transcriptActivityUnsupported.block(computer.id)
             }
         }
         let output = try await remoteStdout(
@@ -1593,5 +1594,22 @@ final class TodoHubRefreshCoalescer {
             }
             waiters[needed, default: []].append(cont)
         }
+    }
+}
+
+/// Remembers per key that something was refused, and allows a new try after `interval`.
+struct RetryAfter {
+    var interval: TimeInterval = 300
+    private var since: [String: Date] = [:]
+
+    init(interval: TimeInterval = 300) { self.interval = interval }
+
+    func isBlocked(_ key: String, now: Date = Date()) -> Bool {
+        guard let refused = since[key] else { return false }
+        return now.timeIntervalSince(refused) < interval
+    }
+
+    mutating func block(_ key: String, now: Date = Date()) {
+        since[key] = now
     }
 }
