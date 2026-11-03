@@ -216,7 +216,12 @@ pub(crate) fn report_db(conn: &Connection, run_id: &str, report: &WatchReport, n
         let title: String = p.title.trim().chars().take(300).collect();
         let details: String = p.details.chars().take(4000).collect();
         let url: String = p.url.chars().take(1000).collect();
-        let folder = p.folder.as_deref().map(str::trim).filter(|f| !f.is_empty());
+        // A repo inside the project: never absolute, never climbing out.
+        let folder = p
+            .folder
+            .as_deref()
+            .map(|f| f.trim().trim_matches('/'))
+            .filter(|f| !f.is_empty() && !f.starts_with('~') && !f.split('/').any(|part| part == ".." || part == "."));
         let existing: Option<(String, String, Option<String>, Option<String>)> = tx
             .query_row(
                 "SELECT id, state, outcome, resolved_at FROM watch_issues WHERE watcher = ?1 AND key = ?2",
@@ -339,6 +344,36 @@ fn new_issues_push(out: &ReportOutcome) -> Option<(String, String)> {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ResolveResult {
+    pub ok: bool,
+    #[serde(default)]
+    pub message: String,
+}
+
+/// The runner's answer to a resolve: cleared, or back to open with the error.
+pub(crate) fn resolve_result_db(conn: &Connection, id: &str, req: &ResolveResult, now: DateTime<Utc>) -> Result<(), WatchError> {
+    let stamp = sql_time(now);
+    let changed = if req.ok {
+        conn.execute(
+            "UPDATE watch_issues SET state = 'cleared', cleared_at = ?2, resolved_at = ?2, resolve_error = NULL, updated_at = ?2
+             WHERE id = ?1 AND state = 'resolving'",
+            params![id, stamp],
+        )?
+    } else {
+        let message: String = req.message.trim().chars().take(200).collect();
+        conn.execute(
+            "UPDATE watch_issues SET state = 'open', resolve_error = ?3, updated_at = ?2 WHERE id = ?1 AND state = 'resolving'",
+            params![id, stamp, if message.is_empty() { "resolve failed".to_string() } else { message }],
+        )?
+    };
+    if changed == 0 {
+        let exists: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM watch_issues WHERE id = ?1)", params![id], |r| r.get(0))?;
+        return Err(if exists { WatchError::Conflict("Issue is not resolving") } else { WatchError::NotFound("Issue not found") });
+    }
+    Ok(())
+}
+
 // --- Handlers ---------------------------------------------------------------------
 
 pub async fn report(
@@ -365,6 +400,25 @@ pub async fn report(
         push_now(&pool, &notifier, format!("{} needs you", out.job_name), why.clone(), None).await;
     }
     HttpResponse::Ok().json(serde_json::json!({"new": out.new_titles.len(), "queued": out.queued_runs.len()}))
+}
+
+pub async fn resolve_result(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<ResolveResult>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match resolve_result_db(&conn, &path, &body, Utc::now()) {
+        Ok(()) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(serde_json::json!({"ok": true}))
+        }
+        Err(e) => respond(e),
+    }
 }
 
 #[cfg(test)]
