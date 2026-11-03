@@ -49,6 +49,11 @@ struct AutomationListColumn: View {
             let fresh = JobDraft.new(defaultProjectID: model.store.projects.first?.id)
             model.jobDraft = fresh
             model.jobDraftOriginal = fresh
+        case let .template(name):
+            guard let template = model.store.jobTemplates.first(where: { $0.name == name }) else { return }
+            let fresh = JobDraft(template: template, projects: model.store.projects.map { (id: $0.id, name: $0.name) })
+            model.jobDraft = fresh
+            model.jobDraftOriginal = fresh
         case let .edit(id):
             if let job = model.store.jobs.first(where: { $0.id == id }) {
                 model.jobDraft = JobDraft(job: job)
@@ -94,7 +99,7 @@ struct AutomationDetailColumn: View {
             } else {
                 AutomationEmpty(text: "This job is gone.")
             }
-        case .new, .edit:
+        case .new, .edit, .template:
             if model.jobDraft != nil {
                 JobFormPane(store: store, job: editedJob, draft: Binding(get: { model.jobDraft ?? JobDraft() }, set: { model.jobDraft = $0 })) { saved in
                     model.jobDraft = nil

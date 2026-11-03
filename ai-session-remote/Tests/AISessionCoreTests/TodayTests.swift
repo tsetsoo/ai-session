@@ -113,3 +113,34 @@ final class TodayTests: XCTestCase {
         XCTAssertEqual(body["kind"] as? String, "reminder")
     }
 }
+
+final class JobTemplateTests: XCTestCase {
+    static let json = """
+    [{"name":"memory-gardener","title":"Memory gardener","description":"Tends memories.","cron":"0 3 * * 0","tool":"claude",
+      "model":null,"priority":"background","limit":"wait","project":"ai-session","prompt":"Tend them.","computer_id":"mac"},
+     {"name":"weekly-upkeep","title":"Weekly upkeep","description":"Deps.","cron":"0 10 * * 0","tool":"claude",
+      "model":"sonnet","priority":"urgent","limit":"always","project":"choose","prompt":"Check deps.","computer_id":"mac"}]
+    """
+
+    func testTemplateBecomesDraft() throws {
+        let templates = try TodoHubClient.makeDecoder().decode([JobTemplate].self, from: Data(Self.json.utf8))
+        let projects: [(id: String, name: String)] = [("p1", "programming"), ("p2", "ai-session")]
+        let gardener = JobDraft(template: templates[0], projects: projects)
+        XCTAssertEqual(gardener.name, "Memory gardener")
+        XCTAssertEqual(gardener.kind, .conversation)
+        XCTAssertEqual(gardener.cron, "0 3 * * 0")
+        XCTAssertEqual(gardener.projectId, "p2", "the manifest's default project")
+        XCTAssertEqual(gardener.computerId, "mac")
+        XCTAssertEqual(gardener.prompt, "Tend them.")
+        XCTAssertTrue(gardener.waits)
+        XCTAssertEqual(gardener.priority, .background)
+        XCTAssertTrue(gardener.canSave)
+        let upkeep = JobDraft(template: templates[1], projects: projects)
+        XCTAssertEqual(upkeep.projectId, "", "choose: the user picks")
+        XCTAssertFalse(upkeep.canSave)
+        XCTAssertFalse(upkeep.waits)
+        XCTAssertEqual(upkeep.priority, .urgent)
+        guard case let .conversation(action) = { var d = upkeep; d.projectId = "p1"; return d }().action else { return XCTFail() }
+        XCTAssertEqual(action.model, "sonnet")
+    }
+}

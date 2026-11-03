@@ -277,3 +277,22 @@ public enum ScheduledMarker {
         }
     }
 }
+
+/// A ready-made job plugin (`/api/job-templates`): a manifest and its prompt, from a computer.
+public struct JobTemplate: Codable, Equatable, Hashable, Identifiable, Sendable {
+    public var name: String
+    public var title: String
+    public var description: String
+    public var cron: String
+    public var tool: String
+    public var model: String?
+    /// `background` or `urgent`.
+    public var priority: String
+    /// `wait` or `always`.
+    public var limit: String
+    /// `choose`, or a project name to preselect.
+    public var project: String
+    public var prompt: String
+    public var computerId: String?
+    public var id: String { name }
+}

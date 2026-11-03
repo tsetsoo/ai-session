@@ -64,13 +64,15 @@ enum JobsPaneTarget: Hashable {
     case job(String)
     case new
     case edit(String)
+    /// A new job from a job plugin (its name).
+    case template(String)
 
     /// The list row this target highlights.
     var listSelection: String? {
         switch self {
         case .limits: "limits"
         case let .job(id), let .edit(id): id
-        case .new: nil
+        case .new, .template: nil
         }
     }
 }

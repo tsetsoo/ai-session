@@ -1060,6 +1060,17 @@ final class TodoHubStore {
         if let r { recentWatchIssues = r }
     }
 
+    /// Ready-made job plugins (from the computers' runners), loaded on demand.
+    private(set) var jobTemplates: [JobTemplate] = []
+
+    func loadJobTemplates() async {
+        #if DEBUG
+        if demo != nil { return }
+        #endif
+        guard let client = try? requireClient() else { return }
+        if let list = try? await client.listJobTemplates() { jobTemplates = list }
+    }
+
     // --- Today ---------------------------------------------------------------------------
 
     private(set) var briefing: Briefing?

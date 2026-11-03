@@ -56,9 +56,15 @@ private struct PhoneJobsList: View {
             }
         }
         .navigationTitle("Jobs")
+        .task(id: store.revision) { await store.loadJobTemplates() }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                NavigationLink { PhoneJobForm(store: store, job: nil) } label: { Label("New Job", systemImage: "plus") }
+                Menu {
+                    NavigationLink { PhoneJobForm(store: store, job: nil) } label: { Text("New Job") }
+                    ForEach(store.jobTemplates) { t in
+                        NavigationLink { PhoneJobForm(store: store, job: nil, template: t) } label: { Text("From template: \(t.title)") }
+                    }
+                } label: { Label("New Job", systemImage: "plus") }
                     .disabled(store.isOffline)
             }
         }
@@ -87,6 +93,7 @@ private struct PhoneJobDetail: View {
 private struct PhoneJobForm: View {
     let store: TodoHubStore
     let job: SchedulerJob?
+    var template: JobTemplate? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var draft = JobDraft()
@@ -110,7 +117,11 @@ private struct PhoneJobForm: View {
         .onAppear {
             guard !loaded else { return }
             loaded = true
-            draft = job.map(JobDraft.init(job:)) ?? JobDraft.new(defaultProjectID: store.projects.first?.id)
+            if let template {
+                draft = JobDraft(template: template, projects: store.projects.map { (id: $0.id, name: $0.name) })
+            } else {
+                draft = job.map(JobDraft.init(job:)) ?? JobDraft.new(defaultProjectID: store.projects.first?.id)
+            }
             original = draft
         }
     }

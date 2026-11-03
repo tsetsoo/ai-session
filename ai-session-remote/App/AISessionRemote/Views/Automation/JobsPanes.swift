@@ -36,10 +36,24 @@ struct JobsList: View {
         .navigationTitle("Jobs")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { go(.new) } label: { Label("New Job", systemImage: "plus") }
-                    .disabled(store.isOffline)
+                Menu {
+                    Button("New Job") { go(.new) }
+                    if !store.jobTemplates.isEmpty {
+                        Section("From a template") {
+                            ForEach(store.jobTemplates) { t in
+                                Button(t.title.isEmpty ? t.name : t.title) { go(.template(t.name)) }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("New Job", systemImage: "plus")
+                } primaryAction: {
+                    go(.new)
+                }
+                .disabled(store.isOffline)
             }
         }
+        .task(id: store.revision) { await store.loadJobTemplates() }
         .confirmationDialog("Discard the unsaved job?", isPresented: $confirmingDiscard) {
             Button("Discard Changes", role: .destructive) {
                 if let pending { target = pending }

@@ -461,6 +461,11 @@ public struct TodoHubClient: Sendable {
         _ = try await send("POST", "/api/watch/issues/\(escape(id))/retry")
     }
 
+    /// Ready-made job plugins the computers reported.
+    public func listJobTemplates() async throws -> [JobTemplate] {
+        try await decode([JobTemplate].self, send("GET", "/api/job-templates"))
+    }
+
     // --- Today -------------------------------------------------------------------------
 
     public func listReminders() async throws -> [Reminder] {

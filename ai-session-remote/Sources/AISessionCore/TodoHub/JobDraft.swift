@@ -28,6 +28,8 @@ public struct JobDraft: Equatable, Sendable {
     public var watcher = "sentry"
     /// Watch: the debugging conversations' tool; "" = push only.
     public var debugTool = "claude"
+    /// A conversation's model (from a job template); nil: the tool's default.
+    public var model: String?
     /// A watch job's usual schedule.
     public static let watchCron = "*/10 * * * *"
     /// A kind this app can't edit (a newer hub).
@@ -48,6 +50,7 @@ public struct JobDraft: Equatable, Sendable {
             projectId = a.projectId
             computerId = a.computerId ?? ""
             tool = a.tool
+            model = a.model
             prompt = a.prompt
             priority = a.priority
             switch a.limit {
@@ -93,7 +96,8 @@ public struct JobDraft: Equatable, Sendable {
         ConversationJobAction(
             projectId: projectId, computerId: computerId.isEmpty ? nil : computerId, tool: tool, folder: nil,
             prompt: prompt, priority: priority,
-            limit: waits ? .wait(fiveHour: ownThresholds ? fiveHour : nil, weekly: ownThresholds ? weekly : nil) : .always
+            limit: waits ? .wait(fiveHour: ownThresholds ? fiveHour : nil, weekly: ownThresholds ? weekly : nil) : .always,
+            model: kind == .conversation ? model : nil
         )
     }
 
@@ -119,6 +123,25 @@ public struct JobDraft: Equatable, Sendable {
 }
 
 public extension JobDraft {
+    /// A job form filled from a job plugin. `projects`: (id, name), for the manifest's default
+    /// project; `choose` leaves it for the user.
+    init(template: JobTemplate, projects: [(id: String, name: String)]) {
+        self.init()
+        name = template.title.isEmpty ? template.name : template.title
+        kind = .conversation
+        usesCron = true
+        cron = template.cron
+        tool = template.tool == "codex" ? "codex" : "claude"
+        model = template.model
+        prompt = template.prompt
+        priority = template.priority == "urgent" ? .urgent : .background
+        waits = template.limit != "always"
+        computerId = template.computerId ?? ""
+        if template.project != "choose" {
+            projectId = projects.first { $0.name == template.project }?.id ?? ""
+        }
+    }
+
     /// A new job's form with its project already chosen, so taking it as the "original" leaves
     /// an untouched form clean.
     static func new(defaultProjectID: String?) -> JobDraft {
