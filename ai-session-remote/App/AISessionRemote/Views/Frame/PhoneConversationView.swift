@@ -34,10 +34,8 @@ struct PhoneConversationView<TerminalContent: View>: View {
     @State private var promptChanged = false
     /// How many of the newest items the chat draws; "Show earlier messages" raises it.
     @State private var windowLimit = ChatTimeline.windowSize
-    /// Why the last pasted photo didn't reach the computer.
-    @State private var photoError: String?
-    /// Pasted photos still on their way to the computer.
-    @State private var photoTasks: [UUID: Task<Void, Never>] = [:]
+    /// Pasted photos on their way to the computer.
+    @State private var photoUploads = PhotoUploads()
     /// Paths of photos on the computer whose message hasn't been sent yet.
     @State private var uploadedPhotos: [String] = []
 
@@ -85,9 +83,9 @@ struct PhoneConversationView<TerminalContent: View>: View {
             composing = false
         }
         .onChange(of: isFrontmost) { _, front in
-            if !front { reviewedOnOpen = false; sendTask?.cancel(); cancelPhotos(); composing = false }
+            if !front { reviewedOnOpen = false; sendTask?.cancel(); photoUploads.cancelAll(); composing = false }
         }
-        .onDisappear { sendTask?.cancel(); cancelPhotos() }
+        .onDisappear { sendTask?.cancel(); photoUploads.cancelAll() }
         #if DEBUG
         .task {
             // Screenshots: `-uiDemoCompose` focuses the message field, so the keyboard layout shows.
@@ -167,7 +165,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
                 connected: terminal.isConnected, promptShowing: prompt != nil || showsFallback,
                 isSending: isSending, onPastePhoto: pastePhoto,
                 onSend: send, onQuickReply: { send($0, clearsDraft: false) },
-                photoStatus: photoTasks.isEmpty ? photoError : (photoTasks.count == 1 ? "Uploading photo…" : "Uploading \(photoTasks.count) photos…")
+                photoStatus: photoUploads.status
             )
         }
         .background(Color(uiColor: .systemGroupedBackground))
@@ -253,34 +251,16 @@ struct PhoneConversationView<TerminalContent: View>: View {
 
     /// Copies the photo to the conversation's computer over SSH and puts its path in the draft
     /// at the caret, so the agent reads it when the message is sent. Several can be on the way.
-    private func pastePhoto(_ image: UIImage) {
-        photoError = nil
-        let id = UUID()
-        let name = "\(id.uuidString.lowercased()).jpg"
-        photoTasks[id] = Task { @MainActor in
-            defer { photoTasks[id] = nil }
-            do {
-                let path = try await PastedPhoto(image: image).upload(name: name, config: config)
-                uploadedPhotos.append(path)
-                draftEditor.insert(path + " ")
-            } catch where Task.isCancelled || error is CancellationError {
-                // Left the conversation: the partial file is already being removed.
-            } catch PastedPhoto.Unreadable.photo {
-                photoError = "Couldn’t read that photo."
-            } catch {
-                photoError = "Couldn’t copy the photo to \(conversation.computer.name). Try pasting it again."
-            }
+    private func pastePhoto(_ photo: PastedPhoto) {
+        photoUploads.start(photo, config: config, computerName: conversation.computer.name) { path in
+            uploadedPhotos.append(path)
+            draftEditor.insert(path + " ")
         }
-    }
-
-    private func cancelPhotos() {
-        photoTasks.values.forEach { $0.cancel() }
-        photoTasks = [:]
     }
 
     /// The photos in a sent message are deleted from the computer an hour from now.
     private func sent(_ text: String) {
-        photoError = nil
+        photoUploads.clearError()
         let paths = PhotoUpload.paths(in: text, from: uploadedPhotos)
         guard !paths.isEmpty else { return }
         uploadedPhotos.removeAll { paths.contains($0) }

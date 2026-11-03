@@ -95,6 +95,13 @@ public enum PhotoUpload {
         }
     }
 
+    /// `path` as typed into a terminal: as is when it is plain, single-quoted when a shell
+    /// would split or expand it (a home folder with a space, say).
+    public static func typed(_ path: String) -> String {
+        let plain = path.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "/._-+@:,".contains($0)) }
+        return plain ? path : quote(path)
+    }
+
     /// The uploaded paths that `text` mentions.
     public static func paths(in text: String, from uploaded: [String]) -> [String] {
         uploaded.filter { text.contains($0) }

@@ -101,6 +101,12 @@ final class PhotoUploadTests: XCTestCase {
         XCTAssertTrue(ssh.recordedCommands[1].contains("rm -f"))
     }
 
+    func testQuotesATypedPathOnlyWhenAShellWouldSplitIt() {
+        XCTAssertEqual(PhotoUpload.typed("/Users/me/.ai-remote/uploads/a-1.jpg"), "/Users/me/.ai-remote/uploads/a-1.jpg")
+        XCTAssertEqual(PhotoUpload.typed("/Users/John Smith/x.jpg"), "'/Users/John Smith/x.jpg'")
+        XCTAssertEqual(PhotoUpload.typed("/Users/o'neil/x.jpg"), "'/Users/o'\"'\"'neil/x.jpg'")
+    }
+
     func testFindsTheUploadsAMessageMentions() {
         let uploaded = ["/u/a.jpg", "/u/b.jpg"]
         XCTAssertEqual(PhotoUpload.paths(in: "look at /u/b.jpg please", from: uploaded), ["/u/b.jpg"])

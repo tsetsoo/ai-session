@@ -365,8 +365,6 @@ struct TerminalSurface: View {
     #if os(iOS)
     @State private var ctrlArmed = false
     @State private var keyboardVisible = false
-    /// "Uploading photo…" over the top of the terminal while a pasted photo is on its way.
-    @State private var photoStatus: String?
     #endif
 
     /// - Parameters:
@@ -483,7 +481,8 @@ struct TerminalSurface: View {
         ZStack {
             terminalGrid
             #if os(iOS)
-            if let photoStatus {
+            // "Uploading photo…" over the top of the terminal while a pasted photo is on its way.
+            if let photoStatus = coordinator.photoUploads.status {
                 VStack {
                     Text(photoStatus)
                         .font(.footnote.weight(.medium))
@@ -510,6 +509,9 @@ struct TerminalSurface: View {
             }
             #endif
         }
+        #if os(iOS)
+        .animation(.easeInOut(duration: 0.2), value: coordinator.photoUploads.status)
+        #endif
         .onAppear {
             coordinator.setShown(isFrontmost)
             coordinator.onStateChange = { state in
@@ -531,9 +533,6 @@ struct TerminalSurface: View {
                 onEnded(exitStatus)
             }
             coordinator.onUserInput = onUserInput
-            #if os(iOS)
-            coordinator.onPhotoStatus = { photoStatus = $0 }
-            #endif
             coordinator.onScreenChange = { [weak handle] lines in handle?.screenChanged(lines) }
             handle?.coordinator = coordinator
             handle?.reconnectAction = { Task { await reconnect() } }

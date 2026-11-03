@@ -52,20 +52,16 @@ final class ChatDraftEditorHandle {
 /// Paste with a photo on the clipboard hands the photo over instead of doing nothing. A photo
 /// wins over text copied with it (Safari's Copy Image adds the link); text alone pastes as text.
 final class PhotoPasteTextView: UITextView {
-    var onPastePhoto: ((UIImage) -> Void)?
-
-    private var pastesPhoto: Bool {
-        onPastePhoto != nil && UIPasteboard.general.hasImages
-    }
+    var onPastePhoto: ((PastedPhoto) -> Void)?
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if action == #selector(paste(_:)), pastesPhoto { return true }
+        if action == #selector(paste(_:)), onPastePhoto != nil, UIPasteboard.general.hasImages { return true }
         return super.canPerformAction(action, withSender: sender)
     }
 
     override func paste(_ sender: Any?) {
-        guard pastesPhoto, let image = UIPasteboard.general.image else { return super.paste(sender) }
-        onPastePhoto?(image)
+        guard let onPastePhoto, let photo = PastedPhoto.fromClipboard(textWins: false) else { return super.paste(sender) }
+        onPastePhoto(photo)
     }
 }
 
@@ -73,7 +69,7 @@ struct ChatDraftEditor: UIViewRepresentable {
     @Binding var text: String
     @Binding var focused: Bool
     let handle: ChatDraftEditorHandle
-    var onPastePhoto: ((UIImage) -> Void)?
+    var onPastePhoto: ((PastedPhoto) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 

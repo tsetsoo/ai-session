@@ -20,7 +20,7 @@ struct ChatComposer: View {
     let promptShowing: Bool
     let isSending: Bool
     /// A photo pasted into the field; nil where photos can't be sent.
-    var onPastePhoto: ((UIImage) -> Void)?
+    var onPastePhoto: ((PastedPhoto) -> Void)?
     let onSend: () -> Void
     let onQuickReply: (String) -> Void
     /// "Uploading photo…" or why the last one failed.
