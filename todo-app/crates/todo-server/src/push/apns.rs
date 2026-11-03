@@ -187,8 +187,19 @@ fn truncate_title(title: &str) -> String {
 }
 
 pub fn build_payload(alert: &Alert) -> serde_json::Value {
+    // A Today push (reminder, date, briefing) is all text: it goes in the body, which shows
+    // every line; other pushes keep `<section> · <computer>` as the subtitle.
+    let text = if matches!(alert.kind, PushKind::Today) {
+        if alert.subtitle.is_empty() {
+            serde_json::json!({"title": truncate_title(&alert.title)})
+        } else {
+            serde_json::json!({"title": truncate_title(&alert.title), "body": alert.subtitle})
+        }
+    } else {
+        serde_json::json!({"title": truncate_title(&alert.title), "subtitle": alert.subtitle, "body": alert.kind.body()})
+    };
     let mut aps = serde_json::json!({
-        "alert": {"title": truncate_title(&alert.title), "subtitle": alert.subtitle, "body": alert.kind.body()},
+        "alert": text,
         "category": CATEGORY,
         "interruption-level": if alert.passive { "passive" } else { "active" },
     });
@@ -607,6 +618,24 @@ pub(crate) mod tests {
         assert_eq!(get("apns-priority"), Some("10"));
         assert_eq!(get("apns-expiration"), Some("1700003600"));
         assert_eq!(get("apns-collapse-id"), Some("todo-t1"));
+    }
+
+    #[test]
+    fn today_payload_puts_text_in_the_body() {
+        let alert = Alert {
+            todo_id: None,
+            session_id: None,
+            title: "Good morning".into(),
+            subtitle: "Reminders: 09:00 Pills\nTomorrow: Maria's birthday".into(),
+            kind: PushKind::Today,
+            passive: false,
+        };
+        let p = build_payload(&alert);
+        assert_eq!(p["aps"]["alert"]["body"], "Reminders: 09:00 Pills\nTomorrow: Maria's birthday");
+        assert!(p["aps"]["alert"].get("subtitle").is_none(), "{p}");
+        assert_eq!(p["kind"], "today");
+        let empty = Alert { subtitle: String::new(), ..alert };
+        assert!(build_payload(&empty)["aps"]["alert"].get("body").is_none(), "no stray 'Today' line");
     }
 
     #[test]

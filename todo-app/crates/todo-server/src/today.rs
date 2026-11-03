@@ -144,11 +144,14 @@ const REMINDER_COLS: &str = "id, title, notes, local_at, next_at, repeat, state,
 
 fn row_to_reminder(r: &Row) -> rusqlite::Result<Reminder> {
     let next: String = r.get(4)?;
+    // `at` is when it comes next (a snooze shows); `local_at` keeps the series' own time.
+    let series: String = r.get(3)?;
+    let at = parse_sql_time(&next).map(|t| t.with_timezone(&TZ).naive_local().format(LOCAL_FMT).to_string()).unwrap_or(series);
     Ok(Reminder {
         id: r.get(0)?,
         title: r.get(1)?,
         notes: r.get(2)?,
-        at: r.get(3)?,
+        at,
         next_at: parse_sql_time(&next).map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)).unwrap_or(next),
         repeat: r.get(5)?,
         state: r.get(6)?,
@@ -229,12 +232,15 @@ pub(crate) fn update_reminder_db(conn: &Connection, id: &str, req: &ReminderRequ
     let notes = req.notes.clone().unwrap_or(current.notes);
     if let Some(at) = &req.at {
         let local = parse_local(at).ok_or(TodayError::BadRequest("at must be YYYY-MM-DD HH:MM"))?;
-        // A new time starts over: upcoming, pushed again when it comes.
+        // Only a new time starts over (upcoming, pushed again when it comes): the form sends the
+        // time with every save, and fixing a typo must not push a due reminder again.
+        if local.format(LOCAL_FMT).to_string() != current.at {
         conn.execute(
             "UPDATE reminders SET local_at = ?2, anchor_day = ?3, anchor_month = ?4, next_at = ?5, state = 'upcoming', pushed_at = NULL
              WHERE id = ?1",
             params![id, local.format(LOCAL_FMT).to_string(), local.day(), local.month(), sql_time(local_to_utc(local))],
         )?;
+        }
     }
     conn.execute(
         "UPDATE reminders SET title = ?2, notes = ?3, repeat = ?4, updated_at = datetime('now') WHERE id = ?1",
@@ -268,12 +274,12 @@ pub struct SnoozeRequest {
     pub until: String,
 }
 
-/// Snooze: this occurrence moves to `until`; a repeat's later times follow from there.
+/// Snooze: only this time moves to `until`; a repeat keeps its own time afterwards.
 pub(crate) fn snooze_reminder_db(conn: &Connection, id: &str, req: &SnoozeRequest) -> Result<Reminder, TodayError> {
     let local = parse_local(&req.until).ok_or(TodayError::BadRequest("until must be YYYY-MM-DD HH:MM"))?;
     let changed = conn.execute(
-        "UPDATE reminders SET local_at = ?2, next_at = ?3, state = 'upcoming', pushed_at = NULL, updated_at = datetime('now') WHERE id = ?1",
-        params![id, local.format(LOCAL_FMT).to_string(), sql_time(local_to_utc(local))],
+        "UPDATE reminders SET next_at = ?2, state = 'upcoming', pushed_at = NULL, updated_at = datetime('now') WHERE id = ?1",
+        params![id, sql_time(local_to_utc(local))],
     )?;
     if changed == 0 {
         return Err(TodayError::NotFound("Reminder not found"));
@@ -702,10 +708,12 @@ pub(crate) fn briefing_db(conn: &Connection, now: DateTime<Utc>, since: DateTime
     let tomorrow = today.succ_opt().unwrap_or(today);
     let day = today.format("%Y-%m-%d").to_string();
     let reminders = {
+        // Not done and coming (or come) before tomorrow, Sofia.
+        let end = local_to_utc(tomorrow.and_hms_opt(0, 0, 0).unwrap_or_default());
         let mut stmt = conn.prepare(&format!(
-            "SELECT {REMINDER_COLS} FROM reminders WHERE state != 'done' AND substr(local_at, 1, 10) <= ?1 ORDER BY local_at"
+            "SELECT {REMINDER_COLS} FROM reminders WHERE state != 'done' AND next_at < ?1 ORDER BY next_at"
         ))?;
-        let rows = stmt.query_map(params![day], row_to_reminder)?;
+        let rows = stmt.query_map(params![sql_time(end)], row_to_reminder)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
     let people: Vec<Person> = list_people_db(conn, now)?
@@ -1002,6 +1010,30 @@ pub(crate) mod tests {
         let id = r["id"].as_str().unwrap();
         let (_, r) = patch(&pool, &format!("/api/reminders/{id}"), json!({"title": "Call accountant", "at": "2026-11-07 11:30"})).await;
         assert_eq!((&r["title"], &r["at"], &r["repeat"]), (&json!("Call accountant"), &json!("2026-11-07 11:30"), &json!("weekly")));
+    }
+
+    #[test]
+    fn editing_a_due_reminder_without_a_new_time_keeps_it_due() {
+        let (_db, pool) = pool("today");
+        let conn = pool.get().unwrap();
+        conn.execute("UPDATE today_settings SET briefing_enabled = 0", []).unwrap();
+        let id = add_reminder(&conn, "Pils", "2026-11-06 09:00");
+        assert_eq!(today_tick_db(&conn, at_sofia("2026-11-06 09:00")).unwrap().len(), 1);
+        let fix = ReminderRequest { title: Some("Pills".into()), notes: None, at: Some("2026-11-06 09:00".into()), repeat: None, source: None };
+        let r = update_reminder_db(&conn, &id, &fix).ok().unwrap();
+        assert_eq!((r.title.as_str(), r.state.as_str()), ("Pills", "due"));
+        assert!(today_tick_db(&conn, at_sofia("2026-11-06 09:06")).unwrap().is_empty(), "a typo fix doesn't push again");
+    }
+
+    #[test]
+    fn snooze_moves_this_time_only() {
+        let (_db, pool) = pool("today");
+        let conn = pool.get().unwrap();
+        let r = create_reminder_db(&conn, &ReminderRequest { title: Some("Pills".into()), notes: None, at: Some("2026-11-06 08:00".into()), repeat: Some("daily".into()), source: None }).ok().unwrap();
+        let snoozed = snooze_reminder_db(&conn, &r.id, &SnoozeRequest { until: "2026-11-06 18:00".into() }).ok().unwrap();
+        assert_eq!(snoozed.at, "2026-11-06 18:00", "shows the snoozed time");
+        let next = done_reminder_db(&conn, &r.id, at_sofia("2026-11-06 18:05")).ok().unwrap();
+        assert_eq!(next.at, "2026-11-07 08:00", "the series keeps 08:00");
     }
 
     #[test]
