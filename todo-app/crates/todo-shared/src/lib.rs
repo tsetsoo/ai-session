@@ -928,6 +928,9 @@ pub struct UpdateMemoryRequest {
     pub pinned: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<bool>,
+    /// With `archived: true`: `duplicate` or `retired` (the memory gardener); default `user`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_reason: Option<String>,
     /// `false` approves a pending memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<bool>,
@@ -1322,6 +1325,46 @@ pub struct WatchIssue {
     /// The fix's commits, as the agent reported them.
     #[serde(default)]
     pub commits: Vec<String>,
+}
+
+/// A ready-made job plugin (`ai-session-remote/jobs/<name>`), as a computer reported it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobTemplate {
+    pub name: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub cron: String,
+    #[serde(default = "default_tool")]
+    pub tool: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default = "default_priority")]
+    pub priority: String,
+    #[serde(default = "default_limit")]
+    pub limit: String,
+    /// `choose`, or a project name as the default.
+    #[serde(default = "default_project")]
+    pub project: String,
+    #[serde(default)]
+    pub prompt: String,
+    /// The computer that reported it (filled in by the hub's list).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computer_id: Option<String>,
+}
+
+fn default_tool() -> String {
+    "claude".into()
+}
+fn default_priority() -> String {
+    "background".into()
+}
+fn default_limit() -> String {
+    "wait".into()
+}
+fn default_project() -> String {
+    "choose".into()
 }
 
 /// A watcher installed on a computer, from its manifest; settings say only whether they are set.

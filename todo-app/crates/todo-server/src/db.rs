@@ -119,6 +119,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v15_objects(&conn).expect("Failed to create watch objects");
     create_v16_objects(&conn).expect("Failed to add watch columns");
     create_v17_objects(&conn).expect("Failed to create today objects");
+    create_v18_objects(&conn).expect("Failed to add job templates");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -502,6 +503,16 @@ const V17_OBJECTS: &str = "
     );
     INSERT OR IGNORE INTO today_settings (id) VALUES (1);";
 
+/// v18: the job plugins each computer reported. Only adds.
+fn create_v18_objects(conn: &Connection) -> rusqlite::Result<()> {
+    for column in ["job_templates", "job_templates_at"] {
+        if table_sql(conn, "computers")?.is_some() && !column_exists(conn, "computers", column)? {
+            conn.execute_batch(&format!("ALTER TABLE computers ADD COLUMN {column} TEXT;"))?;
+        }
+    }
+    Ok(())
+}
+
 fn create_v17_objects(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V17_OBJECTS)?;
     if table_sql(conn, "job_runs")?.is_some() && !column_exists(conn, "job_runs", "chosen_tool")? {
@@ -643,6 +654,7 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v14: `ideas`; `job_runs.note` (additive)
 /// - v15: `watch_issues`, `watch_alerts` (additive)
 /// - v16: `job_runs.branch`, `watch_issues.commits`, `computers.watchers` (additive)
+/// - v18: `computers.job_templates`, `computers.job_templates_at` (additive)
 /// - v17: `reminders`, `people`, `people_pushes`, `today_settings`, `job_runs.chosen_tool` (additive)
 /// - v13: scheduler `jobs`, `job_runs`, `scheduler_settings`; `todos.scheduled_job_id` and
 ///   `scheduled_run_id` (additive)
@@ -650,7 +662,7 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -665,6 +677,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
         return Ok(0);
     }
     if table_sql(conn, "reminders")?.is_some() {
+        if column_exists(conn, "computers", "job_templates")? {
+            return Ok(18);
+        }
         return Ok(17);
     }
     if table_sql(conn, "watch_issues")?.is_some() {
@@ -861,8 +876,16 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 16 {
         if !backed_up {
             backup_before_migration(conn, db_path, 17)?;
+            backed_up = true;
         }
         create_v17_objects(conn)?;
+        version = 17;
+    }
+    if version == 17 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 18)?;
+        }
+        create_v18_objects(conn)?;
     }
     Ok(())
 }
@@ -2518,11 +2541,24 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 17);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         for t in ["reminders", "people", "people_pushes", "today_settings"] {
             assert!(table_sql(&conn, t).unwrap().is_some(), "{t}");
         }
         assert!(column_exists(&conn, "job_runs", "chosen_tool").unwrap());
+    }
+
+    #[test]
+    fn v17_migrates_to_v18_with_job_templates() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch("ALTER TABLE computers DROP COLUMN job_templates; ALTER TABLE computers DROP COLUMN job_templates_at; PRAGMA user_version = 17;").unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 18);
+        assert!(column_exists(&conn, "computers", "job_templates").unwrap());
     }
 
     #[test]

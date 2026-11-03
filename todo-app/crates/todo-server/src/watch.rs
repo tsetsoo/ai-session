@@ -812,6 +812,62 @@ pub async fn run_overwhelmed(
     }
 }
 
+/// A computer's job plugins (manifests with their prompts), as its runner reported them.
+pub(crate) fn set_job_templates_db(conn: &Connection, computer_id: &str, templates: &[todo_shared::JobTemplate]) -> Result<(), WatchError> {
+    for t in templates {
+        if t.name.trim().is_empty() || crate::cron::parse(&t.cron).is_err() {
+            return Err(WatchError::BadRequest("each job template needs a name and a valid cron"));
+        }
+    }
+    let changed = conn.execute(
+        "UPDATE computers SET job_templates = ?2, job_templates_at = datetime('now') WHERE id = ?1",
+        params![computer_id, serde_json::to_string(templates).unwrap_or_default()],
+    )?;
+    if changed == 0 {
+        return Err(WatchError::NotFound("Computer not found"));
+    }
+    Ok(())
+}
+
+/// Job plugins across computers: one per name, from the computer that reported most recently.
+pub(crate) fn list_job_templates_db(conn: &Connection) -> rusqlite::Result<Vec<todo_shared::JobTemplate>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, job_templates FROM computers WHERE job_templates IS NOT NULL ORDER BY job_templates_at DESC, rowid DESC",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for row in rows {
+        let (computer, raw) = row?;
+        for mut t in serde_json::from_str::<Vec<todo_shared::JobTemplate>>(&raw).unwrap_or_default() {
+            if seen.insert(t.name.clone()) {
+                t.computer_id = Some(computer.clone());
+                out.push(t);
+            }
+        }
+    }
+    out.sort_by(|a, b| a.title.cmp(&b.title));
+    Ok(out)
+}
+
+pub async fn put_job_templates(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<Vec<todo_shared::JobTemplate>>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = conn!(pool);
+    done(set_job_templates_db(&conn, &path, &body).map(|_| serde_json::json!({"ok": true})), &broadcaster)
+}
+
+pub async fn list_job_templates(pool: web::Data<DbPool>) -> HttpResponse {
+    let conn = conn!(pool);
+    match list_job_templates_db(&conn) {
+        Ok(v) => HttpResponse::Ok().json(v),
+        Err(e) => server_error(e),
+    }
+}
+
 pub async fn get_watchers(pool: web::Data<DbPool>, path: web::Path<String>) -> HttpResponse {
     let conn = conn!(pool);
     match watchers_db(&conn, &path) {
@@ -1428,6 +1484,27 @@ pub(crate) mod tests {
         taken(&conn, "didnt-hold", "r1", Some("fixed"));
         assert_eq!(post(&pool, "/api/watch/issues/didnt-hold/retry", json!({})).await.0, StatusCode::OK);
         assert_eq!(issue(&conn, "didnt-hold"), ("open".into(), None, None));
+    }
+
+    #[actix_web::test]
+    async fn job_templates_reported_per_computer_and_listed_once() {
+        use crate::test_support::{get, put};
+        use actix_web::http::StatusCode;
+        use serde_json::json;
+        let (_db, pool) = pool("watch");
+        seed_watch(&pool.get().unwrap(), None);
+        let upkeep = json!({"name": "weekly-upkeep", "title": "Weekly upkeep", "description": "d", "cron": "0 10 * * 0",
+            "tool": "claude", "model": null, "priority": "background", "limit": "wait", "project": "choose", "prompt": "Check deps."});
+        assert_eq!(put(&pool, "/api/computers/mac/job-templates", json!([upkeep.clone()])).await.0, StatusCode::OK);
+        let mut newer = upkeep.clone();
+        newer["prompt"] = json!("Check deps, v2.");
+        assert_eq!(put(&pool, "/api/computers/spread/job-templates", json!([newer])).await.0, StatusCode::OK);
+        let (_, list) = get(&pool, "/api/job-templates").await;
+        let list = list.as_array().unwrap();
+        assert_eq!(list.len(), 1, "one per name: {list:?}");
+        assert_eq!((&list[0]["prompt"], &list[0]["computer_id"]), (&json!("Check deps, v2."), &json!("spread")));
+        assert_eq!(put(&pool, "/api/computers/nope/job-templates", json!([])).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(put(&pool, "/api/computers/mac/job-templates", json!([{"name": "x", "cron": "bad cron"}])).await.0, StatusCode::BAD_REQUEST);
     }
 
     #[test]
