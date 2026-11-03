@@ -118,6 +118,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v14_objects(&conn).expect("Failed to create idea objects");
     create_v15_objects(&conn).expect("Failed to create watch objects");
     create_v16_objects(&conn).expect("Failed to add watch columns");
+    create_v17_objects(&conn).expect("Failed to create today objects");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -452,6 +453,63 @@ const V15_OBJECTS: &str = "
         PRIMARY KEY (job_id, day)
     );";
 
+/// v17: reminders, people and their pushes, today settings, a run's chosen tool. Only adds.
+const V17_OBJECTS: &str = "
+    CREATE TABLE IF NOT EXISTS reminders (
+        id           TEXT PRIMARY KEY,
+        title        TEXT NOT NULL,
+        notes        TEXT NOT NULL DEFAULT '',
+        local_at     TEXT NOT NULL,
+        anchor_day   INTEGER NOT NULL,
+        anchor_month INTEGER NOT NULL,
+        next_at      TEXT NOT NULL,
+        repeat       TEXT NOT NULL DEFAULT 'none' CHECK(repeat IN ('none','daily','weekdays','weekly','monthly','yearly')),
+        state        TEXT NOT NULL DEFAULT 'upcoming' CHECK(state IN ('upcoming','due','done')),
+        pushed_at    TEXT,
+        source       TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','agent')),
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS reminders_next ON reminders(state, next_at);
+    CREATE TABLE IF NOT EXISTS people (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL,
+        kind       TEXT NOT NULL DEFAULT 'birthday' CHECK(kind IN ('birthday','anniversary','other')),
+        month      INTEGER NOT NULL,
+        day        INTEGER NOT NULL,
+        year       INTEGER,
+        notes      TEXT NOT NULL DEFAULT '',
+        source     TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','agent')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS people_pushes (
+        person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+        date      TEXT NOT NULL,
+        kind      TEXT NOT NULL CHECK(kind IN ('eve','day')),
+        sent_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (person_id, date, kind)
+    );
+    CREATE TABLE IF NOT EXISTS today_settings (
+        id               INTEGER PRIMARY KEY CHECK(id = 1),
+        briefing_enabled INTEGER NOT NULL DEFAULT 1,
+        briefing_time    TEXT NOT NULL DEFAULT '08:00',
+        assistant_model  TEXT NOT NULL DEFAULT 'auto' CHECK(assistant_model IN ('auto','claude','codex')),
+        claude_model     TEXT NOT NULL DEFAULT 'haiku',
+        codex_model      TEXT NOT NULL DEFAULT 'gpt-6.1-terra',
+        last_briefing_on TEXT,
+        last_briefing_at TEXT
+    );
+    INSERT OR IGNORE INTO today_settings (id) VALUES (1);";
+
+fn create_v17_objects(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(V17_OBJECTS)?;
+    if table_sql(conn, "job_runs")?.is_some() && !column_exists(conn, "job_runs", "chosen_tool")? {
+        conn.execute_batch("ALTER TABLE job_runs ADD COLUMN chosen_tool TEXT;")?;
+    }
+    Ok(())
+}
+
 /// v16: a run's branch, an issue's commits, a computer's installed watchers. Only adds.
 fn create_v16_objects(conn: &Connection) -> rusqlite::Result<()> {
     for (table, column) in [("job_runs", "branch"), ("watch_issues", "commits"), ("computers", "watchers")] {
@@ -585,13 +643,14 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v14: `ideas`; `job_runs.note` (additive)
 /// - v15: `watch_issues`, `watch_alerts` (additive)
 /// - v16: `job_runs.branch`, `watch_issues.commits`, `computers.watchers` (additive)
+/// - v17: `reminders`, `people`, `people_pushes`, `today_settings`, `job_runs.chosen_tool` (additive)
 /// - v13: scheduler `jobs`, `job_runs`, `scheduler_settings`; `todos.scheduled_job_id` and
 ///   `scheduled_run_id` (additive)
 /// - v12: memories gain usage, pending, import key and archive reason; `memory_active_days`;
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -604,6 +663,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let conversations = table_sql(conn, "conversations")?;
     if sections.is_none() && conversations.is_none() {
         return Ok(0);
+    }
+    if table_sql(conn, "reminders")?.is_some() {
+        return Ok(17);
     }
     if table_sql(conn, "watch_issues")?.is_some() {
         if column_exists(conn, "computers", "watchers")? {
@@ -791,8 +853,16 @@ fn migrate(conn: &Connection, db_path: &str) -> rusqlite::Result<()> {
     if version == 15 {
         if !backed_up {
             backup_before_migration(conn, db_path, 16)?;
+            backed_up = true;
         }
         create_v16_objects(conn)?;
+        version = 16;
+    }
+    if version == 16 {
+        if !backed_up {
+            backup_before_migration(conn, db_path, 17)?;
+        }
+        create_v17_objects(conn)?;
     }
     Ok(())
 }
@@ -2432,10 +2502,27 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 16);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(column_exists(&conn, "job_runs", "branch").unwrap());
         assert!(column_exists(&conn, "watch_issues", "commits").unwrap());
         assert!(column_exists(&conn, "computers", "watchers").unwrap());
+    }
+
+    #[test]
+    fn v16_migrates_to_v17_with_today_tables() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch("DROP TABLE reminders; DROP TABLE people_pushes; DROP TABLE people; DROP TABLE today_settings;
+             ALTER TABLE job_runs DROP COLUMN chosen_tool; PRAGMA user_version = 16;").unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 17);
+        for t in ["reminders", "people", "people_pushes", "today_settings"] {
+            assert!(table_sql(&conn, t).unwrap().is_some(), "{t}");
+        }
+        assert!(column_exists(&conn, "job_runs", "chosen_tool").unwrap());
     }
 
     #[test]

@@ -21,6 +21,7 @@ mod push;
 mod runner_api;
 mod scheduler;
 mod sessions;
+mod today;
 mod watch;
 #[cfg(test)]
 mod test_support;
@@ -128,6 +129,18 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/ideas/{id}", web::delete().to(ideas::delete_idea))
         .route("/api/ideas/{id}/todo", web::post().to(ideas::idea_to_todo))
         .route("/api/ideas/{id}/research", web::post().to(ideas::research_idea))
+        .route("/api/reminders", web::get().to(today::list_reminders))
+        .route("/api/reminders", web::post().to(today::create_reminder))
+        .route("/api/reminders/{id}", web::patch().to(today::update_reminder))
+        .route("/api/reminders/{id}", web::delete().to(today::delete_reminder))
+        .route("/api/reminders/{id}/done", web::post().to(today::done_reminder))
+        .route("/api/reminders/{id}/snooze", web::post().to(today::snooze_reminder))
+        .route("/api/people", web::get().to(today::list_people))
+        .route("/api/people", web::post().to(today::create_person))
+        .route("/api/people/{id}", web::patch().to(today::update_person))
+        .route("/api/people/{id}", web::delete().to(today::delete_person))
+        .route("/api/today/settings", web::get().to(today::get_settings))
+        .route("/api/today/settings", web::put().to(today::put_settings))
         .route("/api/runner/due", web::get().to(runner_api::due))
         .route("/api/runs/{id}/claim", web::post().to(runner_api::claim))
         .route("/api/runs/{id}/wait", web::post().to(runner_api::wait))
