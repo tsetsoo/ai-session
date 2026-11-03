@@ -726,8 +726,15 @@ do_install() {
   # Watchers live beside their secrets (watchers/env, written by the user, never by us).
   run mkdir -p "${AI_DIR}/watchers"
   run chmod 700 "${AI_DIR}/watchers"
-  for file in "${SRC_DIR}"/watchers/*; do
-    if [[ -f "$file" ]]; then run install -m 755 "$file" "${AI_DIR}/watchers/$(basename "$file")"; fi
+  # Plugins: ai-session-remote/watchers/<name>/{watcher,watcher.json} in the repo (a helper
+  # tarball carries the folder beside scripts/todo).
+  local watchers_src="${SRC_DIR}/../../watchers" dir name
+  [[ -d "$watchers_src" ]] || watchers_src="${SRC_DIR}/watchers"
+  for dir in "$watchers_src"/*/; do
+    [[ -f "${dir}watcher" && -f "${dir}watcher.json" ]] || continue
+    name=$(basename "$dir")
+    run install -m 755 "${dir}watcher" "${AI_DIR}/watchers/${name}"
+    run install -m 644 "${dir}watcher.json" "${AI_DIR}/watchers/${name}.json"
   done
   for file in "${MODULES[@]}"; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   resolve_codex_for_hooks

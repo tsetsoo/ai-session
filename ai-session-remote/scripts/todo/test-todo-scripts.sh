@@ -2838,7 +2838,12 @@ args="$(sed -n '1,/^---$/p' "$R_OPEN_LOG")"
 [[ "$(cat "${SANDBOX}/runner-prompt.txt")" == "PREAMBLE for ~/.ai-remote/worktrees/proj-app/r-git00001"$'\n\n'"Do the thing." ]] || fail "prompt wrong: $(cat "${SANDBOX}/runner-prompt.txt")"
 posts_to start | grep -q '"cwd": "~/.ai-remote/worktrees/proj-app/r-git00001", "is_git": true' || fail "start body wrong: $(posts_to start)"
 posts_to finish | grep -q '"state": "done"' || fail "finish not posted: $(posts_to finish)"
-pass "runner_starts_due_run_in_worktree"
+posts_to start | python3 -c '
+import json, sys
+rows = [json.loads(l) for l in sys.stdin]
+assert rows and rows[0]["body"]["branch"].startswith("scheduled/nightly-research-"), rows
+' || fail "start did not send the branch: $(posts_to start)"
+pass "runner_starts_due_run_in_worktree (and tells the hub its branch)"
 
 runs_reset
 due_run r-wait0001 proj-app '{"mode":"wait","five_hour":40,"weekly":null}'
@@ -3137,6 +3142,52 @@ assert len(rows) == 1 and rows[0]["body"]["state"] == "failed" and "git" in rows
 [[ -z "$(posts_to start)" && ! -s "$R_OPEN_LOG" ]] || fail "a debugging run started outside a git repo"
 pass "runner_debug_run_needs_git_repo (ai-todo-watch can only report from a worktree)"
 
+# Watcher plugins: the runner reports manifests (and which settings are set, never values).
+printf '{"name":"fakew","title":"Fake","description":"Test watcher","resolve":true,"resolve_label":"Resolve in Fake","settings":[{"key":"SENTRY_TOKEN","label":"Token","secret":true},{"key":"MISSING_ONE","label":"Missing"}]}' >"${W_DIR}/fakew.json"
+printf 'not json' >"${W_DIR}/broken.json"
+printf '#!/bin/sh\nexit 0\n' >"${W_DIR}/broken" && chmod +x "${W_DIR}/broken"
+printf '{"name":"orphan"}' >"${W_DIR}/orphan.json"
+watchers_puts() {
+  tail -n +"$((R_MARK + 1))" "$M_HUB_LOG" | python3 -c '
+import json, sys
+for l in sys.stdin:
+    r = json.loads(l)
+    if r["method"] == "PUT" and r["path"].endswith("/watchers"):
+        print(json.dumps({"path": r["path"], "body": r["body"]}))'
+}
+runs_reset
+rm -f "${R_STATE}/watchers.json"
+wrunner tick || fail "tick failed"
+watchers_puts | python3 -c '
+import json, sys
+rows = [json.loads(l) for l in sys.stdin]
+assert len(rows) == 1 and rows[0]["path"] == "/api/computers/comp-1/watchers", rows
+body = rows[0]["body"]
+assert [w["name"] for w in body] == ["fakew"], body
+s = {x["key"]: x for x in body[0]["settings"]}
+assert s["SENTRY_TOKEN"]["set"] is True and s["MISSING_ONE"]["set"] is False, s
+assert body[0]["resolve_label"] == "Resolve in Fake" and body[0]["description"] == "Test watcher", body
+' || fail "watchers report: $(watchers_puts)"
+! watchers_puts | grep -q secret123 || fail "a setting value was reported"
+pass "runner_reports_watchers_skipping_bad_manifest (only whether settings are set)"
+
+runs_reset
+wrunner tick || fail "tick failed"
+[[ -z "$(watchers_puts)" ]] || fail "an unchanged report was sent again: $(watchers_puts)"
+printf '{"name":"fakew","title":"Fake 2","settings":[]}' >"${W_DIR}/fakew.json"
+wrunner tick || fail "tick failed"
+watchers_puts | grep -q '"Fake 2"' || fail "a changed manifest was not reported: $(watchers_puts)"
+pass "runner_watchers_report_once_until_changed"
+
+runs_reset
+rm -f "${R_STATE}/watchers.json"
+hub_edit "s['watchers_status'] = 404"
+wrunner tick || fail "tick failed on an old hub"
+hub_edit "s.pop('watchers_status', None)"
+! grep -q 'watchers' <<<"$(wrunner status --json)" || fail "an old hub's 404 became an error: $(wrunner status --json)"
+pass "runner_watchers_report_404_is_quiet"
+rm -f "${W_DIR}/broken" "${W_DIR}/broken.json" "${W_DIR}/orphan.json"
+
 WATCH="${SCRIPT_DIR}/ai-todo-watch"
 W_TREE="${HOME}/.ai-remote/worktrees/proj-app/run-dbg01/src"
 mkdir -p "$W_TREE"
@@ -3155,7 +3206,17 @@ assert "secret123" not in rows[2]["body"]["why"], rows
 status=0
 (cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" outcome sentry:1 done "x") >/dev/null 2>&1 || status=$?
 [[ $status -eq 64 ]] || fail "bad outcome exit $status"
-pass "watch_helper_outcome_from_worktree"
+runs_reset
+(cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" outcome sentry:4 fixed "nil check" --commit 5c36409e --commit 435B0CD5) >/dev/null || fail "outcome with commits failed"
+watch_posts | python3 -c '
+import json, sys
+b = json.loads(sys.stdin.readline())["body"]
+assert b == {"key": "sentry:4", "outcome": "fixed", "note": "nil check", "commits": ["5c36409e", "435B0CD5"]}, b
+' || fail "commits: $(watch_posts)"
+status=0
+(cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" outcome sentry:4 fixed "x" --commit) >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "--commit without a sha exit $status"
+pass "watch_helper_outcome_from_worktree (and --commit)"
 
 status=0
 (cd "$M_APP" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" outcome sentry:1 fixed "x") >/dev/null 2>"${SANDBOX}/watch.err" || status=$?
@@ -3276,6 +3337,7 @@ printf '{"projects": {"p": {"targets": [{"kind": "codex", "path": "%s/AGENTS.md"
 pass "install_removes_old_digest_blocks"
 [[ -x "${HOME}/.ai-remote/bin/ai-todo-watch" ]] || fail "ai-todo-watch not installed"
 [[ -x "${HOME}/.ai-remote/watchers/sentry" ]] || fail "the sentry watcher not installed"
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["name"] == "sentry"' "${HOME}/.ai-remote/watchers/sentry.json" || fail "the sentry manifest not installed"
 [[ "$(stat -f %Lp "${HOME}/.ai-remote/watchers")" == 700 ]] || fail "watchers dir mode $(stat -f %Lp "${HOME}/.ai-remote/watchers")"
 printf "SENTRY_TOKEN='mine'\n" >"${HOME}/.ai-remote/watchers/env"
 # An extra install; the launchd test below counts the calls of the others.
@@ -4291,7 +4353,9 @@ pass "open_mcp_helper_failure_starts_unmanaged"
 # A fake Sentry: issues per project from <dir>/issues-<project>.json, PAGE per page with Link
 # cursors, latest events from <dir>/event-<id>.json, PUT resolves logged; <dir>/status forces
 # an HTTP error.
-SENTRY="${SCRIPT_DIR}/watchers/sentry"
+SENTRY="${SCRIPT_DIR}/../../watchers/sentry/watcher"
+[[ -x "$SENTRY" ]] && python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["name"] == "sentry" and m["resolve"] is True and m["resolve_label"] == "Resolve in Sentry", m; assert {s["key"] for s in m["settings"]} >= {"SENTRY_TOKEN", "SENTRY_ORG", "SENTRY_PROJECTS"}, m' "${SCRIPT_DIR}/../../watchers/sentry/watcher.json" \
+  || fail "the sentry plugin (watcher + watcher.json) is not in ai-session-remote/watchers/sentry"
 SN_DIR="${SANDBOX}/sentry"
 mkdir -p "$SN_DIR"
 python3 - "$SN_DIR" <<'PY' &

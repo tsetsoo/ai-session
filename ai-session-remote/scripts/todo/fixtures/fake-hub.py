@@ -126,6 +126,8 @@ class Hub(BaseHTTPRequestHandler):
                                     {"five_hour": 60, "weekly": 80, "pause_waiting": False},
                                     "runs": state.get("due_runs", []),
                                     "resolves": state.get("resolves", [])})
+        if method == "PUT" and path.startswith("/api/computers/") and path.endswith("/watchers"):
+            return self.reply(state.get("watchers_status", 200), {"ok": True})
         if method == "POST" and path.startswith("/api/watch/"):
             return self.reply(state.get("watch_status", 200), {"ok": True})
         if method == "GET" and path == "/api/ideas":

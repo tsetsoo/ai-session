@@ -382,6 +382,59 @@ def check_watch(hub, run, job):
     return len(report["problems"])
 
 
+WATCHERS_REPORT_EVERY = 86400
+
+
+def watchers_report():
+    """The installed watchers: every <name>.json with an executable <name> beside it, and per
+    setting whether the env file sets it. Never a value."""
+    env = watcher_env()
+    out = []
+    try:
+        names = sorted(os.listdir(WATCHERS))
+    except OSError:
+        return out
+    for file in names:
+        if not file.endswith(".json"):
+            continue
+        name = file[:-5]
+        path = os.path.join(WATCHERS, name)
+        if not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*", name) or not os.access(path, os.X_OK):
+            continue
+        manifest = load_json(os.path.join(WATCHERS, file))
+        if not isinstance(manifest, dict):
+            continue
+        settings = []
+        for s in manifest.get("settings") or []:
+            if isinstance(s, dict) and s.get("key"):
+                settings.append({"key": str(s["key"]), "label": str(s.get("label") or ""),
+                                 "secret": bool(s.get("secret")), "set": bool(env.get(str(s["key"])))})
+        out.append({"name": name, "title": str(manifest.get("title") or name),
+                    "description": str(manifest.get("description") or ""), "settings": settings,
+                    "resolve": bool(manifest.get("resolve")),
+                    "resolve_label": manifest.get("resolve_label") if isinstance(manifest.get("resolve_label"), str) else None})
+    return out
+
+
+def report_watchers(hub, computer_id):
+    """PUT the watchers report when it changed or a day passed. An old hub (404) is retried a
+    day later, quietly."""
+    path = os.path.join(STATE_DIR, "watchers.json")
+    report = watchers_report()
+    digest = json.dumps(report, sort_keys=True)
+    state = load_json(path, {}) or {}
+    if state.get("digest") == digest and now() - float(state.get("at") or 0) < WATCHERS_REPORT_EVERY:
+        return
+    try:
+        hub.request("PUT", "/api/computers/%s/watchers" % urllib.parse.quote(computer_id, safe=""), body=report)
+    except HubError as e:
+        if e.status != 404:
+            log("watchers_report_failed", error=e)
+            return
+        log("watchers_report_unsupported")
+    save_json(path, {"digest": digest, "at": now()})
+
+
 def do_resolves(hub, resolves):
     env = None
     for item in resolves or []:
@@ -419,7 +472,10 @@ def start_run(hub, computer_id, due, folders):
     if (run.get("note") or "").startswith("watch:") and not is_git:
         raise RuntimeError("a debugging run needs a git repo; %s is not one (map the issue to a repo folder)" % tilde(folder))
     try:
-        started = hub.request("POST", "/api/runs/%s/start" % run["id"], body={"cwd": tilde(path), "is_git": is_git})
+        body = {"cwd": tilde(path), "is_git": is_git}
+        if branch:
+            body["branch"] = branch
+        started = hub.request("POST", "/api/runs/%s/start" % run["id"], body=body)
         ensure_state()
         fd, prompt_file = tempfile.mkstemp(dir=STATE_DIR, prefix="prompt.")
         with os.fdopen(fd, "w") as f:
@@ -534,6 +590,7 @@ def cmd_tick(args):
                 except HubError:
                     pass
         do_resolves(hub, due.get("resolves"))
+        report_watchers(hub, computer_id)
     except HubError as e:
         status["last_error"] = str(e)
         log("error", error=e)

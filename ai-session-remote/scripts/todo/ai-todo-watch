@@ -2,7 +2,7 @@
 # For a debugging conversation started by a watcher: report on the issues it took.
 #
 # Usage:
-#   ai-todo-watch outcome <key> fixed|needs_you|cant_fix "<note>"
+#   ai-todo-watch outcome <key> fixed|needs_you|cant_fix "<note>" [--commit <sha>]...
 #   ai-todo-watch release <key>...          # give issues back for another conversation
 #   ai-todo-watch overwhelmed "<why>"       # push the user
 #
@@ -42,7 +42,7 @@ AI_DIR = os.path.join(HOME, ".ai-remote")
 TREES = os.environ.get("AI_TODO_RUNNER_WORKTREES") or os.path.join(AI_DIR, "worktrees")
 WATCHERS = os.environ.get("AI_TODO_WATCHERS_DIR") or os.path.join(AI_DIR, "watchers")
 OUTCOMES = ("fixed", "needs_you", "cant_fix")
-USAGE = "usage: ai-todo-watch outcome <key> fixed|needs_you|cant_fix \"<note>\" | release <key>... | overwhelmed \"<why>\""
+USAGE = "usage: ai-todo-watch outcome <key> fixed|needs_you|cant_fix \"<note>\" [--commit <sha>]... | release <key>... | overwhelmed \"<why>\""
 
 
 def die(message, code):
@@ -125,7 +125,14 @@ def main(argv):
     if not argv:
         die(USAGE, 64)
     command, args = argv[0], argv[1:]
+    commits = []
     if command == "outcome":
+        rest, args = args[3:], args[:3]
+        while rest:
+            if rest[0] != "--commit" or len(rest) < 2 or not re.fullmatch(r"[0-9A-Fa-f]{7,40}", rest[1]):
+                die(USAGE, 64)
+            commits.append(rest[1])
+            rest = rest[2:]
         if len(args) != 3 or args[1] not in OUTCOMES or not args[0].strip():
             die(USAGE, 64)
     elif command == "release":
@@ -141,7 +148,10 @@ def main(argv):
     path = "/api/watch/runs/%s/%s" % (urllib.parse.quote(run, safe=""), command)
     if command == "outcome":
         redact = redactor(conf)
-        request(conf, path, {"key": args[0].strip(), "outcome": args[1], "note": redact(" ".join(args[2].split()))[:500]})
+        body = {"key": args[0].strip(), "outcome": args[1], "note": redact(" ".join(args[2].split()))[:500]}
+        if commits:
+            body["commits"] = commits
+        request(conf, path, body)
         print("Recorded %s: %s." % (args[0].strip(), args[1]))
     elif command == "release":
         out = request(conf, path, {"keys": [a.strip() for a in args]}) or {}
