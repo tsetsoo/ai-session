@@ -159,6 +159,7 @@ pub(crate) fn shape_db(conn: &Connection, req: &ShapeRequest) -> Result<todo_sha
             tool: "claude".into(),
             folder: None,
             prompt: SHAPE_PROMPT.into(),
+            model: None,
             priority: Priority::Urgent,
             limit: LimitSetting::Always,
         },

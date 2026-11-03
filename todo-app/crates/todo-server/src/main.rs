@@ -140,6 +140,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/people/{id}", web::patch().to(today::update_person))
         .route("/api/people/{id}", web::delete().to(today::delete_person))
         .route("/api/today", web::get().to(today::today_view))
+        .route("/api/today/assistant", web::post().to(today::assistant))
         .route("/api/today/settings", web::get().to(today::get_settings))
         .route("/api/today/settings", web::put().to(today::put_settings))
         .route("/api/runner/due", web::get().to(runner_api::due))

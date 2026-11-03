@@ -61,6 +61,9 @@ pub struct StartRequest {
     /// `~` form.
     pub cwd: String,
     pub is_git: bool,
+    /// For a job whose tool is `auto`: the tool the runner chose (newer runners).
+    #[serde(default)]
+    pub tool: Option<String>,
     /// The worktree's branch (newer runners).
     #[serde(default)]
     pub branch: Option<String>,
@@ -74,6 +77,8 @@ pub struct StartResponse {
     pub session_id: String,
     pub tool: String,
     pub prompt: String,
+    /// The model to start the tool with; `None`: its default.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -322,7 +327,25 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
     let Some(parts) = job.action.conversation_parts() else {
         return Err(RunError::BadRequest("Not a conversation job"));
     };
-    let (project_id, tool, prompt, priority, limit) = (parts.project_id, parts.tool, parts.prompt, &parts.priority, &parts.limit);
+    let (project_id, prompt, priority, limit) = (parts.project_id, parts.prompt, &parts.priority, &parts.limit);
+    // `auto`: what the runner chose by weekly headroom; an older runner says nothing → claude.
+    let tool: &str = if parts.tool == "auto" {
+        match req.tool.as_deref() {
+            Some(t @ ("claude" | "codex")) => t,
+            _ => "claude",
+        }
+    } else {
+        parts.tool
+    };
+    let assistant = run.note.as_deref().and_then(|n| n.strip_prefix("assistant:")).map(str::to_string);
+    let model: Option<String> = match (parts.model, &assistant) {
+        (Some(m), _) => Some(m.to_string()),
+        (None, Some(_)) => {
+            let s = crate::today::settings_db(&tx)?;
+            Some(if tool == "codex" { s.codex_model } else { s.claude_model })
+        }
+        (None, None) => None,
+    };
     let (project_name, section): (String, String) = tx
         .query_row("SELECT name, section FROM projects WHERE id = ?1", params![project_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?
@@ -385,6 +408,11 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         None
     };
     let title = match (&idea, &watch_folder) {
+        _ if assistant.is_some() => {
+            let hint = assistant.as_deref().and_then(|a| a.split_once(':')).map(|(_, t)| t).unwrap_or("");
+            let short: String = hint.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(50).collect();
+            format!("Assistant · {short}")
+        }
         (Some((_, idea_title, _)), _) => format!("Research: {idea_title}"),
         (None, Some(folder)) => {
             let place = if folder.is_empty() { project_name.as_str() } else { folder.as_str() };
@@ -412,14 +440,15 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         LimitSetting::Wait { .. } => "wait",
     };
     tx.execute(
-        "UPDATE job_runs SET todo_id = ?2, tool = ?3, limit_mode = ?4, started_at = ?5, updated_at = ?5, branch = ?6 WHERE id = ?1",
+        "UPDATE job_runs SET todo_id = ?2, tool = ?3, limit_mode = ?4, started_at = ?5, updated_at = ?5, branch = ?6, chosen_tool = ?7 WHERE id = ?1",
         params![
             run.id,
             todo_id,
             tool,
             limit_mode,
             sql_time(Utc::now()),
-            req.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()).map(|b| b.chars().take(200).collect::<String>())
+            req.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()).map(|b| b.chars().take(200).collect::<String>()),
+            (parts.tool == "auto").then_some(tool)
         ],
     )?;
     let note = run.note.clone().unwrap_or_default();
@@ -438,6 +467,10 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
                 &[("project", project_name.as_str()), ("title", idea_title.as_str()), ("notes", notes.as_str()), ("id", idea_id.as_str())],
             );
             if prompt.trim().is_empty() { research } else { format!("{research}\n\n{}", render(prompt, &vars)) }
+        }
+        None if assistant.is_some() => {
+            let (kind, hint) = assistant.as_deref().and_then(|a| a.split_once(':')).unwrap_or(("", ""));
+            crate::today::assistant_prompt(kind, hint, Utc::now())
         }
         None if watch_folder.is_some() => {
             let issues = taken
@@ -466,6 +499,7 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         session_id: conversation.session_id,
         tool: tool.to_string(),
         prompt,
+        model,
     })
 }
 

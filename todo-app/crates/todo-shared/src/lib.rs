@@ -1175,12 +1175,16 @@ pub enum JobAction {
         project_id: String,
         /// `None`: the computer of the project's section.
         computer_id: Option<String>,
+        /// `claude`, `codex`, or `auto` (the runner picks by weekly headroom).
         tool: String,
         /// `None`: the project folder.
         folder: Option<String>,
         prompt: String,
         priority: Priority,
         limit: LimitSetting,
+        /// The tool's model (`haiku`, `gpt-6.1-terra`); `None`: the tool's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     /// A research run: the hub picks the project's next idea and builds the prompt;
     /// `prompt` holds optional extra instructions.
@@ -1219,6 +1223,7 @@ pub struct ConversationParts<'a> {
     pub prompt: &'a str,
     pub priority: Priority,
     pub limit: LimitSetting,
+    pub model: Option<&'a str>,
 }
 
 impl JobAction {
@@ -1226,8 +1231,7 @@ impl JobAction {
     #[must_use]
     pub fn conversation_parts(&self) -> Option<ConversationParts<'_>> {
         match self {
-            JobAction::Conversation { project_id, computer_id, tool, folder, prompt, priority, limit }
-            | JobAction::Research { project_id, computer_id, tool, folder, prompt, priority, limit } => Some(ConversationParts {
+            JobAction::Conversation { project_id, computer_id, tool, folder, prompt, priority, limit, model } => Some(ConversationParts {
                 project_id,
                 computer_id: computer_id.as_deref(),
                 tool,
@@ -1235,6 +1239,17 @@ impl JobAction {
                 prompt,
                 priority: *priority,
                 limit: *limit,
+                model: model.as_deref(),
+            }),
+            JobAction::Research { project_id, computer_id, tool, folder, prompt, priority, limit } => Some(ConversationParts {
+                project_id,
+                computer_id: computer_id.as_deref(),
+                tool,
+                folder: folder.as_deref(),
+                prompt,
+                priority: *priority,
+                limit: *limit,
+                model: None,
             }),
             _ => None,
         }

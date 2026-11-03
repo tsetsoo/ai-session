@@ -109,6 +109,7 @@ fn ensure_debug_job(conn: &Connection, watch: &WatchParts, tool: &str) -> Result
         prompt: prompt.to_string(),
         priority: Priority::Urgent,
         limit: LimitSetting::Always,
+        model: None,
     };
     if let Some(id) = debug_job_id(conn, watch.watcher)? {
         conn.execute(

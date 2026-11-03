@@ -156,7 +156,9 @@ fn validate(conn: &Connection, name: &str, trigger: &JobTrigger, action: &JobAct
         JobAction::Conversation { .. } | JobAction::Research { .. } => {
             let parts = action.conversation_parts().expect("conversation-like action");
             let (project_id, computer_id, tool, prompt, limit) = (parts.project_id, parts.computer_id, parts.tool, parts.prompt, &parts.limit);
-            if !TOOLS.contains(&tool) {
+            // `auto`: the runner picks claude or codex by weekly headroom (the assistant).
+            let auto = tool == "auto" && !action.is_research();
+            if !TOOLS.contains(&tool) && !auto {
                 return Err(JobError::BadRequest("tool must be claude or codex".into()));
             }
             if !action.is_research() && prompt.trim().is_empty() {
