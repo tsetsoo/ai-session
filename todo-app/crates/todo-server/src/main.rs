@@ -131,7 +131,12 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/runs/{id}/wait", web::post().to(runner_api::wait))
         .route("/api/runs/{id}/start", web::post().to(runner_api::start))
         .route("/api/runs/{id}/finish", web::post().to(runner_api::finish))
-        .route("/api/runs/{id}/report", web::post().to(watch::report))
+        // A check can list up to 1000 issues with 4000 characters of details each.
+        .service(
+            web::resource("/api/runs/{id}/report")
+                .app_data(web::JsonConfig::default().limit(16 << 20))
+                .route(web::post().to(watch::report)),
+        )
         .route("/api/watch/issues", web::get().to(watch::list_issues))
         .route("/api/watch/issues/{id}/resolve", web::post().to(watch::resolve_issue))
         .route("/api/watch/issues/{id}/retry", web::post().to(watch::retry_issue))

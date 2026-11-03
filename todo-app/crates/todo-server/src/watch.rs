@@ -88,8 +88,13 @@ pub(crate) fn debug_job_name(watcher: &str) -> String {
 
 /// The watcher's Debug job, if it exists.
 pub(crate) fn debug_job_id(conn: &Connection, watcher: &str) -> rusqlite::Result<Option<String>> {
-    conn.query_row("SELECT id FROM jobs WHERE name = ?1 ORDER BY created_at LIMIT 1", params![debug_job_name(watcher)], |r| r.get(0))
+    conn.query_row("SELECT id FROM jobs WHERE watch_debug_for = ?1 ORDER BY created_at LIMIT 1", params![watcher], |r| r.get(0))
         .optional()
+}
+
+/// The watcher a Debug job serves.
+pub(crate) fn debug_job_watcher(conn: &Connection, job_id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT watch_debug_for FROM jobs WHERE id = ?1", params![job_id], |r| r.get(0)).optional().map(Option::flatten)
 }
 
 /// The watcher's Debug job, created or brought in line with the watch job (tool, project,
@@ -120,7 +125,10 @@ fn ensure_debug_job(conn: &Connection, watch: &WatchParts, tool: &str) -> Result
         max_runs_per_day: Some(96),
     };
     match crate::jobs::create_job_db(conn, &request) {
-        Ok(job) => Ok(job.id),
+        Ok(job) => {
+            conn.execute("UPDATE jobs SET watch_debug_for = ?2 WHERE id = ?1", params![job.id, watch.watcher])?;
+            Ok(job.id)
+        }
         Err(crate::jobs::JobError::Db(e)) => Err(WatchError::Db(e)),
         Err(_) => Err(WatchError::BadRequest("could not create the debug job")),
     }
@@ -272,7 +280,8 @@ pub(crate) fn report_db(conn: &Connection, run_id: &str, report: &WatchReport, n
                 let keep = outcome.as_deref() == Some("cant_fix");
                 tx.execute(
                     "UPDATE watch_issues SET state = 'open', title = ?2, details = ?3, url = ?4, folder = ?5, job_id = ?6, last_seen = ?7,
-                         cleared_at = NULL, resolve_error = NULL, updated_at = ?7,
+                         first_seen = ?7, cleared_at = NULL, resolve_error = NULL, updated_at = ?7,
+                         takes = CASE WHEN ?8 THEN takes ELSE 0 END,
                          taken_run_id = CASE WHEN ?8 THEN taken_run_id END, outcome = CASE WHEN ?8 THEN outcome END,
                          outcome_note = CASE WHEN ?8 THEN outcome_note END
                      WHERE id = ?1",
@@ -312,7 +321,7 @@ pub(crate) fn report_db(conn: &Connection, run_id: &str, report: &WatchReport, n
         params![run.id, result, stamp],
     )?;
     out.queued_runs = queue_debug_runs(&tx, &job, now)?;
-    if watch.debug_tool.is_some() {
+    if watch.debug_tool.is_some() && !first {
         out.overwhelmed = overwhelmed(&tx, &job, watch.watcher, now)?;
     }
     tx.commit()?;
@@ -321,8 +330,12 @@ pub(crate) fn report_db(conn: &Connection, run_id: &str, report: &WatchReport, n
 
 /// The once-a-day "overwhelmed" body when too many issues wait, or one waits too long.
 fn overwhelmed(conn: &Connection, job: &Job, watcher: &str, now: DateTime<Utc>) -> rusqlite::Result<Option<String>> {
+    // Issues nobody is coming for: untaken, and no queued conversation will take their folder.
     let (waiting, oldest): (i64, Option<String>) = conn.query_row(
-        "SELECT COUNT(*), MIN(first_seen) FROM watch_issues WHERE watcher = ?1 AND state = 'open' AND taken_run_id IS NULL",
+        "SELECT COUNT(*), MIN(first_seen) FROM watch_issues WHERE watcher = ?1 AND state = 'open' AND taken_run_id IS NULL
+           AND 'watch:' || COALESCE(folder, '') NOT IN (SELECT r.note FROM job_runs r JOIN jobs j ON j.id = r.job_id
+                 WHERE j.watch_debug_for = ?1 AND r.note IS NOT NULL
+                   AND (r.state IN ('due','waiting') OR (r.state = 'running' AND r.todo_id IS NULL)))",
         params![watcher],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
@@ -398,7 +411,8 @@ pub(crate) fn watch_upkeep(conn: &Connection, now: DateTime<Utc>) -> rusqlite::R
         params![stamp, sql_time(now - Duration::minutes(RESOLVE_TIMEOUT_MINUTES))],
     )?;
     let pruned = conn.execute(
-        "DELETE FROM job_runs WHERE state = 'done' AND result = 'quiet' AND due_at < ?1
+        "DELETE FROM job_runs WHERE state IN ('done','failed','skipped','missed') AND due_at < ?1
+           AND (state != 'done' OR result = 'quiet')
            AND job_id IN (SELECT id FROM jobs WHERE json_extract(action, '$.kind') = 'watch')",
         params![sql_time(now - Duration::days(QUIET_RUNS_KEPT_DAYS))],
     )?;
@@ -457,6 +471,15 @@ pub(crate) fn request_resolve_db(conn: &Connection, id: &str, now: DateTime<Utc>
 /// queue, and a conversation is queued if there's room.
 pub(crate) fn retry_db(conn: &Connection, id: &str, now: DateTime<Utc>) -> Result<(), WatchError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    // Never while the conversation that took it is still on it (or waiting for the user).
+    let busy: bool = tx.query_row(
+        &format!("SELECT EXISTS (SELECT 1 FROM watch_issues i JOIN job_runs r ON r.id = i.taken_run_id WHERE i.id = ?1 AND {})", AT_WORK.replace("?G", "?2")),
+        params![id, sql_time(now - Duration::minutes(UNKNOWN_GRACE_MINUTES))],
+        |r| r.get(0),
+    )?;
+    if busy {
+        return Err(WatchError::Conflict("Its conversation is still on it; answer it there, or try again once it's done"));
+    }
     let changed = tx.execute(
         "UPDATE watch_issues SET taken_run_id = NULL, outcome = NULL, outcome_note = NULL, takes = 0, updated_at = ?2
          WHERE id = ?1 AND state = 'open' AND outcome IN ('needs_you','cant_fix')",
@@ -526,21 +549,22 @@ pub(crate) fn outcome_db(conn: &Connection, run_id: &str, req: &OutcomeRequest, 
 pub(crate) fn release_db(conn: &Connection, run_id: &str, req: &ReleaseRequest, now: DateTime<Utc>) -> Result<usize, WatchError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let mut released = 0;
+    let mut watcher: Option<String> = None;
     for key in &req.keys {
-        released += tx.execute(
-            "UPDATE watch_issues SET taken_run_id = NULL, outcome = NULL, outcome_note = NULL, updated_at = ?3
-             WHERE taken_run_id = ?1 AND key = ?2",
-            params![run_id, key.trim(), sql_time(now)],
-        )?;
-    }
-    if released > 0 {
-        // The run still holds others or is at work: requeue from any issue of the same watcher.
-        let watcher: Option<String> = tx
-            .query_row("SELECT watcher FROM watch_issues WHERE key = ?1", params![req.keys.first().map(|k| k.trim()).unwrap_or_default()], |r| r.get(0))
+        let held: Option<String> = tx
+            .query_row("SELECT watcher FROM watch_issues WHERE taken_run_id = ?1 AND key = ?2", params![run_id, key.trim()], |r| r.get(0))
             .optional()?;
-        if let Some(watcher) = watcher {
-            requeue_for_issue(&tx, "watcher = ?1 AND job_id IS NOT NULL", &watcher, now)?;
-        }
+        let Some(held) = held else { continue };
+        // Given back on purpose: it doesn't count as a conversation that ended without a word.
+        released += tx.execute(
+            "UPDATE watch_issues SET taken_run_id = NULL, outcome = NULL, outcome_note = NULL, takes = MAX(takes - 1, 0), updated_at = ?3
+             WHERE taken_run_id = ?1 AND key = ?2 AND watcher = ?4",
+            params![run_id, key.trim(), sql_time(now), held],
+        )?;
+        watcher.get_or_insert(held);
+    }
+    if let Some(watcher) = watcher {
+        requeue_for_issue(&tx, "watcher = ?1 AND job_id IS NOT NULL", &watcher, now)?;
     }
     tx.commit()?;
     Ok(released)
@@ -894,11 +918,130 @@ pub(crate) mod tests {
         let (_db, pool) = pool("watch");
         let conn = pool.get().unwrap();
         seed_watch(&conn, Some("claude"));
-        let many: Vec<WatchProblem> = (0..23).map(|i| problem(&format!("k{i}"), "T", Some("backend"))).collect();
-        let out = report_db(&conn, &running_check(&conn, "c1"), &report_of(many.clone()), now()).ok().unwrap();
+        // 25 repos: 2 conversations take 2 of them; 23 issues still have nobody coming.
+        let many: Vec<WatchProblem> = (0..25).map(|i| problem(&format!("k{i}"), "T", Some(&format!("repo{i}")))).collect();
+        let first = report_db(&conn, &running_check(&conn, "c1"), &report_of(many.clone()), now()).ok().unwrap();
+        assert!(first.overwhelmed.is_none(), "the first check pushes nothing");
+        let out = report_db(&conn, &running_check(&conn, "c2"), &report_of(many.clone()), now()).ok().unwrap();
         assert_eq!(out.overwhelmed.as_deref(), Some("23 issues waiting for a conversation"));
-        let again = report_db(&conn, &running_check(&conn, "c2"), &report_of(many), now()).ok().unwrap();
+        let again = report_db(&conn, &running_check(&conn, "c3"), &report_of(many), now()).ok().unwrap();
         assert!(again.overwhelmed.is_none());
+    }
+
+    #[test]
+    fn issues_a_queued_run_will_take_are_not_overwhelming() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        report_db(&conn, &running_check(&conn, "c1"), &report_of(vec![]), now()).ok().unwrap();
+        let batch: Vec<WatchProblem> = (0..23).map(|i| problem(&format!("k{i}"), "T", Some("backend"))).collect();
+        let out = report_db(&conn, &running_check(&conn, "c2"), &report_of(batch), now()).ok().unwrap();
+        assert_eq!(out.queued_runs.len(), 1);
+        assert!(out.overwhelmed.is_none(), "one queued conversation takes all 23");
+    }
+
+    #[test]
+    fn comeback_resets_first_seen_and_takes() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, None);
+        report_db(&conn, &running_check(&conn, "c1"), &report_of(vec![]), now()).ok().unwrap();
+        conn.execute(
+            "INSERT INTO watch_issues (id, watcher, key, project_id, title, state, takes, first_seen, outcome, taken_run_id)
+             VALUES ('i1', 'sentry', 'back', 'ps', 'B', 'cleared', 2, '2026-10-01 00:00:00', 'fixed', 'r0')",
+            [],
+        )
+        .unwrap();
+        report_db(&conn, &running_check(&conn, "c2"), &report_of(vec![problem("back", "B", None)]), now()).ok().unwrap();
+        let (first_seen, takes): (String, i64) =
+            conn.query_row("SELECT first_seen, takes FROM watch_issues WHERE key = 'back'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((first_seen, takes), (sql_time(now()), 0));
+    }
+
+    #[actix_web::test]
+    async fn debug_job_is_hidden_and_keyed_by_watcher() {
+        use crate::test_support::{get, post};
+        use actix_web::http::StatusCode;
+        use serde_json::json;
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        report_db(&conn, &running_check(&conn, "c1"), &report_of(vec![problem("b1", "B1", Some("backend"))]), now()).ok().unwrap();
+        let debug = debug_job_id(&conn, "sentry").unwrap().expect("debug job");
+        let (_, jobs) = get(&pool, "/api/jobs").await;
+        assert!(jobs.as_array().unwrap().iter().all(|j| j["id"] != debug.as_str()), "{jobs}");
+        assert_eq!(post(&pool, &format!("/api/jobs/{debug}/run"), json!({})).await.0, StatusCode::CONFLICT);
+        conn.execute("UPDATE jobs SET name = 'renamed' WHERE id = ?1", params![debug]).unwrap();
+        assert_eq!(debug_job_id(&conn, "sentry").unwrap().as_deref(), Some(debug.as_str()));
+        let run: String = conn.query_row("SELECT id FROM job_runs WHERE job_id = ?1", params![debug], |r| r.get(0)).unwrap();
+        post(&pool, &format!("/api/runs/{run}/claim"), json!({"computer_id": "mac"})).await;
+        let (status, v) = post(&pool, &format!("/api/runs/{run}/start"), json!({"cwd": "~/w", "is_git": true})).await;
+        assert_eq!(status, StatusCode::OK, "a renamed Debug job still knows its watcher: {v}");
+    }
+
+    #[actix_web::test]
+    async fn retry_refused_while_its_conversation_works() {
+        use crate::test_support::post;
+        use actix_web::http::StatusCode;
+        use serde_json::json;
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        debug_run_with_conversation(&conn, "r1", "waiting", true);
+        taken(&conn, "asked", "r1", Some("needs_you"));
+        assert_eq!(post(&pool, "/api/watch/issues/asked/retry", json!({})).await.0, StatusCode::CONFLICT);
+        conn.execute("UPDATE conversations SET status = 'idle' WHERE todo_id = 't-r1'", []).unwrap();
+        assert_eq!(post(&pool, "/api/watch/issues/asked/retry", json!({})).await.0, StatusCode::OK);
+    }
+
+    #[actix_web::test]
+    async fn big_report_is_accepted() {
+        use crate::test_support::post;
+        use actix_web::http::StatusCode;
+        use serde_json::json;
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, None);
+        running_check(&conn, "c1");
+        let problems: Vec<_> = (0..1000).map(|i| json!({"key": format!("k{i}"), "title": "t", "details": "x".repeat(3500)})).collect();
+        let (status, v) = post(&pool, "/api/runs/c1/report", json!({"problems": problems})).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+    }
+
+    #[test]
+    fn old_watch_checks_pruned_whatever_state() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, None);
+        conn.execute(
+            "INSERT INTO job_runs (id, job_id, due_at, state, result) VALUES
+               ('f', 'w', ?1, 'failed', 'watcher exit 1'), ('s', 'w', ?1, 'skipped', 'superseded by a later slot'),
+               ('s2', 'w', ?2, 'skipped', 'superseded by a later slot')",
+            params![sql_time(now() - Duration::days(3)), sql_time(now())],
+        )
+        .unwrap();
+        let ids: Vec<String> = crate::jobs::recent_runs_db(&conn, 50).unwrap().into_iter().map(|r| r.run.id).collect();
+        assert!(!ids.contains(&"s2".to_string()), "skipped checks are hidden: {ids:?}");
+        watch_upkeep(&conn, now()).unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM job_runs", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 1);
+    }
+
+    #[actix_web::test]
+    async fn release_requeues_and_gives_back_the_take() {
+        use crate::test_support::post;
+        use serde_json::json;
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        debug_run_with_conversation(&conn, "r1", "busy", true);
+        taken(&conn, "give", "r1", None);
+        conn.execute("UPDATE watch_issues SET takes = 1", []).unwrap();
+        post(&pool, "/api/watch/runs/r1/release", json!({"keys": ["typo", "give"]})).await;
+        let takes: i64 = conn.query_row("SELECT takes FROM watch_issues WHERE key = 'give'", [], |r| r.get(0)).unwrap();
+        assert_eq!(takes, 0);
+        let queued: i64 = conn.query_row("SELECT COUNT(*) FROM job_runs WHERE note LIKE 'watch:%' AND state = 'due'", [], |r| r.get(0)).unwrap();
+        assert_eq!(queued, 1, "the given-back issue gets a conversation");
     }
 
     #[test]
@@ -1018,6 +1161,7 @@ pub(crate) mod tests {
         assert!(open.as_array().unwrap().iter().all(|i| i["todo_id"] == "t-r1"));
         assert_eq!(get(&pool, "/api/watch/issues?state=recent").await.1.as_array().unwrap().len(), 1);
         assert_eq!(post(&pool, "/api/watch/issues/working/retry", json!({})).await.0, StatusCode::CONFLICT);
+        conn.execute("UPDATE conversations SET status = 'idle' WHERE todo_id = 't-r1'", []).unwrap();
         assert_eq!(post(&pool, "/api/watch/issues/stuck/retry", json!({})).await.0, StatusCode::OK);
         assert_eq!(issue(&conn, "stuck"), ("open".into(), None, None));
         assert_eq!(post(&pool, "/api/watch/issues/working/resolve", json!({})).await.0, StatusCode::OK);

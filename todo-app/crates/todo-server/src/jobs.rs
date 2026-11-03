@@ -277,9 +277,19 @@ pub(crate) fn update_job_db(conn: &Connection, id: &str, req: &UpdateJobRequest)
 }
 
 /// A `due` run for now: "Run now" (also for disabled jobs).
+/// Jobs the hub runs for itself (a watcher's Debug job): not listed, not run by hand.
+pub(crate) fn hidden_job_ids(conn: &Connection) -> rusqlite::Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM jobs WHERE watch_debug_for IS NOT NULL")?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    rows.collect()
+}
+
 pub(crate) fn run_now_db(conn: &Connection, id: &str) -> Result<JobRun, JobError> {
     if load_job(conn, id)?.is_none() {
         return Err(JobError::NotFound("Job not found"));
+    }
+    if hidden_job_ids(conn)?.contains(id) {
+        return Err(JobError::Conflict("This job runs only for its watcher's issues"));
     }
     let run_id = Uuid::new_v4().to_string();
     conn.execute(
@@ -302,7 +312,7 @@ pub(crate) fn recent_runs_db(conn: &Connection, limit: usize) -> rusqlite::Resul
     let cols = RUN_COLS.split(", ").map(|c| format!("r.{c}")).collect::<Vec<_>>().join(", ");
     let mut stmt = conn.prepare(&format!(
         "SELECT {cols}, j.name FROM job_runs r JOIN jobs j ON j.id = r.job_id
-         WHERE NOT (r.result IS 'quiet' AND json_extract(j.action, '$.kind') = 'watch')
+         WHERE NOT (json_extract(j.action, '$.kind') = 'watch' AND (r.result IS 'quiet' OR r.state = 'skipped'))
          ORDER BY r.due_at DESC, r.rowid DESC LIMIT ?1"
     ))?;
     let rows = stmt.query_map(params![limit.min(MAX_RUNS) as i64], |row| {
@@ -346,7 +356,11 @@ macro_rules! conn {
 
 pub async fn list_jobs(pool: web::Data<DbPool>) -> HttpResponse {
     let conn = conn!(pool);
-    match list_jobs_db(&conn) {
+    let listed = list_jobs_db(&conn).and_then(|jobs| {
+        let hidden = hidden_job_ids(&conn)?;
+        Ok(jobs.into_iter().filter(|j| !hidden.contains(&j.id)).collect::<Vec<_>>())
+    });
+    match listed {
         Ok(jobs) => HttpResponse::Ok().json(jobs),
         Err(e) => server_error(e),
     }

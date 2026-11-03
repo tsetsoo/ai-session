@@ -452,7 +452,12 @@ const V15_OBJECTS: &str = "
     );";
 
 fn create_v15_objects(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(V15_OBJECTS)
+    conn.execute_batch(V15_OBJECTS)?;
+    // A watcher's hidden "Debug" job: the watcher it serves (not its name, which can change).
+    if table_sql(conn, "jobs")?.is_some() && !column_exists(conn, "jobs", "watch_debug_for")? {
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN watch_debug_for TEXT;")?;
+    }
+    Ok(())
 }
 
 fn create_v13_objects(conn: &Connection) -> rusqlite::Result<()> {

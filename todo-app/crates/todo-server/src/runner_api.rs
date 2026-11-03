@@ -14,7 +14,7 @@ use crate::conversations::{bad_request, conflict, insert_conversation, load_conv
 use crate::db::DbPool;
 use crate::jobs::{list_jobs_db, load_job, load_run, settings_db};
 use crate::scheduler::{insert_scheduled_todo, local_date, render, sql_time};
-use crate::watch::{at_work_count, display_name, watch_parts, DEBUG_DEFAULT_PROMPT, MAX_AT_WORK};
+use crate::watch::{at_work_count, debug_job_watcher, display_name, watch_parts, DEBUG_DEFAULT_PROMPT, MAX_AT_WORK};
 
 #[derive(Debug, Serialize)]
 pub struct DueRun {
@@ -326,7 +326,7 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
     let date = local_date(Utc::now());
     // A debugging run takes every untaken open issue of its watcher in its folder.
     let watch_folder = run.note.as_deref().and_then(|n| n.strip_prefix("watch:")).map(str::to_string);
-    let watcher = job.name.strip_prefix("Debug · ").unwrap_or_default().to_string();
+    let watcher = if watch_folder.is_some() { debug_job_watcher(&tx, &job.id)?.unwrap_or_default() } else { String::new() };
     let taken: Vec<(String, String, String, String)> = if let Some(folder) = &watch_folder {
         let n = tx.execute(
             "UPDATE watch_issues SET taken_run_id = ?1, takes = takes + 1, updated_at = datetime('now')
@@ -334,6 +334,13 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
             params![run.id, watcher, folder],
         )?;
         if n == 0 {
+            // Cleared or taken since it was queued: nothing to do, which is not a failure (a
+            // failure pauses the folder for an hour).
+            tx.execute(
+                "UPDATE job_runs SET state = 'skipped', result = 'nothing left to take', updated_at = datetime('now') WHERE id = ?1",
+                params![run.id],
+            )?;
+            tx.commit()?;
             return Err(RunError::Conflict("No untaken issues"));
         }
         let mut stmt = tx.prepare("SELECT key, title, url, details FROM watch_issues WHERE taken_run_id = ?1 ORDER BY first_seen, rowid")?;
@@ -1082,6 +1089,20 @@ mod watch_runner_tests {
         let body = json!({"cwd": "~/w", "is_git": true});
         assert_eq!(post(&pool, &format!("/api/runs/{first}/start"), body.clone()).await.0, StatusCode::OK);
         assert_eq!(post(&pool, "/api/runs/second/start", body).await.0, StatusCode::CONFLICT);
+    }
+
+    #[actix_web::test]
+    async fn start_with_nothing_to_take_skips_the_run() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        report_db(&conn, &running_check(&conn, "c1"), &report_of(vec![problem("b1", "B1", Some("backend"))]), now()).ok().unwrap();
+        let run = debug_runs(&conn)[0].clone();
+        conn.execute("UPDATE watch_issues SET state = 'cleared'", []).unwrap();
+        post(&pool, &format!("/api/runs/{run}/claim"), json!({"computer_id": "mac"})).await;
+        assert_eq!(post(&pool, &format!("/api/runs/{run}/start"), json!({"cwd": "~/w", "is_git": true})).await.0, StatusCode::CONFLICT);
+        let state: String = conn.query_row("SELECT state FROM job_runs WHERE id = ?1", params![run], |r| r.get(0)).unwrap();
+        assert_eq!(state, "skipped", "nothing left to take is not a failure (a failure pauses the folder)");
     }
 
     #[actix_web::test]

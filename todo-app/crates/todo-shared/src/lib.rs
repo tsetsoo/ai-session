@@ -1198,7 +1198,7 @@ pub enum JobAction {
     /// A todo, created by the hub.
     Todo { title: String, project_id: Option<String>, section: Option<Section> },
     /// A watcher check on one computer; new problems push, and with a debug tool open problems
-    /// are taken by debugging conversations (runs of the hidden "Debug · <job>" job).
+    /// are taken by debugging conversations (runs of the watcher's hidden Debug job).
     Watch {
         project_id: String,
         computer_id: String,

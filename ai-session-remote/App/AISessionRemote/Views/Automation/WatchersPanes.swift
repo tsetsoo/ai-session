@@ -45,7 +45,7 @@ struct WatchersListContent<Row: View>: View {
                 }
             }
         }
-        .task(id: store.revision) { await store.loadWatchIssues() }
+        .task(id: store.revision) { await store.loadRecentWatchIssues() }
     }
 }
 

@@ -1058,6 +1058,15 @@ final class TodoHubStore {
         if let r { recentWatchIssues = r }
     }
 
+    /// Reloads only the recently cleared issues: every refresh already brings the open ones.
+    func loadRecentWatchIssues() async {
+        #if DEBUG
+        if demo != nil { return }
+        #endif
+        guard let client = try? requireClient() else { return }
+        if let r = try? await client.listWatchIssues(state: "recent") { recentWatchIssues = r }
+    }
+
     /// Resolve at the source; the watcher's computer does it within a minute.
     func resolveWatchIssue(_ issue: WatchIssue) async throws {
         try await perform { client in try await client.resolveWatchIssue(id: issue.id) }
