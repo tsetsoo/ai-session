@@ -262,9 +262,9 @@ final class TerminalHandle {
     fileprivate(set) var connectionState: TerminalConnectionState = .idle
     /// The Claude or Codex question on screen, if any (see `TerminalPrompt`).
     fileprivate(set) var prompt: TerminalPrompt?
-    /// The last non-empty rows on screen, for answering a question the app can't read.
+    /// All non-empty rows on screen, for answering a question the app can't read. Long
+    /// approval warnings must not crowd the question or its options out of the preview.
     fileprivate(set) var screenTail: [String] = []
-    static let screenTailRows = 12
     @ObservationIgnored fileprivate weak var coordinator: TerminalCoordinator?
     @ObservationIgnored fileprivate var reconnectAction: () -> Void = {}
 
@@ -303,7 +303,7 @@ final class TerminalHandle {
     func screenChanged(_ lines: [String]) {
         let next = TerminalPrompt.parse(screen: lines)
         if next != prompt { prompt = next }
-        let tail = Array(lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.suffix(Self.screenTailRows))
+        let tail = lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         if tail != screenTail { screenTail = tail }
     }
 

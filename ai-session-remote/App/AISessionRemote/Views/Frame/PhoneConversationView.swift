@@ -69,7 +69,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
                         .opacity(showsChat ? 0 : 1)
                         .allowsHitTesting(!showsChat)
                         .accessibilityHidden(showsChat)
-                    if showsChat { chat }
+                    if showsChat { chat(promptMaxHeight: proxy.size.height * 0.6) }
                 }
             }
         }
@@ -102,7 +102,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
         }
     }
 
-    private var chat: some View {
+    private func chat(promptMaxHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -148,6 +148,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
             } else if showsFallback {
                 ChatScreenFallbackCard(
                     lines: terminal.screenTail,
+                    maxContentHeight: max(44, promptMaxHeight - 100),
                     onKey: { terminal.send($0.bytes(tool: conversation.tool)) },
                     onOpenTerminal: { showsChat = false }
                 )

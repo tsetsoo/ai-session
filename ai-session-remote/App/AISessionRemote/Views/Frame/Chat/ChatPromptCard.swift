@@ -93,8 +93,18 @@ struct ChatPromptBanner: View {
 /// the keys a menu needs.
 struct ChatScreenFallbackCard: View {
     let lines: [String]
+    var maxContentHeight: CGFloat = 240
     let onKey: (TerminalKey) -> Void
     let onOpenTerminal: () -> Void
+
+    /// Follow the menu cursor after an arrow key, including menus the parser doesn't know.
+    /// With no cursor, start at the bottom where terminal prompts normally put their choices.
+    private var focusedRow: Int? {
+        lines.lastIndex { line in
+            guard let first = line.trimmingCharacters(in: .whitespaces).first else { return false }
+            return "❯›>".contains(first)
+        } ?? lines.indices.last
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -103,12 +113,24 @@ struct ChatScreenFallbackCard: View {
                 Spacer()
                 Button("Open Terminal", action: onOpenTerminal).font(.footnote)
             }
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(lines.joined(separator: "\n"))
+            ScrollViewReader { proxy in
+                ScrollView([.horizontal, .vertical]) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(lines.indices, id: \.self) { row in
+                            Text(lines[row])
+                                .id(row)
+                        }
+                    }
                     .font(.caption2.monospaced())
-                    .fixedSize(horizontal: true, vertical: false)
+                    // Preserve every row even when the card has less room than the prompt.
+                    .fixedSize(horizontal: true, vertical: true)
                     .padding(8)
+                }
+                .onChange(of: lines, initial: true) { _, _ in
+                    if let focusedRow { proxy.scrollTo(focusedRow, anchor: .leading) }
+                }
             }
+            .frame(maxHeight: maxContentHeight)
             .background(DS.chipFill, in: RoundedRectangle(cornerRadius: 8))
             HStack(spacing: 8) {
                 key("↑", .up, "Up")

@@ -84,30 +84,35 @@ struct ConversationListView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
             }
-            if conversations.isEmpty {
-                Section {
-                    if filtered.isEmpty && !store.hasLoadedOnce {
-                        // Before the first sync "Nothing needs you" would be a guess.
-                        ProgressView()
-                            .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight)
-                    } else if filtered.isEmpty {
-                        emptyState
-                    } else {
-                        ContentUnavailableView.search(text: query)
+            // Keep the section in place as the filter becomes empty and fills again.
+            // Replacing whole sections lets the Mac List reuse a header's cached height
+            // for a conversation, clipping its computer and status lines.
+            Section {
+                if conversations.isEmpty {
+                    Group {
+                        if filtered.isEmpty && !store.hasLoadedOnce {
+                            // Before the first sync "Nothing needs you" would be a guess.
+                            ProgressView()
+                                .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight)
+                        } else if filtered.isEmpty {
+                            emptyState
+                        } else {
+                            ContentUnavailableView.search(text: query)
+                        }
                     }
-                }
-                .listRowBackground(Color.clear)
-            } else if !active.isEmpty {
-                Section {
+                    .listRowBackground(Color.clear)
+                } else {
                     ForEach(active, id: \.listKey) { conversation in
                         row(conversation, todo: todos[conversation.todoId], board: board,
                             shortcut: shortcuts[conversation.listKey])
                     }
-                } footer: {
-                    #if os(iOS)
-                    Text("Swipe left to close or delete. Swipe right to copy the resume command.")
-                    #endif
                 }
+            } footer: {
+                #if os(iOS)
+                if !conversations.isEmpty {
+                    Text("Swipe left to close or delete. Swipe right to copy the resume command.")
+                }
+                #endif
             }
             #if os(macOS)
             Section {
