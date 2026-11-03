@@ -40,6 +40,7 @@ HOME = os.path.expanduser("~")
 LIB_DIR = os.environ.get("AI_TODO_LIB_DIR") or os.path.join(HOME, ".ai-remote", "bin")
 AI_DIR = os.path.join(HOME, ".ai-remote")
 TREES = os.environ.get("AI_TODO_RUNNER_WORKTREES") or os.path.join(AI_DIR, "worktrees")
+WATCHERS = os.environ.get("AI_TODO_WATCHERS_DIR") or os.path.join(AI_DIR, "watchers")
 OUTCOMES = ("fixed", "needs_you", "cant_fix")
 USAGE = "usage: ai-todo-watch outcome <key> fixed|needs_you|cant_fix \"<note>\" | release <key>... | overwhelmed \"<why>\""
 
@@ -94,6 +95,19 @@ def redactor(conf):
     secrets = ai_todo_redact.secret_values_from_env(os.environ)
     if conf.get("TODO_API_TOKEN"):
         secrets.append(conf["TODO_API_TOKEN"])
+    # The watchers' secrets (the Sentry token) never leave in a note, whatever the agent read.
+    try:
+        with open(os.path.join(WATCHERS, "env")) as f:
+            for line in f:
+                m = re.match(r"\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=(.*)$", line.rstrip("\n"))
+                if m:
+                    raw = m.group(1).strip()
+                    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+                        raw = raw[1:-1]
+                    if len(raw) >= 4:
+                        secrets.append(raw)
+    except OSError:
+        pass
     return lambda text: ai_todo_redact.redact(text, secrets)
 
 

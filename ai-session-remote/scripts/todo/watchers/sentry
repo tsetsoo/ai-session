@@ -35,6 +35,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -43,6 +44,10 @@ MAX_ISSUES = 500
 PAGE = 100
 MAX_DETAILS = 4000
 MAX_FRAMES = 8
+# Event details fetched per check, and the time spent on them: the runner stops a check at 60 s,
+# so a big backlog fills in over several checks instead of never finishing.
+MAX_EVENTS = int(os.environ.get("SENTRY_MAX_EVENTS") or 20)
+EVENTS_SECONDS = 35
 STATE_DIR = os.environ.get("AI_TODO_WATCH_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".ai-remote", "watchers", "state")
 
 
@@ -177,7 +182,7 @@ def cmd_check(args):
     projects = [p.strip() for p in setting("SENTRY_PROJECTS").split(",") if p.strip()]
     where = folders()
     cache = load_cache()
-    cache_changed = False
+    fetched, started = 0, time.monotonic()
     problems, partial = [], False
     for project in projects:
         issues, more = unresolved(org, project)
@@ -186,13 +191,15 @@ def cmd_check(args):
             if not isinstance(issue, dict) or not issue.get("id"):
                 continue
             iid = str(issue["id"])
-            if iid not in cache and not os.environ.get("SENTRY_NO_EVENTS"):
+            if (iid not in cache and not os.environ.get("SENTRY_NO_EVENTS") and fetched < MAX_EVENTS
+                    and time.monotonic() - started < EVENTS_SECONDS):
+                fetched += 1
                 # Details are a bonus: an issue whose event can't be read is still reported,
                 # and tried again on the next check.
                 try:
                     event, _ = try_request("GET", "/organizations/%s/issues/%s/events/latest/" % (org, iid))
                     cache[iid] = event_summary(event)
-                    cache_changed = True
+                    save_cache(cache)
                 except SentryError:
                     pass
             slug = ((issue.get("project") or {}).get("slug")) or project
@@ -212,8 +219,6 @@ def cmd_check(args):
             if where.get(slug):
                 problem["folder"] = where[slug]
             problems.append(problem)
-    if cache_changed:
-        save_cache(cache)
     json.dump({"problems": problems, "partial": partial}, sys.stdout)
     print()
 

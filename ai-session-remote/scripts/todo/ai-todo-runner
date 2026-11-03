@@ -415,6 +415,9 @@ def start_run(hub, computer_id, due, folders):
     if folder != project_folder and not folder.startswith(project_folder.rstrip("/") + "/"):
         raise RuntimeError("folder is outside the project")
     path, is_git, branch = make_worktree(folder, action["project_id"], run["id"], job.get("name") or "job")
+    # A debugging run reports its issues with ai-todo-watch, which only works in a worktree.
+    if (run.get("note") or "").startswith("watch:") and not is_git:
+        raise RuntimeError("a debugging run needs a git repo; %s is not one (map the issue to a repo folder)" % tilde(folder))
     try:
         started = hub.request("POST", "/api/runs/%s/start" % run["id"], body={"cwd": tilde(path), "is_git": is_git})
         ensure_state()

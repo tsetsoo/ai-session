@@ -3125,19 +3125,32 @@ assert bad["ok"] is False and "HTTP 403" in bad["message"] and "secret123" not i
 ' || fail "resolves: $(watch_posts)"
 pass "runner_resolves_and_reports_result"
 
+runs_reset
+due_run r-dbgplain proj-plain '{"mode":"always"}'
+hub_edit "s['due_runs'][0]['run']['note'] = 'watch:'"
+runner tick || fail "tick failed"
+posts_to finish | python3 -c '
+import json, sys
+rows = [json.loads(l) for l in sys.stdin]
+assert len(rows) == 1 and rows[0]["body"]["state"] == "failed" and "git" in rows[0]["body"]["result"], rows
+' || fail "a debugging run outside a git repo: $(posts_to finish)"
+[[ -z "$(posts_to start)" && ! -s "$R_OPEN_LOG" ]] || fail "a debugging run started outside a git repo"
+pass "runner_debug_run_needs_git_repo (ai-todo-watch can only report from a worktree)"
+
 WATCH="${SCRIPT_DIR}/ai-todo-watch"
 W_TREE="${HOME}/.ai-remote/worktrees/proj-app/run-dbg01/src"
 mkdir -p "$W_TREE"
 runs_reset
 (cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" outcome sentry:1 fixed "nil check in Serve") >/dev/null || fail "outcome failed"
 (cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" release sentry:2 sentry:3) >/dev/null || fail "release failed"
-(cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" overwhelmed "40 issues, mostly one cause password=hunter2xyz") >/dev/null || fail "overwhelmed failed"
+(cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" AI_TODO_WATCHERS_DIR="$W_DIR" "$WATCH" overwhelmed "40 issues, mostly one cause password=hunter2xyz token secret123") >/dev/null || fail "overwhelmed failed"
 watch_posts | python3 -c '
 import json, sys
 rows = [json.loads(l) for l in sys.stdin]
 assert rows[0] == {"path": "/api/watch/runs/run-dbg01/outcome", "body": {"key": "sentry:1", "outcome": "fixed", "note": "nil check in Serve"}}, rows
 assert rows[1] == {"path": "/api/watch/runs/run-dbg01/release", "body": {"keys": ["sentry:2", "sentry:3"]}}, rows
 assert rows[2]["path"] == "/api/watch/runs/run-dbg01/overwhelmed" and "hunter2xyz" not in rows[2]["body"]["why"], rows
+assert "secret123" not in rows[2]["body"]["why"], rows
 ' || fail "watch helper posts: $(watch_posts)"
 status=0
 (cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" outcome sentry:1 done "x") >/dev/null 2>&1 || status=$?
@@ -4381,6 +4394,18 @@ echo 100 >"${SN_DIR}/page"
 mkdir -p "${SN_DIR}/state-big" && out=$(AI_TODO_WATCH_STATE_DIR="${SN_DIR}/state-big" SENTRY_API="http://127.0.0.1:$(cat "${SN_DIR}/port")" SENTRY_TOKEN=x SENTRY_ORG=o SENTRY_PROJECTS=go-http SENTRY_NO_EVENTS=1 "$SENTRY" check) || fail "big check failed"
 python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert r["partial"] is True and len(r["problems"]) == 500, (r["partial"], len(r["problems"]))' "$out" || fail "partial not reported"
 pass "sentry_check_partial_past_500"
+
+python3 -c '
+import json
+print(json.dumps([{"id": str(3000 + i), "shortId": "GO-%d" % i, "title": "t", "project": {"slug": "go-http"}} for i in range(25)]))' >"${SN_DIR}/issues-go-http.json"
+: >"${SN_DIR}/log"
+cap_check() { AI_TODO_WATCH_STATE_DIR="${SN_DIR}/state-cap" SENTRY_API="http://127.0.0.1:$(cat "${SN_DIR}/port")" SENTRY_TOKEN=x SENTRY_ORG=o SENTRY_PROJECTS=go-http "$SENTRY" check; }
+out=$(cap_check) || fail "capped check failed"
+python3 -c 'import json,sys; assert len(json.loads(sys.argv[1])["problems"]) == 25' "$out" || fail "capped check lost issues"
+[[ $(grep -c 'events/latest' "${SN_DIR}/log") -eq 20 ]] || fail "first check fetched $(grep -c 'events/latest' "${SN_DIR}/log") events, not 20"
+cap_check >/dev/null || fail "second capped check failed"
+[[ $(grep -c 'events/latest' "${SN_DIR}/log") -eq 25 ]] || fail "second check did not fetch the other 5 events"
+pass "sentry_event_fetches_capped_per_check (a big backlog fills in over several checks)"
 
 : >"${SN_DIR}/log"
 out=$(sentry resolve sentry:11) || fail "resolve failed"
