@@ -89,6 +89,13 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// The visible rows, at most every `screenCheckDelay` after output arrives. Set it to watch
     /// for a Claude or Codex question (see `TerminalPrompt`).
     var onScreenChange: (([String]) -> Void)?
+    #if os(iOS)
+    /// "Uploading photo…" while a pasted photo goes to the computer, a failure for a moment,
+    /// or nil.
+    var onPhotoStatus: ((String?) -> Void)?
+    private var photoTasks: [UUID: Task<Void, Never>] = [:]
+    private var photoError: String?
+    #endif
     private var screenCheckPending = false
     private let screenCheckDelay: TimeInterval = 0.25
     /// The surface is the one on screen. Output for a background conversation is held and fed
@@ -284,6 +291,9 @@ final class TerminalCoordinator: TerminalViewDelegate {
         // cannot fail the session `reconnect()` is about to open.
         sessionGeneration += 1
         resizeDebouncer.cancelPending()
+        #if os(iOS)
+        cancelPhotos()
+        #endif
         // Drop output held while this surface was hidden, and anything still queued in the
         // coalescer. A drain already scheduled then flushes an empty buffer. `reconnect()`
         // calls this before opening the next session, so that session is not replayed.
@@ -370,10 +380,67 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
     /// Pastes the clipboard the way SwiftTerm's own paste does: bracketed when the program
     /// asked for bracketed paste, so a multi-line paste isn't taken as several Returns.
+    /// A photo on the clipboard is copied to the computer instead (iOS) and its path typed.
     func pasteFromClipboard() {
+        #if os(iOS)
+        if pastePhotoFromClipboard() { return }
+        #endif
         guard let text = PlatformSupport.pasteboardString, !text.isEmpty else { return }
         send(TerminalPaste.bytes(for: text, bracketed: isBracketedPasteMode))
     }
+
+    #if os(iOS)
+    /// True when the clipboard held a photo and it is being copied to the computer over SSH.
+    /// Its path is typed at the cursor once it is there. The terminal can't tell when that line
+    /// is sent, so the photo is deleted an hour after the paste.
+    func pastePhotoFromClipboard() -> Bool {
+        guard UIPasteboard.general.hasImages, let image = UIPasteboard.general.image else { return false }
+        let id = UUID()
+        let config = hostConfig
+        photoTasks[id] = Task { @MainActor [weak self] in
+            defer { self?.photoTasks[id] = nil; self?.reportPhotoStatus() }
+            do {
+                let path = try await PastedPhoto(image: image).upload(config: config)
+                _ = try? await NIOSSHClient().exec(config, command: PhotoUpload.deleteCommand(paths: [path]))
+                guard let self, !Task.isCancelled, self.state == .connected else { return }
+                self.send(TerminalPaste.bytes(for: path + " ", bracketed: self.isBracketedPasteMode))
+            } catch where Task.isCancelled || error is CancellationError {
+                // Disconnected: the partial file is already being removed.
+            } catch PastedPhoto.Unreadable.photo {
+                self?.showPhotoError("Couldn’t read that photo.")
+            } catch {
+                self?.showPhotoError("Couldn’t copy the photo. Try pasting it again.")
+            }
+        }
+        reportPhotoStatus()
+        return true
+    }
+
+    private func reportPhotoStatus() {
+        switch photoTasks.count {
+        case 0: onPhotoStatus?(photoError)
+        case 1: onPhotoStatus?("Uploading photo…")
+        case let count: onPhotoStatus?("Uploading \(count) photos…")
+        }
+    }
+
+    private func showPhotoError(_ message: String) {
+        photoError = message
+        onPhotoStatus?(message)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self, self.photoError == message else { return }
+            self.photoError = nil
+            self.reportPhotoStatus()
+        }
+    }
+
+    private func cancelPhotos() {
+        photoTasks.values.forEach { $0.cancel() }
+        photoTasks = [:]
+        photoError = nil
+        onPhotoStatus?(nil)
+    }
+    #endif
 
     /// Types `text` as a paste, then Return.
     func submit(_ text: String) {

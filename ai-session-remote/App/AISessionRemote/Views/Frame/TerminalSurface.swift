@@ -235,6 +235,7 @@ private struct TerminalContainerView: UIViewRepresentable {
         let view = TouchScrollTerminalView(frame: .zero)
         // The surface docks `KeyBar` instead of SwiftTerm's `TerminalAccessory`.
         view.inputAccessoryView = UIView(frame: .zero)
+        view.onPastePhoto = { [weak coordinator] in coordinator?.pastePhotoFromClipboard() ?? false }
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         coordinator.setPalette(palette)
         view.isUserInteractionEnabled = hitTarget == .grid
@@ -364,6 +365,8 @@ struct TerminalSurface: View {
     #if os(iOS)
     @State private var ctrlArmed = false
     @State private var keyboardVisible = false
+    /// "Uploading photo…" over the top of the terminal while a pasted photo is on its way.
+    @State private var photoStatus: String?
     #endif
 
     /// - Parameters:
@@ -479,6 +482,21 @@ struct TerminalSurface: View {
     private var surface: some View {
         ZStack {
             terminalGrid
+            #if os(iOS)
+            if let photoStatus {
+                VStack {
+                    Text(photoStatus)
+                        .font(.footnote.weight(.medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.top, 8)
+                    Spacer()
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+            #endif
             if showConnectingOverlay && (connectionState == .connecting || connectionState == .idle) {
                 connectingOverlay
             }
@@ -513,6 +531,9 @@ struct TerminalSurface: View {
                 onEnded(exitStatus)
             }
             coordinator.onUserInput = onUserInput
+            #if os(iOS)
+            coordinator.onPhotoStatus = { photoStatus = $0 }
+            #endif
             coordinator.onScreenChange = { [weak handle] lines in handle?.screenChanged(lines) }
             handle?.coordinator = coordinator
             handle?.reconnectAction = { Task { await reconnect() } }

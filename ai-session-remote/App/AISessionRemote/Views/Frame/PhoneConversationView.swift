@@ -257,20 +257,16 @@ struct PhoneConversationView<TerminalContent: View>: View {
         photoError = nil
         let id = UUID()
         let name = "\(id.uuidString.lowercased()).jpg"
-        let photo = PastedPhoto(image: image)
         photoTasks[id] = Task { @MainActor in
             defer { photoTasks[id] = nil }
-            // Scaling a 48 MP photo takes a while; keep it off the main thread.
-            guard let data = await Task.detached(priority: .userInitiated, operation: { photo.jpeg() }).value else {
-                photoError = "Couldn’t read that photo."
-                return
-            }
             do {
-                let path = try await PhotoUpload.upload(data, name: name, config: config, ssh: NIOSSHClient())
+                let path = try await PastedPhoto(image: image).upload(name: name, config: config)
                 uploadedPhotos.append(path)
                 draftEditor.insert(path + " ")
             } catch where Task.isCancelled || error is CancellationError {
                 // Left the conversation: the partial file is already being removed.
+            } catch PastedPhoto.Unreadable.photo {
+                photoError = "Couldn’t read that photo."
             } catch {
                 photoError = "Couldn’t copy the photo to \(conversation.computer.name). Try pasting it again."
             }
@@ -337,30 +333,6 @@ struct PhoneConversationView<TerminalContent: View>: View {
                     : "The session isn’t ready for a message. Open Terminal to check it. Your draft is saved here."
             }
         }
-    }
-}
-
-/// A pasted photo, scaled and encoded away from the main thread. UIImage is safe to read from
-/// any thread once made, and nothing changes this one.
-private struct PastedPhoto: @unchecked Sendable {
-    let image: UIImage
-
-    /// The model scales images down to about this long edge anyway, so a bigger one only
-    /// costs upload time. Transparent areas become white, as JPEG has no transparency.
-    func jpeg(longEdge: CGFloat = 1568) -> Data? {
-        let size = image.size
-        guard size.width > 0, size.height > 0 else { return nil }
-        let scale = min(1, longEdge / max(size.width, size.height))
-        let target = CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        format.opaque = true
-        let resized = UIGraphicsImageRenderer(size: target, format: format).image { context in
-            UIColor.white.setFill()
-            context.fill(CGRect(origin: .zero, size: target))
-            image.draw(in: CGRect(origin: .zero, size: target))
-        }
-        return resized.jpegData(compressionQuality: 0.85)
     }
 }
 #endif
