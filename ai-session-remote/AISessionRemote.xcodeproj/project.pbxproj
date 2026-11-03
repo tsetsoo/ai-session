@@ -78,6 +78,7 @@
 		43742E0FFAA3656D1B6E80B8 /* TodoRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CB81134A32870654F0473B2 /* TodoRow.swift */; };
 		44F3E96E02F25239D27F1CE9 /* ProjectMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */; };
 		459745DF108E3518C8BB10E3 /* NIOSSHClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */; };
+		465F34DE80D17EF111F5AE60 /* PastedPhoto.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA6283BF8B0D73C324854FCF /* PastedPhoto.swift */; };
 		46D9BAF045E1DB923CD0174A /* SidebarModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77812A59712865DEA10BA4B1 /* SidebarModel.swift */; };
 		4798B1536086B407EB854423 /* DemoFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA54D98ADC3ACCD267883621 /* DemoFixtures.swift */; };
 		47BA8BDD90F1E015257BC3BE /* TransientValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7E9EA050869E8EB945D576 /* TransientValue.swift */; };
@@ -249,6 +250,7 @@
 		DE709355ECEEA8775AB8E62E /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90D767C2AC93115AC1E9B3F4 /* HostStore.swift */; };
 		DE9A16A1D79FF049E688395B /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = 650353A821892A0627808D84 /* NIOPosix */; };
 		DEC7BB251D56E61ACCB79C2D /* SSHConnectionPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */; };
+		DFE51CCFE1AF61B94531D16D /* PastedPhoto.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA6283BF8B0D73C324854FCF /* PastedPhoto.swift */; };
 		E135A9C032C1EEE94521B02D /* ChatCodeBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D85EAC354443F3D03E6BAD90 /* ChatCodeBlock.swift */; };
 		E174CD3627AEC66039734C6F /* OnThisComputerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24947A77BA8C57130367110F /* OnThisComputerView.swift */; };
 		E2A339E52CAD6A60C4906591 /* KeyBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4968C45BBA0F9D47DF734624 /* KeyBar.swift */; };
@@ -457,6 +459,7 @@
 		F7B4DE59A842C29732755FED /* TerminalOutputCoalescer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalOutputCoalescer.swift; sourceTree = "<group>"; };
 		F85D0650002C6172FF438409 /* ProjectsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsView.swift; sourceTree = "<group>"; };
 		FA4DD29F996099D82C6D7514 /* HostEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEntity.swift; sourceTree = "<group>"; };
+		FA6283BF8B0D73C324854FCF /* PastedPhoto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PastedPhoto.swift; sourceTree = "<group>"; };
 		FC52BED04F49AD7A7B30B16E /* MCPStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStoreTests.swift; sourceTree = "<group>"; };
 		FC6FD9E3610549559A6206B4 /* PhoneAutomation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneAutomation.swift; sourceTree = "<group>"; };
 		FCE24CED81E2D0F51FE59940 /* WatchersPanes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchersPanes.swift; sourceTree = "<group>"; };
@@ -663,6 +666,7 @@
 				EE3B756FF0192985AADAFF36 /* HostRepository.swift */,
 				D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */,
 				985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */,
+				FA6283BF8B0D73C324854FCF /* PastedPhoto.swift */,
 				EF6DEE121192E3AD0DCE2E22 /* ReachabilityProbe.swift */,
 				B24103E63B65EE5783B9E334 /* RemoteConversations.swift */,
 				CAA172C22AAE74D2E6E00975 /* RemoteLimits.swift */,
@@ -1097,6 +1101,7 @@
 				0EBEF766C754B360334DAFB5 /* NotificationSettingsView.swift in Sources */,
 				BF9A18AF476748AE63B0CF5E /* OnThisComputerView.swift in Sources */,
 				9E2353625C323498C43847EE /* OpenSSHPrivateKeyParser.swift in Sources */,
+				465F34DE80D17EF111F5AE60 /* PastedPhoto.swift in Sources */,
 				198CA4A6590C5F06551A9C63 /* PhoneAutomation.swift in Sources */,
 				9319FAEB5DC0DF9A6C10C1B3 /* PhoneConversationView.swift in Sources */,
 				8A86245F4D6DB1F9A7A87844 /* PhoneShell.swift in Sources */,
@@ -1218,6 +1223,7 @@
 				E7262818704634E6B9AEE94B /* NotificationSettingsView.swift in Sources */,
 				E174CD3627AEC66039734C6F /* OnThisComputerView.swift in Sources */,
 				98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */,
+				DFE51CCFE1AF61B94531D16D /* PastedPhoto.swift in Sources */,
 				04A0FF5D5DEEC1749B5C5545 /* PhoneAutomation.swift in Sources */,
 				6B92586B4E148229B78351F0 /* PhoneConversationView.swift in Sources */,
 				0299C3EF9137E36AF7C6A392 /* PhoneShell.swift in Sources */,
