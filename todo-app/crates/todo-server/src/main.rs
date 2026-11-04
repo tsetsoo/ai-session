@@ -22,6 +22,7 @@ mod runner_api;
 mod scheduler;
 mod sessions;
 mod today;
+mod updates;
 mod watch;
 #[cfg(test)]
 mod test_support;
@@ -146,6 +147,9 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/today/settings", web::get().to(today::get_settings))
         .route("/api/today/settings", web::put().to(today::put_settings))
         .route("/api/runner/due", web::get().to(runner_api::due))
+        .route("/api/updates/match", web::post().to(updates::match_sessions))
+        .route("/api/updates/summaries", web::post().to(updates::post_summaries))
+        .route("/api/updates/reports", web::post().to(updates::post_report))
         .route("/api/runs/{id}/claim", web::post().to(runner_api::claim))
         .route("/api/runs/{id}/wait", web::post().to(runner_api::wait))
         .route("/api/runs/{id}/start", web::post().to(runner_api::start))
