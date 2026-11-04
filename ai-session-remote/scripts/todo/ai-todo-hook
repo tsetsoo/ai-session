@@ -233,9 +233,9 @@ allowed = "-_" if sys.argv[2] == "codex" else "-"
 if not isinstance(sid, str) or not sid or not all(c.isalnum() or c in allowed for c in sid):
     sys.exit(1)
 status, tool = sys.argv[1], sys.argv[2]
-if tool == "claude" and data.get("agent_id"):
-    sys.exit(1)  # A subagent ending must not mark the parent conversation complete.
 event = data.get("hook_event_name")
+if tool == "claude" and data.get("agent_id") and event in ("Stop", "UserPromptSubmit", "SessionEnd", "StopFailure"):
+    sys.exit(1)  # A subagent ending must not mark the parent conversation complete.
 if tool == "claude" and event == "Notification" and data.get("notification_type") in ("auth_success", "local_command"):
     sys.exit(1)
 msg = data.get("message")
@@ -261,11 +261,25 @@ else:
     out = {"claude_session_id": sid, "status": status, "attended": False}
 if isinstance(event, str):
     out["_hook_event"] = event
+if tool == "claude":
+    # Local-only evidence, removed by the publisher before delivery. Never copy task
+    # commands/descriptions or final response text into the outbox.
+    evidence = {"waiting": status == "waiting", "agent_id": data.get("agent_id"),
+                "prompt_id": data.get("tool_use_id") or data.get("elicitation_id")}
+    if event in ("Stop", "SubagentStop", "SubagentStart"):
+        evidence["transcript_path"] = data.get("transcript_path")
+        evidence["agent_id"] = data.get("agent_id")
+        tasks = data.get("background_tasks")
+        if isinstance(tasks, list):
+            evidence["background_tasks"] = [
+                {"id": t.get("id"), "type": t.get("type")} if isinstance(t, dict) else None for t in tasks]
+    out["_claude"] = evidence
 if status == "waiting" and msg:
     out["message"] = msg[:500]
 print(sid)
 print(status)
 print(json.dumps(out))
+print("activity" if tool == "claude" and event in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "ElicitationResult") else "")
 ' "$status" "$tool" 2>/dev/null) || exit 0
   sid=$(printf '%s\n' "$parsed" | sed -n 1p)
   status=$(printf '%s\n' "$parsed" | sed -n 2p)
@@ -282,6 +296,13 @@ else
   else
     body=$(printf '{"claude_session_id":"%s","status":"%s","attended":false}' "$sid" "$status")
   fi
+fi
+
+# A main tool call can be a Stop-hook continuation or a background wakeup. It must
+# reach the durable publisher even when runtime busy already set the legacy file.
+# Once there, unchanged busy reports are coalesced without an HTTP request.
+if [ "$(printf '%s\n' "${parsed:-}" | sed -n 4p)" = activity ]; then
+  only_if_changed=
 fi
 
 state_dir="$HOME/.ai-remote/hook-state"
@@ -327,6 +348,10 @@ post() {
   if [ -x "$status_bin" ] && [ -n "$event_time" ]; then
     printf '%s' "$body" | "$status_bin" publish --time "$event_time"
     return $?
+  fi
+  # Internal evidence belongs only in the durable local publisher.
+  if command -v python3 >/dev/null 2>&1; then
+    body=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.dumps({k:v for k,v in json.load(sys.stdin).items() if not k.startswith("_")}))')
   fi
   # The token goes through curl's config on stdin so it never shows up in `ps`.
   {
