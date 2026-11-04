@@ -254,6 +254,16 @@ class SummarizeRunTests(Base):
         up.main(["run"])
         self.assertEqual(len(self.hub.posted("/api/updates/reports")), 1)
         self.assertEqual(len(self.model_calls()), 4, "the posted one isn't summarized again")
+        failed = [i for b in self.hub.posted("/api/updates/summaries") for i in b["items"] if i.get("failed")]
+        self.assertEqual([(i["session_id"], i["summary"]) for i in failed], [("s2", "")], "the day says so")
+
+    def test_unreadable_transcript_counted_as_failed(self):
+        self.add_session("gone", entries=[])
+        (self.home / "t-gone.json").unlink()
+        up.main(["run"])
+        items = [i for b in self.hub.posted("/api/updates/summaries") for i in b["items"]]
+        self.assertEqual([(i["session_id"], i.get("failed")) for i in items], [("gone", True)])
+        self.assertEqual(len(self.hub.posted("/api/updates/reports")), 1)
 
     def test_lock_held_exits_without_hub(self):
         os.makedirs(self.home / "state", exist_ok=True)
@@ -300,6 +310,14 @@ class CommitTests(unittest.TestCase):
         git(r, "checkout", "-q", "main")
         start, end = up.day_window(DAY)
         self.assertEqual(sorted(c["subject"] for c in up.user_commits(str(r), start, end)), ["mine", "scheduled run"])
+
+    def test_plus_address_matches_exactly(self):
+        r = self.repo(self.root / "r")
+        git(r, "config", "user.email", "me+work@x.io")
+        commit(r, "mine", "me+work@x.io", "2026-11-02T09:00:00Z")
+        commit(r, "lookalike", "mexwork@x.io", "2026-11-02T10:00:00Z")
+        start, end = up.day_window(DAY)
+        self.assertEqual([c["subject"] for c in up.user_commits(str(r), start, end)], ["mine"])
 
     def test_cherry_pick_counted_once(self):
         r = self.repo(self.root / "r")

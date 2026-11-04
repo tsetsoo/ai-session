@@ -16,6 +16,7 @@ struct ProjectUpdatesSection: View {
     @State private var shownSummaries: Set<String> = []
     @State private var copied: String?
     @State private var errorMessage: String?
+    @State private var isLoadingOlder = false
 
     private static let pageSize = 14
 
@@ -23,13 +24,15 @@ struct ProjectUpdatesSection: View {
         Section {
             if let updates {
                 if updates.isEmpty {
-                    Text("The first update appears after 08:00 tomorrow.").foregroundStyle(.secondary)
+                    Text("No updates yet. Each morning after 08:00, the previous day's work shows here.")
+                        .foregroundStyle(.secondary)
                 }
                 ForEach(updates) { update in
                     day(update)
                 }
                 if canLoadOlder {
                     Button("Show Older") { Task { await loadOlder() } }
+                        .disabled(isLoadingOlder)
                 }
             } else {
                 ProgressView().frame(maxWidth: .infinity)
@@ -42,7 +45,15 @@ struct ProjectUpdatesSection: View {
         } header: {
             Text("Updates")
         }
-        .task(id: "\(project.id)|\(store.revision)") { await loadFirstPage() }
+        .task(id: "\(project.id)|\(store.revision)") {
+            // Hub broadcasts come in bursts while conversations run: wait for a quiet moment
+            // (a newer revision cancels this task) before reloading.
+            if updates != nil {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { return }
+            }
+            await loadFirstPage()
+        }
     }
 
     // MARK: A day
@@ -56,6 +67,12 @@ struct ProjectUpdatesSection: View {
                 Text(ChatStyledText.make(update.text))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if update.failed > 0 {
+                    Label(update.failed == 1 ? "1 conversation couldn't be summarized"
+                          : "\(update.failed) conversations couldn't be summarized", systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if !update.waitingOn.isEmpty {
                     Label("Waiting on: \(update.waitingOn.joined(separator: ", "))", systemImage: "clock")
                         .font(.caption)
@@ -125,11 +142,13 @@ struct ProjectUpdatesSection: View {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                 Spacer()
-                if todo == nil {
+                if row.todoId == nil {
                     Text("terminal only").font(.caption).foregroundStyle(.secondary)
+                } else if todo == nil {
+                    Text("todo archived or deleted").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Text(row.summary).font(.callout).foregroundStyle(.secondary)
+            Text(row.failed ? "Couldn't be summarized." : row.summary).font(.callout).foregroundStyle(.secondary)
             Text("\(row.tool) · \(row.computer)").font(.caption2).foregroundStyle(.tertiary)
         }
         .padding(.vertical, 2)
@@ -145,8 +164,9 @@ struct ProjectUpdatesSection: View {
             guard !Task.isCancelled else { return }
             // Keep older pages already shown; replace the newest page.
             let older = (updates ?? []).filter { u in page.last.map { u.day < $0.day } ?? false }
-            if updates == nil, let newest = page.first { expanded.insert(newest.day) }
-            updates = page + older
+            // The newest day opens when it first shows up (on first load, or a new morning's).
+            if let newest = page.first, newest.day != updates?.first?.day { expanded.insert(newest.day) }
+            updates = UpdateDay.appending(page, older)
             if updates?.count == page.count { canLoadOlder = page.count == Self.pageSize }
             for day in shownSummaries { await loadSummaries(day) }
             errorMessage = nil
@@ -158,10 +178,12 @@ struct ProjectUpdatesSection: View {
     }
 
     private func loadOlder() async {
-        guard let last = updates?.last else { return }
+        guard !isLoadingOlder, let last = updates?.last else { return }
+        isLoadingOlder = true
+        defer { isLoadingOlder = false }
         do {
             let page = try await store.projectUpdates(projectId: project.id, before: last.day, limit: Self.pageSize)
-            updates = (updates ?? []) + page
+            updates = UpdateDay.appending(updates ?? [], page)
             canLoadOlder = page.count == Self.pageSize
         } catch {
             errorMessage = TodoHubStore.message(for: error)

@@ -13,8 +13,8 @@ minutes); one run:
    model with no tools: Claude Haiku (`claude -p --tools ""`), or GPT-6.1 Terra in a read-only
    sandbox with no network when Claude has no headroom. Without headroom for either, the run
    stops and a later one tries again. Summaries go to POST /api/updates/summaries; then POST
-   /api/updates/reports says the day is done here. A conversation that fails 3 runs in a row
-   is left out.
+   /api/updates/reports says the day is done here. A conversation that fails 3 runs in a row,
+   or whose transcript can't be read, is posted as failed: the day shows it wasn't summarized.
 3. For each project update to write: the project's commits in the window (the user's own, by
    the repo's user.email, plus scheduled/* branches) and the hub's summaries and completed
    todos go to the same model with the project's style; the Markdown goes to
@@ -405,6 +405,14 @@ def read_transcript(tool, sid):
     return entries if isinstance(entries, list) else None
 
 
+def post_failed(hub, computer_id, day, s):
+    """A conversation that couldn't be summarized: counted on the day, not written from."""
+    item = {"tool": s["tool"], "session_id": s["session_id"], "cwd": s.get("cwd") or "",
+            "title": redact(s.get("title") or ""), "summary": "", "jira_keys": [], "model": "", "failed": True}
+    hub.request("POST", "/api/updates/summaries", body={"computer_id": computer_id, "day": day, "items": [item]})
+    log("summary_given_up", day=day, session="%s:%s" % (s["tool"], s["session_id"]))
+
+
 def summarize_day(hub, computer_id, day, settings, state, usage=read_usage):
     """Summarizes and posts the day's conversations here; reports the day when none is left
     to retry. Raises Wait when neither tool has headroom."""
@@ -430,6 +438,9 @@ def summarize_day(hub, computer_id, day, settings, state, usage=read_usage):
             continue
         entries = read_transcript(s["tool"], s["session_id"])
         if entries is None:
+            # Touched in the window but unreadable: the day says so.
+            post_failed(hub, computer_id, day, s)
+            done.append(key)
             continue
         entries = window_entries(entries, start, end)
         if not entries:
@@ -448,6 +459,10 @@ def summarize_day(hub, computer_id, day, settings, state, usage=read_usage):
             log("summary_failed", day=day, session=key, error=e, count=failures[fail_key])
             if failures[fail_key] < MAX_FAILURES:
                 retry_later = True
+            else:
+                post_failed(hub, computer_id, day, s)
+                done.append(key)
+                failures.pop(fail_key, None)
             continue
         item = {"tool": s["tool"], "session_id": s["session_id"], "cwd": s.get("cwd") or "", "title": redact(title),
                 "summary": redact(out["summary"]), "jira_keys": verified_keys(out["jira_keys"], text, title),

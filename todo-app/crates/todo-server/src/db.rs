@@ -121,6 +121,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v17_objects(&conn).expect("Failed to create today objects");
     create_v18_objects(&conn).expect("Failed to add job templates");
     create_v19_objects(&conn).expect("Failed to create daily update objects");
+    create_v20_objects(&conn).expect("Failed to add the failed-summary column");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -545,6 +546,14 @@ const V19_OBJECTS: &str = "
     CREATE INDEX IF NOT EXISTS project_updates_day ON project_updates(day);
 ";
 
+/// v20: a conversation that couldn't be summarized is stored as such, so its day says so.
+fn create_v20_objects(conn: &Connection) -> rusqlite::Result<()> {
+    if table_sql(conn, "update_summaries")?.is_some() && !column_exists(conn, "update_summaries", "failed")? {
+        conn.execute_batch("ALTER TABLE update_summaries ADD COLUMN failed INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    Ok(())
+}
+
 fn create_v19_objects(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(V19_OBJECTS)?;
     for (table, column, ddl) in [
@@ -722,7 +731,7 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -738,6 +747,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     }
     if table_sql(conn, "reminders")?.is_some() {
         if table_sql(conn, "project_updates")?.is_some() {
+            if column_exists(conn, "update_summaries", "failed")? {
+                return Ok(20);
+            }
             return Ok(19);
         }
         if column_exists(conn, "computers", "job_templates")? {
@@ -2639,7 +2651,7 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 19);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         for t in ["update_summaries", "update_reports", "project_updates"] {
             assert!(table_sql(&conn, t).unwrap().is_some(), "{t}");
         }

@@ -11,6 +11,8 @@ public struct ProjectUpdate: Codable, Hashable, Identifiable, Sendable {
     public var text: String
     public var commits: Int
     public var conversations: Int
+    /// Conversations of that day that couldn't be summarized.
+    public var failed: Int
     /// Computers that hadn't reported when it was written.
     public var waitingOn: [String]
     public var writtenAt: String
@@ -19,15 +21,32 @@ public struct ProjectUpdate: Codable, Hashable, Identifiable, Sendable {
 
     public var id: String { day }
 
-    public init(day: String, text: String, commits: Int = 0, conversations: Int = 0, waitingOn: [String] = [],
-                writtenAt: String = "", rewriting: Bool = false) {
+    public init(day: String, text: String, commits: Int = 0, conversations: Int = 0, failed: Int = 0,
+                waitingOn: [String] = [], writtenAt: String = "", rewriting: Bool = false) {
         self.day = day
         self.text = text
         self.commits = commits
         self.conversations = conversations
+        self.failed = failed
         self.waitingOn = waitingOn
         self.writtenAt = writtenAt
         self.rewriting = rewriting
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case day, text, commits, conversations, failed, waitingOn, writtenAt, rewriting
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        day = try c.decode(String.self, forKey: .day)
+        text = try c.decode(String.self, forKey: .text)
+        commits = try c.decodeIfPresent(Int.self, forKey: .commits) ?? 0
+        conversations = try c.decodeIfPresent(Int.self, forKey: .conversations) ?? 0
+        failed = try c.decodeIfPresent(Int.self, forKey: .failed) ?? 0
+        waitingOn = try c.decodeIfPresent([String].self, forKey: .waitingOn) ?? []
+        writtenAt = try c.decodeIfPresent(String.self, forKey: .writtenAt) ?? ""
+        rewriting = try c.decodeIfPresent(Bool.self, forKey: .rewriting) ?? false
     }
 }
 
@@ -41,8 +60,26 @@ public struct UpdateSummary: Codable, Hashable, Identifiable, Sendable {
     public var summary: String
     public var jiraKeys: [String]
     public var computer: String
+    /// It couldn't be summarized; `summary` is empty.
+    public var failed: Bool
 
     public var id: String { "\(tool):\(sessionId)" }
+
+    private enum CodingKeys: String, CodingKey {
+        case tool, sessionId, todoId, title, summary, jiraKeys, computer, failed
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tool = try c.decode(String.self, forKey: .tool)
+        sessionId = try c.decode(String.self, forKey: .sessionId)
+        todoId = try c.decodeIfPresent(String.self, forKey: .todoId)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        jiraKeys = try c.decodeIfPresent([String].self, forKey: .jiraKeys) ?? []
+        computer = try c.decodeIfPresent(String.self, forKey: .computer) ?? ""
+        failed = try c.decodeIfPresent(Bool.self, forKey: .failed) ?? false
+    }
 }
 
 public enum UpdateDay {
@@ -61,6 +98,12 @@ public enum UpdateDay {
         f.dateFormat = "EEE d MMM"
         return f
     }()
+
+    /// `older` added after `shown`, skipping days already there (a page loaded twice).
+    public static func appending(_ shown: [ProjectUpdate], _ older: [ProjectUpdate]) -> [ProjectUpdate] {
+        let days = Set(shown.map(\.day))
+        return shown + older.filter { !days.contains($0.day) }
+    }
 
     /// "Mon 2 Nov" for "2026-11-02"; anything else is returned as it is.
     public static func label(_ day: String) -> String {

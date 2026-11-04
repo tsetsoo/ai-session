@@ -180,6 +180,9 @@ pub struct SummaryItem {
     pub jira_keys: Vec<String>,
     #[serde(default)]
     pub model: String,
+    /// The runner gave up on this conversation; it's counted on the day, not written from.
+    #[serde(default)]
+    pub failed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,12 +221,12 @@ pub(crate) fn summaries_db(conn: &Connection, req: &SummariesRequest) -> Result<
         // `seq` grows with every stored summary, so a write can tell which ones it included.
         let seq: i64 = tx.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM update_summaries", [], |r| r.get(0))?;
         tx.execute(
-            "INSERT INTO update_summaries (id, project_id, day, computer_id, tool, session_id, todo_id, title, summary, jira_keys, model, seq)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO update_summaries (id, project_id, day, computer_id, tool, session_id, todo_id, title, summary, jira_keys, model, seq, failed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT (project_id, day, tool, session_id) DO UPDATE SET
                 computer_id = excluded.computer_id, todo_id = excluded.todo_id, title = excluded.title,
                 summary = excluded.summary, jira_keys = excluded.jira_keys, model = excluded.model,
-                seq = excluded.seq, created_at = datetime('now')",
+                seq = excluded.seq, failed = excluded.failed, created_at = datetime('now')",
             params![
                 Uuid::new_v4().to_string(),
                 project_id,
@@ -237,6 +240,7 @@ pub(crate) fn summaries_db(conn: &Connection, req: &SummariesRequest) -> Result<
                 serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()),
                 cut(&item.model, 80),
                 seq,
+                item.failed as i64,
             ],
         )?;
         // An update already written for that day is rewritten with this summary in it.
@@ -409,7 +413,7 @@ fn write_item(conn: &Connection, p: &OnProject, day: &str) -> rusqlite::Result<W
     let mut stmt = conn.prepare(
         "SELECT u.title, u.summary, u.jira_keys, COALESCE(c.name, u.computer_id) FROM update_summaries u
          LEFT JOIN computers c ON c.id = u.computer_id
-         WHERE u.project_id = ?1 AND u.day = ?2 ORDER BY u.created_at, u.rowid",
+         WHERE u.project_id = ?1 AND u.day = ?2 AND u.failed = 0 ORDER BY u.created_at, u.rowid",
     )?;
     let summaries = stmt
         .query_map(params![p.id, day], |r| {
@@ -659,7 +663,8 @@ pub(crate) fn list_updates_db(conn: &Connection, project_id: &str, q: &ListQuery
     let limit = q.limit.unwrap_or(LIST_DEFAULT).clamp(1, LIST_MAX);
     let mut stmt = conn.prepare(
         "SELECT u.day, u.text, u.commits, u.waiting_on, u.written_at, u.rewrite_requested, u.stale,
-                (SELECT COUNT(*) FROM update_summaries s WHERE s.project_id = u.project_id AND s.day = u.day)
+                (SELECT COUNT(*) FROM update_summaries s WHERE s.project_id = u.project_id AND s.day = u.day AND s.failed = 0),
+                (SELECT COUNT(*) FROM update_summaries s WHERE s.project_id = u.project_id AND s.day = u.day AND s.failed = 1)
          FROM project_updates u
          WHERE u.project_id = ?1 AND u.text != '' AND (?2 IS NULL OR u.day < ?2)
          ORDER BY u.day DESC LIMIT ?3",
@@ -674,6 +679,7 @@ pub(crate) fn list_updates_db(conn: &Connection, project_id: &str, q: &ListQuery
             written_at: r.get(4)?,
             rewriting: r.get::<_, i64>(5)? != 0 || r.get::<_, i64>(6)? != 0,
             conversations: r.get(7)?,
+            failed: r.get(8)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -692,7 +698,7 @@ pub async fn list_updates(pool: web::Data<DbPool>, path: web::Path<String>, q: w
 pub(crate) fn day_summaries_db(conn: &Connection, project_id: &str, day: &str) -> Result<Vec<UpdateSummary>, UpdateError> {
     checked_day(day)?;
     let mut stmt = conn.prepare(
-        "SELECT u.tool, u.session_id, u.todo_id, u.title, u.summary, u.jira_keys, COALESCE(c.name, u.computer_id)
+        "SELECT u.tool, u.session_id, u.todo_id, u.title, u.summary, u.jira_keys, COALESCE(c.name, u.computer_id), u.failed
          FROM update_summaries u LEFT JOIN computers c ON c.id = u.computer_id
          WHERE u.project_id = ?1 AND u.day = ?2 ORDER BY u.created_at, u.rowid",
     )?;
@@ -706,6 +712,7 @@ pub(crate) fn day_summaries_db(conn: &Connection, project_id: &str, day: &str) -
             summary: r.get(4)?,
             jira_keys: serde_json::from_str(&keys).unwrap_or_default(),
             computer: r.get(6)?,
+            failed: r.get::<_, i64>(7)? != 0,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1058,6 +1065,7 @@ mod tests {
                     summary: "late".into(),
                     jira_keys: vec![],
                     model: "haiku".into(),
+                    failed: false,
                 }],
             },
         )
@@ -1220,6 +1228,7 @@ mod tests {
                         summary: "x".into(),
                         jira_keys: vec![],
                         model: String::new(),
+                        failed: false,
                     }],
                 },
             )
@@ -1268,6 +1277,7 @@ mod tests {
                     summary: "late".into(),
                     jira_keys: vec![],
                     model: "haiku".into(),
+                    failed: false,
                 }],
             },
         )
@@ -1329,5 +1339,46 @@ mod tests {
         rewrite_db(&conn, "pa", "2026-10-28").ok().unwrap();
         let work = runner_db(&conn, "mac", utc("2026-11-04 08:01:00")).ok().unwrap();
         assert!(write_days(&work).contains(&("pa".to_string(), "2026-10-28".to_string())));
+    }
+    // --- Conversations that couldn't be summarized ---------------------------------------
+
+    #[actix_web::test]
+    async fn failed_summaries_are_counted_not_written_from() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET daily_updates_since = '2026-11-03'", []).unwrap();
+        let (status, resp) = post(
+            &pool,
+            "/api/updates/summaries",
+            json!({"computer_id": "mac", "day": "2026-11-03", "items": [
+                {"tool": "claude", "session_id": "ok", "cwd": "~/w/a", "title": "Good", "summary": "Did it", "jira_keys": [], "model": "haiku"},
+                {"tool": "claude", "session_id": "bad", "cwd": "~/w/a", "title": "Broken", "summary": "", "failed": true}
+            ]}),
+        )
+        .await;
+        assert_eq!((status, resp), (StatusCode::OK, json!({"stored": 2, "skipped": 0})));
+        report(&conn, "mac", "2026-11-03");
+        let now = utc("2026-11-04 08:01:00");
+        let work = runner_db(&conn, "mac", now).ok().unwrap();
+        assert_eq!(work.write[0].summaries.iter().map(|s| s.summary.as_str()).collect::<Vec<_>>(), vec!["Did it"]);
+        put_update_db(&conn, "pa", "2026-11-03", &PutUpdateRequest { text: "x".into(), commits: 0, generation: None }, now).ok().unwrap();
+        let (_, list) = crate::test_support::get(&pool, "/api/projects/pa/updates").await;
+        assert_eq!((&list[0]["conversations"], &list[0]["failed"]), (&json!(1), &json!(1)));
+        let (_, rows) = crate::test_support::get(&pool, "/api/projects/pa/updates/2026-11-03/summaries").await;
+        assert_eq!(rows.as_array().unwrap().iter().map(|r| r["failed"].clone()).collect::<Vec<_>>(), vec![json!(false), json!(true)]);
+    }
+
+    #[actix_web::test]
+    async fn later_success_replaces_failure() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let body = |failed: bool, summary: &str| json!({"computer_id": "mac", "day": "2026-11-03", "items": [
+            {"tool": "claude", "session_id": "s", "cwd": "~/w/a", "title": "T", "summary": summary, "failed": failed}]});
+        post(&pool, "/api/updates/summaries", body(true, "")).await;
+        post(&pool, "/api/updates/summaries", body(false, "fine now")).await;
+        let failed: i64 = conn.query_row("SELECT failed FROM update_summaries", [], |r| r.get(0)).unwrap();
+        assert_eq!(failed, 0);
     }
 }

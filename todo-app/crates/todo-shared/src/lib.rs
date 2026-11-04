@@ -511,6 +511,9 @@ pub struct ProjectUpdate {
     pub commits: u32,
     /// Conversation summaries it was written from.
     pub conversations: u32,
+    /// Conversations of that day that couldn't be summarized.
+    #[serde(default)]
+    pub failed: u32,
     /// Computers that hadn't reported when it was written.
     pub waiting_on: Vec<String>,
     pub written_at: String,
@@ -528,6 +531,9 @@ pub struct UpdateSummary {
     pub summary: String,
     pub jira_keys: Vec<String>,
     pub computer: String,
+    /// The conversation couldn't be summarized (`summary` is empty).
+    #[serde(default)]
+    pub failed: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

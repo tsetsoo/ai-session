@@ -79,6 +79,33 @@ final class UpdatesClientTests: XCTestCase {
         XCTAssertEqual(object["update_style"] as? String, "x")
     }
 
+    func testFailedCountsDecodeWithDefaults() throws {
+        let decoder = TodoHubClient.makeDecoder()
+        let old = try decoder.decode(ProjectUpdate.self, from: Data("""
+        {"day":"2026-11-02","text":"x","commits":0,"conversations":1,"waiting_on":[],"written_at":"","rewriting":false}
+        """.utf8))
+        XCTAssertEqual(old.failed, 0)
+        let new = try decoder.decode(ProjectUpdate.self, from: Data("""
+        {"day":"2026-11-02","text":"x","commits":0,"conversations":1,"failed":2,"waiting_on":[],"written_at":"","rewriting":false}
+        """.utf8))
+        XCTAssertEqual(new.failed, 2)
+        let summary = try decoder.decode(UpdateSummary.self, from: Data("""
+        {"tool":"claude","session_id":"s","todo_id":null,"title":"T","summary":"","jira_keys":[],"computer":"mac","failed":true}
+        """.utf8))
+        XCTAssertTrue(summary.failed)
+        let oldSummary = try decoder.decode(UpdateSummary.self, from: Data("""
+        {"tool":"claude","session_id":"s","todo_id":null,"title":"T","summary":"S","jira_keys":[],"computer":"mac"}
+        """.utf8))
+        XCTAssertFalse(oldSummary.failed)
+    }
+
+    func testMergePagesDedupesByDay() {
+        let a = ProjectUpdate(day: "2026-11-03", text: "a")
+        let b = ProjectUpdate(day: "2026-11-02", text: "b")
+        let c = ProjectUpdate(day: "2026-11-01", text: "c")
+        XCTAssertEqual(UpdateDay.appending([a, b], [b, c]).map(\.day), ["2026-11-03", "2026-11-02", "2026-11-01"])
+    }
+
     func testDayLabel() {
         XCTAssertEqual(UpdateDay.label("2026-11-02"), "Mon 2 Nov")
         XCTAssertEqual(UpdateDay.label("garbage"), "garbage")

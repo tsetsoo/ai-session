@@ -385,7 +385,7 @@ fn project_endpoints() -> Vec<Value> {
         json!({
             "method": "POST",
             "path": "/api/updates/summaries",
-            "description": "Runners: store conversation summaries for a day (summary cut to 2000 characters); marks an already written update of that day for rewriting",
+            "description": "Runners: store conversation summaries for a day (summary cut to 2000 characters; \"failed\": true for one that couldn't be summarized, counted on the day); marks an already written update of that day for rewriting",
             "example_request": {"computer_id": "…", "day": "2026-11-02", "items": [{"tool": "claude", "session_id": "…", "cwd": "~/w/a", "title": "…", "summary": "…", "jira_keys": ["EIN-1"], "model": "haiku"}]}
         }),
         json!({

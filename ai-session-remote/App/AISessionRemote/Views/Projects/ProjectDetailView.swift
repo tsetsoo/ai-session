@@ -105,15 +105,15 @@ struct ProjectDetailView: View {
             }
             todosSection(project)
             conversationsSection(project)
-            if project.dailyUpdates {
-                ProjectUpdatesSection(project: project, store: store, onOpenTodo: onOpenTodo)
-            }
             Section {
                 Button {
                     model.openIdeas(projectId: project.id)
                 } label: {
                     Label(ideasLinkText, systemImage: "lightbulb")
                 }
+            }
+            if project.dailyUpdates {
+                ProjectUpdatesSection(project: project, store: store, onOpenTodo: onOpenTodo)
             }
             memoriesSections(project)
         }
