@@ -494,6 +494,12 @@ pub struct Project {
     /// MCP server names ticked by default for new conversations in this project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_default: Option<Vec<String>>,
+    /// A summary of each day's work (08:00 to 08:00 Sofia) is written for this project.
+    #[serde(default)]
+    pub daily_updates: bool,
+    /// How the daily update should read; empty: a plain bullet list.
+    #[serde(default)]
+    pub update_style: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -521,6 +527,10 @@ pub struct UpdateProjectRequest {
     /// `null` clears the default.
     #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
     pub mcp_default: Option<Option<Vec<String>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_updates: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_style: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -120,6 +120,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v16_objects(&conn).expect("Failed to add watch columns");
     create_v17_objects(&conn).expect("Failed to create today objects");
     create_v18_objects(&conn).expect("Failed to add job templates");
+    create_v19_objects(&conn).expect("Failed to create daily update objects");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -504,6 +505,60 @@ const V17_OBJECTS: &str = "
     INSERT OR IGNORE INTO today_settings (id) VALUES (1);";
 
 /// v18: the job plugins each computer reported. Only adds.
+/// v19: daily updates per project: the per-conversation summaries each Mac writes, which
+/// computers reported which day, and the project updates written from them.
+const V19_OBJECTS: &str = "
+    CREATE TABLE IF NOT EXISTS update_summaries (
+        id          TEXT PRIMARY KEY,
+        project_id  TEXT NOT NULL,
+        day         TEXT NOT NULL,
+        computer_id TEXT NOT NULL,
+        tool        TEXT NOT NULL,
+        session_id  TEXT NOT NULL,
+        todo_id     TEXT,
+        title       TEXT NOT NULL DEFAULT '',
+        summary     TEXT NOT NULL,
+        jira_keys   TEXT NOT NULL DEFAULT '[]',
+        model       TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (project_id, day, tool, session_id)
+    );
+    CREATE INDEX IF NOT EXISTS update_summaries_project_day ON update_summaries(project_id, day);
+    CREATE TABLE IF NOT EXISTS update_reports (
+        computer_id TEXT NOT NULL,
+        day         TEXT NOT NULL,
+        reported_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (computer_id, day)
+    );
+    CREATE TABLE IF NOT EXISTS project_updates (
+        project_id        TEXT NOT NULL,
+        day               TEXT NOT NULL,
+        text              TEXT NOT NULL,
+        commits           INTEGER NOT NULL DEFAULT 0,
+        waiting_on        TEXT NOT NULL DEFAULT '[]',
+        written_at        TEXT NOT NULL DEFAULT (datetime('now')),
+        rewrite_requested INTEGER NOT NULL DEFAULT 0,
+        stale             INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project_id, day)
+    );
+    CREATE INDEX IF NOT EXISTS project_updates_day ON project_updates(day);
+";
+
+fn create_v19_objects(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(V19_OBJECTS)?;
+    for (table, column, ddl) in [
+        ("projects", "daily_updates", "INTEGER NOT NULL DEFAULT 0"),
+        ("projects", "update_style", "TEXT NOT NULL DEFAULT ''"),
+        ("projects", "daily_updates_since", "TEXT"),
+        ("computers", "runner_seen_at", "TEXT"),
+    ] {
+        if table_sql(conn, table)?.is_some() && !column_exists(conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl};"))?;
+        }
+    }
+    Ok(())
+}
+
 fn create_v18_objects(conn: &Connection) -> rusqlite::Result<()> {
     for column in ["job_templates", "job_templates_at"] {
         if table_sql(conn, "computers")?.is_some() && !column_exists(conn, "computers", column)? {
@@ -666,7 +721,7 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -681,6 +736,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
         return Ok(0);
     }
     if table_sql(conn, "reminders")?.is_some() {
+        if table_sql(conn, "project_updates")?.is_some() {
+            return Ok(19);
+        }
         if column_exists(conn, "computers", "job_templates")? {
             return Ok(18);
         }
@@ -2561,8 +2619,32 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 18);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(column_exists(&conn, "computers", "job_templates").unwrap());
+    }
+
+    #[test]
+    fn v18_migrates_to_v19_with_daily_updates() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(
+            "DROP TABLE update_summaries; DROP TABLE update_reports; DROP TABLE project_updates;
+             ALTER TABLE projects DROP COLUMN daily_updates; ALTER TABLE projects DROP COLUMN update_style;
+             ALTER TABLE projects DROP COLUMN daily_updates_since; ALTER TABLE computers DROP COLUMN runner_seen_at;
+             PRAGMA user_version = 18;",
+        )
+        .unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 19);
+        for t in ["update_summaries", "update_reports", "project_updates"] {
+            assert!(table_sql(&conn, t).unwrap().is_some(), "{t}");
+        }
+        for (t, c) in [("projects", "daily_updates"), ("projects", "update_style"), ("projects", "daily_updates_since"), ("computers", "runner_seen_at")] {
+            assert!(column_exists(&conn, t, c).unwrap(), "{t}.{c}");
+        }
     }
 
     #[test]

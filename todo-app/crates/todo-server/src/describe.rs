@@ -339,7 +339,7 @@ fn project_endpoints() -> Vec<Value> {
         json!({
             "method": "PATCH",
             "path": "/api/projects/{id}",
-            "description": "Change any of name, folder, repo_url (null clears it), digest_enabled and mcp_default (array of MCP server names ticked by default for new conversations; null clears it; 400 for an invalid name). A new folder follows the same rules and 409s as on create, and re-matches the computer's conversations",
+            "description": "Change any of name, folder, repo_url (null clears it), digest_enabled, mcp_default (array of MCP server names ticked by default for new conversations; null clears it; 400 for an invalid name), daily_updates and update_style (at most 4000 characters). A new folder follows the same rules and 409s as on create, and re-matches the computer's conversations",
             "example_request": {"folder": "~/programming/todo-app", "digest_enabled": false}
         }),
         json!({
@@ -451,6 +451,8 @@ fn project_models() -> Value {
             "folder": "string - folder on the computer, ~ for its home, no trailing /",
             "repo_url": "string or null",
             "digest_enabled": "boolean - whether the computer feeds this project's memories into new conversations",
+            "daily_updates": "boolean - a summary of each day's work (08:00 to 08:00 Sofia) is written for this project",
+            "update_style": "string - how that summary should read; empty: a plain bullet list",
             "created_at": "string (datetime)",
             "updated_at": "string (datetime)",
             "open_todos": "integer",

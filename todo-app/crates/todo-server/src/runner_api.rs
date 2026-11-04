@@ -534,7 +534,12 @@ pub async fn due(pool: web::Data<DbPool>, query: web::Query<std::collections::Ha
     let Some(computer_id) = query.get("computer_id").filter(|c| !c.trim().is_empty()) else {
         return bad_request("computer_id is required");
     };
-    match pool.get().map_err(|e| e.to_string()).and_then(|c| due_db(&c, computer_id).map_err(|e| e.to_string())) {
+    let checked_in = |c: &Connection| -> rusqlite::Result<DueResponse> {
+        // The daily updates wait only for computers whose runner checked in lately.
+        c.execute("UPDATE computers SET runner_seen_at = datetime('now') WHERE id = ?1", params![computer_id])?;
+        due_db(c, computer_id)
+    };
+    match pool.get().map_err(|e| e.to_string()).and_then(|c| checked_in(&c).map_err(|e| e.to_string())) {
         Ok(resp) => HttpResponse::Ok().json(resp),
         Err(e) => server_error(e),
     }
@@ -650,6 +655,17 @@ mod tests {
 
     const ALWAYS: &str = r#"{"mode":"always"}"#;
     const WAIT: &str = r#"{"mode":"wait","five_hour":null,"weekly":null}"#;
+
+    #[actix_web::test]
+    async fn due_records_runner_seen_at() {
+        let (_db, pool) = pool("runner-seen");
+        seed_computers(&pool.get().unwrap());
+        let (status, _) = get(&pool, "/api/runner/due?computer_id=mac").await;
+        assert_eq!(status, actix_web::http::StatusCode::OK);
+        let seen: Option<String> = pool.get().unwrap()
+            .query_row("SELECT runner_seen_at FROM computers WHERE id = 'mac'", [], |r| r.get(0)).unwrap();
+        assert!(seen.is_some());
+    }
 
     #[actix_web::test]
     async fn due_lists_runs_for_computer_only() {

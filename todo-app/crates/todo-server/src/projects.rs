@@ -17,17 +17,22 @@ use crate::conversations::{
 use crate::db::DbPool;
 use crate::paths;
 
-/// Project columns with their counts (0..=11), `mcp_default` (12), then the computer (13..=20).
+/// Project columns with their counts (0..=11), `mcp_default` (12), the computer (13..=20),
+/// then `daily_updates` (21) and `update_style` (22).
 const PROJECT_SELECT: &str = "SELECT p.id, p.name, p.section, p.folder, p.repo_url, p.digest_enabled, p.created_at, p.updated_at,
         (SELECT COUNT(*) FROM todos t WHERE t.project_id = p.id AND t.completed = 0),
         (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id),
         (SELECT COUNT(*) FROM memories x WHERE x.project_id = p.id AND x.archived = 0),
         (SELECT MAX(s.last_activity) FROM sessions s WHERE s.project_id = p.id),
         p.mcp_default,
-        m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default
+        m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default,
+        p.daily_updates, p.update_style
      FROM projects p
      JOIN section_computers sc ON sc.section = p.section
      JOIN computers m ON m.id = sc.computer_id";
+
+/// Longest `update_style`, in characters.
+const MAX_UPDATE_STYLE: usize = 4000;
 
 /// How many example cwds a suggestion carries.
 const EXAMPLE_CWDS: usize = 3;
@@ -59,6 +64,8 @@ fn row_to_project(row: &Row) -> rusqlite::Result<Project> {
         last_activity: row.get(11)?,
         mcp_default: mcp_from_sql(row, 12)?,
         computer: computer_at(row, 13)?,
+        daily_updates: row.get::<_, i64>(21)? != 0,
+        update_style: row.get(22)?,
     })
 }
 
@@ -312,6 +319,9 @@ pub(crate) fn update_project_db(conn: &Connection, id: &str, req: &UpdateProject
         .map(validate_mcp_option)
         .transpose()
         .map_err(|_| ProjectError::BadRequest("invalid MCP server name"))?;
+    if req.update_style.as_ref().is_some_and(|s| s.chars().count() > MAX_UPDATE_STYLE) {
+        return Err(ProjectError::BadRequest("update_style is limited to 4000 characters"));
+    }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let existing = load_project(&tx, id)?.ok_or(ProjectError::NotFound("Project not found"))?;
     let section = existing.section.as_str();
@@ -332,6 +342,9 @@ pub(crate) fn update_project_db(conn: &Connection, id: &str, req: &UpdateProject
             repo_url = CASE WHEN ?3 THEN ?4 ELSE repo_url END,
             digest_enabled = COALESCE(?5, digest_enabled),
             mcp_default = CASE WHEN ?6 THEN ?7 ELSE mcp_default END,
+            daily_updates_since = CASE WHEN ?9 = 1 AND daily_updates = 0 THEN ?11 ELSE daily_updates_since END,
+            daily_updates = COALESCE(?9, daily_updates),
+            update_style = COALESCE(?10, update_style),
             updated_at = datetime('now')
          WHERE id = ?8",
         params![
@@ -342,7 +355,10 @@ pub(crate) fn update_project_db(conn: &Connection, id: &str, req: &UpdateProject
             req.digest_enabled,
             mcp_default.is_some(),
             mcp_default.as_ref().and_then(|d| mcp_to_sql(d.as_deref())),
-            id
+            id,
+            req.daily_updates,
+            req.update_style.as_deref().map(str::trim),
+            crate::scheduler::local_date(chrono::Utc::now()),
         ],
     )?;
     if folder.as_deref().is_some_and(|f| f != existing.folder) {
@@ -757,6 +773,57 @@ mod tests {
             let (status, body) = create(&pool, "Si", folder).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{folder}: {body}");
         }
+    }
+
+    #[actix_web::test]
+    async fn patch_daily_updates_and_style() {
+        let (_db, pool) = pool("proj-upd");
+        seed_computers(&pool.get().unwrap());
+        let a = create_ok(&pool, "Si", "~/a").await;
+        let (status, body) = patch(&pool, &format!("/api/projects/{a}"), json!({"daily_updates": true, "update_style": "Group by Jira"})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!((&body["daily_updates"], &body["update_style"]), (&json!(true), &json!("Group by Jira")));
+        let (_, body) = get(&pool, &format!("/api/projects/{a}")).await;
+        assert_eq!((&body["daily_updates"], &body["update_style"]), (&json!(true), &json!("Group by Jira")));
+    }
+
+    #[actix_web::test]
+    async fn update_style_too_long() {
+        let (_db, pool) = pool("proj-upd");
+        seed_computers(&pool.get().unwrap());
+        let a = create_ok(&pool, "Si", "~/a").await;
+        let (status, _) = patch(&pool, &format!("/api/projects/{a}"), json!({"update_style": "x".repeat(4001)})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn new_project_updates_off() {
+        let (_db, pool) = pool("proj-upd");
+        seed_computers(&pool.get().unwrap());
+        let a = create_ok(&pool, "Si", "~/a").await;
+        let (_, body) = get(&pool, &format!("/api/projects/{a}")).await;
+        assert_eq!((&body["daily_updates"], &body["update_style"]), (&json!(false), &json!("")));
+    }
+
+    #[actix_web::test]
+    async fn switch_on_sets_since() {
+        let (_db, pool) = pool("proj-upd");
+        let conn = pool.get().unwrap();
+        seed_computers(&conn);
+        let a = create_ok(&pool, "Si", "~/a").await;
+        let since = |conn: &rusqlite::Connection| -> Option<String> {
+            conn.query_row("SELECT daily_updates_since FROM projects WHERE id = ?1", [&a], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(since(&conn), None);
+        patch(&pool, &format!("/api/projects/{a}"), json!({"daily_updates": true})).await;
+        let today = crate::scheduler::local_date(chrono::Utc::now());
+        assert_eq!(since(&conn).as_deref(), Some(today.as_str()));
+        conn.execute("UPDATE projects SET daily_updates_since = '2026-01-01' WHERE id = ?1", [&a]).unwrap();
+        patch(&pool, &format!("/api/projects/{a}"), json!({"daily_updates": true})).await;
+        assert_eq!(since(&conn).as_deref(), Some("2026-01-01"), "already on: unchanged");
+        patch(&pool, &format!("/api/projects/{a}"), json!({"daily_updates": false})).await;
+        patch(&pool, &format!("/api/projects/{a}"), json!({"daily_updates": true})).await;
+        assert_eq!(since(&conn).as_deref(), Some(today.as_str()), "off then on: reset");
     }
 
     #[actix_web::test]
