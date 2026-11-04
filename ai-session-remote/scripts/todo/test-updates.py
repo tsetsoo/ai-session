@@ -118,6 +118,7 @@ class Base(unittest.TestCase):
         # or into codex's -o file). FAIL as the answer exits 1.
         return script(self.home / "bin" / name, r'''
 echo "{name}" >>"{calls}"
+printf '%s\n' "$@" >>"{log}"
 cat >>"{log}"
 line=$(head -n 1 "{answers}"); tail -n +2 "{answers}" >"{answers}.rest"; mv "{answers}.rest" "{answers}"
 [ "$line" = FAIL ] && exit 1
@@ -261,6 +262,133 @@ class SummarizeRunTests(Base):
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.assertEqual(up.main(["run"]), 0)
         self.assertEqual(self.hub.requests, [])
+
+
+def git(repo, *args, env=None):
+    import subprocess
+    full = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", **(env or {}))
+    return subprocess.run(["git", "-C", str(repo)] + list(args), check=True, capture_output=True, text=True, env=full).stdout
+
+
+def commit(repo, subject, email, when):
+    env = {"GIT_AUTHOR_EMAIL": email, "GIT_AUTHOR_NAME": "A", "GIT_COMMITTER_EMAIL": email, "GIT_COMMITTER_NAME": "A",
+           "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+    git(repo, "commit", "--allow-empty", "-q", "-m", subject, env=env)
+
+
+class CommitTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def repo(self, path):
+        path.mkdir(parents=True)
+        git(path, "init", "-q", "-b", "main")
+        git(path, "config", "user.email", "me@x")
+        return path
+
+    def test_user_commits_mine_and_scheduled_in_window(self):
+        r = self.repo(self.root / "r")
+        commit(r, "before", "me@x", "2026-11-02T05:00:00Z")
+        commit(r, "mine", "me@x", "2026-11-02T09:00:00Z")
+        commit(r, "theirs", "other@x", "2026-11-02T10:00:00Z")
+        git(r, "checkout", "-q", "-b", "scheduled/a")
+        commit(r, "scheduled run", "bot@x", "2026-11-02T11:00:00Z")
+        git(r, "checkout", "-q", "main")
+        start, end = up.day_window(DAY)
+        self.assertEqual(sorted(c["subject"] for c in up.user_commits(str(r), start, end)), ["mine", "scheduled run"])
+
+    def test_cherry_pick_counted_once(self):
+        r = self.repo(self.root / "r")
+        commit(r, "base", "me@x", "2026-11-01T09:00:00Z")
+        git(r, "checkout", "-q", "-b", "other")
+        commit(r, "fix", "me@x", "2026-11-02T09:00:00Z")
+        sha = git(r, "rev-parse", "HEAD").strip()
+        git(r, "checkout", "-q", "main")
+        git(r, "cherry-pick", "--allow-empty", sha, env={"GIT_COMMITTER_EMAIL": "me@x", "GIT_COMMITTER_NAME": "A",
+                                         "GIT_COMMITTER_DATE": "2026-11-02T12:00:00Z"})
+        start, end = up.day_window(DAY)
+        self.assertEqual([c["subject"] for c in up.user_commits(str(r), start, end)], ["fix"])
+
+    def test_repos_in_nested(self):
+        self.repo(self.root / "a")
+        self.repo(self.root / "b" / "c")
+        (self.root / "node_modules" / "x" / ".git").mkdir(parents=True)
+        (self.root / ".hidden" / ".git").mkdir(parents=True)
+        self.assertEqual(sorted(os.path.relpath(p, self.root) for p in up.repos_in(str(self.root))), ["a", os.path.join("b", "c")])
+        single = self.repo(self.root / "single")
+        self.assertEqual(up.repos_in(str(single)), [str(single)])
+
+    def test_unknown_keys(self):
+        text = "- **[EIN-1](https://j/browse/EIN-1)** done\n- [XYZ-9](https://j/browse/XYZ-9) made up"
+        self.assertEqual(up.unknown_keys(text, ["EIN-1 summary"]), {"XYZ-9"})
+
+    def test_delink(self):
+        text = "[XYZ-9](https://j/browse/XYZ-9) and [EIN-1](https://j/browse/EIN-1)"
+        self.assertEqual(up.delink(text, {"XYZ-9"}), "XYZ-9 and [EIN-1](https://j/browse/EIN-1)")
+
+
+class WriteRunTests(Base):
+    def write_item(self, **kw):
+        item = {"project_id": "pa", "project_name": "a", "folder": str(self.home / "nope"), "day": DAY,
+                "style": "Group by Jira: [KEY](https://solveit.atlassian.net/browse/KEY)",
+                "summaries": [], "completed_todos": [], "todo_titles": []}
+        item.update(kw)
+        self.hub.work["days"] = []
+        self.hub.work["write"] = [item]
+
+    def test_empty_day_puts_empty_without_model(self):
+        self.write_item()
+        up.main(["run"])
+        self.assertEqual(self.model_calls(), [])
+        self.assertEqual(self.hub.posted("/api/projects/pa/updates/%s" % DAY), [{"text": "", "commits": 0}])
+
+    def test_writes_markdown_from_summaries(self):
+        self.write_item(summaries=[{"title": "T", "summary": "Fixed EIN-1.", "jira_keys": ["EIN-1"], "computer": "mac"}])
+        self.answer({"text": "- **[EIN-1](https://solveit.atlassian.net/browse/EIN-1)** fixed"})
+        up.main(["run"])
+        put = self.hub.posted("/api/projects/pa/updates/%s" % DAY)
+        self.assertEqual(put, [{"text": "- **[EIN-1](https://solveit.atlassian.net/browse/EIN-1)** fixed", "commits": 0}])
+        self.assertIn("Fixed EIN-1.", self.model_log.read_text())
+        self.assertIn("Group by Jira", self.model_log.read_text())
+
+    def test_made_up_key_retried_then_delinked(self):
+        self.write_item(summaries=[{"title": "T", "summary": "Fixed EIN-1.", "jira_keys": ["EIN-1"], "computer": "mac"}])
+        bad = {"text": "[XYZ-9](https://solveit.atlassian.net/browse/XYZ-9) fixed"}
+        self.answer(bad, bad)
+        up.main(["run"])
+        self.assertEqual(len(self.model_calls()), 2)
+        text = self.hub.posted("/api/projects/pa/updates/%s" % DAY)[0]["text"]
+        self.assertIn("XYZ-9", text)
+        self.assertNotIn("browse/XYZ-9", text)
+
+    def test_commits_counted_and_passed(self):
+        repo = self.home / "proj"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "user.email", "me@x")
+        commit(repo, "CH-12 add export", "me@x", "2026-11-02T09:00:00Z")
+        self.write_item(folder=str(repo))
+        self.answer({"text": "- [CH-12](https://jira.digital.ingka.com/browse/CH-12) export"})
+        up.main(["run"])
+        put = self.hub.posted("/api/projects/pa/updates/%s" % DAY)[0]
+        self.assertEqual(put["commits"], 1)
+        self.assertIn("browse/CH-12", put["text"])
+        self.assertIn("CH-12 add export", self.model_log.read_text())
+
+    def test_tilde_folder(self):
+        repo = self.home / "w" / "a"
+        repo.mkdir(parents=True)
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "user.email", "me@x")
+        commit(repo, "x", "me@x", "2026-11-02T09:00:00Z")
+        self.write_item(folder="~/w/a")
+        self.answer({"text": "x"})
+        up.main(["run"])
+        self.assertEqual(self.hub.posted("/api/projects/pa/updates/%s" % DAY)[0]["commits"], 1)
 
 
 if __name__ == "__main__":

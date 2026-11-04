@@ -2871,6 +2871,14 @@ pass "hub_down_keeps_offsets: nightly, run and trigger with the hub unreachable 
 # Reuses the memory sections' fake hub and HOME.
 
 RUNNER="${SCRIPT_DIR}/ai-todo-runner"
+# The runner starts ai-todo-updates in the background; this fake records each start.
+R_UPDATES_LOG="${SANDBOX}/runner-updates.log"
+export AI_TODO_UPDATES_BIN="${SANDBOX}/bin/fake-updates"
+cat >"$AI_TODO_UPDATES_BIN" <<FAKE
+#!/bin/sh
+echo "\$*" >>"$R_UPDATES_LOG"
+FAKE
+chmod +x "$AI_TODO_UPDATES_BIN"
 R_STATE="${HOME}/.ai-remote/runner-state"
 R_TREES="${HOME}/.ai-remote/worktrees"
 R_OPEN_LOG="${SANDBOX}/runner-open.log"
@@ -3379,6 +3387,17 @@ runs_reset
 AI_TODO_JOBS_DIR="$J_DIR" wrunner tick || fail "tick failed"
 [[ -z "$(templates_puts)" ]] || fail "unchanged job templates were sent again"
 pass "runner_reports_job_plugins (manifest + prompt; skips broken ones; once until changed)"
+
+rm -f "$R_UPDATES_LOG" "${R_STATE}/updates-start.json"
+runs_reset
+wrunner tick || fail "tick failed"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$R_UPDATES_LOG" ]] && break; sleep 0.2; done
+[[ "$(cat "$R_UPDATES_LOG" 2>/dev/null)" == "run" ]] || fail "runner didn't start ai-todo-updates run: $(cat "$R_UPDATES_LOG" 2>/dev/null)"
+runs_reset
+wrunner tick || fail "tick failed"
+sleep 0.5
+[[ "$(wc -l <"$R_UPDATES_LOG" | tr -d ' ')" == 1 ]] || fail "ai-todo-updates started again within 5 minutes"
+pass "runner_starts_updates_at_most_every_5_minutes"
 rm -f "${W_DIR}/broken" "${W_DIR}/broken.json" "${W_DIR}/orphan.json"
 
 WATCH="${SCRIPT_DIR}/ai-todo-watch"

@@ -29,12 +29,15 @@
 # answer's "resolves" run `<watcher> resolve <key>` and POST /api/watch/issues/<id>/resolve-result.
 # Watcher output is never logged; error messages have the env file's values redacted.
 #
+# Daily updates: after a tick that reached the hub, `ai-todo-updates run` is started in the
+# background (at most every 5 minutes; it takes its own lock).
+#
 # Never prints or logs prompt text. Log: ~/.ai-remote/runner-state/runner.log (ids, counts,
 # errors). Exit 0 except 64 bad arguments, 65 no hub / computer id.
 #
 # Config: ~/.ai-remote/todo-hub.conf (TODO_HUB_URL, TODO_API_TOKEN, TODO_COMPUTER_ID).
 # Test hooks: AI_TODO_HUB_CONF, AI_TODO_OPEN_BIN, AI_TODO_LIMITS_BIN, AI_TODO_LIMITS_TIMEOUT,
-#   AI_TODO_RUNNER_STATE_DIR, AI_TODO_RUNNER_WORKTREES, AI_TODO_WATCHERS_DIR
+#   AI_TODO_RUNNER_STATE_DIR, AI_TODO_RUNNER_WORKTREES, AI_TODO_WATCHERS_DIR, AI_TODO_UPDATES_BIN
 AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_LIB_DIR
 ai_path=
 ai_ifs=$IFS
@@ -72,6 +75,8 @@ OPEN_BIN = os.environ.get("AI_TODO_OPEN_BIN") or os.path.join(LIB_DIR, "ai-todo-
 LIMITS_BIN = os.environ.get("AI_TODO_LIMITS_BIN") or os.path.join(LIB_DIR, "ai-todo-limits")
 WATCHERS = os.environ.get("AI_TODO_WATCHERS_DIR") or os.path.join(AI_DIR, "watchers")
 JOBS = os.environ.get("AI_TODO_JOBS_DIR") or os.path.join(AI_DIR, "jobs")
+UPDATES_BIN = os.environ.get("AI_TODO_UPDATES_BIN") or os.path.join(LIB_DIR, "ai-todo-updates")
+UPDATES_EVERY = 300
 WATCH_TIMEOUT = 60
 LIMITS_TIMEOUT = float(os.environ.get("AI_TODO_LIMITS_TIMEOUT") or 20)
 MAX_STARTS = 3
@@ -516,6 +521,23 @@ def report_job_templates(hub, computer_id):
         log("job_templates_state_failed", error=type(e).__name__)
 
 
+def maybe_start_updates():
+    """Daily updates: start `ai-todo-updates run` in the background at most every 5 minutes.
+    It takes its own lock and may call a model for minutes; the tick never waits for it."""
+    if not os.access(UPDATES_BIN, os.X_OK):
+        return
+    path = os.path.join(STATE_DIR, "updates-start.json")
+    state = load_json(path, {}) or {}
+    if now() - float(state.get("at") or 0) < UPDATES_EVERY:
+        return
+    try:
+        subprocess.Popen([UPDATES_BIN, "run"], start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+        save_json(path, {"at": now()})
+    except OSError as e:
+        log("updates_start_failed", error=type(e).__name__)
+
+
 def do_resolves(hub, resolves):
     env = None
     for item in resolves or []:
@@ -683,6 +705,7 @@ def cmd_tick(args):
         do_resolves(hub, due.get("resolves"))
         report_watchers(hub, computer_id)
         report_job_templates(hub, computer_id)
+        maybe_start_updates()
     cleanup_worktrees()
     status["started"] = [t for t in status.get("started", []) if t > now() - 86400]
     save_json(status_path, status)
