@@ -4182,6 +4182,8 @@ PY
 pass "chat transcript preserves roles, blank lines and indentation"
 python3 "${SCRIPT_DIR}/test-status.py" || fail "Codex status delivery/runtime regressions"
 pass "Codex runtime state, concurrency, durable retries and executable discovery"
+python3 "${SCRIPT_DIR}/test-updates.py" || fail "daily updates regressions"
+pass "daily updates: windows, model choice, Jira keys, redaction, retries, commits, writing"
 
 # --- ai-todo-mcp ------------------------------------------------------------------
 
