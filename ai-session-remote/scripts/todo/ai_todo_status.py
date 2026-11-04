@@ -5,6 +5,7 @@ outbox or log. The monitor reads metadata; it never resumes threads or submits p
 """
 import base64
 import contextlib
+from datetime import datetime
 import fcntl
 import glob
 import hashlib
@@ -142,6 +143,149 @@ def deliver(path, record, timeout=0.5):
     return not record["pending"]
 
 
+def claude_tasks(value, excluding=None):
+    """Keep only task identity/type; never persist commands, descriptions or prompts."""
+    if not isinstance(value, list):
+        return None  # An unavailable registry is not evidence that agents finished.
+    result = []
+    for task in value:
+        if not isinstance(task, dict):
+            return None
+        if excluding and task.get("id") == excluding:
+            continue
+        result.append({"id": task.get("id"), "type": task.get("type")})
+    return result
+
+
+def claude_stop_confirmed(sid, completion):
+    """A Stop hook runs before other hooks can block it. Confirm the final summary.
+
+    Read a bounded tail, including on later polls: renewed main-thread activity must
+    invalidate completion even if its hook was missed. Failure/unknown input stays busy.
+    """
+    try:
+        path = Path(completion["transcript_path"])
+        if path.name != sid + ".jsonl":
+            return False
+        with path.open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - 262144))
+            if size > 262144:
+                handle.readline()
+            lines = handle.read().splitlines()
+        confirmed = False
+        for line in lines:
+            try:
+                row = json.loads(line)
+                stamp = row.get("timestamp")
+                timestamp = int(datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1_000_000_000)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if timestamp < completion["stopped_ns"] or row.get("isSidechain") or row.get("agentId"):
+                continue
+            if row.get("sessionId", row.get("session_id")) != sid:
+                continue
+            if row.get("type") == "system" and row.get("subtype") == "stop_hook_summary":
+                confirmed = (row.get("preventedContinuation") is False and not row.get("hookErrors")
+                             and not row.get("hookAdditionalContext") and not row.get("stopReason"))
+            elif (row.get("type") in ("user", "assistant") and not row.get("isMeta")
+                  or row.get("type") == "api-request" and row.get("querySource") == "repl_main_thread"):
+                # The final response can be flushed after our hook started. Only
+                # activity after its summary proves that Claude continued.
+                if confirmed:
+                    return False
+        return confirmed
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+
+
+def claude_effective_state(sid, state, record, instance=None):
+    evidence = record.get("claude_turn", {})
+    prompts = evidence.get("prompts", {})
+    if prompts and state[0] != "waiting":
+        return "waiting", next(iter(prompts.values()))["message"]
+    completion = evidence.get("completion")
+    if not completion or state[0] == "waiting":
+        return state  # A pending approval/question always takes precedence.
+    # A newer/background runtime is independent work, not the stopped interactive turn.
+    if not instance or instance.get("kind") != "interactive" or instance != completion.get("instance"):
+        return state
+    started = instance.get("startedAt")
+    if isinstance(started, (int, float)) and started * 1_000_000 > completion["stopped_ns"]:
+        return state
+    tasks = evidence.get("tasks")
+    if tasks is not None and any(task.get("type") != "shell" for task in tasks):
+        return "busy", None
+    if tasks is None or state[0] != "busy":
+        return state
+    return ("idle", None) if claude_stop_confirmed(sid, completion) else state
+
+
+def claude_hook_evidence(previous, event, metadata, observed, snapshot):
+    evidence = dict(previous.get("claude_turn", {}))
+    if snapshot:
+        if evidence.get("instance") and evidence["instance"] != snapshot:
+            evidence = {}
+        evidence["instance"] = snapshot
+    agent = metadata.get("agent_id")
+    lifecycle = event in ("SubagentStart", "SubagentStop")
+    main = not agent and not lifecycle
+    # Main activity and task snapshots have independent clocks. An agent completing
+    # must not discard a delayed parent Stop, nor may that Stop resurrect the agent.
+    if main and (event != "Notification" or metadata.get("waiting")):
+        if observed <= evidence.get("main_hook_ns", -1):
+            return evidence
+        evidence["main_hook_ns"] = observed
+    evidence["hook_ns"] = max(observed, evidence.get("hook_ns", 0))
+    prompts = dict(evidence.get("prompts", {}))
+    scope = agent or "main"
+    prompt_id = metadata.get("prompt_id")
+    key = scope + ":" + (prompt_id if isinstance(prompt_id, str) else "unknown")
+    if metadata.get("waiting") and event in ("PermissionRequest", "PreToolUse", "Elicitation"):
+        if observed >= prompts.get(key, {}).get("observed_ns", 0):
+            prompts[key] = {"observed_ns": observed, "message": metadata.get("message") or "Claude needs your attention"}
+    elif event in ("PostToolUse", "PostToolUseFailure", "ElicitationResult"):
+        # Another parallel tool finishing cannot answer this tool's approval.
+        if prompt_id and observed >= prompts.get(key, {}).get("observed_ns", 0):
+            prompts.pop(key, None)
+    elif event == "UserPromptSubmit":
+        prompts = {k: v for k, v in prompts.items() if not k.startswith("main:")}
+    evidence["prompts"] = prompts
+    if event in ("Stop", "SubagentStart", "SubagentStop") and observed > evidence.get("tasks_ns", -1):
+        tasks = claude_tasks(metadata.get("background_tasks"), excluding=agent if event == "SubagentStop" else None)
+        if event == "SubagentStart":
+            tasks = evidence.get("tasks")
+            if tasks is not None:
+                tasks = tasks + [{"id": agent, "type": "subagent"}]
+        elif event == "SubagentStop" and tasks is None and evidence.get("tasks") is not None:
+            tasks = [task for task in evidence["tasks"] if task.get("id") != agent]
+        evidence.update(tasks=tasks, tasks_ns=observed)
+    if event == "Stop" and isinstance(metadata.get("transcript_path"), str):
+        evidence["completion"] = {
+            "stopped_ns": observed, "transcript_path": metadata["transcript_path"], "instance": snapshot,
+        }
+    elif main and (event != "Notification" or metadata.get("waiting")):
+        # Main tools include Stop-hook continuations and background wakeups.
+        evidence.pop("completion", None)
+    return evidence
+
+
+def claude_runtime_evidence(evidence, state, observed, instance=None):
+    evidence = dict(evidence)
+    if instance:
+        if evidence.get("instance") and evidence["instance"] != instance:
+            evidence = {}
+        evidence["instance"] = instance
+    if state[0] == "waiting":
+        evidence["runtime_waiting_ns"] = observed
+    elif state[0] in ("busy", "idle") and evidence.get("runtime_waiting_ns"):
+        answered = evidence.pop("runtime_waiting_ns")
+        evidence.pop("completion", None)  # Answering a prompt resumes work; require a new Stop.
+        evidence["prompts"] = {key: value for key, value in evidence.get("prompts", {}).items()
+                               if value["observed_ns"] > answered}
+    return evidence
+
+
 def publish(body, observed_ns=None, source="hook", try_send=True):
     sid = body.get("session_id") or body.get("claude_session_id")
     tool = body.get("tool", "claude" if body.get("claude_session_id") else "codex")
@@ -154,6 +298,8 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
     body = dict(body, session_id=sid, tool=tool)
     body.pop("claude_session_id", None)
     hook_event = body.pop("_hook_event", None)
+    claude_metadata = body.pop("_claude", {})
+    instance = body.pop("_claude_instance", None)
     observed = int(observed_ns if observed_ns is not None else time.time_ns())
     if not 0 <= observed <= 2**63 - 1:
         raise ValueError("invalid event timestamp")
@@ -165,6 +311,14 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
         turn_started = max(previous_turn, observed if hook_event == "UserPromptSubmit" else 0)
         new_turn = turn_started > previous_turn
         overridden = False
+        evidence = previous.get("claude_turn", {})
+        if tool == "claude" and source != "runtime":
+            raw_snapshot = read_json(root() / "claude-runtime.json", {})
+            instance = raw_snapshot.get("instances", {}).get(sid)
+            claude_metadata = dict(claude_metadata, message=body.get("message"))
+            evidence = claude_hook_evidence(previous, hook_event, claude_metadata, observed, instance)
+        elif tool == "claude":
+            evidence = claude_runtime_evidence(evidence, (body["status"], body.get("message")), observed, instance)
         if source != "runtime" and hook_event != "UserPromptSubmit":
             snapshot = fresh_runtime_state(sid, tool)
             if snapshot and snapshot[0] >= turn_started:
@@ -173,14 +327,28 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
                 if body["message"] is None:
                     body.pop("message", None)
                 overridden = True
+        if tool == "claude":
+            # Resolve both hooks and runtime heartbeats with the same durable evidence.
+            state = (body["status"], body.get("message"))
+            if hook_event in ("Stop", "SubagentStop") and evidence.get("completion") and state[0] == "idle":
+                state = ("busy", None)  # Wait for the successful Stop summary.
+            body["status"], body["message"] = claude_effective_state(
+                sid, state, {"claude_turn": evidence}, instance)
+            if body["message"] is None:
+                body.pop("message")
         if previous_time > observed or (previous_time == observed and previous_body.get("status") != body["status"]):
-            if not new_turn:
+            if tool == "claude" and source != "runtime" and evidence != previous.get("claude_turn", {}):
+                # Runtime heartbeats may overtake a hook. Their timestamp must not
+                # erase lifecycle evidence or keep a new turn falsely idle.
+                observed = previous_time + 1
+            elif not new_turn:
                 sync_legacy_state(sid, previous["body"]["status"], tool=tool)
                 return True
             # A runtime heartbeat can overtake the prompt hook. Keep the newer state,
             # but retain the turn identity so a fast/offline result becomes unread once.
-            body = dict(previous_body)
-            observed = previous_time
+            else:
+                body = dict(previous_body)
+                observed = previous_time
         body["event_timestamp_ns"] = observed
         if turn_started:
             body["turn_started_ns"] = turn_started
@@ -190,10 +358,17 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
         if source == "runtime" and time.time_ns() - attended_ns < 60_000_000_000:
             body["attended"] = True
         record = {"body": body, "source": source, "pending": True, "attended_ns": attended_ns}
+        if tool == "claude" and evidence:
+            record["claude_turn"] = evidence
         # Persist before networking; a killed hook must leave the final event recoverable.
         atomic_json(path, record)
         if overridden or source == "runtime":
             sync_legacy_state(sid, body["status"], tool=tool)
+        if (tool == "claude" and hook_event in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "ElicitationResult") and not previous.get("pending", True)
+                and all(previous_body.get(key) == body.get(key) for key in ("status", "message", "turn_started_ns", "attended"))):
+            record.update(pending=False, delivered_ns=previous.get("delivered_ns"))
+            atomic_json(path, record)
+            return True
         return deliver(path, record) if try_send else False
 
 
@@ -791,6 +966,7 @@ class ClaudeRuntime:
     def __init__(self):
         self.cli = find_claude()
         self.listed = set()
+        self.instances = {}
 
     def states(self):
         env = dict(os.environ, PATH=str(Path(self.cli).parent) + os.pathsep + os.environ.get("PATH", ""))
@@ -817,6 +993,8 @@ class ClaudeRuntime:
                 newest[sid] = (started, row)
         # Listed with a status we can't read is still listed: poll_runtime must not settle it.
         self.listed = set(newest)
+        self.instances = {sid: {key: row.get(key) for key in ("kind", "startedAt", "pid")}
+                          for sid, (_, row) in newest.items()}
         result = {}
         for sid, (_, row) in newest.items():
             state = claude_status(row)
@@ -837,6 +1015,7 @@ def poll_runtime(client, previous, try_send=True, tool="codex"):
     states = client.states()
     observed = time.time_ns()
     effective = {}
+    instances = getattr(client, "instances", {}) if tool == "claude" else {}
     for sid, state in states.items():
         prior = previous.setdefault(sid, {})
         prior.pop("missing_since_ns", None)
@@ -845,18 +1024,24 @@ def poll_runtime(client, previous, try_send=True, tool="codex"):
             if observed - idle_since < 1_000_000_000:
                 # A newly queued turn can briefly retain idle before the runtime starts it.
                 # Confirm idle once more so that gap cannot emit a false completion/review.
-                if prior.get("state"):
-                    effective[sid] = prior["state"]
+                retained = prior.get("raw_state", prior.get("state"))
+                if retained:
+                    effective[sid] = retained
                 continue
         else:
             prior.pop("idle_since_ns", None)
         effective[sid] = state
-    atomic_json(root() / ("claude-runtime.json" if tool == "claude" else "runtime.json"), {"observed_ns": observed, "threads": effective})
-    for sid, state in effective.items():
+    atomic_json(root() / ("claude-runtime.json" if tool == "claude" else "runtime.json"), {"observed_ns": observed, "threads": effective, "instances": instances})
+    for sid, raw_state in effective.items():
+        record = read_json(root() / f"claude.{sid}.json", {}) if tool == "claude" else {}
+        record["claude_turn"] = claude_runtime_evidence(record.get("claude_turn", {}), raw_state, observed, instances.get(sid))
+        state = claude_effective_state(sid, raw_state, record, instances.get(sid)) if tool == "claude" else raw_state
         prior = previous[sid]
-        if tuple(prior.get("state", ())) != tuple(state) or observed - prior.get("reported_ns", 0) >= 30_000_000_000:
-            publish({"session_id": sid, "tool": tool, "status": state[0], "message": state[1], "attended": False}, observed, source="runtime", try_send=try_send)
-            prior.update(state=state, reported_ns=observed)
+        if (tuple(prior.get("state", ())) != tuple(state)
+                or tool == "claude" and tuple(prior.get("raw_state", ())) != tuple(raw_state)
+                or observed - prior.get("reported_ns", 0) >= 30_000_000_000):
+            publish({"session_id": sid, "tool": tool, "status": raw_state[0], "message": raw_state[1], "attended": False, "_claude_instance": instances.get(sid)}, observed, source="runtime", try_send=try_send)
+            prior.update(state=state, raw_state=raw_state, reported_ns=observed)
     listed = getattr(client, "listed", None) or set(states)
     for sid in set(previous) - set(states):
         prior = previous[sid]

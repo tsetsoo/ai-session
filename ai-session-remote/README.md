@@ -140,6 +140,15 @@ The installer is safe to re-run. It sets up:
   runtime's metadata over its private Unix socket, so approval prompts and questions remain
   waiting until answered, then return to working while the tool runs. It never submits prompts
   or resumes threads. Idle is confirmed once more before reporting completion.
+  - Claude is polled through `claude agents --json --all`. A successful main-turn Stop
+    can settle an interactive conversation even if that same runtime keeps reporting busy
+    while shells remain open. The publisher checks the transcript's final Stop summary
+    and retains the completion evidence across heartbeats and service restarts. Pending
+    runtime approvals/questions, non-shell background tasks, an unavailable task registry,
+    and a different runtime process remain authoritative. New prompts or main-thread tools
+    retire completion; SubagentStart/SubagentStop update the remaining agent work. Task
+    commands, descriptions and final responses are never copied into status records.
+    `scripts/todo/install.sh --claude-status-only` updates the hooks and monitor on a host.
   - Failed deliveries are kept in `~/.ai-remote/status-state/` and retried independently of
     the terminal. Reporter timestamps prevent delayed hooks or retries from undoing a newer state.
     The latest user-turn identity survives coalescing, so a fast or offline result becomes

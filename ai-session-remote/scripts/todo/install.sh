@@ -180,7 +180,8 @@ if kind == "codex":
 else:
     ours = {"UserPromptSubmit": "busy", "Notification": "waiting", "Stop": "idle", "PostToolUse": "tool",
             "PreToolUse": "tool", "PermissionRequest": "waiting", "PostToolUseFailure": "tool",
-            "SessionEnd": "idle", "StopFailure": "waiting", "Elicitation": "waiting", "ElicitationResult": "tool"}
+            "SessionEnd": "idle", "StopFailure": "waiting", "Elicitation": "waiting", "ElicitationResult": "tool",
+            "SubagentStart": "busy", "SubagentStop": "busy"}
     prefix = f"{bin_dir}/ai-todo-hook"
 
 data = {}

@@ -567,6 +567,228 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(self.requests[-1]["status"], "idle")
         self.assertEqual(self.requests[-1]["turn_started_ns"], 100)
 
+    def claude_completion_fixture(self, tasks=()):
+        self.claude_sid = "87e18b12-badf-4b18-ae34-0ea53567be87"
+        (status.root() / ("claude." + self.claude_sid + ".json")).unlink(missing_ok=True)
+        self.claude_now = time.time_ns()
+        self.claude_transcript = self.home / (self.claude_sid + ".jsonl")
+        self.claude_transcript.touch()
+        client = self.Listing({self.claude_sid: ("busy", None)})
+        client.instances = {self.claude_sid: {"kind": "interactive", "pid": 42, "startedAt": 100}}
+        previous = {}
+        self.poll_at(client, previous, self.claude_now, 0)
+        self.claude_hook("UserPromptSubmit", "busy", 1)
+        self.poll_at(client, previous, self.claude_now, 1.5)
+        self.claude_hook("Stop", "idle", 2, background_tasks=list(tasks),
+                         transcript_path=str(self.claude_transcript))
+        return client, previous
+
+    def claude_hook(self, event, state, seconds, **metadata):
+        observed = self.claude_now + int(seconds * 1_000_000_000)
+        with patch.object(status.time, "time_ns", return_value=observed):
+            status.publish({"session_id": self.claude_sid, "tool": "claude", "status": state,
+                            "_hook_event": event, "_claude": metadata}, observed)
+
+    def claude_transcript_row(self, seconds=3, **extra):
+        from datetime import datetime, timezone
+        stamp = datetime.fromtimestamp(self.claude_now / 1e9 + seconds, timezone.utc).isoformat()
+        row = {"type": "system", "subtype": "stop_hook_summary", "sessionId": self.claude_sid,
+               "isSidechain": False, "timestamp": stamp, "preventedContinuation": False,
+               "hookErrors": [], "hookAdditionalContext": [], **extra}
+        with self.claude_transcript.open("a") as handle:
+            handle.write(json.dumps(row) + "\n")
+
+    def test_completed_main_turn_settles_despite_persistent_runtime_busy_and_shell(self):
+        client, previous = self.claude_completion_fixture([{"id": "vite", "type": "shell"}])
+        self.assertEqual(self.requests[-1]["status"], "busy", "Stop must finish successfully first")
+        self.claude_transcript_row()
+        for seconds in (4, 35, 70):
+            self.poll_at(client, previous, self.claude_now, seconds)
+            self.assertEqual(self.requests[-1]["status"], "idle")
+        self.assertEqual(client.value[self.claude_sid][0], "busy", "the upstream runtime is unchanged")
+        previous.clear()  # Service restart retains the completion fence on disk.
+        self.poll_at(client, previous, self.claude_now, 100)
+        self.assertEqual(self.requests[-1]["status"], "idle")
+        self.assertEqual(self.requests[-1]["turn_started_ns"], self.claude_now + 1_000_000_000)
+        self.assertFalse(any(k.startswith("_") for k in self.requests[-1]))
+
+    def test_new_prompt_and_main_tool_continuation_retire_completion(self):
+        for event in ("UserPromptSubmit", "PreToolUse"):
+            with self.subTest(event=event):
+                client, previous = self.claude_completion_fixture()
+                self.claude_transcript_row()
+                self.poll_at(client, previous, self.claude_now, 4)
+                # A heartbeat overtakes a hook started earlier; it must still become busy.
+                self.poll_at(client, previous, self.claude_now, 40)
+                self.claude_hook(event, "busy", 39)
+                self.assertEqual(self.requests[-1]["status"], "busy")
+                self.poll_at(client, previous, self.claude_now, 80)
+                self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_late_stop_cannot_settle_a_new_turn(self):
+        client, previous = self.claude_completion_fixture()
+        self.claude_transcript_row()
+        self.claude_hook("UserPromptSubmit", "busy", 5)
+        self.claude_hook("Stop", "idle", 2, background_tasks=[], transcript_path=str(self.claude_transcript))
+        self.poll_at(client, previous, self.claude_now, 40)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_background_agents_keep_working_until_the_last_one_finishes(self):
+        tasks = [{"id": "a", "type": "subagent"}, {"id": "b", "type": "subagent"}, {"id": "vite", "type": "shell"}]
+        client, previous = self.claude_completion_fixture(tasks)
+        self.claude_transcript_row()
+        self.poll_at(client, previous, self.claude_now, 4)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+        self.claude_hook("SubagentStop", "busy", 5, agent_id="a", background_tasks=tasks[1:])
+        self.poll_at(client, previous, self.claude_now, 6)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+        # The stopping agent may still be in the registry while its hook executes.
+        self.claude_hook("SubagentStop", "busy", 7, agent_id="b", background_tasks=tasks[1:])
+        self.poll_at(client, previous, self.claude_now, 8)
+        self.assertEqual(self.requests[-1]["status"], "idle")
+        self.claude_hook("SubagentStart", "busy", 9, agent_id="c")
+        self.poll_at(client, previous, self.claude_now, 10)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_parent_runtime_idle_does_not_finish_active_background_agents(self):
+        client, previous = self.claude_completion_fixture([{"id": "a", "type": "subagent"}])
+        self.claude_transcript_row()
+        client.value[self.claude_sid] = ("idle", None)
+        self.poll_at(client, previous, self.claude_now, 4)
+        self.poll_at(client, previous, self.claude_now, 6)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_runtime_approval_survives_stop_and_parallel_agent_completion(self):
+        client, previous = self.claude_completion_fixture([{"id": "a", "type": "subagent"}])
+        self.claude_transcript_row()
+        client.value[self.claude_sid] = ("waiting", "Claude needs approval")
+        self.poll_at(client, previous, self.claude_now, 4)
+        self.claude_hook("SubagentStop", "busy", 5, agent_id="a", background_tasks=[])
+        self.assertEqual(self.requests[-1]["status"], "waiting")
+        self.poll_at(client, previous, self.claude_now, 40)
+        self.assertEqual(self.requests[-1]["status"], "waiting")
+        # Answering the approval resumes main work and discards the completion.
+        client.value[self.claude_sid] = ("busy", None)
+        self.claude_hook("PostToolUse", "busy", 41)
+        self.poll_at(client, previous, self.claude_now, 42)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_delayed_main_stop_keeps_a_later_agent_completion(self):
+        client, previous = self.claude_completion_fixture([{"id": "agent", "type": "subagent"}])
+        # Publish a later agent result first, before the main Stop reaches the lock.
+        self.claude_hook("SubagentStop", "busy", 4, agent_id="agent", background_tasks=[])
+        self.claude_hook("Stop", "idle", 3, background_tasks=[{"id": "agent", "type": "subagent"}],
+                         transcript_path=str(self.claude_transcript))
+        self.claude_transcript_row(3.5)
+        self.poll_at(client, previous, self.claude_now, 5)
+        self.assertEqual(self.requests[-1]["status"], "idle")
+
+    def test_permission_hook_beats_stale_busy_and_unrelated_tool_completion(self):
+        client, previous = self.claude_completion_fixture([{"id": "agent", "type": "subagent"}])
+        self.claude_transcript_row()
+        self.claude_hook("PermissionRequest", "waiting", 3.5, agent_id="agent", prompt_id="approval", waiting=True)
+        self.assertEqual(self.requests[-1]["status"], "waiting")
+        self.poll_at(client, previous, self.claude_now, 4)
+        self.claude_hook("PostToolUse", "busy", 5, agent_id="agent", prompt_id="different-tool")
+        self.assertEqual(self.requests[-1]["status"], "waiting")
+        self.claude_hook("SubagentStop", "busy", 6, agent_id="other-agent", background_tasks=[])
+        self.poll_at(client, previous, self.claude_now, 40)
+        self.assertEqual(self.requests[-1]["status"], "waiting")
+        self.claude_hook("PostToolUse", "busy", 41, agent_id="agent", prompt_id="approval")
+        self.assertNotEqual(self.requests[-1]["status"], "waiting")
+
+    def test_runtime_approval_answer_without_tool_hook_requires_new_completion(self):
+        client, previous = self.claude_completion_fixture()
+        self.claude_transcript_row()
+        client.value[self.claude_sid] = ("waiting", "Claude needs approval")
+        self.poll_at(client, previous, self.claude_now, 4)
+        client.value[self.claude_sid] = ("busy", None)
+        self.poll_at(client, previous, self.claude_now, 5)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_denied_permission_clears_when_runtime_confirms_idle(self):
+        client, previous = self.claude_completion_fixture()
+        self.claude_hook("PermissionRequest", "waiting", 3, prompt_id="approval", waiting=True)
+        client.value[self.claude_sid] = ("waiting", "Claude needs approval")
+        self.poll_at(client, previous, self.claude_now, 4)
+        client.value[self.claude_sid] = ("idle", None)
+        self.poll_at(client, previous, self.claude_now, 5)
+        self.poll_at(client, previous, self.claude_now, 7)
+        self.assertEqual(self.requests[-1]["status"], "idle")
+
+    def test_blocked_failed_or_unconfirmed_stop_never_settles_runtime_busy(self):
+        for summary in (None, {"preventedContinuation": True}, {"hookErrors": ["blocked"]},
+                        {"hookAdditionalContext": ["keep working"]}):
+            with self.subTest(summary=summary):
+                client, previous = self.claude_completion_fixture()
+                if summary is not None:
+                    self.claude_transcript_row(**summary)
+                self.poll_at(client, previous, self.claude_now, 40)
+                self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_unknown_task_registry_and_non_shell_work_remain_busy(self):
+        for tasks in (None, [None], [{"type": "new-task-kind"}], [{"type": "MCP task"}]):
+            with self.subTest(tasks=tasks):
+                client, previous = self.claude_completion_fixture()
+                self.claude_hook("Stop", "idle", 2.5, background_tasks=tasks, transcript_path=str(self.claude_transcript))
+                self.claude_transcript_row()
+                self.poll_at(client, previous, self.claude_now, 40)
+                self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_new_runtime_instance_and_background_job_are_never_settled_by_old_stop(self):
+        for change in ({"pid": 43}, {"startedAt": 200}, {"kind": "background"}):
+            with self.subTest(change=change):
+                client, previous = self.claude_completion_fixture()
+                self.claude_transcript_row()
+                client.instances[self.claude_sid] = dict(client.instances[self.claude_sid], **change)
+                self.poll_at(client, previous, self.claude_now, 40)
+                self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_a_replacement_runtime_does_not_inherit_an_old_permission_prompt(self):
+        client, previous = self.claude_completion_fixture()
+        self.claude_hook("PermissionRequest", "waiting", 3, prompt_id="approval", waiting=True)
+        self.poll_at(client, previous, self.claude_now, 4)
+        self.assertEqual(self.requests[-1]["status"], "waiting")
+        client.instances[self.claude_sid] = dict(client.instances[self.claude_sid], pid=999)
+        self.poll_at(client, previous, self.claude_now, 5)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_transcript_activity_after_successful_stop_invalidates_it_without_hook(self):
+        client, previous = self.claude_completion_fixture()
+        self.claude_transcript_row()
+        self.poll_at(client, previous, self.claude_now, 4)
+        self.assertEqual(self.requests[-1]["status"], "idle")
+        self.claude_transcript_row(5, type="assistant", subtype=None)
+        self.poll_at(client, previous, self.claude_now, 40)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_completion_evidence_is_local_and_survives_offline_delivery(self):
+        client, previous = self.claude_completion_fixture([{"id": "vite", "type": "shell", "command": "secret", "description": "secret"}])
+        self.claude_transcript_row()
+        self.http_status = 503
+        self.poll_at(client, previous, self.claude_now, 4)
+        record = status.read_json(status.root() / ("claude." + self.claude_sid + ".json"))
+        self.assertNotIn("secret", json.dumps(record))
+        self.assertTrue(record["pending"])
+        self.assertNotIn("transcript_path", json.dumps(record["body"]))
+        self.http_status = 204
+        status.retry_pending()
+        self.assertEqual(self.requests[-1]["status"], "idle")
+
+    def test_real_claude_hook_keeps_agent_approval_until_its_own_tool_finishes(self):
+        sid = "87e18b12-badf-4b18-ae34-0ea53567be87"
+        hook = str(Path(__file__).with_name("ai-todo-hook"))
+        env = dict(os.environ, AI_TODO_HOOK_SYNC="1", AI_TODO_TMUX_SESSION="other",
+                   AI_TODO_MEMORY_BIN=str(self.home / "no-memory-helper"))
+        def call(event, state, tool_id):
+            subprocess.run([hook, state], input=json.dumps({"session_id": sid, "hook_event_name": event,
+                           "agent_id": "agent", "tool_use_id": tool_id, "tool_name": "Bash"}),
+                           env=env, capture_output=True, text=True, check=True)
+            return self.requests[-1]["status"]
+        self.assertEqual(call("PermissionRequest", "waiting", "approval"), "waiting")
+        self.assertEqual(call("PostToolUse", "tool", "other-tool"), "waiting")
+        self.assertEqual(call("PostToolUse", "tool", "approval"), "busy")
+
     def test_unknown_claude_wait_reason_shape_does_not_crash_monitor(self):
         self.assertEqual(status.claude_status({"status": "waiting", "waitingFor": {"new": "shape"}}),
                          ("waiting", "Claude needs your attention"))

@@ -1437,6 +1437,31 @@ printf '{"session_id":"%s"}' "$SID" | AI_TODO_MEMORY_BIN="${SANDBOX}/nonexistent
 [[ $(wc -l <"$HUB_LOG") -eq $((posts + 1)) && "$(last_status)" == idle ]] || fail "hook without ai-todo-memory did not post idle"
 pass "hook_without_memory_binary_still_posts_status (and a todo-hub.conf without TODO_COMPUTER_ID)"
 
+# Completion evidence crosses the actual shell/CLI boundary but stays off the wire.
+python3 - "$HOOK" "$HUB_LOG" "$SID" "$SANDBOX" <<'PY' || fail "Claude completion hook metadata or activity was lost"
+import json, os, pathlib, subprocess, sys
+hook, log, sid, sandbox = sys.argv[1:]
+queue = pathlib.Path(os.environ["HOME"]) / ".ai-remote/status-state"
+def call(event, state, **extra):
+    data = dict(session_id=sid, hook_event_name=event, **extra)
+    subprocess.run([hook, state], input=json.dumps(data), text=True, check=True)
+    return json.loads((queue / ("claude." + sid + ".json")).read_text())
+r = call("Stop", "idle", transcript_path=sandbox + "/" + sid + ".jsonl",
+         background_tasks=[{"id":"shell", "type":"shell", "command":"private command", "description":"private description"}])
+assert r["claude_turn"]["tasks"] == [{"id":"shell", "type":"shell"}], r
+assert "private command" not in json.dumps(r) and "private description" not in json.dumps(r), r
+r = call("SubagentStart", "busy", agent_id="a")
+assert r["claude_turn"]["tasks"][-1] == {"id":"a", "type":"subagent"}, r
+r = call("SubagentStop", "busy", agent_id="a", background_tasks=[])
+assert r["claude_turn"]["tasks"] == [], r
+# Legacy busy/sent files already say busy: PreToolUse must still retire the fence.
+r = call("PreToolUse", "tool", tool_name="Bash")
+assert "completion" not in r["claude_turn"], r
+for req in map(json.loads, pathlib.Path(log).read_text().splitlines()):
+    assert not any(k.startswith("_") for k in req["body"]), req
+PY
+pass "Claude Stop task metadata stays local; agent lifecycle and a main tool invalidate completion correctly"
+
 # --- ai-todo-hook --codex (Codex 0.163+ hooks: same JSON as Claude's) -------------------
 
 codex_hook() { # <status> <event> [extra json fields]: one Codex hook call for X_LINKED
@@ -3644,7 +3669,8 @@ assert commands("Stop") == ["afplay /System/Library/Sounds/Glass.aiff", f"{bin_d
 assert commands("PostToolUse") == [f"{bin_dir}/ai-todo-hook tool"], commands("PostToolUse")
 assert commands("PreToolUse") == ["echo pre", f"{bin_dir}/ai-todo-hook tool"], commands("PreToolUse")
 for event, status in {"PermissionRequest":"waiting", "PostToolUseFailure":"tool", "SessionEnd":"idle",
-                      "StopFailure":"waiting", "Elicitation":"waiting", "ElicitationResult":"tool"}.items():
+                      "StopFailure":"waiting", "Elicitation":"waiting", "ElicitationResult":"tool",
+                      "SubagentStart":"busy", "SubagentStop":"busy"}.items():
     assert commands(event) == [f"{bin_dir}/ai-todo-hook {status}"], (event, commands(event))
 assert commands("SessionStart") == [f"{bin_dir}/ai-todo-memory session-start"], commands("SessionStart")
 assert hooks["PreToolUse"][0]["matcher"] == "Bash"
