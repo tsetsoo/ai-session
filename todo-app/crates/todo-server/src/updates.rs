@@ -215,13 +215,15 @@ pub(crate) fn summaries_db(conn: &Connection, req: &SummariesRequest) -> Result<
             )
             .optional()?;
         let keys: Vec<String> = item.jira_keys.iter().take(20).map(|k| cut(k, 40)).collect();
+        // `seq` grows with every stored summary, so a write can tell which ones it included.
+        let seq: i64 = tx.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM update_summaries", [], |r| r.get(0))?;
         tx.execute(
-            "INSERT INTO update_summaries (id, project_id, day, computer_id, tool, session_id, todo_id, title, summary, jira_keys, model)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO update_summaries (id, project_id, day, computer_id, tool, session_id, todo_id, title, summary, jira_keys, model, seq)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT (project_id, day, tool, session_id) DO UPDATE SET
                 computer_id = excluded.computer_id, todo_id = excluded.todo_id, title = excluded.title,
                 summary = excluded.summary, jira_keys = excluded.jira_keys, model = excluded.model,
-                created_at = datetime('now')",
+                seq = excluded.seq, created_at = datetime('now')",
             params![
                 Uuid::new_v4().to_string(),
                 project_id,
@@ -234,6 +236,7 @@ pub(crate) fn summaries_db(conn: &Connection, req: &SummariesRequest) -> Result<
                 cut(item.summary.trim(), MAX_SUMMARY),
                 serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()),
                 cut(&item.model, 80),
+                seq,
             ],
         )?;
         // An update already written for that day is rewritten with this summary in it.
@@ -271,6 +274,13 @@ pub(crate) fn report_db(conn: &Connection, req: &ReportRequest) -> Result<(), Up
         "INSERT INTO update_reports (computer_id, day) VALUES (?1, ?2)
          ON CONFLICT (computer_id, day) DO UPDATE SET reported_at = datetime('now')",
         params![req.computer_id, req.day],
+    )?;
+    // Updates written while waiting on this computer are written again without the note.
+    conn.execute(
+        "UPDATE project_updates SET stale = 1 WHERE day = ?1 AND EXISTS (
+             SELECT 1 FROM json_each(project_updates.waiting_on), computers c
+             WHERE c.id = ?2 AND json_each.value = c.name)",
+        params![req.day, req.computer_id],
     )?;
     Ok(())
 }
@@ -327,6 +337,8 @@ pub struct WriteItem {
     pub summaries: Vec<WriteSummary>,
     pub completed_todos: Vec<CompletedTodo>,
     pub todo_titles: Vec<String>,
+    /// The newest summary's `seq`; sent back with the PUT.
+    pub generation: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -426,7 +438,13 @@ fn write_item(conn: &Connection, p: &OnProject, day: &str) -> rusqlite::Result<W
     let todo_titles = stmt
         .query_map(params![p.id, crate::scheduler::sql_time(start)], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<String>>>()?;
+    let generation: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(seq), 0) FROM update_summaries WHERE project_id = ?1 AND day = ?2",
+        params![p.id, day],
+        |r| r.get(0),
+    )?;
     Ok(WriteItem {
+        generation,
         project_id: p.id.clone(),
         project_name: p.name.clone(),
         folder: p.folder.clone(),
@@ -492,6 +510,10 @@ pub(crate) fn runner_db(conn: &Connection, computer_id: &str, now: DateTime<Utc>
     let mut write = Vec::new();
     let mine: Vec<&OnProject> = projects.iter().filter(|p| p.computer_id == computer_id).collect();
     for day in &recent {
+        // This computer's own summaries come first, even past the 10:00 fallback.
+        if days.contains(day) {
+            continue;
+        }
         let candidates: Vec<&&OnProject> = mine.iter().filter(|p| day.as_str() >= p.since.as_str()).collect();
         if candidates.is_empty() || !ready(conn, day, now)? {
             continue;
@@ -500,6 +522,19 @@ pub(crate) fn runner_db(conn: &Connection, computer_id: &str, now: DateTime<Utc>
             if needs_writing(conn, &p.id, day)? {
                 write.push(write_item(conn, p, day)?);
             }
+        }
+    }
+    // Rewrites asked for on older days (still kept): those days are long past the fallback.
+    let oldest_recent = recent.first().cloned().unwrap_or_default();
+    let cutoff = (now.with_timezone(&TZ).date_naive() - Duration::days(KEEP_DAYS)).format("%Y-%m-%d").to_string();
+    for p in &mine {
+        let mut stmt = conn.prepare(
+            "SELECT day FROM project_updates WHERE project_id = ?1 AND (rewrite_requested = 1 OR stale = 1)
+             AND day < ?2 AND day >= ?3 ORDER BY day",
+        )?;
+        let older = stmt.query_map(params![p.id, oldest_recent, cutoff], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        for day in older {
+            write.push(write_item(conn, p, &day)?);
         }
     }
     let projects = mine.iter().map(|p| RunnerProject { id: p.id.clone(), name: p.name.clone(), folder: p.folder.clone() }).collect();
@@ -526,6 +561,9 @@ pub struct PutUpdateRequest {
     pub text: String,
     #[serde(default)]
     pub commits: u32,
+    /// The work item's `generation`: summaries stored after it keep the update stale.
+    #[serde(default)]
+    pub generation: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -549,11 +587,22 @@ pub(crate) fn put_update_db(
         return Err(UpdateError::NotFound("Project not found"));
     }
     let waiting = waiting_on(conn, day, now)?;
+    let newer: bool = match req.generation {
+        Some(generation) => conn
+            .query_row(
+                "SELECT 1 FROM update_summaries WHERE project_id = ?1 AND day = ?2 AND seq > ?3 LIMIT 1",
+                params![project_id, day, generation],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some(),
+        None => false,
+    };
     conn.execute(
         "INSERT INTO project_updates (project_id, day, text, commits, waiting_on, written_at, rewrite_requested, stale)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)
          ON CONFLICT (project_id, day) DO UPDATE SET text = excluded.text, commits = excluded.commits,
-            waiting_on = excluded.waiting_on, written_at = excluded.written_at, rewrite_requested = 0, stale = 0",
+            waiting_on = excluded.waiting_on, written_at = excluded.written_at, rewrite_requested = 0, stale = excluded.stale",
         params![
             project_id,
             day,
@@ -561,6 +610,7 @@ pub(crate) fn put_update_db(
             req.commits,
             serde_json::to_string(&waiting).unwrap_or_else(|_| "[]".into()),
             crate::scheduler::sql_time(now),
+            newer as i64,
         ],
     )?;
     Ok(StoredUpdate { day: day.to_string(), waiting_on: waiting })
@@ -979,7 +1029,7 @@ mod tests {
         report(&conn, "mac", "2026-11-03");
         let now = utc("2026-11-04 08:01:00"); // 10:01 Sofia
         assert_eq!(write_days(&runner_db(&conn, "mac", now).ok().unwrap()), vec![("pa".to_string(), "2026-11-03".to_string())]);
-        let update = put_update_db(&conn, "pa", "2026-11-03", &PutUpdateRequest { text: "done".into(), commits: 2 }, now).ok().unwrap();
+        let update = put_update_db(&conn, "pa", "2026-11-03", &PutUpdateRequest { text: "done".into(), commits: 2, generation: None }, now).ok().unwrap();
         assert_eq!(update.waiting_on, vec!["spreads-macbook-pro".to_string()]);
     }
 
@@ -992,7 +1042,7 @@ mod tests {
         seen(&conn, "mac", "2026-11-04 06:59:00");
         report(&conn, "mac", "2026-11-03");
         let now = utc("2026-11-04 07:00:00");
-        let body = PutUpdateRequest { text: "v1".into(), commits: 0 };
+        let body = PutUpdateRequest { text: "v1".into(), commits: 0, generation: None };
         put_update_db(&conn, "pa", "2026-11-03", &body, now).ok().unwrap();
         assert!(runner_db(&conn, "mac", now).ok().unwrap().write.is_empty(), "written");
         summaries_db(
@@ -1045,6 +1095,7 @@ mod tests {
                  ('t3', 'open EIN-7', 'Si', 'pa', 0, NULL);",
         )
         .unwrap();
+        report(&conn, "mac", "2026-11-03");
         let work = runner_db(&conn, "mac", utc("2026-11-04 08:01:00")).ok().unwrap();
         let w = &work.write[0];
         assert_eq!(w.completed_todos.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), vec!["EIN-5 in window"]);
@@ -1057,16 +1108,16 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         let now = utc("2026-11-04 08:01:00");
-        let long = PutUpdateRequest { text: "x".repeat(MAX_UPDATE + 1), commits: 0 };
+        let long = PutUpdateRequest { text: "x".repeat(MAX_UPDATE + 1), commits: 0, generation: None };
         assert!(matches!(put_update_db(&conn, "pa", "2026-11-03", &long, now), Err(UpdateError::BadRequest(_))));
-        let ok = PutUpdateRequest { text: "x".into(), commits: 0 };
+        let ok = PutUpdateRequest { text: "x".into(), commits: 0, generation: None };
         assert!(matches!(put_update_db(&conn, "nope", "2026-11-03", &ok, now), Err(UpdateError::NotFound(_))));
         assert!(matches!(put_update_db(&conn, "pa", "bad", &ok, now), Err(UpdateError::BadRequest(_))));
     }
     // --- Task 4: for the apps -----------------------------------------------------------
 
     fn put(conn: &Connection, day: &str, text: &str) {
-        put_update_db(conn, "pa", day, &PutUpdateRequest { text: text.into(), commits: 1 }, utc("2026-11-04 08:01:00")).ok().unwrap();
+        put_update_db(conn, "pa", day, &PutUpdateRequest { text: text.into(), commits: 1, generation: None }, utc("2026-11-04 08:01:00")).ok().unwrap();
     }
 
     #[actix_web::test]
@@ -1186,5 +1237,97 @@ mod tests {
                 .unwrap();
             assert_eq!(days, vec!["2026-08-06".to_string()], "{table}");
         }
+    }
+    // --- Final review fixes -------------------------------------------------------------
+
+    #[actix_web::test]
+    async fn write_waits_for_own_report_even_past_ten() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET daily_updates_since = '2026-11-03'", []).unwrap();
+        let now = utc("2026-11-04 08:30:00"); // 10:30 Sofia: the Mac wakes with the 3rd unreported
+        let work = runner_db(&conn, "mac", now).ok().unwrap();
+        assert_eq!(work.days, vec!["2026-11-03"]);
+        assert!(work.write.is_empty(), "its own summaries come first");
+        report(&conn, "mac", "2026-11-03");
+        assert_eq!(write_days(&runner_db(&conn, "mac", now).ok().unwrap()).len(), 1);
+    }
+
+    fn late_summary(conn: &Connection, sid: &str) {
+        summaries_db(
+            conn,
+            &SummariesRequest {
+                computer_id: "mac".into(),
+                day: "2026-11-03".into(),
+                items: vec![SummaryItem {
+                    tool: "claude".into(),
+                    session_id: sid.into(),
+                    cwd: "~/w/a".into(),
+                    title: "T".into(),
+                    summary: "late".into(),
+                    jira_keys: vec![],
+                    model: "haiku".into(),
+                }],
+            },
+        )
+        .ok()
+        .unwrap();
+    }
+
+    #[actix_web::test]
+    async fn summary_during_write_keeps_stale() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET daily_updates_since = '2026-11-03'", []).unwrap();
+        seen(&conn, "mac", "2026-11-04 06:59:00");
+        late_summary(&conn, "s1");
+        report(&conn, "mac", "2026-11-03");
+        let now = utc("2026-11-04 07:00:00");
+        let work = runner_db(&conn, "mac", now).ok().unwrap();
+        let generation = work.write[0].generation;
+        late_summary(&conn, "s2"); // arrives while the model writes
+        put_update_db(&conn, "pa", "2026-11-03", &PutUpdateRequest { text: "v1".into(), commits: 0, generation: Some(generation) }, now)
+            .ok()
+            .unwrap();
+        assert_eq!(write_days(&runner_db(&conn, "mac", now).ok().unwrap()).len(), 1, "written again with s2");
+        let work = runner_db(&conn, "mac", now).ok().unwrap();
+        put_update_db(&conn, "pa", "2026-11-03", &PutUpdateRequest { text: "v2".into(), commits: 0, generation: Some(work.write[0].generation) }, now)
+            .ok()
+            .unwrap();
+        assert!(runner_db(&conn, "mac", now).ok().unwrap().write.is_empty());
+    }
+
+    #[actix_web::test]
+    async fn late_report_clears_waiting_on() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET daily_updates_since = '2026-11-03'", []).unwrap();
+        seen(&conn, "mac", "2026-11-04 08:00:00");
+        seen(&conn, "spread", "2026-11-04 06:00:00");
+        report(&conn, "mac", "2026-11-03");
+        let now = utc("2026-11-04 08:01:00");
+        put(&conn, "2026-11-03", "x");
+        report(&conn, "spread", "2026-11-03"); // nothing for pa, but no longer waited on
+        let work = runner_db(&conn, "mac", now).ok().unwrap();
+        assert_eq!(write_days(&work).len(), 1, "rewritten without the waiting note");
+        put_update_db(&conn, "pa", "2026-11-03", &PutUpdateRequest { text: "y".into(), commits: 0, generation: Some(work.write[0].generation) }, now)
+            .ok()
+            .unwrap();
+        let (_, body) = crate::test_support::get(&pool, "/api/projects/pa/updates").await;
+        assert_eq!(body[0]["waiting_on"], json!([]));
+    }
+
+    #[actix_web::test]
+    async fn rewrite_of_older_day_is_picked_up() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        put(&conn, "2026-10-28", "old");
+        rewrite_db(&conn, "pa", "2026-10-28").ok().unwrap();
+        let work = runner_db(&conn, "mac", utc("2026-11-04 08:01:00")).ok().unwrap();
+        assert!(write_days(&work).contains(&("pa".to_string(), "2026-10-28".to_string())));
     }
 }

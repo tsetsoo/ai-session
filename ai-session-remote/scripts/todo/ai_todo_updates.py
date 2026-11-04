@@ -481,6 +481,9 @@ def prune(state, days_kept):
     keep = set(days_kept)
     state["posted"] = {d: v for d, v in (state.get("posted") or {}).items() if d in keep}
     state["failures"] = {k: v for k, v in (state.get("failures") or {}).items() if k.rsplit(":", 1)[-1] in keep}
+    # Write failures are per project and day; days drop out after the 90 days the hub keeps.
+    oldest = (datetime.now(timezone.utc) - timedelta(days=100)).strftime("%Y-%m-%d")
+    state["write_failures"] = {k: v for k, v in (state.get("write_failures") or {}).items() if k.rsplit(":", 1)[-1] >= oldest}
 
 
 def cmd_run():
@@ -506,8 +509,19 @@ def cmd_run():
             if summarize_day(hub, computer_id, day, settings, state):
                 status.setdefault("days_done", []).append(day)
             save_json(state_path, state)
+        failures = state.setdefault("write_failures", {})
         for item in work.get("write") or []:
-            write_one(hub, item, settings)
+            key = "%s:%s" % (item.get("project_id"), item.get("day"))
+            try:
+                write_one(hub, item, settings)
+                failures.pop(key, None)
+            except (ModelError, HubError) as e:
+                failures[key] = failures.get(key, 0) + 1
+                log("write_failed", project=item.get("project_id"), day=item.get("day"), error=e, count=failures[key])
+                if failures[key] >= MAX_FAILURES:
+                    put_update(hub, item, WRITE_FAILED_NOTE, 0)
+                    failures.pop(key, None)
+            save_json(state_path, state)
         status["last_error"] = None
     except Wait:
         log("wait")
@@ -641,15 +655,33 @@ def update_message(item, commits):
     return "\n\n".join(parts)
 
 
+MAX_UPDATE = 20000
+WRITE_FAILED_NOTE = "_This update couldn't be written (the model failed 3 times). Use Rewrite to try again._"
+
+
+def put_update(hub, item, text, commits):
+    path = "/api/projects/%s/updates/%s" % (urllib.parse.quote(item["project_id"], safe=""), item["day"])
+    hub.request("PUT", path, body={"text": text[:MAX_UPDATE], "commits": commits, "generation": item.get("generation")})
+
+
+def key_sources(item, commits):
+    """Where a Jira key in an update may come from: keys verified against the transcripts, todo
+    titles and commit subjects. Not the summaries' prose, which a model wrote."""
+    sources = [" ".join(k for s in item.get("summaries") or [] for k in (s.get("jira_keys") or []))]
+    sources += [t.get("title", "") for t in item.get("completed_todos") or []]
+    sources += list(item.get("todo_titles") or [])
+    sources += [c["subject"] for c in commits]
+    return sources
+
+
 def write_one(hub, item, settings, usage=read_usage):
     """Writes and PUTs one project's update for one day. Raises Wait without headroom."""
     start, end = day_window(item["day"])
     commits = []
     for repo in repos_in(item.get("folder")):
         commits.extend(user_commits(repo, start, end))
-    path = "/api/projects/%s/updates/%s" % (urllib.parse.quote(item["project_id"], safe=""), item["day"])
     if not (item.get("summaries") or item.get("completed_todos") or commits):
-        hub.request("PUT", path, body={"text": "", "commits": 0})
+        put_update(hub, item, "", 0)
         log("written_empty", project=item["project_id"], day=item["day"])
         return
     tool_model = pick_model(settings, usage)
@@ -657,7 +689,7 @@ def write_one(hub, item, settings, usage=read_usage):
         raise Wait()
     message = redact(update_message(item, commits))
     system = UPDATE_SYSTEM.format(style=(item.get("style") or "").strip() or DEFAULT_STYLE)
-    sources = [message]
+    sources = key_sources(item, commits)
     text = run_model(tool_model, system, message, UPDATE_SCHEMA).get("text") or ""
     unknown = unknown_keys(text, sources)
     if unknown:
@@ -667,7 +699,7 @@ def write_one(hub, item, settings, usage=read_usage):
         unknown = unknown_keys(text, sources)
         if unknown:
             text = delink(text, unknown)
-    hub.request("PUT", path, body={"text": redact(text).strip(), "commits": len(commits)})
+    put_update(hub, item, redact(text).strip(), len(commits))
     log("written", project=item["project_id"], day=item["day"], commits=len(commits))
 
 

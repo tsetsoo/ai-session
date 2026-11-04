@@ -520,6 +520,7 @@ const V19_OBJECTS: &str = "
         summary     TEXT NOT NULL,
         jira_keys   TEXT NOT NULL DEFAULT '[]',
         model       TEXT NOT NULL DEFAULT '',
+        seq         INTEGER NOT NULL DEFAULT 0,
         created_at  TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE (project_id, day, tool, session_id)
     );

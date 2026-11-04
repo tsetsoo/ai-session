@@ -335,7 +335,7 @@ class WriteRunTests(Base):
     def write_item(self, **kw):
         item = {"project_id": "pa", "project_name": "a", "folder": str(self.home / "nope"), "day": DAY,
                 "style": "Group by Jira: [KEY](https://solveit.atlassian.net/browse/KEY)",
-                "summaries": [], "completed_todos": [], "todo_titles": []}
+                "summaries": [], "completed_todos": [], "todo_titles": [], "generation": 7}
         item.update(kw)
         self.hub.work["days"] = []
         self.hub.work["write"] = [item]
@@ -344,14 +344,15 @@ class WriteRunTests(Base):
         self.write_item()
         up.main(["run"])
         self.assertEqual(self.model_calls(), [])
-        self.assertEqual(self.hub.posted("/api/projects/pa/updates/%s" % DAY), [{"text": "", "commits": 0}])
+        self.assertEqual(self.hub.posted("/api/projects/pa/updates/%s" % DAY), [{"text": "", "commits": 0, "generation": 7}])
 
     def test_writes_markdown_from_summaries(self):
         self.write_item(summaries=[{"title": "T", "summary": "Fixed EIN-1.", "jira_keys": ["EIN-1"], "computer": "mac"}])
         self.answer({"text": "- **[EIN-1](https://solveit.atlassian.net/browse/EIN-1)** fixed"})
         up.main(["run"])
         put = self.hub.posted("/api/projects/pa/updates/%s" % DAY)
-        self.assertEqual(put, [{"text": "- **[EIN-1](https://solveit.atlassian.net/browse/EIN-1)** fixed", "commits": 0}])
+        self.assertEqual(put, [{"text": "- **[EIN-1](https://solveit.atlassian.net/browse/EIN-1)** fixed", "commits": 0,
+                                "generation": 7}])
         self.assertIn("Fixed EIN-1.", self.model_log.read_text())
         self.assertIn("Group by Jira", self.model_log.read_text())
 
@@ -389,6 +390,34 @@ class WriteRunTests(Base):
         self.answer({"text": "x"})
         up.main(["run"])
         self.assertEqual(self.hub.posted("/api/projects/pa/updates/%s" % DAY)[0]["commits"], 1)
+
+    def test_key_made_up_in_summary_prose_is_delinked(self):
+        self.write_item(summaries=[{"title": "T", "summary": "Fixed XYZ-9 (invented).", "jira_keys": [], "computer": "mac"}])
+        bad = {"text": "[XYZ-9](https://solveit.atlassian.net/browse/XYZ-9) fixed"}
+        self.answer(bad, bad)
+        up.main(["run"])
+        text = self.hub.posted("/api/projects/pa/updates/%s" % DAY)[0]["text"]
+        self.assertNotIn("browse/XYZ-9", text)
+
+    def test_failing_write_counted_and_others_continue(self):
+        summary = [{"title": "T", "summary": "S", "jira_keys": [], "computer": "mac"}]
+        self.write_item(summaries=summary)
+        second = dict(self.hub.work["write"][0], project_id="pb")
+        self.hub.work["write"].append(second)
+        for run in range(3):
+            self.answer("FAIL", {"text": "b ok"})
+            up.main(["run"])
+        a = self.hub.posted("/api/projects/pa/updates/%s" % DAY)
+        b = self.hub.posted("/api/projects/pb/updates/%s" % DAY)
+        self.assertEqual(len(b), 3, "the second item is written every run")
+        self.assertEqual(len(a), 1, "the first gets a note after 3 failures")
+        self.assertIn("couldn't be written", a[0]["text"])
+
+    def test_long_text_cut_to_hub_limit(self):
+        self.write_item(summaries=[{"title": "T", "summary": "S", "jira_keys": [], "computer": "mac"}])
+        self.answer({"text": "y" * 25000})
+        up.main(["run"])
+        self.assertEqual(len(self.hub.posted("/api/projects/pa/updates/%s" % DAY)[0]["text"]), 20000)
 
 
 if __name__ == "__main__":
