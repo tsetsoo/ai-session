@@ -109,13 +109,17 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
     /// MCP servers new conversations in this project start with. `nil` = not set (fall back to
     /// the computer's), `[]` = none.
     public var mcpDefault: [String]?
+    /// Each morning, a summary of the previous day's work is written for this project.
+    public var dailyUpdates: Bool
+    /// How that summary should read; empty: a plain bullet list.
+    public var updateStyle: String
 
     public init(
         id: String, name: String, computer: Computer, folder: String, section: TodoSection = .si,
         repoUrl: String? = nil,
         digestEnabled: Bool = true, createdAt: String = "", updatedAt: String = "",
         openTodos: Int = 0, sessions: Int = 0, memories: Int = 0, lastActivity: String? = nil,
-        mcpDefault: [String]? = nil
+        mcpDefault: [String]? = nil, dailyUpdates: Bool = false, updateStyle: String = ""
     ) {
         self.id = id
         self.name = name
@@ -131,11 +135,13 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
         self.memories = memories
         self.lastActivity = lastActivity
         self.mcpDefault = mcpDefault
+        self.dailyUpdates = dailyUpdates
+        self.updateStyle = updateStyle
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, section, computer, folder, repoUrl, digestEnabled, createdAt, updatedAt
-        case openTodos, sessions, memories, lastActivity, mcpDefault
+        case openTodos, sessions, memories, lastActivity, mcpDefault, dailyUpdates, updateStyle
     }
 
     public init(from decoder: Decoder) throws {
@@ -154,6 +160,8 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
         memories = try c.decodeIfPresent(Int.self, forKey: .memories) ?? 0
         lastActivity = try c.decodeIfPresent(String.self, forKey: .lastActivity)
         mcpDefault = try c.decodeIfPresent([String].self, forKey: .mcpDefault)
+        dailyUpdates = try c.decodeIfPresent(Bool.self, forKey: .dailyUpdates) ?? false
+        updateStyle = try c.decodeIfPresent(String.self, forKey: .updateStyle) ?? ""
     }
 
     public var lastActivityDate: Date? { HubDates.date(from: lastActivity) }
@@ -232,18 +240,22 @@ public struct UpdateProjectRequest: Encodable, Sendable {
     public var repoUrl: NullableChange<String>?
     public var digestEnabled: Bool?
     public var mcpDefault: MCPDefaultChange?
+    public var dailyUpdates: Bool?
+    public var updateStyle: String?
 
     public init(name: String? = nil, folder: String? = nil, repoUrl: NullableChange<String>? = nil, digestEnabled: Bool? = nil,
-                mcpDefault: MCPDefaultChange? = nil) {
+                mcpDefault: MCPDefaultChange? = nil, dailyUpdates: Bool? = nil, updateStyle: String? = nil) {
         self.name = name
         self.folder = folder
         self.repoUrl = repoUrl
         self.digestEnabled = digestEnabled
         self.mcpDefault = mcpDefault
+        self.dailyUpdates = dailyUpdates
+        self.updateStyle = updateStyle
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, folder, repoUrl, digestEnabled, mcpDefault
+        case name, folder, repoUrl, digestEnabled, mcpDefault, dailyUpdates, updateStyle
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -253,6 +265,8 @@ public struct UpdateProjectRequest: Encodable, Sendable {
         try c.encodeChange(repoUrl, forKey: .repoUrl)
         try c.encodeIfPresent(digestEnabled, forKey: .digestEnabled)
         try c.encodeMCPDefault(mcpDefault, forKey: .mcpDefault)
+        try c.encodeIfPresent(dailyUpdates, forKey: .dailyUpdates)
+        try c.encodeIfPresent(updateStyle, forKey: .updateStyle)
     }
 }
 

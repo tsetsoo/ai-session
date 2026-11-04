@@ -408,6 +408,25 @@ public struct TodoHubClient: Sendable {
         try await decode(SchedulerSettings.self, send("PUT", "/api/scheduler/settings", body: settings))
     }
 
+    // MARK: Daily updates
+
+    /// A project's daily updates, newest first; `before` pages back (`YYYY-MM-DD`).
+    public func projectUpdates(projectId: String, before: String? = nil, limit: Int = 14) async throws -> [ProjectUpdate] {
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let before { query.insert(URLQueryItem(name: "before", value: before), at: 0) }
+        return try await decode([ProjectUpdate].self, send("GET", "/api/projects/\(escape(projectId))/updates", query: query))
+    }
+
+    /// The conversation summaries a day's update was written from, oldest first.
+    public func updateSummaries(projectId: String, day: String) async throws -> [UpdateSummary] {
+        try await decode([UpdateSummary].self, send("GET", "/api/projects/\(escape(projectId))/updates/\(escape(day))/summaries"))
+    }
+
+    /// Asks the project's computer to write that day's update again.
+    public func rewriteUpdate(projectId: String, day: String) async throws {
+        _ = try await send("POST", "/api/projects/\(escape(projectId))/updates/\(escape(day))/rewrite")
+    }
+
     // MARK: Ideas
 
     /// Starred first, then by status, then newest. Pending (agent-proposed) ones only with `pending`.
