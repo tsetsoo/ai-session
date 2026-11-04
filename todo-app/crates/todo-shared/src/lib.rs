@@ -502,6 +502,34 @@ pub struct Project {
     pub update_style: String,
 }
 
+/// One day's update of a project (the window starting 08:00 Sofia on `day`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectUpdate {
+    pub day: String,
+    /// Markdown.
+    pub text: String,
+    pub commits: u32,
+    /// Conversation summaries it was written from.
+    pub conversations: u32,
+    /// Computers that hadn't reported when it was written.
+    pub waiting_on: Vec<String>,
+    pub written_at: String,
+    /// A rewrite was asked for, or a late summary came in; the project's computer rewrites it.
+    pub rewriting: bool,
+}
+
+/// One conversation's summary for a day, as the project update was written from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateSummary {
+    pub tool: String,
+    pub session_id: String,
+    pub todo_id: Option<String>,
+    pub title: String,
+    pub summary: String,
+    pub jira_keys: Vec<String>,
+    pub computer: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateProjectRequest {
     pub name: String,

@@ -348,6 +348,52 @@ fn project_endpoints() -> Vec<Value> {
             "description": "Delete a project. Its todos lose the project, conversations are matched to the remaining projects (overrides pointing at it are cleared) and memories follow their conversation or become project-less. Nothing else is deleted",
             "example_response": {"deleted": "<uuid>"}
         }),
+        json!({
+            "method": "GET",
+            "path": "/api/projects/{id}/updates",
+            "description": "The project's daily updates, newest first (days with nothing are left out). A day is the window from 08:00 Sofia on that date to 08:00 the next. Query: before=<YYYY-MM-DD>, limit (default 14, at most 30). Kept 90 days",
+            "example_response": [{"day": "2026-11-02", "text": "- **[EIN-1](https://…)** …", "commits": 3, "conversations": 2, "waiting_on": [], "written_at": "2026-11-03 06:02:11", "rewriting": false}]
+        }),
+        json!({
+            "method": "GET",
+            "path": "/api/projects/{id}/updates/{day}/summaries",
+            "description": "The conversation summaries a day's update was written from, oldest first",
+            "example_response": [{"tool": "claude", "session_id": "…", "todo_id": null, "title": "…", "summary": "…", "jira_keys": ["EIN-1"], "computer": "tsvetelins-macbook-pro"}]
+        }),
+        json!({
+            "method": "POST",
+            "path": "/api/projects/{id}/updates/{day}/rewrite",
+            "description": "Ask the project's computer to write that day's update again (404 when there is none)"
+        }),
+        json!({
+            "method": "PUT",
+            "path": "/api/projects/{id}/updates/{day}",
+            "description": "Runners: store a day's update (Markdown, at most 20000 characters; empty text = nothing happened). The hub records which expected computers hadn't reported",
+            "example_request": {"text": "…", "commits": 3}
+        }),
+        json!({
+            "method": "GET",
+            "path": "/api/updates/runner",
+            "description": "Runners: ?computer_id=. Days this computer still has to summarize (the last 3 closed days, from when a project was switched on), its switched-on projects, and the project updates it should write now",
+        }),
+        json!({
+            "method": "POST",
+            "path": "/api/updates/match",
+            "description": "Runners: which of these conversations belong to a project with daily updates on",
+            "example_request": {"computer_id": "…", "sessions": [{"tool": "claude", "session_id": "…", "cwd": "~/w/a"}]}
+        }),
+        json!({
+            "method": "POST",
+            "path": "/api/updates/summaries",
+            "description": "Runners: store conversation summaries for a day (summary cut to 2000 characters); marks an already written update of that day for rewriting",
+            "example_request": {"computer_id": "…", "day": "2026-11-02", "items": [{"tool": "claude", "session_id": "…", "cwd": "~/w/a", "title": "…", "summary": "…", "jira_keys": ["EIN-1"], "model": "haiku"}]}
+        }),
+        json!({
+            "method": "POST",
+            "path": "/api/updates/reports",
+            "description": "Runners: this computer has summarized that day",
+            "example_request": {"computer_id": "…", "day": "2026-11-02"}
+        }),
     ]
 }
 
@@ -590,6 +636,14 @@ mod tests {
             ("GET", "/api/projects/{id}"),
             ("PATCH", "/api/projects/{id}"),
             ("DELETE", "/api/projects/{id}"),
+            ("GET", "/api/projects/{id}/updates"),
+            ("GET", "/api/projects/{id}/updates/{day}/summaries"),
+            ("POST", "/api/projects/{id}/updates/{day}/rewrite"),
+            ("PUT", "/api/projects/{id}/updates/{day}"),
+            ("GET", "/api/updates/runner"),
+            ("POST", "/api/updates/match"),
+            ("POST", "/api/updates/summaries"),
+            ("POST", "/api/updates/reports"),
             ("PUT", "/api/conversations/{id}/mcp"),
             ("POST", "/api/conversations/mcp"),
             ("POST", "/api/sessions/stats"),

@@ -57,6 +57,7 @@ pub(crate) async fn run_tick(pool: &DbPool, broadcaster: &Broadcaster, notifier:
     if outcome.changed() {
         broadcaster.send();
     }
+    crate::updates::daily_cleanup(pool, Utc::now());
     // Reminders, dates and the briefing: held through quiet hours by not sending (and not
     // marking) them, so they go out with sound when quiet hours end.
     let today = pool.get().map_err(|e| e.to_string()).and_then(|c| crate::today::today_tick_db(&c, Utc::now()).map_err(|e| e.to_string()));

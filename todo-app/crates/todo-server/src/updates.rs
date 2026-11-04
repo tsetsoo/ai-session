@@ -6,6 +6,7 @@ use actix_web::{web, HttpResponse};
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
+use todo_shared::{ProjectUpdate, UpdateSummary};
 use uuid::Uuid;
 
 use crate::broadcast::Broadcaster;
@@ -585,6 +586,144 @@ pub async fn put_update(
 }
 
 
+// --- For the apps ---------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    pub before: Option<String>,
+    pub limit: Option<u32>,
+}
+
+const LIST_DEFAULT: u32 = 14;
+const LIST_MAX: u32 = 30;
+/// Days kept, counted back from today's Sofia date.
+const KEEP_DAYS: i64 = 90;
+
+pub(crate) fn list_updates_db(conn: &Connection, project_id: &str, q: &ListQuery) -> Result<Vec<ProjectUpdate>, UpdateError> {
+    if let Some(before) = &q.before {
+        checked_day(before)?;
+    }
+    if !crate::projects::project_exists(conn, project_id)? {
+        return Err(UpdateError::NotFound("Project not found"));
+    }
+    let limit = q.limit.unwrap_or(LIST_DEFAULT).clamp(1, LIST_MAX);
+    let mut stmt = conn.prepare(
+        "SELECT u.day, u.text, u.commits, u.waiting_on, u.written_at, u.rewrite_requested, u.stale,
+                (SELECT COUNT(*) FROM update_summaries s WHERE s.project_id = u.project_id AND s.day = u.day)
+         FROM project_updates u
+         WHERE u.project_id = ?1 AND u.text != '' AND (?2 IS NULL OR u.day < ?2)
+         ORDER BY u.day DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![project_id, q.before, limit], |r| {
+        let waiting: String = r.get(3)?;
+        Ok(ProjectUpdate {
+            day: r.get(0)?,
+            text: r.get(1)?,
+            commits: r.get(2)?,
+            waiting_on: serde_json::from_str(&waiting).unwrap_or_default(),
+            written_at: r.get(4)?,
+            rewriting: r.get::<_, i64>(5)? != 0 || r.get::<_, i64>(6)? != 0,
+            conversations: r.get(7)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub async fn list_updates(pool: web::Data<DbPool>, path: web::Path<String>, q: web::Query<ListQuery>) -> HttpResponse {
+    match pool.get() {
+        Ok(conn) => match list_updates_db(&conn, &path, &q) {
+            Ok(v) => HttpResponse::Ok().json(v),
+            Err(e) => respond(e),
+        },
+        Err(e) => server_error(e),
+    }
+}
+
+pub(crate) fn day_summaries_db(conn: &Connection, project_id: &str, day: &str) -> Result<Vec<UpdateSummary>, UpdateError> {
+    checked_day(day)?;
+    let mut stmt = conn.prepare(
+        "SELECT u.tool, u.session_id, u.todo_id, u.title, u.summary, u.jira_keys, COALESCE(c.name, u.computer_id)
+         FROM update_summaries u LEFT JOIN computers c ON c.id = u.computer_id
+         WHERE u.project_id = ?1 AND u.day = ?2 ORDER BY u.created_at, u.rowid",
+    )?;
+    let rows = stmt.query_map(params![project_id, day], |r| {
+        let keys: String = r.get(5)?;
+        Ok(UpdateSummary {
+            tool: r.get(0)?,
+            session_id: r.get(1)?,
+            todo_id: r.get(2)?,
+            title: r.get(3)?,
+            summary: r.get(4)?,
+            jira_keys: serde_json::from_str(&keys).unwrap_or_default(),
+            computer: r.get(6)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub async fn day_summaries(pool: web::Data<DbPool>, path: web::Path<(String, String)>) -> HttpResponse {
+    let (project_id, day) = path.into_inner();
+    match pool.get() {
+        Ok(conn) => match day_summaries_db(&conn, &project_id, &day) {
+            Ok(v) => HttpResponse::Ok().json(v),
+            Err(e) => respond(e),
+        },
+        Err(e) => server_error(e),
+    }
+}
+
+pub(crate) fn rewrite_db(conn: &Connection, project_id: &str, day: &str) -> Result<(), UpdateError> {
+    checked_day(day)?;
+    let n = conn.execute(
+        "UPDATE project_updates SET rewrite_requested = 1 WHERE project_id = ?1 AND day = ?2",
+        params![project_id, day],
+    )?;
+    if n == 0 {
+        return Err(UpdateError::NotFound("No update for that day"));
+    }
+    Ok(())
+}
+
+pub async fn rewrite(pool: web::Data<DbPool>, broadcaster: web::Data<Broadcaster>, path: web::Path<(String, String)>) -> HttpResponse {
+    let (project_id, day) = path.into_inner();
+    match pool.get() {
+        Ok(conn) => match rewrite_db(&conn, &project_id, &day) {
+            Ok(()) => {
+                broadcaster.send();
+                HttpResponse::Ok().json(serde_json::json!({"ok": true}))
+            }
+            Err(e) => respond(e),
+        },
+        Err(e) => server_error(e),
+    }
+}
+
+/// Deletes summaries, reports and updates of days more than 90 days before today (Sofia).
+pub(crate) fn cleanup_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<usize> {
+    let today = now.with_timezone(&TZ).date_naive();
+    let cutoff = (today - Duration::days(KEEP_DAYS)).format("%Y-%m-%d").to_string();
+    let mut n = 0;
+    for table in ["update_summaries", "update_reports", "project_updates"] {
+        n += conn.execute(&format!("DELETE FROM {table} WHERE day < ?1"), params![cutoff])?;
+    }
+    Ok(n)
+}
+
+/// `cleanup_db` once per Sofia date, from the scheduler tick.
+pub(crate) fn daily_cleanup(pool: &DbPool, now: DateTime<Utc>) {
+    static LAST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let today = crate::scheduler::local_date(now);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.as_deref() == Some(today.as_str()) {
+        return;
+    }
+    match pool.get().map_err(|e| e.to_string()).and_then(|c| cleanup_db(&c, now).map_err(|e| e.to_string())) {
+        Ok(_) => *last = Some(today),
+        Err(e) => println!("updates: cleanup failed: {e}"),
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -923,5 +1062,129 @@ mod tests {
         let ok = PutUpdateRequest { text: "x".into(), commits: 0 };
         assert!(matches!(put_update_db(&conn, "nope", "2026-11-03", &ok, now), Err(UpdateError::NotFound(_))));
         assert!(matches!(put_update_db(&conn, "pa", "bad", &ok, now), Err(UpdateError::BadRequest(_))));
+    }
+    // --- Task 4: for the apps -----------------------------------------------------------
+
+    fn put(conn: &Connection, day: &str, text: &str) {
+        put_update_db(conn, "pa", day, &PutUpdateRequest { text: text.into(), commits: 1 }, utc("2026-11-04 08:01:00")).ok().unwrap();
+    }
+
+    #[actix_web::test]
+    async fn list_updates_newest_first_hides_empty() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        put(&conn, "2026-11-01", "one");
+        put(&conn, "2026-11-02", "");
+        put(&conn, "2026-11-03", "three");
+        let (status, body) = crate::test_support::get(&pool, "/api/projects/pa/updates").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let days: Vec<&str> = body.as_array().unwrap().iter().map(|u| u["day"].as_str().unwrap()).collect();
+        assert_eq!(days, vec!["2026-11-03", "2026-11-01"]);
+        assert_eq!((&body[0]["commits"], &body[0]["rewriting"]), (&json!(1), &json!(false)));
+    }
+
+    #[actix_web::test]
+    async fn list_updates_pages_with_before() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        for d in ["2026-11-01", "2026-11-02", "2026-11-03"] {
+            put(&conn, d, "x");
+        }
+        let (_, body) = crate::test_support::get(&pool, "/api/projects/pa/updates?before=2026-11-03&limit=1").await;
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["day"], "2026-11-02");
+        let (status, _) = crate::test_support::get(&pool, "/api/projects/pa/updates?before=bad").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn list_updates_counts_conversations() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        post(
+            &pool,
+            "/api/updates/summaries",
+            json!({"computer_id": "mac", "day": "2026-11-03", "items": [item("s1", "~/w/a", "a"), item("s2", "~/w/a", "b")]}),
+        )
+        .await;
+        put(&conn, "2026-11-03", "x");
+        let (_, body) = crate::test_support::get(&pool, "/api/projects/pa/updates").await;
+        assert_eq!(body[0]["conversations"], 2);
+    }
+
+    #[actix_web::test]
+    async fn summaries_for_day() {
+        let (_db, pool) = pool("updates");
+        seed(&pool.get().unwrap());
+        post(
+            &pool,
+            "/api/updates/summaries",
+            json!({"computer_id": "mac", "day": "2026-11-03", "items": [item("s1", "~/w/a", "first"), item("s2", "~/w/a", "second")]}),
+        )
+        .await;
+        let (status, body) = crate::test_support::get(&pool, "/api/projects/pa/updates/2026-11-03/summaries").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body.as_array().unwrap().len(), 2);
+        assert_eq!(
+            (&body[0]["summary"], &body[0]["computer"], &body[0]["jira_keys"], &body[0]["todo_id"]),
+            (&json!("first"), &json!("tsvetelins-macbook-pro"), &json!(["EIN-1"]), &json!(null))
+        );
+    }
+
+    #[actix_web::test]
+    async fn rewrite_flags_and_404() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (status, _) = post(&pool, "/api/projects/pa/updates/2026-11-03/rewrite", json!({})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        put(&conn, "2026-11-03", "x");
+        let (status, _) = post(&pool, "/api/projects/pa/updates/2026-11-03/rewrite", json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = crate::test_support::get(&pool, "/api/projects/pa/updates").await;
+        assert_eq!(body[0]["rewriting"], true);
+    }
+
+    #[actix_web::test]
+    async fn cleanup_keeps_ninety_days() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        for d in ["2026-08-05", "2026-08-06"] {
+            put(&conn, d, "x");
+            report(&conn, "mac", d);
+            summaries_db(
+                &conn,
+                &SummariesRequest {
+                    computer_id: "mac".into(),
+                    day: d.into(),
+                    items: vec![SummaryItem {
+                        tool: "claude".into(),
+                        session_id: format!("s-{d}"),
+                        cwd: "~/w/a".into(),
+                        title: String::new(),
+                        summary: "x".into(),
+                        jira_keys: vec![],
+                        model: String::new(),
+                    }],
+                },
+            )
+            .ok()
+            .unwrap();
+        }
+        cleanup_db(&conn, utc("2026-11-04 10:00:00")).unwrap();
+        for table in ["project_updates", "update_reports", "update_summaries"] {
+            let days: Vec<String> = conn
+                .prepare(&format!("SELECT day FROM {table}"))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(days, vec!["2026-08-06".to_string()], "{table}");
+        }
     }
 }
