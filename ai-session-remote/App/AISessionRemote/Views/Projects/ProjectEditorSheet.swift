@@ -34,6 +34,8 @@ struct ProjectEditorSheet: View {
     @State private var isSaving = false
     @State private var loaded = false
     @State private var mcpDefault: [String]?
+    @State private var dailyUpdates = false
+    @State private var updateStyle = ""
 
     var body: some View {
         NavigationStack {
@@ -72,6 +74,27 @@ struct ProjectEditorSheet: View {
                     Toggle("Feed memories into new conversations", isOn: $digestEnabled)
                 } footer: {
                     Text("The computer writes a short digest of this project's memories where new Claude and Codex conversations in the folder load it.")
+                }
+                if case .edit = mode {
+                    Section {
+                        Toggle("Daily updates", isOn: $dailyUpdates)
+                        if dailyUpdates {
+                            ZStack(alignment: .topLeading) {
+                                if updateStyle.isEmpty {
+                                    Text("How the update should read. Empty: a plain bullet list.")
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.top, 8)
+                                        .padding(.leading, 5)
+                                }
+                                TextEditor(text: $updateStyle)
+                                    .frame(minHeight: 90)
+                                    .scrollContentBackground(.hidden)
+                            }
+                            .accessibilityLabel("Update style")
+                        }
+                    } footer: {
+                        Text("Each morning, a summary of yesterday's work (08:00 to 08:00) appears on this project's page.")
+                    }
                 }
                 if case let .edit(project) = mode {
                     ProjectDefaultServersSection(project: project, store: store, selection: $mcpDefault)
@@ -145,6 +168,8 @@ struct ProjectEditorSheet: View {
             repoUrl = project.repoUrl ?? ""
             digestEnabled = project.digestEnabled
             mcpDefault = project.mcpDefault
+            dailyUpdates = project.dailyUpdates
+            updateStyle = project.updateStyle
         }
     }
 
@@ -172,10 +197,13 @@ struct ProjectEditorSheet: View {
                         folder: folder == project.folder ? nil : folder,
                         repoUrl: repo == (project.repoUrl ?? "") ? nil : (repo.isEmpty ? .clear : .set(repo)),
                         digestEnabled: digestEnabled == project.digestEnabled ? nil : digestEnabled,
-                        mcpDefault: mcpDefault == project.mcpDefault ? nil : (mcpDefault.map { .set($0) } ?? .clear)
+                        mcpDefault: mcpDefault == project.mcpDefault ? nil : (mcpDefault.map { .set($0) } ?? .clear),
+                        dailyUpdates: dailyUpdates == project.dailyUpdates ? nil : dailyUpdates,
+                        updateStyle: trimmed(updateStyle) == project.updateStyle ? nil : trimmed(updateStyle)
                     )
                     if request.name != nil || request.folder != nil || request.repoUrl != nil
-                        || request.digestEnabled != nil || request.mcpDefault != nil {
+                        || request.digestEnabled != nil || request.mcpDefault != nil
+                        || request.dailyUpdates != nil || request.updateStyle != nil {
                         try await store.updateProject(project, request)
                     }
                     dismiss()

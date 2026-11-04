@@ -1221,6 +1221,26 @@ final class TodoHubStore {
         try await perform { client in _ = try await client.updateSchedulerSettings(settings) }
     }
 
+    // MARK: Daily updates
+
+    func projectUpdates(projectId: String, before: String?, limit: Int = 14) async throws -> [ProjectUpdate] {
+        #if DEBUG
+        if demo != nil { return [] }
+        #endif
+        return try await requireClient().projectUpdates(projectId: projectId, before: before, limit: limit)
+    }
+
+    func updateSummaries(projectId: String, day: String) async throws -> [UpdateSummary] {
+        #if DEBUG
+        if demo != nil { return [] }
+        #endif
+        return try await requireClient().updateSummaries(projectId: projectId, day: day)
+    }
+
+    func rewriteUpdate(projectId: String, day: String) async throws {
+        try await perform { client in try await client.rewriteUpdate(projectId: projectId, day: day) }
+    }
+
     // MARK: Ideas
 
     func ideas(projectId: String, pending: Bool = false) async throws -> [Idea] {

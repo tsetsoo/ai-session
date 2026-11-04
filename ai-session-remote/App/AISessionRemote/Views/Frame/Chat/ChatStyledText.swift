@@ -1,9 +1,8 @@
-#if os(iOS)
 import AISessionCore
 import SwiftUI
 
 /// A reply's prose lines as styled text: headings sized, list markers as bullets, quotes
-/// dimmed, and inline emphasis, code and links rendered. Line rules are `ChatMarkdown`'s, so
+/// dimmed, and inline emphasis, code and links rendered (also project updates, on both platforms). Line rules are `ChatMarkdown`'s, so
 /// what shows matches "Copy as plain text".
 enum ChatStyledText {
     static let codeFont = Font.system(.callout, design: .monospaced)
@@ -42,4 +41,3 @@ enum ChatStyledText {
         return attributed
     }
 }
-#endif
