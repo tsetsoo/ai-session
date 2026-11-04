@@ -17,11 +17,18 @@ use crate::db::DbPool;
 pub(crate) const MAX_SUMMARY: usize = 2000;
 const MAX_TITLE: usize = 200;
 const MAX_ITEMS: usize = 500;
+/// Longest project update, in characters.
+pub(crate) const MAX_UPDATE: usize = 20_000;
+/// Days back a Mac catches up, and how long a silent computer is still waited for.
+const CATCH_UP_DAYS: i64 = 3;
+/// Sofia hour on the morning after a window when the update is written without late computers.
+const FALLBACK_HOUR: u32 = 10;
 /// The window starts and ends at this Sofia hour.
 const DAY_START_HOUR: u32 = 8;
 
 pub(crate) enum UpdateError {
     BadRequest(String),
+    NotFound(&'static str),
     Db(rusqlite::Error),
 }
 
@@ -34,6 +41,7 @@ impl From<rusqlite::Error> for UpdateError {
 fn respond(e: UpdateError) -> HttpResponse {
     match e {
         UpdateError::BadRequest(m) => bad_request(&m),
+        UpdateError::NotFound(m) => crate::conversations::not_found(m),
         UpdateError::Db(e) => server_error(e),
     }
 }
@@ -277,6 +285,306 @@ pub async fn post_report(pool: web::Data<DbPool>, req: web::Json<ReportRequest>)
 }
 
 
+// --- What each runner should do ------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct RunnerSettings {
+    pub five_hour: u8,
+    pub weekly: u8,
+    pub claude_model: String,
+    pub codex_model: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunnerProject {
+    pub id: String,
+    pub name: String,
+    pub folder: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WriteSummary {
+    pub title: String,
+    pub summary: String,
+    pub jira_keys: Vec<String>,
+    pub computer: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompletedTodo {
+    pub title: String,
+    pub completed_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WriteItem {
+    pub project_id: String,
+    pub project_name: String,
+    pub folder: String,
+    pub day: String,
+    pub style: String,
+    pub summaries: Vec<WriteSummary>,
+    pub completed_todos: Vec<CompletedTodo>,
+    pub todo_titles: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunnerWork {
+    pub settings: RunnerSettings,
+    /// Closed days (oldest first) this computer still has to summarize.
+    pub days: Vec<String>,
+    /// Switched-on projects on this computer (their commits are read here).
+    pub projects: Vec<RunnerProject>,
+    /// Project updates this computer should write now.
+    pub write: Vec<WriteItem>,
+}
+
+/// The last `CATCH_UP_DAYS` closed days, oldest first.
+fn recent_days(now: DateTime<Utc>) -> Vec<String> {
+    let last = parse_day(&last_closed_day(now)).expect("last_closed_day is a date");
+    (0..CATCH_UP_DAYS).rev().map(|back| (last - Duration::days(back)).format("%Y-%m-%d").to_string()).collect()
+}
+
+/// Computers whose runner checked in within the last `CATCH_UP_DAYS` days: (id, name).
+pub(crate) fn expected_computers(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<Vec<(String, String)>> {
+    let since = crate::scheduler::sql_time(now - Duration::days(CATCH_UP_DAYS));
+    let mut stmt = conn.prepare("SELECT id, name FROM computers WHERE runner_seen_at >= ?1 ORDER BY name")?;
+    let rows = stmt.query_map(params![since], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
+}
+
+/// Names of expected computers that haven't reported `day`.
+fn waiting_on(conn: &Connection, day: &str, now: DateTime<Utc>) -> rusqlite::Result<Vec<String>> {
+    let mut out = Vec::new();
+    for (id, name) in expected_computers(conn, now)? {
+        let reported: bool = conn
+            .query_row("SELECT 1 FROM update_reports WHERE computer_id = ?1 AND day = ?2", params![id, day], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if !reported {
+            out.push(name);
+        }
+    }
+    Ok(out)
+}
+
+/// Every expected computer reported, or it's past 10:00 Sofia the morning after the window.
+fn ready(conn: &Connection, day: &str, now: DateTime<Utc>) -> rusqlite::Result<bool> {
+    let fallback = parse_day(day)
+        .and_then(|d| d.succ_opt())
+        .and_then(|d| TZ.from_local_datetime(&d.and_time(NaiveTime::from_hms_opt(FALLBACK_HOUR, 0, 0)?)).single())
+        .map(|t| t.with_timezone(&Utc));
+    if fallback.is_some_and(|f| now >= f) {
+        return Ok(true);
+    }
+    Ok(waiting_on(conn, day, now)?.is_empty())
+}
+
+fn needs_writing(conn: &Connection, project_id: &str, day: &str) -> rusqlite::Result<bool> {
+    let row: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT rewrite_requested, stale FROM project_updates WHERE project_id = ?1 AND day = ?2",
+            params![project_id, day],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(row.is_none_or(|(rewrite, stale)| rewrite != 0 || stale != 0))
+}
+
+fn write_item(conn: &Connection, p: &OnProject, day: &str) -> rusqlite::Result<WriteItem> {
+    let (start, end) = day_window(day).expect("a recent day has a window");
+    let mut stmt = conn.prepare(
+        "SELECT u.title, u.summary, u.jira_keys, COALESCE(c.name, u.computer_id) FROM update_summaries u
+         LEFT JOIN computers c ON c.id = u.computer_id
+         WHERE u.project_id = ?1 AND u.day = ?2 ORDER BY u.created_at, u.rowid",
+    )?;
+    let summaries = stmt
+        .query_map(params![p.id, day], |r| {
+            let keys: String = r.get(2)?;
+            Ok(WriteSummary {
+                title: r.get(0)?,
+                summary: r.get(1)?,
+                jira_keys: serde_json::from_str(&keys).unwrap_or_default(),
+                computer: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut stmt = conn.prepare(
+        "SELECT title, completed_at FROM todos WHERE project_id = ?1 AND completed = 1
+         AND completed_at >= ?2 AND completed_at < ?3 ORDER BY completed_at",
+    )?;
+    let completed_todos = stmt
+        .query_map(params![p.id, crate::scheduler::sql_time(start), crate::scheduler::sql_time(end)], |r| {
+            Ok(CompletedTodo { title: r.get(0)?, completed_at: r.get(1)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut stmt = conn.prepare(
+        "SELECT title FROM todos WHERE project_id = ?1 AND (completed = 0 OR completed_at >= ?2)
+         ORDER BY updated_at DESC LIMIT 200",
+    )?;
+    let todo_titles = stmt
+        .query_map(params![p.id, crate::scheduler::sql_time(start)], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(WriteItem {
+        project_id: p.id.clone(),
+        project_name: p.name.clone(),
+        folder: p.folder.clone(),
+        day: day.to_string(),
+        style: p.style.clone(),
+        summaries,
+        completed_todos,
+        todo_titles,
+    })
+}
+
+struct OnProject {
+    id: String,
+    name: String,
+    folder: String,
+    style: String,
+    since: String,
+    computer_id: String,
+}
+
+fn on_projects(conn: &Connection) -> rusqlite::Result<Vec<OnProject>> {
+    let mut stmt = conn.prepare(
+        "SELECT p.id, p.name, p.folder, p.update_style, COALESCE(p.daily_updates_since, ''), sc.computer_id
+         FROM projects p JOIN section_computers sc ON sc.section = p.section
+         WHERE p.daily_updates = 1 ORDER BY p.name",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(OnProject {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            folder: r.get(2)?,
+            style: r.get(3)?,
+            since: r.get(4)?,
+            computer_id: r.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub(crate) fn runner_db(conn: &Connection, computer_id: &str, now: DateTime<Utc>) -> Result<RunnerWork, UpdateError> {
+    let scheduler = crate::jobs::settings_db(conn)?;
+    let today = crate::today::settings_db(conn)?;
+    let settings = RunnerSettings {
+        five_hour: scheduler.five_hour,
+        weekly: scheduler.weekly,
+        claude_model: today.claude_model,
+        codex_model: today.codex_model,
+    };
+    let projects = on_projects(conn)?;
+    let recent = recent_days(now);
+    let mut days = Vec::new();
+    if let Some(earliest) = projects.iter().map(|p| p.since.as_str()).min() {
+        for day in &recent {
+            let reported = conn
+                .query_row("SELECT 1 FROM update_reports WHERE computer_id = ?1 AND day = ?2", params![computer_id, day], |_| Ok(()))
+                .optional()?
+                .is_some();
+            if day.as_str() >= earliest && !reported {
+                days.push(day.clone());
+            }
+        }
+    }
+    let mut write = Vec::new();
+    let mine: Vec<&OnProject> = projects.iter().filter(|p| p.computer_id == computer_id).collect();
+    for day in &recent {
+        let candidates: Vec<&&OnProject> = mine.iter().filter(|p| day.as_str() >= p.since.as_str()).collect();
+        if candidates.is_empty() || !ready(conn, day, now)? {
+            continue;
+        }
+        for p in candidates {
+            if needs_writing(conn, &p.id, day)? {
+                write.push(write_item(conn, p, day)?);
+            }
+        }
+    }
+    let projects = mine.iter().map(|p| RunnerProject { id: p.id.clone(), name: p.name.clone(), folder: p.folder.clone() }).collect();
+    Ok(RunnerWork { settings, days, projects, write })
+}
+
+pub async fn runner_work(pool: web::Data<DbPool>, query: web::Query<std::collections::HashMap<String, String>>) -> HttpResponse {
+    let Some(computer_id) = query.get("computer_id").filter(|c| !c.trim().is_empty()) else {
+        return bad_request("computer_id is required");
+    };
+    match pool.get() {
+        Ok(conn) => match runner_db(&conn, computer_id, Utc::now()) {
+            Ok(v) => HttpResponse::Ok().json(v),
+            Err(e) => respond(e),
+        },
+        Err(e) => server_error(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PutUpdateRequest {
+    /// Markdown; empty: nothing happened that day (stored so it isn't offered again, not shown).
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub commits: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StoredUpdate {
+    pub day: String,
+    pub waiting_on: Vec<String>,
+}
+
+pub(crate) fn put_update_db(
+    conn: &Connection,
+    project_id: &str,
+    day: &str,
+    req: &PutUpdateRequest,
+    now: DateTime<Utc>,
+) -> Result<StoredUpdate, UpdateError> {
+    checked_day(day)?;
+    if req.text.chars().count() > MAX_UPDATE {
+        return Err(UpdateError::BadRequest(format!("text is limited to {MAX_UPDATE} characters")));
+    }
+    if !crate::projects::project_exists(conn, project_id)? {
+        return Err(UpdateError::NotFound("Project not found"));
+    }
+    let waiting = waiting_on(conn, day, now)?;
+    conn.execute(
+        "INSERT INTO project_updates (project_id, day, text, commits, waiting_on, written_at, rewrite_requested, stale)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0)
+         ON CONFLICT (project_id, day) DO UPDATE SET text = excluded.text, commits = excluded.commits,
+            waiting_on = excluded.waiting_on, written_at = excluded.written_at, rewrite_requested = 0, stale = 0",
+        params![
+            project_id,
+            day,
+            req.text.trim(),
+            req.commits,
+            serde_json::to_string(&waiting).unwrap_or_else(|_| "[]".into()),
+            crate::scheduler::sql_time(now),
+        ],
+    )?;
+    Ok(StoredUpdate { day: day.to_string(), waiting_on: waiting })
+}
+
+pub async fn put_update(
+    pool: web::Data<DbPool>,
+    broadcaster: web::Data<Broadcaster>,
+    path: web::Path<(String, String)>,
+    req: web::Json<PutUpdateRequest>,
+) -> HttpResponse {
+    let (project_id, day) = path.into_inner();
+    match pool.get() {
+        Ok(conn) => match put_update_db(&conn, &project_id, &day, &req, Utc::now()) {
+            Ok(v) => {
+                broadcaster.send();
+                HttpResponse::Ok().json(v)
+            }
+            Err(e) => respond(e),
+        },
+        Err(e) => server_error(e),
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,5 +754,174 @@ mod tests {
         }
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM update_reports", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+    // --- Task 3: what each runner should do -------------------------------------------
+
+    fn seen(conn: &Connection, computer: &str, at: &str) {
+        conn.execute("UPDATE computers SET runner_seen_at = ?2 WHERE id = ?1", params![computer, at]).unwrap();
+    }
+
+    fn report(conn: &Connection, computer: &str, day: &str) {
+        report_db(conn, &ReportRequest { computer_id: computer.into(), day: day.into() }).ok().unwrap();
+    }
+
+    fn write_days(work: &RunnerWork) -> Vec<(String, String)> {
+        work.write.iter().map(|w| (w.project_id.clone(), w.day.clone())).collect()
+    }
+
+    #[actix_web::test]
+    async fn days_lists_unreported_closed_days_max_three() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let now = utc("2026-11-06 07:00:00");
+        // 09:00 Sofia on the 6th: the 5th's window has closed.
+        assert_eq!(runner_db(&conn, "mac", now).ok().unwrap().days, vec!["2026-11-03", "2026-11-04", "2026-11-05"]);
+        report(&conn, "mac", "2026-11-04");
+        assert_eq!(runner_db(&conn, "mac", now).ok().unwrap().days, vec!["2026-11-03", "2026-11-05"]);
+    }
+
+    #[actix_web::test]
+    async fn days_empty_when_no_project_on() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET daily_updates = 0", []).unwrap();
+        let work = runner_db(&conn, "mac", utc("2026-11-06 07:00:00")).ok().unwrap();
+        assert!(work.days.is_empty() && work.write.is_empty() && work.projects.is_empty());
+    }
+
+    #[actix_web::test]
+    async fn days_start_at_switch_on() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET daily_updates_since = '2026-11-04' WHERE id = 'pa'", []).unwrap();
+        assert_eq!(runner_db(&conn, "mac", utc("2026-11-06 07:00:00")).ok().unwrap().days, vec!["2026-11-04", "2026-11-05"]);
+    }
+
+    #[actix_web::test]
+    async fn write_waits_for_expected_computers() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET daily_updates_since = '2026-11-03'", []).unwrap();
+        let now = utc("2026-11-04 07:00:00"); // 09:00 Sofia: before the 10:00 fallback
+        seen(&conn, "mac", "2026-11-04 06:59:00");
+        seen(&conn, "spread", "2026-11-04 06:00:00");
+        report(&conn, "mac", "2026-11-03");
+        assert!(runner_db(&conn, "mac", now).ok().unwrap().write.is_empty());
+        report(&conn, "spread", "2026-11-03");
+        let work = runner_db(&conn, "mac", now).ok().unwrap();
+        assert_eq!(write_days(&work), vec![("pa".to_string(), "2026-11-03".to_string())]);
+        assert_eq!(work.write[0].folder, "~/w/a");
+    }
+
+    #[actix_web::test]
+    async fn write_ignores_computer_unseen_for_three_days() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET daily_updates_since = '2026-11-03'", []).unwrap();
+        seen(&conn, "mac", "2026-11-04 06:59:00");
+        seen(&conn, "spread", "2026-10-31 06:00:00");
+        report(&conn, "mac", "2026-11-03");
+        assert_eq!(write_days(&runner_db(&conn, "mac", utc("2026-11-04 07:00:00")).ok().unwrap()).len(), 1);
+    }
+
+    #[actix_web::test]
+    async fn write_after_ten_without_reports() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET daily_updates_since = '2026-11-03'", []).unwrap();
+        seen(&conn, "mac", "2026-11-04 08:00:00");
+        seen(&conn, "spread", "2026-11-04 06:00:00");
+        report(&conn, "mac", "2026-11-03");
+        let now = utc("2026-11-04 08:01:00"); // 10:01 Sofia
+        assert_eq!(write_days(&runner_db(&conn, "mac", now).ok().unwrap()), vec![("pa".to_string(), "2026-11-03".to_string())]);
+        let update = put_update_db(&conn, "pa", "2026-11-03", &PutUpdateRequest { text: "done".into(), commits: 2 }, now).ok().unwrap();
+        assert_eq!(update.waiting_on, vec!["spreads-macbook-pro".to_string()]);
+    }
+
+    #[actix_web::test]
+    async fn put_clears_stale_and_rewrite() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET daily_updates_since = '2026-11-03'", []).unwrap();
+        seen(&conn, "mac", "2026-11-04 06:59:00");
+        report(&conn, "mac", "2026-11-03");
+        let now = utc("2026-11-04 07:00:00");
+        let body = PutUpdateRequest { text: "v1".into(), commits: 0 };
+        put_update_db(&conn, "pa", "2026-11-03", &body, now).ok().unwrap();
+        assert!(runner_db(&conn, "mac", now).ok().unwrap().write.is_empty(), "written");
+        summaries_db(
+            &conn,
+            &SummariesRequest {
+                computer_id: "mac".into(),
+                day: "2026-11-03".into(),
+                items: vec![SummaryItem {
+                    tool: "claude".into(),
+                    session_id: "s1".into(),
+                    cwd: "~/w/a".into(),
+                    title: "T".into(),
+                    summary: "late".into(),
+                    jira_keys: vec![],
+                    model: "haiku".into(),
+                }],
+            },
+        )
+        .ok()
+        .unwrap();
+        let work = runner_db(&conn, "mac", now).ok().unwrap();
+        assert_eq!(write_days(&work).len(), 1, "stale: written again");
+        assert_eq!(work.write[0].summaries[0].summary, "late");
+        put_update_db(&conn, "pa", "2026-11-03", &body, now).ok().unwrap();
+        assert!(runner_db(&conn, "mac", now).ok().unwrap().write.is_empty());
+        conn.execute("UPDATE project_updates SET rewrite_requested = 1", []).unwrap();
+        assert_eq!(write_days(&runner_db(&conn, "mac", now).ok().unwrap()).len(), 1, "rewrite asked");
+    }
+
+    #[actix_web::test]
+    async fn write_only_for_project_computer() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let work = runner_db(&conn, "codbex", utc("2026-11-06 09:00:00")).ok().unwrap();
+        assert!(work.write.is_empty() && work.projects.is_empty());
+        assert!(!work.days.is_empty(), "codbex still summarizes its own conversations");
+    }
+
+    #[actix_web::test]
+    async fn write_includes_completed_todos_in_window() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET daily_updates_since = '2026-11-03'", []).unwrap();
+        conn.execute_batch(
+            "INSERT INTO todos (id, title, section, project_id, completed, completed_at) VALUES
+                 ('t1', 'EIN-5 in window', 'Si', 'pa', 1, '2026-11-03 10:00:00'),
+                 ('t2', 'before window', 'Si', 'pa', 1, '2026-11-03 05:59:59'),
+                 ('t3', 'open EIN-7', 'Si', 'pa', 0, NULL);",
+        )
+        .unwrap();
+        let work = runner_db(&conn, "mac", utc("2026-11-04 08:01:00")).ok().unwrap();
+        let w = &work.write[0];
+        assert_eq!(w.completed_todos.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), vec!["EIN-5 in window"]);
+        assert!(w.todo_titles.contains(&"open EIN-7".to_string()));
+    }
+
+    #[actix_web::test]
+    async fn put_update_validates() {
+        let (_db, pool) = pool("updates");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let now = utc("2026-11-04 08:01:00");
+        let long = PutUpdateRequest { text: "x".repeat(MAX_UPDATE + 1), commits: 0 };
+        assert!(matches!(put_update_db(&conn, "pa", "2026-11-03", &long, now), Err(UpdateError::BadRequest(_))));
+        let ok = PutUpdateRequest { text: "x".into(), commits: 0 };
+        assert!(matches!(put_update_db(&conn, "nope", "2026-11-03", &ok, now), Err(UpdateError::NotFound(_))));
+        assert!(matches!(put_update_db(&conn, "pa", "bad", &ok, now), Err(UpdateError::BadRequest(_))));
     }
 }

@@ -150,6 +150,8 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/updates/match", web::post().to(updates::match_sessions))
         .route("/api/updates/summaries", web::post().to(updates::post_summaries))
         .route("/api/updates/reports", web::post().to(updates::post_report))
+        .route("/api/updates/runner", web::get().to(updates::runner_work))
+        .route("/api/projects/{id}/updates/{day}", web::put().to(updates::put_update))
         .route("/api/runs/{id}/claim", web::post().to(runner_api::claim))
         .route("/api/runs/{id}/wait", web::post().to(runner_api::wait))
         .route("/api/runs/{id}/start", web::post().to(runner_api::start))
