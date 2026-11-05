@@ -608,6 +608,9 @@ if [ "$tool" = cursor ]; then
   set -- env "AGENT_CLI_CREDENTIAL_STORE=file" "$@"
 fi
 tmux_cmd new-session -d -s "$name" -c "$cwd" -- env "PATH=$PATH" "LANG=$session_lang" "LC_CTYPE=$session_ctype" "LC_ALL=$session_lang" "$@"
+# Off from the start (attach sets it again): a fresh Codex or Cursor waits here for its
+# id, and its first screen should already have the full height.
+tmux_cmd set-option -q -t "=$name:" status off 2>/dev/null || true
 if [ "$fresh" = 1 ]; then
   new_id=$(wait_for_fresh_id "$tool") || {
     tmux_cmd kill-session -t "=$name" 2>/dev/null || true

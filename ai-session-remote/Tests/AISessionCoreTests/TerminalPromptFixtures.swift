@@ -408,4 +408,36 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
  Esc to cancel · Tab to amend
 """#
+
+    // Claude Code 2.1.318 in an 86x40 pane, captured 2026-11-05: the tip fits on one line
+    // and ends 2 columns short of the edge, so it must not take the line under it along.
+    static let claudeBashTipAtEdge = #"""
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Opus 5.5 with medium effort · Claude Team
+ ▝▝   ▝▝   /…/cc97db91-a727-483b-ab76-97c84287bc3c/scratchpad/promptlab
+
+
+❯ Run the shell command touch made-by-test.txt with the Bash tool. Nothing else.
+
+⏺ Creating empty file made-by-test.txt
+  ⎿  $ touch made-by-test.txt
+
+──────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+ Create empty file made-by-test.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ touch made-by-test.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to /private/tmp/claude-501/-Users-tsvetelinpantev-p
+      rogramming-ai-session/cc97db91-a727-483b-ab76-97c84287bc3c/scratchpad/promptlab
+      from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend
+"""#
 }

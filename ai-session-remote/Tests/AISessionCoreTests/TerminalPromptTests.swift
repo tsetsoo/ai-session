@@ -34,6 +34,13 @@ final class TerminalPromptTests: XCTestCase {
         XCTAssertFalse(detail.contains("switch to auto mode"), "the wrapped tip's second line is dropped too: \(detail)")
     }
 
+    func testClaudeTipEndingNearTheEdgeKeepsTheLineUnderIt() throws {
+        let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeBashTipAtEdge))
+        let detail = try XCTUnwrap(prompt.detail)
+        XCTAssertTrue(detail.contains("Create empty file made-by-test.txt"), detail)
+        XCTAssertFalse(detail.contains("Tip:"), detail)
+    }
+
     func testClaudeEditPrompt() throws {
         let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeEdit))
         XCTAssertEqual(prompt.question, "Do you want to make this edit to a.txt?")
