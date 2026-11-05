@@ -1,12 +1,17 @@
 //! The weekly recap: weeks run Monday to Sunday in daily-update days (Sofia 08:00 to 08:00).
 
+use actix_web::{web, HttpResponse};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use todo_shared::{WeeklyJob, WeeklyJobs, WeeklyRunLine};
 
+use crate::broadcast::Broadcaster;
+use crate::conversations::server_error;
 use crate::cron::TZ;
+use crate::db::DbPool;
 use crate::scheduler::{parse_sql_time, sql_time};
-use crate::updates::{day_window, parse_day};
+use crate::updates::{day_window, on_projects, parse_day, respond, UpdateError};
 
 const FALLBACK_HOUR: u32 = 10;
 
@@ -19,13 +24,11 @@ fn monday(d: NaiveDate) -> NaiveDate {
 }
 
 /// The Monday of the week that `day` (YYYY-MM-DD) belongs to.
-#[allow(dead_code)] // used by the recap writer (Task 3)
 pub(crate) fn week_of_day(day: &str) -> Option<String> {
     Some(fmt(monday(parse_day(day)?)))
 }
 
 /// The seven days of the week starting on `week` (which must be a Monday).
-#[allow(dead_code)] // used by the recap writer (Task 3)
 pub(crate) fn week_days(week: &str) -> Option<Vec<String>> {
     let start = parse_day(week)?;
     if start.weekday().num_days_from_monday() != 0 {
@@ -247,9 +250,300 @@ fn snapshot_week(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<usiz
     )
 }
 
+/// A daily update the runner stores when the model failed three times starts with this.
+pub(crate) const WRITE_FAILED_PREFIX: &str = "_This update couldn't be written";
+const MAX_HEADLINE: usize = 200;
+
+#[derive(Debug, Serialize)]
+pub struct WeeklyDaySummary {
+    pub title: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WeeklyDay {
+    pub day: String,
+    /// "update", "quiet", "failed", "missing" or "untracked".
+    pub state: String,
+    /// The daily update; only for "update".
+    pub text: String,
+    /// Conversation summaries; only for "failed" and "missing" days.
+    pub summaries: Vec<WeeklyDaySummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WeeklyItem {
+    pub project_id: String,
+    pub project_name: String,
+    pub week: String,
+    pub style: String,
+    pub days: Vec<WeeklyDay>,
+}
+
+fn week_day_states(
+    conn: &Connection,
+    project_id: &str,
+    since: &str,
+    week: &str,
+) -> rusqlite::Result<Vec<WeeklyDay>> {
+    let mut out = Vec::new();
+    for day in week_days(week).unwrap_or_default() {
+        let mut item = WeeklyDay {
+            day: day.clone(),
+            state: String::new(),
+            text: String::new(),
+            summaries: Vec::new(),
+        };
+        if day.as_str() < since {
+            item.state = "untracked".into();
+            out.push(item);
+            continue;
+        }
+        let row: Option<String> = conn
+            .query_row(
+                "SELECT text FROM project_updates WHERE project_id = ?1 AND day = ?2",
+                params![project_id, day],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match row {
+            Some(t) if t.is_empty() => item.state = "quiet".into(),
+            Some(t) if t.starts_with(WRITE_FAILED_PREFIX) => item.state = "failed".into(),
+            Some(t) => {
+                item.state = "update".into();
+                item.text = t;
+            }
+            None => item.state = "missing".into(),
+        }
+        if item.state == "failed" || item.state == "missing" {
+            let mut stmt = conn.prepare(
+                "SELECT title, summary FROM update_summaries WHERE project_id = ?1 AND day = ?2 AND failed = 0 ORDER BY created_at, rowid",
+            )?;
+            item.summaries = stmt
+                .query_map(params![project_id, day], |r| {
+                    Ok(WeeklyDaySummary {
+                        title: r.get(0)?,
+                        summary: r.get(1)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+        }
+        out.push(item);
+    }
+    Ok(out)
+}
+
+/// Sunday's daily update is in and settled, or the week's fallback time has passed.
+fn week_ready(
+    conn: &Connection,
+    project_id: &str,
+    week: &str,
+    now: DateTime<Utc>,
+) -> rusqlite::Result<bool> {
+    if week_fallback(week).is_some_and(|f| now >= f) {
+        return Ok(true);
+    }
+    let Some(sunday) = week_days(week).and_then(|d| d.last().cloned()) else {
+        return Ok(false);
+    };
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM project_updates WHERE project_id = ?1 AND day = ?2 AND rewrite_requested = 0 AND stale = 0)",
+        params![project_id, sunday],
+        |r| r.get(0),
+    )
+}
+
+/// The recaps `computer_id` should write now: the last finished week of its projects once
+/// ready (when it has work to recap and no recap yet), and any week asked to be rewritten
+/// or gone stale.
+pub(crate) fn weekly_items(
+    conn: &Connection,
+    computer_id: &str,
+    now: DateTime<Utc>,
+) -> rusqlite::Result<Vec<WeeklyItem>> {
+    let last = last_finished_week(now);
+    let mut out = Vec::new();
+    for p in on_projects(conn)?
+        .iter()
+        .filter(|p| p.computer_id == computer_id)
+    {
+        let mut stmt =
+            conn.prepare("SELECT week FROM weekly_recaps WHERE project_id = ?1 AND (rewrite_requested = 1 OR stale = 1) ORDER BY week")?;
+        let flagged = stmt
+            .query_map(params![p.id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut weeks: Vec<(String, bool)> = flagged.into_iter().map(|w| (w, false)).collect();
+        if let Some(week) = &last {
+            let have: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM weekly_recaps WHERE week = ?1 AND project_id = ?2)",
+                params![week, p.id],
+                |r| r.get(0),
+            )?;
+            if !have && week_ready(conn, &p.id, week, now)? {
+                weeks.push((week.clone(), true));
+            }
+        }
+        for (week, fresh) in weeks {
+            let days = week_day_states(conn, &p.id, &p.since, &week)?;
+            // A fresh week with nothing to recap is not offered; a flagged one always is.
+            if fresh
+                && !days
+                    .iter()
+                    .any(|d| d.state == "update" || d.state == "failed")
+            {
+                continue;
+            }
+            out.push(WeeklyItem {
+                project_id: p.id.clone(),
+                project_name: p.name.clone(),
+                week,
+                style: p.style.clone(),
+                days,
+            });
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PutWeeklyRequest {
+    pub headline: String,
+    #[serde(default)]
+    pub wins: String,
+    #[serde(default)]
+    pub failed: bool,
+}
+
+fn checked_week(week: &str) -> Result<Vec<String>, UpdateError> {
+    week_days(week)
+        .ok_or_else(|| UpdateError::BadRequest("week must be the YYYY-MM-DD of a Monday".into()))
+}
+
+pub(crate) fn put_weekly_db(
+    conn: &Connection,
+    project_id: &str,
+    week: &str,
+    req: &PutWeeklyRequest,
+    now: DateTime<Utc>,
+) -> Result<(), UpdateError> {
+    let days = checked_week(week)?;
+    if req.headline.chars().count() > MAX_HEADLINE {
+        return Err(UpdateError::BadRequest(format!(
+            "headline is limited to {MAX_HEADLINE} characters"
+        )));
+    }
+    let (name, since) =
+        project_row(conn, project_id)?.ok_or(UpdateError::NotFound("Project not found"))?;
+    let (mut commits, mut with_work) = (0i64, 0i64);
+    let states: Vec<serde_json::Value> = week_day_states(conn, project_id, &since, week)?
+        .into_iter()
+        .map(|d| {
+            with_work += i64::from(d.state == "update");
+            serde_json::json!({"day": d.day, "state": d.state})
+        })
+        .collect();
+    commits += conn.query_row(
+        "SELECT COALESCE(SUM(commits), 0) FROM project_updates WHERE project_id = ?1 AND day >= ?2 AND day <= ?3",
+        params![project_id, days[0], days[6]],
+        |r| r.get::<_, i64>(0),
+    )?;
+    let conversations: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT tool || ':' || session_id) FROM update_summaries WHERE project_id = ?1 AND day >= ?2 AND day <= ?3",
+        params![project_id, days[0], days[6]],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO weekly_recaps (week, project_id, project_name, headline, wins, failed, days, commits, conversations,
+                                    days_with_work, written_at, rewrite_requested, stale)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, 0)
+         ON CONFLICT (week, project_id) DO UPDATE SET project_name = excluded.project_name, headline = excluded.headline,
+            wins = excluded.wins, failed = excluded.failed, days = excluded.days, commits = excluded.commits,
+            conversations = excluded.conversations, days_with_work = excluded.days_with_work,
+            written_at = excluded.written_at, rewrite_requested = 0, stale = 0",
+        params![
+            week,
+            project_id,
+            name,
+            req.headline.trim(),
+            req.wins.trim(),
+            i64::from(req.failed),
+            serde_json::Value::Array(states).to_string(),
+            commits,
+            conversations,
+            with_work,
+            sql_time(now),
+        ],
+    )?;
+    Ok(())
+}
+
+/// The project's name and daily-updates start day ('' when unset), if the project exists.
+fn project_row(conn: &Connection, project_id: &str) -> rusqlite::Result<Option<(String, String)>> {
+    conn.query_row(
+        "SELECT name, COALESCE(daily_updates_since, '') FROM projects WHERE id = ?1",
+        params![project_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+}
+
+pub async fn put_weekly(
+    pool: web::Data<DbPool>,
+    broadcaster: web::Data<Broadcaster>,
+    path: web::Path<(String, String)>,
+    req: web::Json<PutWeeklyRequest>,
+) -> HttpResponse {
+    let (project_id, week) = path.into_inner();
+    match pool.get() {
+        Ok(conn) => match put_weekly_db(&conn, &project_id, &week, &req, Utc::now()) {
+            Ok(()) => {
+                broadcaster.send();
+                HttpResponse::Ok().json(serde_json::json!({"week": week}))
+            }
+            Err(e) => respond(e),
+        },
+        Err(e) => server_error(e),
+    }
+}
+
+pub(crate) fn rewrite_weekly_db(
+    conn: &Connection,
+    project_id: &str,
+    week: &str,
+) -> Result<(), UpdateError> {
+    checked_week(week)?;
+    let n = conn.execute(
+        "UPDATE weekly_recaps SET rewrite_requested = 1 WHERE project_id = ?1 AND week = ?2",
+        params![project_id, week],
+    )?;
+    if n == 0 {
+        return Err(UpdateError::NotFound("No recap for that week"));
+    }
+    Ok(())
+}
+
+pub async fn rewrite_weekly(
+    pool: web::Data<DbPool>,
+    broadcaster: web::Data<Broadcaster>,
+    path: web::Path<(String, String)>,
+) -> HttpResponse {
+    let (project_id, week) = path.into_inner();
+    match pool.get() {
+        Ok(conn) => match rewrite_weekly_db(&conn, &project_id, &week) {
+            Ok(()) => {
+                broadcaster.send();
+                HttpResponse::Ok().json(serde_json::json!({"ok": true}))
+            }
+            Err(e) => respond(e),
+        },
+        Err(e) => server_error(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn utc(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
@@ -477,5 +771,340 @@ mod tests {
         crate::scheduler::tick_db(&conn, utc("2026-11-09T09:00:00Z")).unwrap();
         let pruned: i64 = conn.query_row("SELECT COUNT(*) FROM job_runs WHERE job_id = 'w'", [], |r| r.get(0)).unwrap();
         assert_eq!(pruned, 0);
+    }
+
+    // --- Runner work, PUT, rewrite, stale ---------------------------------------------
+
+    use crate::test_support::{post, put, seed_computers};
+
+    const WEEK: &str = "2026-11-02";
+
+    fn seed_updates(conn: &Connection, since: &str) {
+        seed_computers(conn);
+        conn.execute(
+            "INSERT INTO projects (id, name, section, folder, daily_updates, daily_updates_since) VALUES ('pa', 'Alpha', 'Si', '~/w/a', 1, ?1)",
+            params![since],
+        )
+        .unwrap();
+    }
+
+    fn daily(conn: &Connection, day: &str, text: &str, commits: u32) {
+        conn.execute(
+            "INSERT OR REPLACE INTO project_updates (project_id, day, text, commits) VALUES ('pa', ?1, ?2, ?3)",
+            params![day, text, commits],
+        )
+        .unwrap();
+    }
+
+    fn summary(conn: &Connection, day: &str, session: &str, failed: i64) {
+        conn.execute(
+            "INSERT INTO update_summaries (id, project_id, day, computer_id, tool, session_id, title, summary, failed)
+             VALUES (?1, 'pa', ?2, 'mac', 'claude', ?3, ?4, ?5, ?6)",
+            params![uuid::Uuid::new_v4().to_string(), day, session, format!("T {session}"), format!("S {session}"), failed],
+        )
+        .unwrap();
+    }
+
+    fn items(conn: &Connection, now: &str) -> Vec<WeeklyItem> {
+        weekly_items(conn, "mac", utc(now)).unwrap()
+    }
+
+    fn states(item: &WeeklyItem) -> Vec<&str> {
+        item.days.iter().map(|d| d.state.as_str()).collect()
+    }
+
+    #[test]
+    fn weekly_not_offered_before_ready() {
+        let (_db, pool) = pool("wk-notready");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "did things", 1);
+        assert!(items(&conn, "2026-11-09T06:05:00Z").is_empty());
+    }
+
+    #[test]
+    fn weekly_ready_when_sunday_quiet() {
+        let (_db, pool) = pool("wk-sunday");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "did things", 1);
+        daily(&conn, "2026-11-08", "", 0);
+        let got = items(&conn, "2026-11-09T06:05:00Z");
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            (got[0].week.as_str(), got[0].project_name.as_str()),
+            (WEEK, "Alpha")
+        );
+        assert_eq!(
+            states(&got[0]),
+            ["missing", "update", "missing", "missing", "missing", "missing", "quiet"]
+        );
+        assert_eq!(got[0].days[1].text, "did things");
+    }
+
+    #[test]
+    fn weekly_ready_needs_a_settled_sunday() {
+        let (_db, pool) = pool("wk-sunday-stale");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "did things", 1);
+        daily(&conn, "2026-11-08", "", 0);
+        conn.execute(
+            "UPDATE project_updates SET stale = 1 WHERE day = '2026-11-08'",
+            [],
+        )
+        .unwrap();
+        assert!(items(&conn, "2026-11-09T06:05:00Z").is_empty());
+    }
+
+    #[test]
+    fn weekly_offered_at_fallback() {
+        let (_db, pool) = pool("wk-fallback");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "did things", 1);
+        assert!(items(&conn, "2026-11-09T07:59:00Z").is_empty());
+        assert_eq!(items(&conn, "2026-11-09T08:00:00Z").len(), 1);
+    }
+
+    #[test]
+    fn days_before_since_are_untracked() {
+        let (_db, pool) = pool("wk-since");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-11-04");
+        daily(&conn, "2026-11-02", "old", 0);
+        daily(&conn, "2026-11-03", "old", 0);
+        daily(&conn, "2026-11-04", "wed", 0);
+        summary(&conn, "2026-11-05", "s1", 0);
+        summary(&conn, "2026-11-05", "s2", 1);
+        let got = items(&conn, "2026-11-09T08:00:00Z");
+        assert_eq!(
+            states(&got[0]),
+            [
+                "untracked",
+                "untracked",
+                "update",
+                "missing",
+                "missing",
+                "missing",
+                "missing"
+            ]
+        );
+        assert_eq!(got[0].days[0].text, "");
+        let thu = &got[0].days[3];
+        assert_eq!(thu.text, "");
+        assert_eq!(thu.summaries.len(), 1);
+        assert_eq!(
+            (
+                thu.summaries[0].title.as_str(),
+                thu.summaries[0].summary.as_str()
+            ),
+            ("T s1", "S s1")
+        );
+    }
+
+    #[test]
+    fn failed_day_carries_summaries() {
+        let (_db, pool) = pool("wk-failed");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "_This update couldn't be written (the model failed 3 times). Use Rewrite to try again._", 0);
+        summary(&conn, "2026-11-03", "s1", 0);
+        let got = items(&conn, "2026-11-09T08:00:00Z");
+        assert_eq!(got.len(), 1);
+        let tue = &got[0].days[1];
+        assert_eq!(tue.state, "failed");
+        assert_eq!(tue.text, "");
+        assert_eq!(tue.summaries.len(), 1);
+    }
+
+    #[test]
+    fn not_offered_to_other_computer() {
+        let (_db, pool) = pool("wk-other");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "did things", 1);
+        assert!(weekly_items(&conn, "spread", utc("2026-11-09T08:00:00Z"))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn quiet_week_not_offered() {
+        let (_db, pool) = pool("wk-quiet");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-11-05");
+        daily(&conn, "2026-11-03", "before since", 0);
+        daily(&conn, "2026-11-06", "", 0);
+        daily(&conn, "2026-11-08", "", 0);
+        assert!(items(&conn, "2026-11-09T08:00:00Z").is_empty());
+    }
+
+    #[actix_web::test]
+    async fn put_weekly_computes_counts() {
+        let (_db, pool) = pool("wk-put");
+        {
+            let conn = pool.get().unwrap();
+            seed_updates(&conn, "2026-01-01");
+            daily(&conn, "2026-11-03", "a", 2);
+            daily(&conn, "2026-11-04", "b", 3);
+            daily(&conn, "2026-11-05", "", 0);
+            summary(&conn, "2026-11-03", "s1", 0);
+            summary(&conn, "2026-11-04", "s1", 0);
+            summary(&conn, "2026-11-04", "s2", 0);
+        }
+        let (status, body) = put(
+            &pool,
+            "/api/projects/pa/weekly/2026-11-02",
+            json!({"headline": "Good week", "wins": "- you shipped", "failed": false}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{body}");
+        let conn = pool.get().unwrap();
+        let (name, head, commits, convs, work, days): (String, String, i64, i64, i64, String) = conn
+            .query_row(
+                "SELECT project_name, headline, commits, conversations, days_with_work, days FROM weekly_recaps WHERE week = ?1",
+                params![WEEK],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (name.as_str(), head.as_str(), commits, convs, work),
+            ("Alpha", "Good week", 5, 2, 2)
+        );
+        let days: serde_json::Value = serde_json::from_str(&days).unwrap();
+        assert_eq!(days[1], json!({"day": "2026-11-03", "state": "update"}));
+        assert_eq!(days[3], json!({"day": "2026-11-05", "state": "quiet"}));
+        assert_eq!(days[0]["state"], "missing");
+        // Offered work is gone now.
+        assert!(items(&conn, "2026-11-09T08:00:00Z").is_empty());
+    }
+
+    #[actix_web::test]
+    async fn put_weekly_rejects_bad_input() {
+        let (_db, pool) = pool("wk-put-bad");
+        seed_updates(&pool.get().unwrap(), "2026-01-01");
+        let ok = json!({"headline": "h", "wins": "w", "failed": false});
+        assert_eq!(
+            put(&pool, "/api/projects/pa/weekly/2026-11-03", ok.clone())
+                .await
+                .0,
+            400
+        );
+        assert_eq!(
+            put(&pool, "/api/projects/pa/weekly/nope", ok.clone())
+                .await
+                .0,
+            400
+        );
+        assert_eq!(
+            put(
+                &pool,
+                "/api/projects/pa/weekly/2026-11-02",
+                json!({"headline": "x".repeat(201), "wins": "w", "failed": false})
+            )
+            .await
+            .0,
+            400
+        );
+        assert_eq!(
+            put(&pool, "/api/projects/zz/weekly/2026-11-02", ok).await.0,
+            404
+        );
+    }
+
+    fn put_recap(conn: &Connection, written: &str) {
+        conn.execute(
+            "INSERT INTO weekly_recaps (week, project_id, project_name, headline, wins, written_at) VALUES (?1, 'pa', 'Alpha', 'h', 'w', ?2)",
+            params![WEEK, written],
+        )
+        .unwrap();
+    }
+
+    fn flags(conn: &Connection) -> (i64, i64) {
+        conn.query_row(
+            "SELECT rewrite_requested, stale FROM weekly_recaps WHERE week = ?1",
+            params![WEEK],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn late_daily_marks_recap_stale() {
+        let (_db, pool) = pool("wk-stale");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "a", 0);
+        put_recap(&conn, "2026-11-09 08:30:00");
+        let req = crate::updates::PutUpdateRequest {
+            text: "late".into(),
+            commits: 1,
+            generation: None,
+        };
+        crate::updates::put_update_db(&conn, "pa", "2026-11-04", &req, utc("2026-11-10T10:00:00Z"))
+            .unwrap();
+        assert_eq!(flags(&conn), (0, 1));
+        let offered = items(&conn, "2026-11-10T10:05:00Z");
+        assert_eq!(offered.len(), 1);
+        assert_eq!(offered[0].days[2].text, "late");
+    }
+
+    #[test]
+    fn old_week_not_marked_stale() {
+        let (_db, pool) = pool("wk-old");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        put_recap(&conn, "2026-11-09 08:30:00");
+        let req = crate::updates::PutUpdateRequest {
+            text: "very late".into(),
+            commits: 0,
+            generation: None,
+        };
+        // The week ends on 11-09; 14 days after the week's Monday is 11-16 10:00 Sofia.
+        crate::updates::put_update_db(&conn, "pa", "2026-11-04", &req, utc("2026-11-17T09:00:00Z"))
+            .unwrap();
+        assert_eq!(flags(&conn), (0, 0));
+    }
+
+    #[actix_web::test]
+    async fn rewrite_offers_again() {
+        let (_db, pool) = pool("wk-rewrite");
+        {
+            let conn = pool.get().unwrap();
+            seed_updates(&conn, "2026-01-01");
+            daily(&conn, "2026-11-03", "a", 0);
+            put_recap(&conn, "2026-11-09 08:30:00");
+            assert!(items(&conn, "2026-11-09T09:00:00Z").is_empty());
+        }
+        assert_eq!(
+            post(
+                &pool,
+                "/api/projects/pa/weekly/2026-11-02/rewrite",
+                json!({})
+            )
+            .await
+            .0,
+            200
+        );
+        assert_eq!(
+            post(
+                &pool,
+                "/api/projects/pa/weekly/2026-10-26/rewrite",
+                json!({})
+            )
+            .await
+            .0,
+            404
+        );
+        assert_eq!(
+            post(&pool, "/api/projects/pa/weekly/bad/rewrite", json!({}))
+                .await
+                .0,
+            400
+        );
+        let conn = pool.get().unwrap();
+        assert_eq!(items(&conn, "2026-11-09T09:00:00Z").len(), 1);
+        assert_eq!(flags(&conn), (1, 0));
     }
 }

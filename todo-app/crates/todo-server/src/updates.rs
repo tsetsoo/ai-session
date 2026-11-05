@@ -27,6 +27,7 @@ const FALLBACK_HOUR: u32 = 10;
 /// The window starts and ends at this Sofia hour.
 const DAY_START_HOUR: u32 = 8;
 
+#[derive(Debug)]
 pub(crate) enum UpdateError {
     BadRequest(String),
     NotFound(&'static str),
@@ -39,7 +40,7 @@ impl From<rusqlite::Error> for UpdateError {
     }
 }
 
-fn respond(e: UpdateError) -> HttpResponse {
+pub(crate) fn respond(e: UpdateError) -> HttpResponse {
     match e {
         UpdateError::BadRequest(m) => bad_request(&m),
         UpdateError::NotFound(m) => crate::conversations::not_found(m),
@@ -74,7 +75,7 @@ pub(crate) fn last_closed_day(now: DateTime<Utc>) -> String {
     (today - Duration::days(back)).format("%Y-%m-%d").to_string()
 }
 
-fn checked_day(day: &str) -> Result<(), UpdateError> {
+pub(crate) fn checked_day(day: &str) -> Result<(), UpdateError> {
     if parse_day(day).is_none() {
         return Err(UpdateError::BadRequest("day must be YYYY-MM-DD".into()));
     }
@@ -354,6 +355,8 @@ pub struct RunnerWork {
     pub projects: Vec<RunnerProject>,
     /// Project updates this computer should write now.
     pub write: Vec<WriteItem>,
+    /// Weekly recaps this computer should write now.
+    pub weekly: Vec<crate::weekly::WeeklyItem>,
 }
 
 /// The last `CATCH_UP_DAYS` closed days, oldest first.
@@ -460,16 +463,16 @@ fn write_item(conn: &Connection, p: &OnProject, day: &str) -> rusqlite::Result<W
     })
 }
 
-struct OnProject {
-    id: String,
-    name: String,
-    folder: String,
-    style: String,
-    since: String,
-    computer_id: String,
+pub(crate) struct OnProject {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) folder: String,
+    pub(crate) style: String,
+    pub(crate) since: String,
+    pub(crate) computer_id: String,
 }
 
-fn on_projects(conn: &Connection) -> rusqlite::Result<Vec<OnProject>> {
+pub(crate) fn on_projects(conn: &Connection) -> rusqlite::Result<Vec<OnProject>> {
     let mut stmt = conn.prepare(
         "SELECT p.id, p.name, p.folder, p.update_style, COALESCE(p.daily_updates_since, ''), sc.computer_id
          FROM projects p JOIN section_computers sc ON sc.section = p.section
@@ -542,7 +545,8 @@ pub(crate) fn runner_db(conn: &Connection, computer_id: &str, now: DateTime<Utc>
         }
     }
     let projects = mine.iter().map(|p| RunnerProject { id: p.id.clone(), name: p.name.clone(), folder: p.folder.clone() }).collect();
-    Ok(RunnerWork { settings, days, projects, write })
+    let weekly = crate::weekly::weekly_items(conn, computer_id, now)?;
+    Ok(RunnerWork { settings, days, projects, write, weekly })
 }
 
 pub async fn runner_work(pool: web::Data<DbPool>, query: web::Query<std::collections::HashMap<String, String>>) -> HttpResponse {
@@ -617,6 +621,12 @@ pub(crate) fn put_update_db(
             newer as i64,
         ],
     )?;
+    // A recap written from the week's earlier updates is rewritten, until a week after the week ends.
+    if let Some(week) = crate::weekly::week_of_day(day) {
+        if crate::weekly::week_fallback(&week).is_some_and(|f| now < f + Duration::days(7)) {
+            conn.execute("UPDATE weekly_recaps SET stale = 1 WHERE project_id = ?1 AND week = ?2", params![project_id, week])?;
+        }
+    }
     Ok(StoredUpdate { day: day.to_string(), waiting_on: waiting })
 }
 
