@@ -781,7 +781,11 @@ def weekly_has_material(item):
 
 def put_weekly(hub, item, headline, wins, failed=False):
     path = "/api/projects/%s/weekly/%s" % (urllib.parse.quote(item["project_id"], safe=""), item["week"])
-    hub.request("PUT", path, body={"headline": headline[:MAX_HEADLINE], "wins": wins[:MAX_WINS], "failed": failed})
+    body = {"headline": headline[:MAX_HEADLINE], "wins": wins[:MAX_WINS], "failed": failed}
+    if item.get("built_at"):
+        # The hub keeps the recap stale if a daily update of the week was written after this.
+        body["built_at"] = item["built_at"]
+    hub.request("PUT", path, body=body)
 
 
 def weekly_key_sources(item):

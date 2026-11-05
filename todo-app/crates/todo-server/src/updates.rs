@@ -547,7 +547,7 @@ pub(crate) fn runner_db(conn: &Connection, computer_id: &str, now: DateTime<Utc>
         }
     }
     let projects = mine.iter().map(|p| RunnerProject { id: p.id.clone(), name: p.name.clone(), folder: p.folder.clone() }).collect();
-    let weekly = crate::weekly::weekly_items(conn, computer_id, now)?;
+    let weekly = crate::weekly::weekly_items(conn, computer_id, now, &write)?;
     Ok(RunnerWork { settings, days, projects, write, weekly })
 }
 

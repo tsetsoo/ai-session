@@ -139,7 +139,10 @@ machine's model. *My call*, from the daily-updates rule that summaries stay on t
   not covered. **Failed** means a failed-write row; its section falls back to that day's summaries. Only
   missing and failed days are named. "Days with work" counts days that have an update.
 - **Ready check:** a week is ready for a project once Sunday is covered (normally right after 08:00, or
-  once Sunday's update is written), or it's past 10:00 Monday.
+  once Sunday's update is written), or it's past 10:00 Monday. A week with a day still handed out for writing in
+  the same runner poll waits for a later poll, so a day written alongside the recap isn't missed. The recap PUT
+  echoes the item's `built_at`; a daily update of the week written at or after it leaves the recap stale. A failed
+  rewrite (`failed: true` over a recap that has wins) keeps the written recap and only clears its flags.
 - **Conversation counts**, *my call*: **distinct conversations** (`(tool, session_id)` in `update_summaries` for
   the week). This avoids summing daily counts, which counts a conversation that spans days several times. It's
   computed when the section is written and stored on the recap row, since summaries go after 90 days. Commits are

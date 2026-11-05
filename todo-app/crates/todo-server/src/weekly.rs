@@ -11,7 +11,7 @@ use crate::conversations::server_error;
 use crate::cron::TZ;
 use crate::db::DbPool;
 use crate::scheduler::{parse_sql_time, sql_time};
-use crate::updates::{day_window, on_projects, parse_day, respond, UpdateError, KEEP_DAYS, MAX_UPDATE};
+use crate::updates::{day_window, on_projects, parse_day, respond, UpdateError, WriteItem, KEEP_DAYS, MAX_UPDATE};
 
 const FALLBACK_HOUR: u32 = 10;
 
@@ -278,6 +278,8 @@ pub struct WeeklyItem {
     pub week: String,
     pub style: String,
     pub days: Vec<WeeklyDay>,
+    /// When the item was built (`YYYY-MM-DD HH:MM:SS` UTC); sent back with the PUT.
+    pub built_at: String,
 }
 
 fn week_day_states(
@@ -355,11 +357,14 @@ fn week_ready(
 
 /// The recaps `computer_id` should write now: the last finished week of its projects once
 /// ready (when it has work to recap and no recap yet), and any week asked to be rewritten
-/// or gone stale.
+/// or gone stale. A week with a day in `write` (the daily updates this poll hands out) waits
+/// for a later poll: written alongside it, that day would miss the recap, and with no recap
+/// row yet nothing would mark it stale.
 pub(crate) fn weekly_items(
     conn: &Connection,
     computer_id: &str,
     now: DateTime<Utc>,
+    write: &[WriteItem],
 ) -> rusqlite::Result<Vec<WeeklyItem>> {
     let last = last_finished_week(now);
     let mut out = Vec::new();
@@ -384,6 +389,13 @@ pub(crate) fn weekly_items(
             }
         }
         for (week, fresh) in weeks {
+            let pending = week_days(&week)
+                .unwrap_or_default()
+                .iter()
+                .any(|d| write.iter().any(|w| w.project_id == p.id && &w.day == d));
+            if pending {
+                continue;
+            }
             let days = week_day_states(conn, &p.id, &p.since, &week)?;
             // Material: an update, or summaries on a day without one. Without it the model would invent a recap.
             let material = days.iter().any(|d| d.state == "update" || !d.summaries.is_empty());
@@ -406,6 +418,7 @@ pub(crate) fn weekly_items(
                 week,
                 style: p.style.clone(),
                 days,
+                built_at: sql_time(now),
             });
         }
     }
@@ -419,6 +432,9 @@ pub struct PutWeeklyRequest {
     pub wins: String,
     #[serde(default)]
     pub failed: bool,
+    /// The work item's `built_at`: daily updates written at or after it keep the recap stale.
+    #[serde(default)]
+    pub built_at: Option<String>,
 }
 
 fn checked_week(week: &str) -> Result<Vec<String>, UpdateError> {
@@ -448,6 +464,27 @@ pub(crate) fn put_weekly_db(
         project_row(conn, project_id)?.ok_or(UpdateError::NotFound("Project not found"))?;
     // Only days daily updates tracked count: from `since` on, within the week.
     let first = if since.as_str() > days[0].as_str() { since.clone() } else { days[0].clone() };
+    // A daily update written since the item was built isn't in this recap: it stays stale.
+    // (`>=`: one written in the same second costs at most one extra rewrite.)
+    let newer: bool = match &req.built_at {
+        Some(built_at) => conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_updates WHERE project_id = ?1 AND day >= ?2 AND day <= ?3 AND written_at >= ?4)",
+            params![project_id, first, days[6], built_at],
+            |r| r.get(0),
+        )?,
+        None => false,
+    };
+    if req.failed {
+        // A rewrite that failed keeps the recap already written; only the flags clear.
+        let kept = conn.execute(
+            "UPDATE weekly_recaps SET rewrite_requested = 0, stale = ?3
+             WHERE project_id = ?1 AND week = ?2 AND failed = 0 AND wins != ''",
+            params![project_id, week, i64::from(newer)],
+        )?;
+        if kept > 0 {
+            return Ok(());
+        }
+    }
     let (mut commits, mut with_work) = (0i64, 0i64);
     let states: Vec<serde_json::Value> = week_day_states(conn, project_id, &since, week)?
         .into_iter()
@@ -469,11 +506,11 @@ pub(crate) fn put_weekly_db(
     conn.execute(
         "INSERT INTO weekly_recaps (week, project_id, project_name, headline, wins, failed, days, commits, conversations,
                                     days_with_work, written_at, rewrite_requested, stale)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, 0)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12)
          ON CONFLICT (week, project_id) DO UPDATE SET project_name = excluded.project_name, headline = excluded.headline,
             wins = excluded.wins, failed = excluded.failed, days = excluded.days, commits = excluded.commits,
             conversations = excluded.conversations, days_with_work = excluded.days_with_work,
-            written_at = excluded.written_at, rewrite_requested = 0, stale = 0",
+            written_at = excluded.written_at, rewrite_requested = 0, stale = excluded.stale",
         params![
             week,
             project_id,
@@ -486,6 +523,7 @@ pub(crate) fn put_weekly_db(
             conversations,
             with_work,
             sql_time(now),
+            i64::from(newer),
         ],
     )?;
     Ok(())
@@ -907,7 +945,8 @@ mod tests {
 
     fn daily(conn: &Connection, day: &str, text: &str, commits: u32) {
         conn.execute(
-            "INSERT OR REPLACE INTO project_updates (project_id, day, text, commits) VALUES ('pa', ?1, ?2, ?3)",
+            // Written the morning after the day, before any recap of its week is built.
+            "INSERT OR REPLACE INTO project_updates (project_id, day, text, commits, written_at) VALUES ('pa', ?1, ?2, ?3, ?1 || ' 09:00:00')",
             params![day, text, commits],
         )
         .unwrap();
@@ -923,7 +962,7 @@ mod tests {
     }
 
     fn items(conn: &Connection, now: &str) -> Vec<WeeklyItem> {
-        weekly_items(conn, "mac", utc(now)).unwrap()
+        weekly_items(conn, "mac", utc(now), &[]).unwrap()
     }
 
     fn states(item: &WeeklyItem) -> Vec<&str> {
@@ -1041,7 +1080,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed_updates(&conn, "2026-01-01");
         daily(&conn, "2026-11-03", "did things", 1);
-        assert!(weekly_items(&conn, "spread", utc("2026-11-09T08:00:00Z"))
+        assert!(weekly_items(&conn, "spread", utc("2026-11-09T08:00:00Z"), &[])
             .unwrap()
             .is_empty());
     }
@@ -1302,6 +1341,137 @@ mod tests {
         assert_eq!(put(&pool, uri, over).await.0, 400);
         let at = json!({"headline": "h", "wins": "x".repeat(crate::updates::MAX_UPDATE), "failed": false});
         assert_eq!(put(&pool, uri, at).await.0, 200);
+    }
+
+    // --- A recap never misses a day written alongside it ---------------------------------
+
+    use crate::updates::{put_update_db, runner_db, PutUpdateRequest};
+
+    fn reported(conn: &Connection, days: &[&str]) {
+        for d in days {
+            conn.execute("INSERT INTO update_reports (computer_id, day) VALUES ('mac', ?1)", params![d]).unwrap();
+        }
+    }
+
+    fn weekly_req(headline: &str, wins: &str, failed: bool, built_at: Option<&str>) -> PutWeeklyRequest {
+        PutWeeklyRequest { headline: headline.into(), wins: wins.into(), failed, built_at: built_at.map(Into::into) }
+    }
+
+    fn daily_req(text: &str, generation: Option<i64>) -> PutUpdateRequest {
+        PutUpdateRequest { text: text.into(), commits: 0, generation }
+    }
+
+    #[test]
+    fn week_waits_for_its_days_written_in_the_same_poll() {
+        let (_db, pool) = pool("wk-same-poll");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "did things", 1);
+        reported(&conn, &["2026-11-06", "2026-11-07", "2026-11-08"]);
+        // Monday 10:00 Sofia: both Sunday's daily fallback and the week's fallback.
+        let ten = utc("2026-11-09T08:00:00Z");
+        let work = runner_db(&conn, "mac", ten).ok().unwrap();
+        assert!(work.write.iter().any(|w| w.day == "2026-11-08"), "Sunday is due");
+        assert!(work.weekly.is_empty(), "the week waits while its days are being written");
+        // The runner writes the days; a week whose days are in later polls' `write` keeps waiting.
+        for w in &work.write {
+            let text = if w.day == "2026-11-08" { "sunday work" } else { "" };
+            put_update_db(&conn, &w.project_id, &w.day, &daily_req(text, Some(w.generation)), ten).ok().unwrap();
+        }
+        let later = utc("2026-11-09T08:05:00Z");
+        let work = runner_db(&conn, "mac", later).ok().unwrap();
+        assert!(work.write.is_empty());
+        assert_eq!(work.weekly.len(), 1, "offered once its days are written");
+        let item = &work.weekly[0];
+        assert_eq!(item.days[6].text, "sunday work");
+        assert_eq!(item.built_at, "2026-11-09 08:05:00");
+        put_weekly_db(&conn, "pa", WEEK, &weekly_req("h", "- w", false, Some(&item.built_at)), later).ok().unwrap();
+        assert_eq!(flags(&conn), (0, 0));
+        assert!(runner_db(&conn, "mac", later).ok().unwrap().weekly.is_empty());
+    }
+
+    #[test]
+    fn flagged_week_waits_for_its_days_too() {
+        let (_db, pool) = pool("wk-same-poll-flagged");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "did things", 1);
+        put_recap(&conn, "2026-11-09 08:30:00");
+        conn.execute("UPDATE weekly_recaps SET rewrite_requested = 1", []).unwrap();
+        reported(&conn, &["2026-11-07", "2026-11-08", "2026-11-09"]);
+        // Tuesday 10:00 Sofia: Sunday (11-08) is still unwritten and due.
+        let work = runner_db(&conn, "mac", utc("2026-11-10T08:00:00Z")).ok().unwrap();
+        assert!(work.write.iter().any(|w| w.day == "2026-11-08"));
+        assert!(work.weekly.is_empty());
+    }
+
+    #[test]
+    fn daily_written_after_the_item_was_built_keeps_the_recap_stale() {
+        let (_db, pool) = pool("wk-built-at");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "did things", 1);
+        daily(&conn, "2026-11-08", "", 0);
+        let got = items(&conn, "2026-11-09T06:05:00Z");
+        assert_eq!(got.len(), 1);
+        // A late Wednesday lands before the recap's PUT: there is no recap row to mark stale yet.
+        put_update_db(&conn, "pa", "2026-11-04", &daily_req("late", None), utc("2026-11-09T06:10:00Z")).ok().unwrap();
+        let built = got[0].built_at.clone();
+        put_weekly_db(&conn, "pa", WEEK, &weekly_req("h", "- w", false, Some(&built)), utc("2026-11-09T06:15:00Z"))
+            .ok()
+            .unwrap();
+        assert_eq!(flags(&conn), (0, 1));
+        let again = items(&conn, "2026-11-09T06:20:00Z");
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].days[2].text, "late");
+        // Written from the new item, the recap settles.
+        put_weekly_db(&conn, "pa", WEEK, &weekly_req("h", "- w", false, Some(&again[0].built_at)), utc("2026-11-09T06:25:00Z"))
+            .ok()
+            .unwrap();
+        assert_eq!(flags(&conn), (0, 0));
+    }
+
+    type RecapRow = (String, String, i64, i64, i64, i64, String);
+
+    fn recap_row(conn: &Connection) -> RecapRow {
+        conn.query_row(
+            "SELECT headline, wins, failed, rewrite_requested, stale, commits, written_at FROM weekly_recaps WHERE week = ?1",
+            params![WEEK],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn failed_rewrite_keeps_the_written_recap() {
+        let (_db, pool) = pool("wk-failed-rewrite");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "a", 2);
+        put_weekly_db(&conn, "pa", WEEK, &weekly_req("Good week", "- you shipped", false, None), utc("2026-11-09T09:00:00Z"))
+            .ok()
+            .unwrap();
+        conn.execute("UPDATE weekly_recaps SET rewrite_requested = 1, stale = 1", []).unwrap();
+        daily(&conn, "2026-11-04", "b", 3);
+        put_weekly_db(&conn, "pa", WEEK, &weekly_req("", "", true, None), utc("2026-11-10T09:00:00Z")).ok().unwrap();
+        assert_eq!(
+            recap_row(&conn),
+            ("Good week".into(), "- you shipped".into(), 0, 0, 0, 2, "2026-11-09 09:00:00".into())
+        );
+    }
+
+    #[test]
+    fn failed_fresh_week_is_stored_failed() {
+        let (_db, pool) = pool("wk-failed-fresh");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "a", 2);
+        put_weekly_db(&conn, "pa", WEEK, &weekly_req("", "", true, None), utc("2026-11-09T09:00:00Z")).ok().unwrap();
+        assert_eq!(recap_row(&conn), (String::new(), String::new(), 1, 0, 0, 2, "2026-11-09 09:00:00".into()));
+        // A failed recap retried and failing again stays failed.
+        conn.execute("UPDATE weekly_recaps SET rewrite_requested = 1", []).unwrap();
+        put_weekly_db(&conn, "pa", WEEK, &weekly_req("", "", true, None), utc("2026-11-10T09:00:00Z")).ok().unwrap();
+        assert_eq!(recap_row(&conn), (String::new(), String::new(), 1, 0, 0, 2, "2026-11-10 09:00:00".into()));
     }
 
     // --- GET /api/weekly -----------------------------------------------------------------

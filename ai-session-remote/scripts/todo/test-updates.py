@@ -466,6 +466,21 @@ class WeeklyRunTests(Base):
                          [{"headline": "Export shipped", "wins": "- You fixed the export", "failed": False}])
         self.assertIn("Fixed EIN-1 export", self.model_log.read_text())
 
+    def test_weekly_put_echoes_built_at(self):
+        self.weekly_item(built_at="2026-11-09 08:05:00")
+        self.answer({"headline": "h", "wins": "- w"})
+        up.main(["run"])
+        self.assertEqual(self.hub.posted(self.put_path()),
+                         [{"headline": "h", "wins": "- w", "failed": False, "built_at": "2026-11-09 08:05:00"}])
+
+    def test_weekly_failed_put_echoes_built_at(self):
+        self.weekly_item(built_at="2026-11-09 08:05:00")
+        for run in range(3):
+            self.answer("FAIL")
+            up.main(["run"])
+        self.assertEqual(self.hub.posted(self.put_path()),
+                         [{"headline": "", "wins": "", "failed": True, "built_at": "2026-11-09 08:05:00"}])
+
     def test_weekly_message_skips_quiet_and_untracked_and_uses_summaries_for_missing(self):
         msg = up.weekly_message(self.weekly_item())
         self.assertIn("<<<MATERIAL", msg)
