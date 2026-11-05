@@ -93,6 +93,14 @@ struct ProjectDetailView: View {
     }
 
     private func list(_ project: Project) -> some View {
+        ScrollViewReader { proxy in
+            listContent(project) { id in
+                withAnimation { proxy.scrollTo(id, anchor: .top) }
+            }
+        }
+    }
+
+    private func listContent(_ project: Project, reveal: @escaping (String) -> Void) -> some View {
         List {
             headerSection(project)
             Section {
@@ -113,7 +121,7 @@ struct ProjectDetailView: View {
                 }
             }
             if project.dailyUpdates {
-                ProjectUpdatesSection(project: project, store: store, onOpenTodo: onOpenTodo)
+                ProjectUpdatesSection(project: project, store: store, onOpenTodo: onOpenTodo, onReveal: reveal)
             }
             memoriesSections(project)
         }

@@ -142,7 +142,7 @@ struct PhoneShell: View {
             NavigationStack {
                 Group {
                     if isConfigured {
-                        PhoneTodayRoot(store: store, onOpenTodo: openTodoFromAutomation)
+                        PhoneTodayRoot(store: store, onOpenTodo: openTodoFromAutomation, onOpenDay: openUpdateDay)
                     } else {
                         notConfigured
                     }
@@ -328,6 +328,13 @@ struct PhoneShell: View {
         case let .project(id):
             ProjectDetailView(projectId: id, store: store) { path.wrappedValue.append(.todo($0.id)) }
         }
+    }
+
+    /// A day from Weekly: the project's page on the Projects tab, that day of its Updates open.
+    private func openUpdateDay(_ projectId: String, _ day: String) {
+        model.updateDayRequest = .init(projectId: projectId, day: day)
+        tab = .projects
+        projectsPath = [.project(projectId)]
     }
 
     /// A todo linked from Automation: shown on the Todos tab.

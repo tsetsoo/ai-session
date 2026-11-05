@@ -89,6 +89,14 @@ struct MacShell: View {
         model.pendingOpenTodoID = todoID
     }
 
+    /// A day from Weekly: back to Sessions, the project's page, that day of its Updates open.
+    private func openUpdateDay(_ projectId: String, _ day: String) {
+        model.updateDayRequest = .init(projectId: projectId, day: day)
+        model.appMode = .sessions
+        model.sidebarSelection = .projects
+        model.selectedProjectID = projectId
+    }
+
     var body: some View {
         @Bindable var model = model
         NavigationSplitView {
@@ -110,7 +118,7 @@ struct MacShell: View {
                 if model.appMode == .automation {
                     AutomationListColumn(onOpenTodo: openTodoFromAutomation)
                 } else if model.appMode == .today {
-                    TodayListColumn(onOpenTodo: openTodoFromAutomation)
+                    TodayListColumn(onOpenTodo: openTodoFromAutomation, onOpenDay: openUpdateDay)
                 } else {
                     contentColumn
                 }

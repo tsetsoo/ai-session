@@ -3,16 +3,28 @@ import SwiftUI
 
 /// Weekly recaps, newest first: a Monday look back at last week's wins. The newest week is open,
 /// older ones show their label and totals. Loads when it opens (never on the general refresh),
-/// four weeks at a time.
+/// four weeks at a time. While a section is being rewritten it also reloads on hub changes.
 struct WeeklyView: View {
     let store: TodoHubStore
     let onOpenTodo: (String) -> Void
+    /// Opens a project's page on one day of its Updates (project id, day key).
+    let onOpenDay: (String, String) -> Void
+
+    private enum Load { case first, older }
 
     @State private var weeks: [WeeklyRecap]?
     @State private var expanded: Set<String> = []
     @State private var canLoadOlder = false
     @State private var isLoadingOlder = false
     @State private var errorMessage: String?
+    /// The load that failed, for Retry (nil when the error came from Rewrite).
+    @State private var failedLoad: Load?
+    /// The one-shot reload after a Rewrite request, in case no hub change arrives.
+    @State private var fallbackReload: Task<Void, Never>?
+
+    private var anyRewriting: Bool {
+        weeks?.contains { $0.sections.contains(where: \.rewriting) } ?? false
+    }
 
     private static let pageSize = 4
 
@@ -33,7 +45,8 @@ struct WeeklyView: View {
                             ),
                             isOffline: store.isOffline,
                             onRewrite: { section in Task { await rewrite(section, week: recap.week) } },
-                            onOpenTodo: onOpenTodo
+                            onOpenTodo: onOpenTodo,
+                            onOpenDay: onOpenDay
                         )
                     }
                     if canLoadOlder {
@@ -44,9 +57,17 @@ struct WeeklyView: View {
                     ProgressView().frame(maxWidth: .infinity)
                 }
                 if let errorMessage {
-                    Label(errorMessage, systemImage: "exclamationmark.triangle")
-                        .font(.subheadline)
-                        .foregroundStyle(DS.warning)
+                    HStack(spacing: DS.spacing.m) {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(DS.warning)
+                        if let failedLoad {
+                            Button("Retry") {
+                                Task { if failedLoad == .older { await loadOlder() } else { await loadFirstPage() } }
+                            }
+                            .disabled(isLoadingOlder)
+                        }
+                    }
+                    .font(.subheadline)
                 }
             }
             .padding(DS.spacing.l)
@@ -59,6 +80,18 @@ struct WeeklyView: View {
             guard weeks == nil else { return }
             await loadFirstPage()
         }
+        // Only while a section is rewriting does this read `store.revision`, so the normal case
+        // makes no extra calls. A newer revision cancels the wait, as hub broadcasts come in bursts.
+        .task(id: anyRewriting ? store.revision : nil) {
+            guard anyRewriting else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await loadFirstPage()
+        }
+        .onDisappear {
+            fallbackReload?.cancel()
+            fallbackReload = nil
+        }
     }
 
     private func loadFirstPage() async {
@@ -66,12 +99,16 @@ struct WeeklyView: View {
             let page = try await store.weeklyRecaps(before: nil, limit: Self.pageSize)
             guard !Task.isCancelled else { return }
             if let newest = page.first, newest.week != weeks?.first?.week { expanded.insert(newest.week) }
-            weeks = page
-            canLoadOlder = page.count == Self.pageSize
+            // Keep older pages already shown; replace the newest page.
+            let older = (weeks ?? []).filter { w in page.last.map { w.week < $0.week } ?? false }
+            weeks = page + older
+            if older.isEmpty { canLoadOlder = page.count == Self.pageSize }
             errorMessage = nil
+            failedLoad = nil
         } catch {
             guard !Task.isCancelled else { return }
             errorMessage = TodoHubStore.message(for: error)
+            failedLoad = .first
             if weeks == nil { weeks = [] }
         }
     }
@@ -85,8 +122,11 @@ struct WeeklyView: View {
             let shown = Set((weeks ?? []).map(\.week))
             weeks = (weeks ?? []) + page.filter { !shown.contains($0.week) }
             canLoadOlder = page.count == Self.pageSize
+            errorMessage = nil
+            failedLoad = nil
         } catch {
             errorMessage = TodoHubStore.message(for: error)
+            failedLoad = .older
         }
     }
 
@@ -96,10 +136,16 @@ struct WeeklyView: View {
             if let w = weeks?.firstIndex(where: { $0.week == week }),
                let s = weeks?[w].sections.firstIndex(where: { $0.projectId == section.projectId }) {
                 weeks?[w].sections[s].rewriting = true
-                weeks?[w].sections[s].failed = false
+            }
+            fallbackReload?.cancel()
+            fallbackReload = Task {
+                try? await Task.sleep(for: .seconds(20))
+                guard !Task.isCancelled else { return }
+                await loadFirstPage()
             }
         } catch {
             errorMessage = TodoHubStore.message(for: error)
+            failedLoad = nil
         }
     }
 }
@@ -112,6 +158,7 @@ struct WeeklyWeekCard: View {
     let isOffline: Bool
     let onRewrite: (WeeklySection) -> Void
     let onOpenTodo: (String) -> Void
+    var onOpenDay: (String, String) -> Void = { _, _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.spacing.l) {
@@ -138,7 +185,8 @@ struct WeeklyWeekCard: View {
                 tiles
                 headlines
                 ForEach(recap.sections) { section in
-                    WeeklySectionBlock(section: section, isOffline: isOffline) { onRewrite(section) }
+                    WeeklySectionBlock(section: section, isOffline: isOffline, onRewrite: { onRewrite(section) },
+                                       onOpenDay: { day in onOpenDay(section.projectId, day) })
                 }
                 if recap.sections.isEmpty {
                     Text("No project had daily updates this week.").foregroundStyle(.secondary)
@@ -201,6 +249,7 @@ struct WeeklySectionBlock: View {
     let section: WeeklySection
     let isOffline: Bool
     let onRewrite: () -> Void
+    var onOpenDay: (String) -> Void = { _ in }
 
     @State private var showsDays = false
 
@@ -247,13 +296,7 @@ struct WeeklySectionBlock: View {
             if showsDays {
                 VStack(alignment: .leading, spacing: DS.spacing.xs) {
                     ForEach(section.days) { day in
-                        HStack {
-                            Text(UpdateDay.label(day.day))
-                            Spacer()
-                            Label(Self.stateText(day.state), systemImage: Self.stateIcon(day.state))
-                                .foregroundStyle(day.state == "failed" ? AnyShapeStyle(DS.error) : AnyShapeStyle(.secondary))
-                        }
-                        .font(.subheadline)
+                        dayRow(day)
                     }
                 }
                 .padding(.leading, DS.spacing.l)
@@ -262,6 +305,35 @@ struct WeeklySectionBlock: View {
         .padding(DS.spacing.m)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(DS.chipFill.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    /// Days with an update row (written or failed) open in the project's Updates, while they're kept.
+    @ViewBuilder
+    private func dayRow(_ day: WeeklyDayState) -> some View {
+        let hasRow = day.state == "update" || day.state == "failed"
+        let kept = WeeklyRecap.isDayKept(day.day)
+        let row = HStack {
+            Text(UpdateDay.label(day.day))
+            Spacer()
+            if hasRow && !kept {
+                Text("no longer kept").foregroundStyle(.tertiary)
+            } else {
+                Label(Self.stateText(day.state), systemImage: Self.stateIcon(day.state))
+                    .foregroundStyle(day.state == "failed" ? AnyShapeStyle(DS.error) : AnyShapeStyle(.secondary))
+            }
+            if hasRow && kept {
+                Image(systemName: "chevron.forward").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .font(.subheadline)
+        .contentShape(Rectangle())
+        if hasRow && kept {
+            Button { onOpenDay(day.day) } label: { row }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens this day in the project's updates")
+        } else {
+            row
+        }
     }
 
     static func stateText(_ state: String) -> String {
@@ -370,6 +442,13 @@ struct WeeklyJobRow: View {
         }
     }
 
+    /// Run times in Sofia, like the rest of the week.
+    private static let timeStyle: Date.FormatStyle = {
+        var style = Date.FormatStyle.dateTime.weekday(.abbreviated).hour().minute()
+        style.timeZone = TodayTime.zone
+        return style
+    }()
+
     private var counts: Text {
         var text = Text("\(WeeklySection.plural(job.runs, "run")) · ✓ \(job.done) · ")
         let failed = Text("✗ \(job.failed)")
@@ -391,7 +470,7 @@ struct WeeklyJobRow: View {
                 Text(line.outcome.isEmpty ? line.state.capitalized : line.outcome)
                     .foregroundStyle(failed ? AnyShapeStyle(DS.error) : AnyShapeStyle(.primary))
                     .lineLimit(2)
-                Text(HubDates.date(from: line.dueAt)?.formatted(.dateTime.weekday(.abbreviated).hour().minute()) ?? line.dueAt)
+                Text(HubDates.date(from: line.dueAt)?.formatted(Self.timeStyle) ?? line.dueAt)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }

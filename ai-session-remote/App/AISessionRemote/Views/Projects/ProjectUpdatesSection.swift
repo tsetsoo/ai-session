@@ -8,6 +8,10 @@ struct ProjectUpdatesSection: View {
     let project: Project
     let store: TodoHubStore
     let onOpenTodo: (Todo) -> Void
+    /// Scrolls the page to a row id (a day opened from Weekly).
+    var onReveal: (String) -> Void = { _ in }
+
+    @Environment(AppModel.self) private var model
 
     @State private var updates: [ProjectUpdate]?
     @State private var canLoadOlder = false
@@ -53,6 +57,10 @@ struct ProjectUpdatesSection: View {
                 guard !Task.isCancelled else { return }
             }
             await loadFirstPage()
+        }
+        .task(id: model.updateDayRequest) {
+            // A day opened from Weekly while this page was already showing.
+            if updates != nil { await revealRequestedDay() }
         }
     }
 
@@ -106,6 +114,7 @@ struct ProjectUpdatesSection: View {
                 }
             }
         }
+        .id(Self.rowID(update.day))
     }
 
     private func sources(_ update: ProjectUpdate) -> some View {
@@ -170,12 +179,30 @@ struct ProjectUpdatesSection: View {
             if updates?.count == page.count { canLoadOlder = page.count == Self.pageSize }
             for day in shownSummaries { await loadSummaries(day) }
             errorMessage = nil
+            await revealRequestedDay()
         } catch {
             guard !Task.isCancelled else { return }
             errorMessage = TodoHubStore.message(for: error)
             if updates == nil { updates = [] }
         }
     }
+
+    /// A day opened from Weekly: expand it (loading older pages until it shows, up to 90 days)
+    /// and scroll to it.
+    private func revealRequestedDay() async {
+        guard let request = model.updateDayRequest, request.projectId == project.id else { return }
+        model.updateDayRequest = nil
+        while canLoadOlder, let last = updates?.last, last.day > request.day, !Task.isCancelled {
+            await loadOlder()
+            guard updates?.last?.day != last.day else { break }
+        }
+        guard updates?.contains(where: { $0.day == request.day }) == true else { return }
+        expanded.insert(request.day)
+        try? await Task.sleep(for: .milliseconds(150))
+        onReveal(Self.rowID(request.day))
+    }
+
+    static func rowID(_ day: String) -> String { "update-\(day)" }
 
     private func loadOlder() async {
         guard !isLoadingOlder, let last = updates?.last else { return }

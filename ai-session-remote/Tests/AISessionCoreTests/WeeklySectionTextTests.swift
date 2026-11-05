@@ -37,3 +37,13 @@ final class WeeklyRecapDayTests: XCTestCase {
         XCTAssertFalse(WeeklyRecap.isRecapDay(f.date(from: "2026-11-10T09:00:00Z")!))
     }
 }
+
+final class WeeklyDayKeptTests: XCTestCase {
+    func testDaysOlderThanNinetyDaysInSofiaAreGone() {
+        // 2026-11-04 22:30 UTC is already 5 Nov in Sofia; 90 days before is 7 Aug.
+        let now = ISO8601DateFormatter().date(from: "2026-11-04T22:30:00Z")!
+        XCTAssertTrue(WeeklyRecap.isDayKept("2026-08-07", now: now))
+        XCTAssertFalse(WeeklyRecap.isDayKept("2026-08-06", now: now))
+        XCTAssertTrue(WeeklyRecap.isDayKept("2026-11-02", now: now))
+    }
+}

@@ -24,6 +24,8 @@ struct TodaySidebar: View {
 struct TodayListColumn: View {
     @Environment(AppModel.self) private var model
     let onOpenTodo: (String) -> Void
+    /// Weekly's days: a project's page on that day of its Updates.
+    let onOpenDay: (String, String) -> Void
 
     var body: some View {
         @Bindable var model = model
@@ -38,7 +40,7 @@ struct TodayListColumn: View {
             case .people:
                 PeopleList(store: model.store, selection: $model.todaySelection)
             case .weekly:
-                WeeklyView(store: model.store, onOpenTodo: onOpenTodo)
+                WeeklyView(store: model.store, onOpenTodo: onOpenTodo, onOpenDay: onOpenDay)
             }
         }
         .task(id: model.store.revision) { await model.store.loadToday() }
@@ -84,11 +86,12 @@ struct TodaySummaryList: View {
     let onShow: (TodayItem) -> Void
     /// The phone's "Last week's recap" row on Mondays (Sofia); the Mac has Weekly in the sidebar.
     var showsWeeklyRow = false
+    var onOpenDay: (String, String) -> Void = { _, _ in }
 
     var body: some View {
         List {
             if showsWeeklyRow && WeeklyRecap.isRecapDay(.now) {
-                NavigationLink { WeeklyView(store: store, onOpenTodo: onOpenTodo) } label: {
+                NavigationLink { WeeklyView(store: store, onOpenTodo: onOpenTodo, onOpenDay: onOpenDay) } label: {
                     Label("Last week's recap", systemImage: "calendar.badge.checkmark")
                 }
             }
@@ -538,16 +541,17 @@ struct AssistantSheet: View {
 struct PhoneTodayRoot: View {
     let store: TodoHubStore
     let onOpenTodo: (String) -> Void
+    let onOpenDay: (String, String) -> Void
 
     var body: some View {
-        TodaySummaryList(store: store, onOpenTodo: onOpenTodo, onShow: { _ in }, showsWeeklyRow: true)
+        TodaySummaryList(store: store, onOpenTodo: onOpenTodo, onShow: { _ in }, showsWeeklyRow: true, onOpenDay: onOpenDay)
             .safeAreaInset(edge: .bottom) { EmptyView() }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         NavigationLink { PhoneReminders(store: store) } label: { Label("Reminders", systemImage: "bell") }
                         NavigationLink { PhonePeople(store: store) } label: { Label("People & Dates", systemImage: "person.2") }
-                        NavigationLink { WeeklyView(store: store, onOpenTodo: onOpenTodo) } label: { Label("Weekly", systemImage: "calendar.badge.checkmark") }
+                        NavigationLink { WeeklyView(store: store, onOpenTodo: onOpenTodo, onOpenDay: onOpenDay) } label: { Label("Weekly", systemImage: "calendar.badge.checkmark") }
                         NavigationLink { TodaySettingsPane(store: store) } label: { Label("Settings", systemImage: "gearshape") }
                     } label: { Label("More", systemImage: "list.bullet") }
                 }

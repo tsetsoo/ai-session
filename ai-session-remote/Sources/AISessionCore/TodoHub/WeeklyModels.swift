@@ -339,4 +339,16 @@ extension WeeklyRecap {
         let c = calendar.dateComponents([.weekday, .hour, .minute], from: date)
         return c.weekday == 2 && !(c.hour == 23 && (c.minute ?? 0) >= 59)
     }
+
+    /// Daily updates are kept 90 days: a day key older than Sofia's today minus 90 can't be opened.
+    public static func isDayKept(_ day: String, now: Date = .now) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TodayTime.zone
+        guard let cutoff = calendar.date(byAdding: .day, value: -90, to: now) else { return true }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TodayTime.zone
+        f.dateFormat = "yyyy-MM-dd"
+        return day >= f.string(from: cutoff)
+    }
 }

@@ -119,6 +119,15 @@ final class AppModel {
         appMode = .automation
     }
 
+    /// A day in Weekly's "From N daily updates": the project page opens with that day of its
+    /// Updates section expanded and scrolled to. The section clears it once loaded.
+    var updateDayRequest: UpdateDayRequest?
+
+    struct UpdateDayRequest: Equatable {
+        let projectId: String
+        let day: String
+    }
+
     var jobDraftIsDirty: Bool { jobDraft.map { $0.isDirty(comparedTo: jobDraftOriginal ?? JobDraft()) } ?? false }
     var selectedTodoID: String?
     /// The conversation row that is selected. Opening a todo sets this to its most urgent conversation.
