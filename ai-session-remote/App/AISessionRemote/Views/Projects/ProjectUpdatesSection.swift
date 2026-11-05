@@ -21,6 +21,8 @@ struct ProjectUpdatesSection: View {
     @State private var copied: String?
     @State private var errorMessage: String?
     @State private var isLoadingOlder = false
+    /// The Weekly request being revealed, so the two tasks that can start it don't both run it.
+    @State private var revealing: AppModel.UpdateDayRequest?
 
     private static let pageSize = 14
 
@@ -190,8 +192,15 @@ struct ProjectUpdatesSection: View {
     /// A day opened from Weekly: expand it (loading older pages until it shows, up to 90 days)
     /// and scroll to it.
     private func revealRequestedDay() async {
-        guard let request = model.updateDayRequest, request.projectId == project.id else { return }
-        model.updateDayRequest = nil
+        guard let request = model.updateDayRequest, request.projectId == project.id, revealing != request else { return }
+        revealing = request
+        defer {
+            revealing = nil
+            // Cleared only once done: the request is the id of a task that runs this, and clearing
+            // it earlier would cancel that task before older pages load. A cancelled reveal keeps
+            // the request for the next load to finish; a newer request is left alone.
+            if !Task.isCancelled, model.updateDayRequest == request { model.updateDayRequest = nil }
+        }
         while canLoadOlder, let last = updates?.last, last.day > request.day, !Task.isCancelled {
             await loadOlder()
             guard updates?.last?.day != last.day else { break }
