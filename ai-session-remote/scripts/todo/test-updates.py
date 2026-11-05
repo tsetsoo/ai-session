@@ -438,5 +438,81 @@ class WriteRunTests(Base):
         self.assertEqual(len(self.hub.posted("/api/projects/pa/updates/%s" % DAY)[0]["text"]), 20000)
 
 
+WEEK = "2026-11-02"
+
+
+class WeeklyRunTests(Base):
+    def weekly_item(self, **kw):
+        item = {"project_id": "pa", "project_name": "a", "week": WEEK,
+                "style": "Jira site: https://solveit.atlassian.net",
+                "days": [{"day": "2026-11-02", "state": "update", "text": "- Fixed EIN-1 export", "summaries": []},
+                         {"day": "2026-11-03", "state": "quiet", "text": "", "summaries": []},
+                         {"day": "2026-11-04", "state": "missing", "text": "",
+                          "summaries": [{"title": "Spike", "summary": "Tried the importer."}]},
+                         {"day": "2026-11-05", "state": "untracked", "text": "", "summaries": []}]}
+        item.update(kw)
+        self.hub.work["days"] = []
+        self.hub.work["weekly"] = [item]
+        return item
+
+    def put_path(self):
+        return "/api/projects/pa/weekly/%s" % WEEK
+
+    def test_weekly_written_and_put(self):
+        self.weekly_item()
+        self.answer({"headline": "Export shipped", "wins": "- You fixed the export"})
+        up.main(["run"])
+        self.assertEqual(self.hub.posted(self.put_path()),
+                         [{"headline": "Export shipped", "wins": "- You fixed the export", "failed": False}])
+        self.assertIn("Fixed EIN-1 export", self.model_log.read_text())
+
+    def test_weekly_message_skips_quiet_and_untracked_and_uses_summaries_for_missing(self):
+        msg = up.weekly_message(self.weekly_item())
+        self.assertIn("<<<MATERIAL", msg)
+        self.assertIn("MATERIAL>>>", msg)
+        self.assertIn("## 2026-11-02 (update)\n- Fixed EIN-1 export", msg)
+        self.assertIn("## 2026-11-04 (no update; conversation summaries)", msg)
+        self.assertIn("Tried the importer.", msg)
+        self.assertNotIn("2026-11-03", msg)
+        self.assertNotIn("2026-11-05", msg)
+
+    def test_weekly_waits_without_headroom(self):
+        script(self.home / "bin" / "limits", "echo '{\"windows\":[{\"kind\":\"weekly\",\"used_percent\":99}]}'\n")
+        self.weekly_item()
+        up.main(["run"])
+        self.assertEqual(self.model_calls(), [])
+        self.assertEqual(self.hub.posted(self.put_path()), [])
+
+    def test_weekly_fails_after_three(self):
+        self.weekly_item()
+        for run in range(3):
+            self.answer("FAIL")
+            up.main(["run"])
+        puts = self.hub.posted(self.put_path())
+        self.assertEqual(puts, [{"headline": "", "wins": "", "failed": True}])
+
+    def test_weekly_unknown_jira_key_delinked(self):
+        self.weekly_item()
+        bad = {"headline": "h", "wins": "- [XYZ-9](https://solveit.atlassian.net/browse/XYZ-9) and "
+                                        "[EIN-1](https://solveit.atlassian.net/browse/EIN-1)"}
+        self.answer(bad, bad)
+        up.main(["run"])
+        wins = self.hub.posted(self.put_path())[0]["wins"]
+        self.assertNotIn("browse/XYZ-9", wins)
+        self.assertIn("browse/EIN-1", wins)
+
+    def test_weekly_headline_cut_to_120(self):
+        self.weekly_item()
+        self.answer({"headline": "h" * 200, "wins": "- w"})
+        up.main(["run"])
+        self.assertEqual(len(self.hub.posted(self.put_path())[0]["headline"]), 120)
+
+    def test_runner_without_weekly_key_still_works(self):
+        self.hub.work["days"] = []
+        self.hub.work.pop("weekly", None)
+        self.assertEqual(up.main(["run"]), 0)
+        self.assertIsNone(json.loads((self.home / "state" / "status.json").read_text())["last_error"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
