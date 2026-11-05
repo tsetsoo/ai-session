@@ -22,8 +22,9 @@ const MAX_ITEMS: usize = 500;
 pub(crate) const MAX_UPDATE: usize = 20_000;
 /// Days back a Mac catches up, and how long a silent computer is still waited for.
 const CATCH_UP_DAYS: i64 = 3;
-/// Sofia hour on the morning after a window when the update is written without late computers.
-const FALLBACK_HOUR: u32 = 10;
+/// Sofia hour on the morning after a window when the update is written without late computers
+/// (and, the Monday after a week, when its recap is written anyway).
+pub(crate) const FALLBACK_HOUR: u32 = 10;
 /// The window starts and ends at this Sofia hour.
 const DAY_START_HOUR: u32 = 8;
 
@@ -60,6 +61,13 @@ pub(crate) fn parse_day(day: &str) -> Option<NaiveDate> {
 /// Sofia 08:00 on `date`, as UTC (08:00 always exists: DST changes happen at night).
 fn sofia_eight(date: NaiveDate) -> Option<DateTime<Utc>> {
     let local = date.and_time(NaiveTime::from_hms_opt(DAY_START_HOUR, 0, 0)?);
+    TZ.from_local_datetime(&local).single().map(|t| t.with_timezone(&Utc))
+}
+
+/// Sofia `FALLBACK_HOUR` on the date `days` after `day` (YYYY-MM-DD), as UTC.
+pub(crate) fn fallback_after(day: &str, days: i64) -> Option<DateTime<Utc>> {
+    let date = parse_day(day)? + Duration::days(days);
+    let local = date.and_time(NaiveTime::from_hms_opt(FALLBACK_HOUR, 0, 0)?);
     TZ.from_local_datetime(&local).single().map(|t| t.with_timezone(&Utc))
 }
 
@@ -392,11 +400,7 @@ fn waiting_on(conn: &Connection, day: &str, now: DateTime<Utc>) -> rusqlite::Res
 
 /// Every expected computer reported, or it's past 10:00 Sofia the morning after the window.
 fn ready(conn: &Connection, day: &str, now: DateTime<Utc>) -> rusqlite::Result<bool> {
-    let fallback = parse_day(day)
-        .and_then(|d| d.succ_opt())
-        .and_then(|d| TZ.from_local_datetime(&d.and_time(NaiveTime::from_hms_opt(FALLBACK_HOUR, 0, 0)?)).single())
-        .map(|t| t.with_timezone(&Utc));
-    if fallback.is_some_and(|f| now >= f) {
+    if fallback_after(day, 1).is_some_and(|f| now >= f) {
         return Ok(true);
     }
     Ok(waiting_on(conn, day, now)?.is_empty())

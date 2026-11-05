@@ -1,7 +1,7 @@
 //! The weekly recap: weeks run Monday to Sunday in daily-update days (Sofia 08:00 to 08:00).
 
 use actix_web::{web, HttpResponse};
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use todo_shared::{WeeklyDayState, WeeklyJob, WeeklyJobs, WeeklyRecap, WeeklyRunLine, WeeklySection, WeeklyTotals};
@@ -11,9 +11,7 @@ use crate::conversations::server_error;
 use crate::cron::TZ;
 use crate::db::DbPool;
 use crate::scheduler::{parse_sql_time, sql_time};
-use crate::updates::{day_window, on_projects, parse_day, respond, UpdateError, WriteItem, KEEP_DAYS, MAX_UPDATE};
-
-const FALLBACK_HOUR: u32 = 10;
+use crate::updates::{day_window, fallback_after, on_projects, parse_day, respond, UpdateError, WriteItem, KEEP_DAYS, MAX_UPDATE};
 
 fn fmt(d: NaiveDate) -> String {
     d.format("%Y-%m-%d").to_string()
@@ -51,9 +49,7 @@ pub(crate) fn last_finished_week(now: DateTime<Utc>) -> Option<String> {
 
 /// When a week's recap is written anyway if its projects' updates are not all in: `week + 7` 10:00 Sofia.
 pub(crate) fn week_fallback(week: &str) -> Option<DateTime<Utc>> {
-    let next = parse_day(week)? + Duration::days(7);
-    let local = next.and_time(NaiveTime::from_hms_opt(FALLBACK_HOUR, 0, 0)?);
-    TZ.from_local_datetime(&local).single().map(|t| t.with_timezone(&Utc))
+    fallback_after(week, 7)
 }
 
 /// The start of a week: Sofia 08:00 on its Monday.
@@ -318,7 +314,8 @@ fn week_day_states(
             )
             .optional()?;
         match row {
-            Some(t) if t.is_empty() => item.state = "quiet".into(),
+            // Whitespace only is nothing written, as the runner judges material.
+            Some(t) if t.trim().is_empty() => item.state = "quiet".into(),
             Some(t) if t.starts_with(WRITE_FAILED_PREFIX) => item.state = "failed".into(),
             Some(t) => {
                 item.state = "update".into();
@@ -581,15 +578,19 @@ pub(crate) fn rewrite_weekly_db(
             "this week's daily updates are no longer kept, so it can't be rewritten".into(),
         ));
     }
-    let on: Option<bool> = conn
+    // Only a project some computer writes for (as `on_projects`) is ever rewritten.
+    let on: Option<(bool, bool)> = conn
         .query_row(
-            "SELECT daily_updates = 1 FROM projects WHERE id = ?1",
+            "SELECT p.daily_updates = 1, EXISTS(SELECT 1 FROM section_computers sc WHERE sc.section = p.section)
+             FROM projects p WHERE p.id = ?1",
             params![project_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    if on == Some(false) {
-        return Err(UpdateError::Conflict("Daily updates are off for this project"));
+    match on {
+        Some((false, _)) => return Err(UpdateError::Conflict("Daily updates are off for this project")),
+        Some((true, false)) => return Err(UpdateError::Conflict("No computer is set for this project's section")),
+        _ => {}
     }
     let n = conn.execute(
         "UPDATE weekly_recaps SET rewrite_requested = 1 WHERE project_id = ?1 AND week = ?2",
@@ -642,9 +643,10 @@ pub(crate) fn list_weekly_db(conn: &Connection, q: &ListQuery) -> Result<Vec<Wee
     let weeks: Vec<String> = weeks_stmt.query_map(params![q.before], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let mut sections_stmt = conn.prepare(
         "SELECT project_id, project_name, headline, wins, failed,
-                (rewrite_requested = 1 OR stale = 1)
-                    AND EXISTS(SELECT 1 FROM projects p WHERE p.id = weekly_recaps.project_id AND p.daily_updates = 1),
-                0, commits, conversations, days_with_work, days, written_at
+                (rewrite_requested = 1 OR stale = 1) AND EXISTS(SELECT 1 FROM projects p
+                    JOIN section_computers sc ON sc.section = p.section
+                    WHERE p.id = weekly_recaps.project_id AND p.daily_updates = 1),
+                commits, conversations, days_with_work, days, written_at
          FROM weekly_recaps WHERE week = ?1 AND (failed = 1 OR wins != '')
          ORDER BY conversations DESC, project_name, project_id",
     )?;
@@ -655,19 +657,20 @@ pub(crate) fn list_weekly_db(conn: &Connection, q: &ListQuery) -> Result<Vec<Wee
         }
         let sections: Vec<WeeklySection> = sections_stmt
             .query_map(params![week], |r| {
-                let days: String = r.get(10)?;
+                let days: String = r.get(9)?;
                 Ok(WeeklySection {
                     project_id: r.get(0)?,
                     project_name: r.get(1)?,
                     headline: r.get(2)?,
                     wins: r.get(3)?,
                     failed: r.get::<_, i64>(4)? != 0,
-                    rewriting: r.get::<_, i64>(5)? != 0 || r.get::<_, i64>(6)? != 0,
-                    commits: r.get(7)?,
-                    conversations: r.get(8)?,
-                    days_with_work: r.get(9)?,
+                    // Only a project some computer writes for (as `on_projects`) gets rewritten.
+                    rewriting: r.get::<_, i64>(5)? != 0,
+                    commits: r.get(6)?,
+                    conversations: r.get(7)?,
+                    days_with_work: r.get(8)?,
                     days: serde_json::from_str::<Vec<WeeklyDayState>>(&days).unwrap_or_default(),
-                    written_at: r.get(11)?,
+                    written_at: r.get(10)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1132,6 +1135,19 @@ mod tests {
         daily(&conn, "2026-11-03", "before since", 0);
         daily(&conn, "2026-11-06", "", 0);
         daily(&conn, "2026-11-08", "", 0);
+        assert!(items(&conn, "2026-11-09T08:00:00Z").is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_update_is_quiet() {
+        let (_db, pool) = pool("wk-blank");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        daily(&conn, "2026-11-03", "  \n\t ", 0);
+        daily(&conn, "2026-11-08", "", 0);
+        let days = week_day_states(&conn, "pa", "2026-01-01", WEEK).unwrap();
+        assert_eq!((days[1].state.as_str(), days[1].text.as_str()), ("quiet", ""));
+        // Nothing to recap, as the runner would also judge.
         assert!(items(&conn, "2026-11-09T08:00:00Z").is_empty());
     }
 
@@ -1642,6 +1658,28 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn not_rewriting_and_no_rewrite_without_a_section_computer() {
+        let (_db, pool) = crate::test_support::pool("wk-no-computer");
+        {
+            let conn = pool.get().unwrap();
+            seed_updates(&conn, "2026-01-01");
+            // Daily updates on, but no computer serves the project's section: nothing would write it.
+            conn.execute("DELETE FROM section_computers WHERE section = 'Si'", []).unwrap();
+            recap(&conn, WEEK, "pa", "Alpha", "- a", 0, 1, 1);
+            conn.execute("UPDATE weekly_recaps SET rewrite_requested = 1", []).unwrap();
+        }
+        let (_, body) = get(&pool, "/api/weekly").await;
+        assert_eq!(body[0]["sections"][0]["rewriting"], false);
+        let conn = pool.get().unwrap();
+        conn.execute("UPDATE weekly_recaps SET rewrite_requested = 0", []).unwrap();
+        assert!(matches!(
+            rewrite_weekly_db(&conn, "pa", WEEK, utc("2026-11-10T10:00:00Z")),
+            Err(UpdateError::Conflict(_))
+        ));
+        assert_eq!(flags(&conn), (0, 0));
+    }
+
+    #[actix_web::test]
     async fn sections_sorted_by_conversations() {
         let (_db, pool) = crate::test_support::pool("wk-sort");
         {
@@ -1651,6 +1689,7 @@ mod tests {
             recap(&conn, WEEK, "pf", "Failed", "", 1, 0, 5);
             recap(&conn, WEEK, "pe", "Empty", "", 0, 0, 7);
             recap(&conn, WEEK, "stale", "Stale", "- s", 0, 0, 1);
+            seed_computers(&conn);
             conn.execute(
                 "INSERT INTO projects (id, name, section, folder, daily_updates) VALUES ('stale', 'Stale', 'Si', '~/s', 1)",
                 [],
