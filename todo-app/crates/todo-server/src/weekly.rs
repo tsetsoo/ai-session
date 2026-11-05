@@ -4,7 +4,7 @@ use actix_web::{web, HttpResponse};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use todo_shared::{WeeklyJob, WeeklyJobs, WeeklyRunLine};
+use todo_shared::{WeeklyDayState, WeeklyJob, WeeklyJobs, WeeklyRecap, WeeklyRunLine, WeeklySection, WeeklyTotals};
 
 use crate::broadcast::Broadcaster;
 use crate::conversations::server_error;
@@ -534,6 +534,76 @@ pub async fn rewrite_weekly(
                 broadcaster.send();
                 HttpResponse::Ok().json(serde_json::json!({"ok": true}))
             }
+            Err(e) => respond(e),
+        },
+        Err(e) => server_error(e),
+    }
+}
+
+// --- For the apps ---------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    pub before: Option<String>,
+    pub limit: Option<u32>,
+}
+
+const LIST_DEFAULT: u32 = 4;
+const LIST_MAX: u32 = 12;
+
+pub(crate) fn list_weekly_db(conn: &Connection, q: &ListQuery) -> Result<Vec<WeeklyRecap>, UpdateError> {
+    if let Some(before) = &q.before {
+        checked_week(before)?;
+    }
+    let limit = q.limit.unwrap_or(LIST_DEFAULT).clamp(1, LIST_MAX);
+    let mut weeks_stmt = conn.prepare(
+        "SELECT week FROM (SELECT week FROM weekly_recaps UNION SELECT week FROM weekly_jobs)
+         WHERE (?1 IS NULL OR week < ?1) ORDER BY week DESC LIMIT ?2",
+    )?;
+    let weeks: Vec<String> = weeks_stmt.query_map(params![q.before, limit], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let mut sections_stmt = conn.prepare(
+        "SELECT project_id, project_name, headline, wins, failed, rewrite_requested, stale, commits, conversations, days_with_work, days, written_at
+         FROM weekly_recaps WHERE week = ?1 AND (failed = 1 OR wins != '')
+         ORDER BY conversations DESC, project_name, project_id",
+    )?;
+    let mut out = Vec::with_capacity(weeks.len());
+    for week in weeks {
+        let sections: Vec<WeeklySection> = sections_stmt
+            .query_map(params![week], |r| {
+                let days: String = r.get(10)?;
+                Ok(WeeklySection {
+                    project_id: r.get(0)?,
+                    project_name: r.get(1)?,
+                    headline: r.get(2)?,
+                    wins: r.get(3)?,
+                    failed: r.get::<_, i64>(4)? != 0,
+                    rewriting: r.get::<_, i64>(5)? != 0 || r.get::<_, i64>(6)? != 0,
+                    commits: r.get(7)?,
+                    conversations: r.get(8)?,
+                    days_with_work: r.get(9)?,
+                    days: serde_json::from_str::<Vec<WeeklyDayState>>(&days).unwrap_or_default(),
+                    written_at: r.get(11)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let snapshot: Option<String> = conn
+            .query_row("SELECT snapshot FROM weekly_jobs WHERE week = ?1", params![week], |r| r.get(0))
+            .optional()?;
+        let jobs: Option<WeeklyJobs> = snapshot.and_then(|s| serde_json::from_str(&s).ok());
+        let totals = WeeklyTotals {
+            commits: sections.iter().map(|s| s.commits).sum(),
+            conversations: sections.iter().map(|s| s.conversations).sum(),
+            runs: jobs.as_ref().map_or(0, |j| j.runs),
+        };
+        out.push(WeeklyRecap { week, totals, sections, jobs });
+    }
+    Ok(out)
+}
+
+pub async fn list_weekly(pool: web::Data<DbPool>, q: web::Query<ListQuery>) -> HttpResponse {
+    match pool.get() {
+        Ok(conn) => match list_weekly_db(&conn, &q) {
+            Ok(v) => HttpResponse::Ok().json(v),
             Err(e) => respond(e),
         },
         Err(e) => server_error(e),
@@ -1106,5 +1176,115 @@ mod tests {
         let conn = pool.get().unwrap();
         assert_eq!(items(&conn, "2026-11-09T09:00:00Z").len(), 1);
         assert_eq!(flags(&conn), (1, 0));
+    }
+
+    // --- GET /api/weekly -----------------------------------------------------------------
+
+    use crate::test_support::get;
+
+    fn recap(conn: &Connection, week: &str, project: &str, name: &str, wins: &str, failed: i64, commits: i64, convs: i64) {
+        conn.execute(
+            "INSERT INTO weekly_recaps (week, project_id, project_name, headline, wins, failed, days, commits, conversations, days_with_work, written_at, stale)
+             VALUES (?1, ?2, ?3, 'head', ?4, ?5, '[{\"day\":\"2026-11-02\",\"state\":\"update\"}]', ?6, ?7, 3, '2026-11-09 08:30:00', ?8)",
+            params![week, project, name, wins, failed, commits, convs, i64::from(project == "stale")],
+        )
+        .unwrap();
+    }
+
+    fn snapshot(conn: &Connection, week: &str, runs: u32) {
+        let jobs = WeeklyJobs { runs, done: runs, failed: 0, skipped: 0, todos_created: 1, conversations_started: 1, findings: 0, jobs: vec![] };
+        conn.execute(
+            "INSERT INTO weekly_jobs (week, snapshot, taken_at) VALUES (?1, ?2, '2026-11-09 08:00:00')",
+            params![week, serde_json::to_string(&jobs).unwrap()],
+        )
+        .unwrap();
+    }
+
+    fn weeks(body: &serde_json::Value) -> Vec<&str> {
+        body.as_array().unwrap().iter().map(|w| w["week"].as_str().unwrap()).collect()
+    }
+
+    #[actix_web::test]
+    async fn list_weekly_newest_first_and_paged() {
+        let (_db, pool) = crate::test_support::pool("wk-list");
+        {
+            let conn = pool.get().unwrap();
+            for w in ["2026-10-12", "2026-10-19", "2026-10-26", "2026-11-02"] {
+                recap(&conn, w, "pa", "Alpha", "- you shipped", 0, 1, 1);
+            }
+        }
+        let (s, body) = get(&pool, "/api/weekly").await;
+        assert_eq!(s, 200, "{body}");
+        assert_eq!(weeks(&body), ["2026-11-02", "2026-10-26", "2026-10-19", "2026-10-12"]);
+        let (_, body) = get(&pool, "/api/weekly?limit=2").await;
+        assert_eq!(weeks(&body), ["2026-11-02", "2026-10-26"]);
+        let (_, body) = get(&pool, "/api/weekly?before=2026-10-26&limit=1").await;
+        assert_eq!(weeks(&body), ["2026-10-19"]);
+        assert_eq!(get(&pool, "/api/weekly?before=nope").await.0, 400);
+        let section = &body[0]["sections"][0];
+        assert_eq!(section["project_name"], "Alpha");
+        assert_eq!(section["rewriting"], false);
+        assert_eq!(section["days"][0]["state"], "update");
+        assert!(body[0]["jobs"].is_null());
+    }
+
+    #[actix_web::test]
+    async fn sections_sorted_by_conversations() {
+        let (_db, pool) = crate::test_support::pool("wk-sort");
+        {
+            let conn = pool.get().unwrap();
+            recap(&conn, WEEK, "pa", "Alpha", "- a", 0, 1, 2);
+            recap(&conn, WEEK, "pb", "Beta", "- b", 0, 1, 9);
+            recap(&conn, WEEK, "pf", "Failed", "", 1, 0, 5);
+            recap(&conn, WEEK, "pe", "Empty", "", 0, 0, 7);
+            recap(&conn, WEEK, "stale", "Stale", "- s", 0, 0, 1);
+        }
+        let (_, body) = get(&pool, "/api/weekly").await;
+        let names: Vec<&str> = body[0]["sections"].as_array().unwrap().iter().map(|s| s["project_name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Beta", "Failed", "Alpha", "Stale"]);
+        assert_eq!(body[0]["sections"][1]["failed"], true);
+        assert_eq!(body[0]["sections"][3]["rewriting"], true);
+    }
+
+    #[actix_web::test]
+    async fn totals_sum_sections_and_runs() {
+        let (_db, pool) = crate::test_support::pool("wk-totals");
+        {
+            let conn = pool.get().unwrap();
+            recap(&conn, WEEK, "pa", "Alpha", "- a", 0, 3, 2);
+            recap(&conn, WEEK, "pb", "Beta", "- b", 0, 4, 5);
+            snapshot(&conn, WEEK, 6);
+            recap(&conn, "2026-10-26", "pa", "Alpha", "- a", 0, 1, 1);
+        }
+        let (_, body) = get(&pool, "/api/weekly").await;
+        assert_eq!(body[0]["totals"], json!({"commits": 7, "conversations": 7, "runs": 6}));
+        assert_eq!(body[0]["jobs"]["runs"], 6);
+        assert_eq!(body[1]["totals"], json!({"commits": 1, "conversations": 1, "runs": 0}));
+    }
+
+    #[actix_web::test]
+    async fn week_with_only_jobs_listed() {
+        let (_db, pool) = crate::test_support::pool("wk-jobs-only");
+        snapshot(&pool.get().unwrap(), WEEK, 2);
+        let (_, body) = get(&pool, "/api/weekly").await;
+        assert_eq!(weeks(&body), [WEEK]);
+        assert_eq!(body[0]["sections"], json!([]));
+        assert_eq!(body[0]["totals"]["runs"], 2);
+    }
+
+    #[actix_web::test]
+    async fn deleted_project_section_kept_with_stored_name() {
+        let (_db, pool) = crate::test_support::pool("wk-deleted");
+        {
+            let conn = pool.get().unwrap();
+            seed_updates(&conn, "2026-01-01");
+            daily(&conn, "2026-11-03", "a", 1);
+        }
+        let ok = json!({"headline": "h", "wins": "- you shipped", "failed": false});
+        assert_eq!(put(&pool, "/api/projects/pa/weekly/2026-11-02", ok).await.0, 200);
+        pool.get().unwrap().execute("DELETE FROM projects WHERE id = 'pa'", []).unwrap();
+        let (_, body) = get(&pool, "/api/weekly").await;
+        assert_eq!(body[0]["sections"][0]["project_name"], "Alpha");
+        assert_eq!(body[0]["sections"][0]["project_id"], "pa");
     }
 }

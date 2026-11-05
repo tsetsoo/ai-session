@@ -1613,6 +1613,46 @@ pub struct WeeklyJobs {
     pub jobs: Vec<WeeklyJob>,
 }
 
+/// Totals across one week's sections and the scheduled jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeeklyTotals {
+    pub commits: u32,
+    pub conversations: u32,
+    pub runs: u32,
+}
+
+/// One day of a project's week: `update`, `quiet`, `failed` or `missing`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeeklyDayState {
+    pub day: String,
+    pub state: String,
+}
+
+/// One project's recap for a week.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeeklySection {
+    pub project_id: String,
+    pub project_name: String,
+    pub headline: String,
+    pub wins: String,
+    pub failed: bool,
+    pub rewriting: bool,
+    pub commits: u32,
+    pub conversations: u32,
+    pub days_with_work: u32,
+    pub days: Vec<WeeklyDayState>,
+    pub written_at: String,
+}
+
+/// A finished week as the apps list it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeeklyRecap {
+    pub week: String,
+    pub totals: WeeklyTotals,
+    pub sections: Vec<WeeklySection>,
+    pub jobs: Option<WeeklyJobs>,
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

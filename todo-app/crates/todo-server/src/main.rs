@@ -156,6 +156,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/projects/{id}/updates/{day}", web::put().to(updates::put_update))
         .route("/api/projects/{id}/updates/{day}/summaries", web::get().to(updates::day_summaries))
         .route("/api/projects/{id}/updates/{day}/rewrite", web::post().to(updates::rewrite))
+        .route("/api/weekly", web::get().to(weekly::list_weekly))
         .route("/api/projects/{id}/weekly/{week}", web::put().to(weekly::put_weekly))
         .route("/api/projects/{id}/weekly/{week}/rewrite", web::post().to(weekly::rewrite_weekly))
         .route("/api/runs/{id}/claim", web::post().to(runner_api::claim))
