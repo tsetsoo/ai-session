@@ -122,6 +122,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v18_objects(&conn).expect("Failed to add job templates");
     create_v19_objects(&conn).expect("Failed to create daily update objects");
     create_v20_objects(&conn).expect("Failed to add the failed-summary column");
+    create_v21_objects(&conn).expect("Failed to create weekly recap objects");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -546,6 +547,65 @@ const V19_OBJECTS: &str = "
     CREATE INDEX IF NOT EXISTS project_updates_day ON project_updates(day);
 ";
 
+const V21_OBJECTS: &str = "
+    CREATE TABLE IF NOT EXISTS weekly_job_tallies (
+        week                  TEXT NOT NULL,
+        job_id                TEXT NOT NULL,
+        job_name              TEXT NOT NULL DEFAULT '',
+        project_name          TEXT NOT NULL DEFAULT '',
+        is_watch              INTEGER NOT NULL DEFAULT 0,
+        runs                  INTEGER NOT NULL DEFAULT 0,
+        done                  INTEGER NOT NULL DEFAULT 0,
+        failed                INTEGER NOT NULL DEFAULT 0,
+        skipped               INTEGER NOT NULL DEFAULT 0,
+        checks                INTEGER NOT NULL DEFAULT 0,
+        findings              INTEGER NOT NULL DEFAULT 0,
+        todos_created         INTEGER NOT NULL DEFAULT 0,
+        conversations_started INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (week, job_id)
+    );
+    CREATE TABLE IF NOT EXISTS weekly_jobs (
+        week     TEXT PRIMARY KEY,
+        snapshot TEXT NOT NULL,
+        taken_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS weekly_recaps (
+        week              TEXT NOT NULL,
+        project_id        TEXT NOT NULL,
+        project_name      TEXT NOT NULL DEFAULT '',
+        headline          TEXT NOT NULL DEFAULT '',
+        wins              TEXT NOT NULL DEFAULT '',
+        failed            INTEGER NOT NULL DEFAULT 0,
+        days              TEXT NOT NULL DEFAULT '[]',
+        commits           INTEGER NOT NULL DEFAULT 0,
+        conversations     INTEGER NOT NULL DEFAULT 0,
+        days_with_work    INTEGER NOT NULL DEFAULT 0,
+        written_at        TEXT NOT NULL,
+        rewrite_requested TEXT,
+        stale             INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (week, project_id)
+    );
+";
+
+/// v21: weekly recap tables, and `job_runs.tallied` so each settled run is counted once.
+/// Runs already settled before the column existed count as tallied, except those due in the
+/// current week, which the tally job counts, so the current week starts complete.
+fn create_v21_objects(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(V21_OBJECTS)?;
+    if table_sql(conn, "job_runs")?.is_some() && !column_exists(conn, "job_runs", "tallied")? {
+        conn.execute_batch("ALTER TABLE job_runs ADD COLUMN tallied INTEGER NOT NULL DEFAULT 0;")?;
+        let week = crate::weekly::week_of_time(chrono::Utc::now());
+        if let Some((start, _)) = crate::updates::day_window(&week) {
+            conn.execute(
+                "UPDATE job_runs SET tallied = 1
+                 WHERE state IN ('done','failed','skipped','missed') AND due_at < ?1",
+                params![crate::scheduler::sql_time(start)],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// v20: a conversation that couldn't be summarized is stored as such, so its day says so.
 fn create_v20_objects(conn: &Connection) -> rusqlite::Result<()> {
     if table_sql(conn, "update_summaries")?.is_some() && !column_exists(conn, "update_summaries", "failed")? {
@@ -731,7 +791,7 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -747,6 +807,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     }
     if table_sql(conn, "reminders")?.is_some() {
         if table_sql(conn, "project_updates")?.is_some() {
+            if table_sql(conn, "weekly_recaps")?.is_some() {
+                return Ok(21);
+            }
             if column_exists(conn, "update_summaries", "failed")? {
                 return Ok(20);
             }
@@ -2658,6 +2721,52 @@ mod tests {
         for (t, c) in [("projects", "daily_updates"), ("projects", "update_style"), ("projects", "daily_updates_since"), ("computers", "runner_seen_at")] {
             assert!(column_exists(&conn, t, c).unwrap(), "{t}.{c}");
         }
+    }
+
+    #[test]
+    fn migrates_to_v21() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(
+            "DROP TABLE weekly_job_tallies; DROP TABLE weekly_jobs; DROP TABLE weekly_recaps;
+             ALTER TABLE job_runs DROP COLUMN tallied; PRAGMA user_version = 20;",
+        )
+        .unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 21);
+        for t in ["weekly_job_tallies", "weekly_jobs", "weekly_recaps"] {
+            assert!(table_sql(&conn, t).unwrap().is_some(), "{t}");
+        }
+        assert!(column_exists(&conn, "job_runs", "tallied").unwrap());
+        assert!(column_exists(&conn, "weekly_recaps", "project_name").unwrap());
+    }
+
+    #[test]
+    fn v21_marks_old_settled_runs_tallied_but_not_this_weeks() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=OFF; ALTER TABLE job_runs DROP COLUMN tallied; PRAGMA user_version = 20;").unwrap();
+        let now = chrono::Utc::now();
+        let old = crate::scheduler::sql_time(now - chrono::Duration::days(20));
+        let recent = crate::scheduler::sql_time(now);
+        for (id, due, state) in [("a", &old, "done"), ("b", &recent, "done"), ("c", &old, "due")] {
+            conn.execute(
+                "INSERT INTO job_runs (id, job_id, due_at, state) VALUES (?1, 'j', ?2, ?3)",
+                params![id, due, state],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        let tallied = |id: &str| -> i64 {
+            conn.query_row("SELECT tallied FROM job_runs WHERE id = ?1", params![id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!((tallied("a"), tallied("b"), tallied("c")), (1, 0, 0));
     }
 
     #[test]

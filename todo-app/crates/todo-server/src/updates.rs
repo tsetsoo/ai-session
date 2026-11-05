@@ -47,7 +47,7 @@ fn respond(e: UpdateError) -> HttpResponse {
     }
 }
 
-fn parse_day(day: &str) -> Option<NaiveDate> {
+pub(crate) fn parse_day(day: &str) -> Option<NaiveDate> {
     if day.len() != 10 {
         return None;
     }
