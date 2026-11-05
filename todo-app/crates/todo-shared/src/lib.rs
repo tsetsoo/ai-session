@@ -1621,7 +1621,7 @@ pub struct WeeklyTotals {
     pub runs: u32,
 }
 
-/// One day of a project's week: `update`, `quiet`, `failed` or `missing`.
+/// One day of a project's week: `update`, `quiet`, `failed`, `missing` or `untracked`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeeklyDayState {
     pub day: String,
