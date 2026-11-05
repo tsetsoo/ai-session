@@ -27,10 +27,13 @@ final class WeeklySectionTextTests: XCTestCase {
 }
 
 final class WeeklyRecapDayTests: XCTestCase {
-    func testRecapDayIsMondayInSofia() {
+    func testRecapDayIsMondayFromEightInSofia() {
         let f = ISO8601DateFormatter()
-        // Sun 8 Nov 22:30 UTC is Mon 9 Nov 00:30 in Sofia (UTC+2).
-        XCTAssertTrue(WeeklyRecap.isRecapDay(f.date(from: "2026-11-08T22:30:00Z")!))
+        // Sun 8 Nov 22:30 UTC is Mon 9 Nov 00:30 in Sofia (UTC+2): the recap isn't written yet.
+        XCTAssertFalse(WeeklyRecap.isRecapDay(f.date(from: "2026-11-08T22:30:00Z")!))
+        // 05:59 UTC is 07:59 Sofia; 06:00 UTC is 08:00.
+        XCTAssertFalse(WeeklyRecap.isRecapDay(f.date(from: "2026-11-09T05:59:00Z")!))
+        XCTAssertTrue(WeeklyRecap.isRecapDay(f.date(from: "2026-11-09T06:00:00Z")!))
         // Mon 9 Nov 21:58 UTC is 23:58 Sofia; 21:59 UTC is 23:59.
         XCTAssertTrue(WeeklyRecap.isRecapDay(f.date(from: "2026-11-09T21:58:00Z")!))
         XCTAssertFalse(WeeklyRecap.isRecapDay(f.date(from: "2026-11-09T21:59:00Z")!))
@@ -45,5 +48,14 @@ final class WeeklyDayKeptTests: XCTestCase {
         XCTAssertTrue(WeeklyRecap.isDayKept("2026-08-07", now: now))
         XCTAssertFalse(WeeklyRecap.isDayKept("2026-08-06", now: now))
         XCTAssertTrue(WeeklyRecap.isDayKept("2026-11-02", now: now))
+    }
+}
+
+final class WeeklyRewritableTests: XCTestCase {
+    func testRewriteOnlyWhileTheWeeksMondayIsKept() {
+        let f = ISO8601DateFormatter()
+        // 90 days before Sofia's 31 Jan 2027 is 2 Nov 2026: the week's Monday is still kept.
+        XCTAssertTrue(WeeklyRecap(week: "2026-11-02").isRewritable(now: f.date(from: "2027-01-31T10:00:00Z")!))
+        XCTAssertFalse(WeeklyRecap(week: "2026-11-02").isRewritable(now: f.date(from: "2027-02-01T10:00:00Z")!))
     }
 }

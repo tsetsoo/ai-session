@@ -24,8 +24,6 @@ struct TodaySidebar: View {
 struct TodayListColumn: View {
     @Environment(AppModel.self) private var model
     let onOpenTodo: (String) -> Void
-    /// Weekly's days: a project's page on that day of its Updates.
-    let onOpenDay: (String, String) -> Void
 
     var body: some View {
         @Bindable var model = model
@@ -40,7 +38,9 @@ struct TodayListColumn: View {
             case .people:
                 PeopleList(store: model.store, selection: $model.todaySelection)
             case .weekly:
-                WeeklyView(store: model.store, onOpenTodo: onOpenTodo, onOpenDay: onOpenDay)
+                // The recaps need the wide pane: they're in the detail column.
+                AutomationEmpty(text: "Each Monday morning, last week's recap is written from your projects' daily updates and the scheduled jobs.")
+                    .navigationTitle("Weekly")
             }
         }
         .task(id: model.store.revision) { await model.store.loadToday() }
@@ -49,6 +49,9 @@ struct TodayListColumn: View {
 
 struct TodayDetailColumn: View {
     @Environment(AppModel.self) private var model
+    let onOpenTodo: (String) -> Void
+    /// Weekly's days: a project's page on that day of its Updates.
+    let onOpenDay: (String, String) -> Void
 
     var body: some View {
         let store = model.store
@@ -70,7 +73,7 @@ struct TodayDetailColumn: View {
                 AutomationEmpty(text: "Choose a person, or press + to add one.")
             }
         case .weekly:
-            AutomationEmpty(text: "")
+            WeeklyView(store: store, onOpenTodo: onOpenTodo, onOpenDay: onOpenDay)
         }
     }
 }

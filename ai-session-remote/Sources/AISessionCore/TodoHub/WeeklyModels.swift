@@ -332,13 +332,18 @@ extension WeeklySection {
 }
 
 extension WeeklyRecap {
-    /// Monday in Sofia, before 23:59: when the phone's Today shows a "Last week's recap" row.
+    /// Monday in Sofia from 08:00 (when the week ends and its recap is written) to before 23:59:
+    /// when the phone's Today shows a "Last week's recap" row.
     public static func isRecapDay(_ date: Date) -> Bool {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TodayTime.zone
         let c = calendar.dateComponents([.weekday, .hour, .minute], from: date)
-        return c.weekday == 2 && !(c.hour == 23 && (c.minute ?? 0) >= 59)
+        guard c.weekday == 2, let hour = c.hour, hour >= 8 else { return false }
+        return !(hour == 23 && (c.minute ?? 0) >= 59)
     }
+
+    /// Rewrite needs the week's daily updates: offered while its Monday is still kept (the hub refuses after).
+    public func isRewritable(now: Date = .now) -> Bool { Self.isDayKept(week, now: now) }
 
     /// Daily updates are kept 90 days: a day key older than Sofia's today minus 90 can't be opened.
     public static func isDayKept(_ day: String, now: Date = .now) -> Bool {

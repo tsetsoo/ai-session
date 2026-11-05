@@ -185,7 +185,8 @@ struct WeeklyWeekCard: View {
                 tiles
                 headlines
                 ForEach(recap.sections) { section in
-                    WeeklySectionBlock(section: section, isOffline: isOffline, onRewrite: { onRewrite(section) },
+                    WeeklySectionBlock(section: section, isOffline: isOffline, canRewrite: recap.isRewritable(),
+                                       onRewrite: { onRewrite(section) },
                                        onOpenDay: { day in onOpenDay(section.projectId, day) })
                 }
                 if recap.sections.isEmpty {
@@ -248,6 +249,8 @@ struct WeeklyWeekCard: View {
 struct WeeklySectionBlock: View {
     let section: WeeklySection
     let isOffline: Bool
+    /// False once the week's daily updates are past the 90-day keep: there is nothing to rewrite from.
+    var canRewrite = true
     let onRewrite: () -> Void
     var onOpenDay: (String) -> Void = { _ in }
 
@@ -285,11 +288,13 @@ struct WeeklySectionBlock: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                Button(action: onRewrite) {
-                    Label(section.rewriting ? "Rewriting…" : "Rewrite", systemImage: "arrow.clockwise")
+                if canRewrite {
+                    Button(action: onRewrite) {
+                        Label(section.rewriting ? "Rewriting…" : "Rewrite", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(section.rewriting || isOffline)
                 }
-                .buttonStyle(.borderless)
-                .disabled(section.rewriting || isOffline)
                 Spacer(minLength: 0)
             }
             .font(.subheadline)

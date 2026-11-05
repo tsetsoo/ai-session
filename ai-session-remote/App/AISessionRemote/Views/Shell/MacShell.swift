@@ -118,7 +118,7 @@ struct MacShell: View {
                 if model.appMode == .automation {
                     AutomationListColumn(onOpenTodo: openTodoFromAutomation)
                 } else if model.appMode == .today {
-                    TodayListColumn(onOpenTodo: openTodoFromAutomation, onOpenDay: openUpdateDay)
+                    TodayListColumn(onOpenTodo: openTodoFromAutomation)
                 } else {
                     contentColumn
                 }
@@ -140,7 +140,7 @@ struct MacShell: View {
                 }
                 if model.appMode == .today {
                     NavigationStack {
-                        TodayDetailColumn()
+                        TodayDetailColumn(onOpenTodo: openTodoFromAutomation, onOpenDay: openUpdateDay)
                     }
                     .background(.background)
                 }
