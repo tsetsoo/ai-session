@@ -78,8 +78,8 @@ Top to bottom (the sketch the user accepted, with the changes noted):
 5. **Scheduled jobs**, across all projects, computed by the hub (no model):
    - Totals: runs, succeeded, failed, skipped.
    - Per job: name, project, runs / ✓ / ✗ / skipped.
-   - **What they did for you**: a short count line built from the runs. It counts todos created (`todo_id` set), conversations
-     started, and watcher findings ("N new").
+   - **What they did for you**: a short count line built from the runs. It counts todos created (`done` runs with `todo_id` set
+     that didn't start a conversation), conversations started, and watcher findings ("N new").
    - Expanding a job lists its runs, one line each, with the outcome and a link to its todo/conversation where there is one.
      Failed runs come first, then runs whose todo is still waiting for review, as the old idea asked.
    - **Watchers** (jobs whose action kind is `watch`): quiet checks and skipped checks are **not** counted as

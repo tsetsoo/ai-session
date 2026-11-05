@@ -123,6 +123,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v19_objects(&conn).expect("Failed to create daily update objects");
     create_v20_objects(&conn).expect("Failed to add the failed-summary column");
     create_v21_objects(&conn).expect("Failed to create weekly recap objects");
+    create_v22_objects(&conn).expect("Failed to create the untallied-runs index");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -606,6 +607,23 @@ fn create_v21_objects(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v22: a partial index over the runs the weekly tally hasn't counted yet, so each tick reads
+/// only those instead of every settled run.
+fn create_v22_objects(conn: &Connection) -> rusqlite::Result<()> {
+    if table_sql(conn, "job_runs")?.is_some() && column_exists(conn, "job_runs", "tallied")? {
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS job_runs_untallied ON job_runs(id) WHERE tallied = 0;")?;
+    }
+    Ok(())
+}
+
+fn index_exists(conn: &Connection, index: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
+        params![index],
+        |r| r.get(0),
+    )
+}
+
 /// v20: a conversation that couldn't be summarized is stored as such, so its day says so.
 fn create_v20_objects(conn: &Connection) -> rusqlite::Result<()> {
     if table_sql(conn, "update_summaries")?.is_some() && !column_exists(conn, "update_summaries", "failed")? {
@@ -791,7 +809,7 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 21;
+pub const SCHEMA_VERSION: i64 = 22;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -808,6 +826,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     if table_sql(conn, "reminders")?.is_some() {
         if table_sql(conn, "project_updates")?.is_some() {
             if table_sql(conn, "weekly_recaps")?.is_some() {
+                if index_exists(conn, "job_runs_untallied")? {
+                    return Ok(22);
+                }
                 return Ok(21);
             }
             if column_exists(conn, "update_summaries", "failed")? {
@@ -2730,13 +2751,13 @@ mod tests {
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "DROP TABLE weekly_job_tallies; DROP TABLE weekly_jobs; DROP TABLE weekly_recaps;
-             ALTER TABLE job_runs DROP COLUMN tallied; PRAGMA user_version = 20;",
+             DROP INDEX job_runs_untallied; ALTER TABLE job_runs DROP COLUMN tallied; PRAGMA user_version = 20;",
         )
         .unwrap();
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 21);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         for t in ["weekly_job_tallies", "weekly_jobs", "weekly_recaps"] {
             assert!(table_sql(&conn, t).unwrap().is_some(), "{t}");
         }
@@ -2750,11 +2771,50 @@ mod tests {
     }
 
     #[test]
+    fn migrates_to_v22() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch("DROP INDEX IF EXISTS job_runs_untallied; PRAGMA user_version = 21;").unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 22);
+        let sql: String = conn
+            .query_row("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'job_runs_untallied'", [], |r| r.get(0))
+            .unwrap();
+        assert!(sql.contains("WHERE tallied = 0"), "{sql}");
+        // The tally's scan of unsettled runs uses it.
+        let plan: Vec<String> = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT id FROM job_runs WHERE tallied = 0")
+            .unwrap()
+            .query_map([], |r| r.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(plan.iter().any(|p| p.contains("job_runs_untallied")), "{plan:?}");
+    }
+
+    #[test]
+    fn schema_version_sniffs_v22() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 22);
+        conn.execute_batch("DROP INDEX job_runs_untallied;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 21);
+    }
+
+    #[test]
     fn v21_marks_old_settled_runs_tallied_but_not_this_weeks() {
         let db = TestDb::new("migrate");
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
-        conn.execute_batch("PRAGMA foreign_keys=OFF; ALTER TABLE job_runs DROP COLUMN tallied; PRAGMA user_version = 20;").unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=OFF; DROP INDEX job_runs_untallied; ALTER TABLE job_runs DROP COLUMN tallied; PRAGMA user_version = 20;",
+        )
+        .unwrap();
         let now = chrono::Utc::now();
         let old = crate::scheduler::sql_time(now - chrono::Duration::days(20));
         let recent = crate::scheduler::sql_time(now);

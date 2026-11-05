@@ -101,16 +101,18 @@ pub(crate) fn weekly_upkeep_logged(conn: &Connection, now: DateTime<Utc>, snapsh
     }
 }
 
+/// Settled runs not yet counted. `+r.state` keeps the planner off the state index, so it
+/// reads the partial `job_runs_untallied` index (only uncounted runs) instead of every settled run.
+const TALLY_RUNS: &str = "SELECT r.id, r.job_id, r.due_at, r.state, r.result, r.todo_id,
+        json_extract(j.action, '$.kind'), j.name,
+        COALESCE((SELECT p.name FROM projects p WHERE p.id = json_extract(j.action, '$.project_id')), '')
+    FROM job_runs r JOIN jobs j ON j.id = r.job_id
+    WHERE r.tallied = 0 AND +r.state IN ('done','failed','skipped','missed')
+    ORDER BY r.due_at";
+
 fn tally_runs(conn: &Connection) -> rusqlite::Result<usize> {
     let rows: Vec<RunRow> = {
-        let mut stmt = conn.prepare(
-            "SELECT r.id, r.job_id, r.due_at, r.state, r.result, r.todo_id,
-                    json_extract(j.action, '$.kind'), j.name,
-                    COALESCE((SELECT p.name FROM projects p WHERE p.id = json_extract(j.action, '$.project_id')), '')
-             FROM job_runs r JOIN jobs j ON j.id = r.job_id
-             WHERE r.state IN ('done','failed','skipped','missed') AND r.tallied = 0
-             ORDER BY r.due_at",
-        )?;
+        let mut stmt = conn.prepare(TALLY_RUNS)?;
         let mapped = stmt.query_map([], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))
         })?;
@@ -118,7 +120,12 @@ fn tally_runs(conn: &Connection) -> rusqlite::Result<usize> {
     };
     let mut counted = 0;
     for (id, job_id, due_at, state, result, todo_id, kind, name, project_name) in &rows {
-        let Some(due) = parse_sql_time(due_at) else { continue };
+        let Some(due) = parse_sql_time(due_at) else {
+            // Unreadable: it can't be placed in a week, so set it aside rather than re-read it every tick.
+            println!("weekly tally: run {id} has an unreadable due_at {due_at:?}; not counted");
+            conn.execute("UPDATE job_runs SET tallied = 1 WHERE id = ?1", params![id])?;
+            continue;
+        };
         let week = week_of_time(due);
         let result = result.as_deref().unwrap_or("");
         let is_watch = kind.as_deref() == Some("watch");
@@ -136,7 +143,9 @@ fn tally_runs(conn: &Connection) -> rusqlite::Result<usize> {
                 findings = new_findings(result);
             }
         }
-        let started = i64::from(result.starts_with("started "));
+        let started = result.starts_with("started ");
+        // A started conversation's run has a todo too: count it as the conversation only.
+        let todo_created = todo_id.is_some() && !started && state == "done";
         conn.execute(
             "INSERT INTO weekly_job_tallies (week, job_id, job_name, project_name, is_watch, runs, done, failed, skipped,
                                              checks, findings, todos_created, conversations_started)
@@ -149,7 +158,7 @@ fn tally_runs(conn: &Connection) -> rusqlite::Result<usize> {
                 conversations_started = conversations_started + excluded.conversations_started",
             params![
                 week, job_id, name, project_name, i64::from(is_watch), runs, done, failed, skipped, checks, findings,
-                i64::from(todo_id.is_some()), started
+                i64::from(todo_created), i64::from(started)
             ],
         )?;
         conn.execute("UPDATE job_runs SET tallied = 1 WHERE id = ?1", params![id])?;
@@ -798,12 +807,40 @@ mod tests {
         run(&conn, "j", "2026-11-06 09:00:00", "missed", None, None);
         run(&conn, "j", "2026-11-05 09:00:00", "due", None, None);
         assert_eq!(tally_settled_runs(&conn).unwrap(), 4);
-        assert_eq!(tally(&conn, "2026-11-02", "j"), (4, 2, 2, 0, 0, 0, 1, 1));
+        assert_eq!(tally(&conn, "2026-11-02", "j"), (4, 2, 2, 0, 0, 0, 0, 1));
         let name: (String, String) = conn
             .query_row("SELECT job_name, project_name FROM weekly_job_tallies WHERE job_id = 'j'", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         assert_eq!(name, ("Research".into(), "Alpha".into()));
         assert_eq!(tally_settled_runs(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn todos_created_counts_only_created_todos() {
+        let (_db, pool) = pool("tally-todos");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        run(&conn, "j", "2026-11-03 09:00:00", "done", Some("todo created"), Some("open1"));
+        // A started conversation has a todo too, but it's counted as a conversation only.
+        run(&conn, "j", "2026-11-04 09:00:00", "done", Some("started claude in ~/a"), Some("shut1"));
+        run(&conn, "j", "2026-11-05 09:00:00", "failed", Some("todo created"), Some("open1"));
+        tally_settled_runs(&conn).unwrap();
+        let (.., todos, conversations) = tally(&conn, "2026-11-02", "j");
+        assert_eq!((todos, conversations), (1, 1));
+    }
+
+    #[test]
+    fn tally_reads_only_untallied_runs() {
+        let (_db, pool) = pool("tally-plan");
+        let conn = pool.get().unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {TALLY_RUNS}"))
+            .unwrap()
+            .query_map([], |r| r.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(plan.iter().any(|p| p.contains("job_runs_untallied")), "{plan:?}");
     }
 
     #[test]
@@ -892,8 +929,10 @@ mod tests {
         assert_eq!(tally_settled_runs(&conn).unwrap(), 2);
         assert_eq!(tally(&conn, "2026-11-02", "j").0, 1);
         assert_eq!(tally(&conn, "2026-11-09", "j").0, 1);
+        // A run whose due_at can't be read is set aside (tallied, uncounted), not re-read every tick.
         let left: i64 = conn.query_row("SELECT COUNT(*) FROM job_runs WHERE tallied = 0", [], |r| r.get(0)).unwrap();
-        assert_eq!(left, 1);
+        assert_eq!(left, 0);
+        assert_eq!(tally_settled_runs(&conn).unwrap(), 0);
     }
 
     #[test]
