@@ -11,7 +11,7 @@ use crate::conversations::server_error;
 use crate::cron::TZ;
 use crate::db::DbPool;
 use crate::scheduler::{parse_sql_time, sql_time};
-use crate::updates::{day_window, on_projects, parse_day, respond, UpdateError};
+use crate::updates::{day_window, on_projects, parse_day, respond, UpdateError, KEEP_DAYS, MAX_UPDATE};
 
 const FALLBACK_HOUR: u32 = 10;
 
@@ -385,12 +385,19 @@ pub(crate) fn weekly_items(
         }
         for (week, fresh) in weeks {
             let days = week_day_states(conn, &p.id, &p.since, &week)?;
-            // A fresh week with nothing to recap is not offered; a flagged one always is.
-            if fresh
-                && !days
-                    .iter()
-                    .any(|d| d.state == "update" || d.state == "failed")
-            {
+            // Material: an update, or summaries on a day without one. Without it the model would invent a recap.
+            let material = days.iter().any(|d| d.state == "update" || !d.summaries.is_empty());
+            if fresh {
+                // A fresh week with nothing to recap is not offered (no row is written).
+                if !material || !days.iter().any(|d| d.state == "update" || d.state == "failed") {
+                    continue;
+                }
+            } else if !material {
+                // A flagged week whose daily updates are gone keeps its text: clear the flags.
+                conn.execute(
+                    "UPDATE weekly_recaps SET rewrite_requested = 0, stale = 0 WHERE project_id = ?1 AND week = ?2",
+                    params![p.id, week],
+                )?;
                 continue;
             }
             out.push(WeeklyItem {
@@ -432,8 +439,15 @@ pub(crate) fn put_weekly_db(
             "headline is limited to {MAX_HEADLINE} characters"
         )));
     }
+    if req.wins.chars().count() > MAX_UPDATE {
+        return Err(UpdateError::BadRequest(format!(
+            "wins are limited to {MAX_UPDATE} characters"
+        )));
+    }
     let (name, since) =
         project_row(conn, project_id)?.ok_or(UpdateError::NotFound("Project not found"))?;
+    // Only days daily updates tracked count: from `since` on, within the week.
+    let first = if since.as_str() > days[0].as_str() { since.clone() } else { days[0].clone() };
     let (mut commits, mut with_work) = (0i64, 0i64);
     let states: Vec<serde_json::Value> = week_day_states(conn, project_id, &since, week)?
         .into_iter()
@@ -444,12 +458,12 @@ pub(crate) fn put_weekly_db(
         .collect();
     commits += conn.query_row(
         "SELECT COALESCE(SUM(commits), 0) FROM project_updates WHERE project_id = ?1 AND day >= ?2 AND day <= ?3",
-        params![project_id, days[0], days[6]],
+        params![project_id, first, days[6]],
         |r| r.get::<_, i64>(0),
     )?;
     let conversations: i64 = conn.query_row(
         "SELECT COUNT(DISTINCT tool || ':' || session_id) FROM update_summaries WHERE project_id = ?1 AND day >= ?2 AND day <= ?3",
-        params![project_id, days[0], days[6]],
+        params![project_id, first, days[6]],
         |r| r.get(0),
     )?;
     conn.execute(
@@ -510,8 +524,26 @@ pub(crate) fn rewrite_weekly_db(
     conn: &Connection,
     project_id: &str,
     week: &str,
+    now: DateTime<Utc>,
 ) -> Result<(), UpdateError> {
     checked_week(week)?;
+    // The week's daily updates go after 90 days; a rewrite from nothing would wipe or invent the recap.
+    let cutoff = fmt(now.with_timezone(&TZ).date_naive() - Duration::days(KEEP_DAYS));
+    if week < cutoff.as_str() {
+        return Err(UpdateError::BadRequest(
+            "this week's daily updates are no longer kept, so it can't be rewritten".into(),
+        ));
+    }
+    let on: Option<bool> = conn
+        .query_row(
+            "SELECT daily_updates = 1 FROM projects WHERE id = ?1",
+            params![project_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if on == Some(false) {
+        return Err(UpdateError::Conflict("Daily updates are off for this project"));
+    }
     let n = conn.execute(
         "UPDATE weekly_recaps SET rewrite_requested = 1 WHERE project_id = ?1 AND week = ?2",
         params![project_id, week],
@@ -529,7 +561,7 @@ pub async fn rewrite_weekly(
 ) -> HttpResponse {
     let (project_id, week) = path.into_inner();
     match pool.get() {
-        Ok(conn) => match rewrite_weekly_db(&conn, &project_id, &week) {
+        Ok(conn) => match rewrite_weekly_db(&conn, &project_id, &week, Utc::now()) {
             Ok(()) => {
                 broadcaster.send();
                 HttpResponse::Ok().json(serde_json::json!({"ok": true}))
@@ -562,7 +594,10 @@ pub(crate) fn list_weekly_db(conn: &Connection, q: &ListQuery) -> Result<Vec<Wee
     )?;
     let weeks: Vec<String> = weeks_stmt.query_map(params![q.before, limit], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let mut sections_stmt = conn.prepare(
-        "SELECT project_id, project_name, headline, wins, failed, rewrite_requested, stale, commits, conversations, days_with_work, days, written_at
+        "SELECT project_id, project_name, headline, wins, failed,
+                (rewrite_requested = 1 OR stale = 1)
+                    AND EXISTS(SELECT 1 FROM projects p WHERE p.id = weekly_recaps.project_id AND p.daily_updates = 1),
+                0, commits, conversations, days_with_work, days, written_at
          FROM weekly_recaps WHERE week = ?1 AND (failed = 1 OR wins != '')
          ORDER BY conversations DESC, project_name, project_id",
     )?;
@@ -589,7 +624,11 @@ pub(crate) fn list_weekly_db(conn: &Connection, q: &ListQuery) -> Result<Vec<Wee
         let snapshot: Option<String> = conn
             .query_row("SELECT snapshot FROM weekly_jobs WHERE week = ?1", params![week], |r| r.get(0))
             .optional()?;
-        let jobs: Option<WeeklyJobs> = snapshot.and_then(|s| serde_json::from_str(&s).ok());
+        // Until the snapshot is taken (Monday 10:00) the week's jobs come from the tallies, which every tick keeps current.
+        let jobs: Option<WeeklyJobs> = match snapshot {
+            Some(s) => serde_json::from_str(&s).ok(),
+            None => Some(live_jobs(conn, &week)?),
+        };
         let totals = WeeklyTotals {
             commits: sections.iter().map(|s| s.commits).sum(),
             conversations: sections.iter().map(|s| s.conversations).sum(),
@@ -1146,27 +1185,11 @@ mod tests {
             daily(&conn, "2026-11-03", "a", 0);
             put_recap(&conn, "2026-11-09 08:30:00");
             assert!(items(&conn, "2026-11-09T09:00:00Z").is_empty());
+            // Fixed "now" so the 90-day keep doesn't make this test expire.
+            let now = utc("2026-11-09T09:00:00Z");
+            assert!(rewrite_weekly_db(&conn, "pa", WEEK, now).is_ok());
+            assert!(matches!(rewrite_weekly_db(&conn, "pa", "2026-10-26", now), Err(UpdateError::NotFound(_))));
         }
-        assert_eq!(
-            post(
-                &pool,
-                "/api/projects/pa/weekly/2026-11-02/rewrite",
-                json!({})
-            )
-            .await
-            .0,
-            200
-        );
-        assert_eq!(
-            post(
-                &pool,
-                "/api/projects/pa/weekly/2026-10-26/rewrite",
-                json!({})
-            )
-            .await
-            .0,
-            404
-        );
         assert_eq!(
             post(&pool, "/api/projects/pa/weekly/bad/rewrite", json!({}))
                 .await
@@ -1176,6 +1199,101 @@ mod tests {
         let conn = pool.get().unwrap();
         assert_eq!(items(&conn, "2026-11-09T09:00:00Z").len(), 1);
         assert_eq!(flags(&conn), (1, 0));
+    }
+
+    #[test]
+    fn rewrite_refused_past_keep_and_when_updates_off() {
+        let (_db, pool) = pool("wk-rewrite-guards");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        put_recap(&conn, "2026-11-09 08:30:00");
+        // 90 days back from Sofia's 2027-01-31 is 2026-11-02: the week's first day is still kept.
+        assert!(rewrite_weekly_db(&conn, "pa", WEEK, utc("2027-01-31T10:00:00Z")).is_ok());
+        conn.execute("UPDATE weekly_recaps SET rewrite_requested = 0", []).unwrap();
+        // A day later the Monday is gone.
+        assert!(matches!(
+            rewrite_weekly_db(&conn, "pa", WEEK, utc("2027-02-01T10:00:00Z")),
+            Err(UpdateError::BadRequest(_))
+        ));
+        assert_eq!(flags(&conn), (0, 0));
+        conn.execute("UPDATE projects SET daily_updates = 0", []).unwrap();
+        assert!(matches!(
+            rewrite_weekly_db(&conn, "pa", WEEK, utc("2026-11-10T10:00:00Z")),
+            Err(UpdateError::Conflict(_))
+        ));
+        assert_eq!(flags(&conn), (0, 0));
+    }
+
+    #[actix_web::test]
+    async fn rewrite_endpoint_409_when_updates_off() {
+        let (_db, pool) = pool("wk-rewrite-409");
+        {
+            let conn = pool.get().unwrap();
+            seed_updates(&conn, "2026-01-01");
+            put_recap(&conn, "2026-11-09 08:30:00");
+            conn.execute("UPDATE projects SET daily_updates = 0", []).unwrap();
+        }
+        // A recap of a week this old would be 400 (past the keep), so use one inside it.
+        let week = week_of_time(Utc::now() - Duration::days(7));
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO weekly_recaps (week, project_id, project_name, headline, wins, written_at) VALUES (?1, 'pa', 'Alpha', 'h', 'w', '')",
+                params![week],
+            )
+            .unwrap();
+        let uri = format!("/api/projects/pa/weekly/{week}/rewrite");
+        assert_eq!(post(&pool, &uri, json!({})).await.0, 409);
+    }
+
+    #[test]
+    fn flagged_week_without_material_cleared_not_offered() {
+        let (_db, pool) = pool("wk-flag-empty");
+        let conn = pool.get().unwrap();
+        seed_updates(&conn, "2026-01-01");
+        put_recap(&conn, "2026-11-09 08:30:00");
+        conn.execute("UPDATE weekly_recaps SET rewrite_requested = 1, stale = 1", []).unwrap();
+        // The week's daily updates and summaries are gone (cleaned up after 90 days).
+        assert!(items(&conn, "2026-11-10T09:00:00Z").is_empty());
+        assert_eq!(flags(&conn), (0, 0));
+        // A flagged week with only summaries on a missing day is still offered.
+        summary(&conn, "2026-11-04", "s1", 0);
+        conn.execute("UPDATE weekly_recaps SET rewrite_requested = 1", []).unwrap();
+        assert_eq!(items(&conn, "2026-11-10T09:00:00Z").len(), 1);
+        assert_eq!(flags(&conn), (1, 0));
+    }
+
+    #[actix_web::test]
+    async fn put_weekly_counts_only_tracked_days() {
+        let (_db, pool) = pool("wk-put-since");
+        {
+            let conn = pool.get().unwrap();
+            seed_updates(&conn, "2026-11-04");
+            daily(&conn, "2026-11-03", "before", 7);
+            daily(&conn, "2026-11-04", "after", 2);
+            summary(&conn, "2026-11-03", "old", 0);
+            summary(&conn, "2026-11-05", "new", 0);
+        }
+        let ok = json!({"headline": "h", "wins": "- w", "failed": false});
+        assert_eq!(put(&pool, "/api/projects/pa/weekly/2026-11-02", ok).await.0, 200);
+        let conn = pool.get().unwrap();
+        let (commits, convs): (i64, i64) = conn
+            .query_row("SELECT commits, conversations FROM weekly_recaps WHERE week = ?1", params![WEEK], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((commits, convs), (2, 1));
+    }
+
+    #[actix_web::test]
+    async fn put_weekly_caps_wins() {
+        let (_db, pool) = pool("wk-put-wins");
+        seed_updates(&pool.get().unwrap(), "2026-01-01");
+        let uri = "/api/projects/pa/weekly/2026-11-02";
+        let over = json!({"headline": "h", "wins": "x".repeat(crate::updates::MAX_UPDATE + 1), "failed": false});
+        assert_eq!(put(&pool, uri, over).await.0, 400);
+        let at = json!({"headline": "h", "wins": "x".repeat(crate::updates::MAX_UPDATE), "failed": false});
+        assert_eq!(put(&pool, uri, at).await.0, 200);
     }
 
     // --- GET /api/weekly -----------------------------------------------------------------
@@ -1225,7 +1343,42 @@ mod tests {
         assert_eq!(section["project_name"], "Alpha");
         assert_eq!(section["rewriting"], false);
         assert_eq!(section["days"][0]["state"], "update");
-        assert!(body[0]["jobs"].is_null());
+        // No snapshot and no tallies: the live (empty) jobs block, not null.
+        assert_eq!(body[0]["jobs"]["runs"], 0);
+    }
+
+    #[actix_web::test]
+    async fn unsnapshotted_week_shows_live_jobs() {
+        let (_db, pool) = crate::test_support::pool("wk-live-jobs");
+        {
+            let conn = pool.get().unwrap();
+            seed(&conn);
+            run(&conn, "j", "2026-11-03 09:00:00", "done", Some("ok"), None);
+            run(&conn, "j", "2026-11-04 09:00:00", "failed", Some("boom"), None);
+            tally_settled_runs(&conn).unwrap();
+            recap(&conn, WEEK, "pa", "Alpha", "- a", 0, 1, 1);
+        }
+        let (_, body) = get(&pool, "/api/weekly").await;
+        assert_eq!(body[0]["totals"]["runs"], 2);
+        assert_eq!(body[0]["jobs"]["runs"], 2);
+        assert_eq!(body[0]["jobs"]["failed"], 1);
+        assert_eq!(body[0]["jobs"]["jobs"][0]["lines"].as_array().unwrap().len(), 2);
+    }
+
+    #[actix_web::test]
+    async fn rewriting_false_when_daily_updates_off() {
+        let (_db, pool) = crate::test_support::pool("wk-rewriting-off");
+        {
+            let conn = pool.get().unwrap();
+            seed_updates(&conn, "2026-01-01");
+            recap(&conn, WEEK, "pa", "Alpha", "- a", 0, 1, 1);
+            conn.execute("UPDATE weekly_recaps SET rewrite_requested = 1", []).unwrap();
+        }
+        let (_, body) = get(&pool, "/api/weekly").await;
+        assert_eq!(body[0]["sections"][0]["rewriting"], true);
+        pool.get().unwrap().execute("UPDATE projects SET daily_updates = 0", []).unwrap();
+        let (_, body) = get(&pool, "/api/weekly").await;
+        assert_eq!(body[0]["sections"][0]["rewriting"], false);
     }
 
     #[actix_web::test]
@@ -1238,6 +1391,11 @@ mod tests {
             recap(&conn, WEEK, "pf", "Failed", "", 1, 0, 5);
             recap(&conn, WEEK, "pe", "Empty", "", 0, 0, 7);
             recap(&conn, WEEK, "stale", "Stale", "- s", 0, 0, 1);
+            conn.execute(
+                "INSERT INTO projects (id, name, section, folder, daily_updates) VALUES ('stale', 'Stale', 'Si', '~/s', 1)",
+                [],
+            )
+            .unwrap();
         }
         let (_, body) = get(&pool, "/api/weekly").await;
         let names: Vec<&str> = body[0]["sections"].as_array().unwrap().iter().map(|s| s["project_name"].as_str().unwrap()).collect();

@@ -769,6 +769,16 @@ def weekly_message(item):
     return "\n\n".join(parts)
 
 
+def weekly_has_material(item):
+    """A day with an update, or conversation summaries on a day without one: something to recap."""
+    for d in item.get("days") or []:
+        if d.get("state") == "update" and (d.get("text") or "").strip():
+            return True
+        if d.get("state") in ("failed", "missing") and d.get("summaries"):
+            return True
+    return False
+
+
 def put_weekly(hub, item, headline, wins, failed=False):
     path = "/api/projects/%s/weekly/%s" % (urllib.parse.quote(item["project_id"], safe=""), item["week"])
     hub.request("PUT", path, body={"headline": headline[:MAX_HEADLINE], "wins": wins[:MAX_WINS], "failed": failed})
@@ -784,7 +794,11 @@ def weekly_key_sources(item):
 
 
 def write_weekly_one(hub, item, settings, usage=read_usage):
-    """Writes and PUTs one project's recap for one week. Raises Wait without headroom."""
+    """Writes and PUTs one project's recap for one week. Raises Wait without headroom.
+    A week with no material (its daily updates and summaries are gone) is skipped: no model, no PUT."""
+    if not weekly_has_material(item):
+        log("weekly_skipped_empty", project=item.get("project_id"), week=item.get("week"))
+        return
     tool_model = pick_model(settings, usage)
     if tool_model is None:
         raise Wait()

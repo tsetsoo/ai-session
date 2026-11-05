@@ -510,6 +510,20 @@ class WeeklyRunTests(Base):
         self.assertNotIn("browse/XYZ-9", wins)
         self.assertIn("browse/EIN-1", wins)
 
+    def test_weekly_without_material_skipped_without_model_or_put(self):
+        self.weekly_item(days=[{"day": "2026-11-02", "state": "quiet", "text": "", "summaries": []},
+                               {"day": "2026-11-03", "state": "failed", "text": "", "summaries": []},
+                               {"day": "2026-11-04", "state": "missing", "text": "", "summaries": []},
+                               {"day": "2026-11-05", "state": "untracked", "text": "", "summaries": []}])
+        for run in range(4):
+            self.answer({"headline": "invented", "wins": "- invented"})
+            self.assertEqual(up.main(["run"]), 0)
+        self.assertEqual(self.model_calls(), [])
+        self.assertEqual(self.hub.posted(self.put_path()), [])
+        state = json.loads((self.home / "state" / "state.json").read_text())
+        self.assertEqual(state.get("write_failures", {}), {})
+        self.assertIsNone(json.loads((self.home / "state" / "status.json").read_text())["last_error"])
+
     def test_weekly_headline_cut_to_120(self):
         self.weekly_item()
         self.answer({"headline": "h" * 200, "wins": "- w"})

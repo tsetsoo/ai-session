@@ -31,6 +31,7 @@ const DAY_START_HOUR: u32 = 8;
 pub(crate) enum UpdateError {
     BadRequest(String),
     NotFound(&'static str),
+    Conflict(&'static str),
     Db(rusqlite::Error),
 }
 
@@ -44,6 +45,7 @@ pub(crate) fn respond(e: UpdateError) -> HttpResponse {
     match e {
         UpdateError::BadRequest(m) => bad_request(&m),
         UpdateError::NotFound(m) => crate::conversations::not_found(m),
+        UpdateError::Conflict(m) => crate::conversations::conflict(m),
         UpdateError::Db(e) => server_error(e),
     }
 }
@@ -661,7 +663,7 @@ pub struct ListQuery {
 const LIST_DEFAULT: u32 = 14;
 const LIST_MAX: u32 = 30;
 /// Days kept, counted back from today's Sofia date.
-const KEEP_DAYS: i64 = 90;
+pub(crate) const KEEP_DAYS: i64 = 90;
 
 pub(crate) fn list_updates_db(conn: &Connection, project_id: &str, q: &ListQuery) -> Result<Vec<ProjectUpdate>, UpdateError> {
     if let Some(before) = &q.before {
