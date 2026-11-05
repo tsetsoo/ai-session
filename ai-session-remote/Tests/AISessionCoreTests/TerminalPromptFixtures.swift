@@ -365,4 +365,79 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   enter continue · esc back
 """#
 
+    // Claude Code 2.1.318 at the phone's width (58x39 pane), captured 2026-11-05 with
+    // `tmux capture-pane -p`. The tip wraps onto a second line here.
+    static let claudeBashNarrow = #"""
+     Besides the usual env secrets and the hub token, it
+     also removes every value from
+     ~/.ai-remote/watchers/env (for example the Sentry
+     token). Exit codes: 64 for bad arguments, 65 for no
+     worktree or config, 1 for a hub error, 90 for missing
+     tools.
+
+✻ Sautéed for 1m 33s · done 1:52 PM
+
+❯ Now do the same for every .swift file in
+  ai-session-remote/Sources/AISessionCore/TodoHub: one
+  Read call per file, a 4-line summary after each,
+  nothing changed.
+
+⏺ Listing Swift files in the TodoHub folder
+  ⎿  $ ls -1 /Users/tsvetelinpantev/programming/ai-session
+     /ai-session-remote/Sources/AISessionCore/TodoHub/ |
+     grep '\.swift$'
+
+──────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose
+ "switch to auto mode" below
+ List Swift files in the TodoHub folder
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ ls -1 /Users/tsvetelinpantev/programming/ai-session/ai
+ │ -session-remote/Sources/AISessionCore/TodoHub/ | grep
+ │ '\.swift$'
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ This command requires approval
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don’t ask again for: grep '\.swift$'
+   3. Yes, and switch to auto mode · auto mode handles
+      these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend
+"""#
+
+    // Claude Code 2.1.318 in an 86x40 pane, captured 2026-11-05: the tip fits on one line
+    // and ends 2 columns short of the edge, so it must not take the line under it along.
+    static let claudeBashTipAtEdge = #"""
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Opus 5.5 with medium effort · Claude Team
+ ▝▝   ▝▝   /…/cc97db91-a727-483b-ab76-97c84287bc3c/scratchpad/promptlab
+
+
+❯ Run the shell command touch made-by-test.txt with the Bash tool. Nothing else.
+
+⏺ Creating empty file made-by-test.txt
+  ⎿  $ touch made-by-test.txt
+
+──────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+ Create empty file made-by-test.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ touch made-by-test.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to /private/tmp/claude-501/-Users-tsvetelinpantev-p
+      rogramming-ai-session/cc97db91-a727-483b-ab76-97c84287bc3c/scratchpad/promptlab
+      from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend
+"""#
 }

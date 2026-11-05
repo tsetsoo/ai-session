@@ -69,7 +69,7 @@ public struct TerminalPrompt: Equatable, Sendable {
                 parsed.append((option.number, option.cursor, option.text, nil, line))
             } else if var last = parsed.popLast() {
                 let text = line.trimmingCharacters(in: .whitespaces)
-                if last.detail == nil, last.lastLine.count >= width - 4 {
+                if last.detail == nil, reachesEdge(last.lastLine, width: width) {
                     // The label wrapped at the pane's edge.
                     let joiner = last.label.hasSuffix("-") || last.label.hasSuffix("/") ? "" : " "
                     last.label += joiner + text
@@ -85,7 +85,7 @@ public struct TerminalPrompt: Equatable, Sendable {
         guard cursors.count == 1 else { return nil }
 
         // The question block sits above the options, up to a rule, two blank lines or a transcript line.
-        var block: [String] = []
+        var block: [(text: String, atEdge: Bool)] = []
         row = first - 1
         while row >= 0, lines[row].isEmpty { row -= 1 }
         var blanks = 0
@@ -97,17 +97,32 @@ public struct TerminalPrompt: Equatable, Sendable {
             } else {
                 blanks = 0
                 if isSolidRule(line) || startsTranscriptLine(line) { break }
-                if !isRule(line) { block.insert(line.trimmingCharacters(in: .whitespaces), at: 0) }
+                if !isRule(line) {
+                    block.insert((line.trimmingCharacters(in: .whitespaces), reachesEdge(line, width: width)), at: 0)
+                }
             }
             row -= 1
         }
-        guard let questionIndex = block.firstIndex(where: { $0.hasSuffix("?") }) else { return nil }
+        guard let questionIndex = block.firstIndex(where: { $0.text.hasSuffix("?") }) else { return nil }
+        // The tip, and the lines it wrapped onto at a narrow width, are not about this question.
+        // A tip that merely ends near the edge is followed by a new sentence (the command's
+        // description starts with a capital), which stays.
+        var tip = Set<Int>()
+        for index in block.indices where block[index].text.hasPrefix("Tip:") {
+            var line = index
+            tip.insert(line)
+            while block[line].atEdge, line + 1 < block.count, line + 1 != questionIndex,
+                  block[line + 1].text.first?.isUppercase != true {
+                line += 1
+                tip.insert(line)
+            }
+        }
         let detailLines = block.enumerated()
-            .filter { $0.offset != questionIndex && !$0.element.hasPrefix("Tip:") }
-            .map(\.element)
+            .filter { $0.offset != questionIndex && !tip.contains($0.offset) }
+            .map(\.element.text)
 
         return TerminalPrompt(
-            question: block[questionIndex],
+            question: block[questionIndex].text,
             detail: detailLines.isEmpty ? nil : detailLines.joined(separator: "\n"),
             options: parsed.map { Option(label: stripHint($0.label), detail: $0.detail, needsText: needsText(stripHint($0.label))) },
             selected: cursors[0]
@@ -120,6 +135,10 @@ public struct TerminalPrompt: Equatable, Sendable {
         while line.last?.isWhitespace == true { line.removeLast() }
         return line
     }
+
+    /// Whether a line ran to (nearly) the pane's edge, so the line under it may continue it.
+    /// `width` is the screen's longest line: Claude's full-width rules make that the pane's width.
+    private static func reachesEdge(_ line: String, width: Int) -> Bool { line.count >= width - 4 }
 
     private static func indent(_ line: String) -> Int { line.prefix { $0 == " " }.count }
 

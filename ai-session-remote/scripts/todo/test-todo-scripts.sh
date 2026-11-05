@@ -123,6 +123,17 @@ sleep 0.3
 [[ $(wc -l <"$CLAUDE_LOG") -eq 1 ]] || fail "second open started claude again"
 pass "second open attaches to the running session without starting claude again"
 
+# The apps read Claude's and Codex's questions off the bottom of the screen; tmux's
+# status bar must not sit under them. A session from before this change loses it on attach.
+[[ "$(tmux -L "$SOCK" show-options -v -t "=$NAME:" status)" == off ]] \
+  || fail "a new conversation session still shows the tmux status bar"
+tmux -L "$SOCK" set-option -t "=$NAME:" status on
+out="$(AI_TODO_OPEN_DETACH=1 "$OPEN" "$NAME" '~/programming' "$SID")"
+[[ "$out" == attach ]] || fail "status-bar reopen printed '$out', expected attach"
+[[ "$(tmux -L "$SOCK" show-options -v -t "=$NAME:" status)" == off ]] \
+  || fail "attaching did not turn off the status bar of an older session"
+pass "conversation sessions have no tmux status bar, older ones lose it on attach"
+
 # The running-session fast path comes before the tool lookup: no claude binary needed.
 out="$(AI_TODO_CLAUDE_BIN=/nonexistent PATH=/usr/bin:/bin:"$(dirname "$(command -v tmux)")" \
   AI_TODO_OPEN_DETACH=1 "$OPEN" "$NAME" '~/programming' "$SID")"
