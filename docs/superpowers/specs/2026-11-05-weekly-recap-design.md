@@ -33,9 +33,9 @@ about what's next and what's blocked. The weekly recap turns a week of them into
 - Posting or sharing it anywhere, or a Copy button tuned for a team. *My call:* no Copy button at all.
 - "Next", "Open", "Blocked" and "waiting on you" items. The daily updates and Today already cover them.
 - Monthly or yearly recaps.
-- Weeks before this ships. *My call:* the first recap is for the week starting Mon 2026-11-09, unless
-  the daily updates from 2026-11-04 on are enough to backfill the week of 2026-11-02 (the builder can try
-  it as a smoke test, see Rollout).
+- Weeks before this ships. *My call:* the first recap is for the week of Mon 2026-11-02, ready Mon 2026-11-09. It's
+  partial, written from the daily updates of 2026-11-04 on. Days before a project's Daily updates were switched on
+  are **not tracked**. They're never shown as missing.
 
 ## Anti-goals
 
@@ -158,8 +158,8 @@ machine's model. *My call*, from the daily-updates rule that summaries stay on t
 
 - Deploy hub v21 to the Pi. Install the runner change on all three Macs (`install.sh`). Rebuild and install the Mac app, then the iPhone.
 - Mark the hub idea "Weekly scheduled-jobs summary" done, as covered by this.
-- Smoke test: write the week of Mon 2026-11-02 from the daily updates that exist (from 2026-11-04 on).
-  It's only partial, so it shows the missing-days path too. Keep it if the user likes it.
+- First real check: on Mon 2026-11-09 the week of Mon 2026-11-02 is written from the daily updates that exist
+  (from 2026-11-04 on). It's partial, so it shows the untracked-days path too.
 
 ## Constraints
 
