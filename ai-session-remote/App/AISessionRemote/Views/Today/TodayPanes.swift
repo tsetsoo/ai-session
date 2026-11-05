@@ -37,6 +37,8 @@ struct TodayListColumn: View {
                 RemindersList(store: model.store, selection: $model.todaySelection)
             case .people:
                 PeopleList(store: model.store, selection: $model.todaySelection)
+            case .weekly:
+                WeeklyView(store: model.store, onOpenTodo: onOpenTodo)
             }
         }
         .task(id: model.store.revision) { await model.store.loadToday() }
@@ -65,6 +67,8 @@ struct TodayDetailColumn: View {
             } else {
                 AutomationEmpty(text: "Choose a person, or press + to add one.")
             }
+        case .weekly:
+            AutomationEmpty(text: "")
         }
     }
 }
@@ -78,9 +82,16 @@ struct TodaySummaryList: View {
     let onOpenTodo: (String) -> Void
     /// Opens Reminders or People.
     let onShow: (TodayItem) -> Void
+    /// The phone's "Last week's recap" row on Mondays (Sofia); the Mac has Weekly in the sidebar.
+    var showsWeeklyRow = false
 
     var body: some View {
         List {
+            if showsWeeklyRow && WeeklyRecap.isRecapDay(.now) {
+                NavigationLink { WeeklyView(store: store, onOpenTodo: onOpenTodo) } label: {
+                    Label("Last week's recap", systemImage: "calendar.badge.checkmark")
+                }
+            }
             if let b = store.briefing {
                 if b.isEmpty && store.reminders.filter(\.isDue).isEmpty {
                     Label("Nothing for today.", systemImage: "sun.max").foregroundStyle(.secondary)
@@ -529,13 +540,14 @@ struct PhoneTodayRoot: View {
     let onOpenTodo: (String) -> Void
 
     var body: some View {
-        TodaySummaryList(store: store, onOpenTodo: onOpenTodo) { _ in }
+        TodaySummaryList(store: store, onOpenTodo: onOpenTodo, onShow: { _ in }, showsWeeklyRow: true)
             .safeAreaInset(edge: .bottom) { EmptyView() }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         NavigationLink { PhoneReminders(store: store) } label: { Label("Reminders", systemImage: "bell") }
                         NavigationLink { PhonePeople(store: store) } label: { Label("People & Dates", systemImage: "person.2") }
+                        NavigationLink { WeeklyView(store: store, onOpenTodo: onOpenTodo) } label: { Label("Weekly", systemImage: "calendar.badge.checkmark") }
                         NavigationLink { TodaySettingsPane(store: store) } label: { Label("Settings", systemImage: "gearshape") }
                     } label: { Label("More", systemImage: "list.bullet") }
                 }

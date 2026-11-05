@@ -277,3 +277,66 @@ extension WeeklyRecap {
         return "\(UpdateDay.label(week)) 08:00 → \(endDay) 08:00"
     }
 }
+
+extension WeeklySection {
+    private static let weekday: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_GB")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "EEE"
+        return f
+    }()
+
+    private static let parser: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    /// Days that count: 7 minus the days before daily updates were tracked.
+    public var trackedDays: Int { 7 - days.filter { $0.state == "untracked" }.count }
+
+    /// Days that had a daily update written.
+    public var updateCount: Int { days.filter { $0.state == "update" }.count }
+
+    /// "5 conversations · 12 commits · 4 of 6 days".
+    public var countLine: String {
+        "\(Self.plural(conversations, "conversation")) · \(Self.plural(commits, "commit")) · \(daysWithWork) of \(trackedDays) days"
+    }
+
+    /// "Thu and Fri missing · Wed couldn't be written", or nil when nothing is missing or failed.
+    public var gapsCaption: String? {
+        let missing = days.filter { $0.state == "missing" }.map { Self.weekdayName($0.day) }
+        let failed = days.filter { $0.state == "failed" }.map { Self.weekdayName($0.day) }
+        var parts: [String] = []
+        if !missing.isEmpty { parts.append("\(Self.list(missing)) missing") }
+        if !failed.isEmpty { parts.append("\(Self.list(failed)) couldn't be written") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// "Thu" for "2026-11-05" (read in UTC, as `UpdateDay` does).
+    public static func weekdayName(_ day: String) -> String {
+        guard let date = parser.date(from: day) else { return day }
+        return weekday.string(from: date)
+    }
+
+    /// "Mon", "Mon and Tue", "Mon, Tue and Thu".
+    public static func list(_ items: [String]) -> String {
+        guard items.count > 1 else { return items.first ?? "" }
+        return items.dropLast().joined(separator: ", ") + " and " + items.last!
+    }
+
+    public static func plural(_ n: Int, _ word: String) -> String { "\(n) \(word)\(n == 1 ? "" : "s")" }
+}
+
+extension WeeklyRecap {
+    /// Monday in Sofia, before 23:59: when the phone's Today shows a "Last week's recap" row.
+    public static func isRecapDay(_ date: Date) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TodayTime.zone
+        let c = calendar.dateComponents([.weekday, .hour, .minute], from: date)
+        return c.weekday == 2 && !(c.hour == 23 && (c.minute ?? 0) >= 59)
+    }
+}

@@ -16,13 +16,14 @@ enum AppMode: String, CaseIterable, Identifiable {
 
 /// Today mode's sidebar.
 enum TodayItem: String, CaseIterable, Identifiable, Hashable {
-    case today, reminders, people
+    case today, reminders, people, weekly
     var id: String { rawValue }
     var title: String {
         switch self {
         case .today: "Today"
         case .reminders: "Reminders"
         case .people: "People & Dates"
+        case .weekly: "Weekly"
         }
     }
     var systemImage: String {
@@ -30,6 +31,7 @@ enum TodayItem: String, CaseIterable, Identifiable, Hashable {
         case .today: "sun.max"
         case .reminders: "bell"
         case .people: "person.2"
+        case .weekly: "calendar.badge.checkmark"
         }
     }
 }
