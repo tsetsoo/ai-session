@@ -72,6 +72,33 @@ type RunRow = (String, String, String, String, Option<String>, Option<String>, O
 /// Adds every settled run not yet counted to its week's per-job tally, so the numbers outlive
 /// the runs (watch upkeep deletes old ones and deleting a job cascades). Returns runs counted.
 pub(crate) fn tally_settled_runs(conn: &Connection) -> rusqlite::Result<usize> {
+    atomically(conn, "weekly_tally", tally_runs)
+}
+
+/// Runs `f` in a savepoint (nests inside any open transaction): its writes all land or none do.
+fn atomically<T>(conn: &Connection, name: &str, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    conn.execute_batch(&format!("SAVEPOINT {name}"))?;
+    match f(conn) {
+        Ok(v) => {
+            conn.execute_batch(&format!("RELEASE {name}"))?;
+            Ok(v)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+            Err(e)
+        }
+    }
+}
+
+/// The tick's weekly bookkeeping: a failure is logged and rolled back, never blocks scheduling.
+pub(crate) fn weekly_upkeep_logged(conn: &Connection, now: DateTime<Utc>, snapshot: bool) {
+    let result = if snapshot { snapshot_finished_weeks(conn, now).map(|_| ()) } else { tally_settled_runs(conn).map(|_| ()) };
+    if let Err(e) = result {
+        println!("weekly recap upkeep failed: {e}");
+    }
+}
+
+fn tally_runs(conn: &Connection) -> rusqlite::Result<usize> {
     let rows: Vec<RunRow> = {
         let mut stmt = conn.prepare(
             "SELECT r.id, r.job_id, r.due_at, r.state, r.result, r.todo_id,
@@ -86,8 +113,10 @@ pub(crate) fn tally_settled_runs(conn: &Connection) -> rusqlite::Result<usize> {
         })?;
         mapped.collect::<rusqlite::Result<_>>()?
     };
+    let mut counted = 0;
     for (id, job_id, due_at, state, result, todo_id, kind, name, project_name) in &rows {
-        let week = week_of_time(parse_sql_time(due_at).unwrap_or_else(Utc::now));
+        let Some(due) = parse_sql_time(due_at) else { continue };
+        let week = week_of_time(due);
         let result = result.as_deref().unwrap_or("");
         let is_watch = kind.as_deref() == Some("watch");
         let (mut runs, mut done, mut failed, mut skipped, mut checks, mut findings) = (0, 0, 0, 0, 0, 0);
@@ -121,8 +150,9 @@ pub(crate) fn tally_settled_runs(conn: &Connection) -> rusqlite::Result<usize> {
             ],
         )?;
         conn.execute("UPDATE job_runs SET tallied = 1 WHERE id = ?1", params![id])?;
+        counted += 1;
     }
-    Ok(rows.len())
+    Ok(counted)
 }
 
 /// A week's jobs from the tallies plus the runs still present (quiet watch checks are not lines).
@@ -162,9 +192,10 @@ pub(crate) fn live_jobs(conn: &Connection, week: &str) -> rusqlite::Result<Weekl
     if let Some(start) = week_start(week) {
         let mut stmt = conn.prepare(
             "SELECT r.job_id, r.id, r.due_at, r.state, COALESCE(t.title, r.result, ''), r.todo_id
-             FROM job_runs r LEFT JOIN todos t ON t.id = r.todo_id
+             FROM job_runs r JOIN jobs j ON j.id = r.job_id LEFT JOIN todos t ON t.id = r.todo_id
              WHERE r.state IN ('done','failed','skipped','missed') AND r.due_at >= ?1 AND r.due_at < ?2
-               AND COALESCE(r.result, '') != 'quiet'
+               AND NOT (COALESCE(json_extract(j.action, '$.kind'), '') = 'watch'
+                        AND (r.state = 'skipped' OR COALESCE(r.result, '') = 'quiet'))
              ORDER BY (r.state IN ('failed','missed')) DESC, COALESCE(t.completed, 1) ASC, r.due_at DESC, r.id",
         )?;
         let mapped = stmt.query_map(params![sql_time(start), sql_time(start + Duration::days(7))], |r| {
@@ -195,6 +226,10 @@ pub(crate) fn live_jobs(conn: &Connection, week: &str) -> rusqlite::Result<Weekl
 /// Stores the jobs snapshot of the last finished week once, when its recap is due.
 /// Returns how many snapshots were taken.
 pub(crate) fn snapshot_finished_weeks(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<usize> {
+    atomically(conn, "weekly_snapshot", |c| snapshot_week(c, now))
+}
+
+fn snapshot_week(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<usize> {
     let Some(week) = last_finished_week(now) else { return Ok(0) };
     if week_fallback(&week).is_none_or(|t| now < t) {
         return Ok(0);
@@ -395,5 +430,52 @@ mod tests {
         assert_eq!(snapshot_finished_weeks(&conn, utc("2026-11-09T09:00:00Z")).unwrap(), 0);
         let again: String = conn.query_row("SELECT taken_at FROM weekly_jobs", [], |r| r.get(0)).unwrap();
         assert_eq!(again, taken);
+    }
+
+    #[test]
+    fn weeks_split_at_monday_eight() {
+        let (_db, pool) = pool("tally-split");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        run(&conn, "j", "2026-11-09 05:59:00", "done", Some("a"), None);
+        run(&conn, "j", "2026-11-09 06:00:00", "done", Some("b"), None);
+        run(&conn, "j", "garbage", "done", Some("c"), None);
+        assert_eq!(tally_settled_runs(&conn).unwrap(), 2);
+        assert_eq!(tally(&conn, "2026-11-02", "j").0, 1);
+        assert_eq!(tally(&conn, "2026-11-09", "j").0, 1);
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM job_runs WHERE tallied = 0", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 1);
+    }
+
+    #[test]
+    fn check_runs_are_not_snapshot_lines() {
+        let (_db, pool) = pool("lines-checks");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        run(&conn, "w", "2026-11-03 01:00:00", "done", Some("quiet"), None);
+        run(&conn, "w", "2026-11-03 02:00:00", "skipped", Some("busy"), None);
+        let kept = run(&conn, "w", "2026-11-03 03:00:00", "done", Some("1 new"), None);
+        tally_settled_runs(&conn).unwrap();
+        let jobs = live_jobs(&conn, "2026-11-02").unwrap();
+        assert_eq!(jobs.jobs[0].checks, 2);
+        let ids: Vec<&str> = jobs.jobs[0].lines.iter().map(|l| l.run_id.as_str()).collect();
+        assert_eq!(ids, [kept.as_str()]);
+    }
+
+    #[test]
+    fn failed_tally_rolls_back_and_tick_continues() {
+        let (_db, pool) = pool("tally-fails");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        run(&conn, "j", "2026-11-03 09:00:00", "done", Some("ok"), None);
+        run(&conn, "w", "2026-10-01 01:00:00", "done", Some("quiet"), None);
+        conn.execute_batch("DROP TABLE weekly_job_tallies").unwrap();
+        assert!(tally_settled_runs(&conn).is_err());
+        let untallied: i64 = conn.query_row("SELECT COUNT(*) FROM job_runs WHERE tallied = 0", [], |r| r.get(0)).unwrap();
+        assert_eq!(untallied, 2);
+        // The tick still runs: the old quiet check is pruned although tallying failed.
+        crate::scheduler::tick_db(&conn, utc("2026-11-09T09:00:00Z")).unwrap();
+        let pruned: i64 = conn.query_row("SELECT COUNT(*) FROM job_runs WHERE job_id = 'w'", [], |r| r.get(0)).unwrap();
+        assert_eq!(pruned, 0);
     }
 }

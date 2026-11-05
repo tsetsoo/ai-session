@@ -401,11 +401,17 @@ pub async fn update_job(
 
 pub async fn delete_job(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
     let conn = conn!(pool);
-    // The job's runs go with it: count them first so its weeks keep their numbers.
-    if let Err(e) = crate::weekly::tally_settled_runs(&conn) {
+    // The job's runs go with it: count them first, in the same transaction, so a run is never lost or counted twice.
+    let tx = match rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate) {
+        Ok(tx) => tx,
+        Err(e) => return server_error(e),
+    };
+    if let Err(e) = crate::weekly::tally_settled_runs(&tx) {
         return server_error(e);
     }
-    match conn.execute("DELETE FROM jobs WHERE id = ?1", params![path.as_str()]) {
+    let deleted = tx.execute("DELETE FROM jobs WHERE id = ?1", params![path.as_str()]);
+    let deleted = deleted.and_then(|n| tx.commit().map(|()| n));
+    match deleted {
         Ok(0) => not_found("Job not found"),
         Ok(_) => {
             broadcaster.send();
