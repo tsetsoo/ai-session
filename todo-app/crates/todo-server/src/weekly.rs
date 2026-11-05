@@ -92,6 +92,13 @@ mod tests {
     }
 
     #[test]
+    fn dst_boundary_weeks() {
+        assert_eq!(week_fallback("2026-10-19"), Some(utc("2026-10-26T08:00:00Z")));
+        assert_eq!(week_of_time(utc("2026-10-26T05:59:00Z")), "2026-10-19");
+        assert_eq!(week_of_time(utc("2026-10-26T06:00:00Z")), "2026-10-26");
+    }
+
+    #[test]
     fn fallback_is_monday_ten() {
         assert_eq!(week_fallback("2026-11-02"), Some(utc("2026-11-09T08:00:00Z")));
     }

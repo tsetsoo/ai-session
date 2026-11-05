@@ -23,8 +23,8 @@ mod scheduler;
 mod sessions;
 mod today;
 mod updates;
-mod weekly;
 mod watch;
+mod weekly;
 #[cfg(test)]
 mod test_support;
 

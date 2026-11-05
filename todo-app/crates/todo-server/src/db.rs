@@ -581,7 +581,7 @@ const V21_OBJECTS: &str = "
         conversations     INTEGER NOT NULL DEFAULT 0,
         days_with_work    INTEGER NOT NULL DEFAULT 0,
         written_at        TEXT NOT NULL,
-        rewrite_requested TEXT,
+        rewrite_requested INTEGER NOT NULL DEFAULT 0,
         stale             INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (week, project_id)
     );
@@ -2742,6 +2742,11 @@ mod tests {
         }
         assert!(column_exists(&conn, "job_runs", "tallied").unwrap());
         assert!(column_exists(&conn, "weekly_recaps", "project_name").unwrap());
+        conn.execute("INSERT INTO weekly_recaps (week, project_id, written_at) VALUES ('w', 'p', 't')", []).unwrap();
+        let (rw, stale): (i64, i64) = conn
+            .query_row("SELECT rewrite_requested, stale FROM weekly_recaps", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((rw, stale), (0, 0));
     }
 
     #[test]
