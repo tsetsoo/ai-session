@@ -1574,6 +1574,45 @@ pub struct SchedulerSettings {
     pub pause_waiting: bool,
 }
 
+/// One run line in a weekly jobs snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeeklyRunLine {
+    pub run_id: String,
+    pub due_at: String,
+    pub state: String,
+    pub outcome: String,
+    pub todo_id: Option<String>,
+}
+
+/// One job's week: its tallies and the runs still present.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeeklyJob {
+    pub job_id: String,
+    pub name: String,
+    pub project_name: String,
+    pub is_watch: bool,
+    pub runs: u32,
+    pub done: u32,
+    pub failed: u32,
+    pub skipped: u32,
+    pub checks: u32,
+    pub findings: u32,
+    pub lines: Vec<WeeklyRunLine>,
+}
+
+/// The scheduled jobs' week, stored as the weekly snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeeklyJobs {
+    pub runs: u32,
+    pub done: u32,
+    pub failed: u32,
+    pub skipped: u32,
+    pub todos_created: u32,
+    pub conversations_started: u32,
+    pub findings: u32,
+    pub jobs: Vec<WeeklyJob>,
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

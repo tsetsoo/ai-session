@@ -170,7 +170,10 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
         params![stamp],
     )?;
 
+    // Count settled runs before the watch prune can delete them, then snapshot a finished week.
+    crate::weekly::tally_settled_runs(&tx)?;
     out.watch_changed = crate::watch::watch_upkeep(&tx, now)?;
+    crate::weekly::snapshot_finished_weeks(&tx, now)?;
 
     let jobs: Vec<JobRow> = {
         let mut stmt = tx.prepare(
