@@ -590,9 +590,9 @@ pub(crate) fn list_weekly_db(conn: &Connection, q: &ListQuery) -> Result<Vec<Wee
     let limit = q.limit.unwrap_or(LIST_DEFAULT).clamp(1, LIST_MAX);
     let mut weeks_stmt = conn.prepare(
         "SELECT week FROM (SELECT week FROM weekly_recaps UNION SELECT week FROM weekly_jobs)
-         WHERE (?1 IS NULL OR week < ?1) ORDER BY week DESC LIMIT ?2",
+         WHERE (?1 IS NULL OR week < ?1) ORDER BY week DESC",
     )?;
-    let weeks: Vec<String> = weeks_stmt.query_map(params![q.before, limit], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let weeks: Vec<String> = weeks_stmt.query_map(params![q.before], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let mut sections_stmt = conn.prepare(
         "SELECT project_id, project_name, headline, wins, failed,
                 (rewrite_requested = 1 OR stale = 1)
@@ -601,8 +601,11 @@ pub(crate) fn list_weekly_db(conn: &Connection, q: &ListQuery) -> Result<Vec<Wee
          FROM weekly_recaps WHERE week = ?1 AND (failed = 1 OR wins != '')
          ORDER BY conversations DESC, project_name, project_id",
     )?;
-    let mut out = Vec::with_capacity(weeks.len());
+    let mut out = Vec::new();
     for week in weeks {
+        if out.len() >= limit as usize {
+            break;
+        }
         let sections: Vec<WeeklySection> = sections_stmt
             .query_map(params![week], |r| {
                 let days: String = r.get(10)?;
@@ -634,6 +637,11 @@ pub(crate) fn list_weekly_db(conn: &Connection, q: &ListQuery) -> Result<Vec<Wee
             conversations: sections.iter().map(|s| s.conversations).sum(),
             runs: jobs.as_ref().map_or(0, |j| j.runs),
         };
+        // A week with nothing to show (e.g. a snapshot written empty by the migration) is not listed.
+        let active = jobs.as_ref().is_some_and(|j| j.runs > 0 || j.jobs.iter().any(|x| x.checks > 0));
+        if sections.is_empty() && !active {
+            continue;
+        }
         out.push(WeeklyRecap { week, totals, sections, jobs });
     }
     Ok(out)
@@ -1345,6 +1353,49 @@ mod tests {
         assert_eq!(section["days"][0]["state"], "update");
         // No snapshot and no tallies: the live (empty) jobs block, not null.
         assert_eq!(body[0]["jobs"]["runs"], 0);
+    }
+
+    #[actix_web::test]
+    async fn list_weekly_skips_empty_weeks() {
+        let (_db, pool) = crate::test_support::pool("wk-skip-empty");
+        {
+            let conn = pool.get().unwrap();
+            let put = |week: &str, jobs: WeeklyJobs| {
+                conn.execute(
+                    "INSERT INTO weekly_jobs (week, snapshot, taken_at) VALUES (?1, ?2, '2026-11-09 08:00:00')",
+                    params![week, serde_json::to_string(&jobs).unwrap()],
+                )
+                .unwrap();
+            };
+            let empty = WeeklyJobs { runs: 0, done: 0, failed: 0, skipped: 0, todos_created: 0, conversations_started: 0, findings: 0, jobs: vec![] };
+            let job = |checks| WeeklyJob {
+                job_id: "j".into(),
+                name: "Watch".into(),
+                project_name: "P".into(),
+                is_watch: true,
+                runs: 0,
+                done: 0,
+                failed: 0,
+                skipped: 0,
+                checks,
+                findings: 0,
+                lines: vec![],
+            };
+            put("2026-10-05", empty.clone());
+            put("2026-10-12", WeeklyJobs { jobs: vec![job(3)], ..empty.clone() });
+            recap(&conn, "2026-10-19", "pa", "Alpha", "- you shipped", 0, 1, 1);
+            put("2026-10-26", empty.clone());
+            put("2026-11-02", WeeklyJobs { jobs: vec![job(0)], ..empty });
+        }
+        let (_, body) = get(&pool, "/api/weekly").await;
+        assert_eq!(weeks(&body), ["2026-10-19", "2026-10-12"]);
+        // Paging keeps scanning past empty weeks to fill the limit.
+        let (_, body) = get(&pool, "/api/weekly?limit=1").await;
+        assert_eq!(weeks(&body), ["2026-10-19"]);
+        let (_, body) = get(&pool, "/api/weekly?before=2026-10-19&limit=1").await;
+        assert_eq!(weeks(&body), ["2026-10-12"]);
+        let (_, body) = get(&pool, "/api/weekly?before=2026-10-12").await;
+        assert!(weeks(&body).is_empty());
     }
 
     #[actix_web::test]
