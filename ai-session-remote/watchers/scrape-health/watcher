@@ -1,0 +1,183 @@
+#!/bin/sh
+# Watcher: alerts of a scrape-fleet health report on a remote host. The runner (ai-todo-runner)
+# calls it with the variables of ~/.ai-remote/watchers/env in its environment.
+#
+# Usage:
+#   scrape-health check   # JSON {"problems": [...], "partial": false} on stdout
+#
+# The host runs a daily check that writes a Markdown report; each alert is one line
+# "- **ALERT** <kind>: <provider> | <hotel> | ...". This watcher reads that report over ssh
+# (BatchMode, so it never prompts) and turns each alert into a problem keyed by kind, provider
+# and hotel, so the same broken hotel stays one issue from day to day and clears once the
+# report no longer names it. A report older than SCRAPE_HEALTH_MAX_AGE_HOURS is a problem of
+# its own: the check itself stopped running.
+#
+# Settings (env): SCRAPE_HEALTH_SSH (user@host), SCRAPE_HEALTH_REPORT (default
+# /root/scrape-health/reports/latest.md), SCRAPE_HEALTH_FOLDER (repo folder for debugging runs,
+# relative to the hub project's folder), SCRAPE_HEALTH_MAX_AGE_HOURS (default 26).
+# Test hook: SCRAPE_HEALTH_LOCAL_REPORT reads a local file instead of ssh.
+#
+# Exit codes: 0 ok, 1 the report can't be read, 64 bad arguments, 65 settings missing,
+# 90 python3 missing.
+ai_path=
+ai_ifs=$IFS
+IFS=:
+set -f
+for ai_dir in /opt/homebrew/bin /home/linuxbrew/.linuxbrew/bin /usr/local/bin "$HOME/.local/bin" /usr/bin /bin /usr/sbin /sbin $PATH; do
+  [ -n "$ai_dir" ] || continue
+  case "$ai_dir" in /home/*) if [ -d /System ]; then continue; fi ;; esac
+  case ":$ai_path:" in *":$ai_dir:"*) continue ;; esac
+  ai_path=${ai_path:+$ai_path:}$ai_dir
+done
+set +f
+IFS=$ai_ifs
+export PATH="$ai_path"
+unset ai_path ai_ifs ai_dir
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+exec python3 - "$@" <<'PY'
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+MAX_DETAILS = 4000
+SSH_TIMEOUT = 40
+ALERT = re.compile(r"^- \*\*ALERT\*\* (.+)$")
+SECTION = re.compile(r"^## (.+)$")
+
+
+def die(message, code):
+    print("scrape-health: " + message, file=sys.stderr)
+    sys.exit(code)
+
+
+def setting(name, default=None):
+    value = (os.environ.get(name) or "").strip()
+    if not value and default is None:
+        die("%s is not set (put it in ~/.ai-remote/watchers/env)" % name, 65)
+    return value or default
+
+
+def read_report():
+    """(report text, age in seconds or None)."""
+    local = os.environ.get("SCRAPE_HEALTH_LOCAL_REPORT")
+    if local:
+        try:
+            with open(local) as f:
+                return f.read(), time.time() - os.path.getmtime(local)
+        except OSError as e:
+            die("cannot read %s: %s" % (local, type(e).__name__), 1)
+    host = setting("SCRAPE_HEALTH_SSH")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9._-]+", host):
+        die("SCRAPE_HEALTH_SSH must be user@host", 65)
+    path = setting("SCRAPE_HEALTH_REPORT", "/root/scrape-health/reports/latest.md")
+    # stat the file the link points at: latest.md is a symlink to the day's report.
+    # Answer: "<report mtime>\n<now>\n\n<report>" (both clocks are the host's).
+    remote = "stat -L -c %%Y %s && date +%%s && echo && cat %s" % (shlex.quote(path), shlex.quote(path))
+    try:
+        p = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, remote],
+                           capture_output=True, text=True, timeout=SSH_TIMEOUT, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        die("ssh to the report host timed out", 1)
+    except OSError as e:
+        die("ssh could not run: %s" % type(e).__name__, 1)
+    if p.returncode != 0:
+        die("ssh exit %d: %s" % (p.returncode, (p.stderr or "").strip()[:200]), 1)
+    head, _, text = p.stdout.partition("\n\n")
+    stamps = head.split()
+    try:
+        age = int(stamps[1]) - int(stamps[0])
+    except (IndexError, ValueError):
+        die("unexpected answer from the report host", 1)
+    return text, age
+
+
+def slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "alert"
+
+
+def problem_of(alert, section, report_title):
+    """One alert line -> a problem. Kind is the text before the first colon (without its
+    parenthesised thresholds); identity is the provider and hotel the line starts with."""
+    kind, sep, rest = alert.partition(":")
+    if not sep:
+        kind, rest = "alert", alert
+    kind = re.sub(r"\s*\(.*?\)", "", kind).strip()
+    # Every real alert names "<provider> | <hotel>...". A line without a separator is output
+    # that leaked into the check's query results (docker's "Pulling fs layer" progress when
+    # the postgres image was missing), not a hotel.
+    body = re.sub(r"\s*\((?:[a-z_]+ \| )+[a-z_]+\)\s*$", "", rest)  # the "(provider | hotel ...)" legend
+    if " | " not in body:
+        return None
+    fields = [f.strip() for f in body.split(" | ")]
+    fields = [f for f in fields if f]
+    identity = fields[:1] if kind == "provider fully silent" else fields[:2]
+    who = " · ".join(identity) or rest.strip()
+    details = [alert, ""] + ([section] if section else []) + ([report_title] if report_title else [])
+    return {
+        "key": "scrape-health:%s:%s" % (slug(kind), "|".join(identity) or slug(rest)),
+        "title": "%s: %s" % (kind[:1].upper() + kind[1:], who),
+        "details": "\n".join(details)[:MAX_DETAILS],
+        "url": "",
+    }
+
+
+def cmd_check(args):
+    if args:
+        die("usage: scrape-health check", 64)
+    max_age = float(setting("SCRAPE_HEALTH_MAX_AGE_HOURS", "26")) * 3600
+    folder = setting("SCRAPE_HEALTH_FOLDER", "")
+    text, age = read_report()
+    problems, noise, section, title = [], [], "", ""
+    for line in text.splitlines():
+        if line.startswith("# ") and not title:
+            title = line[2:].strip()
+        m = SECTION.match(line)
+        if m:
+            section = m.group(1).strip()
+            continue
+        m = ALERT.match(line.strip())
+        if m:
+            p = problem_of(m.group(1).strip(), section, title)
+            if p is None:
+                noise.append(m.group(1).strip())
+            else:
+                problems.append(p)
+    if not title:
+        problems.append({"key": "scrape-health:unreadable-report", "title": "Scrape health report is empty or malformed",
+                         "details": "The report has no '# Scrape fleet health' heading.", "url": ""})
+    if noise:
+        problems.append({"key": "scrape-health:noisy-report",
+                         "title": "Scrape health report has %d alert line(s) that name no hotel" % len(noise),
+                         "details": "The check's query output was polluted, so its hotel alerts can't be trusted "
+                                    "this run:\n" + "\n".join(noise[:20]), "url": ""})
+    if age is not None and age > max_age:
+        problems.append({"key": "scrape-health:stale-report",
+                         "title": "Scrape health check has not run for %d h" % (age // 3600),
+                         "details": "The newest report is %.1f h old (%s). The daily check (cron) "
+                                    "stopped running or failing before it writes." % (age / 3600, title or "no title"),
+                         "url": ""})
+    # One key once: two alert lines naming the same hotel and kind are one problem.
+    seen, unique = set(), []
+    for p in problems:
+        if p["key"] in seen:
+            continue
+        seen.add(p["key"])
+        if folder:
+            p["folder"] = folder
+        unique.append(p)
+    json.dump({"problems": unique, "partial": False}, sys.stdout)
+    print()
+
+
+def main(argv):
+    if not argv or argv[0] != "check":
+        die("usage: scrape-health check", 64)
+    cmd_check(argv[1:])
+
+
+main(sys.argv[1:])
+PY

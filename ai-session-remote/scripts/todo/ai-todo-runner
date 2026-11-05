@@ -15,8 +15,9 @@
 #   2. POST /api/runs/<id>/claim (409: another runner has it; skip).
 #   3. A git worktree of the project folder at ~/.ai-remote/worktrees/<project>/<run>, on
 #      branch scheduled/<job>-<YYYYMMDD>-<run id first 8>, from origin/HEAD (else HEAD). The
-#      live checkout is never switched or changed. A folder that is not a git repository is
-#      used as it is.
+#      live checkout is never switched or changed. A folder that is a subfolder of its repo
+#      (a monorepo component) opens at that subfolder inside the worktree. A folder that is
+#      not a git repository is used as it is.
 #   4. POST /api/runs/<id>/start {cwd, is_git}: the hub creates the scheduled todo and its
 #      conversation and answers the tmux name, session id and first prompt.
 #   5. ai-todo-open --detached --auto-approve --prompt-file <file> <tmux> <cwd> <id|-> <tool>
@@ -294,9 +295,13 @@ def slug(name):
 
 
 def make_worktree(folder, project_id, run_id, job_name):
-    """(cwd, is_git, branch or None). Raises RuntimeError when a git worktree can't be made."""
+    """(worktree root, cwd, is_git, branch or None). The cwd is the folder's place inside the
+    worktree: a folder that is a subfolder of its repo (a monorepo component) opens there, not at
+    the repo root. Raises RuntimeError when a git worktree can't be made."""
     if git(folder, "rev-parse", "--show-toplevel")[0] != 0:
-        return folder, False, None
+        return folder, folder, False, None
+    code, prefix, _ = git(folder, "rev-parse", "--show-prefix")
+    prefix = prefix.strip().strip("/") if code == 0 else ""
     if git(folder, "remote", "get-url", "origin")[0] == 0:
         git(folder, "fetch", "--quiet", "origin", timeout=30)
     base = "origin/HEAD" if git(folder, "rev-parse", "--verify", "--quiet", "origin/HEAD")[0] == 0 else "HEAD"
@@ -310,7 +315,9 @@ def make_worktree(folder, project_id, run_id, job_name):
     registry = load_json(registry_path(), {}) or {}
     registry[run_id] = {"path": path, "folder": folder, "branch": branch, "base": base_sha, "created": now()}
     save_json(registry_path(), registry)
-    return path, True, branch
+    # A subfolder the base commit doesn't have (untracked in the live checkout) opens at the root.
+    cwd = os.path.join(path, prefix) if prefix and os.path.isdir(os.path.join(path, prefix)) else path
+    return path, cwd, True, branch
 
 
 def registry_path():
@@ -570,7 +577,7 @@ def start_run(hub, computer_id, due, folders):
     # conversation at an arbitrary place.
     if folder != project_folder and not folder.startswith(project_folder.rstrip("/") + "/"):
         raise RuntimeError("folder is outside the project")
-    path, is_git, branch = make_worktree(folder, action["project_id"], run["id"], job.get("name") or "job")
+    root, path, is_git, branch = make_worktree(folder, action["project_id"], run["id"], job.get("name") or "job")
     # A debugging run reports its issues with ai-todo-watch, which only works in a worktree.
     if (run.get("note") or "").startswith("watch:") and not is_git:
         raise RuntimeError("a debugging run needs a git repo; %s is not one (map the issue to a repo folder)" % tilde(folder))
@@ -615,7 +622,7 @@ def start_run(hub, computer_id, due, folders):
                 log("session_report_failed", run=run["id"], error=e)
     except Exception as e:
         if is_git and "timed out" not in str(e):
-            remove_worktree(folder, path, branch)
+            remove_worktree(folder, root, branch)
         raise
     return "started %s in %s" % (started.get("tool") or action.get("tool"), tilde(path))
 

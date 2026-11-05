@@ -1,0 +1,27 @@
+{
+  "name": "scrape-health",
+  "title": "Scrape health",
+  "description": "Alerts of the scrape fleet's daily health report (silent hotels or providers, hotels burning dispatches, wedged jobs), read over ssh from the host that runs the check. An alert clears when the next report no longer names it.",
+  "resolve": false,
+  "settings": [
+    {
+      "key": "SCRAPE_HEALTH_SSH",
+      "label": "Report host (user@host, key-based ssh)"
+    },
+    {
+      "key": "SCRAPE_HEALTH_REPORT",
+      "label": "Report path (default /root/scrape-health/reports/latest.md)",
+      "optional": true
+    },
+    {
+      "key": "SCRAPE_HEALTH_FOLDER",
+      "label": "Repo folder for debugging runs, e.g. scrapers",
+      "optional": true
+    },
+    {
+      "key": "SCRAPE_HEALTH_MAX_AGE_HOURS",
+      "label": "Report older than this is a problem (default 26)",
+      "optional": true
+    }
+  ]
+}

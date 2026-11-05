@@ -3061,6 +3061,31 @@ posts_to finish | grep '"id": "r-fail0001"' | grep -q '"state": "failed"' || fai
 ! git -C "$R_REPO" branch --list 'scheduled/*' | grep -q r-fail00 || fail "the branch of a failed start was kept"
 pass "runner_start_failure_reports_and_cleans_worktree"
 
+R_MONO="${HOME}/work/mono"
+if [[ ! -d "${R_MONO}/.git" ]]; then
+  mkdir -p "${R_MONO}/backend" && echo x >"${R_MONO}/backend/main.go"
+  git -C "$R_MONO" init -q -b main && git -C "$R_MONO" add -A && git -C "$R_MONO" -c user.email=t@t -c user.name=t commit -q -m init
+fi
+hub_edit "s['projects'].append(dict(id='proj-mono', name='mono', computer=dict(id='comp-1', name='test-mac'), folder='~/work/mono', repo_url=None, digest_enabled=True))"
+rm -f "${HOME}/.ai-remote/runner-state/projects.json"
+runs_reset
+due_run r-sub00001 proj-mono '{"mode":"always"}' 0 claude '~/work/mono/backend'
+runner tick || fail "tick failed"
+posts_to start | grep -q '"cwd": "~/.ai-remote/worktrees/proj-mono/r-sub00001/backend", "is_git": true' || fail "subfolder start body wrong: $(posts_to start)"
+grep -qx -- "~/.ai-remote/worktrees/proj-mono/r-sub00001/backend" "$R_OPEN_LOG" || fail "ai-todo-open not opened in the subfolder: $(cat "$R_OPEN_LOG")"
+python3 -c '
+import json, os, sys
+d = json.load(open(os.path.expanduser("~/.ai-remote/runner-state/worktrees.json")))
+assert d["r-sub00001"]["path"].endswith("/proj-mono/r-sub00001"), d["r-sub00001"]
+' || fail "the registry should keep the worktree root"
+runs_reset
+due_run r-sbf00002 proj-mono '{"mode":"always"}' 0 claude '~/work/mono/backend'
+FAKE_OPEN_EXIT=94 runner tick || fail "tick failed"
+posts_to finish | grep '"id": "r-sbf00002"' | grep -q '"state": "failed"' || fail "the failed subfolder start was not reported: $(posts_to finish)"
+[[ ! -e "${R_TREES}/proj-mono/r-sbf00002" ]] || fail "the worktree of a failed subfolder start was kept"
+! git -C "$R_MONO" branch --list 'scheduled/*' | grep -q r-sbf000 || fail "the branch of a failed subfolder start was kept"
+pass "runner_subfolder_opens_inside_worktree (registry and cleanup keep the root)"
+
 runs_reset
 due_run r-nr000001 proj-plain "$WAIT_DEFAULT" 2
 due_run r-nr000002 proj-plain "$WAIT_DEFAULT" 2
@@ -4809,6 +4834,59 @@ grep -q 'HTTP 401' "${SN_DIR}/err" || fail "error text: $(cat "${SN_DIR}/err")"
 status=0; SENTRY_TOKEN= "$SENTRY" check >/dev/null 2>"${SN_DIR}/err" || status=$?
 [[ $status -eq 65 ]] && grep -q SENTRY_TOKEN "${SN_DIR}/err" || fail "missing token: $status $(cat "${SN_DIR}/err")"
 pass "sentry_http_error_hides_token"
+
+# --- watchers/scrape-health ----------------------------------------------------------------
+SH_W="${SCRIPT_DIR}/../../watchers/scrape-health/watcher"
+[[ -x "$SH_W" ]] && python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["name"] == "scrape-health" and m["resolve"] is False, m; assert [s["key"] for s in m["settings"] if not s.get("optional")] == ["SCRAPE_HEALTH_SSH"], m' "${SCRIPT_DIR}/../../watchers/scrape-health/watcher.json" \
+  || fail "the scrape-health plugin (watcher + watcher.json) is not in ai-session-remote/watchers/scrape-health"
+SH_DIR="${SANDBOX}/scrape-health"
+mkdir -p "$SH_DIR"
+cat >"${SH_DIR}/report.md" <<'EOF'
+# Scrape fleet health — 2026-10-16T11:00:01Z
+
+## Silent hotels (in rotation, no prices in 48h)
+
+- **ALERT** silent hotel: Unable to find image 'postgres:16' locally (provider | hotel | prices | jobs | last_job)
+- **ALERT** silent hotel: 16: Pulling from library/postgres (provider | hotel | prices | jobs | last_job)
+- **ALERT** silent hotel: clockpms | 13476 | 0 | 2 | 2026-10-15 21:22:13+00 (provider | hotel | prices | jobs | last_job)
+
+## Providers in rotation with zero prices in 48h
+
+- **ALERT** provider fully silent: clockpms | 2 | 0 (provider | hotels_expected | prices)
+
+## Dispatch capacity (7d)
+
+- **ALERT** burning dispatch capacity (>=20 jobs, 0 prices in 7d): webhotelier | https://x.reserve-online.net | 150
+- **ALERT** burning dispatch capacity (>=20 jobs, 0 prices in 7d): webhotelier | https://x.reserve-online.net | 151
+
+**Result: 5 alert(s) raised.**
+EOF
+touch "${SH_DIR}/report.md"
+SCRAPE_HEALTH_LOCAL_REPORT="${SH_DIR}/report.md" SCRAPE_HEALTH_FOLDER=scrapers "$SH_W" check >"${SH_DIR}/out.json" || fail "scrape-health check failed"
+python3 - "${SH_DIR}/out.json" <<'PY' || fail "scrape-health problems wrong: $(cat "${SH_DIR}/out.json")"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["partial"] is False, d
+keys = [p["key"] for p in d["problems"]]
+assert keys == ["scrape-health:silent-hotel:clockpms|13476", "scrape-health:provider-fully-silent:clockpms",
+                "scrape-health:burning-dispatch-capacity:webhotelier|https://x.reserve-online.net",
+                "scrape-health:noisy-report"], keys
+assert all(p["folder"] == "scrapers" for p in d["problems"]), d
+assert d["problems"][0]["title"] == "Silent hotel: clockpms · 13476", d["problems"][0]
+assert "Silent hotels" in d["problems"][0]["details"], d["problems"][0]
+assert "2 alert line(s)" in d["problems"][3]["title"] and "Pulling from" in d["problems"][3]["details"], d["problems"][3]
+PY
+pass "scrape_health_alerts_become_problems (stable keys, one per hotel, leaked lines are one noise problem)"
+
+touch -t 202001010000 "${SH_DIR}/report.md"
+SCRAPE_HEALTH_LOCAL_REPORT="${SH_DIR}/report.md" "$SH_W" check | grep -q '"key": "scrape-health:stale-report"' || fail "an old report did not raise stale-report"
+printf '# Scrape fleet health — ok\n\nNone.\n' >"${SH_DIR}/report.md"
+[[ "$(SCRAPE_HEALTH_LOCAL_REPORT="${SH_DIR}/report.md" "$SH_W" check)" == '{"problems": [], "partial": false}' ]] || fail "a healthy report should have no problems"
+status=0; env -u SCRAPE_HEALTH_SSH "$SH_W" check >/dev/null 2>"${SH_DIR}/err" || status=$?
+[[ $status -eq 65 ]] && grep -q SCRAPE_HEALTH_SSH "${SH_DIR}/err" || fail "missing host: $status $(cat "${SH_DIR}/err")"
+status=0; SCRAPE_HEALTH_SSH='root@x;rm' "$SH_W" check >/dev/null 2>&1 || status=$?
+[[ $status -eq 65 ]] || fail "a host with shell characters was accepted: $status"
+pass "scrape_health_stale_healthy_and_bad_settings"
 
 [[ ! -e "${SANDBOX}/guard.log" ]] || fail "a test reached a real binary: $(cat "${SANDBOX}/guard.log")"
 echo "All ${passes} todo script tests passed."
