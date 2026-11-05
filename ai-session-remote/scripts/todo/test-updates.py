@@ -475,6 +475,15 @@ class WeeklyRunTests(Base):
         self.assertIn("Tried the importer.", msg)
         self.assertNotIn("2026-11-03", msg)
         self.assertNotIn("2026-11-05", msg)
+        empty = up.weekly_message(self.weekly_item(days=[{"day": "2026-11-06", "state": "failed", "text": "", "summaries": []}]))
+        self.assertNotIn("2026-11-06", empty)
+
+    def test_weekly_empty_wins_counted_as_failure(self):
+        self.weekly_item()
+        for run in range(3):
+            self.answer({"headline": "h", "wins": "  "})
+            up.main(["run"])
+        self.assertEqual(self.hub.posted(self.put_path()), [{"headline": "", "wins": "", "failed": True}])
 
     def test_weekly_waits_without_headroom(self):
         script(self.home / "bin" / "limits", "echo '{\"windows\":[{\"kind\":\"weekly\",\"used_percent\":99}]}'\n")

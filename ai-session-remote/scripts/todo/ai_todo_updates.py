@@ -762,6 +762,8 @@ def weekly_message(item):
         elif state in ("failed", "missing"):
             summaries = "\n".join("- %s: %s" % (s.get("title") or "(untitled)", s.get("summary") or "")
                                   for s in d.get("summaries") or [])
+            if not summaries:
+                continue
             parts.append("## %s (no update; conversation summaries)\n%s" % (d.get("day"), summaries))
     parts.append("MATERIAL>>>")
     return "\n\n".join(parts)
@@ -801,7 +803,10 @@ def write_weekly_one(hub, item, settings, usage=read_usage):
         if unknown:
             headline, wins = delink(headline, unknown), delink(wins, unknown)
     headline = " ".join(redact(headline).split())[:MAX_HEADLINE]
-    put_weekly(hub, item, headline, redact(wins).strip())
+    wins = redact(wins).strip()
+    if not wins:
+        raise ModelError("the model returned no wins")
+    put_weekly(hub, item, headline, wins)
     log("weekly_written", project=item["project_id"], week=item["week"])
 
 
