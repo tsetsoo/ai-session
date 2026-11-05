@@ -86,6 +86,8 @@ public struct TerminalPrompt: Equatable, Sendable {
 
         // The question block sits above the options, up to a rule, two blank lines or a transcript line.
         var block: [String] = []
+        /// Whether each block line reached the pane's edge, so the next line continues it.
+        var wrapped: [Bool] = []
         row = first - 1
         while row >= 0, lines[row].isEmpty { row -= 1 }
         var blanks = 0
@@ -97,13 +99,26 @@ public struct TerminalPrompt: Equatable, Sendable {
             } else {
                 blanks = 0
                 if isSolidRule(line) || startsTranscriptLine(line) { break }
-                if !isRule(line) { block.insert(line.trimmingCharacters(in: .whitespaces), at: 0) }
+                if !isRule(line) {
+                    block.insert(line.trimmingCharacters(in: .whitespaces), at: 0)
+                    wrapped.insert(line.count >= width - 4, at: 0)
+                }
             }
             row -= 1
         }
         guard let questionIndex = block.firstIndex(where: { $0.hasSuffix("?") }) else { return nil }
+        // The tip, and the lines it wrapped onto at a narrow width, are not about this question.
+        var tip = Set<Int>()
+        for index in block.indices where block[index].hasPrefix("Tip:") {
+            var line = index
+            tip.insert(line)
+            while wrapped[line], line + 1 < block.count, line + 1 != questionIndex {
+                line += 1
+                tip.insert(line)
+            }
+        }
         let detailLines = block.enumerated()
-            .filter { $0.offset != questionIndex && !$0.element.hasPrefix("Tip:") }
+            .filter { $0.offset != questionIndex && !tip.contains($0.offset) }
             .map(\.element)
 
         return TerminalPrompt(

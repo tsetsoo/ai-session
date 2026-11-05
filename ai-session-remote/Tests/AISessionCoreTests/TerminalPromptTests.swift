@@ -20,6 +20,20 @@ final class TerminalPromptTests: XCTestCase {
         XCTAssertEqual(prompt.options.map(\.needsText), [false, false, false, false])
     }
 
+    func testClaudeBashPromptAtPhoneWidth() throws {
+        let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeBashNarrow))
+        XCTAssertEqual(prompt.question, "Do you want to proceed?")
+        XCTAssertEqual(prompt.options.map(\.label), [
+            "Yes",
+            "Yes, and don’t ask again for: grep '\\.swift$'",
+            "Yes, and switch to auto mode · auto mode handles these prompts for you",
+            "No",
+        ])
+        let detail = try XCTUnwrap(prompt.detail)
+        XCTAssertTrue(detail.contains("List Swift files in the TodoHub folder"), detail)
+        XCTAssertFalse(detail.contains("switch to auto mode"), "the wrapped tip's second line is dropped too: \(detail)")
+    }
+
     func testClaudeEditPrompt() throws {
         let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeEdit))
         XCTAssertEqual(prompt.question, "Do you want to make this edit to a.txt?")

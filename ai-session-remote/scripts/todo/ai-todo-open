@@ -148,6 +148,11 @@ seed_job_status() {
 
 attach() {
   seed_job_status
+  # No tmux status bar in conversations. The apps read the bottom of the screen for
+  # Claude's and Codex's questions ("Esc to cancel" must be the last line) and the bar
+  # would sit under it; the app already shows which conversation this is. Set on every
+  # open, so sessions started before this change lose theirs on their next attach.
+  tmux_cmd set-option -q -t "=$name:" status off 2>/dev/null || true
   if [ "${AI_TODO_OPEN_DETACH:-}" = 1 ]; then
     echo "$1"
     exit 0
