@@ -56,7 +56,74 @@ final class ReadAloud {
     }
 }
 
-/// `AVSpeechSynthesizer` with the voice for the message's language. Plays with the ring/silent
+/// The Read Aloud speed, set in Settings → Read Aloud.
+enum ReadAloudSettings {
+    static let rateKey = "readAloud.rate"
+    static let normalRate = Double(AVSpeechUtteranceDefaultSpeechRate)
+    static let rates: [(name: String, value: Double)] = [
+        ("Slower", normalRate - 0.06), ("Normal", normalRate), ("Faster", normalRate + 0.05), ("Fastest", normalRate + 0.1),
+    ]
+
+    static var rate: Float {
+        let stored = UserDefaults.standard.object(forKey: rateKey) as? Double
+        return Float(stored ?? normalRate)
+    }
+}
+
+/// A voice as far as choosing one goes; `best` is plain logic so it can be tested.
+struct VoiceCandidate: Equatable {
+    enum Quality: Int, Comparable {
+        case basic, enhanced, premium
+        static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
+    let identifier: String
+    let name: String
+    let language: String
+    let quality: Quality
+    /// Novelty voices (Bells, Bubbles…) and the user's Personal Voice are never picked.
+    let isExcluded: Bool
+
+    init(identifier: String, name: String, language: String, quality: Quality, isExcluded: Bool = false) {
+        self.identifier = identifier
+        self.name = name
+        self.language = language
+        self.quality = quality
+        self.isExcluded = isExcluded
+    }
+
+    init(_ voice: AVSpeechSynthesisVoice) {
+        let quality: Quality = switch voice.quality {
+        case .premium: .premium
+        case .enhanced: .enhanced
+        default: .basic
+        }
+        self.init(
+            identifier: voice.identifier, name: voice.name, language: voice.language, quality: quality,
+            isExcluded: voice.voiceTraits.contains(.isNoveltyVoice) || voice.voiceTraits.contains(.isPersonalVoice)
+        )
+    }
+
+    /// NaturalLanguage names some languages differently from the voices ("zh-Hans").
+    private static let aliases = ["zh-Hans": "zh-CN", "zh-Hant": "zh-TW", "nb": "nb-NO"]
+
+    /// The highest quality voice whose language matches. Among equals: the exact code asked
+    /// for, then the region of `locale` (English read on an en-GB phone prefers an en-GB voice).
+    static func best(for language: String, among voices: [VoiceCandidate], locale: Locale) -> VoiceCandidate? {
+        let code = aliases[language] ?? language
+        let base = String(code.prefix { $0 != "-" })
+        let region = locale.region?.identifier
+        let matching = voices.filter { !$0.isExcluded && ($0.language == code || $0.language.hasPrefix(base + "-") || $0.language == base) }
+        func rank(_ voice: VoiceCandidate) -> (Int, Int, Int) {
+            let exact = voice.language == code ? 1 : 0
+            let local = region.map { voice.language == "\(base)-\($0)" } == true ? 1 : 0
+            return (voice.quality.rawValue, exact, local)
+        }
+        return matching.max { rank($0) < rank($1) }
+    }
+}
+
+/// `AVSpeechSynthesizer` with the best voice for the message's language. Plays with the ring/silent
 /// switch on, ducking other audio, and gives the audio session back when done.
 @MainActor
 final class SynthesizerOutput: NSObject, SpeechOutput, AVSpeechSynthesizerDelegate {
@@ -79,14 +146,24 @@ final class SynthesizerOutput: NSObject, SpeechOutput, AVSpeechSynthesizerDelega
         }
     }
 
+    /// Each line is its own utterance with a short pause after it, so headings and list items
+    /// end like sentences. `current` is the last one: its end is the reading's end.
     func speak(_ text: String, language: String?) {
+        let parts = SpokenText.parts(text)
+        guard !parts.isEmpty else { return }
         let audio = AVAudioSession.sharedInstance()
         try? audio.setCategory(.playback, mode: .spokenAudio, options: .duckOthers)
         try? audio.setActive(true)
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = Self.voice(for: language)
-        current = utterance
-        synthesizer.speak(utterance)
+        let voice = Self.voice(for: language)
+        let rate = ReadAloudSettings.rate
+        for part in parts {
+            let utterance = AVSpeechUtterance(string: part.text)
+            utterance.voice = voice
+            utterance.rate = rate
+            utterance.postUtteranceDelay = part.pause
+            current = utterance
+            synthesizer.speak(utterance)
+        }
     }
 
     /// The audio session is given back from the delegate once the synthesizer has really
@@ -96,17 +173,16 @@ final class SynthesizerOutput: NSObject, SpeechOutput, AVSpeechSynthesizerDelega
         synthesizer.stopSpeaking(at: .immediate)
     }
 
-    /// NaturalLanguage names some languages differently from the voices ("zh-Hans").
+    /// The best installed voice for the language (premium, then enhanced, then the basic one),
+    /// in the user's own region when there's a choice.
     static func voice(for language: String?) -> AVSpeechSynthesisVoice? {
-        let fallback = AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
-        guard let language else { return fallback }
-        let aliases = ["zh-Hans": "zh-CN", "zh-Hant": "zh-TW", "nb": "nb-NO"]
-        let base = String(language.prefix { $0 != "-" })
-        let wanted = [language, aliases[language], base].compactMap { $0 }
-        for code in wanted {
-            if let voice = AVSpeechSynthesisVoice(language: code) { return voice }
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+        let candidates = voices.map(VoiceCandidate.init)
+        let wanted = language ?? AVSpeechSynthesisVoice.currentLanguageCode()
+        guard let best = VoiceCandidate.best(for: wanted, among: candidates, locale: Locale.current) else {
+            return AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
         }
-        return AVSpeechSynthesisVoice.speechVoices().first { $0.language.hasPrefix(base + "-") } ?? fallback
+        return AVSpeechSynthesisVoice(identifier: best.identifier)
     }
 
     private func releaseIfIdle() {

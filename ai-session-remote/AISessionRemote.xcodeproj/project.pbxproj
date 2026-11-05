@@ -92,6 +92,7 @@
 		4E3846485AA10B3B7344F5E0 /* ListActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BFD9EB6DE7519501FD14139 /* ListActions.swift */; };
 		4F3045F6CDD8A515D866D341 /* IdeasPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 137F28FB6F0222F70DE53BCF /* IdeasPanes.swift */; };
 		5116AFC9335F2CAC3AF1BC5F /* TodoRename.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12D5F34B1CF5313030CABD54 /* TodoRename.swift */; };
+		52393CB02747D23C39B7110E /* ReadAloudSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB05A31BB0133D0F6B4ADF75 /* ReadAloudSettingsView.swift */; };
 		526B8FB11A2265507B1D21EC /* ReadAloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1793D57706890A26C94F6B6 /* ReadAloud.swift */; };
 		54786EE8A4EC63320E5D2268 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AEEFD06D4BF1BB591C6A637 /* AppDelegate.swift */; };
 		55333C0BB96E72B71E12BF61 /* TodayPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = F734A46121C5F35DAB720843 /* TodayPanes.swift */; };
@@ -207,6 +208,7 @@
 		B065DED24584AB689477A1B6 /* TerminalAppearanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C976B2DC40D400F315259C2 /* TerminalAppearanceTests.swift */; };
 		B06BE65B10FD125FE3054794 /* ListSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD8D8139CC242C8EF215944D /* ListSelection.swift */; };
 		B1B5A447412A719EDF8D2062 /* TerminalTouchScrollTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5450C6574280A263EC927973 /* TerminalTouchScrollTests.swift */; };
+		B1FDE8EE5767E44709E4B429 /* ReadAloudSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB05A31BB0133D0F6B4ADF75 /* ReadAloudSettingsView.swift */; };
 		B237D24CFC72D28C46A01325 /* TodoHubDemo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18F3BE4EBA6E99E52AEE6296 /* TodoHubDemo.swift */; };
 		B2BC95296C9E4B85FBB28FBD /* ProjectUpdatesSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E412E70D538D46BA26B6BE6 /* ProjectUpdatesSection.swift */; };
 		B40E160F6297F0A83546AA38 /* AddTodoSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FAAD07AAEDF8D67ADBBFBF4 /* AddTodoSheet.swift */; };
@@ -440,6 +442,7 @@
 		CA8B20C587DEA3DCF7492AD7 /* TerminalReconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalReconnectTests.swift; sourceTree = "<group>"; };
 		CAA172C22AAE74D2E6E00975 /* RemoteLimits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLimits.swift; sourceTree = "<group>"; };
 		CACA4D506127E0997E071460 /* UsageLimitsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageLimitsBar.swift; sourceTree = "<group>"; };
+		CB05A31BB0133D0F6B4ADF75 /* ReadAloudSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadAloudSettingsView.swift; sourceTree = "<group>"; };
 		CD3241ADE6D78A7C9BB02EC3 /* PromoteSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromoteSessionSheet.swift; sourceTree = "<group>"; };
 		CD5B403BB61AF13CDBD9EEC1 /* DuplicateSummarySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateSummarySheet.swift; sourceTree = "<group>"; };
 		D0A9E0E59778D9C468219BE9 /* NotificationCenterCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationCenterCoordinator.swift; sourceTree = "<group>"; };
@@ -832,6 +835,7 @@
 			children = (
 				D3CBA23D5DB2F1E90F810074 /* MacShell.swift */,
 				B7904F574B3A5E7AE10B093F /* PhoneShell.swift */,
+				CB05A31BB0133D0F6B4ADF75 /* ReadAloudSettingsView.swift */,
 				4231B33E7260245EAB424FD9 /* SettingsPages.swift */,
 				9BB9F3F1B36EAC5FB8B07504 /* SettingsView.swift */,
 				77812A59712865DEA10BA4B1 /* SidebarModel.swift */,
@@ -1143,6 +1147,7 @@
 				0B7DAB6F82204E98F063D5D7 /* QuickAddBar.swift in Sources */,
 				29CF30F43C8411A4456EF7AF /* ReachabilityProbe.swift in Sources */,
 				975D8EA555B9639228A8DB3E /* ReadAloud.swift in Sources */,
+				B1FDE8EE5767E44709E4B429 /* ReadAloudSettingsView.swift in Sources */,
 				CCF7D18D1057CAC0EC45D308 /* RemoteConversations.swift in Sources */,
 				278C9FE2E986245E02258F0F /* RemoteLimits.swift in Sources */,
 				3ECEE70113B596539FC80047 /* RootView.swift in Sources */,
@@ -1268,6 +1273,7 @@
 				414864BA66DF44F9F28242A1 /* QuickAddBar.swift in Sources */,
 				85C64027DA45F4DEB1455A3F /* ReachabilityProbe.swift in Sources */,
 				526B8FB11A2265507B1D21EC /* ReadAloud.swift in Sources */,
+				52393CB02747D23C39B7110E /* ReadAloudSettingsView.swift in Sources */,
 				19C8B2ADB49568C98E8EE5A5 /* RemoteConversations.swift in Sources */,
 				8FDFD567428FABBFBA8F8EE2 /* RemoteLimits.swift in Sources */,
 				356AA5D493C40F589E915D9A /* RootView.swift in Sources */,

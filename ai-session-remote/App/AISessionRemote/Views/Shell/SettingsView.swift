@@ -22,7 +22,7 @@ struct SettingsView: View {
     @State private var sheet: Sheet?
 
     enum Page: Hashable {
-        case terminal, notifications
+        case terminal, notifications, readAloud
     }
 
     private enum Sheet: String, Identifiable {
@@ -89,6 +89,11 @@ struct SettingsView: View {
                     NavigationLink(value: Page.notifications) {
                         Label("Notifications", systemImage: "bell")
                     }
+                    #if os(iOS)
+                    NavigationLink(value: Page.readAloud) {
+                        Label("Read Aloud", systemImage: "speaker.wave.2")
+                    }
+                    #endif
                 }
             }
             .formStyle(.grouped)
@@ -103,6 +108,12 @@ struct SettingsView: View {
                 switch page {
                 case .terminal: TerminalSettingsView()
                 case .notifications: NeedsYouSettingsView()
+                case .readAloud:
+                    #if os(iOS)
+                    ReadAloudSettingsView()
+                    #else
+                    EmptyView()
+                    #endif
                 }
             }
         }

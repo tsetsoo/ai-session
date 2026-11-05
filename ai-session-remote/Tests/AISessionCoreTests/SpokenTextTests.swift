@@ -4,7 +4,26 @@ import XCTest
 final class SpokenTextTests: XCTestCase {
     func testMarkdownIsReadAsProseAndCodeIsNamedNotRead() {
         let text = "## Done\nThe **fix** is in `status.py`.\n```swift\nlet a = 1\n```\n- one\n- two"
-        XCTAssertEqual(SpokenText.make(text), "Done\nThe fix is in status.py.\nCode block.\none\ntwo")
+        XCTAssertEqual(SpokenText.make(text), "Done\nThe fix is in status dot py.\n\nCode block.\n\none\ntwo")
+    }
+
+    func testInlineCodeIsSaidTheWayAPersonWould() {
+        XCTAssertEqual(SpokenText.make("Edit `ReadAloud.swift` and `~/.ai-remote/bin`."),
+                       "Edit Read Aloud dot swift and ~ slash dot ai-remote slash bin.")
+        XCTAssertEqual(SpokenText.make("Run `/theme` with `max_tokens` on `v1.2`."),
+                       "Run slash theme with max tokens on v1.2.")
+        XCTAssertEqual(SpokenText.make("A plain e.g. stays."), "A plain e.g. stays.")
+    }
+
+    func testPartsPauseLongerBetweenParagraphs() {
+        let parts = SpokenText.parts(SpokenText.make("## Done\nAll good.\n\nNext step.\n```\nx\n```"))
+        XCTAssertEqual(parts, [
+            SpokenPart(text: "Done", pause: SpokenText.linePause),
+            SpokenPart(text: "All good.", pause: SpokenText.paragraphPause),
+            SpokenPart(text: "Next step.", pause: SpokenText.paragraphPause),
+            SpokenPart(text: "Code block.", pause: 0),
+        ])
+        XCTAssertEqual(SpokenText.parts("  \n"), [])
     }
 
     func testTableRowsAreReadAsSentences() {
