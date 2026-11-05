@@ -427,6 +427,20 @@ public struct TodoHubClient: Sendable {
         _ = try await send("POST", "/api/projects/\(escape(projectId))/updates/\(escape(day))/rewrite")
     }
 
+    // MARK: Weekly recap
+
+    /// Finished weeks, newest first; `before` pages back (a week's Monday, `YYYY-MM-DD`).
+    public func weeklyRecaps(before: String? = nil, limit: Int = 4) async throws -> [WeeklyRecap] {
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let before { query.insert(URLQueryItem(name: "before", value: before), at: 0) }
+        return try await decode([WeeklyRecap].self, send("GET", "/api/weekly", query: query))
+    }
+
+    /// Asks the project's computer to write that week's section again.
+    public func rewriteWeekly(projectId: String, week: String) async throws {
+        _ = try await send("POST", "/api/projects/\(escape(projectId))/weekly/\(escape(week))/rewrite")
+    }
+
     // MARK: Ideas
 
     /// Starred first, then by status, then newest. Pending (agent-proposed) ones only with `pending`.
