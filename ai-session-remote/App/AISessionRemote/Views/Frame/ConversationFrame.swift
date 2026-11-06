@@ -71,7 +71,10 @@ struct ConversationFrame: View {
     @State private var hasServerChoice = false
     /// "Servers…": the conversation whose checklist is open, then the one waiting on a restart.
     @State private var serversTarget: Conversation?
-    @State private var restartTarget: Conversation?
+    /// "Restart…": the conversation whose restart sheet is open.
+    @State private var restartSheetTarget: Conversation?
+    /// A restart the computer refused while the tool works or waits: asked before forcing it.
+    @State private var restartRequest: RestartRequest?
     /// How the conversation just created should attach, and the text to type once it connects.
     @State private var duplicateLaunch: DuplicateLaunch?
     @State private var summaryText = ""
@@ -272,22 +275,24 @@ struct ConversationFrame: View {
         .reportsVisibleConversation(todo.id, isActive: isFrontmost && !isPoppedOut)
     }
 
-    /// Servers…: the checklist sheet, and the restart question while the tool is working.
+    /// Servers… and Restart…: their sheets, and the question when the tool is working or waiting.
     private func serversPresentation(_ content: some View) -> some View {
         content
         .confirmationDialog(
-            "Restart \(RowText.toolName(restartTarget?.tool ?? "claude"))?",
+            "Restart \(RowText.toolName(restartRequest?.conversation.tool ?? "claude")) Anyway?",
             isPresented: Binding(
-                get: { isFrontmost && restartTarget != nil },
-                set: { if !$0 { restartTarget = nil } }
+                get: { isFrontmost && restartRequest != nil },
+                set: { if !$0 { restartRequest = nil } }
             ),
             titleVisibility: .visible,
-            presenting: restartTarget
-        ) { conversation in
-            Button("Restart", role: .destructive) { restart(conversation) }
+            presenting: restartRequest
+        ) { request in
+            Button("Restart", role: .destructive) {
+                restart(request.conversation, chrome: request.chrome, force: true)
+            }
             Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("Restarting stops it where it is. It resumes with the new servers.")
+        } message: { request in
+            Text("\(request.message) Restarting stops it where it is; it resumes in the same conversation.")
         }
         .sheet(isPresented: Binding(
             get: { isFrontmost && serversTarget != nil },
@@ -304,6 +309,21 @@ struct ConversationFrame: View {
                         saveServers(names, for: conversation)
                     },
                     onCancel: { serversTarget = nil }
+                )
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { isFrontmost && restartSheetTarget != nil },
+            set: { if !$0 { restartSheetTarget = nil } }
+        )) {
+            if let conversation = restartSheetTarget {
+                RestartSheet(
+                    conversation: conversation, store: store, hosts: hosts,
+                    onConfirm: { servers, chrome in
+                        restartSheetTarget = nil
+                        restartWithChanges(conversation, servers: servers, chrome: chrome)
+                    },
+                    onCancel: { restartSheetTarget = nil }
                 )
             }
         }
@@ -650,11 +670,13 @@ struct ConversationFrame: View {
             canChange: conversation != nil && !store.isOffline,
             canRename: !store.isOffline,
             canChangeServers: canChangeServers,
+            canRestart: canRestart,
             isReady: readyConversation != nil,
             isConnected: isConnected,
             copyInMenu: copyInMenu,
             onRename: { renameTarget = todo },
             onServers: changeServers,
+            onRestart: openRestart,
             onCopy: copyResumeCommand,
             onPopOut: { onPopOut?() },
             onMemories: { showingMemories = true },
@@ -686,6 +708,7 @@ struct ConversationFrame: View {
         switch command {
         case .rename: if !store.isOffline { renameTarget = todo }
         case .servers: changeServers()
+        case .restart: openRestart()
         case .copyResume: copyResumeCommand()
         case .memories: showingMemories = true
         case .close: closeConversation()
@@ -933,8 +956,8 @@ struct ConversationFrame: View {
         serversTarget = conversation
     }
 
-    /// Stores the new selection; a tool that is running restarts to pick it up, after asking
-    /// while it is working. One that isn't running uses it when it next starts.
+    /// Stores the new selection; the tool restarts to pick it up. The computer refuses while it
+    /// works or waits, and then the user is asked. One that isn't running uses it when it next starts.
     private func saveServers(_ names: [String]?, for conversation: Conversation) {
         guard names != conversation.mcpServers else { return }
         Task {
@@ -948,28 +971,77 @@ struct ConversationFrame: View {
                 return
             }
             guard readyConversation?.conversation.id == conversation.id else { return }
-            let saved = store.conversations(forTodo: todo.id).first { $0.id == conversation.id } ?? conversation
-            if saved.status == .busy {
-                restartTarget = saved
-            } else {
-                restart(saved)
-            }
+            restart(store.conversations(forTodo: todo.id).first { $0.id == conversation.id } ?? conversation)
         }
     }
 
-    /// Ends the tmux session (the hub row stays open, unlike Close), then attaches again:
-    /// `ai-todo-open` resumes the conversation with the servers it now has. A Codex
-    /// conversation with no rollout yet can't be resumed, so it keeps running as it is.
-    private func restart(_ conversation: Conversation) {
-        perform("Couldn't Restart \(RowText.toolName(conversation.tool))") { _, config in
+    /// Restart…: Claude, Codex or Cursor, on the computer's installed version.
+    private var canRestart: Bool { conversation != nil }
+
+    private func openRestart() {
+        guard canRestart else { return }
+        restartSheetTarget = conversation
+    }
+
+    /// Restart… confirmed: save other servers first (the hub passes them on the next start).
+    private func restartWithChanges(_ conversation: Conversation, servers: [String]?, chrome: ChromeChoice) {
+        Task {
+            var target = conversation
+            if conversation.tool != "cursor", servers != conversation.mcpServers {
+                do {
+                    try await store.setServers(servers, for: conversation)
+                } catch {
+                    failure = ActionFailure(
+                        title: "Couldn't Change Servers",
+                        message: ConversationRowActions.message(for: error, computer: conversation.computer)
+                    )
+                    return
+                }
+                target = store.conversations(forTodo: todo.id).first { $0.id == conversation.id } ?? conversation
+            }
+            restart(target, chrome: chrome)
+        }
+    }
+
+    /// Ends the tool on the computer (the hub row stays open, unlike Close), then attaches
+    /// again: `ai-todo-open` resumes the conversation on the installed version, with the
+    /// servers it now has and its saved settings. The computer refuses while the tool works or
+    /// waits for an answer; the user is asked, then it is forced. A Codex conversation with no
+    /// rollout yet can't be resumed, so it keeps running as it is.
+    private func restart(_ conversation: Conversation, chrome: ChromeChoice = .keep, force: Bool = false) {
+        let tool = RowText.toolName(conversation.tool)
+        perform("Couldn't Restart \(tool)") { _, config in
             let hasRollout = ServersRestart.checksRollout(conversation.tool)
                 ? try? await store.codexHasRollout(conversation, config: config)
                 : nil
             guard ServersRestart.decide(tool: conversation.tool, hasRollout: hasRollout) == .restart else {
-                failure = ActionFailure(title: "Servers Saved", message: ServersRestart.notStartedMessage)
+                failure = ActionFailure(title: "Not Restarted", message: ServersRestart.notStartedMessage)
                 return
             }
-            try await store.endSession(conversation, config: config)
+            do {
+                let result = try await RemoteRestart.restart(conversation, config: config, force: force, chrome: chrome)
+                if result.isRefused {
+                    let message = result.message ?? "It's busy."
+                    if result.canForce {
+                        restartRequest = RestartRequest(conversation: conversation, chrome: chrome, message: message)
+                    } else {
+                        failure = ActionFailure(title: "Can't Restart \(tool) Now", message: message)
+                    }
+                    return
+                }
+                if result.result == "failed" {
+                    failure = ActionFailure(title: "Couldn't Restart \(tool)", message: result.message ?? "The restart failed.")
+                    return
+                }
+            } catch let error as RemoteRestart.OldScripts where chrome == .keep {
+                // Scripts from before restart: end tmux as before, asking first while it works.
+                _ = error
+                if conversation.status == .busy, !force {
+                    restartRequest = RestartRequest(conversation: conversation, chrome: chrome, message: "It's working on a turn.")
+                    return
+                }
+                try await store.endSession(conversation, config: config)
+            }
             loader.restart(conversation)
         }
     }
@@ -1214,7 +1286,7 @@ enum ServersRestart: Equatable {
     case saveOnly
 
     static let notStartedMessage =
-        "Codex can't restart a conversation before its first message. The new servers apply when it next starts."
+        "Codex can't restart a conversation before its first message. Any new servers apply when it next starts."
 
     /// Only Codex needs the rollout check: Claude starts with `--session-id` when it has no transcript.
     static func checksRollout(_ tool: String) -> Bool { tool == "codex" }
@@ -1223,6 +1295,12 @@ enum ServersRestart: Equatable {
     static func decide(tool: String, hasRollout: Bool?) -> ServersRestart {
         checksRollout(tool) && hasRollout == false ? .saveOnly : .restart
     }
+}
+
+private struct RestartRequest {
+    let conversation: Conversation
+    let chrome: ChromeChoice
+    let message: String
 }
 
 private struct ActionFailure {

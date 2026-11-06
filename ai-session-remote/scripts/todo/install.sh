@@ -10,6 +10,7 @@
 #   ~/.ai-remote/bin/ai-todo-memory  memory extraction, session-start index, search, stats push (+ ai_todo_redact.py)
 #   ~/.ai-remote/bin/ai-todo-transcript  one conversation's text, read when duplicating it into another tool
 #   ~/.ai-remote/bin/ai-todo-mcp     lists the MCP servers below and builds claude / codex arguments
+#   ~/.ai-remote/bin/helpers-version.json  commit, mode and time of this install (ai-todo-status doctor)
 #   ~/.ai-remote/mcp/                one <name>.json per MCP server (mode 700); --mcp-link DIR
 #                                    symlinks each DIR/*.json that isn't there yet
 #   ~/.ai-remote/memory-state/       ai-todo-memory's offsets, caches and log (mode 700)
@@ -53,7 +54,7 @@ HUB_CONF="${AI_DIR}/todo-hub.conf"
 TMUX_SNIPPET="${AI_DIR}/tmux.conf"
 # Every helper copied to BIN_DIR, for install and uninstall alike. Programs are 755, modules 644.
 HELPERS=(ai-todo-open ai-todo-review ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status ai-todo-runner ai-todo-idea ai-todo-watch ai-todo-remind ai-todo-updates ai-todo-workspace)
-MODULES=(ai_todo_redact.py ai_todo_status.py ai_todo_updates.py ai_todo_workspace.py)
+MODULES=(ai_todo_redact.py ai_todo_status.py ai_todo_doctor.py ai_todo_launch.py ai_todo_restart.py ai_todo_updates.py ai_todo_workspace.py)
 TMUX_CONF="${HOME}/.tmux.conf"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
 SETTINGS="${CLAUDE_DIR}/settings.json"
@@ -697,17 +698,45 @@ resolve_codex_for_hooks() {
   fi
 }
 
+# What was installed, for `ai-todo-status doctor` (the app's Health page): the commit when
+# SRC_DIR is a git checkout (dirty when scripts/todo has changes), which install mode, when,
+# and the helper files the doctor digests to compare computers. A tarball has no commit.
+write_helpers_stamp() {
+  local mode="$1" commit="" dirty=""
+  if git -C "$SRC_DIR" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    commit=$(git -C "$SRC_DIR" rev-parse HEAD)
+    if [[ -n "$(git -C "$SRC_DIR" status --porcelain -- . 2>/dev/null)" ]]; then dirty=true; else dirty=false; fi
+  fi
+  if [[ $dry_run -eq 1 ]]; then
+    say "would write ${BIN_DIR}/helpers-version.json (${commit:-no commit}, ${mode})"
+    return 0
+  fi
+  python3 - "${BIN_DIR}/helpers-version.json" "$mode" "$commit" "$dirty" "${HELPERS[@]}" "${MODULES[@]}" <<'PY' \
+    || say "helpers: could not write helpers-version.json"
+import datetime, json, os, sys
+path, mode, commit, dirty, *files = sys.argv[1:]
+stamp = {"commit": commit or None, "dirty": {"true": True, "false": False}.get(dirty), "mode": mode,
+         "installed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+         "files": sorted(files)}
+temporary = path + ".tmp"
+with open(temporary, "w") as handle:
+    json.dump(stamp, handle, indent=1)
+os.replace(temporary, path)
+PY
+}
+
 do_install_status() {
   run mkdir -p "$BIN_DIR"
   local file
   for file in ai-todo-open ai-todo-hook ai-todo-codex-notify ai-todo-status; do
     run install -m 755 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"
   done
-  run install -m 644 "${SRC_DIR}/ai_todo_status.py" "${BIN_DIR}/ai_todo_status.py"
+  for file in ai_todo_status.py ai_todo_doctor.py ai_todo_launch.py ai_todo_restart.py; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   resolve_codex_for_hooks
   merge_codex_notify install
   merge_codex_hooks install
   install_status_agent
+  write_helpers_stamp status-only
   say "Codex status updated; hub config, Claude settings and nightly jobs kept"
 }
 
@@ -717,9 +746,10 @@ do_install_claude_status() {
   for file in ai-todo-hook ai-todo-status; do
     run install -m 755 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"
   done
-  run install -m 644 "${SRC_DIR}/ai_todo_status.py" "${BIN_DIR}/ai_todo_status.py"
+  for file in ai_todo_status.py ai_todo_doctor.py ai_todo_launch.py ai_todo_restart.py; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   merge_settings install
   install_status_agent
+  write_helpers_stamp claude-status-only
   say "Claude status updated; Codex settings, hub config and nightly jobs kept"
 }
 
@@ -789,6 +819,7 @@ do_install() {
   for file in "${MODULES[@]}"; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   resolve_codex_for_hooks
   run install -m 644 "${SRC_DIR}/tmux.conf" "$TMUX_SNIPPET"
+  write_helpers_stamp full
   say "scripts: installed to ${BIN_DIR}"
   run mkdir -p "$STATE_DIR"
   run chmod 700 "$STATE_DIR"
@@ -848,7 +879,7 @@ do_uninstall() {
 
   local file installed=()
   for file in "${HELPERS[@]}" "${MODULES[@]}"; do installed+=("${BIN_DIR}/${file}"); done
-  run rm -f "${installed[@]}" "$TMUX_SNIPPET"
+  run rm -f "${installed[@]}" "${BIN_DIR}/helpers-version.json" "$TMUX_SNIPPET"
   say "scripts: removed"
   # Per-session state kept by the hooks.
   run rm -rf "${AI_DIR}/hook-state"

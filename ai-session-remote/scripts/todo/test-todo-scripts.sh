@@ -185,9 +185,42 @@ lines_before=$(wc -l <"$CLAUDE_LOG")
 out="$("$OPEN" --detached --prompt-file "$U_PROMPT" "$U_NAME" '~/programming' "$U_SID" claude)"
 [[ "$out" == resumed ]] || fail "unattended resume printed '$out'"
 wait_for_log_lines $((lines_before + 1))
-[[ "$(tail -n 1 "$CLAUDE_LOG")" == "${HOME}/programming --resume ${U_SID}" ]] || fail "resume got the prompt: $(tail -n 1 "$CLAUDE_LOG")"
+# Started with --auto-approve and nothing in the transcript yet: the saved setting comes back.
+[[ "$(tail -n 1 "$CLAUDE_LOG")" == "${HOME}/programming --resume ${U_SID} --permission-mode auto" ]] \
+  || fail "resume got the prompt or lost auto mode: $(tail -n 1 "$CLAUDE_LOG")"
 tmux -L "$SOCK" kill-session -t "=$U_NAME"
 pass "open_prompt_ignored_on_resume"
+pass "open_resume_keeps_saved_auto_approve"
+# The transcript's latest settings win: a /model switch and a Shift+Tab to plan mode come
+# back; manual mode needs no flag; a conversation that never chose a model gets none.
+cat >"${HOME}/.claude/projects/-home-programming/${U_SID}.jsonl" <<JSONL
+{"type":"user","permissionMode":"auto","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"model":"claude-sonnet-5-5","role":"assistant"}}
+{"type":"user","permissionMode":"plan","message":{"role":"user","content":"/model"}}
+{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-5-5"}}
+{"type":"assistant","message":{"model":"claude-opus-5-5[1m]","role":"assistant"}}
+JSONL
+lines_before=$(wc -l <"$CLAUDE_LOG")
+out="$("$OPEN" --detached "$U_NAME" '~/programming' "$U_SID" claude)"
+[[ "$out" == resumed ]] || fail "settings resume printed '$out'"
+wait_for_log_lines $((lines_before + 1))
+[[ "$(tail -n 1 "$CLAUDE_LOG")" == "${HOME}/programming --resume ${U_SID} --permission-mode plan --model claude-opus-5-5[1m]" ]] \
+  || fail "resume lost the latest model or mode: $(tail -n 1 "$CLAUDE_LOG")"
+tmux -L "$SOCK" kill-session -t "=$U_NAME"
+D_NAME=ai/claude/todo-defaults1
+D_SID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+cat >"${HOME}/.claude/projects/-home-programming/${D_SID}.jsonl" <<JSONL
+{"type":"user","permissionMode":"manual","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"model":"claude-opus-5-5","role":"assistant"}}
+JSONL
+lines_before=$(wc -l <"$CLAUDE_LOG")
+out="$("$OPEN" --detached "$D_NAME" '~/programming' "$D_SID" claude)"
+[[ "$out" == resumed ]] || fail "defaults resume printed '$out'"
+wait_for_log_lines $((lines_before + 1))
+[[ "$(tail -n 1 "$CLAUDE_LOG")" == "${HOME}/programming --resume ${D_SID}" ]] \
+  || fail "a conversation on the default model and manual mode got flags: $(tail -n 1 "$CLAUDE_LOG")"
+tmux -L "$SOCK" kill-session -t "=$D_NAME"
+pass "open_resume_reapplies_latest_model_and_mode"
 U2_NAME=ai/claude/todo-unattended2
 U2_SID=$(python3 -c 'import uuid; print(uuid.uuid4())')
 lines_before=$(wc -l <"$CLAUDE_LOG")
@@ -2915,6 +2948,15 @@ cat >"$AI_TODO_UPDATES_BIN" <<FAKE
 echo "\$*" >>"$R_UPDATES_LOG"
 FAKE
 chmod +x "$AI_TODO_UPDATES_BIN"
+# And `ai-todo-status report` (the doctor report): never the real one, which asks this
+# computer's own CLIs.
+R_HEALTH_LOG="${SANDBOX}/runner-health.log"
+R_STATUS="${SANDBOX}/bin/fake-status"
+cat >"$R_STATUS" <<FAKE
+#!/bin/sh
+echo "\$*" >>"$R_HEALTH_LOG"
+FAKE
+chmod +x "$R_STATUS"
 R_STATE="${HOME}/.ai-remote/runner-state"
 R_TREES="${HOME}/.ai-remote/worktrees"
 R_OPEN_LOG="${SANDBOX}/runner-open.log"
@@ -2948,7 +2990,8 @@ printf '{"tool":"claude","windows":[{"kind":"5h","used_percent":%s},{"kind":"wee
 FAKE
 chmod +x "$R_OPEN" "$R_LIMITS"
 runner() {
-  AI_TODO_HUB_CONF="$M_CONF" AI_TODO_OPEN_BIN="$R_OPEN" AI_TODO_LIMITS_BIN="$R_LIMITS" AI_TODO_LIMITS_TIMEOUT=2 "$RUNNER" "$@"
+  AI_TODO_HUB_CONF="$M_CONF" AI_TODO_OPEN_BIN="$R_OPEN" AI_TODO_LIMITS_BIN="$R_LIMITS" AI_TODO_LIMITS_TIMEOUT=2 \
+    AI_TODO_STATUS_BIN="$R_STATUS" "$RUNNER" "$@"
 }
 R_REPO="${HOME}/work/app"
 if [[ ! -d "${R_REPO}/.git" ]]; then
@@ -3625,6 +3668,17 @@ wrunner tick || fail "tick failed"
 sleep 0.5
 [[ "$(wc -l <"$R_UPDATES_LOG" | tr -d ' ')" == 1 ]] || fail "ai-todo-updates started again within 5 minutes"
 pass "runner_starts_updates_at_most_every_5_minutes"
+
+rm -f "$R_HEALTH_LOG" "${R_STATE}/health-start.json"
+runs_reset
+wrunner tick || fail "tick failed"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$R_HEALTH_LOG" ]] && break; sleep 0.2; done
+[[ "$(cat "$R_HEALTH_LOG" 2>/dev/null)" == "report" ]] || fail "runner didn't start ai-todo-status report: $(cat "$R_HEALTH_LOG" 2>/dev/null)"
+runs_reset
+wrunner tick || fail "tick failed"
+sleep 0.5
+[[ "$(wc -l <"$R_HEALTH_LOG" | tr -d ' ')" == 1 ]] || fail "the health report started again within 10 minutes"
+pass "runner_reports_health_at_most_every_10_minutes"
 rm -f "${W_DIR}/broken" "${W_DIR}/broken.json" "${W_DIR}/orphan.json"
 
 WATCH="${SCRIPT_DIR}/ai-todo-watch"
@@ -4544,6 +4598,12 @@ PY
 pass "chat transcript preserves roles, blank lines and indentation"
 python3 "${SCRIPT_DIR}/test-status.py" || fail "Codex status delivery/runtime regressions"
 pass "Codex runtime state, concurrency, durable retries and executable discovery"
+python3 "${SCRIPT_DIR}/test-doctor.py" || fail "doctor regressions"
+pass "doctor: install methods, running versions, deliveries, helpers digest, auth, hub report"
+python3 "${SCRIPT_DIR}/test-launch.py" || fail "launch settings regressions"
+pass "launch settings: saved at start, latest model and mode reapplied on resume"
+python3 "${SCRIPT_DIR}/test-restart.py" || fail "restart regressions"
+pass "restart: refuses working/waiting/background, stops cleanly, reopens on the installed version"
 python3 "${SCRIPT_DIR}/test-updates.py" || fail "daily updates regressions"
 pass "daily updates: windows, model choice, Jira keys, redaction, retries, commits, writing"
 

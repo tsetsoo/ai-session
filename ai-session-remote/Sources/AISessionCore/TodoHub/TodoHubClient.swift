@@ -103,6 +103,12 @@ public struct TodoHubClient: Sendable {
         try await decode([Computer].self, send("GET", "/api/computers"))
     }
 
+    /// The computer's last doctor report as the hub keeps it (`report` nil before its first).
+    /// An older hub (no such route) throws `.notFound`.
+    public func computerHealth(id: String) async throws -> ComputerHealthSnapshot {
+        try await decode(ComputerHealthSnapshot.self, send("GET", "/api/computers/\(escape(id))/health"))
+    }
+
     public func createComputer(_ request: CreateComputerRequest) async throws -> Computer {
         try await decode(Computer.self, send("POST", "/api/computers", body: request))
     }

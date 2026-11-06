@@ -24,6 +24,12 @@ jobs:
           python-version: "3.12"
       - name: Offline delivery and runtime regressions
         run: python3 ai-session-remote/scripts/todo/test-status.py
+      - name: Offline doctor regressions
+        run: python3 ai-session-remote/scripts/todo/test-doctor.py
+      - name: Offline launch settings regressions
+        run: python3 ai-session-remote/scripts/todo/test-launch.py
+      - name: Offline restart regressions (skipped without tmux)
+        run: python3 ai-session-remote/scripts/todo/test-restart.py
       - name: Shell syntax
         run: |
           bash -n ai-session-remote/scripts/todo/install.sh

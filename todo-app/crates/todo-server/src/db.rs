@@ -136,6 +136,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v22_objects(&conn).expect("Failed to create the untallied-runs index");
     create_v23_objects(&conn).expect("Failed to add the usage-limit pause columns");
     create_v24_objects(&conn).expect("Failed to add worktree columns");
+    conn.execute_batch(crate::health::V25_OBJECTS).expect("Failed to create the computer health table");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -848,9 +849,11 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v24: `projects.worktrees`, `conversations.worktree_source`, `conversations.branch` (additive)
 /// - v12: memories gain usage, pending, import key and archive reason; `memory_active_days`;
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
+/// - v19..v22: daily updates, failed summaries, weekly recaps, the untallied-runs index (additive)
+/// - v25: `computer_health`, each computer's last doctor report (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 24;
+pub const SCHEMA_VERSION: i64 = 25;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -868,6 +871,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
         if table_sql(conn, "project_updates")?.is_some() {
             if table_sql(conn, "weekly_recaps")?.is_some() {
                 if column_exists(conn, "conversations", "worktree_source")? {
+                    if table_sql(conn, "computer_health")?.is_some() {
+                        return Ok(25);
+                    }
                     return Ok(24);
                 }
                 if column_exists(conn, "conversations", "paused_until")? {
@@ -2889,7 +2895,7 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 24);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(column_exists(&conn, "conversations", "worktree_source").unwrap());
         assert!(column_exists(&conn, "conversations", "branch").unwrap());
         let on: i64 = conn.query_row("SELECT worktrees FROM projects WHERE id = 'p'", [], |r| r.get(0)).unwrap();
@@ -2902,6 +2908,8 @@ mod tests {
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 25);
+        conn.execute_batch("DROP TABLE computer_health;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 24);
         conn.execute_batch("ALTER TABLE conversations DROP COLUMN worktree_source;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 23);
@@ -2909,6 +2917,19 @@ mod tests {
         assert_eq!(schema_version(&conn).unwrap(), 22);
         conn.execute_batch("DROP INDEX job_runs_untallied;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 21);
+    }
+
+    #[test]
+    fn migrates_to_v25() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch("DROP TABLE computer_health; PRAGMA user_version = 24;").unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 25);
+        assert!(table_sql(&conn, "computer_health").unwrap().is_some());
     }
 
     #[test]

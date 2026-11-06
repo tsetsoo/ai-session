@@ -326,6 +326,21 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(self.reap(set()), [])
         self.assertFalse(path.with_suffix(".json").exists())
 
+    def test_backend_is_replaced_after_an_update_only_when_idle_and_ours(self):
+        decide = status.backend_decision
+        self.assertEqual(decide(False, False, True, False), "keep", "nothing changed")
+        # A newer Codex: replace an idle, verified backend; otherwise open on the old one.
+        self.assertEqual(decide(False, True, False, True), "replace")
+        self.assertEqual(decide(False, True, True, False), "keep", "a turn is running")
+        self.assertEqual(decide(False, True, False, False), "keep", "not provably ours")
+        # Changed settings still need a new backend, as before.
+        self.assertEqual(decide(True, False, False, True), "replace")
+        self.assertEqual(decide(True, True, False, True), "replace")
+        with self.assertRaisesRegex(ValueError, "turn is active"):
+            decide(True, True, True, False)
+        with self.assertRaisesRegex(ValueError, "could not verify"):
+            decide(True, False, False, False)
+
     def test_terminal_saves_the_folder_as_trusted_once(self):
         class Client:
             def __init__(self, projects):

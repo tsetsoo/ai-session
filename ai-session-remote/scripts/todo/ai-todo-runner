@@ -84,6 +84,9 @@ sys.path.insert(0, LIB_DIR)
 import ai_todo_workspace as workspace  # noqa: E402
 
 UPDATES_EVERY = 300
+# The doctor report for the app's Health page (`ai-todo-status report`, in the background).
+STATUS_BIN = os.environ.get("AI_TODO_STATUS_BIN") or os.path.join(LIB_DIR, "ai-todo-status")
+HEALTH_EVERY = 600
 WATCH_TIMEOUT = 60
 LIMITS_TIMEOUT = float(os.environ.get("AI_TODO_LIMITS_TIMEOUT") or 20)
 MAX_STARTS = 3
@@ -518,6 +521,23 @@ def maybe_start_updates():
         log("updates_start_failed", error=type(e).__name__)
 
 
+def maybe_report_health():
+    """Start `ai-todo-status report` (doctor -> hub) at most every HEALTH_EVERY seconds. It
+    takes a few seconds (it asks each CLI for its version and login), so the tick doesn't wait."""
+    if not os.access(STATUS_BIN, os.X_OK):
+        return
+    path = os.path.join(STATE_DIR, "health-start.json")
+    state = load_json(path, {}) or {}
+    if now() - float(state.get("at") or 0) < HEALTH_EVERY:
+        return
+    try:
+        subprocess.Popen([STATUS_BIN, "report"], start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+        save_json(path, {"at": now()})
+    except OSError as e:
+        log("health_start_failed", error=type(e).__name__)
+
+
 def do_resolves(hub, resolves):
     env = None
     for item in resolves or []:
@@ -686,6 +706,7 @@ def cmd_tick(args):
         report_watchers(hub, computer_id)
         report_job_templates(hub, computer_id)
         maybe_start_updates()
+        maybe_report_health()
     cleanup_worktrees()
     status["started"] = [t for t in status.get("started", []) if t > now() - 86400]
     save_json(status_path, status)

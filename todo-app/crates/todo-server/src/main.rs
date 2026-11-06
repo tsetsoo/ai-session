@@ -9,6 +9,7 @@ mod daily;
 mod db;
 mod describe;
 mod handlers;
+mod health;
 mod ideas;
 mod jobs;
 mod limits;
@@ -70,6 +71,8 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/computers/{id}/job-templates", web::put().to(watch::put_job_templates))
         .route("/api/job-templates", web::get().to(watch::list_job_templates))
         .route("/api/computers/{id}/watchers", web::put().to(watch::put_watchers))
+        .route("/api/computers/{id}/health", web::get().to(health::get_health))
+        .route("/api/computers/{id}/health", web::put().to(health::put_health))
         .route("/api/computers/{id}", web::patch().to(conversations::update_computer))
         .route("/api/computers/{id}", web::delete().to(conversations::delete_computer))
         .route("/api/sections/computers", web::get().to(conversations::list_section_computers))

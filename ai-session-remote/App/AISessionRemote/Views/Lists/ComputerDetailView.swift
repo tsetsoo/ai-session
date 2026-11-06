@@ -5,7 +5,7 @@ import SwiftUI
 /// A computer's tools besides its conversations. In the Mac shell they open in the detail
 /// column: their rows select like conversations, tagged `page:<name>`.
 enum ComputerPage: String, CaseIterable {
-    case otherSessions, onThisComputer, shell
+    case otherSessions, onThisComputer, health, shell
 
     var tag: String { "page:\(rawValue)" }
 
@@ -18,6 +18,7 @@ enum ComputerPage: String, CaseIterable {
         switch self {
         case .otherSessions: "Other Sessions"
         case .onThisComputer: "On This Computer"
+        case .health: "Health"
         case .shell: "Open Shell"
         }
     }
@@ -26,6 +27,7 @@ enum ComputerPage: String, CaseIterable {
         switch self {
         case .otherSessions: "terminal"
         case .onThisComputer: "text.bubble"
+        case .health: "stethoscope"
         case .shell: "apple.terminal"
         }
     }
@@ -35,6 +37,7 @@ enum ComputerPage: String, CaseIterable {
         switch self {
         case .otherSessions: SessionsListView(host: host)
         case .onThisComputer: OnThisComputerView(computer: computer)
+        case .health: ComputerHealthView(computer: computer)
         case .shell: ShellScreen(host: host)
         }
     }
@@ -123,7 +126,7 @@ struct ComputerDetailView: View {
                         }
                     }
                 } footer: {
-                    Text("Manage other sessions, link conversations to todos, or open a shell that keeps running when you leave.")
+                    Text("Manage other sessions, link conversations to todos, check the computer's health, or open a shell that keeps running when you leave.")
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

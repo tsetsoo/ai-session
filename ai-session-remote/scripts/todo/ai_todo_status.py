@@ -55,6 +55,15 @@ def read_json(path, default=None):
 
 
 def configuration():
+    values = hub_values()
+    url = values.get("TODO_HUB_URL", "").rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("TODO_HUB_URL is missing or invalid")
+    return url, values.get("TODO_API_TOKEN", "")
+
+
+def hub_values():
+    """Every KEY=value in todo-hub.conf (TODO_HUB_URL, TODO_API_TOKEN, TODO_COMPUTER_ID)."""
     path = Path(os.environ.get("AI_TODO_HUB_CONF", str(Path.home() / ".ai-remote" / "todo-hub.conf")))
     values = {}
     for line in path.read_text().splitlines():
@@ -64,10 +73,7 @@ def configuration():
         if len(words) == 1 and "=" in words[0]:
             key, value = words[0].split("=", 1)
             values[key] = value
-    url = values.get("TODO_HUB_URL", "").rstrip("/")
-    if not url.startswith(("http://", "https://")):
-        raise ValueError("TODO_HUB_URL is missing or invalid")
-    return url, values.get("TODO_API_TOKEN", "")
+    return values
 
 
 @contextlib.contextmanager
@@ -1038,6 +1044,26 @@ def trust_folder(client, cwd):
                                        "value": {cwd: {"trust_level": "trusted"}}})
 
 
+def backend_decision(settings_changed, upgraded, busy, verified):
+    """Whether terminal() replaces a conversation's running backend: "keep" or "replace".
+
+    Changed settings (MCP servers, approval flags, folder) need a new backend, so a busy or
+    unverifiable one is an error, as before. A newer Codex alone (`upgraded`) replaces an
+    idle, verified backend; otherwise the conversation opens on the older one, never fails.
+    """
+    if not settings_changed and not upgraded:
+        return "keep"
+    if busy:
+        if settings_changed:
+            raise ValueError("runtime settings changed while a turn is active")
+        return "keep"
+    if not verified:
+        if settings_changed:
+            raise ValueError("could not verify the previous runtime process")
+        return "keep"
+    return "replace"
+
+
 def terminal(name, cwd, args):
     """Launch an observable backend with this terminal's MCP config and environment."""
     path = terminal_socket(name)
@@ -1049,6 +1075,9 @@ def terminal(name, cwd, args):
     env_file = Path.home() / ".ai-remote/mcp/env"
     stamp = env_file.stat().st_mtime_ns if env_file.exists() else 0
     digest = hashlib.sha256(json.dumps([backend, cwd, stamp]).encode()).hexdigest()
+    # The binary behind backend[0]: `…/current/bin/codex` and ~/.local/bin links keep their
+    # path when Codex updates, so the resolved file tells an older backend apart.
+    binary = os.path.realpath(backend[0])
     record_path = directory / (key + ".json")
     with open(directory / (key + ".lock"), "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -1060,18 +1089,24 @@ def terminal(name, cwd, args):
             pass
         if existing:
             try:
-                if record.get("digest") != digest:
-                    if any(value[0] != "idle" for value in existing.states().values()):
-                        raise ValueError("runtime settings changed while a turn is active")
+                settings_changed = record.get("digest") != digest
+                upgraded = record.get("binary") != binary
+                if settings_changed or upgraded:
+                    busy = any(value[0] != "idle" for value in existing.states().values())
                     pid = record.get("pid")
-                    # Only replace our own idle backend, never an unrelated reused PID.
-                    command = subprocess.check_output(["ps", "-p", str(pid), "-o", "command="], text=True)
-                    if endpoint not in command or os.getpgid(pid) != pid:
-                        raise ValueError("could not verify the previous runtime process")
-                    # The verified, idle backend must be gone before resuming.
-                    stop_process_group(pid)
-                    existing.close()
-                    existing = None
+                    verified = False
+                    if not busy:
+                        # Only replace our own idle backend, never an unrelated reused PID.
+                        try:
+                            command = subprocess.check_output(["ps", "-p", str(pid), "-o", "command="], text=True)
+                            verified = endpoint in command and os.getpgid(pid) == pid
+                        except (subprocess.CalledProcessError, OSError, TypeError):
+                            verified = False
+                    if backend_decision(settings_changed, upgraded, busy, verified) == "replace":
+                        # The verified, idle backend must be gone before resuming.
+                        stop_process_group(pid)
+                        existing.close()
+                        existing = None
             finally:
                 if existing:
                     existing.close()
@@ -1100,7 +1135,7 @@ def terminal(name, cwd, args):
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGTERM)
                 raise OSError("terminal runtime did not become ready")
-            atomic_json(record_path, {"pid": process.pid, "digest": digest})
+            atomic_json(record_path, {"pid": process.pid, "digest": digest, "binary": binary})
     try:
         client = RuntimeSocket(path)
         try:

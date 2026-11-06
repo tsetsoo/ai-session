@@ -228,6 +228,37 @@ public enum TmuxCommandBuilder {
     /// 5-hour, weekly and monthly limits for this tool's login on the computer.
     /// `--session` is sent only when the chat has an id, so Codex can read that
     /// conversation's own snapshot. The script prints JSON and does not print tokens.
+    /// The computer's doctor report as JSON (`HostHealth`): tool versions and logins, the
+    /// version each running conversation uses, the status service and pending deliveries.
+    /// Read-only; it takes a few seconds.
+    public static let doctor = wrap("\"$HOME/.ai-remote/bin/ai-todo-status\" doctor")
+
+    /// Exit status of `ai-todo-status restart` when the conversation is working, waiting for
+    /// the user, has background tasks or an unreadable state. stdout still has the JSON.
+    public static let restartRefusedExitCode: Int32 = 75
+
+    /// Restarts one conversation (`RestartResult` JSON): refuses while it works or waits
+    /// unless `force`, ends its CLI cleanly, and with `reopenCwd` starts it again detached
+    /// (with `mcpServers` as `--mcp`). Without it, attaching resumes it.
+    public static func restartConversation(
+        tmuxName: String, sessionId: String, tool: String, force: Bool = false,
+        chrome: ChromeChoice = .keep, reopenCwd: String? = nil, mcpServers: [String]? = nil
+    ) -> String {
+        var command = "\"$HOME/.ai-remote/bin/ai-todo-status\" restart \(shellQuote(tmuxName)) \(shellQuote(sessionId)) \(shellQuote(tool))"
+        if force { command += " --force" }
+        if chrome != .keep, tool == "claude" { command += " --chrome \(chrome.rawValue)" }
+        if let reopenCwd {
+            command += " --reopen \(shellQuote(reopenCwd))"
+            if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
+        }
+        return wrap(command)
+    }
+
+    /// The conversation's saved launch settings as JSON (`LaunchSettings`).
+    public static func launchSettings(tool: String, sessionId: String) -> String {
+        wrap("\"$HOME/.ai-remote/bin/ai-todo-status\" launch show \(shellQuote(tool)) \(shellQuote(sessionId))")
+    }
+
     public static func usageLimits(tool: String, sessionId: String?) -> String {
         var command = "\"$HOME/.ai-remote/bin/ai-todo-limits\" --tool \(shellQuote(tool))"
         if let sessionId, !sessionId.isEmpty {

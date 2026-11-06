@@ -1013,6 +1013,12 @@ final class TodoHubStore {
         return memories.filter(\.pending)
     }
 
+    /// The computer's last doctor report as the hub keeps it (the Health page shows it while
+    /// it asks the computer itself, and instead when it can't).
+    func computerHealth(computerId: String) async throws -> ComputerHealthSnapshot {
+        try await requireClient().computerHealth(id: computerId)
+    }
+
     // MARK: Scheduler
 
     /// "Scheduled · <job>" for a scheduled todo, nil for any other.

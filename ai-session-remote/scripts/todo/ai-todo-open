@@ -308,6 +308,32 @@ check_codex_writer() {
   }
 }
 
+# Launch settings (ai-todo-status launch): what a new conversation started with is saved,
+# and a resume gets the conversation's latest model and permission mode back. Optional:
+# without the helper (or if it fails) the resume goes ahead as before.
+launch_bin=${AI_TODO_STATUS_BIN:-$(dirname "$0")/ai-todo-status}
+# Sets resume_words: the resume arguments, one checked word per line.
+resume_settings() { # [resume-args|create-args]
+  [ -x "$launch_bin" ] || return 0
+  extra=$("$launch_bin" launch "${1:-resume-args}" "$tool" "$sid" 2>/dev/null) || return 0
+  # Only this helper's answer (older helpers and test fakes print other things).
+  [ "$(printf '%s\n' "$extra" | head -n 1)" = "ai-todo-launch v1" ] || return 0
+  extra=$(printf '%s\n' "$extra" | sed 1d)
+  [ -n "$extra" ] || return 0
+  # Model names, modes and two fixed -c values: nothing else gets through.
+  printf '%s\n' "$extra" | LC_ALL=C grep -Eqvx '[]["A-Za-z0-9._:=-]+' && return 0
+  resume_words=$extra
+}
+save_launch() { # <session id>
+  [ -x "$launch_bin" ] || return 0
+  [ -n "$model" ] || [ "$auto_approve" = 1 ] || return 0
+  set -- launch save "$tool" "$1"
+  [ -n "$model" ] && set -- "$@" --model "$model"
+  [ "$auto_approve" = 1 ] && set -- "$@" --auto-approve
+  "$launch_bin" "$@" </dev/null >/dev/null 2>&1 || true
+}
+resume_words=
+
 # The threads this session's own ai-todo-status backend has loaded that were not in
 # $loaded_before, one per line. A fresh TUI's thread is loaded there at startup.
 backend_new_ids() {
@@ -447,6 +473,7 @@ if [ "$tool" = codex ]; then
   else
     mode=resumed
     check_codex_writer
+    resume_settings
     set -- "$codex_bin" resume "$sid" --approve-for-me
   fi
   if [ "$managed_runtime" = 1 ]; then
@@ -493,14 +520,41 @@ else
   # Claude stores each conversation as ~/.claude/projects/<project>/<session-id>.jsonl.
   if [ -n "$(find "$HOME/.claude/projects" -maxdepth 2 -name "$sid.jsonl" -print 2>/dev/null | head -n 1)" ]; then
     mode=resumed
+    resume_settings
     set -- "$claude_bin" --resume "$sid"
   else
     mode=created
+    # A restart before anything was sent comes back here: keep its saved Chrome choice.
+    resume_settings create-args
     set -- "$claude_bin" --session-id "$sid"
+    # Right after the id, ahead of a first prompt (which must stay the last argument).
+    if [ -n "$resume_words" ]; then
+      set -f
+      ai_ifs=$IFS
+      IFS='
+'
+      # shellcheck disable=SC2086
+      set -- "$@" $resume_words
+      IFS=$ai_ifs
+      set +f
+      resume_words=
+    fi
     [ "$auto_approve" = 1 ] && set -- "$@" --permission-mode auto
     [ -n "$model" ] && set -- "$@" --model "$model"
     [ -n "$first_prompt" ] && set -- "$@" "$first_prompt"
   fi
+fi
+
+if [ -n "$resume_words" ]; then
+  # One word per line, already checked above: split on newlines only, no globbing.
+  set -f
+  ai_ifs=$IFS
+  IFS='
+'
+  # shellcheck disable=SC2086
+  set -- "$@" $resume_words
+  IFS=$ai_ifs
+  set +f
 fi
 
 # --mcp: put the selected servers' launch arguments after the tool binary, before the id
@@ -645,8 +699,10 @@ if [ "$fresh" = 1 ]; then
   }
   mode="created $new_id"
   report_mcp "$new_id"
+  save_launch "$new_id"
 else
   report_mcp "$sid"
+  if [ "$mode" = created ]; then save_launch "$sid"; fi
 fi
 show_mcp_warnings
 attach "$mode"
