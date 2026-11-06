@@ -62,53 +62,83 @@ final class ReviewSession {
 
     // MARK: Loading
 
+    /// Loads the scope on screen. A newer load (another scope, Refresh) supersedes this one:
+    /// whatever this one gets back after that is dropped, so the window never shows one
+    /// scope's diff under another's name.
     func load(config: HostConnectionConfig) async {
+        loadGeneration += 1
+        let generation = loadGeneration
+        let scope = scope
+        var from: String?
+        if scope == .since {
+            guard let batch = record.lastBatch else {
+                // The picker's change restarts the load.
+                self.scope = .uncommitted
+                return
+            }
+            from = batch.revision
+        }
         isLoading = true
-        defer { isLoading = false }
+        defer { if generation == loadGeneration { isLoading = false } }
         do {
             let status: ReviewStatus = try await run(TmuxCommandBuilder.reviewStatus(cwd: conversation.cwd), config: config)
-            self.status = status
-            var from: String?
-            if scope == .since {
-                guard let batch = record.lastBatch else {
-                    scope = .uncommitted
-                    return await load(config: config)
-                }
-                from = batch.revision
-            }
+            guard generation == loadGeneration else { return }
             let result: ReviewDiffResult = try await run(
                 TmuxCommandBuilder.reviewDiff(cwd: conversation.cwd, scope: scope, from: from, to: status.revision),
                 config: config
             )
+            guard generation == loadGeneration else { return }
+            let placed = await placeComments(at: result.to, config: config)
+            guard generation == loadGeneration else { return }
+            self.status = status
             self.result = result
             diff = UnifiedDiff(parsing: result.patch)
+            anchors = placed
             failure = nil
-            await placeComments(at: result.to, config: config)
         } catch {
+            guard generation == loadGeneration else { return }
             failure = Failure(errorDescription: message(for: error))
         }
     }
 
-    /// Works out where every kept comment is in `revision`, one `--unified 0` diff per older
-    /// revision. A revision that is gone (an unsent snapshot after gc) leaves its comments unplaced.
-    private func placeComments(at revision: String, config: HostConnectionConfig) async {
+    @ObservationIgnored private var loadGeneration = 0
+
+    /// Where every kept new-side comment is in `revision`: one `--unified 0` diff per older
+    /// revision, fetched at the same time. A comment stays unplaced when its revision is gone
+    /// or the diff failed, and when its file is past the end of a cut-off diff (it would read
+    /// as untouched).
+    private func placeComments(at revision: String, config: HostConnectionConfig) async -> [UUID: ReviewAnchor] {
         var placed: [UUID: ReviewAnchor] = [:]
         let live = record.comments.filter { $0.state != .dismissed && $0.side == .new }
-        for (commentRevision, comments) in Dictionary(grouping: live, by: \.revision) {
-            if commentRevision == revision {
-                for comment in comments {
-                    placed[comment.id] = .moved(path: comment.path, startLine: comment.startLine, endLine: comment.endLine)
-                }
-                continue
-            }
-            guard let between: ReviewDiffResult = try? await run(
-                TmuxCommandBuilder.reviewDiff(cwd: conversation.cwd, scope: .since, from: commentRevision, to: revision, unified: 0),
-                config: config
-            ) else { continue }
-            let mapping = UnifiedDiff(parsing: between.patch)
-            for comment in comments { placed[comment.id] = ReviewAnchor.resolve(comment, through: mapping) }
+        let byRevision = Dictionary(grouping: live, by: \.revision)
+        for comment in byRevision[revision] ?? [] {
+            placed[comment.id] = .moved(path: comment.path, startLine: comment.startLine, endLine: comment.endLine)
         }
-        anchors = placed
+        let older = byRevision.keys.filter { $0 != revision }
+        let cwd = conversation.cwd
+        let mappings = await withTaskGroup(of: (String, ReviewDiffResult?).self) { group in
+            for commentRevision in older {
+                group.addTask {
+                    let between: ReviewDiffResult? = try? await self.run(
+                        TmuxCommandBuilder.reviewDiff(cwd: cwd, scope: .since, from: commentRevision, to: revision, unified: 0),
+                        config: config
+                    )
+                    return (commentRevision, between)
+                }
+            }
+            var all: [String: ReviewDiffResult] = [:]
+            for await (commentRevision, between) in group { all[commentRevision] = between }
+            return all
+        }
+        // A failed diff left no entry: its comments stay unplaced.
+        for (commentRevision, between) in mappings {
+            let mapping = UnifiedDiff(parsing: between.patch)
+            for comment in byRevision[commentRevision] ?? [] {
+                if between.truncated, mapping.file(fromOldPath: comment.path) == nil { continue }
+                placed[comment.id] = ReviewAnchor.resolve(comment, through: mapping)
+            }
+        }
+        return placed
     }
 
     // MARK: Comments
@@ -158,6 +188,7 @@ final class ReviewSession {
         record.comments.filter { comment in
             guard comment.state != .dismissed else { return false }
             if comment.side == .old {
+                // `path` is the file's old path for removed lines (they're in the old revision).
                 return side == .old && comment.revision == result?.from && comment.path == path
                     && (comment.endLine ?? comment.startLine) == line
             }
@@ -168,13 +199,15 @@ final class ReviewSession {
 
     /// Comments of a file that aren't on a line of the diff on screen: whole-file ones, ones on
     /// lines the diff doesn't show, and ones whose lines changed since.
-    func otherComments(path: String, file: DiffFile) -> [ReviewComment] {
+    func otherComments(file: DiffFile) -> [ReviewComment] {
+        let path = file.path
+        let oldPath = file.oldPath ?? file.path
         let shownNew = Set(file.hunks.flatMap(\.lines).compactMap { $0.kind == .removed ? nil : $0.newLine })
         let shownOld = Set(file.hunks.flatMap(\.lines).compactMap { $0.kind == .removed ? $0.oldLine : nil })
         return record.comments.filter { comment in
             guard comment.state != .dismissed else { return false }
             if comment.side == .old {
-                guard comment.path == path else { return false }
+                guard comment.path == oldPath else { return false }
                 return comment.revision != result?.from || !shownOld.contains(comment.endLine ?? comment.startLine ?? -1)
             }
             switch anchors[comment.id] {
@@ -197,7 +230,7 @@ final class ReviewSession {
 
     /// Comments not tied to any file in this diff (their file has no changes in this scope).
     func commentsOutsideDiff() -> [ReviewComment] {
-        let paths = Set(diff.files.map(\.path))
+        let paths = Set(diff.files.map(\.path) + diff.files.compactMap(\.oldPath))
         return record.comments.filter { comment in
             guard comment.state != .dismissed else { return false }
             if case let .moved(path, _, _)? = anchors[comment.id] { return !paths.contains(path) }
@@ -205,11 +238,11 @@ final class ReviewSession {
         }
     }
 
-    func commentCount(path: String) -> Int {
+    func commentCount(file: DiffFile) -> Int {
         record.comments.filter { comment in
             guard comment.state != .dismissed else { return false }
-            if case let .moved(movedPath, _, _)? = anchors[comment.id] { return movedPath == path }
-            return comment.path == path
+            if case let .moved(movedPath, _, _)? = anchors[comment.id] { return movedPath == file.path }
+            return comment.path == (comment.side == .old ? file.oldPath ?? file.path : file.path)
         }.count
     }
 
@@ -275,8 +308,19 @@ final class ReviewSession {
 
     private func run<T: Decodable>(_ command: String, config: HostConnectionConfig) async throws -> T {
         let output = try await exec(config, command)
-        if output.exitCode == TmuxCommandBuilder.reviewNoRepositoryExitCode {
+        switch output.exitCode {
+        case TmuxCommandBuilder.reviewNoRepositoryExitCode:
             throw Failure(errorDescription: "\(conversation.cwd) on \(conversation.computer.name) isn't a git repository.")
+        case TmuxCommandBuilder.reviewUnknownRevisionExitCode:
+            throw Failure(errorDescription: "The changes being compared aren't on \(conversation.computer.name) any more. "
+                + "Choose Uncommitted or Branch.")
+        case TmuxCommandBuilder.reviewGitFailedExitCode:
+            // git's own words: they name the file or lock that is the problem.
+            let detail = output.stderr.split(separator: "\n").first.map { $0.replacingOccurrences(of: "ai-todo-review: ", with: "") }
+            throw Failure(errorDescription: "git failed in \(conversation.cwd) on \(conversation.computer.name)"
+                + (detail.map { ": \(String($0.prefix(200)))" } ?? "."))
+        default:
+            break
         }
         try RemoteConversations.check(output, computerName: conversation.computer.name)
         do {

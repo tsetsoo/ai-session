@@ -6,7 +6,7 @@ Usage:
   ai-todo-review diff <cwd> [--scope uncommitted|branch|since] [--from <sha>] [--to <sha>]
                             [--unified N] [--max-bytes N]
   ai-todo-review keep <cwd> <sha>
-  ai-todo-review send <tmux_name>          (the message on stdin)
+  ai-todo-review send [--base64] <tmux_name>   (the message on stdin)
 
 Every command but send prints JSON.
 
@@ -22,12 +22,17 @@ diff    a unified diff of the repository (paths from its root) from --from to --
         base, since = --from as given. --unified 0 is for moving comments between revisions.
 keep    refs/ai-review/<sha> -> sha, so a revision feedback was sent against survives gc.
 send    pastes stdin into the tmux session `<tmux_name>` as a bracketed paste, then Return.
-        Refused (exit 75) while the program there hasn't turned bracketed paste on: line by
-        line, every newline would submit.
+        --base64: stdin is base64 (the app sends it so; decoding here needs no base64 flags).
+        Paste end markers (ESC[201~) in the message are dropped, so it can't end the paste
+        early. Refused (exit 75) while the program there hasn't turned bracketed paste on:
+        line by line, every newline would submit.
 
-Exit codes: 64 bad arguments, 66 no such tmux session, 69 not a git repository (or cwd
-missing), 75 the pane isn't ready for a paste, 90 git or tmux missing.
+Exit codes: 64 bad arguments, 65 unknown revision or empty message, 66 no such tmux
+session, 69 not a git repository (or cwd missing), 70 git failed (its message on stderr),
+75 the pane isn't ready for a paste, 90 git or tmux missing.
 """
+import base64
+import binascii
 import json
 import os
 import shutil
@@ -221,7 +226,7 @@ def cmd_diff(args):
         from_sha = head
     for sha in (from_sha, to_sha):
         if sha and not line(root, "rev-parse", "--verify", "-q", sha + "^{commit}"):
-            die("unknown revision %s" % sha, 64)
+            die("unknown revision %s" % sha, 65)
     if from_sha is None:
         # No commits yet: everything is new.
         from_sha = line(root, "hash-object", "-t", "tree", "/dev/null")
@@ -246,7 +251,7 @@ def cmd_keep(args):
     root = repo_root(args[0])
     sha = line(root, "rev-parse", "--verify", "-q", args[1] + "^{commit}")
     if not sha:
-        die("unknown revision %s" % args[1], 64)
+        die("unknown revision %s" % args[1], 65)
     git(root, "update-ref", KEEP_PREFIX + sha, sha)
     print(json.dumps({"kept": sha}))
 
@@ -260,13 +265,27 @@ def tmux(*args, stdin=None):
         die("tmux not found", 90)
 
 
+PASTE_END = b"\x1b[201~"
+
+
 def cmd_send(args):
+    encoded = bool(args) and args[0] == "--base64"
+    if encoded:
+        args = args[1:]
     if len(args) != 1 or not args[0]:
-        die("usage: ai-todo-review send <tmux_name> < message", 64)
+        die("usage: ai-todo-review send [--base64] <tmux_name> < message", 64)
     name = args[0]
     message = sys.stdin.buffer.read()
+    if encoded:
+        try:
+            message = base64.b64decode(message.strip(), validate=True)
+        except (binascii.Error, ValueError):
+            die("the message isn't base64", 64)
+    # Removing one marker can join the pieces around it into another.
+    while PASTE_END in message:
+        message = message.replace(PASTE_END, b"")
     if not message.strip():
-        die("empty message", 64)
+        die("empty message", 65)
     target = "=%s:" % name
     if tmux("has-session", "-t", "=" + name).returncode != 0:
         die("no tmux session %s" % name, 66)
@@ -291,7 +310,7 @@ def main(argv):
     try:
         commands[argv[0]](argv[1:])
     except GitError as error:
-        die(str(error)[:300] or "git failed", 69)
+        die(str(error)[:300] or "git failed", 70)
 
 
 if __name__ == "__main__":

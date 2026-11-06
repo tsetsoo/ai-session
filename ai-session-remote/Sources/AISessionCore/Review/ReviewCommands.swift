@@ -10,6 +10,10 @@ extension TmuxCommandBuilder {
     public static let reviewNoSessionExitCode: Int32 = 66
     /// Not a git repository, or the folder is gone.
     public static let reviewNoRepositoryExitCode: Int32 = 69
+    /// A revision that isn't in the repository (any more), or an empty message.
+    public static let reviewUnknownRevisionExitCode: Int32 = 65
+    /// git itself failed; its message is on stderr.
+    public static let reviewGitFailedExitCode: Int32 = 70
 
     public static func reviewStatus(cwd: String) -> String {
         wrap("exec \(reviewHelper) status \(shellQuotePath(cwd))")
@@ -28,9 +32,10 @@ extension TmuxCommandBuilder {
         wrap("exec \(reviewHelper) keep \(shellQuotePath(cwd)) \(shellQuote(revision))")
     }
 
-    /// The message travels base64-encoded, so no byte of it is ever shell syntax.
+    /// The message travels base64-encoded, so no byte of it is ever shell syntax. The helper
+    /// decodes it itself: `base64 -d` vs `-D` differs between hosts.
     public static func reviewSend(tmuxName: String, message: String) -> String {
         let encoded = Data(message.utf8).base64EncodedString()
-        return wrap("printf '%s' \(shellQuote(encoded)) | base64 -d | \(reviewHelper) send \(shellQuote(tmuxName))")
+        return wrap("printf '%s' \(shellQuote(encoded)) | \(reviewHelper) send --base64 \(shellQuote(tmuxName))")
     }
 }

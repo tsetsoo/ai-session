@@ -73,6 +73,16 @@ struct ReviewTests {
         #expect(diff.files[4].isBinary)
     }
 
+    @Test func crlfFilesSplitIntoLines() {
+        let patch = "diff --git a/w.txt b/w.txt\n--- a/w.txt\n+++ b/w.txt\n@@ -1,2 +1,2 @@\n-a\r\n+b\r\n c\r\n"
+            + "diff --git a/n.txt b/n.txt\n--- a/n.txt\n+++ b/n.txt\n@@ -1 +1 @@\n-x\n+y\n"
+        let diff = UnifiedDiff(parsing: patch)
+        #expect(diff.files.map(\.path) == ["w.txt", "n.txt"])
+        #expect(diff.files[0].hunks[0].lines.map(\.text) == ["a", "b", "c"])
+        #expect(diff.files[0].hunks[0].lines.map(\.kind) == [.removed, .added, .context])
+        #expect(diff.files[1].additions == 1)
+    }
+
     @Test func hunkHeaderDefaultsCountToOne() {
         let hunk = UnifiedDiff.hunkHeader("@@ -7 +9,0 @@")
         #expect(hunk?.oldStart == 7 && hunk?.oldCount == 1 && hunk?.newStart == 9 && hunk?.newCount == 0)
@@ -189,6 +199,13 @@ struct ReviewTests {
         """)
     }
 
+    @Test func messageNamesTheRevisionOfAStaleComment() {
+        let stale = [ReviewComment(path: "f.swift", startLine: 40, endLine: nil, revision: "aaaaaaaa1111",
+                                   quote: ["old"], body: "b")]
+        #expect(ReviewMessage.render(stale, branch: nil, revision: "bbbbbbbb2222", includesUncommitted: false)
+            .contains("1. f.swift:40 (at aaaaaaaa; these lines have changed since)"))
+    }
+
     @Test func messageWithoutBranch() {
         let one = [ReviewComment(path: "a", startLine: 1, endLine: 1, revision: "abc", quote: [], body: "b")]
         #expect(ReviewMessage.render(one, branch: nil, revision: "abc", includesUncommitted: false)
@@ -204,7 +221,7 @@ struct ReviewTests {
         #expect(TmuxCommandBuilder.reviewKeep(cwd: "/w", revision: "abc").hasSuffix("keep '/w' 'abc'"))
         let send = TmuxCommandBuilder.reviewSend(tmuxName: "ai/claude/todo-1", message: "it's $(rm -rf /)\n")
         let encoded = Data("it's $(rm -rf /)\n".utf8).base64EncodedString()
-        #expect(send.hasSuffix("printf '%s' '\(encoded)' | base64 -d | \"$HOME/.ai-remote/bin/ai-todo-review\" send 'ai/claude/todo-1'"))
+        #expect(send.hasSuffix("printf '%s' '\(encoded)' | \"$HOME/.ai-remote/bin/ai-todo-review\" send --base64 'ai/claude/todo-1'"))
     }
 
     @Test func statusDecodesScriptOutput() throws {

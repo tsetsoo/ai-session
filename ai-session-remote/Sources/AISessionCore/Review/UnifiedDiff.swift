@@ -34,8 +34,11 @@ public struct UnifiedDiff: Equatable, Sendable {
             file = nil
         }
 
-        for raw in patch.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
+        // Split on the byte, not the Character: Swift reads "\r\n" as one Character, so a CRLF
+        // file's lines would never split. The CR stays out of the line's text.
+        for raw in patch.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false) {
+            let bytes = raw.last == UInt8(ascii: "\r") ? raw.dropLast() : raw[...]
+            let line = String(decoding: bytes, as: UTF8.self)
             if line.hasPrefix("diff --git ") {
                 closeFile()
                 let paths = Self.headerPaths(String(line.dropFirst("diff --git ".count)))

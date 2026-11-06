@@ -3671,9 +3671,14 @@ pass "review_diff_scopes_uncommitted_branch_since"
 
 "$REVIEW" keep "$RV_REPO" "$rev1" >/dev/null || fail "keep failed"
 [[ "$(git -C "$RV_REPO" rev-parse "refs/ai-review/${rev1}")" == "$rev1" ]] || fail "keep made no ref"
-for bad in 'nope' 'status' 'diff' "diff $RV_REPO --scope since" "diff $RV_REPO --scope weird" "keep $RV_REPO 0000000"; do
+for bad in 'nope' 'status' 'diff' "diff $RV_REPO --scope since" "diff $RV_REPO --scope weird"; do
   status=0; eval "\"\$REVIEW\" $bad" >/dev/null 2>&1 || status=$?
   [[ $status -eq 64 ]] || fail "review $bad exit $status"
+done
+# A revision that is gone is not a usage error (the app would call the helper outdated).
+for gone in "keep $RV_REPO 0000000" "diff $RV_REPO --scope since --from 0000000"; do
+  status=0; eval "\"\$REVIEW\" $gone" >/dev/null 2>&1 || status=$?
+  [[ $status -eq 65 ]] || fail "review $gone exit $status"
 done
 status=0; "$REVIEW" status "${SANDBOX}/no-such-folder" >/dev/null 2>&1 || status=$?
 [[ $status -eq 69 ]] || fail "missing folder exit $status"
@@ -3696,12 +3701,13 @@ for _ in $(seq 1 50); do
   [[ "$(tmux -L "$SOCK" display-message -p -t '=rv-ready:' '#{bracket_paste_flag}')" == 1 ]] && break
   sleep 0.1
 done
-printf 'Review feedback\n1. f.txt:2\nfix it\n' | "$REVIEW" send rv-ready >/dev/null || fail "send failed"
+# Base64 in, as the app sends it; an end marker in a quoted line must not end the paste.
+printf 'Review feedback\n1. f.txt:2\n> \033[201~x\nfix it\n' | base64 | "$REVIEW" send --base64 rv-ready >/dev/null || fail "send failed"
 for _ in $(seq 1 50); do grep -q 'fix it' "$RV_OUT" 2>/dev/null && break; sleep 0.1; done
 python3 - "$RV_OUT" <<'PY' || fail "pasted bytes: $(od -c "$RV_OUT" | head)"
 import sys
 data = open(sys.argv[1], "rb").read()
-assert data == b"\x1b[200~Review feedback\r1. f.txt:2\rfix it\x1b[201~\r", data
+assert data == b"\x1b[200~Review feedback\r1. f.txt:2\r> x\rfix it\x1b[201~\r", data
 PY
 tmux -L "$SOCK" new-session -d -s rv-plain -x 80 -y 24 "sleep 300"
 status=0; printf 'x\ny\n' | "$REVIEW" send rv-plain >/dev/null 2>&1 || status=$?
@@ -3709,7 +3715,9 @@ status=0; printf 'x\ny\n' | "$REVIEW" send rv-plain >/dev/null 2>&1 || status=$?
 status=0; printf 'x\n' | "$REVIEW" send rv-missing >/dev/null 2>&1 || status=$?
 [[ $status -eq 66 ]] || fail "send to a missing session exit $status"
 status=0; printf '  \n' | "$REVIEW" send rv-ready >/dev/null 2>&1 || status=$?
-[[ $status -eq 64 ]] || fail "send of nothing exit $status"
+[[ $status -eq 65 ]] || fail "send of nothing exit $status"
+status=0; printf 'not base64!' | "$REVIEW" send --base64 rv-ready >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "send of bad base64 exit $status"
 tmux -L "$SOCK" kill-session -t '=rv-ready' 2>/dev/null || true
 tmux -L "$SOCK" kill-session -t '=rv-plain' 2>/dev/null || true
 pass "review_send_pastes_bracketed_or_refuses"

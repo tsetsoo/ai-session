@@ -10,6 +10,10 @@ final class ReviewSessionTests: XCTestCase {
     private var commands: [String] = []
     private var sendExit: Int32 = 0
     private var revision = "rev2"
+    private var mappingTruncated = false
+    /// While set, the uncommitted diff waits for `release()`.
+    private var holdUncommitted = false
+    private var held: CheckedContinuation<Void, Never>?
 
     private let mapping = """
     diff --git a/f.txt b/f.txt
@@ -30,11 +34,16 @@ final class ReviewSessionTests: XCTestCase {
             return json(["root": "/w", "branch": "feat", "head": "head1", "revision": revision, "clean": false])
         }
         if command.contains(" diff "), command.contains("--unified 0") {
-            return json(["from": "rev1", "to": revision, "scope": "since", "patch": mapping, "truncated": false])
+            let patch = mappingTruncated ? "" : mapping
+            return json(["from": "rev1", "to": revision, "scope": "since", "patch": patch, "truncated": mappingTruncated])
         }
         if command.contains(" diff ") {
+            let scope = command.contains("--scope branch") ? "branch" : "uncommitted"
+            if scope == "uncommitted", holdUncommitted {
+                await withCheckedContinuation { held = $0 }
+            }
             let patch = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,3 @@\n a\n+inserted\n b\n"
-            return json(["from": "head1", "to": revision, "scope": "uncommitted", "patch": patch, "truncated": false])
+            return json(["from": "head1", "to": revision, "scope": scope, "patch": patch, "truncated": false])
         }
         if command.contains(" keep ") { return json(["kept": revision]) }
         if command.contains(" send ") { return SSHExecResult(exitCode: sendExit, stdout: "{}", stderr: "") }
@@ -67,6 +76,37 @@ final class ReviewSessionTests: XCTestCase {
         XCTAssertEqual(session.anchors[old.id], .moved(path: "f.txt", startLine: 3, endLine: nil))
         XCTAssertEqual(session.comments(atPath: "f.txt", side: .new, endLine: 3).map(\.id), [old.id])
         XCTAssertTrue(commands.contains { $0.contains("--from 'rev1' --to 'rev2' --unified 0") })
+    }
+
+    func testAnOlderLoadFinishingLastIsDropped() async throws {
+        let (session, _) = makeSession()
+        holdUncommitted = true
+        let first = Task { await session.load(config: config) }
+        while held == nil { await Task.yield() }
+        session.scope = .branch
+        await session.load(config: config)
+        XCTAssertEqual(session.result?.scope, "branch")
+        held?.resume()
+        await first.value
+        XCTAssertEqual(session.result?.scope, "branch")
+        XCTAssertFalse(session.isLoading)
+    }
+
+    func testACutOffMappingLeavesCommentsPastTheCutUnplaced() async {
+        let (session, store) = makeSession()
+        mappingTruncated = true
+        let old = ReviewComment(path: "f.txt", startLine: 2, endLine: nil, revision: "rev1", quote: ["b"], body: "x")
+        store.update(session.key) { $0.comments.append(old) }
+        await session.load(config: config)
+        XCTAssertNil(session.anchors[old.id])
+        XCTAssertEqual(session.otherComments(file: session.diff.files[0]).map(\.id), [old.id])
+    }
+
+    func testSinceWithoutABatchFallsBackToUncommitted() async {
+        let (session, _) = makeSession()
+        session.scope = .since
+        await session.load(config: config)
+        XCTAssertEqual(session.scope, .uncommitted)
     }
 
     func testSendTypesOneMessageAndMarksTheDraftsSent() async {

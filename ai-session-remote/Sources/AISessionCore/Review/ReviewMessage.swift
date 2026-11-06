@@ -16,7 +16,7 @@ public enum ReviewMessage {
         var parts = ["Review feedback \(at)\(uncommitted) (\(count)). Address each numbered item; "
             + "then reply with what you changed for each number, or why you didn't."]
         for (index, comment) in comments.enumerated() {
-            var lines = ["\(index + 1). \(heading(comment))"]
+            var lines = ["\(index + 1). \(heading(comment, revision: revision))"]
             let quote = comment.quote.prefix(maxQuotedLines).map { "> " + $0 }
             lines += quote
             if comment.quote.count > maxQuotedLines { lines.append("> …") }
@@ -26,9 +26,14 @@ public enum ReviewMessage {
         return parts.joined(separator: "\n\n")
     }
 
-    private static func heading(_ comment: ReviewComment) -> String {
+    /// A comment still on another revision (its lines changed, or couldn't be followed) names
+    /// that revision, so its line numbers aren't read against the one in the first line.
+    private static func heading(_ comment: ReviewComment, revision: String) -> String {
         if comment.startLine == nil { return "\(comment.path) (whole file)" }
         if comment.side == .old { return "\(comment.location) (removed lines, at \(comment.revision.prefix(8)))" }
+        if comment.revision != revision {
+            return "\(comment.location) (at \(comment.revision.prefix(8)); these lines have changed since)"
+        }
         return comment.location
     }
 }

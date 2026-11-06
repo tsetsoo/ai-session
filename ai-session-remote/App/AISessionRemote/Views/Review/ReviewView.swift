@@ -126,7 +126,7 @@ struct ReviewView: View {
             }
             Section(filesHeader) {
                 ForEach(session.diff.files) { file in
-                    FileRow(file: file, comments: session.commentCount(path: file.path))
+                    FileRow(file: file, comments: session.commentCount(file: file))
                         .tag(file.path)
                 }
             }
@@ -317,7 +317,7 @@ private struct FileDiffView: View {
         ScrollView([.vertical]) {
             LazyVStack(alignment: .leading, spacing: 0) {
                 header
-                let others = session.otherComments(path: file.path, file: file)
+                let others = session.otherComments(file: file)
                 if !others.isEmpty || fileComment {
                     VStack(alignment: .leading, spacing: DS.spacing.s) {
                         ForEach(others) { comment in
@@ -380,6 +380,8 @@ private struct FileDiffView: View {
     private func lineRow(_ line: DiffLine) -> some View {
         let side: DiffSide = line.kind == .removed ? .old : .new
         let number = side == .old ? line.oldLine : line.newLine
+        // Removed lines are in the old revision, where a renamed file had its old name.
+        let path = side == .old ? file.oldPath ?? file.path : file.path
         let isSelected = number.map { n in selection.map { $0.side == side && $0.lines.contains(n) } ?? false } ?? false
         DiffLineRow(line: line, isSelected: isSelected)
             .contentShape(Rectangle())
@@ -388,14 +390,14 @@ private struct FileDiffView: View {
                 select(number, side: side)
             }
         if let number {
-            ForEach(session.comments(atPath: file.path, side: side, endLine: number)) { comment in
+            ForEach(session.comments(atPath: path, side: side, endLine: number)) { comment in
                 CommentCard(comment: comment, isStale: false, session: session)
                     .padding(.horizontal, DS.spacing.m)
                     .padding(.vertical, DS.spacing.xs)
             }
             if let selection, selection.side == side, selection.lines.upperBound == number {
                 CommentComposer(text: $draft, title: title(selection)) {
-                    session.addComment(path: file.path, side: side, lines: selection.lines,
+                    session.addComment(path: path, side: side, lines: selection.lines,
                                        quote: quote(selection), body: draft)
                     draft = ""
                     self.selection = nil
