@@ -139,6 +139,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     conn.execute_batch(crate::health::V25_OBJECTS).expect("Failed to create the computer health table");
     create_v26_objects(&conn).expect("Failed to create the worker and model usage tables");
     create_v27_objects(&conn).expect("Failed to add the resume-after-limit columns");
+    conn.execute_batch(crate::usage::V28_OBJECTS).expect("Failed to create the session history table");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -899,9 +900,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v26: `session_workers`, `session_worker_days`, `session_models`,
 ///   `sessions.copied_entries_skipped` (additive)
 /// - v27: conversations gain resume after a usage limit (toggle, plan, offer, lease; additive)
+/// - v28: `session_todos` and its triggers on `conversations`: each session's last todo (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 27;
+pub const SCHEMA_VERSION: i64 = 28;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -922,6 +924,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
                     if table_sql(conn, "computer_health")?.is_some() {
                         if table_sql(conn, "session_workers")?.is_some() {
                             if column_exists(conn, "conversations", "resume_lease_until")? {
+                                if table_sql(conn, "session_todos")?.is_some() {
+                                    return Ok(28);
+                                }
                                 return Ok(27);
                             }
                             return Ok(26);
@@ -2968,7 +2973,7 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 27);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         for (column, _) in V27_COLUMNS {
             assert!(column_exists(&conn, "conversations", column).unwrap(), "{column}");
         }
@@ -2980,6 +2985,11 @@ mod tests {
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 28);
+        conn.execute_batch(
+            "DROP TRIGGER conversations_session_todo_ai; DROP TRIGGER conversations_session_todo_au; DROP TABLE session_todos;",
+        )
+        .unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 27);
         conn.execute_batch("ALTER TABLE conversations DROP COLUMN resume_lease_until;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 26);
@@ -3006,6 +3016,35 @@ mod tests {
         let conn = pool.get().unwrap();
         assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(table_sql(&conn, "computer_health").unwrap().is_some());
+    }
+
+    #[test]
+    fn migrates_to_v28_records_linked_sessions() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(
+            "DROP TRIGGER conversations_session_todo_ai; DROP TRIGGER conversations_session_todo_au;
+             DROP TABLE session_todos;
+             INSERT INTO computers (id, name, hostname, username) VALUES ('m', 'm', 'h', 'u');
+             INSERT INTO todos (id, section, title) VALUES ('t', 'Si', 'x');
+             INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id) VALUES
+                 ('c1', 't', 'm', '~', 'claude', 'a', 's1'), ('c2', 't', 'm', '~', 'codex', 'b', NULL);
+             PRAGMA user_version = 27;",
+        )
+        .unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 28);
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT session_id, conversation_id FROM session_todos")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![("s1".to_string(), "c1".to_string())]);
     }
 
     #[test]

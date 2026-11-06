@@ -453,10 +453,19 @@ fn session_endpoints() -> Vec<Value> {
         json!({
             "method": "GET",
             "path": "/api/todos/{id}/usage",
-            "description": "Usage of a todo's conversations: own (the conversations themselves) and workers (their sub-agents), by_model and worker_types heaviest first (output + cache-creation tokens), first_activity/last_activity/elapsed_seconds (workers included; own.active_seconds is the busy time), stats_updated_at (the oldest upload among them), unread_conversations and conversations [{conversation_id, tool, session_id, computer_id, label, title, reading: uploaded|cursor|no_session|not_uploaded, own, workers, …}]. Counts, never prices. 404 for an unknown todo",
+            "description": "Usage of a todo's conversations: own (the conversations themselves) and workers (their sub-agents), by_model and worker_types heaviest first (output + cache-creation tokens), first_activity/last_activity/elapsed_seconds (workers included; own.active_seconds is the busy time), stats_updated_at (the oldest upload among them), unread_conversations and conversations [{conversation_id, tool, session_id, computer_id, label, title, reading: uploaded|cursor|no_session|not_uploaded, removed (no longer on the todo but still counted), own, workers, …}]. Counts, never prices. 404 for an unknown todo",
             "example_response": {"todo_id": "<uuid>", "own": {"sessions": 1, "output_tokens": 51234, "cache_creation_tokens": 402_311, "active_seconds": 5400}, "workers": {"sessions": 3, "output_tokens": 20_100},
                 "by_model": [{"model": "claude-opus-5-5", "output_tokens": 51234}], "worker_types": [{"kind": "agent", "type": "Explore", "sessions": 3}],
                 "elapsed_seconds": 9000, "unread_conversations": 0, "conversations": []}
+        }),
+        json!({
+            "method": "GET",
+            "path": "/api/stats/heaviest",
+            "description": "What used the most of one week (Monday to Sunday): todos (each session counts for the todo it was last linked to, even after its conversation was removed), jobs (their runs' todos), sub-agent worker_types and conversations, each heaviest first by output + cache-creation tokens, plus the week's own and workers totals. Counts, never prices. 400 when week_start is not a Monday",
+            "parameters": [
+                {"name": "week_start", "in": "query", "required": false, "type": "string (YYYY-MM-DD, a Monday)", "description": "Default: this week"},
+                {"name": "limit", "in": "query", "required": false, "type": "integer", "description": "Rows per list; default 10, at most 100"}
+            ]
         }),
         json!({
             "method": "GET",
@@ -682,6 +691,7 @@ mod tests {
             ("GET", "/api/stats/weekly"),
             ("GET", "/api/todos/{id}/usage"),
             ("GET", "/api/jobs/{id}/usage"),
+            ("GET", "/api/stats/heaviest"),
             ("GET", "/api/memories"),
             ("POST", "/api/memories"),
             ("POST", "/api/memories/bulk"),

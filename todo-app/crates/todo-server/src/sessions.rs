@@ -149,7 +149,7 @@ impl From<rusqlite::Error> for SessionError {
     }
 }
 
-fn session_error_response(e: SessionError) -> HttpResponse {
+pub(crate) fn session_error_response(e: SessionError) -> HttpResponse {
     match e {
         SessionError::BadRequest(msg) => bad_request(&msg),
         SessionError::NotFound(msg) => not_found(msg),
@@ -557,7 +557,7 @@ impl SessionWeek {
 
 /// The week's Monday and Sunday: `week_start` when it is a valid Monday, else a 400;
 /// without one, the Monday of the server's local today.
-fn week_bounds(conn: &Connection, week_start: Option<&str>) -> Result<(String, String), SessionError> {
+pub(crate) fn week_bounds(conn: &Connection, week_start: Option<&str>) -> Result<(String, String), SessionError> {
     let start: String = match week_start {
         Some(start) => {
             let monday: Option<bool> = conn.query_row(

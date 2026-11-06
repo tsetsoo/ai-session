@@ -1015,6 +1015,10 @@ pub struct ConversationUsage {
     pub last_activity: Option<String>,
     #[serde(default)]
     pub stats_updated_at: Option<String>,
+    /// The conversation is no longer on the todo (deleted, or replaced by a restart), but
+    /// its session still counts there
+    #[serde(default)]
+    pub removed: bool,
 }
 
 /// Usage summed over a set of conversations.
@@ -1072,6 +1076,62 @@ pub struct JobUsage {
     #[serde(flatten)]
     pub usage: UsageSummary,
     pub runs: Vec<RunUsage>,
+}
+
+/// One todo in `GET /api/stats/heaviest`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeavyTodo {
+    pub todo_id: String,
+    pub title: String,
+    pub section: Option<Section>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub own: StatsCounters,
+    pub workers: StatsCounters,
+}
+
+/// One job (all its runs' todos) in `GET /api/stats/heaviest`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeavyJob {
+    pub job_id: String,
+    pub name: String,
+    /// Runs whose todo's conversations had activity that week
+    pub runs: i64,
+    pub own: StatsCounters,
+    pub workers: StatsCounters,
+}
+
+/// One conversation in `GET /api/stats/heaviest`, linked to a todo or not.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeavyConversation {
+    pub tool: String,
+    pub session_id: String,
+    pub computer_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub todo_id: Option<String>,
+    pub own: StatsCounters,
+    pub workers: StatsCounters,
+}
+
+/// `GET /api/stats/heaviest`: what used the most of one week, each list heaviest first
+/// by output + cache-creation tokens (cache reads are cheap and left out of the ranking).
+/// Counts only, never a price.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeavyUsage {
+    pub week_start: String,
+    pub week_end: String,
+    /// Every conversation's own usage that week
+    pub own: StatsCounters,
+    /// Every sub-agent's usage that week
+    pub workers: StatsCounters,
+    pub todos: Vec<HeavyTodo>,
+    pub jobs: Vec<HeavyJob>,
+    pub worker_types: Vec<WorkerTypeUsage>,
+    pub conversations: Vec<HeavyConversation>,
 }
 
 // ---------------------------------------------------------------------------

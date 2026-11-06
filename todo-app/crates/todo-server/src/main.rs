@@ -190,6 +190,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/sessions/stats", web::post().to(sessions::upload_stats))
         .route("/api/sessions/{tool}/{session_id}/project", web::put().to(sessions::set_session_project))
         .route("/api/stats/weekly", web::get().to(sessions::weekly_stats))
+        .route("/api/stats/heaviest", web::get().to(usage::heaviest))
         .route("/api/todos/{id}/usage", web::get().to(usage::todo_usage))
         .route("/api/jobs/{id}/usage", web::get().to(usage::job_usage))
         // Usage limits shared per tool account

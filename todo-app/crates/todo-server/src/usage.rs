@@ -12,16 +12,57 @@ use actix_web::{web, HttpResponse};
 use chrono::DateTime;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use todo_shared::{
-    ConversationUsage, JobUsage, ModelTokens, ModelUsage, RunUsage, StatsCounters, TodoUsage, UsageReading,
-    UsageSummary, WorkerTypeUsage,
+    ConversationUsage, HeavyConversation, HeavyJob, HeavyTodo, HeavyUsage, JobUsage, ModelTokens, ModelUsage, RunUsage,
+    Section, StatsCounters, TodoUsage, UsageReading, UsageSummary, WorkerTypeUsage,
 };
 
 use crate::conversations::{not_found, server_error};
 use crate::db::DbPool;
-use crate::sessions::StatsCountersExt;
+use crate::sessions::{session_error_response, week_bounds, SessionError, StatsCountersExt};
 
 const DEFAULT_RUNS: usize = 20;
+
+/// v28: which todo each session last belonged to, kept when its conversation row is deleted
+/// or replaced (relinking, a restart under a new session id). Triggers on `conversations`
+/// write it, so every path that links a session records it. A session moved to another todo
+/// counts there only. Only adds; the backfill from `conversations` is safe on every start.
+pub(crate) const V28_OBJECTS: &str = "
+    CREATE TABLE IF NOT EXISTS session_todos (
+        tool            TEXT NOT NULL,
+        session_id      TEXT NOT NULL,
+        todo_id         TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL,
+        computer_id     TEXT NOT NULL,
+        label           TEXT,
+        linked_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (tool, session_id)
+    );
+    CREATE INDEX IF NOT EXISTS session_todos_todo ON session_todos(todo_id);
+    CREATE TRIGGER IF NOT EXISTS conversations_session_todo_ai AFTER INSERT ON conversations
+    WHEN NEW.session_id IS NOT NULL BEGIN
+        INSERT INTO session_todos (tool, session_id, todo_id, conversation_id, computer_id, label, linked_at)
+        VALUES (NEW.tool, NEW.session_id, NEW.todo_id, NEW.id, NEW.computer_id, NEW.label, NEW.created_at)
+        ON CONFLICT(tool, session_id) DO UPDATE SET todo_id = excluded.todo_id,
+            conversation_id = excluded.conversation_id, computer_id = excluded.computer_id, label = excluded.label;
+    END;
+    CREATE TRIGGER IF NOT EXISTS conversations_session_todo_au
+    AFTER UPDATE OF session_id, todo_id, label ON conversations
+    WHEN NEW.session_id IS NOT NULL BEGIN
+        INSERT INTO session_todos (tool, session_id, todo_id, conversation_id, computer_id, label, linked_at)
+        VALUES (NEW.tool, NEW.session_id, NEW.todo_id, NEW.id, NEW.computer_id, NEW.label, NEW.created_at)
+        ON CONFLICT(tool, session_id) DO UPDATE SET todo_id = excluded.todo_id,
+            conversation_id = excluded.conversation_id, computer_id = excluded.computer_id, label = excluded.label;
+    END;
+    INSERT INTO session_todos (tool, session_id, todo_id, conversation_id, computer_id, label, linked_at)
+    SELECT tool, session_id, todo_id, id, computer_id, label, created_at FROM conversations
+    WHERE session_id IS NOT NULL
+    ON CONFLICT(tool, session_id) DO UPDATE SET todo_id = excluded.todo_id,
+        conversation_id = excluded.conversation_id, computer_id = excluded.computer_id, label = excluded.label
+    WHERE session_todos.todo_id != excluded.todo_id;
+";
 const MAX_RUNS: usize = 200;
+const DEFAULT_HEAVY: usize = 10;
+const MAX_HEAVY: usize = 100;
 
 fn add_opt(total: &mut Option<i64>, value: Option<i64>) {
     if let Some(value) = value {
@@ -76,17 +117,25 @@ pub(crate) fn usage_for_todos(conn: &Connection, todo_ids: &[String]) -> rusqlit
     }
     let marks = vec!["?"; todo_ids.len()].join(",");
     let mut stmt = conn.prepare(&format!(
-        "SELECT c.id, c.todo_id, c.tool, c.session_id, c.computer_id, c.label, s.title, s.stats_updated_at,
+        "WITH linked AS (
+             SELECT id, todo_id, tool, session_id, computer_id, label, created_at, 0 AS removed
+             FROM conversations WHERE todo_id IN ({marks})
+             UNION ALL
+             SELECT h.conversation_id, h.todo_id, h.tool, h.session_id, h.computer_id, h.label, h.linked_at, 1
+             FROM session_todos h
+             WHERE h.todo_id IN ({marks}) AND NOT EXISTS (
+                 SELECT 1 FROM conversations c WHERE c.tool = h.tool AND c.session_id = h.session_id))
+         SELECT c.id, c.todo_id, c.tool, c.session_id, c.computer_id, c.label, s.title, s.stats_updated_at,
                 s.first_activity, s.last_activity,
                 CASE WHEN s.stats_updated_at IS NULL THEN 0 ELSE 1 END, s.prompts, s.assistant_turns,
                 s.input_tokens, s.output_tokens, s.cache_read_tokens, s.cache_creation_tokens, s.active_seconds,
-                json_array_length(s.files_touched)
-         FROM conversations c
+                json_array_length(s.files_touched), c.removed
+         FROM linked c
          LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id
-         WHERE c.todo_id IN ({marks})
          ORDER BY c.created_at, c.id"
     ))?;
-    let rows = stmt.query_map(params_from_iter(todo_ids), |r| {
+    let ids = todo_ids.iter().chain(todo_ids.iter());
+    let rows = stmt.query_map(params_from_iter(ids), |r| {
         let tool: String = r.get(2)?;
         let session_id: Option<String> = r.get(3)?;
         let uploaded: Option<String> = r.get(7)?;
@@ -114,6 +163,7 @@ pub(crate) fn usage_for_todos(conn: &Connection, todo_ids: &[String]) -> rusqlit
             first_activity: r.get(8)?,
             last_activity: r.get(9)?,
             stats_updated_at: uploaded,
+            removed: r.get::<_, i64>(19)? != 0,
         })
     })?;
     let mut conversations = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -243,6 +293,137 @@ pub(crate) fn job_usage_db(conn: &Connection, job_id: &str, runs: usize) -> rusq
     Ok(Some(JobUsage { job_id: job_id.to_string(), usage, runs: run_usage }))
 }
 
+fn weight_of(own: &StatsCounters, workers: &StatsCounters) -> i64 {
+    weight(own.output_tokens, own.cache_creation_tokens) + weight(workers.output_tokens, workers.cache_creation_tokens)
+}
+
+const DAY_SUMS: &str = "SUM(d.prompts), SUM(d.assistant_turns), SUM(d.input_tokens), SUM(d.output_tokens),
+     SUM(d.cache_read_tokens), SUM(d.cache_creation_tokens), SUM(d.active_seconds), SUM(d.files_touched)";
+
+type SessionKey = (String, String);
+
+/// What used the most of one week (Monday to Sunday): todos (through each session's last
+/// todo, so removed conversations still count), jobs (their runs' todos), sub-agent types
+/// and conversations, each list cut to `limit`, heaviest first.
+pub(crate) fn heaviest_db(conn: &Connection, week_start: Option<&str>, limit: usize) -> Result<HeavyUsage, SessionError> {
+    let (start, end) = week_bounds(conn, week_start)?;
+    let mut sessions: BTreeMap<SessionKey, (StatsCounters, StatsCounters)> = BTreeMap::new();
+    for (table, count, workers) in
+        [("session_days", "1", false), ("session_worker_days", "COUNT(DISTINCT d.worker_id)", true)]
+    {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT d.tool, d.session_id, {count}, {DAY_SUMS} FROM {table} d
+             WHERE d.day >= ?1 AND d.day <= ?2 GROUP BY d.tool, d.session_id"
+        ))?;
+        let rows = stmt.query_map(params![start, end], |r| Ok(((r.get(0)?, r.get(1)?), counters_from(r, 2)?)))?;
+        for row in rows {
+            let (key, counters) = row?;
+            let entry = sessions.entry(key).or_default();
+            if workers { entry.1 = counters } else { entry.0 = counters }
+        }
+    }
+
+    let mut own = StatsCounters::default();
+    let mut workers = StatsCounters::default();
+    let mut todos: BTreeMap<String, (StatsCounters, StatsCounters)> = BTreeMap::new();
+    let mut conversations = Vec::with_capacity(sessions.len());
+    for ((tool, session_id), (o, w)) in &sessions {
+        own.add(o);
+        workers.add(w);
+        let (computer_id, title, project_id, todo_id): (String, Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT s.computer_id, s.title, s.project_id, h.todo_id FROM sessions s
+                 LEFT JOIN session_todos h ON h.tool = s.tool AND h.session_id = s.session_id
+                 WHERE s.tool = ?1 AND s.session_id = ?2",
+                params![tool, session_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
+        if let Some(todo_id) = &todo_id {
+            let t = todos.entry(todo_id.clone()).or_default();
+            t.0.add(o);
+            t.1.add(w);
+        }
+        conversations.push(HeavyConversation {
+            tool: tool.clone(),
+            session_id: session_id.clone(),
+            computer_id,
+            title,
+            project_id,
+            todo_id,
+            own: o.clone(),
+            workers: w.clone(),
+        });
+    }
+    conversations.sort_by_key(|c| -weight_of(&c.own, &c.workers));
+    conversations.truncate(limit);
+
+    // Jobs: a todo belongs to the job whose run created it.
+    let mut jobs: BTreeMap<String, HeavyJob> = BTreeMap::new();
+    for (todo_id, (o, w)) in &todos {
+        let job: Option<(String, String)> = conn
+            .query_row(
+                "SELECT j.id, j.name FROM job_runs r JOIN jobs j ON j.id = r.job_id WHERE r.todo_id = ?1 LIMIT 1",
+                params![todo_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((job_id, name)) = job {
+            let j = jobs.entry(job_id.clone()).or_insert_with(|| HeavyJob {
+                job_id,
+                name,
+                runs: 0,
+                own: StatsCounters::default(),
+                workers: StatsCounters::default(),
+            });
+            j.runs += 1;
+            j.own.add(o);
+            j.workers.add(w);
+        }
+    }
+    let mut jobs: Vec<HeavyJob> = jobs.into_values().collect();
+    jobs.sort_by_key(|j| -weight_of(&j.own, &j.workers));
+    jobs.truncate(limit);
+
+    let mut heavy_todos = Vec::with_capacity(todos.len());
+    for (todo_id, (o, w)) in todos {
+        let found: Option<(String, String, Option<String>)> = conn
+            .query_row("SELECT title, section, project_id FROM todos WHERE id = ?1", params![todo_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()?;
+        let Some((title, section, project_id)) = found else { continue };
+        heavy_todos.push(HeavyTodo { todo_id, title, section: Section::parse(&section), project_id, own: o, workers: w });
+    }
+    heavy_todos.sort_by_key(|t| -weight_of(&t.own, &t.workers));
+    heavy_todos.truncate(limit);
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT w.kind, w.worker_type, COUNT(DISTINCT d.tool || ' ' || d.session_id || ' ' || d.worker_id), {DAY_SUMS}
+         FROM session_worker_days d
+         JOIN session_workers w ON w.tool = d.tool AND w.session_id = d.session_id AND w.worker_id = d.worker_id
+         WHERE d.day >= ?1 AND d.day <= ?2
+         GROUP BY w.kind, w.worker_type"
+    ))?;
+    let mut worker_types: Vec<WorkerTypeUsage> = stmt
+        .query_map(params![start, end], |r| {
+            Ok(WorkerTypeUsage { kind: r.get(0)?, worker_type: r.get(1)?, counters: counters_from(r, 2)? })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    worker_types.sort_by_key(|w| -weight(w.counters.output_tokens, w.counters.cache_creation_tokens));
+    worker_types.truncate(limit);
+
+    Ok(HeavyUsage {
+        week_start: start,
+        week_end: end,
+        own,
+        workers,
+        todos: heavy_todos,
+        jobs,
+        worker_types,
+        conversations,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -274,6 +455,24 @@ pub async fn job_usage(pool: web::Data<DbPool>, path: web::Path<String>, query: 
         Ok(Some(usage)) => HttpResponse::Ok().json(usage),
         Ok(None) => not_found("Job not found"),
         Err(e) => server_error(e),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct HeaviestQuery {
+    pub week_start: Option<String>,
+    /// Rows per list (default 10, at most 100)
+    pub limit: Option<usize>,
+}
+
+pub async fn heaviest(pool: web::Data<DbPool>, query: web::Query<HeaviestQuery>) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match heaviest_db(&conn, query.week_start.as_deref(), query.limit.unwrap_or(DEFAULT_HEAVY).clamp(1, MAX_HEAVY)) {
+        Ok(usage) => HttpResponse::Ok().json(usage),
+        Err(e) => session_error_response(e),
     }
 }
 
@@ -416,6 +615,47 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn removed_conversations_still_count() {
+        let (_db, pool) = pool("usage");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        upload(&pool, vec![session("s1", 1000, Some(vec![])), session("s2", 7, None)]).await;
+        // A conversation linked later by session id (the path a Codex/Cursor link takes).
+        conn.execute_batch(
+            "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, created_at)
+                 VALUES ('c6', 't3', 'mac', '~/a', 'claude', 'ai/6', '2026-11-02 11:00:00');
+             UPDATE conversations SET session_id = 's9' WHERE id = 'c6';
+             INSERT INTO sessions (tool, session_id, computer_id, cwd, output_tokens, stats_updated_at)
+                 VALUES ('claude', 's9', 'mac', '~/a', 33, datetime('now'));",
+        )
+        .unwrap();
+
+        conn.execute_batch("DELETE FROM conversations WHERE id IN ('c1', 'c6');").unwrap();
+        let (_, u) = get(&pool, "/api/todos/t1/usage").await;
+        assert_eq!(u["own"]["output_tokens"], 1000, "the deleted conversation's session still counts: {u}");
+        let c1 = u["conversations"].as_array().unwrap().iter().find(|c| c["conversation_id"] == "c1").unwrap();
+        assert_eq!((&c1["removed"], &c1["reading"]), (&json!(true), &json!("uploaded")));
+        let (_, u3) = get(&pool, "/api/todos/t3/usage").await;
+        assert_eq!(u3["own"]["output_tokens"], 33, "a session id set after insert is recorded too");
+
+        // The session moves to another todo: it counts there only.
+        conn.execute_batch(
+            "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id)
+                 VALUES ('c7', 't2', 'mac', '~/a', 'claude', 'ai/7', 's1');",
+        )
+        .unwrap();
+        let (_, u1) = get(&pool, "/api/todos/t1/usage").await;
+        assert!(u1["own"]["output_tokens"].is_null(), "{u1}");
+        let (_, u2) = get(&pool, "/api/todos/t2/usage").await;
+        assert_eq!((&u2["own"]["sessions"], &u2["own"]["output_tokens"]), (&json!(2), &json!(1007)));
+        assert!(u2["conversations"].as_array().unwrap().iter().all(|c| c["removed"] == false));
+
+        // Deleting the todo drops its history.
+        conn.execute_batch("DELETE FROM todos WHERE id = 't3';").unwrap();
+        assert_eq!(count(&conn, "session_todos WHERE session_id = 's9'"), 0);
+    }
+
+    #[actix_web::test]
     async fn job_usage_sums_runs() {
         let (_db, pool) = pool("usage");
         let conn = pool.get().unwrap();
@@ -440,6 +680,50 @@ mod tests {
         let (_, idle) = get(&pool, "/api/jobs/j2/usage").await;
         assert_eq!((&idle["runs"], &idle["own"]["sessions"]), (&json!([]), &json!(0)));
         assert_eq!(get(&pool, "/api/jobs/nope/usage").await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn heaviest_ranks_by_output_and_cache_writes() {
+        let (_db, pool) = pool("usage");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        // s1 (t1): 1000 own out + two Explore workers (100 + 300); s2 (t2): 7 out; s3: no todo, 2000 out.
+        upload(
+            &pool,
+            vec![
+                session("s1", 1000, Some(vec![worker("w1", "agent", "Explore", 100, "2026-11-02T12:00:00Z"), worker("w2", "agent", "Explore", 300, "2026-11-02T12:00:00Z"), worker("w3", "agent", "Plan", 5, "2026-11-02T12:00:00Z")])),
+                session("s2", 7, None),
+                session("s3", 2000, None),
+            ],
+        )
+        .await;
+        conn.execute_batch(
+            "INSERT INTO jobs (id, name, trigger, action) VALUES ('j1', 'Gardener', '{}', '{}');
+             INSERT INTO job_runs (id, job_id, due_at, state, todo_id) VALUES
+                 ('r1', 'j1', '2026-11-01T08:00:00Z', 'done', 't1'), ('r2', 'j1', '2026-11-02T08:00:00Z', 'done', 't2');
+             DELETE FROM conversations WHERE id = 'c1';",
+        )
+        .unwrap();
+        let (status, h) = get(&pool, "/api/stats/heaviest?week_start=2026-11-02").await;
+        assert_eq!(status, StatusCode::OK, "{h}");
+        assert_eq!((&h["own"]["sessions"], &h["own"]["output_tokens"]), (&json!(3), &json!(3007)));
+        assert_eq!((&h["workers"]["sessions"], &h["workers"]["output_tokens"]), (&json!(3), &json!(405)));
+        let todos: Vec<(&str, i64)> = h["todos"].as_array().unwrap().iter()
+            .map(|t| (t["todo_id"].as_str().unwrap(), t["workers"]["output_tokens"].as_i64().unwrap_or(0))).collect();
+        assert_eq!(todos, vec![("t1", 405), ("t2", 0)], "a removed conversation still counts for its todo");
+        assert_eq!(h["todos"][0]["title"], "one");
+        assert_eq!((&h["jobs"][0]["job_id"], &h["jobs"][0]["runs"], &h["jobs"][0]["own"]["output_tokens"]), (&json!("j1"), &json!(2), &json!(1007)));
+        let convs: Vec<&str> = h["conversations"].as_array().unwrap().iter().map(|c| c["session_id"].as_str().unwrap()).collect();
+        assert_eq!(convs, vec!["s3", "s1", "s2"], "s1 is 1000 + 405 + cache writes, s3 2000 + 50");
+        assert!(h["conversations"][0]["todo_id"].is_null());
+        let types: Vec<(&str, i64)> = h["worker_types"].as_array().unwrap().iter().map(|w| (w["type"].as_str().unwrap(), w["sessions"].as_i64().unwrap())).collect();
+        assert_eq!(types, vec![("Explore", 2), ("Plan", 1)]);
+
+        let (_, one) = get(&pool, "/api/stats/heaviest?week_start=2026-11-02&limit=1").await;
+        assert_eq!((one["conversations"].as_array().unwrap().len(), one["todos"].as_array().unwrap().len()), (1, 1));
+        let (_, empty) = get(&pool, "/api/stats/heaviest?week_start=2026-10-26").await;
+        assert_eq!((&empty["todos"], &empty["own"]["sessions"]), (&json!([]), &json!(0)));
+        assert_eq!(get(&pool, "/api/stats/heaviest?week_start=2026-11-03").await.0, StatusCode::BAD_REQUEST);
     }
 
     #[actix_web::test]
