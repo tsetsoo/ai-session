@@ -4,7 +4,7 @@
 #
 # Usage:
 #   ai-todo-runner tick              # one pass: at most 3 conversations started
-#   ai-todo-runner status [--json]   # last tick, last error, runs started in the last 24 h
+#   ai-todo-runner status [--json]   # last tick, last error and when, runs started in the last 24 h
 #
 # A tick: GET /api/runner/due?computer_id=<this computer>, then per due run, in order:
 #   1. Usage limit. A job set to "wait for headroom" reads usage on this computer
@@ -637,7 +637,7 @@ def cmd_tick(args):
                     log("checked", run=rid, problems=count)
                 except Exception as e:  # every claimed check gets a report or a finish
                     message = str(e) or type(e).__name__
-                    status["last_error"] = message
+                    status["last_error"], status["last_error_at"] = message, now()
                     log("check_failed", run=rid, error=message)
                     try:
                         hub.request("POST", "/api/runs/%s/finish" % rid, body={"state": "failed", "result": message})
@@ -670,14 +670,14 @@ def cmd_tick(args):
                 log("started", run=rid, tool=item["job"]["action"].get("tool"))
             except Exception as e:  # every claimed run gets a finish, whatever went wrong
                 message = str(e) or type(e).__name__
-                status["last_error"] = message
+                status["last_error"], status["last_error_at"] = message, now()
                 log("failed", run=rid, error=message)
                 try:
                     hub.request("POST", "/api/runs/%s/finish" % rid, body={"state": "failed", "result": message})
                 except HubError:
                     pass
     except HubError as e:
-        status["last_error"] = str(e)
+        status["last_error"], status["last_error_at"] = str(e), now()
         log("error", error=e)
     # Each catches its own hub errors: one failed run above doesn't skip them.
     if due is not None:
@@ -694,6 +694,7 @@ def cmd_status(args):
     status = load_json(os.path.join(STATE_DIR, "status.json"), {}) or {}
     out = {"last_tick": iso(status["last_tick"]) if status.get("last_tick") else None,
            "last_error": status.get("last_error"),
+           "last_error_at": iso(status["last_error_at"]) if status.get("last_error") and status.get("last_error_at") else None,
            "started_24h": len([t for t in status.get("started", []) if t > now() - 86400])}
     if "--json" in args:
         print(json.dumps(out))

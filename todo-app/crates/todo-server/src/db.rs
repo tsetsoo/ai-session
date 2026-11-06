@@ -5,6 +5,18 @@ use std::path::Path;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
+/// Per-connection settings, so every pooled connection gets them:
+/// - foreign_keys on.
+/// - busy_timeout 15 s (rusqlite's default is 5 s): on the Pi's SD card a writer can hold
+///   the lock past 5 s, and the scheduler tick and GET /api/runner/due then failed with
+///   "database is locked" (several times a day, 2026-11-05/06).
+/// - synchronous=NORMAL: with WAL a commit no longer waits for an fsync of the log (the
+///   checkpoint still syncs), so writers hold the lock far shorter. Safe against corruption;
+///   a power cut can lose only the last commits.
+pub(crate) fn init_connection(c: &mut Connection) -> rusqlite::Result<()> {
+    c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=15000; PRAGMA synchronous=NORMAL;")
+}
+
 pub fn init_pool(db_path: &str) -> DbPool {
     // Ensure parent directory exists
     if let Some(parent) = Path::new(db_path).parent() {
@@ -13,9 +25,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
         }
     }
 
-    // foreign_keys is per connection, so every pooled connection must turn it on.
-    let manager = SqliteConnectionManager::file(db_path)
-        .with_init(|c| c.execute_batch("PRAGMA foreign_keys=ON;"));
+    let manager = SqliteConnectionManager::file(db_path).with_init(init_connection);
     let pool = Pool::builder()
         .max_size(8)
         .build(manager)
@@ -1737,6 +1747,20 @@ impl Drop for TestDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_pooled_connection_waits_for_the_lock_and_syncs_normally() {
+        let db = TestDb::new("pragmas");
+        let pool = db.pool();
+        // Hold one connection so the next comes from a fresh connect.
+        let (a, b) = (pool.get().unwrap(), pool.get().unwrap());
+        for c in [&a, &b] {
+            let timeout: i64 = c.query_row("PRAGMA busy_timeout", [], |r| r.get(0)).unwrap();
+            let sync: i64 = c.query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap();
+            let fk: i64 = c.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+            assert_eq!((timeout, sync, fk), (15000, 1, 1));
+        }
+    }
 
     /// The conversation schema as shipped in todo-app #1 (what the Pi runs today).
     const V1_SCHEMA: &str = "
