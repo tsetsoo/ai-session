@@ -11,6 +11,8 @@ final class ReviewSession {
     /// Failures worded for the window: no SSH words, no raw remote output.
     struct Failure: LocalizedError, Equatable {
         let errorDescription: String?
+        /// Exit 65: a revision or branch the repository doesn't have.
+        var isUnknownRevision = false
     }
 
     private(set) var conversation: Conversation
@@ -20,8 +22,20 @@ final class ReviewSession {
     private(set) var baseCommit: ReviewLog.Commit?
     /// Recent commits for Compare With, from the last load.
     private(set) var commits: [ReviewLog.Commit] = []
-    /// The last commit before the conversation started, from the last load.
+    /// Where the conversation started, from the last load: its worktree's base, else the
+    /// last commit before the hub created it.
     private(set) var conversationStart: String?
+    /// The conversation's worktree is gone but its branch is kept in the project folder: the
+    /// window reviews that branch (committed work only).
+    private(set) var keptBranch: (folder: String, branch: String)?
+
+    /// Where the reads run: the conversation's folder, or the project folder with `--ref`.
+    private var source: (cwd: String, ref: String?) {
+        keptBranch.map { ($0.folder, $0.branch) } ?? (conversation.cwd, nil)
+    }
+
+    /// The folder isn't in a git repository (exit 69), as opposed to any other failure.
+    struct NotARepository: Error {}
     private(set) var status: ReviewStatus?
     private(set) var result: ReviewDiffResult?
     private(set) var diff = UnifiedDiff(files: [])
@@ -92,6 +106,10 @@ final class ReviewSession {
                 return
             }
             from = baseCommit.sha
+        case .uncommitted where keptBranch != nil:
+            // A kept branch has nothing uncommitted; what it has is on the branch.
+            self.scope = .branch
+            return
         case .uncommitted, .branch, .conversation:
             break
         }
@@ -99,19 +117,23 @@ final class ReviewSession {
         defer { if generation == loadGeneration { isLoading = false } }
         let knownAtStart = Set(record.comments.map(\.id))
         do {
-            let cwd = conversation.cwd
+            let status = try await locate(config: config)
+            guard generation == loadGeneration else { return }
+            if keptBranch != nil, scope == .uncommitted {
+                self.status = status
+                self.scope = .branch
+                return
+            }
+            let (cwd, ref) = source
             let started = Self.gitTime(conversation.createdAt)
             // The history for Compare With and the conversation's start come with every load.
-            async let history: ReviewLog? = try? await run(TmuxCommandBuilder.reviewLog(cwd: cwd, before: started), config: config)
-            let status: ReviewStatus = try await run(TmuxCommandBuilder.reviewStatus(cwd: cwd), config: config)
-            let log = await history
+            let log: ReviewLog? = try? await run(TmuxCommandBuilder.reviewLog(cwd: cwd, before: started, ref: ref), config: config)
             guard generation == loadGeneration else { return }
-            if let log {
-                commits = log.commits
-                conversationStart = log.before
-            }
+            if let log { commits = log.commits }
+            // A worktree knows where it began; otherwise the last commit before the hub made it.
+            conversationStart = status.worktreeBase ?? log?.before
             if scope == .conversation {
-                guard let start = log?.before else {
+                guard let start = conversationStart else {
                     throw Failure(errorDescription: started == nil || log == nil
                         ? "Couldn't tell where this conversation started. Choose Branch or Compare With."
                         : "There's no commit from before this conversation started. Choose Branch or Compare With.")
@@ -119,7 +141,7 @@ final class ReviewSession {
                 from = start
             }
             let result: ReviewDiffResult = try await run(
-                TmuxCommandBuilder.reviewDiff(cwd: conversation.cwd, scope: scope, from: from, to: status.revision),
+                TmuxCommandBuilder.reviewDiff(cwd: cwd, scope: scope, from: from, to: status.revision, ref: ref),
                 config: config
             )
             guard generation == loadGeneration else { return }
@@ -144,6 +166,35 @@ final class ReviewSession {
     }
 
     @ObservationIgnored private var loadGeneration = 0
+
+    /// The conversation's folder when it is in git. When it isn't: the kept branch of its
+    /// worktree in the project folder, or a failure that says why there's nothing to review.
+    private func locate(config: HostConnectionConfig) async throws -> ReviewStatus {
+        do {
+            let status: ReviewStatus = try await run(TmuxCommandBuilder.reviewStatus(cwd: conversation.cwd), config: config)
+            keptBranch = nil
+            return status
+        } catch is NotARepository {
+            guard let worktree = conversation.worktree else {
+                throw Failure(errorDescription: "This conversation's folder, \(conversation.cwd), isn't in a git repository on "
+                    + "\(conversation.computer.name), so there are no changes to review. New conversations in a git project "
+                    + "get their own worktree and can be reviewed.")
+            }
+            do {
+                let status: ReviewStatus = try await run(
+                    TmuxCommandBuilder.reviewStatus(cwd: worktree.folder, ref: worktree.branch), config: config
+                )
+                keptBranch = worktree
+                return status
+            } catch let failure as Failure where failure.isUnknownRevision {
+                throw Failure(errorDescription: "This conversation's worktree is gone from \(conversation.computer.name), "
+                    + "and so is its branch \(worktree.branch). There's nothing left to review.")
+            } catch is NotARepository {
+                throw Failure(errorDescription: "This conversation's worktree is gone from \(conversation.computer.name), "
+                    + "and its project folder \(worktree.folder) isn't a git repository there any more.")
+            }
+        }
+    }
 
     /// Compare With: everything since `commit`. The window's scope change starts the load.
     func compare(from commit: ReviewLog.Commit) {
@@ -173,7 +224,7 @@ final class ReviewSession {
             placed[comment.id] = .moved(path: comment.path, startLine: comment.startLine, endLine: comment.endLine)
         }
         let older = byRevision.keys.filter { $0 != revision }
-        let cwd = conversation.cwd
+        let (cwd, ref) = source
         var mappings: [String: ReviewDiffResult] = [:]
         var missing: [String] = []
         for commentRevision in older {
@@ -186,7 +237,7 @@ final class ReviewSession {
             func start(_ commentRevision: String) {
                 group.addTask {
                     let between: ReviewDiffResult? = try? await self.run(
-                        TmuxCommandBuilder.reviewDiff(cwd: cwd, scope: .since, from: commentRevision, to: revision, unified: 0),
+                        TmuxCommandBuilder.reviewDiff(cwd: cwd, scope: .since, from: commentRevision, to: revision, unified: 0, ref: ref),
                         config: config
                     )
                     return (commentRevision, between)
@@ -362,7 +413,7 @@ final class ReviewSession {
         let outgoing = outgoing()
         let text = message()
         do {
-            let _: [String: String] = try await run(TmuxCommandBuilder.reviewKeep(cwd: conversation.cwd, revision: revision), config: config)
+            let _: [String: String] = try await run(TmuxCommandBuilder.reviewKeep(cwd: source.cwd, revision: revision), config: config)
             let sent = try await exec(config, TmuxCommandBuilder.reviewSend(tmuxName: conversation.tmuxName, message: text))
             switch sent.exitCode {
             case TmuxCommandBuilder.reviewNoSessionExitCode:
@@ -398,10 +449,10 @@ final class ReviewSession {
         let output = try await exec(config, command)
         switch output.exitCode {
         case TmuxCommandBuilder.reviewNoRepositoryExitCode:
-            throw Failure(errorDescription: "\(conversation.cwd) on \(conversation.computer.name) isn't a git repository.")
+            throw NotARepository()
         case TmuxCommandBuilder.reviewUnknownRevisionExitCode:
             throw Failure(errorDescription: "The changes being compared aren't on \(conversation.computer.name) any more. "
-                + "Choose Uncommitted or Branch.")
+                + "Choose Uncommitted or Branch.", isUnknownRevision: true)
         case TmuxCommandBuilder.reviewGitFailedExitCode:
             // git's own words: they name the file or lock that is the problem.
             let detail = output.stderr.split(separator: "\n").first.map { $0.replacingOccurrences(of: "ai-todo-review: ", with: "") }
@@ -420,6 +471,9 @@ final class ReviewSession {
 
     private func message(for error: Error) -> String {
         if let failure = error as? Failure { return failure.errorDescription ?? "Something went wrong." }
+        if error is NotARepository {
+            return "\(source.cwd) on \(conversation.computer.name) isn't a git repository."
+        }
         return ConversationRowActions.message(for: error, computer: conversation.computer)
     }
 }

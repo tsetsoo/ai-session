@@ -4023,6 +4023,33 @@ for bad in "log" "log $RV_REPO --limit 0" "log $RV_REPO --before"; do
 done
 pass "review_keep_and_bad_args"
 
+# A worktree the runner made: its base is the conversation's start. --ref reviews a kept
+# branch of the project folder when the worktree is gone.
+RV_STATE="${SANDBOX}/review-runner-state"
+RV_WT="${SANDBOX}/review-wt"
+mkdir -p "$RV_STATE"
+rv_git worktree add -q -b conv-branch "$RV_WT" HEAD~1
+rv_wt_base="$(git -C "$RV_WT" rev-parse HEAD)"
+printf 'wt\n' >"${RV_WT}/wt.txt"
+git -C "$RV_WT" add -A && git -C "$RV_WT" -c user.name=t -c user.email=t@t commit -qm "conversation work"
+python3 - "$RV_STATE/worktrees.json" "$RV_WT" "$rv_wt_base" <<'PY'
+import json, sys
+json.dump({"review-wt": {"path": sys.argv[2], "folder": "x", "branch": "conv-branch", "base": sys.argv[3]}}, open(sys.argv[1], "w"))
+PY
+[[ "$(AI_TODO_RUNNER_STATE_DIR="$RV_STATE" "$REVIEW" status "$RV_WT" | rv_field worktree_base)" == "$rv_wt_base" ]] || fail "worktree_base: $(AI_TODO_RUNNER_STATE_DIR="$RV_STATE" "$REVIEW" status "$RV_WT")"
+[[ "$(AI_TODO_RUNNER_STATE_DIR="$RV_STATE" "$REVIEW" status "$RV_REPO" | rv_field worktree_base)" == None ]] || fail "worktree_base outside a registered worktree"
+rv_ref="$("$REVIEW" status "$RV_REPO" --ref conv-branch)"
+[[ "$(rv_field revision <<<"$rv_ref")" == "$(git -C "$RV_WT" rev-parse HEAD)" && "$(rv_field clean <<<"$rv_ref")" == True && "$(rv_field branch <<<"$rv_ref")" == conv-branch ]] || fail "status --ref: $rv_ref"
+grep -q '^+++ b/wt.txt$' <<<"$("$REVIEW" diff "$RV_REPO" --ref conv-branch --scope since --from "$rv_wt_base" | rv_field patch)" || fail "diff --ref"
+[[ -z "$("$REVIEW" diff "$RV_REPO" --ref conv-branch | rv_field patch)" ]] || fail "diff --ref has uncommitted changes"
+[[ "$("$REVIEW" log "$RV_REPO" --ref conv-branch --limit 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["subject"])')" == "conversation work" ]] || fail "log --ref"
+status=0; "$REVIEW" status "$RV_REPO" --ref no-such-branch >/dev/null 2>&1 || status=$?
+[[ $status -eq 65 ]] || fail "status --ref of a missing branch exit $status"
+status=0; "$REVIEW" status "$RV_REPO" --ref >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "status --ref without a branch exit $status"
+rv_git worktree remove --force "$RV_WT"
+pass "review_worktree_base_and_ref"
+
 # send: a pane whose program turned bracketed paste on gets the whole message as one paste.
 RV_OUT="${SANDBOX}/review-pane.out"
 RV_PANE="${SANDBOX}/review-pane.sh"

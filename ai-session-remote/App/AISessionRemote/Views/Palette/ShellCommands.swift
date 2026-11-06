@@ -17,6 +17,8 @@ struct ShellCommands {
     let newTodo: (() -> Void)?
     /// Only the conversation visible in this scene can be popped out.
     var popOutConversation: (() -> Void)? = nil
+    /// Review Changes… (⌥⌘R) for the conversation visible in this scene.
+    var reviewConversation: (() -> Void)? = nil
 }
 
 /// ⌘⏎ and ⌘⌫ for the todo selected in the list column. Published with `focusedValue` from

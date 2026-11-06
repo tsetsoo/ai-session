@@ -350,7 +350,8 @@ struct MacShell: View {
                 showingPalette = false
                 showingAdd = true
             } : nil,
-            popOutConversation: popOutConversation
+            popOutConversation: popOutConversation,
+            reviewConversation: reviewConversation
         )
     }
 
@@ -372,6 +373,16 @@ struct MacShell: View {
 
     /// The todo whose conversation the detail column shows, also used by scene commands.
     private var visibleTodoID: String? { destination.todoID }
+
+    private var reviewConversation: (() -> Void)? {
+        #if os(macOS)
+        guard let todoID = visibleTodoID,
+              let conversation = store.displayed(forTodo: todoID, selectedKey: model.selectedConversationID) else { return nil }
+        return { model.openReview(todoID: todoID, conversation: conversation, openWindow: openWindow) }
+        #else
+        return nil
+        #endif
+    }
 
     private var popOutConversation: (() -> Void)? {
         #if os(macOS)

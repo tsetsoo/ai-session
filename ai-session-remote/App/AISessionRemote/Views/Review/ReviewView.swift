@@ -227,7 +227,8 @@ struct ReviewView: View {
             Picker("Changes", selection: $session.scope) {
                 ForEach(ReviewScope.segments) { scope in
                     Text(scope.title).tag(scope)
-                        .disabled(scope == .since && session.record.lastBatch == nil)
+                        .disabled((scope == .since && session.record.lastBatch == nil)
+                                  || (scope == .uncommitted && session.keptBranch != nil))
                 }
             }
             .pickerStyle(.segmented)
@@ -298,6 +299,7 @@ struct ReviewView: View {
     private var statusLine: String {
         guard let status = session.status else { return session.isLoading ? "Loading…" : "" }
         var parts = [status.branch ?? "detached HEAD"]
+        if session.keptBranch != nil { parts.append("worktree removed, branch kept") }
         if let base = status.base, session.scope == .branch { parts.append("vs \(base.ref)") }
         if let from = session.result?.from, session.scope == .conversation || session.scope == .commit {
             parts.append("from \(from.prefix(7))")

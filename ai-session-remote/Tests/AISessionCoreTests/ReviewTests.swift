@@ -236,6 +236,19 @@ struct ReviewTests {
         #expect(!ReviewScope.segments.contains(.commit))
     }
 
+    @Test func refIsPassedToEveryRead() {
+        #expect(TmuxCommandBuilder.reviewStatus(cwd: "/p", ref: "ai/x-1").hasSuffix("status '/p' --ref 'ai/x-1'"))
+        #expect(TmuxCommandBuilder.reviewDiff(cwd: "/p", scope: .branch, ref: "ai/x-1").hasSuffix("--scope branch --ref 'ai/x-1'"))
+        #expect(TmuxCommandBuilder.reviewLog(cwd: "/p", ref: "ai/x-1").hasSuffix("--limit 30 --ref 'ai/x-1'"))
+        #expect(!TmuxCommandBuilder.reviewStatus(cwd: "/p").contains("--ref"))
+    }
+
+    @Test func statusDecodesWorktreeBase() throws {
+        let json = #"{"root": "/w", "branch": "b", "head": "h", "revision": "h", "clean": true, "worktree_base": "w0", "ref": null}"#
+        let status = try JSONDecoder().decode(ReviewStatus.self, from: Data(json.utf8))
+        #expect(status.worktreeBase == "w0" && status.ref == nil)
+    }
+
     @Test func logDecodesScriptOutput() throws {
         let json = #"{"commits": [{"sha": "a", "subject": "s", "date": "2026-11-06T19:19:30+02:00", "pushed": null}], "before": null}"#
         let log = try JSONDecoder().decode(ReviewLog.self, from: Data(json.utf8))

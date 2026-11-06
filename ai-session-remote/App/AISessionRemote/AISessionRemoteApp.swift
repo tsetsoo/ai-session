@@ -66,6 +66,7 @@ struct AISessionRemoteApp: App {
                 #if os(macOS)
                 Divider()
                 PopOutButton()
+                ReviewChangesButton()
                 Divider()
                 // Plain ⌘= is handled by a key monitor (TextSizeShortcuts), since ⌘+ needs Shift.
                 Button("Bigger Text") { TextSizeShortcuts.step(by: 1) }
@@ -108,6 +109,17 @@ struct AISessionRemoteApp: App {
 }
 
 #if os(macOS)
+/// Conversation ▸ Review Changes… (⌥⌘R) for the main window's selected conversation.
+private struct ReviewChangesButton: View {
+    @FocusedValue(\.shellCommands) private var shell
+
+    var body: some View {
+        Button("Review Changes…") { shell?.reviewConversation?() }
+            .keyboardShortcut("r", modifiers: [.command, .option])
+            .disabled(shell?.reviewConversation == nil)
+    }
+}
+
 /// Conversation ▸ Open in New Window (⇧⌘O) for the main window's selected conversation.
 private struct PopOutButton: View {
     @FocusedValue(\.shellCommands) private var shell

@@ -2,11 +2,11 @@
 """A conversation's changes for the review view, and review feedback typed into its tmux pane.
 
 Usage:
-  ai-todo-review status <cwd>
+  ai-todo-review status <cwd> [--ref <branch>]
   ai-todo-review diff <cwd> [--scope uncommitted|branch|since] [--from <sha>] [--to <sha>]
-                            [--unified N] [--max-bytes N]
+                            [--unified N] [--max-bytes N] [--ref <branch>]
   ai-todo-review keep <cwd> <sha>
-  ai-todo-review log <cwd> [--limit N] [--before <ISO time>]
+  ai-todo-review log <cwd> [--limit N] [--before <ISO time>] [--ref <branch>]
   ai-todo-review send [--base64] <tmux_name>   (the message on stdin)
 
 Every command but send prints JSON.
@@ -17,7 +17,13 @@ it and neither the real index, the working tree nor the stash stack is touched. 
 has a fixed author, committer, date and message, so the same worktree gives the same sha.
 
 status  root, branch, head, upstream with ahead/behind, the branch's base (merge-base with
-        origin's default branch) and the current revision.
+        origin's default branch) and the current revision. worktree_base: when the repository
+        is a worktree the runner or app made (runner-state/worktrees.json), the commit it was
+        made from (its merge-base with HEAD, so a branch kept from an earlier worktree counts
+        from where it began); else null.
+--ref   reviews that branch of the repository instead of its working tree: HEAD is the
+        branch's tip, the revision is that commit and nothing is uncommitted. For a
+        conversation whose worktree is gone but whose branch is kept in the project folder.
 diff    a unified diff of the repository (paths from its root) from --from to --to (default:
         the current revision). --scope picks --from: uncommitted = HEAD (default), branch = the
         base, since = --from as given. --unified 0 is for moving comments between revisions.
@@ -177,19 +183,72 @@ def base_of(root, head):
     return {"ref": short_ref(ref), "sha": sha} if sha else None
 
 
+def registry_file():
+    state = os.environ.get("AI_TODO_RUNNER_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".ai-remote", "runner-state")
+    return os.path.join(state, "worktrees.json")
+
+
+def worktree_base(root, head):
+    """The commit this worktree was made from, when the runner or app made it; else None."""
+    try:
+        with open(registry_file()) as handle:
+            registry = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    entries = registry.values() if isinstance(registry, dict) else registry if isinstance(registry, list) else []
+    real = os.path.realpath(root)
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("base") or not entry.get("path"):
+            continue
+        if os.path.realpath(entry["path"]) != real:
+            continue
+        base = line(root, "rev-parse", "--verify", "-q", entry["base"] + "^{commit}")
+        if not base:
+            return None
+        return (line(root, "merge-base", base, head) if head else None) or base
+    return None
+
+
+def ref_sha(root, ref):
+    """The tip of branch `ref`, or exit 65 when the repository has no such branch."""
+    sha = line(root, "rev-parse", "--verify", "-q", "refs/heads/%s^{commit}" % ref)
+    if not sha:
+        die("no branch %s" % ref, 65)
+    return sha
+
+
+def take_ref(args):
+    """(args without `--ref X`, X or None)."""
+    rest = list(args)
+    if "--ref" not in rest:
+        return rest, None
+    at = rest.index("--ref")
+    if at + 1 >= len(rest) or not rest[at + 1] or rest[at + 1].startswith("-"):
+        die("--ref needs a branch", 64)
+    ref = rest[at + 1]
+    del rest[at:at + 2]
+    return rest, ref
+
+
 def cmd_status(args):
+    args, ref = take_ref(args)
     if len(args) != 1:
-        die("usage: ai-todo-review status <cwd>", 64)
+        die("usage: ai-todo-review status <cwd> [--ref <branch>]", 64)
     root = repo_root(args[0])
-    head = head_sha(root)
-    branch = line(root, "symbolic-ref", "-q", "--short", "HEAD")
-    upstream = line(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    if ref:
+        head = ref_sha(root, ref)
+        branch = ref
+        upstream = line(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "refs/heads/%s@{upstream}" % ref)
+    else:
+        head = head_sha(root)
+        branch = line(root, "symbolic-ref", "-q", "--short", "HEAD")
+        upstream = line(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
     ahead = behind = None
     if upstream and head:
-        counts = line(root, "rev-list", "--left-right", "--count", "%s...@{upstream}" % head)
+        counts = line(root, "rev-list", "--left-right", "--count", "%s...%s" % (head, upstream))
         if counts and len(counts.split()) == 2:
             ahead, behind = (int(n) for n in counts.split())
-    revision, clean = snapshot(root)
+    revision, clean = (head, True) if ref else snapshot(root)
     print(json.dumps({
         "root": root,
         "branch": branch,
@@ -200,10 +259,13 @@ def cmd_status(args):
         "base": base_of(root, head),
         "revision": revision,
         "clean": clean,
+        "worktree_base": None if ref else worktree_base(root, head),
+        "ref": ref,
     }))
 
 
 def cmd_diff(args):
+    args, ref = take_ref(args)
     cwd = None
     scope = "uncommitted"
     from_sha = to_sha = None
@@ -233,9 +295,9 @@ def cmd_diff(args):
     if cwd is None or scope not in ("uncommitted", "branch", "since") or unified < 0 or max_bytes < 1:
         die("usage: ai-todo-review diff <cwd> [--scope uncommitted|branch|since] ...", 64)
     root = repo_root(cwd)
-    head = head_sha(root)
+    head = ref_sha(root, ref) if ref else head_sha(root)
     if to_sha is None:
-        to_sha, _ = snapshot(root)
+        to_sha = head if ref else snapshot(root)[0]
     if scope == "since":
         if not from_sha:
             die("--scope since needs --from <sha>", 64)
@@ -268,6 +330,7 @@ def cmd_diff(args):
 
 
 def cmd_log(args):
+    args, ref = take_ref(args)
     limit = 30
     before = None
     rest = list(args)
@@ -288,14 +351,16 @@ def cmd_log(args):
     if cwd is None or not 1 <= limit <= 500 or (before is not None and not before.strip()):
         die("usage: ai-todo-review log <cwd> [--limit N] [--before <ISO time>]", 64)
     root = repo_root(cwd)
-    head = head_sha(root)
+    head = ref_sha(root, ref) if ref else head_sha(root)
     commits = []
     found_before = None
     if head:
         out, _ = git(root, "log", "--first-parent", "-n", str(limit), "--format=%H%x1f%s%x1f%cI", head)
         unpushed = None
-        if line(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"):
-            listed, _ = git(root, "rev-list", "@{upstream}.." + head)
+        upstream = line(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name",
+                        ("refs/heads/%s@{upstream}" % ref) if ref else "@{upstream}")
+        if upstream:
+            listed, _ = git(root, "rev-list", "%s..%s" % (upstream, head))
             unpushed = set(listed.split())
         for row in out.splitlines():
             parts = row.split("\x1f")

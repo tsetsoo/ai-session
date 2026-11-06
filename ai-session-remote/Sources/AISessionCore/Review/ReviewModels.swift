@@ -23,9 +23,20 @@ public struct ReviewStatus: Codable, Equatable, Sendable {
     /// HEAD when `clean`, else a snapshot commit of the uncommitted changes on top of it.
     public var revision: String
     public var clean: Bool
+    /// The commit the runner or app made this worktree from (where its conversation began),
+    /// or nil when the folder isn't such a worktree.
+    public var worktreeBase: String?
+    /// The branch reviewed instead of a working tree (`--ref`), or nil.
+    public var ref: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case root, branch, head, upstream, ahead, behind, base, revision, clean, ref
+        case worktreeBase = "worktree_base"
+    }
 
     public init(root: String, branch: String?, head: String?, upstream: String? = nil, ahead: Int? = nil,
-                behind: Int? = nil, base: Base? = nil, revision: String, clean: Bool) {
+                behind: Int? = nil, base: Base? = nil, revision: String, clean: Bool,
+                worktreeBase: String? = nil, ref: String? = nil) {
         self.root = root
         self.branch = branch
         self.head = head
@@ -35,6 +46,8 @@ public struct ReviewStatus: Codable, Equatable, Sendable {
         self.base = base
         self.revision = revision
         self.clean = clean
+        self.worktreeBase = worktreeBase
+        self.ref = ref
     }
 }
 

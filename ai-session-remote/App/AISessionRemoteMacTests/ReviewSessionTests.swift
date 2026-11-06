@@ -14,6 +14,12 @@ final class ReviewSessionTests: XCTestCase {
     private var mappingFails = false
     /// `log --before`'s answer; nil = no commit that old.
     private var startCommit: String? = "start1"
+    /// The conversation's folder answers exit 69 (gone, or not in git).
+    private var folderGone = false
+    /// `status --ref` answers exit 65 (the branch is gone too).
+    private var branchGone = false
+    /// `status`'s worktree_base.
+    private var worktreeBase: String?
     /// The diff on screen renames the file.
     private var renamed = false
     /// While set, `send` waits for the second press to arrive.
@@ -46,7 +52,14 @@ final class ReviewSessionTests: XCTestCase {
             return json(["commits": commits, "before": startCommit as Any? ?? NSNull()])
         }
         if command.contains(" status ") {
-            return json(["root": "/w", "branch": "feat", "head": "head1", "revision": revision, "clean": false])
+            if command.contains("--ref") {
+                if branchGone { return SSHExecResult(exitCode: 65, stdout: "", stderr: "no branch") }
+                return json(["root": "/project", "branch": "ai/x-1", "head": "tip1", "revision": "tip1", "clean": true,
+                             "ref": "ai/x-1"])
+            }
+            if folderGone { return SSHExecResult(exitCode: 69, stdout: "", stderr: "no folder") }
+            return json(["root": "/w", "branch": "feat", "head": "head1", "revision": revision, "clean": false,
+                         "worktree_base": worktreeBase as Any? ?? NSNull()])
         }
         if command.contains(" diff "), command.contains("--unified 0") {
             if mappingFails { return SSHExecResult(exitCode: 65, stdout: "", stderr: "gone") }
@@ -71,13 +84,17 @@ final class ReviewSessionTests: XCTestCase {
         return SSHExecResult(exitCode: 1, stdout: "", stderr: "unexpected")
     }
 
-    private func makeSession(status: ConversationStatus = .idle) -> (ReviewSession, ReviewStore) {
+    private func makeSession(status: ConversationStatus = .idle, worktree: Bool = false) -> (ReviewSession, ReviewStore) {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("review-\(UUID().uuidString).json")
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
         let store = ReviewStore(fileURL: url)
         var conversation = DemoFixtures.conversations[0]
         conversation.status = status
         conversation.statusRevision = 4
+        if worktree {
+            conversation.worktreeSource = "/project"
+            conversation.branch = "ai/x-1"
+        }
         let session = ReviewSession(conversation: conversation, store: store, exec: { [unowned self] in
             try await self.exec($0, $1)
         })
@@ -209,6 +226,46 @@ final class ReviewSessionTests: XCTestCase {
         XCTAssertEqual(session.scope, .commit)
         await session.load(config: config)
         XCTAssertTrue(commands.contains { $0.contains("--scope since --from 'start1'") })
+    }
+
+    func testAWorktreeConversationStartsAtItsBase() async {
+        let (session, _) = makeSession()
+        worktreeBase = "wtbase1"
+        session.scope = .conversation
+        await session.load(config: config)
+        XCTAssertNil(session.failure)
+        XCTAssertEqual(session.conversationStart, "wtbase1")
+        XCTAssertTrue(commands.contains { $0.contains(" diff ") && $0.contains("--from 'wtbase1'") })
+    }
+
+    func testAGoneWorktreeReviewsItsKeptBranch() async {
+        let (session, _) = makeSession(worktree: true)
+        folderGone = true
+        await session.load(config: config)
+        // Nothing is uncommitted on a kept branch: the window moves to Branch, which loads it.
+        XCTAssertEqual(session.scope, .branch)
+        await session.load(config: config)
+        XCTAssertNil(session.failure)
+        XCTAssertNotNil(session.keptBranch)
+        XCTAssertEqual(session.status?.ref, "ai/x-1")
+        XCTAssertTrue(commands.contains { $0.contains(" diff '/project' --scope branch") && $0.contains("--ref 'ai/x-1'") })
+        XCTAssertTrue(commands.contains { $0.contains(" log '/project'") && $0.contains("--ref 'ai/x-1'") })
+    }
+
+    func testAGoneWorktreeWithAGoneBranchSaysSo() async {
+        let (session, _) = makeSession(worktree: true)
+        folderGone = true
+        branchGone = true
+        await session.load(config: config)
+        XCTAssertTrue(session.failure?.errorDescription?.contains("so is its branch ai/x-1") == true, "\(String(describing: session.failure))")
+    }
+
+    func testAFolderOutsideGitExplainsWhy() async {
+        let (session, _) = makeSession()
+        folderGone = true
+        await session.load(config: config)
+        XCTAssertTrue(session.failure?.errorDescription?.contains("isn't in a git repository") == true, "\(String(describing: session.failure))")
+        XCTAssertTrue(session.failure?.errorDescription?.contains("get their own worktree") == true)
     }
 
     func testGitTimeReadsTheHubsUTC() {
