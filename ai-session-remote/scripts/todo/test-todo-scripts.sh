@@ -1691,7 +1691,8 @@ import json, sys
 rows = json.load(open(sys.argv[1]))
 assert len(rows) == 1, rows
 s = rows[0]
-assert list(s) == ["tool", "session_id", "cwd", "title", "repo_root", "repo_url", "stats", "days"], list(s)
+assert list(s) == ["tool", "session_id", "cwd", "title", "repo_root", "repo_url", "stats", "days", "by_model",
+                   "workers", "copied_entries_skipped"], list(s)
 assert (s["tool"], s["session_id"], s["cwd"], s["title"]) == ("claude", sys.argv[2], "~/work/app", "Add the parser please"), s
 assert s["repo_root"] is None and s["repo_url"] is None, s
 assert s["stats"] == {
@@ -1700,6 +1701,10 @@ assert s["stats"] == {
     "first_activity": "2026-10-15T09:00:00Z", "last_activity": "2026-10-15T22:32:00Z",
     "files_touched": ["src/parser.py", "src/config.py", "~/other/notes.md"],
     "models": ["claude-opus-5-5", "claude-sonnet-5"]}, s["stats"]
+assert s["by_model"] == {
+    "claude-opus-5-5": {"input_tokens": 124, "output_tokens": 150, "cache_read_tokens": 13200, "cache_creation_tokens": 300},
+    "claude-sonnet-5": {"input_tokens": 3, "output_tokens": 60, "cache_read_tokens": 4000, "cache_creation_tokens": 50}}, s["by_model"]
+assert (s["workers"], s["copied_entries_skipped"]) == ([], 0), s
 assert s["days"] == [
     {"day": "2026-10-15", "prompts": 2, "assistant_turns": 2, "input_tokens": 122, "output_tokens": 140,
      "cache_read_tokens": 9100, "cache_creation_tokens": 300, "active_seconds": 180, "files_touched": 3},
@@ -1735,6 +1740,168 @@ touch -t "$OLD" "${S_PROJ}/${S_CLAUDE}.jsonl"
   || fail "stats --tool claude wrong"
 if stats --session "claude:../x" >/dev/null 2>&1; then fail "stats accepted a bad --session"; else [[ $? -eq 64 ]] || fail "bad --session should exit 64"; fi
 pass "stats scope: --since DAYS by transcript mtime (default 1), --tool, --session tool:id validated"
+
+# Workers and copies: a Claude sub-agent, a resumed copy (old sessionId), a copy with the
+# sessionId rewritten (same uuids), and Codex sub-agent threads (fork with copied history,
+# guardian, nested child).
+W_PROJ="${SHOME}/.claude/projects/-work-sub"
+W_P=c0ffee00-0000-4000-8000-000000000010
+W_R=c0ffee00-0000-4000-8000-000000000011
+W_C=c0ffee00-0000-4000-8000-000000000012
+W_DAY="${SHOME}/.codex/sessions/2026/10/20"
+W_X=019f0000-0000-7000-8000-0000000000d1
+W_Y=019f0000-0000-7000-8000-0000000000d2
+W_Z=019f0000-0000-7000-8000-0000000000d3
+W_W=019f0000-0000-7000-8000-0000000000d4
+mkdir -p "$W_PROJ/$W_P/subagents" "$W_DAY"
+python3 - "$W_PROJ" "$W_P" "$W_R" "$W_C" "$W_DAY" "$W_X" "$W_Y" "$W_Z" "$W_W" "$S_CWD" <<'PY'
+import json, sys, time
+proj, P, R, C, day, X, Y, Z, W, cwd = sys.argv[1:]
+U1, A1 = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+
+
+def user(sid, uuid, ts, text, **kw):
+    return dict(type="user", uuid=uuid, sessionId=sid, cwd=cwd, timestamp="2026-10-20T" + ts + "Z",
+                message={"role": "user", "content": text}, **kw)
+
+
+def asst(sid, uuid, ts, mid, model, usage, **kw):
+    i, o, cr, cc = usage
+    return dict(type="assistant", uuid=uuid, sessionId=sid, cwd=cwd, timestamp="2026-10-20T" + ts + "Z",
+                message={"id": mid, "role": "assistant", "model": model, "stop_reason": "end_turn",
+                         "usage": {"input_tokens": i, "output_tokens": o, "cache_read_input_tokens": cr,
+                                   "cache_creation_input_tokens": cc},
+                         "content": [{"type": "text", "text": "ok"}]}, **kw)
+
+
+def write(path, rows):
+    with open(path, "w") as f:
+        for r in rows:
+            f.write(json.dumps(r, separators=(",", ":")) + "\n")
+    time.sleep(0.05)  # creation order decides which transcript owns a copied entry
+
+
+write(f"{proj}/{P}.jsonl", [user(P, U1, "10:00:00", "Plan it"),
+                            asst(P, A1, "10:00:30", "msg_P1", "claude-opus-5-5", (10, 100, 1000, 50))])
+write(f"{proj}/{P}/subagents/agent-a1.jsonl", [
+    user(P, "33333333-3333-4333-8333-333333333333", "10:00:05", "Research X", isSidechain=True),
+    asst(P, "44444444-4444-4444-8444-444444444444", "10:00:20", "msg_W1", "claude-haiku-5", (5, 40, 500, 20),
+         isSidechain=True)])
+with open(f"{proj}/{P}/subagents/agent-a1.meta.json", "w") as f:
+    json.dump({"agentType": "Explore", "description": "Research X", "spawnDepth": 1}, f)
+write(f"{proj}/{R}.jsonl", [user(P, U1, "10:00:00", "Plan it"),
+                            asst(P, A1, "10:00:30", "msg_P1", "claude-opus-5-5", (10, 100, 1000, 50)),
+                            user(R, "55555555-5555-4555-8555-555555555555", "11:00:00", "Continue"),
+                            asst(R, "66666666-6666-4666-8666-666666666666", "11:00:20", "msg_R1", "claude-opus-5-5",
+                                 (1, 10, 100, 0))])
+write(f"{proj}/{C}.jsonl", [user(C, U1, "10:00:00", "Plan it"),
+                            asst(C, A1, "10:00:30", "msg_P1", "claude-opus-5-5", (10, 100, 1000, 50)),
+                            user(C, "77777777-7777-4777-8777-777777777777", "12:00:00", "Another"),
+                            asst(C, "88888888-8888-4888-8888-888888888888", "12:00:20", "msg_C1", "claude-opus-5-5",
+                                 (2, 20, 0, 0))])
+
+
+def ev(ts, kind, payload):
+    return {"timestamp": "2026-10-20T" + ts + "Z", "type": kind, "payload": payload}
+
+
+def meta(ts, tid, **kw):
+    return ev(ts, "session_meta", dict(id=tid, timestamp="2026-10-20T" + ts + "Z", cwd=cwd, **kw))
+
+
+def msg(ts, text):
+    return ev(ts, "response_item", {"type": "message", "role": "user",
+                                    "content": [{"type": "input_text", "text": text}]})
+
+
+def tokens(ts, i, cached, o):
+    return ev(ts, "event_msg", {"type": "token_count", "info": {"total_token_usage": {
+        "input_tokens": i, "cached_input_tokens": cached, "output_tokens": o}}})
+
+
+def done(ts):
+    return ev(ts, "event_msg", {"type": "task_complete"})
+
+
+def model(ts, m):
+    return ev(ts, "turn_context", {"cwd": cwd, "model": m})
+
+
+def spawn(parent, depth, nick):
+    return {"subagent": {"thread_spawn": {"parent_thread_id": parent, "depth": depth,
+                                          "agent_nickname": nick, "agent_role": None}}}
+
+
+def rollout(ts, tid, rows):
+    write(f"{day}/rollout-2026-10-20T{ts.replace(':', '-')}-{tid}.jsonl", rows)
+
+
+rollout("09:00:00", X, [meta("09:00:00", X, source="cli"), model("09:00:01", "gpt-5.5-codex"),
+                        msg("09:00:02", "Spawn helpers"), tokens("09:00:10", 1000, 200, 100), done("09:00:11")])
+rollout("09:05:00", Y, [meta("09:05:00.000", Y, forked_from_id=X, parent_thread_id=X, source=spawn(X, 1, "Kuhn")),
+                        model("09:05:00.001", "gpt-5.5-codex"), msg("09:05:00.002", "Spawn helpers"),
+                        tokens("09:05:00.003", 1000, 200, 100), done("09:05:00.004"),
+                        ev("09:05:00.020", "event_msg", {"type": "thread_settings_applied"}),
+                        model("09:05:02", "gpt-5.5-mini"), msg("09:05:03", "Do part 1"),
+                        tokens("09:05:30", 1500, 400, 160), done("09:05:31")])
+rollout("09:06:00", Z, [meta("09:06:00", Z, parent_thread_id=X, source={"subagent": {"other": "guardian"}}),
+                        model("09:06:01", "gpt-5.5-mini"), msg("09:06:02", "<review>check</review>"),
+                        tokens("09:06:10", 300, 0, 20), done("09:06:11")])
+rollout("09:07:00", W, [meta("09:07:00", W, parent_thread_id=Y, source=spawn(Y, 2, "Noether")),
+                        model("09:07:01", "gpt-5.5-mini"), msg("09:07:02", "Do part 1a"),
+                        tokens("09:07:10", 50, 0, 5), done("09:07:11")])
+PY
+stats --session "claude:${W_P}" --session "claude:${W_R}" --session "claude:${W_C}" --session "codex:${W_X}" \
+  --session "codex:${W_Y}" >"${SANDBOX}/stats-workers.json" || fail "stats with workers failed"
+python3 - "${SANDBOX}/stats-workers.json" "$W_P" "$W_R" "$W_C" "$W_X" "$W_Y" "$W_Z" "$W_W" <<'PY' \
+  || fail "worker/copy stats wrong: $(cat "${SANDBOX}/stats-workers.json")"
+import json, sys
+P, R, C, X, Y, Z, W = sys.argv[2:]
+rows = {r["session_id"]: r for r in json.load(open(sys.argv[1]))}
+assert sorted(rows) == sorted([P, R, C, X]), sorted(rows)  # a sub-agent thread is not a row of its own
+p, r, c, x = rows[P], rows[R], rows[C], rows[X]
+assert (p["stats"]["prompts"], p["stats"]["output_tokens"], p["copied_entries_skipped"]) == (1, 100, 0), p
+assert p["by_model"] == {"claude-opus-5-5": {"input_tokens": 10, "output_tokens": 100, "cache_read_tokens": 1000,
+                                             "cache_creation_tokens": 50}}, p["by_model"]
+[w] = p["workers"]
+assert (w["id"], w["kind"], w["type"], w["title"], w["depth"]) == ("a1", "agent", "Explore", "Research X", 1), w
+assert (w["stats"]["prompts"], w["stats"]["assistant_turns"], w["stats"]["output_tokens"],
+        w["stats"]["cache_creation_tokens"], w["stats"]["active_seconds"], w["stats"]["models"]) == (
+        1, 1, 40, 20, 15, ["claude-haiku-5"]), w["stats"]
+assert w["by_model"] == {"claude-haiku-5": {"input_tokens": 5, "output_tokens": 40, "cache_read_tokens": 500,
+                                            "cache_creation_tokens": 20}}, w
+assert [d["day"] for d in w["days"]] == ["2026-10-20"], w["days"]
+for row, out in ((r, 10), (c, 20)):
+    s = row["stats"]
+    assert (s["prompts"], s["assistant_turns"], s["output_tokens"], s["active_seconds"],
+            row["copied_entries_skipped"], row["workers"]) == (1, 1, out, 20, 2, []), row
+assert (x["stats"]["prompts"], x["stats"]["output_tokens"], x["copied_entries_skipped"]) == (1, 100, 0), x
+assert x["by_model"] == {"gpt-5.5-codex": {"input_tokens": 800, "output_tokens": 100, "cache_read_tokens": 200,
+                                           "cache_creation_tokens": None}}, x["by_model"]
+assert [(v["id"], v["kind"], v["type"], v["title"], v["depth"]) for v in x["workers"]] == [
+    (Y, "agent", None, "Kuhn", 1), (Z, "internal", "guardian", None, 1), (W, "agent", None, "Noether", 2)], x["workers"]
+y, z, n = x["workers"]
+assert (y["stats"]["prompts"], y["stats"]["assistant_turns"], y["stats"]["input_tokens"],
+        y["stats"]["output_tokens"], y["stats"]["cache_read_tokens"], y["stats"]["models"]) == (
+        1, 1, 300, 60, 200, ["gpt-5.5-mini"]), y["stats"]
+assert y["by_model"] == {"gpt-5.5-mini": {"input_tokens": 300, "output_tokens": 60, "cache_read_tokens": 200,
+                                          "cache_creation_tokens": None}}, y
+assert (z["stats"]["prompts"], z["stats"]["input_tokens"], z["stats"]["output_tokens"]) == (0, 300, 20), z["stats"]
+assert (n["stats"]["prompts"], n["stats"]["output_tokens"]) == (1, 5), n["stats"]
+PY
+pass "stats_workers: Claude sub-agents and Codex sub-agent threads (fork history skipped, guardian internal, nested) with per-model tokens; resumed and rewritten copies counted once"
+
+touch -t "$OLD" "${W_PROJ}/${W_P}.jsonl" "${W_PROJ}/${W_R}.jsonl" "${W_PROJ}/${W_C}.jsonl" \
+  "$W_DAY"/rollout-*-"${W_X}".jsonl "$W_DAY"/rollout-*-"${W_Z}".jsonl "$W_DAY"/rollout-*-"${W_W}".jsonl
+touch "$W_PROJ/$W_P/subagents/agent-a1.jsonl" "$W_DAY"/rollout-*-"${W_Y}".jsonl
+stats --since 1 >"${SANDBOX}/stats-workers-since.json" || fail "stats --since failed"
+python3 - "${SANDBOX}/stats-workers-since.json" "$W_P" "$W_X" "$W_R" "$W_C" <<'PY' \
+  || fail "a changed sub-agent transcript did not bring its conversation into --since"
+import json, sys
+ids = {r["session_id"] for r in json.load(open(sys.argv[1]))}
+assert {sys.argv[2], sys.argv[3]} <= ids and not ids & {sys.argv[4], sys.argv[5]}, ids
+PY
+pass "stats scope: a changed sub-agent transcript brings in its parent conversation"
 
 REPO="${SHOME}/work/repo"
 mkdir -p "$REPO"

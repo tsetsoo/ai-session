@@ -36,11 +36,22 @@
 # stats   Usage numbers per conversation and per local day, without any LLM, for
 #         ai-todo-memory to push to todo-server. Scope: conversations whose transcript
 #         changed in the last DAYS days (default 1), or exactly the --session ones. Prints
-#         a JSON array of {tool, session_id, cwd, title, repo_root, repo_url, stats, days}.
-#         Sidechain / sub-agent entries are skipped. Tokens: Claude usage once per
+#         a JSON array of {tool, session_id, cwd, title, repo_root, repo_url, stats, days,
+#         by_model, workers, copied_entries_skipped}. Tokens: Claude usage once per
 #         message.id; Codex per-day deltas of the cumulative token_count (no cache-creation
-#         figure). Active time: gaps under 10 min between user/assistant entries, counted on
-#         the later entry's local day. The title is the first prompt, redacted
+#         figure). by_model: token fields per model. stats/days/by_model are the
+#         conversation's own usage; workers lists its sub-agents, each {id, kind
+#         (agent|internal), type, title, depth, stats, days, by_model}: Claude
+#         <transcript>/subagents/agent-*.jsonl (+ .meta.json), Codex rollouts whose
+#         session_meta names a parent thread (nested ones under the top conversation;
+#         guardian = internal). A sub-agent thread is never a row of its own, and a changed
+#         sub-agent transcript brings its conversation into --since. Copies counted once:
+#         Claude entries carrying another conversation's sessionId (copied on resume) or a
+#         uuid an earlier-created transcript in the same folder holds; a Codex fork's copied
+#         history (up to thread_settings_applied, else within 1 s of its start) counts
+#         nothing. copied_entries_skipped says how many entries that left out.
+#         Active time: gaps under 10 min between user/assistant entries, counted on the
+#         later entry's local day (a worker's own, apart from its parent's). The title is the first prompt, redacted
 #         (ai_todo_redact.py next to this script; null if it is missing), <= 120 chars.
 #
 # Running = a live claude/codex/agent process uses it: ~/.claude/sessions/<pid>.json, the id
@@ -883,6 +894,7 @@ class StatsAcc:
         self.first = self.last = self.prev = None
         self.files = []
         self.models = []
+        self.by_model = {}  # {model: {field: n}}
 
     def day(self, day):
         if day not in self.days:
@@ -913,11 +925,16 @@ class StatsAcc:
         if day:
             self.day(day)["turns"] += 1
 
-    def add_tokens(self, day, values):
+    def add_tokens(self, day, values, model=None):
         if self.tokens is None:
             self.tokens = {}
+        per_model = None
+        if isinstance(model, str) and model and not model.startswith("<"):
+            per_model = self.by_model.setdefault(model, {})
         for field, n in values.items():
             self.tokens[field] = self.tokens.get(field, 0) + n
+            if per_model is not None:
+                per_model[field] = per_model.get(field, 0) + n
             if day:
                 bucket = self.day(day)["tokens"]
                 bucket[field] = bucket.get(field, 0) + n
@@ -965,6 +982,11 @@ class StatsAcc:
             days.append(row)
         return stats, days
 
+    def model_usage(self, fields):
+        """{model: token fields} for models that reported usage; fields the tool lacks are null."""
+        return {m: {f: (int(c.get(f, 0)) if f in fields else None) for f in TOKEN_FIELDS}
+                for m, c in sorted(self.by_model.items())}
+
 
 def effective_cwd(counts, last_seen):
     """The working directory a conversation is about. Sessions are often started in a parent
@@ -988,16 +1010,105 @@ def effective_cwd(counts, last_seen):
     return max(candidates, key=lambda c: (counts[c], last_seen.get(c, 0)))
 
 
-def claude_stats(path, acc):
-    """Fill acc from a Claude transcript. Returns (cwd, first real prompt)."""
+UUID_RE = re.compile(rb'"uuid":"([0-9a-fA-F-]{36})"')
+FIRST_TS_RE = re.compile(rb'"timestamp":"([^"]+)"')
+FORK_COPY_SLACK = 1.0  # seconds; a Codex fork's copied history is stamped at its start
+
+
+def read_json_file(path):
+    try:
+        with open(path, errors="replace") as f:
+            value = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def first_entry(path):
+    try:
+        with open(path, errors="replace") as f:
+            value = json.loads(f.readline())
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def file_birth(path):
+    """When a transcript was created: st_birthtime where the filesystem keeps it, else its
+    first timestamp, else its mtime."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return float("inf")
+    birth = getattr(st, "st_birthtime", None)
+    if birth:
+        return birth
+    try:
+        with open(path, "rb") as f:
+            for line in f:
+                m = FIRST_TS_RE.search(line)
+                ts = parse_ts(m.group(1).decode("ascii", "replace")) if m else None
+                if ts is not None:
+                    return ts
+    except OSError:
+        pass
+    return st.st_mtime
+
+
+class ClaudeCopies:
+    """Which Claude transcript owns each entry uuid, per project folder, built once per run.
+
+    A resumed conversation copies earlier entries into its new transcript. Usually they keep
+    the old sessionId (skipped by that alone), but some copies get the new id and only keep
+    their uuid. An entry counts in the earliest-created transcript holding it (then by path)."""
+
+    def __init__(self):
+        self.folders = {}
+
+    def owner(self, path, uuid):
+        folder = os.path.dirname(path)
+        if folder not in self.folders:
+            self.folders[folder] = self._index(folder)
+        return self.folders[folder].get(uuid)
+
+    @staticmethod
+    def _index(folder):
+        owners = {}
+        for path in sorted(glob.glob(os.path.join(folder, "*.jsonl")), key=lambda f: (file_birth(f), f)):
+            try:
+                with open(path, "rb") as f:
+                    for line in f:
+                        if b'"type":"user"' in line or b'"type":"assistant"' in line:
+                            for uuid in UUID_RE.findall(line):
+                                owners.setdefault(uuid.decode("ascii"), path)
+            except OSError:
+                continue
+        return owners
+
+
+def claude_stats(path, acc, sid=None, copies=None, worker=False):
+    """Fill acc from a Claude transcript. Returns (cwd, first real prompt, copied entries skipped).
+
+    Main transcripts skip sidechain entries (workers are read from their own files), entries
+    whose sessionId is another conversation's, and entries an earlier transcript owns."""
     title, usage, ended = "", {}, set()
     cwds, last_seen = {}, {}
+    skipped = 0
     for n, entry in enumerate(read_jsonl(path)):
-        if not isinstance(entry, dict) or entry.get("isSidechain"):
+        if not isinstance(entry, dict) or (entry.get("isSidechain") and not worker):
             continue
         kind = entry.get("type")
         if kind not in ("user", "assistant"):
             continue
+        owner_sid = entry.get("sessionId")
+        if sid and isinstance(owner_sid, str) and owner_sid and owner_sid != sid:
+            skipped += 1
+            continue
+        if copies is not None and isinstance(entry.get("uuid"), str):
+            owner = copies.owner(path, entry["uuid"])
+            if owner is not None and owner != path:
+                skipped += 1
+                continue
         if isinstance(entry.get("cwd"), str) and entry["cwd"]:
             cwds[entry["cwd"]] = cwds.get(entry["cwd"], 0) + 1
             last_seen[entry["cwd"]] = n
@@ -1014,7 +1125,7 @@ def claude_stats(path, acc):
         acc.model(message.get("model"))
         u = message.get("usage")
         if isinstance(u, dict):
-            day_of_id, counts = usage.setdefault(mid, (day, {}))
+            _, counts, _ = usage.setdefault(mid, (day, {}, message.get("model")))
             for src, dst in CLAUDE_USAGE:
                 v = u.get(src)
                 if isinstance(v, int) and not isinstance(v, bool):
@@ -1027,37 +1138,156 @@ def claude_stats(path, acc):
             if isinstance(part, dict) and part.get("type") == "tool_use" and part.get("name") in EDIT_TOOLS:
                 args = part.get("input") if isinstance(part.get("input"), dict) else {}
                 acc.file(day, args.get("file_path") or args.get("notebook_path"))
-    for day, counts in usage.values():
-        acc.add_tokens(day, counts)
-    return effective_cwd(cwds, last_seen), title
+    for day, counts, model in usage.values():
+        acc.add_tokens(day, counts, model)
+    return effective_cwd(cwds, last_seen), title, skipped
 
 
-def codex_stats(path, acc):
-    """Fill acc from a Codex rollout. Returns (session_id, cwd, first real prompt), or None
-    for files that aren't a conversation (no session_meta) or are a sub-agent thread."""
-    meta, title, current_cwd = None, "", None
+def claude_workers(path, sid):
+    """Sub-agents of a Claude conversation: <transcript without .jsonl>/subagents/agent-<id>.jsonl,
+    described by agent-<id>.meta.json. Yields (worker fields, StatsAcc)."""
+    folder = os.path.join(path[: -len(".jsonl")], "subagents")
+    for wpath in sorted(glob.glob(os.path.join(folder, "agent-*.jsonl"))):
+        meta = read_json_file(wpath[: -len(".jsonl")] + ".meta.json")
+        acc = StatsAcc()
+        _, prompt, _ = claude_stats(wpath, acc, sid=sid, worker=True)
+        depth = meta.get("spawnDepth")
+        yield {
+            "id": os.path.basename(wpath)[len("agent-"): -len(".jsonl")],
+            "kind": "agent",
+            "type": meta.get("agentType") if isinstance(meta.get("agentType"), str) else None,
+            "title": meta.get("description") if isinstance(meta.get("description"), str) else prompt,
+            "depth": depth if isinstance(depth, int) and not isinstance(depth, bool) else 1,
+        }, acc
+
+
+class CodexThreads:
+    """session_meta of every Codex rollout on this computer, read once per run."""
+
+    def __init__(self):
+        self._threads = None
+
+    def threads(self):
+        """{thread id: (newest rollout path, session_meta payload)}."""
+        if self._threads is None:
+            self._threads = {}
+            for path in glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*.jsonl"), recursive=True):
+                first = first_entry(path)
+                payload = first.get("payload") if isinstance(first.get("payload"), dict) else {}
+                tid = payload.get("id")
+                if first.get("type") != "session_meta" or not isinstance(tid, str) or not tid:
+                    continue
+                known = self._threads.get(tid)
+                if known is None or os.path.getmtime(path) > os.path.getmtime(known[0]):
+                    self._threads[tid] = (path, payload)
+        return self._threads
+
+    @staticmethod
+    def parent_of(payload):
+        source = payload.get("source")
+        sub = source.get("subagent") if isinstance(source, dict) else None
+        if not isinstance(sub, dict):
+            return None
+        spawn = sub.get("thread_spawn") if isinstance(sub.get("thread_spawn"), dict) else {}
+        parent = payload.get("parent_thread_id") or spawn.get("parent_thread_id")
+        return parent if isinstance(parent, str) and parent else None
+
+    def root(self, tid):
+        """The top conversation a (possibly nested) sub-agent thread belongs to."""
+        seen = set()
+        while tid not in seen:
+            seen.add(tid)
+            known = self.threads().get(tid)
+            parent = self.parent_of(known[1]) if known else None
+            if not parent:
+                return tid
+            tid = parent
+        return tid
+
+    def root_path(self, path):
+        """The rollout to read for the conversation `path` belongs to (itself unless a sub-agent)."""
+        payload = first_entry(path).get("payload")
+        tid = payload.get("id") if isinstance(payload, dict) else None
+        if not isinstance(tid, str) or not self.parent_of(payload):
+            return path
+        known = self.threads().get(self.root(tid))
+        return known[0] if known else path
+
+    def workers(self, tid):
+        """(path, payload) of every sub-agent thread under tid, nested ones included."""
+        return sorted(((p, m) for t, (p, m) in self.threads().items() if t != tid and self.parent_of(m)
+                       and self.root(t) == tid), key=lambda pm: (str(pm[1].get("timestamp")), pm[0]))
+
+
+def codex_worker_fields(payload):
+    sub = payload["source"]["subagent"]
+    spawn = sub.get("thread_spawn") if isinstance(sub.get("thread_spawn"), dict) else None
+    if spawn is None:
+        other = sub.get("other") if isinstance(sub.get("other"), str) else None
+        return {"id": payload["id"], "kind": "internal", "type": other, "title": None, "depth": 1}
+    depth = spawn.get("depth")
+    title = spawn.get("agent_nickname") or spawn.get("agent_path")
+    return {"id": payload["id"], "kind": "agent",
+            "type": spawn.get("agent_role") if isinstance(spawn.get("agent_role"), str) else None,
+            "title": title if isinstance(title, str) else None,
+            "depth": depth if isinstance(depth, int) and not isinstance(depth, bool) else 1}
+
+
+def codex_copy_end(entries, meta_ts):
+    """Index of the first entry after a forked rollout's copied history: past the
+    thread_settings_applied event when there is one, else past the entries stamped within
+    FORK_COPY_SLACK of the fork's start."""
+    for i, entry in enumerate(entries):
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        if entry.get("type") == "event_msg" and payload.get("type") == "thread_settings_applied":
+            return i + 1
+    if meta_ts is None:
+        return 1
+    for i, entry in enumerate(entries):
+        ts = parse_ts(entry.get("timestamp"))
+        if i > 0 and ts is not None and ts - meta_ts > FORK_COPY_SLACK:
+            return i
+    return len(entries)
+
+
+def codex_stats(path, acc, worker=False):
+    """Fill acc from a Codex rollout. Returns (session_id, cwd, first real prompt, copied
+    entries skipped), or None for files that aren't a conversation (no session_meta) or, unless
+    `worker`, are a sub-agent thread. A fork's copied history counts nothing; its token totals
+    only serve as the baseline."""
+    entries = [e for e in read_jsonl(path) if isinstance(e, dict)]
+    if not entries or entries[0].get("type") != "session_meta":
+        return None
+    meta = entries[0].get("payload") if isinstance(entries[0].get("payload"), dict) else {}
+    if not meta.get("id"):
+        return None
+    if CodexThreads.parent_of(meta) and not worker:
+        return None  # sub-agent threads belong to their parent conversation
+    copy_end = 1
+    if meta.get("forked_from_id"):
+        copy_end = codex_copy_end(entries, parse_ts(meta.get("timestamp") or entries[0].get("timestamp")))
+    title = ""
+    current_cwd = meta.get("cwd") if isinstance(meta.get("cwd"), str) else None
+    current_model = None
     cwds, last_seen = {}, {}
     previous = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
-    for i, entry in enumerate(read_jsonl(path)):
-        if not isinstance(entry, dict):
-            continue
+    skipped = 0
+    for i, entry in enumerate(entries[1:], start=1):
+        copied = i < copy_end
         kind = entry.get("type")
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
-        if i == 0:
-            if kind != "session_meta" or not payload.get("id"):
-                return None
-            source = payload.get("source")
-            if isinstance(source, dict) and "subagent" in source:
-                return None
-            meta = payload
-            current_cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else None
-            continue
         ts = parse_ts(entry.get("timestamp"))
         if kind == "turn_context":
-            acc.model(payload.get("model"))
+            if isinstance(payload.get("model"), str) and payload["model"]:
+                current_model = payload["model"]
+                if not copied:
+                    acc.model(current_model)
             if isinstance(payload.get("cwd"), str) and payload["cwd"]:
                 current_cwd = payload["cwd"]
         elif kind == "response_item":
+            if copied:
+                skipped += 1
+                continue
             day = acc.tick(ts)
             if current_cwd:
                 cwds[current_cwd] = cwds.get(current_cwd, 0) + 1
@@ -1078,7 +1308,10 @@ def codex_stats(path, acc):
             day = local_day(ts) if ts is not None else None
             ptype = payload.get("type")
             if ptype == "task_complete":
-                acc.turn(day)
+                if copied:
+                    skipped += 1
+                else:
+                    acc.turn(day)
             elif ptype == "token_count":
                 info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
                 total = info.get("total_token_usage")
@@ -1087,11 +1320,11 @@ def codex_stats(path, acc):
                     current = {"input_tokens": max(0, int(total.get("input_tokens") or 0) - cached),
                                "output_tokens": int(total.get("output_tokens") or 0),
                                "cache_read_tokens": cached}
-                    acc.add_tokens(day, {k: max(0, current[k] - previous[k]) for k in current})
+                    if not copied:
+                        acc.add_tokens(day, {k: max(0, current[k] - previous[k]) for k in current},
+                                       current_model)
                     previous = current
-    if not meta:
-        return None
-    return meta["id"], effective_cwd(cwds, last_seen) or meta.get("cwd"), title
+    return meta["id"], effective_cwd(cwds, last_seen) or meta.get("cwd"), title, skipped
 
 
 def strip_credentials(url):
@@ -1140,8 +1373,25 @@ def repo_fields(cwd, cache):
     return cache[cwd_key]
 
 
-def stats_targets(sessions, tool, since_days):
-    """{(tool, id): newest transcript path} in scope."""
+class StatsRun:
+    """Per-run indexes shared by every conversation of one stats call."""
+
+    def __init__(self, redactor, secrets):
+        self.redactor = redactor
+        self.secrets = secrets
+        self.repo_cache = {}
+        self.copies = ClaudeCopies()
+        self.codex = CodexThreads()
+
+    def redact(self, text):
+        if not isinstance(text, str) or not text:
+            return None
+        return self.redactor.redact(text, self.secrets)[:TITLE_MAX] if self.redactor else None
+
+
+def stats_targets(sessions, tool, since_days, run):
+    """{(tool, id): newest transcript path} in scope. A changed sub-agent transcript brings in
+    the conversation it belongs to."""
     found = {}
 
     def keep(t, sid, path):
@@ -1160,38 +1410,59 @@ def stats_targets(sessions, tool, since_days):
         for path in glob.glob(os.path.join(CLAUDE_PROJECTS, "*", "*.jsonl")):
             if os.path.getmtime(path) >= cutoff:
                 keep("claude", os.path.basename(path)[: -len(".jsonl")], path)
+        for wpath in glob.glob(os.path.join(CLAUDE_PROJECTS, "*", "*", "subagents", "agent-*.jsonl")):
+            parent = os.path.dirname(os.path.dirname(wpath)) + ".jsonl"
+            if os.path.getmtime(wpath) >= cutoff and os.path.isfile(parent):
+                keep("claude", os.path.basename(parent)[: -len(".jsonl")], parent)
     if tool in (None, "codex"):
         for path in glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*.jsonl"), recursive=True):
             if os.path.getmtime(path) >= cutoff:
-                keep("codex", path, path)  # the real id comes from session_meta
+                root = run.codex.root_path(path)
+                keep("codex", root, root)  # the real id comes from session_meta
     return found
 
 
-def session_stats(tool, sid, path, redactor, secrets, repo_cache):
+def session_stats(tool, sid, path, run):
     acc = StatsAcc()
+    workers = []
     if tool == "claude":
-        cwd, title = claude_stats(path, acc)
+        cwd, title, skipped = claude_stats(path, acc, sid=sid, copies=run.copies)
         fields = TOKEN_FIELDS
+        workers = list(claude_workers(path, sid))
     else:
         parsed = codex_stats(path, acc)
         if parsed is None:
             return None
-        sid, cwd, title = parsed
+        sid, cwd, title, skipped = parsed
         fields = ("input_tokens", "output_tokens", "cache_read_tokens")
+        for wpath, payload in run.codex.workers(sid):
+            wacc = StatsAcc()
+            if codex_stats(wpath, wacc, worker=True) is not None:
+                workers.append((codex_worker_fields(payload), wacc))
     if acc.prompts == 0:
         return None
     cwd_abs = os.path.normpath(os.path.expanduser(cwd)) if isinstance(cwd, str) and cwd else None
     stats, days = acc.result(cwd_abs, fields)
-    repo_root, repo_url = repo_fields(cwd_abs, repo_cache)
+    repo_root, repo_url = repo_fields(cwd_abs, run.repo_cache)
+    worker_rows = []
+    for fields_of, wacc in workers:
+        if wacc.first is None and wacc.tokens is None:
+            continue
+        wstats, wdays = wacc.result(cwd_abs, fields)
+        worker_rows.append(dict(fields_of, title=run.redact(fields_of["title"]), stats=wstats,
+                                days=wdays, by_model=wacc.model_usage(fields)))
     return {
         "tool": tool,
         "session_id": sid,
         "cwd": tilde(cwd_abs),
-        "title": redactor.redact(title, secrets)[:TITLE_MAX] if redactor else None,
+        "title": run.redact(title),
         "repo_root": repo_root,
         "repo_url": repo_url,
         "stats": stats,
         "days": days,
+        "by_model": acc.model_usage(fields),
+        "workers": worker_rows,
+        "copied_entries_skipped": skipped,
     }
 
 
@@ -1233,10 +1504,11 @@ def cmd_stats(args):
             secrets.append(token)
     else:
         print("warning: ai_todo_redact.py not found next to ai-todo-sessions; titles left out", file=sys.stderr)
-    targets = stats_targets(sessions, tool, since)
-    rows, repo_cache = [], {}
+    run = StatsRun(redactor, secrets)
+    targets = stats_targets(sessions, tool, since, run)
+    rows = []
     for (t, sid), path in sorted(targets.items(), key=lambda kv: os.path.getmtime(kv[1]), reverse=True):
-        row = session_stats(t, sid, path, redactor, secrets, repo_cache)
+        row = session_stats(t, sid, path, run)
         if row and all(r["session_id"] != row["session_id"] or r["tool"] != row["tool"] for r in rows):
             rows.append(row)
     if as_json:
