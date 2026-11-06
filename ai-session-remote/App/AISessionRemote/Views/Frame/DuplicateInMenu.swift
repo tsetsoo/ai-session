@@ -44,33 +44,3 @@ enum DuplicateIn {
         }
     }
 }
-
-/// Toolbar menu: Claude, Codex, Cursor, and the name of the new conversation.
-struct DuplicateInMenu: View {
-    var proposedName: String
-    var onConfirm: (String, String) -> Void
-    @State private var name = ""
-
-    var body: some View {
-        Menu {
-            TextField("Name", text: $name)
-            Button("Claude") { confirm("claude") }
-            Button("Codex") { confirm("codex") }
-            Button("Cursor") { confirm("cursor") }
-        } label: {
-            Image(systemName: "plus.square.on.square")
-        }
-        .accessibilityLabel("Duplicate in")
-        #if os(macOS)
-        .help("Duplicate in")
-        #endif
-        .onAppear { if name.isEmpty { name = proposedName } }
-        .onChange(of: proposedName) { _, proposal in
-            if name.isEmpty { name = proposal }
-        }
-    }
-
-    private func confirm(_ tool: String) {
-        onConfirm(tool, DuplicateIn.submittedName(name, proposal: proposedName))
-    }
-}

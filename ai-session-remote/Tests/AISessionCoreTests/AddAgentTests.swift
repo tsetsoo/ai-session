@@ -41,7 +41,10 @@ final class AddAgentTests: XCTestCase {
     }
 
     func testFullForksTheSameToolAndSendsTheTranscriptToAnother() {
-        XCTAssertEqual(plan(.full, tool: "claude").start, .fork(sourceSessionId: "s1"))
+        // Sharing the folder: a native fork. In a worktree of its own a fork can't follow
+        // (`claude --resume` finds sessions by folder), so the transcript goes in instead.
+        XCTAssertEqual(plan(.full, tool: "claude", projectWorktrees: false).start, .fork(sourceSessionId: "s1"))
+        XCTAssertEqual(plan(.full, tool: "claude").start, .firstPrompt("the transcript"))
         XCTAssertEqual(plan(.full, tool: "codex").start, .firstPrompt("the transcript"))
         XCTAssertEqual(plan(.full, tool: "codex").base, .sourceSnapshot)
     }
@@ -82,6 +85,12 @@ final class AddAgentTests: XCTestCase {
         ]
         XCTAssertEqual(AddAgent.firstUserMessage(messages), "Fix the login")
         XCTAssertNil(AddAgent.firstUserMessage([]))
+    }
+
+    func testThePlanMapsOntoTheDuplicateStart() {
+        XCTAssertEqual(plan(.summary).duplicatePlan, .start(text: "the summary", label: "Codex"))
+        XCTAssertEqual(plan(.full, tool: "claude", projectWorktrees: false).duplicatePlan, .fork(sourceSessionId: "s1", label: "Codex"))
+        XCTAssertEqual(plan(.summary, summary: nil).duplicatePlan, .cancelled)
     }
 
     // MARK: Hub fields and calls

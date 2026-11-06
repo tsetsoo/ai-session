@@ -946,13 +946,8 @@ private struct ConversationColumn: View {
             onReconnect: { send(.reconnect, for: todo.id) },
             onCopyScreen: { send(.copyScreen, for: todo.id) },
             onPaste: { send(.paste, for: todo.id) },
-            showsDuplicate: hasConversation,
-            duplicateName: DuplicateIn.proposedName(
-                existingLabels: model.store.conversations(forTodo: todo.id).compactMap(\.label)
-            ),
-            onDuplicate: { tool, name in
-                send(.duplicate(tool: tool, name: name), for: todo.id)
-            },
+            showsAddAgent: hasConversation,
+            onAddAgent: { send(.addAgent, for: todo.id) },
             isDuplicating: state?.isDuplicating ?? false,
             onReview: reviewAction(todo.id),
             resumeOnReset: ConversationToolbar.resumeToggle(conversation),

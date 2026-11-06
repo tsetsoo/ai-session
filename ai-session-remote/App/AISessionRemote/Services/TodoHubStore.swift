@@ -544,10 +544,14 @@ final class TodoHubStore {
 
     /// A second conversation on the same computer and folder. The caller has already decided
     /// to create it: a cancelled summary never reaches here.
-    func duplicateConversation(source: Conversation, tool: String, label: String) async throws -> Conversation {
+    func duplicateConversation(
+        source: Conversation, tool: String, label: String,
+        ownWorktree: Bool = false, model: String? = nil, baseSha: String? = nil
+    ) async throws -> Conversation {
         guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
         let created = try await client.duplicateConversation(
-            todoId: source.todoId, sourceId: source.id, tool: tool, label: label
+            todoId: source.todoId, sourceId: source.id, tool: tool, label: label,
+            ownWorktree: ownWorktree, model: model, baseSha: baseSha
         )
         remember(created)
         return created
@@ -571,7 +575,8 @@ final class TodoHubStore {
                 let path = try await writeHandoff(firstPrompt, on: created, config: config)
                 let result = try await NIOSSHClient().exec(config, command: TmuxCommandBuilder.openTodoConversation(
                     tmuxName: created.tmuxName, cwd: created.cwd, sessionId: created.sessionId, tool: created.tool,
-                    mcpServers: created.mcpServers, worktree: created.worktree, promptFile: path, detached: true
+                    mcpServers: created.mcpServers, worktree: created.worktree, promptFile: path, detached: true,
+                    model: created.model, worktreeBase: created.worktreeBase
                 ))
                 try RemoteConversations.check(result, computerName: created.computer.name)
                 return created
@@ -593,12 +598,14 @@ final class TodoHubStore {
                 created, config: config,
                 command: TmuxCommandBuilder.freshTodoConversation(
                     tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool,
-                    mcpServers: created.mcpServers, worktree: created.worktree, promptFile: path
+                    mcpServers: created.mcpServers, worktree: created.worktree, promptFile: path,
+                    model: created.model, worktreeBase: created.worktreeBase
                 ),
                 fallbackCommand: Self.shouldOfferFallback(created)
                     ? TmuxCommandBuilder.freshTodoConversation(
                         tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool,
-                        worktree: created.worktree, promptFile: path
+                        worktree: created.worktree, promptFile: path,
+                        model: created.model, worktreeBase: created.worktreeBase
                     ) : nil
             )
         case let .captureFork(sourceSessionId):
@@ -627,6 +634,20 @@ final class TodoHubStore {
             tmuxName: created.tmuxName, cwd: created.cwd, arguments: arguments, mcpServers: created.mcpServers,
             worktree: created.worktree
         )
+    }
+
+    /// A commit with the conversation's current state, uncommitted and untracked files included
+    /// (`ai-todo-review status`), kept from git's clean-up (`keep`): an added agent starts there.
+    func snapshot(of conversation: Conversation, config: HostConnectionConfig) async throws -> String {
+        let output = try await remoteStdout(
+            TmuxCommandBuilder.reviewStatus(cwd: conversation.cwd), config: config, computerName: conversation.computer.name
+        )
+        let status = try JSONDecoder().decode(ReviewStatus.self, from: Data(output.utf8))
+        _ = try await remoteStdout(
+            TmuxCommandBuilder.reviewKeep(cwd: conversation.cwd, revision: status.revision),
+            config: config, computerName: conversation.computer.name
+        )
+        return status.revision
     }
 
     /// The hand-off text in a private file on the conversation's computer; its path.

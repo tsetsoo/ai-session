@@ -110,7 +110,7 @@ enum ConversationToolbarCommand: Equatable {
     case toggleResume
     /// The one-tap Resume once a weekly or unknown limit has reset.
     case resumeNow
-    case duplicate(tool: String, name: String)
+    case addAgent
 }
 
 struct ConversationToolbarRequest: Equatable {
@@ -322,9 +322,8 @@ struct ConversationToolbarActions: View {
     var onCopyScreen: () -> Void
     var onPaste: () -> Void
     /// Offered only while this frame is showing a conversation.
-    var showsDuplicate: Bool
-    var duplicateName: String
-    var onDuplicate: (String, String) -> Void
+    var showsAddAgent: Bool
+    var onAddAgent: () -> Void
     /// A duplicate is being made. The frame shows its progress; a second one waits.
     var isDuplicating = false
     var onReview: (() -> Void)? = nil
@@ -366,8 +365,14 @@ struct ConversationToolbarActions: View {
                 #endif
                 .accessibilityLabel("Open in New Window")
             }
-            if showsDuplicate {
-                DuplicateInMenu(proposedName: duplicateName, onConfirm: onDuplicate)
+            if showsAddAgent {
+                Button(action: onAddAgent) {
+                    Image(systemName: "plus.square.on.square")
+                }
+                .accessibilityLabel("Add Agent")
+                #if os(macOS)
+                .help("Add Agent…")
+                #endif
                     .disabled(isDuplicating)
             }
             ConversationMenu(

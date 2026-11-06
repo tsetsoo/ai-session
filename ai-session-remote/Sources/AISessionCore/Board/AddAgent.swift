@@ -45,12 +45,15 @@ public enum AddAgent {
     ) -> AddAgentPlan {
         let model = model?.trimmingCharacters(in: .whitespacesAndNewlines)
         let summary = confirmedSummary.flatMap { nonEmpty($0) }
+        let ownWorktree = projectWorktrees && source.worktreeSource != nil
         let start: AddAgentPlan.Start
         switch handoff {
         case .summary:
             start = summary.map { .firstPrompt($0) } ?? .cancelled(reason: nil)
         case .full:
-            if source.tool == tool, ForkCommand.arguments(tool: tool, sessionId: source.sessionId) != nil {
+            // A fork resumes in the source's folder (`claude --resume` finds sessions by folder),
+            // so it only fits an agent that shares it.
+            if !ownWorktree, source.tool == tool, ForkCommand.arguments(tool: tool, sessionId: source.sessionId) != nil {
                 start = .fork(sourceSessionId: source.sessionId)
             } else if let text = nonEmpty(transcript), TranscriptBudget.fits(tool: tool, characterCount: text.count) {
                 start = .firstPrompt(text)
@@ -63,7 +66,7 @@ public enum AddAgent {
         }
         return AddAgentPlan(
             tool: tool, model: model?.isEmpty == false ? model : nil, label: label,
-            ownWorktree: projectWorktrees && source.worktreeSource != nil,
+            ownWorktree: ownWorktree,
             base: handoff == .fresh ? .sourceBase : .sourceSnapshot, start: start
         )
     }
@@ -76,5 +79,16 @@ public enum AddAgent {
     private static func nonEmpty(_ text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+extension AddAgentPlan {
+    /// The same start in the terms the conversation-start code uses.
+    public var duplicatePlan: DuplicateHandoff.Plan {
+        switch start {
+        case let .fork(sourceSessionId): return .fork(sourceSessionId: sourceSessionId, label: label)
+        case let .firstPrompt(text): return .start(text: text, label: label)
+        case .cancelled: return .cancelled
+        }
     }
 }

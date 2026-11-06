@@ -79,8 +79,8 @@ struct ConversationFrame: View {
     @State private var restartRequest: RestartRequest?
     /// How the conversation just created should attach, and the text to type once it connects.
     @State private var duplicateLaunch: DuplicateLaunch?
-    @State private var summaryText = ""
-    @State private var summaryContext: DuplicateSummaryContext?
+    /// The conversation an Add Agent sheet is open for.
+    @State private var addAgentSource: Conversation?
     @State private var isDuplicating = false
     /// Typing a duplicate's hand-off once the new tool takes pastes. Cancelled when the frame goes.
     @State private var handoffTask: Task<Void, Never>?
@@ -255,14 +255,18 @@ struct ConversationFrame: View {
         ) { sheet in
             sheetContent(sheet)
         }
-        .sheet(isPresented: Binding(
-            get: { isFrontmost && summaryContext != nil },
-            set: { if !$0 { summaryContext = nil } }
-        )) {
-            DuplicateSummarySheet(
-                text: $summaryText,
-                onStart: confirmSummary,
-                onCancel: { summaryContext = nil }
+        .sheet(item: Binding(
+            get: { isFrontmost ? addAgentSource.map(AddAgentSource.init) : nil },
+            set: { if $0 == nil { addAgentSource = nil } }
+        )) { item in
+            AddAgentSheet(
+                proposedName: DuplicateIn.proposedName(
+                    existingLabels: store.conversations(forTodo: todo.id).compactMap(\.label)
+                ),
+                ownWorktree: ownWorktree(for: item.source),
+                loadSummary: summaryLoader(for: item.source),
+                onStart: { choice in startAddAgent(choice, source: item.source) },
+                onCancel: { addAgentSource = nil }
             )
         }
         .modifier(MemoriesPresenter(
@@ -688,11 +692,8 @@ struct ConversationFrame: View {
             onReconnect: { terminal.reconnect() },
             onCopyScreen: { copyScreen() },
             onPaste: { terminal.paste() },
-            showsDuplicate: conversation != nil,
-            duplicateName: DuplicateIn.proposedName(
-                existingLabels: store.conversations(forTodo: todo.id).compactMap(\.label)
-            ),
-            onDuplicate: { tool, name in beginDuplicate(tool: tool, name: name) },
+            showsAddAgent: conversation != nil,
+            onAddAgent: beginAddAgent,
             isDuplicating: isDuplicating,
             onReview: reviewAction,
             resumeOnReset: ConversationToolbar.resumeToggle(conversation),
@@ -751,7 +752,7 @@ struct ConversationFrame: View {
         case .review: reviewAction?()
         case .toggleResume: toggleResume()
         case .resumeNow: resumeNow()
-        case let .duplicate(tool, name): beginDuplicate(tool: tool, name: name)
+        case .addAgent: beginAddAgent()
         }
     }
 
@@ -1162,79 +1163,95 @@ struct ConversationFrame: View {
         return open.attachCommand
     }
 
-    private func beginDuplicate(tool: String, name: String) {
+    private func beginAddAgent() {
         guard !isDuplicating, let source = conversation else { return }
+        addAgentSource = source
+    }
+
+    /// The added agent gets a worktree of its own when this one has one and its project wants it.
+    private func ownWorktree(for source: Conversation) -> Bool {
+        projectWorktrees(for: source) && source.worktreeSource != nil
+    }
+
+    private func projectWorktrees(for source: Conversation) -> Bool {
+        let projectId = source.projectId ?? todo.projectId
+        return store.projects.first { $0.id == projectId }?.worktrees ?? false
+    }
+
+    private func summaryLoader(for source: Conversation) -> () async throws -> String {
+        let openConfig = readyConversation?.config
+        return {
+            let config = try openConfig ?? HostLookup.config(for: source.computer, in: hosts)
+            return try await store.summarizeConversation(source, config: config)
+        }
+    }
+
+    private func startAddAgent(_ choice: AddAgentChoice, source: Conversation) {
+        addAgentSource = nil
+        guard !isDuplicating else { return }
         withAnimation { isDuplicating = true }
         let openConfig = readyConversation?.config
         Task {
-            // Off while the summary sheet is up; Start turns it back on.
             defer { withAnimation { isDuplicating = false } }
             do {
                 let config = try openConfig ?? HostLookup.config(for: source.computer, in: hosts)
-                let transcript = try await transcriptForDuplicate(source: source, tool: tool, config: config)
-                switch DuplicateHandoff.decide(sourceTool: source.tool, destinationTool: tool, transcript: transcript) {
-                case .askForSummary:
-                    summaryText = try await store.summarizeConversation(source, config: config)
-                    summaryContext = DuplicateSummaryContext(
-                        source: source, tool: tool, name: name, transcript: transcript
-                    )
-                case .fork, .sendTranscript:
-                    let plan = DuplicateHandoff.plan(
-                        source: source, destinationTool: tool, label: name,
-                        transcript: transcript, confirmedSummary: nil
-                    )
-                    try await startDuplicate(plan, source: source, tool: tool, config: config)
+                let worktrees = projectWorktrees(for: source)
+                var transcript = ""
+                var firstMessage: String?
+                var summary = choice.summary
+                switch choice.handoff {
+                case .summary:
+                    break
+                case .full:
+                    let forks = !(worktrees && source.worktreeSource != nil) && source.tool == choice.tool
+                        && ForkCommand.arguments(tool: choice.tool, sessionId: source.sessionId) != nil
+                    if !forks {
+                        transcript = try await store.captureTranscript(of: source, config: config)
+                        if !TranscriptBudget.fits(tool: choice.tool, characterCount: transcript.count) {
+                            summary = try await store.summarizeConversation(source, config: config)
+                        }
+                    }
+                case .fresh:
+                    firstMessage = AddAgent.firstUserMessage(try await store.conversationMessages(of: source, config: config))
                 }
+                let plan = AddAgent.plan(
+                    source: source, tool: choice.tool, model: choice.model, label: choice.name, handoff: choice.handoff,
+                    projectWorktrees: worktrees, transcript: transcript, firstUserMessage: firstMessage,
+                    confirmedSummary: summary
+                )
+                if case let .cancelled(reason) = plan.start {
+                    if let reason { failure = ActionFailure(title: "Couldn't Add Agent", message: reason) }
+                    return
+                }
+                let base: String? = if plan.ownWorktree {
+                    switch plan.base {
+                    case .sourceSnapshot: try await store.snapshot(of: source, config: config)
+                    case .sourceBase: source.worktreeBase
+                    }
+                } else { nil }
+                try await startDuplicate(plan, source: source, baseSha: base, config: config)
             } catch {
                 failure = ActionFailure(
-                    title: "Couldn't Duplicate Conversation",
+                    title: "Couldn't Add Agent",
                     message: ConversationRowActions.message(for: error, computer: source.computer)
                 )
             }
         }
     }
 
-    private func confirmSummary() {
-        guard let context = summaryContext, !isDuplicating else { return }
-        let text = summaryText
-        summaryContext = nil
-        withAnimation { isDuplicating = true }
-        Task {
-            defer { withAnimation { isDuplicating = false } }
-            do {
-                let plan = DuplicateHandoff.plan(
-                    source: context.source, destinationTool: context.tool, label: context.name,
-                    transcript: context.transcript, confirmedSummary: text
-                )
-                let config = try readyConversation?.config ?? HostLookup.config(for: context.source.computer, in: hosts)
-                try await startDuplicate(plan, source: context.source, tool: context.tool, config: config)
-            } catch {
-                failure = ActionFailure(
-                    title: "Couldn't Duplicate Conversation",
-                    message: ConversationRowActions.message(for: error, computer: context.source.computer)
-                )
-            }
-        }
-    }
-
-    /// Same tool with a native fork does not need the transcript. Anything else does.
-    private func transcriptForDuplicate(
-        source: Conversation, tool: String, config: HostConnectionConfig
-    ) async throws -> String {
-        if source.tool == tool, ForkCommand.arguments(tool: tool, sessionId: source.sessionId) != nil {
-            return ""
-        }
-        return try await store.captureTranscript(of: source, config: config)
-    }
-
     /// Creates the row only when the plan is a fork or a start, records the session the tool
     /// is using, then attaches that conversation. The source terminal is a different one.
     private func startDuplicate(
-        _ plan: DuplicateHandoff.Plan, source: Conversation, tool: String, config: HostConnectionConfig
+        _ addPlan: AddAgentPlan, source: Conversation, baseSha: String?, config: HostConnectionConfig
     ) async throws {
+        let plan = addPlan.duplicatePlan
+        let tool = addPlan.tool
         var created: Conversation?
         try await DuplicateIn.perform(plan) {
-            created = try await store.duplicateConversation(source: source, tool: tool, label: label(of: plan))
+            created = try await store.duplicateConversation(
+                source: source, tool: tool, label: label(of: plan),
+                ownWorktree: addPlan.ownWorktree, model: addPlan.model, baseSha: baseSha
+            )
         }
         guard let created else { return }
         let ready = try await store.prepareDuplicate(created, plan: plan, config: config)
@@ -1275,13 +1292,6 @@ private struct DuplicateLaunch {
     var conversationID: String
     var attachCommand: String?
     var paste: String?
-}
-
-private struct DuplicateSummaryContext {
-    var source: Conversation
-    var tool: String
-    var name: String
-    var transcript: String
 }
 
 /// Resolves tool colors in the terminal's light or dark scheme, which can differ from the app.
@@ -1377,3 +1387,8 @@ private enum FrameSheet: Identifiable {
     }
 }
 
+/// An Add Agent sheet's subject, identified for `.sheet(item:)`.
+private struct AddAgentSource: Identifiable {
+    var source: Conversation
+    var id: String { source.listKey }
+}
