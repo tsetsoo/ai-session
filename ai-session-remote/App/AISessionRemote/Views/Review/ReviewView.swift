@@ -76,7 +76,8 @@ struct ReviewView: View {
             detail
         }
         .toolbar { toolbar }
-        .task(id: session.scope) { await reload() }
+        // Another commit in Compare With is a new load too, though the scope stays `.commit`.
+        .task(id: "\(session.scope.rawValue)|\(session.baseCommit?.sha ?? "")") { await reload() }
         .onChange(of: conversation) { _, updated in session.refresh(updated) }
         .sheet(isPresented: $showingSend) {
             // A failed send is shown in the sheet: macOS doesn't present the window's alert over it.
@@ -186,13 +187,19 @@ struct ReviewView: View {
     private var emptyTitle: String {
         switch session.scope {
         case .uncommitted: "Nothing Uncommitted"
+        case .conversation: "No Changes Since the Conversation Started"
         case .branch: "No Changes on This Branch"
         case .since: "No Changes Since Feedback"
+        case .commit: "No Changes Since That Commit"
         }
     }
 
     private var emptyDetail: String {
-        session.scope == .uncommitted ? "Choose Branch to see what was committed." : ""
+        switch session.scope {
+        case .uncommitted: "Choose Conversation to see everything it changed, committed or not."
+        case .branch: "This branch has nothing the default branch doesn't. Choose Conversation, or a commit in Compare With."
+        default: ""
+        }
     }
 
     // MARK: Detail
@@ -218,13 +225,31 @@ struct ReviewView: View {
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
             Picker("Changes", selection: $session.scope) {
-                ForEach(ReviewScope.allCases) { scope in
+                ForEach(ReviewScope.segments) { scope in
                     Text(scope.title).tag(scope)
                         .disabled(scope == .since && session.record.lastBatch == nil)
                 }
             }
             .pickerStyle(.segmented)
-            .help("Uncommitted: HEAD to the worktree. Branch: the branch's base to the worktree. Since Feedback: what changed after the last comments were sent.")
+            .help("Uncommitted: what isn't committed yet. Conversation: everything since the conversation started, committed or not (in a shared folder, others' commits since then too). Branch: what this branch has that the default branch doesn't. Since Feedback: what changed after the last comments were sent.")
+        }
+        ToolbarItem(placement: .navigation) {
+            Menu {
+                if session.commits.isEmpty {
+                    Text("No commits yet")
+                }
+                ForEach(session.commits) { commit in
+                    Button {
+                        session.compare(from: commit)
+                    } label: {
+                        Text(commitLabel(commit))
+                    }
+                }
+            } label: {
+                Label(session.scope == .commit ? "From \(session.baseCommit.map { String($0.sha.prefix(7)) } ?? "")" : "Compare With",
+                      systemImage: "clock.arrow.circlepath")
+            }
+            .help("Review everything since a commit you pick, up to the worktree now.")
         }
         ToolbarItem(placement: .status) {
             Text(statusLine)
@@ -259,10 +284,24 @@ struct ReviewView: View {
         return count == 0 ? "Send to Agent" : "Send \(count) to Agent"
     }
 
+    /// `a1b2c3d  Subject · 2 h ago · not pushed`
+    private func commitLabel(_ commit: ReviewLog.Commit) -> String {
+        var parts = ["\(commit.sha.prefix(7))  \(commit.subject.prefix(72))"]
+        if let date = HubDates.date(from: commit.date) {
+            parts.append(date.formatted(.relative(presentation: .named)))
+        }
+        if commit.pushed == false { parts.append("not pushed") }
+        if commit.sha == session.conversationStart { parts.append("conversation started after this") }
+        return parts.joined(separator: " · ")
+    }
+
     private var statusLine: String {
         guard let status = session.status else { return session.isLoading ? "Loading…" : "" }
         var parts = [status.branch ?? "detached HEAD"]
         if let base = status.base, session.scope == .branch { parts.append("vs \(base.ref)") }
+        if let from = session.result?.from, session.scope == .conversation || session.scope == .commit {
+            parts.append("from \(from.prefix(7))")
+        }
         if let ahead = status.ahead, ahead > 0 { parts.append("\(ahead) unpushed") }
         parts.append(status.clean ? "nothing uncommitted" : "uncommitted changes")
         parts.append(conversation.computer.name)

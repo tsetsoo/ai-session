@@ -21,10 +21,17 @@ extension TmuxCommandBuilder {
 
     public static func reviewDiff(cwd: String, scope: ReviewScope, from: String? = nil, to: String? = nil,
                                   unified: Int? = nil) -> String {
-        var command = "exec \(reviewHelper) diff \(shellQuotePath(cwd)) --scope \(scope.rawValue)"
+        var command = "exec \(reviewHelper) diff \(shellQuotePath(cwd)) --scope \(scope.scriptScope)"
         if let from { command += " --from \(shellQuote(from))" }
         if let to { command += " --to \(shellQuote(to))" }
         if let unified { command += " --unified \(max(0, unified))" }
+        return wrap(command)
+    }
+
+    /// Recent commits, and with `before` (ISO 8601) the last one made before then.
+    public static func reviewLog(cwd: String, limit: Int = 30, before: String? = nil) -> String {
+        var command = "exec \(reviewHelper) log \(shellQuotePath(cwd)) --limit \(min(max(limit, 1), 500))"
+        if let before { command += " --before \(shellQuote(before))" }
         return wrap(command)
     }
 

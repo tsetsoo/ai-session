@@ -3757,6 +3757,21 @@ status=0; "$REVIEW" status "${SANDBOX}/no-such-folder" >/dev/null 2>&1 || status
 [[ $status -eq 69 ]] || fail "missing folder exit $status"
 status=0; "$REVIEW" status "$SANDBOX" >/dev/null 2>&1 || status=$?
 [[ $status -eq 69 ]] || fail "not a repository exit $status"
+# log: newest first, pushed-ness without an upstream is unknown, --before finds the start.
+rv_log="$("$REVIEW" log "$RV_REPO" --limit 5)"
+python3 - "$rv_log" <<'PY' || fail "review log: $rv_log"
+import json, sys
+d = json.loads(sys.argv[1])
+assert [c["subject"] for c in d["commits"]] == ["second", "init"], d
+assert all(c["pushed"] is None for c in d["commits"]), d
+assert d["before"] is None, d
+PY
+[[ "$("$REVIEW" log "$RV_REPO" --before "2090-01-01T00:00:00Z" | rv_field before)" == "$(git -C "$RV_REPO" rev-parse HEAD)" ]] || fail "log --before now"
+[[ "$("$REVIEW" log "$RV_REPO" --before "2000-01-01T00:00:00Z" | rv_field before)" == None ]] || fail "log --before the first commit"
+for bad in "log" "log $RV_REPO --limit 0" "log $RV_REPO --before"; do
+  status=0; eval "\"\$REVIEW\" $bad" >/dev/null 2>&1 || status=$?
+  [[ $status -eq 64 ]] || fail "review $bad exit $status"
+done
 pass "review_keep_and_bad_args"
 
 # send: a pane whose program turned bracketed paste on gets the whole message as one paste.

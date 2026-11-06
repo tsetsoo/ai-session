@@ -12,6 +12,8 @@ final class ReviewSessionTests: XCTestCase {
     private var revision = "rev2"
     private var mappingTruncated = false
     private var mappingFails = false
+    /// `log --before`'s answer; nil = no commit that old.
+    private var startCommit: String? = "start1"
     /// The diff on screen renames the file.
     private var renamed = false
     /// While set, `send` waits for the second press to arrive.
@@ -36,6 +38,13 @@ final class ReviewSessionTests: XCTestCase {
             let data = try! JSONSerialization.data(withJSONObject: value)
             return SSHExecResult(exitCode: 0, stdout: String(decoding: data, as: UTF8.self), stderr: "")
         }
+        if command.contains(" log ") {
+            let commits: [[String: Any]] = [
+                ["sha": "head1", "subject": "latest", "date": "2026-11-06T19:00:00+02:00", "pushed": true],
+                ["sha": "start1", "subject": "before the conversation", "date": "2026-11-01T09:00:00Z", "pushed": true],
+            ]
+            return json(["commits": commits, "before": startCommit as Any? ?? NSNull()])
+        }
         if command.contains(" status ") {
             return json(["root": "/w", "branch": "feat", "head": "head1", "revision": revision, "clean": false])
         }
@@ -45,7 +54,7 @@ final class ReviewSessionTests: XCTestCase {
             return json(["from": "rev1", "to": revision, "scope": "since", "patch": patch, "truncated": mappingTruncated])
         }
         if command.contains(" diff ") {
-            let scope = command.contains("--scope branch") ? "branch" : "uncommitted"
+            let scope = command.contains("--scope branch") ? "branch" : command.contains("--scope since") ? "since" : "uncommitted"
             if scope == "uncommitted", holdUncommitted {
                 await withCheckedContinuation { held = $0 }
             }
@@ -169,6 +178,42 @@ final class ReviewSessionTests: XCTestCase {
         XCTAssertEqual(names.count, 2, "\(names)")
         let aside = try XCTUnwrap(names.first { $0.contains("unreadable") })
         XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent(aside), encoding: .utf8), "{not json")
+    }
+
+    func testConversationScopeStartsAtTheLastCommitBeforeItBegan() async throws {
+        let (session, _) = makeSession()
+        session.scope = .conversation
+        await session.load(config: config)
+        XCTAssertNil(session.failure)
+        let log = try XCTUnwrap(commands.first { $0.contains(" log ") })
+        // The hub's UTC time, as ISO for git.
+        XCTAssertTrue(log.contains("--before '\(ReviewSession.gitTime(session.conversation.createdAt) ?? "?")'"), log)
+        XCTAssertTrue(commands.contains { $0.contains(" diff ") && $0.contains("--scope since --from 'start1'") })
+        XCTAssertEqual(session.conversationStart, "start1")
+        XCTAssertEqual(session.commits.map(\.sha), ["head1", "start1"])
+    }
+
+    func testConversationScopeWithoutAnOlderCommitSaysSo() async {
+        let (session, _) = makeSession()
+        startCommit = nil
+        session.scope = .conversation
+        await session.load(config: config)
+        XCTAssertNotNil(session.failure)
+        XCTAssertFalse(commands.contains { $0.contains(" diff ") && !$0.contains("--unified 0") })
+    }
+
+    func testCompareWithACommit() async throws {
+        let (session, _) = makeSession()
+        await session.load(config: config)
+        session.compare(from: try XCTUnwrap(session.commits.last))
+        XCTAssertEqual(session.scope, .commit)
+        await session.load(config: config)
+        XCTAssertTrue(commands.contains { $0.contains("--scope since --from 'start1'") })
+    }
+
+    func testGitTimeReadsTheHubsUTC() {
+        XCTAssertEqual(ReviewSession.gitTime("2026-10-15 20:17:27"), "2026-10-15T20:17:27Z")
+        XCTAssertNil(ReviewSession.gitTime(""))
     }
 
     func testSinceWithoutABatchFallsBackToUncommitted() async {

@@ -227,6 +227,21 @@ struct ReviewTests {
         #expect(send.hasSuffix("printf '%s' '\(encoded)' | \"$HOME/.ai-remote/bin/ai-todo-review\" send --base64 'ai/claude/todo-1'"))
     }
 
+    @Test func scopesFromACommitAskTheScriptForSince() {
+        #expect(TmuxCommandBuilder.reviewDiff(cwd: "/w", scope: .conversation, from: "abc").contains("--scope since --from 'abc'"))
+        #expect(TmuxCommandBuilder.reviewDiff(cwd: "/w", scope: .commit, from: "abc").contains("--scope since --from 'abc'"))
+        #expect(TmuxCommandBuilder.reviewDiff(cwd: "/w", scope: .branch).contains("--scope branch"))
+        #expect(TmuxCommandBuilder.reviewLog(cwd: "/w", before: "2026-11-06T10:00:00Z")
+            .hasSuffix("log '/w' --limit 30 --before '2026-11-06T10:00:00Z'"))
+        #expect(!ReviewScope.segments.contains(.commit))
+    }
+
+    @Test func logDecodesScriptOutput() throws {
+        let json = #"{"commits": [{"sha": "a", "subject": "s", "date": "2026-11-06T19:19:30+02:00", "pushed": null}], "before": null}"#
+        let log = try JSONDecoder().decode(ReviewLog.self, from: Data(json.utf8))
+        #expect(log == ReviewLog(commits: [.init(sha: "a", subject: "s", date: "2026-11-06T19:19:30+02:00", pushed: nil)], before: nil))
+    }
+
     @Test func statusDecodesScriptOutput() throws {
         let json = #"{"root": "/w", "branch": "feat", "head": "h", "upstream": null, "ahead": null, "behind": null, "base": {"ref": "origin/main", "sha": "b"}, "revision": "r", "clean": false}"#
         let status = try JSONDecoder().decode(ReviewStatus.self, from: Data(json.utf8))

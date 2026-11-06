@@ -42,19 +42,69 @@ public struct ReviewStatus: Codable, Equatable, Sendable {
 public enum ReviewScope: String, Codable, CaseIterable, Sendable, Identifiable {
     /// HEAD → worktree.
     case uncommitted
-    /// The branch's base → worktree: everything the conversation did on its branch.
+    /// The last commit before the conversation started → worktree: everything since it began,
+    /// committed or not, on a branch or straight on main.
+    case conversation
+    /// The branch's base → worktree: everything on the branch that the default branch hasn't.
     case branch
     /// The revision feedback was last sent against → worktree.
     case since
+    /// A commit picked from the history → worktree.
+    case commit
 
     public var id: String { rawValue }
+
+    /// The picker's segments; `commit` comes from the Compare With menu.
+    public static let segments: [ReviewScope] = [.uncommitted, .conversation, .branch, .since]
 
     public var title: String {
         switch self {
         case .uncommitted: "Uncommitted"
+        case .conversation: "Conversation"
         case .branch: "Branch"
         case .since: "Since Feedback"
+        case .commit: "From Commit"
         }
+    }
+
+    /// `ai-todo-review diff --scope`: the ones from a given commit are all `since --from`.
+    var scriptScope: String {
+        switch self {
+        case .uncommitted: "uncommitted"
+        case .branch: "branch"
+        case .conversation, .since, .commit: "since"
+        }
+    }
+}
+
+/// `ai-todo-review log`.
+public struct ReviewLog: Codable, Equatable, Sendable {
+    public struct Commit: Codable, Equatable, Sendable, Identifiable {
+        public var sha: String
+        public var subject: String
+        /// Committer date, ISO 8601.
+        public var date: String
+        /// Nil without an upstream.
+        public var pushed: Bool?
+
+        public var id: String { sha }
+
+        public init(sha: String, subject: String, date: String, pushed: Bool?) {
+            self.sha = sha
+            self.subject = subject
+            self.date = date
+            self.pushed = pushed
+        }
+    }
+
+    /// Newest first, along HEAD's first parents.
+    public var commits: [Commit]
+    /// The last commit before `--before`, or nil (none asked, or none that old).
+    public var before: String?
+
+    public init(commits: [Commit], before: String?) {
+        self.commits = commits
+        self.before = before
     }
 }
 

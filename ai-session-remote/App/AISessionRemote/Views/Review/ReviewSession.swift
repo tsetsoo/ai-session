@@ -16,6 +16,12 @@ final class ReviewSession {
     private(set) var conversation: Conversation
     let store: ReviewStore
     var scope: ReviewScope = .uncommitted
+    /// The commit `ReviewScope.commit` compares from (Compare With).
+    private(set) var baseCommit: ReviewLog.Commit?
+    /// Recent commits for Compare With, from the last load.
+    private(set) var commits: [ReviewLog.Commit] = []
+    /// The last commit before the conversation started, from the last load.
+    private(set) var conversationStart: String?
     private(set) var status: ReviewStatus?
     private(set) var result: ReviewDiffResult?
     private(set) var diff = UnifiedDiff(files: [])
@@ -72,20 +78,46 @@ final class ReviewSession {
         let generation = loadGeneration
         let scope = scope
         var from: String?
-        if scope == .since {
+        switch scope {
+        case .since:
             guard let batch = record.lastBatch else {
                 // The picker's change restarts the load.
                 self.scope = .uncommitted
                 return
             }
             from = batch.revision
+        case .commit:
+            guard let baseCommit else {
+                self.scope = .uncommitted
+                return
+            }
+            from = baseCommit.sha
+        case .uncommitted, .branch, .conversation:
+            break
         }
         isLoading = true
         defer { if generation == loadGeneration { isLoading = false } }
         let knownAtStart = Set(record.comments.map(\.id))
         do {
-            let status: ReviewStatus = try await run(TmuxCommandBuilder.reviewStatus(cwd: conversation.cwd), config: config)
+            let cwd = conversation.cwd
+            let started = Self.gitTime(conversation.createdAt)
+            // The history for Compare With and the conversation's start come with every load.
+            async let history: ReviewLog? = try? await run(TmuxCommandBuilder.reviewLog(cwd: cwd, before: started), config: config)
+            let status: ReviewStatus = try await run(TmuxCommandBuilder.reviewStatus(cwd: cwd), config: config)
+            let log = await history
             guard generation == loadGeneration else { return }
+            if let log {
+                commits = log.commits
+                conversationStart = log.before
+            }
+            if scope == .conversation {
+                guard let start = log?.before else {
+                    throw Failure(errorDescription: started == nil || log == nil
+                        ? "Couldn't tell where this conversation started. Choose Branch or Compare With."
+                        : "There's no commit from before this conversation started. Choose Branch or Compare With.")
+                }
+                from = start
+            }
             let result: ReviewDiffResult = try await run(
                 TmuxCommandBuilder.reviewDiff(cwd: conversation.cwd, scope: scope, from: from, to: status.revision),
                 config: config
@@ -112,6 +144,20 @@ final class ReviewSession {
     }
 
     @ObservationIgnored private var loadGeneration = 0
+
+    /// Compare With: everything since `commit`. The window's scope change starts the load.
+    func compare(from commit: ReviewLog.Commit) {
+        baseCommit = commit
+        scope = .commit
+    }
+
+    /// The hub's `2026-10-15 20:17:27` (UTC) as the ISO time git's `--before` reads.
+    static func gitTime(_ hubTime: String) -> String? {
+        guard let date = HubDates.date(from: hubTime) else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
     @ObservationIgnored private var mappingCache: [String: ReviewDiffResult] = [:]
     static let mappingConcurrency = 4
 
