@@ -31,6 +31,7 @@ public enum ConversationIndex {
         switch conversation.status {
         case .waiting: return 0
         case .busy: return 1
+        case .idle where conversation.paused != nil: return 1
         case .idle: return conversation.reviewed ? 3 : 2
         case .unknown: return 3
         case .closed: return 4

@@ -43,7 +43,8 @@ public final class ConversationBoard: Sendable {
             let changed = Self.changeDate(conversation)
             changedByListKey[conversation.listKey] = changed
             let alive = Self.tmuxAlive(conversation, changed: changed, liveTmux: liveTmux, listedAt: listedAt)
-            let status = ConversationDisplayStatus(conversation.status, tmuxAlive: alive, reviewed: conversation.reviewed)
+            let status = ConversationDisplayStatus(conversation.status, tmuxAlive: alive, reviewed: conversation.reviewed,
+                                                   paused: conversation.paused != nil)
             statusByListKey[conversation.listKey] = status
             byTodo[conversation.todoId, default: []].append((conversation, status))
             if !todoIDs.contains(conversation.todoId) {
@@ -82,7 +83,8 @@ public final class ConversationBoard: Sendable {
             case .needsYou:
                 needing.append(conversation)
                 needsByComputer[computer, default: 0] += 1
-            case .working:
+            case .working, .paused:
+                // A paused conversation carries on after its limit resets.
                 working.append(conversation)
                 workingByComputer[computer, default: 0] += 1
             case .idle:

@@ -11,6 +11,25 @@ final class RowTextTests: XCTestCase {
                      status: status, statusMessage: message, statusUpdatedAt: updated, createdAt: created)
     }
 
+    func testPauseTextSaysWhichLimitAndWhenItResets() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Sofia")!
+        let locale = Locale(identifier: "en_GB")
+        let text = { (kind: String, at: String?) in
+            RowText.pauseText(LimitPause(kind: kind, resetsAt: at), now: self.now, calendar: calendar, locale: locale)
+        }
+        // now = 12:00 Sofia, Saturday 2026-10-17.
+        XCTAssertEqual(text("session", "2026-10-17T13:40:00Z"), "Session limit · resets 16:40")
+        XCTAssertEqual(text("weekly", "2026-10-18T22:00:00Z"), "Weekly limit · resets Mon 01:00")
+        XCTAssertEqual(text("weekly", "2026-10-30T22:00:00Z"), "Weekly limit · resets 31 Oct at 00:00")
+        XCTAssertEqual(text("session", "2026-10-17T08:00:00Z"), "Session limit · resetting")
+        XCTAssertEqual(text("limit", nil), "Usage limit")
+        var paused = conv(status: .idle, message: "Session limit reached")
+        paused.paused = LimitPause(kind: "limit")
+        XCTAssertEqual(RowText.conversationMessage(paused, status: .paused, now: now), "Usage limit")
+        XCTAssertEqual(RowText.todoSubtitle(paused, status: .paused, now: now), "Usage limit")
+    }
+
     func testComputerLine() {
         XCTAssertEqual(RowText.computerLine(working: 3, review: 2, needsYou: 1), "1 needs you · 2 to review · 3 working")
         XCTAssertEqual(RowText.computerLine(working: 2, review: 0, needsYou: 0), "2 working")

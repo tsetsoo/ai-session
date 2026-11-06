@@ -376,6 +376,25 @@ pub struct Conversation {
     /// MCP servers selected for this conversation. Absent when no selection was made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<Vec<String>>,
+    /// The last turn stopped on a usage limit. The status is `idle`, so apps that predate
+    /// this show it as finished. Absent when the conversation isn't paused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<LimitPause>,
+}
+
+/// A conversation stopped by a subscription or API usage limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LimitPause {
+    /// `session` (the 5-hour window), `weekly`, or `limit` (no reset time known: a plain
+    /// rate limit, or one whose message couldn't be read).
+    pub kind: String,
+    /// When the limit resets (RFC 3339, UTC), if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<String>,
+}
+
+impl LimitPause {
+    pub const KINDS: &'static [&'static str] = &["session", "weekly", "limit"];
 }
 
 /// Sent by the status hooks on the computer. Either key identifies the conversation;
@@ -406,6 +425,10 @@ pub struct ConversationStatusRequest {
     /// by runtime polling. Repeated heartbeats for this turn do not rearm review.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_started_ns: Option<i64>,
+    /// With `idle`: the turn stopped on a usage limit. A later post without it clears the
+    /// pause only when the status changes or a new turn starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<LimitPause>,
 }
 
 /// Acknowledge only the idle result the client actually displayed.

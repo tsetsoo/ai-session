@@ -798,6 +798,117 @@ class StatusTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 status.publish(self.body("busy"), value)
 
+    # --- Usage-limit pauses ---------------------------------------------------------
+
+    def sofia(self, *args):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return datetime(*args, tzinfo=ZoneInfo("Europe/Sofia"))
+
+    def test_limit_reset_times_from_real_messages(self):
+        now = self.sofia(2026, 10, 16, 19, 20)  # A Friday
+        cases = {
+            "You've hit your session limit · resets 12:40am (Europe/Sofia)": "2026-10-16T21:40:00Z",
+            "You've hit your session limit · resets 6:50pm (Europe/Sofia)": "2026-10-17T15:50:00Z",
+            "You've hit your weekly limit · resets Mon 12:00am (Europe/Sofia)": "2026-10-18T21:00:00Z",
+            "You've hit your limit · resets 1:40pm (America/New_York)": "2026-10-16T17:40:00Z",
+            "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit "
+            "https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 5th, 2026 1:47 AM.":
+                None,  # local time: checked below
+            "Claude AI usage limit reached|1793836048": "2026-11-04T23:47:28Z",
+        }
+        for text, expected in cases.items():
+            reset = status.limit_reset_time(text, now)
+            self.assertIsNotNone(reset, text)
+            if expected:
+                self.assertEqual(status._utc_iso(reset), expected, text)
+        codex = status.limit_reset_time("try again at Nov 5th, 2026 1:47 AM.", now)
+        self.assertEqual((codex.year, codex.month, codex.day, codex.hour, codex.minute), (2026, 11, 5, 1, 47))
+        self.assertIsNone(status.limit_reset_time("API Error: Rate limit reached", now))
+        self.assertEqual(status.limit_kind("You've hit your weekly limit · resets 1am"), "weekly")
+        self.assertEqual(status.limit_kind("5-hour limit reached ∙ resets 8pm"), "session")
+        self.assertEqual(status.limit_kind("API Error: Rate limit reached"), "limit")
+
+    def run_claude_hook(self, payload, state="waiting"):
+        hook = str(Path(__file__).with_name("ai-todo-hook"))
+        env = dict(os.environ, AI_TODO_HOOK_SYNC="1", AI_TODO_TMUX_SESSION="other",
+                   AI_TODO_MEMORY_BIN=str(self.home / "no-memory-helper"))
+        subprocess.run([hook, state], input=json.dumps(payload), env=env, capture_output=True, text=True, check=True)
+        return self.requests[-1]
+
+    def test_claude_usage_limit_is_a_quiet_pause_not_an_error(self):
+        sid = "5a1c0b5e-0000-4000-8000-00000000c1a0"
+        sent = self.run_claude_hook({
+            "session_id": sid, "hook_event_name": "StopFailure", "error": "rate_limit",
+            "last_assistant_message": "You've hit your session limit · resets 12:40am (Europe/Sofia)"})
+        self.assertEqual(sent["status"], "idle")
+        self.assertEqual(sent["paused"]["kind"], "session")
+        self.assertRegex(sent["paused"]["resets_at"], r"^\d{4}-\d\d-\d\dT2[12]:40:00Z$")
+        self.assertEqual(sent["message"], "Session limit reached")
+        self.assertNotIn("_limit", sent)
+        # Any other API error still needs you.
+        other = self.run_claude_hook({"session_id": sid, "hook_event_name": "StopFailure", "error": "server_error"})
+        self.assertEqual(other["status"], "waiting")
+        self.assertNotIn("paused", other)
+
+    def test_claude_usage_limit_text_comes_from_the_transcript_when_the_hook_has_none(self):
+        sid = "5a1c0b5e-0000-4000-8000-00000000c1a1"
+        transcript = self.home / "t.jsonl"
+        rows = [
+            {"type": "user", "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "error": "rate_limit", "isApiErrorMessage": True, "message": {
+                "role": "assistant", "content": [{"type": "text", "text": "You've hit your weekly limit · resets 1am (Europe/Sofia)"}]}},
+            {"type": "system", "subtype": "turn_duration"},
+        ]
+        transcript.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        sent = self.run_claude_hook({
+            "session_id": sid, "hook_event_name": "StopFailure", "error": "rate_limit",
+            "last_assistant_message": "API Error: Rate limit reached", "transcript_path": str(transcript)})
+        self.assertEqual((sent["status"], sent["paused"]["kind"]), ("idle", "weekly"))
+        self.assertRegex(sent["paused"]["resets_at"], r"T2[23]:00:00Z$")
+        # A plain rate limit with no reset anywhere is still a pause, of unknown length.
+        transcript.write_text(json.dumps({"type": "user", "message": {"content": "later"}}) + "\n")
+        sent = self.run_claude_hook({
+            "session_id": sid, "hook_event_name": "StopFailure", "error": "rate_limit",
+            "last_assistant_message": "API Error: Rate limit reached", "transcript_path": str(transcript)})
+        self.assertEqual(sent["paused"], {"kind": "limit"})
+        self.assertEqual(sent["message"], "Usage limit reached")
+
+    def codex_rollout(self, sid, *rows):
+        folder = self.home / ".codex/sessions/2026/11/04"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / ("rollout-2026-11-04T11-51-07-" + sid + ".jsonl")
+        path.write_text("".join(json.dumps({"type": "event_msg", "payload": r}) + "\n" for r in rows))
+        return path
+
+    def test_codex_usage_limit_pause_uses_the_exhausted_window(self):
+        sid = "01a1a5f8-2c43-7a41-9833-5ae1e4f32a22"
+        limits = {"limit_id": "codex", "primary": {"used_percent": 100.0, "window_minutes": 300, "resets_at": 1793836048},
+                  "secondary": {"used_percent": 19.0, "window_minutes": 10080, "resets_at": 1794404625}}
+        error = {"message": "You’ve hit your usage limit. ... try again at Nov 5th, 2026 1:47 AM.",
+                 "codex_error_info": "usage_limit_exceeded"}
+        self.codex_rollout(sid, {"type": "task_started"}, {"type": "token_count", "rate_limits": limits},
+                           {"type": "token_count", "rate_limits": {"limit_id": "premium", "primary": None}},
+                           {"type": "task_complete", "error": error})
+        status.publish({"tool": "codex", "session_id": sid, "status": "idle", "_hook_event": "Stop"}, 100)
+        sent = self.requests[-1]
+        self.assertEqual(sent["paused"], {"kind": "session", "resets_at": "2026-11-04T23:47:28Z"})
+        self.assertEqual(sent["message"], "Session limit reached")
+        # The next turn ran normally: no pause.
+        self.codex_rollout(sid, {"type": "task_started"}, {"type": "task_complete", "last_agent_message": "done"})
+        status.publish({"tool": "codex", "session_id": sid, "status": "busy", "_hook_event": "UserPromptSubmit"}, 200)
+        status.publish({"tool": "codex", "session_id": sid, "status": "idle", "_hook_event": "Stop"}, 300)
+        self.assertNotIn("paused", self.requests[-1])
+
+    def test_a_pause_is_never_copied_into_a_later_report(self):
+        sid = "5a1c0b5e-0000-4000-8000-00000000c1a2"
+        status.publish({"tool": "claude", "session_id": sid, "status": "idle", "_hook_event": "StopFailure",
+                        "_limit": {"message": "You've hit your session limit · resets 2am (Europe/Sofia)"}}, 100)
+        self.assertIn("paused", self.requests[-1])
+        status.publish({"tool": "claude", "session_id": sid, "status": "idle", "paused": {"kind": "weekly"}}, 200,
+                       source="runtime")
+        self.assertNotIn("paused", self.requests[-1])
+
 
 if __name__ == "__main__":
     unittest.main()

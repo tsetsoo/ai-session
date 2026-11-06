@@ -1,10 +1,12 @@
 /// What the UI shows for a conversation: the hub status, overridden by whether its tmux session lives.
 public enum ConversationDisplayStatus: Equatable, Sendable {
     case working, needsYou, idle, ready, closed
+    /// Stopped on a usage limit: not finished and not needing you.
+    case paused
 
     /// `tmuxAlive == false` means the computer was reachable and the session is gone, so it is
     /// closed whatever the hub last said. `nil` means unknown: trust the hub.
-    public init(_ status: ConversationStatus, tmuxAlive: Bool?, reviewed: Bool = false) {
+    public init(_ status: ConversationStatus, tmuxAlive: Bool?, reviewed: Bool = false, paused: Bool = false) {
         if tmuxAlive == false {
             self = .closed
             return
@@ -12,6 +14,7 @@ public enum ConversationDisplayStatus: Equatable, Sendable {
         switch status {
         case .busy: self = .working
         case .waiting: self = .needsYou
+        case .idle where paused: self = .paused
         case .idle: self = reviewed ? .ready : .idle
         case .unknown: self = .ready
         case .closed: self = .closed
@@ -25,6 +28,7 @@ public enum ConversationDisplayStatus: Equatable, Sendable {
         case .idle: return "Ready for review"
         case .ready: return "Ready"
         case .closed: return "Closed"
+        case .paused: return "Paused"
         }
     }
 }

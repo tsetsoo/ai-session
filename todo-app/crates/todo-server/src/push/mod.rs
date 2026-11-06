@@ -303,6 +303,7 @@ mod tests {
                 old: S::parse(&old).unwrap(),
                 new,
                 attended,
+                paused: false,
                 at: std::time::SystemTime::now(),
             });
         }
@@ -474,6 +475,7 @@ mod tests {
             old: S::Busy,
             new: S::Idle,
             attended: false,
+            paused: false,
             at: std::time::SystemTime::now() + Duration::from_secs(6 * 60),
         });
         wait(1).await;

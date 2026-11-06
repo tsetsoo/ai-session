@@ -79,6 +79,40 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(ConversationDisplayStatus.closed.label, "Closed")
     }
 
+    func testPausedConversationIsWorkingNotReview() {
+        var paused = conv("p", .idle)
+        paused.paused = LimitPause(kind: "session", resetsAt: "2026-10-17T21:40:00Z")
+        paused.reviewed = true  // A pause is shown whatever the review mark says.
+        let done = conv("d", .idle)
+        let b = board([paused, done])
+        XCTAssertEqual(b.status(of: paused), .paused)
+        XCTAssertEqual(b.working.map(\.id), [paused.id])
+        XCTAssertEqual(b.review.map(\.id), [done.id])
+        XCTAssertEqual(b.needsYou.count, 0)
+        XCTAssertEqual(TodoGrouping.Status(.paused), .working)
+        // The same conversation once its next turn started.
+        var resumed = paused
+        resumed.status = .busy
+        resumed.paused = nil
+        XCTAssertEqual(board([resumed]).status(of: resumed), .working)
+    }
+
+    func testPauseDecodesAndAnUnreadablePauseIsIgnored() throws {
+        let json = #"""
+        {"id":"c","todo_id":"t","cwd":"~","tool":"claude","tmux_name":"x","session_id":"s","status":"idle",
+         "computer":{"id":"m","name":"Mac","hostname":"mac","port":22,"username":"me","created_at":"","updated_at":""},
+         "created_at":"","paused":{"kind":"weekly","resets_at":"2026-11-06T23:00:00Z"}}
+        """#
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let decoded = try decoder.decode(Conversation.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.paused, LimitPause(kind: "weekly", resetsAt: "2026-11-06T23:00:00Z"))
+        XCTAssertEqual(decoded.paused?.resetDate, ISO8601DateFormatter().date(from: "2026-11-06T23:00:00Z"))
+        let odd = json.replacingOccurrences(of: #""paused":{"kind":"weekly","resets_at":"2026-11-06T23:00:00Z"}"#,
+                                            with: #""paused":"soon""#)
+        XCTAssertNil(try decoder.decode(Conversation.self, from: Data(odd.utf8)).paused)
+    }
+
     func testOpenExcludesClosedAndDeadTmux() {
         let b = board([
             conv("a", .busy), conv("b", .closed), conv("c", .idle, tmux: "gone"),

@@ -639,6 +639,7 @@ struct ConversationFrame: View {
     private func toolbarActions(showsCopy: Bool, showsPopOut: Bool, copyInMenu: Bool) -> some View {
         ConversationToolbarActions(
             status: displayStatus,
+            statusDetail: conversation?.paused.map { RowText.pauseText($0, now: Date()) },
             showsCopy: showsCopy,
             canCopy: conversation != nil,
             showsPopOut: showsPopOut,

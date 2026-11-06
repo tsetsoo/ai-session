@@ -44,7 +44,7 @@ public enum TodoGrouping: String, CaseIterable, Sendable {
             switch status {
             case .needsYou: self = .needsYou
             case .idle: self = .review
-            case .working: self = .working
+            case .working, .paused: self = .working
             case .ready: self = .ready
             case .closed, nil: self = .noConversation
             }

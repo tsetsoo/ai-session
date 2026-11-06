@@ -156,6 +156,9 @@ public struct Conversation: Codable, Equatable, Sendable {
     /// The MCP servers this conversation was started with. `nil` = not managed (or an older
     /// hub), `[]` = managed with none.
     public var mcpServers: [String]?
+    /// The last turn stopped on a usage limit (the status is then `idle`). `nil` otherwise,
+    /// and from hubs that predate pauses.
+    public var paused: LimitPause?
 
     /// Row identity. A conversation from a hub that omits `id` is still the only one on its todo.
     public var listKey: String { id.isEmpty ? todoId : id }
@@ -180,7 +183,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         label: String? = nil,
         mcpServers: [String]? = nil,
         statusRevision: Int = 0,
-        reviewed: Bool = false
+        reviewed: Bool = false,
+        paused: LimitPause? = nil
     ) {
         self.id = id
         self.todoId = todoId
@@ -198,13 +202,14 @@ public struct Conversation: Codable, Equatable, Sendable {
         self.mcpServers = mcpServers
         self.statusRevision = statusRevision
         self.reviewed = reviewed
+        self.paused = paused
     }
 
     // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
     private enum CodingKeys: String, CodingKey {
         case id, todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
         case status, statusMessage, statusUpdatedAt, createdAt, projectId, label, mcpServers
-        case statusRevision, reviewed
+        case statusRevision, reviewed, paused
     }
 
     public init(from decoder: Decoder) throws {
@@ -231,6 +236,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
         label = try c.decodeIfPresent(String.self, forKey: .label)
         mcpServers = try c.decodeIfPresent([String].self, forKey: .mcpServers)
+        // A pause this app can't read is shown as finished, never as a failed list.
+        paused = (try? c.decodeIfPresent(LimitPause.self, forKey: .paused)) ?? nil
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -251,6 +258,31 @@ public struct Conversation: Codable, Equatable, Sendable {
         try c.encodeIfPresent(projectId, forKey: .projectId)
         try c.encodeIfPresent(label, forKey: .label)
         try c.encodeIfPresent(mcpServers, forKey: .mcpServers)
+        try c.encodeIfPresent(paused, forKey: .paused)
+    }
+}
+
+/// A conversation stopped by a subscription or API usage limit.
+public struct LimitPause: Codable, Equatable, Sendable {
+    /// `session` (the 5-hour window), `weekly`, or `limit` (no window known).
+    public var kind: String
+    /// When the limit resets (RFC 3339), if known.
+    public var resetsAt: String?
+
+    public init(kind: String, resetsAt: String? = nil) {
+        self.kind = kind
+        self.resetsAt = resetsAt
+    }
+
+    public var resetDate: Date? { resetsAt.flatMap { HubDates.date(from: $0) } }
+
+    /// "Session limit", "Weekly limit", "Usage limit".
+    public var title: String {
+        switch kind {
+        case "session": "Session limit"
+        case "weekly": "Weekly limit"
+        default: "Usage limit"
+        }
     }
 }
 

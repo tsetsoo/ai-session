@@ -15,6 +15,9 @@
 #
 # - The idle notification ("Claude is waiting for your input", notification_type
 #   idle_prompt) is reported as idle, not waiting.
+# - StopFailure with error rate_limit (a usage limit) is idle, not waiting: the conversation
+#   is paused, not asking for you. The limit text goes to the publisher privately (_limit),
+#   which sends "paused" {kind, resets_at}. Any other StopFailure is waiting.
 # - `tool` posts busy only when the last status this hook sent for the session
 #   was not busy, so a long turn doesn't post once per tool call. The last sent
 #   status is kept in ~/.ai-remote/hook-state/<session_id>.
@@ -247,6 +250,10 @@ if status == "waiting" and (
 if tool == "claude":
     if event == "PreToolUse" and data.get("tool_name") in ("AskUserQuestion", "ExitPlanMode"):
         status, msg = "waiting", "Claude needs your answer"
+    elif event == "StopFailure" and data.get("error") == "rate_limit":
+        # A usage limit pauses the conversation; it does not need you. The publisher reads
+        # the reset time from this text or the transcript.
+        status, msg = "idle", ""
     elif event == "StopFailure":
         status, msg = "waiting", "Claude encountered an error; open the conversation"
     elif status == "waiting" and not msg:
@@ -261,6 +268,11 @@ else:
     out = {"claude_session_id": sid, "status": status, "attended": False}
 if isinstance(event, str):
     out["_hook_event"] = event
+if tool == "claude" and event == "StopFailure" and data.get("error") == "rate_limit":
+    text = data.get("last_assistant_message")
+    path = data.get("transcript_path")
+    out["_limit"] = {"message": text[:500] if isinstance(text, str) else None,
+                     "transcript_path": path if isinstance(path, str) else None}
 if tool == "claude":
     # Local-only evidence, removed by the publisher before delivery. Never copy task
     # commands/descriptions or final response text into the outbox.

@@ -237,7 +237,7 @@ fn base_description() -> Value {
             {
                 "method": "POST",
                 "path": "/api/conversations/status",
-                "description": "Status hook endpoint. Identify the conversation with session_id (or claude_session_id, sent by older hooks) and tool (optional, default claude: older hooks are Claude hooks); one post updates at most one conversation. 204 on success, 404 for sessions that are not todo conversations, 400 without an id or for status closed",
+                "description": "Status hook endpoint. Identify the conversation with session_id (or claude_session_id, sent by older hooks) and tool (optional, default claude: older hooks are Claude hooks); one post updates at most one conversation. With status idle, an optional paused {kind: session|weekly|limit, resets_at: RFC 3339} marks a turn stopped by a usage limit: no done push, and the pause stays until the status changes or a new turn starts. 204 on success, 404 for sessions that are not todo conversations, 400 without an id, for status closed or for an invalid pause",
                 "example_request": {"session_id": "<uuid>", "tool": "claude", "status": "waiting", "message": "Claude needs your permission"}
             },
             {"method": "PUT", "path": "/api/push/devices", "description": "Register or refresh this device's APNs token (hex). Returns the PushDevice; the full token is never returned", "example_request": {"token": "<hex>", "platform": "ios", "environment": "sandbox", "bundle_id": "com.aisessionremote.app", "app_version": "1.0 (7)", "device_name": "iPhone"}},

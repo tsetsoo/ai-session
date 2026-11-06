@@ -286,6 +286,205 @@ def claude_runtime_evidence(evidence, state, observed, instance=None):
     return evidence
 
 
+# --- Usage-limit pauses ---------------------------------------------------------------
+# A turn that stopped on a subscription usage limit is reported idle with
+# "paused": {"kind": "session"|"weekly"|"limit", "resets_at": "<UTC RFC 3339>"|absent}.
+# Claude: a StopFailure hook with error "rate_limit"; the limit text is the hook's
+#   last_assistant_message or, failing that, the transcript's last rate_limit record:
+#   "You've hit your session limit · resets 12:40am (Europe/Sofia)"
+#   "You've hit your weekly limit · resets Mon 12:00am"
+#   "5-hour limit reached ∙ resets 8pm", "Claude AI usage limit reached|1726000000"
+# Codex: the rollout's last task_complete has error.codex_error_info usage_limit_exceeded;
+#   the window at 100% in the last token_count rate_limits gives the kind and exact reset,
+#   else its text: "... try again at 4:40 PM." / "... try again at Nov 5th, 2026 1:47 AM."
+
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_RESET_TIME = re.compile(
+    r"(?:resets|try again at)\s+(?:at\s+)?"
+    r"(?:(?P<weekday>mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?"
+    r"(?:(?P<month>jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+"
+    r"(?:(?P<year>\d{4}),?\s+)?(?:at\s+)?)?"
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)"
+    r"(?:\s*\((?P<zone>[A-Za-z_]+(?:/[A-Za-z0-9_+-]+)*)\))?",
+    re.IGNORECASE)
+_LEGACY_EPOCH = re.compile(r"usage limit reached\|(\d{9,11})", re.IGNORECASE)
+_CODEX_WINDOWS = {300: "session", 10080: "weekly"}
+
+
+def _utc_iso(moment):
+    from datetime import timezone
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def limit_reset_time(text, now=None):
+    """The reset time a limit message names, as an aware datetime, or None. A bare time
+    already past means tomorrow; a weekday means its next occurrence."""
+    from datetime import timedelta
+    legacy = _LEGACY_EPOCH.search(text or "")
+    if legacy:
+        return datetime.fromtimestamp(int(legacy.group(1))).astimezone()
+    match = _RESET_TIME.search(text or "")
+    if not match:
+        return None
+    zone = None
+    if match.group("zone"):
+        try:
+            from zoneinfo import ZoneInfo
+            zone = ZoneInfo(match.group("zone"))
+        except Exception:
+            zone = None
+    now = (now or datetime.now().astimezone()).astimezone(zone) if zone else (now or datetime.now().astimezone()).astimezone()
+    hour = int(match.group("hour")) % 12 + (12 if match.group("ampm").lower() == "pm" else 0)
+    minute = int(match.group("minute") or 0)
+    if hour > 23 or minute > 59:
+        return None
+    if match.group("month"):
+        month = _MONTHS.index(match.group("month").lower()[:3]) + 1
+        year = int(match.group("year") or now.year)
+        try:
+            moment = now.replace(year=year, month=month, day=int(match.group("day")), hour=hour, minute=minute,
+                                 second=0, microsecond=0)
+        except ValueError:
+            return None
+        if not match.group("year") and moment < now - timedelta(days=180):
+            moment = moment.replace(year=year + 1)
+        return moment
+    moment = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if match.group("weekday"):
+        ahead = (_WEEKDAYS.index(match.group("weekday").lower()[:3]) - moment.weekday()) % 7
+        moment += timedelta(days=ahead)
+        if moment <= now:
+            moment += timedelta(days=7)
+    elif moment <= now:
+        moment += timedelta(days=1)
+    return moment
+
+
+def limit_kind(text):
+    lower = (text or "").lower()
+    if "weekly" in lower:
+        return "weekly"
+    if "session limit" in lower or "5-hour" in lower:
+        return "session"
+    return "limit"
+
+
+def _tail_lines(path, size=262144):
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            end = handle.tell()
+            handle.seek(max(0, end - size))
+            raw = handle.read()
+    except (OSError, TypeError, ValueError):
+        return []
+    lines = raw.decode("utf-8", "replace").splitlines()
+    return lines[1:] if end > size else lines
+
+
+def _claude_limit_text(transcript_path):
+    """The text of the transcript's last rate_limit API error, if it is the last record
+    that says anything."""
+    for line in reversed(_tail_lines(transcript_path)):
+        if '"rate_limit"' not in line and '"type":"user"' not in line and '"type": "user"' not in line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("type") == "user" and not record.get("isMeta"):
+            return None  # The user wrote after the error.
+        if record.get("error") == "rate_limit":
+            content = (record.get("message") or {}).get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return " ".join(b.get("text", "") for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return None
+
+
+def claude_limit_pause(message, transcript_path, now=None):
+    """The pause for a Claude StopFailure with error rate_limit."""
+    text = message if isinstance(message, str) and limit_reset_time(message, now) else None
+    if text is None and transcript_path:
+        text = _claude_limit_text(transcript_path)
+    if text is None:
+        text = message if isinstance(message, str) else ""
+    pause = {"kind": limit_kind(text)}
+    reset = limit_reset_time(text, now)
+    if reset is not None:
+        pause["resets_at"] = _utc_iso(reset)
+        if pause["kind"] == "limit":
+            pause["kind"] = "session"  # Named a reset but no window: the 5-hour one is the usual.
+    return pause
+
+
+def codex_rollout(session_id):
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", session_id or ""):
+        return None
+    pattern = str(codex_home() / "sessions" / "*" / "*" / "*" / ("rollout-*-" + session_id + ".jsonl"))
+    found = sorted(glob.glob(pattern))
+    return found[-1] if found else None
+
+
+def codex_limit_pause(session_id, now=None):
+    """The pause when the Codex thread's last turn ended on its usage limit, else None."""
+    path = codex_rollout(session_id)
+    if not path:
+        return None
+    limits = None
+    ended = None
+    for line in _tail_lines(path):
+        if '"token_count"' not in line and '"task_complete"' not in line and '"task_started"' not in line:
+            continue
+        try:
+            payload = json.loads(line).get("payload")
+        except (ValueError, AttributeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        kind = payload.get("type")
+        if kind == "task_started":
+            ended = None
+        elif kind == "task_complete":
+            ended = payload
+        elif kind == "token_count" and isinstance(payload.get("rate_limits"), dict):
+            if payload["rate_limits"].get("limit_id") in (None, "codex"):
+                limits = payload["rate_limits"]
+    error = ended.get("error") if isinstance(ended, dict) else None
+    if not isinstance(error, dict):
+        return None
+    text = error.get("message") if isinstance(error.get("message"), str) else ""
+    if error.get("codex_error_info") != "usage_limit_exceeded" and "usage limit" not in text.lower():
+        return None
+    best = None
+    for name in ("primary", "secondary"):
+        window = (limits or {}).get(name)
+        if not isinstance(window, dict):
+            continue
+        try:
+            used, minutes, resets = float(window.get("used_percent")), int(window.get("window_minutes")), int(window.get("resets_at"))
+        except (TypeError, ValueError):
+            continue
+        if used >= 100 and (best is None or resets > best[1]):
+            best = (_CODEX_WINDOWS.get(minutes, "limit"), resets)
+    if best:
+        from datetime import timezone
+        return {"kind": best[0], "resets_at": _utc_iso(datetime.fromtimestamp(best[1], timezone.utc))}
+    pause = {"kind": limit_kind(text)}
+    reset = limit_reset_time(text, now)
+    if reset is not None:
+        pause["resets_at"] = _utc_iso(reset)
+    return pause
+
+
+def limit_pause_message(pause):
+    return {"session": "Session limit reached", "weekly": "Weekly limit reached"}.get(pause.get("kind"), "Usage limit reached")
+
+
 def publish(body, observed_ns=None, source="hook", try_send=True):
     sid = body.get("session_id") or body.get("claude_session_id")
     tool = body.get("tool", "claude" if body.get("claude_session_id") else "codex")
@@ -299,6 +498,8 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
     body.pop("claude_session_id", None)
     hook_event = body.pop("_hook_event", None)
     claude_metadata = body.pop("_claude", {})
+    limit = body.pop("_limit", None)
+    body.pop("paused", None)  # Only this publisher decides a pause.
     instance = body.pop("_claude_instance", None)
     observed = int(observed_ns if observed_ns is not None else time.time_ns())
     if not 0 <= observed <= 2**63 - 1:
@@ -349,6 +550,21 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
             else:
                 body = dict(previous_body)
                 observed = previous_time
+        body.pop("paused", None)  # A copied earlier body must not repeat its pause.
+        if body["status"] == "idle":
+            pause = None
+            try:
+                if tool == "claude" and source != "runtime" and hook_event == "StopFailure" and isinstance(limit, dict):
+                    pause = claude_limit_pause(limit.get("message"), limit.get("transcript_path"))
+                elif tool == "codex" and (source != "runtime" or previous_body.get("status") != "idle"):
+                    # Codex may end an errored turn without its Stop hook or notify, so the
+                    # monitor's busy -> idle counts too; idle heartbeats don't re-read.
+                    pause = codex_limit_pause(sid)
+            except Exception:
+                pause = None  # A pause is a nicety; the status must still go out.
+            if pause:
+                body["paused"] = pause
+                body["message"] = limit_pause_message(pause)
         body["event_timestamp_ns"] = observed
         if turn_started:
             body["turn_started_ns"] = turn_started

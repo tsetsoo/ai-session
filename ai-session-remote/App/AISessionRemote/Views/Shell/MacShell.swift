@@ -465,7 +465,7 @@ struct MacShell: View {
         let list: AppModel.SidebarItem? = switch status {
         case .needsYou: .needsYou
         case .idle: .review
-        case .working: .working
+        case .working, .paused: .working
         case .ready, .closed, nil: nil
         }
         switch current {

@@ -134,6 +134,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v20_objects(&conn).expect("Failed to add the failed-summary column");
     create_v21_objects(&conn).expect("Failed to create weekly recap objects");
     create_v22_objects(&conn).expect("Failed to create the untallied-runs index");
+    create_v23_objects(&conn).expect("Failed to add the usage-limit pause columns");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -211,7 +212,9 @@ fn conversations_ddl(table: &str) -> String {
             status_revision   INTEGER NOT NULL DEFAULT 0,
             reviewed          INTEGER NOT NULL DEFAULT 0,
             status_event_ns   INTEGER,
-            status_turn_ns    INTEGER
+            status_turn_ns    INTEGER,
+            paused_kind       TEXT,
+            paused_until      TEXT
         )"
     )
 }
@@ -617,6 +620,16 @@ fn create_v21_objects(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v23: a conversation paused by a usage limit: its kind and when the limit resets.
+fn create_v23_objects(conn: &Connection) -> rusqlite::Result<()> {
+    for column in ["paused_kind", "paused_until"] {
+        if table_sql(conn, "conversations")?.is_some() && !column_exists(conn, "conversations", column)? {
+            conn.execute_batch(&format!("ALTER TABLE conversations ADD COLUMN {column} TEXT;"))?;
+        }
+    }
+    Ok(())
+}
+
 /// v22: a partial index over the runs the weekly tally hasn't counted yet, so each tick reads
 /// only those instead of every settled run.
 fn create_v22_objects(conn: &Connection) -> rusqlite::Result<()> {
@@ -819,7 +832,7 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 23;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -836,6 +849,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     if table_sql(conn, "reminders")?.is_some() {
         if table_sql(conn, "project_updates")?.is_some() {
             if table_sql(conn, "weekly_recaps")?.is_some() {
+                if column_exists(conn, "conversations", "paused_until")? {
+                    return Ok(23);
+                }
                 if index_exists(conn, "job_runs_untallied")? {
                     return Ok(22);
                 }
@@ -2803,7 +2819,7 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 22);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         let sql: String = conn
             .query_row("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'job_runs_untallied'", [], |r| r.get(0))
             .unwrap();
@@ -2820,11 +2836,30 @@ mod tests {
     }
 
     #[test]
+    fn migrates_to_v23() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE conversations DROP COLUMN paused_kind; ALTER TABLE conversations DROP COLUMN paused_until; PRAGMA user_version = 22;",
+        )
+        .unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 23);
+        assert!(column_exists(&conn, "conversations", "paused_kind").unwrap());
+        assert!(column_exists(&conn, "conversations", "paused_until").unwrap());
+    }
+
+    #[test]
     fn schema_version_sniffs_v22() {
         let db = TestDb::new("migrate");
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 23);
+        conn.execute_batch("ALTER TABLE conversations DROP COLUMN paused_until;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 22);
         conn.execute_batch("DROP INDEX job_runs_untallied;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 21);

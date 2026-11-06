@@ -80,9 +80,25 @@ public enum RowText {
             guard let since = date(conversation.statusUpdatedAt) else { return status.label }
             let elapsed = now.timeIntervalSince(since)
             return elapsed < 60 ? "Finished just now" : "Finished \(shortInterval(elapsed)) ago"
+        case .paused:
+            return conversation.paused.map { pauseText($0, now: now) } ?? status.label
         case .ready, .closed:
             return status.label
         }
+    }
+
+    /// "Session limit · resets 00:40", "Weekly limit · resets Mon 01:00", "Usage limit".
+    /// A reset already past reads "resetting": the limit is over, the turn hasn't resumed.
+    public static func pauseText(_ pause: LimitPause, now: Date, calendar: Calendar = .current,
+                                 locale: Locale = .current) -> String {
+        guard let reset = pause.resetDate else { return pause.title }
+        if reset <= now { return "\(pause.title) · resetting" }
+        var style = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone)
+            .hour().minute()
+        if !calendar.isDate(reset, inSameDayAs: now) {
+            style = reset.timeIntervalSince(now) < 6 * 24 * 3600 ? style.weekday(.abbreviated) : style.day().month(.abbreviated)
+        }
+        return "\(pause.title) · resets \(reset.formatted(style))"
     }
 
     /// A todo row's second line: the status message when it needs you, else "mac-studio · 3m".
@@ -91,6 +107,7 @@ public enum RowText {
                                     now: Date) -> String? {
         guard let conversation, let status else { return nil }
         if status == .needsYou, let message = message(conversation) { return message }
+        if status == .paused, let pause = conversation.paused { return pauseText(pause, now: now) }
         return [conversation.computer.name, age(of: conversation, now: now)]
             .compactMap { $0 }
             .joined(separator: " · ")

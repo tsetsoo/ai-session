@@ -7,16 +7,19 @@ struct StatusBadge: View {
 
     private let status: ConversationDisplayStatus
     private let style: Style
+    /// Replaces the label when set: "Session limit · resets 00:40" for a paused conversation.
+    private let detail: String?
 
-    init(_ status: ConversationDisplayStatus, style: Style = .pill) {
+    init(_ status: ConversationDisplayStatus, style: Style = .pill, detail: String? = nil) {
         self.status = status
         self.style = style
+        self.detail = detail
     }
 
     var body: some View {
         content
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(status.label)
+            .accessibilityLabel(detail.map { "\(status.label), \($0)" } ?? status.label)
     }
 
     @ViewBuilder private var content: some View {
@@ -50,6 +53,15 @@ struct StatusBadge: View {
                 .foregroundStyle(.tertiary)
         case (.closed, .dot):
             Color.clear.frame(width: 1, height: 1)
+        case (.paused, .pill):
+            HStack(spacing: DS.spacing.xs + 2) {
+                pauseGlyph
+                Text(detail ?? status.label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case (.paused, .dot):
+            pauseGlyph
         }
     }
 
@@ -57,6 +69,13 @@ struct StatusBadge: View {
         Text(status.label)
             .font(.caption)
             .foregroundStyle(status == .working ? .primary : .secondary)
+    }
+
+    private var pauseGlyph: some View {
+        Image(systemName: "pause.fill")
+            .font(.system(size: 7, weight: .bold))
+            .foregroundStyle(.secondary)
+            .frame(width: 8, height: 8)
     }
 
     private var idleDot: some View {

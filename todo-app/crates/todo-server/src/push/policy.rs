@@ -15,6 +15,8 @@ pub struct Transition {
     pub new: ConversationStatus,
     /// The hook saw recent keyboard activity in the conversation's tmux session
     pub attended: bool,
+    /// The turn stopped on a usage limit: it isn't done, so no "done" push.
+    pub paused: bool,
     pub at: SystemTime,
 }
 
@@ -64,6 +66,9 @@ impl TurnTracker {
             (Idle, Idle) => None,
             (_, Idle) => {
                 let turn = self.turns.remove(&t.todo_id)?;
+                if t.paused {
+                    return None;
+                }
                 let started = turn.started_at.filter(|_| !turn.done_sent)?;
                 let secs = t.at.duration_since(started).unwrap_or_default().as_secs();
                 Some(Event::Done { minutes: u32::try_from(secs / 60).unwrap_or(u32::MAX) })
@@ -175,7 +180,7 @@ mod tests {
     use todo_shared::{ConversationStatus::*, PushSettings, QuietHours};
 
     fn t(old: ConversationStatus, new: ConversationStatus, secs: u64) -> Transition {
-        Transition { todo_id: "t1".into(), old, new, attended: false, at: UNIX_EPOCH + Duration::from_secs(secs) }
+        Transition { todo_id: "t1".into(), old, new, attended: false, paused: false, at: UNIX_EPOCH + Duration::from_secs(secs) }
     }
 
     fn ctx(settings: &PushSettings) -> Ctx<'_> {
@@ -198,6 +203,17 @@ mod tests {
         turns.mark_sent("t1", Event::Waiting);
         assert_eq!(turns.on_transition(&t(Waiting, Busy, 20)), None, "answered");
         assert_eq!(turns.on_transition(&t(Busy, Waiting, 30)), None, "second prompt in the same turn");
+    }
+
+    #[test]
+    fn a_turn_paused_by_a_usage_limit_is_not_done() {
+        let mut turns = TurnTracker::default();
+        turns.on_transition(&t(Idle, Busy, 0));
+        let paused = Transition { paused: true, ..t(Busy, Idle, 30 * 60) };
+        assert_eq!(turns.on_transition(&paused), None);
+        // The resumed turn is a new one.
+        turns.on_transition(&t(Idle, Busy, 31 * 60));
+        assert_eq!(turns.on_transition(&t(Busy, Idle, 41 * 60)), Some(Event::Done { minutes: 10 }));
     }
 
     #[test]

@@ -78,7 +78,8 @@ enum ConversationToolbar {
         guard conversation != nil || todo.conversationStatus != nil else { return nil }
         return ConversationDisplayStatus(
             conversation?.status ?? todo.conversationStatus ?? .unknown,
-            tmuxAlive: nil
+            tmuxAlive: nil,
+            paused: conversation?.paused != nil
         )
     }
 }
@@ -249,6 +250,8 @@ struct ConversationToolbarTitle: View {
 /// pill appearing does not insert another `NSToolbar` item.
 struct ConversationToolbarActions: View {
     var status: ConversationDisplayStatus?
+    /// Why it is paused and when it resumes, shown with a paused status.
+    var statusDetail: String? = nil
     var showsCopy: Bool
     var canCopy: Bool
     var showsPopOut: Bool
@@ -280,7 +283,7 @@ struct ConversationToolbarActions: View {
     var body: some View {
         HStack(spacing: ConversationToolbar.controlSpacing) {
             if let status {
-                StatusBadge(status, style: .pill)
+                StatusBadge(status, style: .pill, detail: statusDetail)
                     .padding(.horizontal, DS.spacing.xs)
             }
             if showsCopy {

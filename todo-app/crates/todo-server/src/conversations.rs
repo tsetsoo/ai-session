@@ -12,7 +12,7 @@ use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
     Computer, Conversation, ConversationStatus, ConversationStatusRequest, CreateComputerRequest, DeleteResponse,
-    DuplicateConversationRequest, Importance, LinkConversationRequest, OpenConversationRequest, Section, SectionComputer,
+    DuplicateConversationRequest, Importance, LimitPause, LinkConversationRequest, OpenConversationRequest, Section, SectionComputer,
     ReportConversationMcpRequest, SetConversationMcpRequest, SetConversationSessionRequest, SetSectionComputerRequest,
     TodoFromConversationRequest, TodoWithConversation, UpdateComputerRequest,
 };
@@ -31,11 +31,12 @@ pub(crate) const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
 pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at, mcp_default";
 
 /// Conversation columns (0..=11), its computer (12..=19), then whether its session is known
-/// and that session's project (20, 21).
+/// and that session's project (20, 21), its review state (22, 23) and limit pause (24, 25).
 const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
         c.status_message, c.status_updated_at, c.created_at, c.label, c.mcp_servers,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default,
-        s.session_id IS NOT NULL, s.project_id, c.status_revision, c.reviewed
+        s.session_id IS NOT NULL, s.project_id, c.status_revision, c.reviewed,
+        c.paused_kind, c.paused_until
      FROM conversations c JOIN computers m ON m.id = c.computer_id
      LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id";
 
@@ -145,8 +146,32 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
         mcp_servers: mcp_from_sql(row, 11)?,
         computer: computer_at(row, 12)?,
         project_id: row.get(21)?,
+        paused: pause_from_sql(row.get(24)?, row.get(25)?),
     };
     Ok((conversation, row.get(20)?))
+}
+
+/// The stored pause, if any. Only an idle conversation is paused: a closed one keeps the
+/// columns but isn't shown as paused.
+fn pause_from_sql(kind: Option<String>, resets_at: Option<String>) -> Option<LimitPause> {
+    kind.map(|kind| LimitPause { kind, resets_at })
+}
+
+/// A known pause kind and, if given, an RFC 3339 reset time (stored as UTC `...Z`).
+pub(crate) fn normalize_pause(pause: &LimitPause) -> Result<LimitPause, &'static str> {
+    if !LimitPause::KINDS.contains(&pause.kind.as_str()) {
+        return Err("paused.kind must be session, weekly or limit");
+    }
+    let resets_at = match pause.resets_at.as_deref() {
+        None => None,
+        Some(at) => Some(
+            chrono::DateTime::parse_from_rfc3339(at)
+                .map_err(|_| "paused.resets_at must be an RFC 3339 time")?
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        ),
+    };
+    Ok(LimitPause { kind: pause.kind.clone(), resets_at })
 }
 
 /// A conversation whose session isn't known yet gets its project matched on the fly.
@@ -652,6 +677,8 @@ pub(crate) struct StatusChange {
     pub todo_id: String,
     pub old: ConversationStatus,
     pub applied: bool,
+    /// The update left the conversation paused by a usage limit.
+    pub paused: bool,
 }
 
 /// Apply a hook status update to the `(tool, session_id)` conversation (UNIQUE, so at most
@@ -677,21 +704,35 @@ pub(crate) fn set_status_db(
     let old = ConversationStatus::parse(&old).unwrap_or(ConversationStatus::Unknown);
     if event_ns.is_some_and(|previous| req.event_timestamp_ns.is_some_and(|next| next < previous || (next == previous && req.status != old))
         || (matches!(tool, "codex" | "claude") && req.event_timestamp_ns.is_none())) {
-        return Ok(Some(StatusChange { todo_id, old, applied: false }));
+        return Ok(Some(StatusChange { todo_id, old, applied: false, paused: false }));
     }
     let new_turn = req.turn_started_ns.is_some_and(|next| turn_ns.is_none_or(|previous| next > previous));
+    // Only an idle conversation is paused; the caller validated the pause.
+    let pause = req.paused.as_ref().filter(|_| req.status == ConversationStatus::Idle);
     tx.execute(
         "UPDATE conversations SET
          status_revision = status_revision + CASE WHEN status != ?1 OR ?7 THEN 1 ELSE 0 END,
          reviewed = CASE WHEN status != ?1 OR ?7 THEN 0 ELSE reviewed END,
          status_updated_at = CASE WHEN status != ?1 OR status_message IS NOT ?2 OR ?7 THEN datetime('now') ELSE status_updated_at END,
          status = ?1, status_message = ?2, status_event_ns = COALESCE(?5, status_event_ns),
-         status_turn_ns = CASE WHEN ?7 THEN ?6 ELSE status_turn_ns END
+         status_turn_ns = CASE WHEN ?7 THEN ?6 ELSE status_turn_ns END,
+         paused_kind = CASE WHEN ?8 IS NOT NULL THEN ?8 WHEN status != ?1 OR ?7 THEN NULL ELSE paused_kind END,
+         paused_until = CASE WHEN ?8 IS NOT NULL THEN ?9 WHEN status != ?1 OR ?7 THEN NULL ELSE paused_until END
          WHERE tool = ?3 AND session_id = ?4 AND status != 'closed'",
-        params![req.status.as_str(), req.message, tool, session_id, req.event_timestamp_ns, req.turn_started_ns, new_turn],
+        params![
+            req.status.as_str(),
+            req.message,
+            tool,
+            session_id,
+            req.event_timestamp_ns,
+            req.turn_started_ns,
+            new_turn,
+            pause.as_ref().map(|p| p.kind.as_str()),
+            pause.as_ref().and_then(|p| p.resets_at.as_deref()),
+        ],
     )?;
     tx.commit()?;
-    Ok(Some(StatusChange { todo_id, old, applied: true }))
+    Ok(Some(StatusChange { todo_id, old, applied: true, paused: pause.is_some() }))
 }
 
 pub(crate) fn valid_text(s: &str) -> bool {
@@ -1380,6 +1421,13 @@ pub async fn post_conversation_status(
     if body.status == ConversationStatus::Closed {
         return bad_request("Hooks cannot close a conversation; use POST /api/todos/{id}/conversation/close");
     }
+    let mut body = body.into_inner();
+    if let Some(pause) = &body.paused {
+        match normalize_pause(pause) {
+            Ok(pause) => body.paused = Some(pause),
+            Err(message) => return bad_request(message),
+        }
+    }
     let Some(session_id) = body.session_id() else {
         return bad_request("session_id (or claude_session_id) is required");
     };
@@ -1403,6 +1451,7 @@ pub async fn post_conversation_status(
                 old: change.old,
                 new: body.status,
                 attended: body.attended.unwrap_or(false),
+                paused: change.paused,
                 at: std::time::SystemTime::now(),
             });
             HttpResponse::NoContent().finish()
@@ -1481,6 +1530,7 @@ mod tests {
             project_id: None,
             label: None,
             mcp_servers: None,
+            paused: None,
         }
     }
 
@@ -1869,6 +1919,53 @@ mod tests {
     }
 
     #[test]
+    fn a_limit_pause_lasts_until_the_status_changes_or_a_new_turn_starts() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let read = |conn: &Connection| load_conversation_by_id(conn, &conv.id).unwrap().unwrap().paused;
+        let pause = LimitPause { kind: "session".into(), resets_at: Some("2026-11-06T22:40:00Z".into()) };
+        let status = |status, paused: Option<LimitPause>, turn: Option<i64>| ConversationStatusRequest {
+            status, paused, turn_started_ns: turn, ..Default::default()
+        };
+        set_status_db(&conn, "claude", &conv.session_id, &status(ConversationStatus::Busy, None, Some(1))).unwrap();
+        let change = set_status_db(&conn, "claude", &conv.session_id, &status(ConversationStatus::Idle, Some(pause.clone()), None))
+            .unwrap()
+            .unwrap();
+        assert!(change.paused);
+        assert_eq!(read(&conn), Some(pause.clone()));
+        // A later idle report without the pause (a monitor heartbeat) keeps it.
+        set_status_db(&conn, "claude", &conv.session_id, &status(ConversationStatus::Idle, None, None)).unwrap();
+        assert_eq!(read(&conn), Some(pause.clone()));
+        // A new turn clears it, even when the report is idle (a fast turn the monitor missed).
+        set_status_db(&conn, "claude", &conv.session_id, &status(ConversationStatus::Idle, None, Some(2))).unwrap();
+        assert_eq!(read(&conn), None);
+        // So does any other status.
+        set_status_db(&conn, "claude", &conv.session_id, &status(ConversationStatus::Idle, Some(pause.clone()), None)).unwrap();
+        set_status_db(&conn, "claude", &conv.session_id, &status(ConversationStatus::Waiting, None, None)).unwrap();
+        assert_eq!(read(&conn), None);
+        // A pause is only taken with idle.
+        let change = set_status_db(&conn, "claude", &conv.session_id, &status(ConversationStatus::Busy, Some(pause), None))
+            .unwrap()
+            .unwrap();
+        assert!(!change.paused);
+        assert_eq!(read(&conn), None);
+    }
+
+    #[test]
+    fn a_pause_needs_a_known_kind_and_an_rfc3339_time() {
+        let pause = |kind: &str, at: Option<&str>| LimitPause { kind: kind.into(), resets_at: at.map(Into::into) };
+        assert_eq!(
+            normalize_pause(&pause("weekly", Some("2026-11-07T01:00:00+02:00"))).unwrap().resets_at.as_deref(),
+            Some("2026-11-06T23:00:00Z")
+        );
+        assert!(normalize_pause(&pause("limit", None)).is_ok());
+        assert!(normalize_pause(&pause("monthly", None)).is_err());
+        assert!(normalize_pause(&pause("session", Some("12:40am"))).is_err());
+    }
+
+    #[test]
     fn status_change_reports_old_status() {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
@@ -1877,7 +1974,7 @@ mod tests {
         let busy = ConversationStatusRequest { status: ConversationStatus::Busy, ..Default::default() };
         let waiting = ConversationStatusRequest { status: ConversationStatus::Waiting, ..Default::default() };
         let first = set_status_db(&conn, "claude", &conv.session_id, &busy).unwrap().unwrap();
-        assert_eq!(first, StatusChange { todo_id: TODO.into(), old: ConversationStatus::Unknown, applied: true });
+        assert_eq!(first, StatusChange { todo_id: TODO.into(), old: ConversationStatus::Unknown, applied: true, paused: false });
         let second = set_status_db(&conn, "claude", &conv.session_id, &waiting).unwrap().unwrap();
         assert_eq!(second.old, ConversationStatus::Busy);
         let repeat = set_status_db(&conn, "claude", &conv.session_id, &waiting).unwrap().unwrap();
