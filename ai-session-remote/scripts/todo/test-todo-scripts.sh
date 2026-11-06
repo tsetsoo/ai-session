@@ -145,6 +145,23 @@ grep -q -- "--session-id ${HO_SID} Summary: fix the login." "$CLAUDE_LOG" || fai
 [[ ! -e "${SANDBOX}/handoff.txt" ]] || fail "the hand-off file was left behind"
 tmux -L "$SOCK" kill-session -t "=$HO_NAME"
 pass "ai-todo-open gives a new Claude conversation its hand-off as the first message, and deletes the file"
+# A long hand-off (a whole conversation) never goes through tmux's command line, which
+# refuses about 16 KB: the session reads it from the file.
+HO2_NAME="ai/claude/todo-0f3a9c25"; HO2_SID="9b2f6c3e-1d4a-4e7b-8c55-2f0e8a1b7d95"
+python3 -c 'import sys; open(sys.argv[1], "w").write("Transcript start. " + "word " * 8000 + "THE END")' "${SANDBOX}/handoff-long.txt"
+before=$(wc -l <"$CLAUDE_LOG")
+out="$(AI_TODO_OPEN_DETACH=1 "$OPEN" --prompt-file "${SANDBOX}/handoff-long.txt" "$HO2_NAME" '~/programming' "$HO2_SID" 2>"${SANDBOX}/ho2.err")" \
+  || fail "a 40 KB hand-off failed to start: $(cat "${SANDBOX}/ho2.err")"
+wait_for_log_lines $((before + 1))
+tail -n 1 "$CLAUDE_LOG" | grep -q -- "--session-id ${HO2_SID} Transcript start\. word .*THE END$" || fail "the long hand-off did not arrive whole"
+for _ in $(seq 1 30); do [[ -e "${SANDBOX}/handoff-long.txt" ]] || break; sleep 0.1; done
+[[ ! -e "${SANDBOX}/handoff-long.txt" ]] || fail "the long hand-off file was left behind"
+tmux -L "$SOCK" kill-session -t "=$HO2_NAME"
+# Attaching to a running session uses no prompt, and the file still goes.
+printf 'unused' >"${SANDBOX}/handoff-unused.txt"
+AI_TODO_OPEN_DETACH=1 "$OPEN" --prompt-file "${SANDBOX}/handoff-unused.txt" "$NAME" '~/programming' "$SID" >/dev/null
+[[ ! -e "${SANDBOX}/handoff-unused.txt" ]] || fail "an attach left the hand-off file behind"
+pass "a long hand-off reaches the tool whole (read inside the session, not through tmux's command line); an attach removes the file"
 
 # The running-session fast path comes before the tool lookup: no claude binary needed.
 out="$(AI_TODO_CLAUDE_BIN=/nonexistent PATH=/usr/bin:/bin:"$(dirname "$(command -v tmux)")" \

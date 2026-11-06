@@ -245,6 +245,36 @@ public enum TmuxCommandBuilder {
         return wrap(script)
     }
 
+    /// The most UTF-8 bytes of hand-off text in one command (about 64 KB once base64-encoded),
+    /// well under every computer's limit for one argument (128 KB on Linux).
+    public static let promptPieceBytes = 48_000
+
+    /// `text` in pieces of at most `promptPieceBytes` bytes, split between characters:
+    /// the first goes up with `writePromptFile`, the rest with `appendPromptFile`.
+    public static func promptPieces(_ text: String) -> [String] {
+        var pieces: [String] = []
+        var current = ""
+        var bytes = 0
+        for character in text {
+            let size = String(character).utf8.count
+            if bytes + size > promptPieceBytes, !current.isEmpty {
+                pieces.append(current)
+                current = ""
+                bytes = 0
+            }
+            current.append(character)
+            bytes += size
+        }
+        if !current.isEmpty || pieces.isEmpty { pieces.append(current) }
+        return pieces
+    }
+
+    /// Adds `text` to a prompt file `writePromptFile` made.
+    public static func appendPromptFile(path: String, text: String) -> String {
+        let encoded = Data(text.utf8).base64EncodedString()
+        return wrap("printf '%s' \(shellQuote(encoded)) | base64 --decode >>\(shellQuote(path))")
+    }
+
     /// ` --worktree <folder> <branch>`, or nothing. A `~` folder is quoted; the script expands it.
     private static func worktreeArguments(_ worktree: (folder: String, branch: String)?) -> String {
         guard let worktree else { return "" }

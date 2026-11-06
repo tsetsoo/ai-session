@@ -171,7 +171,13 @@ seed_job_status() {
   AI_TODO_CLAUDE_JOBS=$jobs "$hook" seed "$open_sid" </dev/null >/dev/null 2>&1 &
 }
 
+# The --prompt-file is for a session this starts; anything else removes it (also `attach`,
+# which execs tmux, so no exit trap would run).
+drop_prompt_file() { [ -z "$prompt_file" ] || rm -f "$prompt_file"; }
+trap drop_prompt_file EXIT
+
 attach() {
+  drop_prompt_file
   seed_job_status
   # No tmux status bar in conversations. The apps read the bottom of the screen for
   # Claude's and Codex's questions ("Esc to cancel" must be the last line) and the bar
@@ -240,11 +246,19 @@ esac
 command -v tmux >/dev/null 2>&1 || { echo "tmux not found" >&2; exit 90; }
 
 # The first message of a new conversation (scheduler runner). Read once and removed.
+# The file stays where it is: the new session reads it (see `with_first_prompt`), so a long
+# hand-off never goes through tmux's command line, which refuses about 16 KB. An empty or
+# missing file is no first message. Whatever doesn't start a session removes it.
 first_prompt=
 if [ -n "$prompt_file" ]; then
-  first_prompt=$(cat "$prompt_file" 2>/dev/null || true)
-  rm -f "$prompt_file"
+  if [ -s "$prompt_file" ]; then
+    first_prompt=1
+  else
+    rm -f "$prompt_file"
+    prompt_file=
+  fi
 fi
+
 
 uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 
@@ -470,7 +484,7 @@ if [ "$tool" = codex ]; then
     # workspace sandbox blocks by default; Claude's auto mode already allows it.
     [ "$auto_approve" = 1 ] && set -- "$@" -c sandbox_workspace_write.network_access=true
     [ -n "$model" ] && set -- "$@" -m "$model"
-    [ -n "$first_prompt" ] && set -- "$@" "$first_prompt"
+    [ -n "$first_prompt" ] && with_first_prompt=1
   elif [ -z "$(find "$HOME/.codex/sessions" -name "rollout-*-$sid.jsonl" -print 2>/dev/null | head -n 1)" ]; then
     # Started but never sent a message: Codex 0.163+ keeps no rollout for it and
     # `codex resume` refuses it. Nothing was said in it, so a new one loses nothing.
@@ -554,7 +568,7 @@ else
     fi
     [ "$auto_approve" = 1 ] && set -- "$@" --permission-mode auto
     [ -n "$model" ] && set -- "$@" --model "$model"
-    [ -n "$first_prompt" ] && set -- "$@" "$first_prompt"
+    [ -n "$first_prompt" ] && with_first_prompt=1
   fi
 fi
 
@@ -699,6 +713,13 @@ fi
 # the attach looks like a closed connection. The file store resumes the chat.
 if [ "$tool" = cursor ]; then
   set -- env "AGENT_CLI_CREDENTIAL_STORE=file" "$@"
+fi
+# The first message: read from its file inside the session, removed there, and appended as
+# the tool's last argument.
+if [ "${with_first_prompt:-}" = 1 ]; then
+  # shellcheck disable=SC2016
+  set -- sh -c 'p=$(cat "$1") || exit 1; rm -f "$1"; shift; exec "$@" "$p"' ai-todo-prompt "$prompt_file" "$@"
+  prompt_file=
 fi
 tmux_cmd new-session -d -s "$name" -c "$cwd" -- env "PATH=$PATH" "LANG=$session_lang" "LC_CTYPE=$session_ctype" "LC_ALL=$session_lang" "$@"
 # Off from the start (attach sets it again): a fresh Codex or Cursor waits here for its

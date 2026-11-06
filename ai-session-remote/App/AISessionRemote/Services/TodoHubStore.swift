@@ -652,10 +652,19 @@ final class TodoHubStore {
     }
 
     /// The hand-off text in a private file on the conversation's computer; its path.
+    /// A long text goes up in pieces, so no command passes the computer's argument limit.
     private func writeHandoff(_ text: String, on conversation: Conversation, config: HostConnectionConfig) async throws -> String {
-        try await remoteStdout(
-            TmuxCommandBuilder.writePromptFile(text: text), config: config, computerName: conversation.computer.name
+        let pieces = TmuxCommandBuilder.promptPieces(text)
+        let path = try await remoteStdout(
+            TmuxCommandBuilder.writePromptFile(text: pieces[0]), config: config, computerName: conversation.computer.name
         )
+        for piece in pieces.dropFirst() {
+            _ = try await remoteStdout(
+                TmuxCommandBuilder.appendPromptFile(path: path, text: piece), config: config,
+                computerName: conversation.computer.name
+            )
+        }
+        return path
     }
 
     /// A start that failed: its tmux session (if any) and its hub row go.

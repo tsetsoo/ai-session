@@ -53,6 +53,18 @@ final class HandoffPromptTests: XCTestCase {
         XCTAssertNil(DuplicateHandoff.firstPrompt(.cancelled, tool: "claude"))
     }
 
+    /// A long hand-off goes up in pieces, each well under any computer's argument limit.
+    func testLongHandoffsAreWrittenInPieces() {
+        let text = String(repeating: "абв ", count: 30_000) // 120k characters, 210 KB of UTF-8
+        let pieces = TmuxCommandBuilder.promptPieces(text)
+        XCTAssertGreaterThan(pieces.count, 1)
+        XCTAssertEqual(pieces.joined(), text)
+        XCTAssertTrue(pieces.allSatisfy { $0.utf8.count <= TmuxCommandBuilder.promptPieceBytes })
+        XCTAssertEqual(TmuxCommandBuilder.promptPieces("short"), ["short"])
+        let append = TmuxCommandBuilder.appendPromptFile(path: "/h/p f", text: "more")
+        XCTAssertTrue(append.contains("base64 --decode >>'/h/p f'"), append)
+    }
+
     #if os(macOS)
     /// Run for real: the file holds the text exactly, private to the user.
     func testWritePromptFileWritesTheTextExactly() throws {
@@ -60,9 +72,11 @@ final class HandoffPromptTests: XCTestCase {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
         let text = "Summary: fix the login.\n- it's \"quoted\"\n- $HOME and `ticks`\nкирилица"
+            + String(repeating: "абв ", count: 30_000)
+        let pieces = TmuxCommandBuilder.promptPieces(text)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", TmuxCommandBuilder.writePromptFile(text: text)]
+        process.arguments = ["-c", TmuxCommandBuilder.writePromptFile(text: pieces[0])]
         process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
         let out = Pipe()
         process.standardOutput = out
@@ -72,6 +86,15 @@ final class HandoffPromptTests: XCTestCase {
         let path = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         XCTAssertTrue(path.hasPrefix(home.path + "/.ai-remote/prompts/handoff."), path)
+        for piece in pieces.dropFirst() {
+            let append = Process()
+            append.executableURL = URL(fileURLWithPath: "/bin/sh")
+            append.arguments = ["-c", TmuxCommandBuilder.appendPromptFile(path: path, text: piece)]
+            append.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
+            try append.run()
+            append.waitUntilExit()
+            XCTAssertEqual(append.terminationStatus, 0)
+        }
         XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), text)
         let mode = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int
         XCTAssertEqual(mode, 0o600)
