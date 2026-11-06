@@ -1,5 +1,7 @@
 # Competing agents, stage 0: worktree per conversation, implementation plan
 
+> **Superseded (2026-11-06).** Another session shipped worktree per conversation to main first (855de62, e861274), so this plan's implementation (branch `scheduled/research-now-ai-session-20261106-3ff0dec9`) was not merged. Only what main lacked was ported: worktrees of not-done todos are kept by cleanup (`keep_worktrees`, commit 130d944).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A new conversation started from the app in a project with worktrees on runs in its own git worktree, `~/.ai-remote/worktrees/<project>/<conversation>`. That worktree survives while its todo is open, and a missing one is recreated when the conversation is reopened.
