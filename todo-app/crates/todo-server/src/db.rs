@@ -135,6 +135,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v21_objects(&conn).expect("Failed to create weekly recap objects");
     create_v22_objects(&conn).expect("Failed to create the untallied-runs index");
     create_v23_objects(&conn).expect("Failed to add the usage-limit pause columns");
+    create_v24_objects(&conn).expect("Failed to add worktree columns");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -639,6 +640,21 @@ fn create_v22_objects(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v24: a project's worktree setting (on by default) and a conversation's worktree source
+/// and branch. Only adds.
+fn create_v24_objects(conn: &Connection) -> rusqlite::Result<()> {
+    for (table, column, ddl) in [
+        ("projects", "worktrees", "INTEGER NOT NULL DEFAULT 1"),
+        ("conversations", "worktree_source", "TEXT"),
+        ("conversations", "branch", "TEXT"),
+    ] {
+        if table_sql(conn, table)?.is_some() && !column_exists(conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl};"))?;
+        }
+    }
+    Ok(())
+}
+
 fn index_exists(conn: &Connection, index: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
@@ -828,11 +844,13 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v18: `computers.job_templates`, `computers.job_templates_at`, `memories.archived_by` (additive)
 /// - v13: scheduler `jobs`, `job_runs`, `scheduler_settings`; `todos.scheduled_job_id` and
 ///   `scheduled_run_id` (additive)
+/// - v19..v22: daily updates, weekly recap (additive)
+/// - v24: `projects.worktrees`, `conversations.worktree_source`, `conversations.branch` (additive)
 /// - v12: memories gain usage, pending, import key and archive reason; `memory_active_days`;
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 23;
+pub const SCHEMA_VERSION: i64 = 24;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -849,6 +867,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     if table_sql(conn, "reminders")?.is_some() {
         if table_sql(conn, "project_updates")?.is_some() {
             if table_sql(conn, "weekly_recaps")?.is_some() {
+                if column_exists(conn, "conversations", "worktree_source")? {
+                    return Ok(24);
+                }
                 if column_exists(conn, "conversations", "paused_until")? {
                     return Ok(23);
                 }
@@ -2841,15 +2862,38 @@ mod tests {
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
-            "ALTER TABLE conversations DROP COLUMN paused_kind; ALTER TABLE conversations DROP COLUMN paused_until; PRAGMA user_version = 22;",
+            "ALTER TABLE projects DROP COLUMN worktrees; ALTER TABLE conversations DROP COLUMN worktree_source;
+             ALTER TABLE conversations DROP COLUMN branch;
+             ALTER TABLE conversations DROP COLUMN paused_kind; ALTER TABLE conversations DROP COLUMN paused_until; PRAGMA user_version = 22;",
         )
         .unwrap();
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 23);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(column_exists(&conn, "conversations", "paused_kind").unwrap());
         assert!(column_exists(&conn, "conversations", "paused_until").unwrap());
+    }
+
+    #[test]
+    fn migrates_v23_adds_worktree_columns_with_worktrees_on() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE projects DROP COLUMN worktrees; ALTER TABLE conversations DROP COLUMN worktree_source;
+             ALTER TABLE conversations DROP COLUMN branch; PRAGMA user_version = 23;
+             INSERT INTO projects (id, name, section, folder) VALUES ('p', 'p', 'P', '~/p');",
+        )
+        .unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 24);
+        assert!(column_exists(&conn, "conversations", "worktree_source").unwrap());
+        assert!(column_exists(&conn, "conversations", "branch").unwrap());
+        let on: i64 = conn.query_row("SELECT worktrees FROM projects WHERE id = 'p'", [], |r| r.get(0)).unwrap();
+        assert_eq!(on, 1);
     }
 
     #[test]
@@ -2858,6 +2902,8 @@ mod tests {
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 24);
+        conn.execute_batch("ALTER TABLE conversations DROP COLUMN worktree_source;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 23);
         conn.execute_batch("ALTER TABLE conversations DROP COLUMN paused_until;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 22);

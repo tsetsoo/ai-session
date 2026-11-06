@@ -36,6 +36,7 @@ struct ProjectEditorSheet: View {
     @State private var mcpDefault: [String]?
     @State private var dailyUpdates = false
     @State private var updateStyle = ""
+    @State private var worktrees = true
 
     var body: some View {
         NavigationStack {
@@ -69,6 +70,15 @@ struct ProjectEditorSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                }
+                if case .edit = mode, !trimmed(repoUrl).isEmpty {
+                    Section {
+                        Toggle("New conversations get their own worktree", isOn: $worktrees)
+                    } footer: {
+                        Text(worktrees
+                            ? "Each new conversation works on its own branch in ~/.ai-remote/worktrees, made from the latest origin. Files named in .worktreeinclude and .worktreelink come along. Existing conversations stay where they are."
+                            : "New conversations share the project folder.")
+                    }
                 }
                 Section {
                     Toggle("Feed memories into new conversations", isOn: $digestEnabled)
@@ -170,6 +180,7 @@ struct ProjectEditorSheet: View {
             mcpDefault = project.mcpDefault
             dailyUpdates = project.dailyUpdates
             updateStyle = project.updateStyle
+            worktrees = project.worktrees
         }
     }
 
@@ -199,11 +210,12 @@ struct ProjectEditorSheet: View {
                         digestEnabled: digestEnabled == project.digestEnabled ? nil : digestEnabled,
                         mcpDefault: mcpDefault == project.mcpDefault ? nil : (mcpDefault.map { .set($0) } ?? .clear),
                         dailyUpdates: dailyUpdates == project.dailyUpdates ? nil : dailyUpdates,
-                        updateStyle: trimmed(updateStyle) == project.updateStyle ? nil : trimmed(updateStyle)
+                        updateStyle: trimmed(updateStyle) == project.updateStyle ? nil : trimmed(updateStyle),
+                        worktrees: worktrees == project.worktrees ? nil : worktrees
                     )
                     if request.name != nil || request.folder != nil || request.repoUrl != nil
                         || request.digestEnabled != nil || request.mcpDefault != nil
-                        || request.dailyUpdates != nil || request.updateStyle != nil {
+                        || request.dailyUpdates != nil || request.updateStyle != nil || request.worktrees != nil {
                         try await store.updateProject(project, request)
                     }
                     dismiss()

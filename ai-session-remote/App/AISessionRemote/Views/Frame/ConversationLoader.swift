@@ -30,7 +30,8 @@ struct OpenTodoConversation: Identifiable, Hashable {
             cwd: conversation.cwd,
             sessionId: conversation.sessionId,
             tool: conversation.tool,
-            mcpServers: mcpServers
+            mcpServers: mcpServers,
+            worktree: conversation.worktree
         )
     }
 

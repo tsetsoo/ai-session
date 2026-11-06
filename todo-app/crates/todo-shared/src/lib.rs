@@ -312,6 +312,10 @@ pub struct OpenConversationRequest {
     /// MCP server names for a conversation this call creates; ignored when it already exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<Vec<String>>,
+    /// The app can create worktrees (passes `--worktree` to `ai-todo-open`). Without it, a
+    /// new conversation shares the project folder, as before.
+    #[serde(default)]
+    pub worktrees: bool,
 }
 
 /// Replace a conversation's MCP selection. `null` means no selection was made.
@@ -380,6 +384,14 @@ pub struct Conversation {
     /// this show it as finished. Absent when the conversation isn't paused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<LimitPause>,
+    /// The project folder this conversation's own git worktree is made from. Present when
+    /// `cwd` is that worktree (`~/.ai-remote/worktrees/<project>/<conversation>`), which the
+    /// computer creates on first open (`ai-todo-open --worktree <source> <branch>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_source: Option<String>,
+    /// The worktree's branch, with `worktree_source`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// A conversation stopped by a subscription or API usage limit.
@@ -523,6 +535,14 @@ pub struct Project {
     /// How the daily update should read; empty: a plain bullet list.
     #[serde(default)]
     pub update_style: String,
+    /// New conversations open in their own git worktree (only when the project has a
+    /// `repo_url`, i.e. is a git repo). Off: they share the project folder.
+    #[serde(default = "default_true")]
+    pub worktrees: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// One day's update of a project (the window starting 08:00 Sofia on `day`).
@@ -588,6 +608,8 @@ pub struct UpdateProjectRequest {
     pub daily_updates: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktrees: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

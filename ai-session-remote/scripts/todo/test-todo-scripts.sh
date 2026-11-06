@@ -3238,6 +3238,53 @@ runner tick || fail "cleanup tick failed"
 grep -q "cleaned run=r-mrg00001 reason=merged" "${R_STATE}/runner.log" || fail "merged cleanup not logged"
 pass "runner_cleans_merged_worktrees (squash merge counts; unmerged commits and ones in use by tmux kept)"
 
+# A conversation's own worktree: ai-todo-open --worktree makes it on the first open, the
+# tool starts in it, later opens reuse it, and the runner's sweep knows it.
+C_ID="c0ffee00-1111-4222-8333-444455556666"
+C_WT="${R_TREES}/proj-merged/${C_ID}"
+C_NAME="ai/claude/todo-c0ffee00"
+C_SID="0c0ffee0-aaaa-4bbb-8ccc-dddddddddddd"
+: >"$CLAUDE_LOG"
+out="$(AI_TODO_RUNNER_STATE_DIR="$R_STATE" AI_TODO_OPEN_DETACH=1 "$OPEN" --worktree '~/work/merged' ai/fix-login-c0ffee00 \
+  "$C_NAME" "~/.ai-remote/worktrees/proj-merged/${C_ID}" "$C_SID" 2>"${SANDBOX}/wt.err")" || fail "worktree open failed: $(cat "${SANDBOX}/wt.err")"
+[[ "$out" == created ]] || fail "worktree open printed '$out'"
+grep -q "Preparing a worktree" "${SANDBOX}/wt.err" || fail "no progress shown: $(cat "${SANDBOX}/wt.err")"
+[[ "$(git -C "$C_WT" rev-parse --abbrev-ref HEAD)" == ai/fix-login-c0ffee00 ]] || fail "worktree not on its branch"
+[[ "$(git -C "$C_WT" rev-parse HEAD)" == "$(git -C "$R_MERGED" rev-parse origin/main)" ]] || fail "worktree not made from origin/HEAD"
+wait_for_log_lines 1
+[[ "$(tail -n 1 "$CLAUDE_LOG")" == "$(cd "$C_WT" && pwd -P) --session-id ${C_SID}" ]] || fail "claude not started in the worktree: $(tail -n 1 "$CLAUDE_LOG")"
+python3 - "${R_STATE}/worktrees.json" "$C_ID" "$C_WT" <<'PY' || fail "conversation worktree not registered"
+import json, sys
+e = json.load(open(sys.argv[1]))[sys.argv[2]]
+assert e["path"] == sys.argv[3] and e["branch"] == "ai/fix-login-c0ffee00", e
+PY
+tmux -L "$SOCK" kill-session -t "=$C_NAME"
+echo work >"${C_WT}/w.txt"
+out="$(AI_TODO_RUNNER_STATE_DIR="$R_STATE" AI_TODO_OPEN_DETACH=1 "$OPEN" --worktree '~/work/merged' ai/fix-login-c0ffee00 \
+  "$C_NAME" "~/.ai-remote/worktrees/proj-merged/${C_ID}" "$C_SID" 2>"${SANDBOX}/wt.err")" || fail "reopen failed: $(cat "${SANDBOX}/wt.err")"
+[[ -f "${C_WT}/w.txt" ]] && ! grep -q "Preparing" "${SANDBOX}/wt.err" || fail "a reopen made the worktree again"
+tmux -L "$SOCK" kill-session -t "=$C_NAME"
+# Removed (swept or by hand): the next open makes it again on the same branch.
+git_q -C "$R_MERGED" worktree remove --force "$C_WT"
+AI_TODO_RUNNER_STATE_DIR="$R_STATE" AI_TODO_OPEN_DETACH=1 "$OPEN" --worktree '~/work/merged' ai/fix-login-c0ffee00 \
+  "$C_NAME" "~/.ai-remote/worktrees/proj-merged/${C_ID}" "$C_SID" >/dev/null 2>"${SANDBOX}/wt.err" || fail "remake failed: $(cat "${SANDBOX}/wt.err")"
+[[ "$(git -C "$C_WT" rev-parse --abbrev-ref HEAD)" == ai/fix-login-c0ffee00 ]] || fail "remade worktree not on its kept branch"
+tmux -L "$SOCK" kill-session -t "=$C_NAME"
+# A folder outside git: exit 93, nothing started.
+set +e
+AI_TODO_RUNNER_STATE_DIR="$R_STATE" AI_TODO_OPEN_DETACH=1 "$OPEN" --worktree '~/work/plain' ai/x-c0ffee01 \
+  ai/claude/todo-c0ffee01 "~/.ai-remote/worktrees/proj-plain/c0ffee01" "$C_SID" >/dev/null 2>"${SANDBOX}/wt.err"
+status=$?; set -e
+[[ $status -eq 93 ]] && grep -q "not in a git repository" "${SANDBOX}/wt.err" || fail "non-git worktree open: $status $(cat "${SANDBOX}/wt.err")"
+! tmux -L "$SOCK" has-session -t "=ai/claude/todo-c0ffee01" 2>/dev/null || fail "a session started without its worktree"
+for args in "--worktree" "--worktree ~/work/merged" "--worktree ~/work/merged bad..branch $C_NAME ~ $C_SID"; do
+  # shellcheck disable=SC2086
+  if AI_TODO_RUNNER_STATE_DIR="$R_STATE" AI_TODO_OPEN_DETACH=1 "$OPEN" $args >/dev/null 2>&1; then
+    fail "ai-todo-open accepted bad --worktree arguments: $args"
+  fi
+done
+pass "open_makes_the_conversation_worktree (once, from origin/HEAD, branch kept when remade; non-git folder exits 93)"
+
 runs_reset
 due_run r-codex001 proj-app '{"mode":"always"}' 0 codex
 FAKE_OPEN_ID=01a1cccc-0000-7000-8000-00000000c0de runner tick || fail "tick failed"

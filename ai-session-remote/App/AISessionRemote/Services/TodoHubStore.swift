@@ -496,14 +496,16 @@ final class TodoHubStore {
                 var result = try await NIOSSHClient().exec(
                     config,
                     command: TmuxCommandBuilder.freshTodoConversation(
-                        tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool, mcpServers: servers
+                        tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool, mcpServers: servers,
+                        worktree: conversation.worktree
                     )
                 )
                 if Self.shouldRetryWithoutServers(result, servers: servers, tool: tool) {
                     result = try await NIOSSHClient().exec(
                         config,
                         command: TmuxCommandBuilder.freshTodoConversation(
-                            tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool
+                            tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool,
+                            worktree: conversation.worktree
                         )
                     )
                 }
@@ -556,11 +558,12 @@ final class TodoHubStore {
                 created, config: config,
                 command: TmuxCommandBuilder.freshTodoConversation(
                     tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool,
-                    mcpServers: created.mcpServers
+                    mcpServers: created.mcpServers, worktree: created.worktree
                 ),
                 fallbackCommand: Self.shouldOfferFallback(created)
                     ? TmuxCommandBuilder.freshTodoConversation(
-                        tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool
+                        tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool,
+                        worktree: created.worktree
                     ) : nil
             )
         case let .captureFork(sourceSessionId):

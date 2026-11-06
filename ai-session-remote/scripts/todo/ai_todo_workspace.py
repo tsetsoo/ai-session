@@ -1,6 +1,7 @@
 """Conversation worktrees: make one, bring the project's local files into it, keep copies
 current, and sweep the ones that hold nothing. Used by ai-todo-runner (scheduled runs) and
-ai-todo-workspace (list, sync).
+ai-todo-workspace (list, sync, and ensure: a conversation's own worktree, made on its first
+open by ai-todo-open --worktree).
 
 Local files. A worktree has only what git tracks, so a project's gitignored files (.env,
 an excluded CLAUDE.md, local notes) are missing from it. Two files at the top of the project
@@ -117,7 +118,13 @@ def create(folder, path, branch):
     base = "origin/HEAD" if git(folder, "rev-parse", "--verify", "--quiet", "origin/HEAD")[0] == 0 else "HEAD"
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     base_sha = git(folder, "rev-parse", base)[1]
-    code, _, err = git(folder, "worktree", "add", "-b", branch, path, base)
+    if git(folder, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch)[0] == 0:
+        # A conversation's worktree made again (swept, or deleted by hand): its branch is
+        # kept with whatever it has.
+        git(folder, "worktree", "prune")
+        code, _, err = git(folder, "worktree", "add", path, branch)
+    else:
+        code, _, err = git(folder, "worktree", "add", "-b", branch, path, base)
     if code != 0:
         raise RuntimeError("git worktree add failed: %s" % err[:200])
     entry = {"path": path, "folder": folder, "top": top, "branch": branch, "base": base_sha,
@@ -257,6 +264,33 @@ def sync(entry):
             updated.append(rel)
     entry["copied"] = copied
     return updated, differs
+
+
+def ensure(registry_path, path, folder, branch, log=lambda msg: None):
+    """A conversation's own worktree at `path` (of `folder`'s repo, on `branch`): made and
+    registered when missing, its local files synced when present. Safe to call on every open
+    and from two devices at once (a lock per path). Returns (made, updated, differs).
+    Raises NotARepo or RuntimeError as create() does."""
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    lock_path = os.path.join(os.path.dirname(path), "." + os.path.basename(path) + ".lock")
+    with open(lock_path, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if os.path.isdir(path):
+            with locked_registry(registry_path) as registry:
+                entry = next((e for e in registry.values() if e.get("path") == path), None)
+                updated, differs = sync(entry) if entry else ([], [])
+            return False, updated, differs
+        log("Preparing a worktree of %s on branch %s" % (folder, branch))
+        _, entry = create(folder, path, branch)
+        try:
+            with locked_registry(registry_path) as registry:
+                for key in [k for k, e in registry.items() if e.get("path") == path]:
+                    registry.pop(key)
+                registry[os.path.basename(path)] = entry
+        except Exception:
+            remove(entry)
+            raise
+        return True, [], []
 
 
 # --- Sweep ---------------------------------------------------------------------------

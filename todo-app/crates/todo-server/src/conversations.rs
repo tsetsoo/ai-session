@@ -31,12 +31,13 @@ pub(crate) const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
 pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at, mcp_default";
 
 /// Conversation columns (0..=11), its computer (12..=19), then whether its session is known
-/// and that session's project (20, 21), its review state (22, 23) and limit pause (24, 25).
+/// and that session's project (20, 21), its review state (22, 23) limit pause (24, 25) and
+/// worktree source and branch (26, 27).
 const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
         c.status_message, c.status_updated_at, c.created_at, c.label, c.mcp_servers,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default,
         s.session_id IS NOT NULL, s.project_id, c.status_revision, c.reviewed,
-        c.paused_kind, c.paused_until
+        c.paused_kind, c.paused_until, c.worktree_source, c.branch
      FROM conversations c JOIN computers m ON m.id = c.computer_id
      LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id";
 
@@ -147,6 +148,8 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
         computer: computer_at(row, 12)?,
         project_id: row.get(21)?,
         paused: pause_from_sql(row.get(24)?, row.get(25)?),
+        worktree_source: row.get(26)?,
+        branch: row.get(27)?,
     };
     Ok((conversation, row.get(20)?))
 }
@@ -261,14 +264,19 @@ pub(crate) fn is_constraint_violation(e: &rusqlite::Error) -> bool {
 /// close, status update or todo delete.
 ///
 /// `mcp_servers` (already validated) is stored only when this call creates the row.
+///
+/// `worktrees`: the client can create worktrees. A conversation this call creates in a git
+/// project (one with a `repo_url`) whose `worktrees` setting is on then gets its own worktree:
+/// see `plan_worktree`.
 pub(crate) fn open_conversation_db(
     conn: &Connection,
     todo_id: &str,
     tool: &str,
     mcp_servers: Option<&[String]>,
+    worktrees: bool,
 ) -> Result<Conversation, OpenError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let conversation = open_conversation_in(&tx, todo_id, tool, mcp_servers)?;
+    let conversation = open_conversation_in(&tx, todo_id, tool, mcp_servers, worktrees)?;
     tx.commit()?;
     Ok(conversation)
 }
@@ -278,6 +286,7 @@ fn open_conversation_in(
     todo_id: &str,
     tool: &str,
     mcp_servers: Option<&[String]>,
+    worktrees: bool,
 ) -> Result<Conversation, OpenError> {
     let tool = tool.trim();
     if !SUPPORTED_TOOLS.contains(&tool) {
@@ -306,19 +315,63 @@ fn open_conversation_in(
     let Some(computer_id) = computer_id else {
         return Err(OpenError::NoComputer(section));
     };
-    let cwd: String = conn
+    let (project_id, cwd, own_worktree, title): (String, String, bool, String) = conn
         .query_row(
-            "SELECT p.folder FROM todos t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
+            "SELECT p.id, p.folder, p.worktrees = 1 AND COALESCE(TRIM(p.repo_url), '') <> '', t.title
+             FROM todos t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
             params![todo_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?
         .ok_or(OpenError::NoProject)?;
     let session_id = (tool == "claude").then(|| Uuid::new_v4().to_string());
-    if insert_conversation(conn, todo_id, &computer_id, &cwd, tool, session_id.as_deref(), false, None, mcp_servers)?.is_none() {
+    let Some(id) = insert_conversation(conn, todo_id, &computer_id, &cwd, tool, session_id.as_deref(), false, None, mcp_servers)?
+    else {
         return Err(OpenError::NoTmuxName);
+    };
+    if worktrees && own_worktree {
+        plan_worktree(conn, &id, &project_id, &cwd, &title)?;
     }
     load_conversation(conn, todo_id)?.ok_or(OpenError::TodoNotFound)
+}
+
+/// Where a conversation's own worktree lives on its computer.
+pub(crate) fn worktree_path(project_id: &str, conversation_id: &str) -> String {
+    format!("~/.ai-remote/worktrees/{project_id}/{conversation_id}")
+}
+
+/// The branch of a conversation's worktree: `ai/<title slug>-<first 8 of its id>`. It stays
+/// the same for the conversation's life, so a PR opened from it stays linked.
+pub(crate) fn worktree_branch(title: &str, conversation_id: &str) -> String {
+    let mut words = String::new();
+    for c in title.chars().map(|c| c.to_ascii_lowercase()) {
+        if c.is_ascii_alphanumeric() {
+            words.push(c);
+        } else if !words.is_empty() && !words.ends_with('-') {
+            words.push('-');
+        }
+        if words.len() >= 40 {
+            break;
+        }
+    }
+    let words = words.trim_end_matches('-');
+    let short: String = slug(conversation_id).chars().take(8).collect();
+    if words.is_empty() {
+        format!("ai/{short}")
+    } else {
+        format!("ai/{words}-{short}")
+    }
+}
+
+/// Moves a new conversation into its own worktree of `folder`: `cwd` becomes the worktree's
+/// path and `folder` is kept as its source. The computer creates it when the conversation
+/// first opens (`ai-todo-open --worktree`).
+fn plan_worktree(conn: &Connection, id: &str, project_id: &str, folder: &str, title: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE conversations SET cwd = ?2, worktree_source = ?3, branch = ?4 WHERE id = ?1",
+        params![id, worktree_path(project_id, id), folder, worktree_branch(title, id)],
+    )?;
+    Ok(())
 }
 
 pub(crate) fn duplicate_conversation_db(
@@ -365,6 +418,13 @@ fn duplicate_in(conn: &Connection, todo_id: &str, source_id: &str, tool: &str, l
     else {
         return Err(OpenError::NoTmuxName);
     };
+    // A duplicate works in the same folder, so it shares the source's worktree.
+    if source.worktree_source.is_some() {
+        conn.execute(
+            "UPDATE conversations SET worktree_source = ?2, branch = ?3 WHERE id = ?1",
+            params![id, source.worktree_source, source.branch],
+        )?;
+    }
     load_conversation_by_id(conn, &id)?.ok_or(OpenError::TodoNotFound)
 }
 
@@ -1066,7 +1126,7 @@ pub async fn open_conversation(
         Ok(names) => names,
         Err(msg) => return bad_request(&msg),
     };
-    match open_conversation_db(&conn, &path.into_inner(), &body.tool, mcp_servers.as_deref()) {
+    match open_conversation_db(&conn, &path.into_inner(), &body.tool, mcp_servers.as_deref(), body.worktrees) {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)
@@ -1531,6 +1591,8 @@ mod tests {
             label: None,
             mcp_servers: None,
             paused: None,
+            worktree_source: None,
+            branch: None,
         }
     }
 
@@ -1658,6 +1720,39 @@ mod tests {
     }
 
     use crate::test_support::{post as post_json, put as put_json};
+
+    #[actix_web::test]
+    async fn duplicate_shares_the_worktree() {
+        let (_db, pool) = crate::test_support::pool("dup-wt");
+        {
+            let conn = pool.get().unwrap();
+            crate::test_support::seed_computers(&conn);
+            conn.execute(
+                "INSERT INTO projects (id, name, section, folder, repo_url) VALUES ('p1', 'app', 'P', '~/app', 'git@x:a.git')",
+                [],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'P', 'Do it', 'p1')", []).unwrap();
+        }
+        let (status, source) = crate::test_support::post(
+            &pool,
+            "/api/todos/t1/conversation",
+            serde_json::json!({"tool": "claude", "worktrees": true}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{source}");
+        assert_eq!(source["worktree_source"], "~/app");
+        let (status, created) = crate::test_support::post(
+            &pool,
+            "/api/todos/t1/conversations",
+            serde_json::json!({"source_id": source["id"], "tool": "codex", "label": "second"}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{created}");
+        assert_eq!(created["cwd"], source["cwd"]);
+        assert_eq!(created["worktree_source"], "~/app");
+        assert_eq!(created["branch"], source["branch"]);
+    }
 
     #[actix_web::test]
     async fn open_stores_mcp_only_when_creating() {
@@ -1859,7 +1954,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
 
-        let first = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let first = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         assert_eq!(first.tmux_name, "ai/claude/todo-0f3a9c21");
         assert_eq!(first.cwd, "~/programming");
         assert_eq!(first.computer.id, "m1");
@@ -1869,9 +1964,50 @@ mod tests {
 
         // Changing the section mapping does not move an existing conversation.
         conn.execute("UPDATE projects SET folder = '/elsewhere' WHERE id = 'p1'", []).unwrap();
-        let again = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let again = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         assert_eq!(again.claude_session_id, first.claude_session_id);
         assert_eq!(again.cwd, "~/programming");
+    }
+
+    #[test]
+    fn git_project_conversation_gets_its_own_worktree_when_the_app_can_make_one() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET repo_url = 'git@example.com:me/p.git' WHERE id = 'p1'", []).unwrap();
+
+        // An app that can't make worktrees gets the project folder, as before.
+        let old_app = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
+        assert_eq!((old_app.cwd.as_str(), old_app.worktree_source.as_deref()), ("~/programming", None));
+        conn.execute("DELETE FROM conversations", []).unwrap();
+
+        let conv = open_conversation_db(&conn, TODO, "claude", None, true).unwrap();
+        assert_eq!(conv.cwd, format!("~/.ai-remote/worktrees/p1/{}", conv.id));
+        assert_eq!(conv.worktree_source.as_deref(), Some("~/programming"));
+        assert_eq!(conv.branch, Some(format!("ai/with-mapping-{}", &conv.id[..8])));
+        assert_eq!(conv.project_id.as_deref(), Some("p1"));
+        // Reopening keeps it.
+        let again = open_conversation_db(&conn, TODO, "claude", None, true).unwrap();
+        assert_eq!((again.id, again.cwd), (conv.id.clone(), conv.cwd.clone()));
+
+        // A project switched off, or not a git repo (no repo URL), shares its folder.
+        for setup in ["UPDATE projects SET worktrees = 0", "UPDATE projects SET worktrees = 1, repo_url = '  '"] {
+            conn.execute("DELETE FROM conversations", []).unwrap();
+            conn.execute(setup, []).unwrap();
+            let conv = open_conversation_db(&conn, TODO, "claude", None, true).unwrap();
+            assert_eq!((conv.cwd.as_str(), conv.worktree_source), ("~/programming", None), "{setup}");
+        }
+    }
+
+    #[test]
+    fn worktree_branch_is_a_short_slug_of_the_title() {
+        let id = "0F3A9C21-aaaa-4bbb-8ccc-123456789abc";
+        assert_eq!(worktree_branch("Fix: the login (again)!", id), "ai/fix-the-login-again-0f3a9c21");
+        assert_eq!(worktree_branch("Ünïcode ✓", id), "ai/n-code-0f3a9c21");
+        assert_eq!(worktree_branch("  ", id), "ai/0f3a9c21");
+        let long = worktree_branch(&"word ".repeat(30), id);
+        assert!(long.len() <= "ai/".len() + 41 + 9 && long.ends_with("-0f3a9c21"), "{long}");
+        assert!(!long.contains("--"), "{long}");
     }
 
     #[test]
@@ -1879,8 +2015,8 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        assert!(matches!(open_conversation_db(&conn, "missing", "claude", None), Err(OpenError::TodoNotFound)));
-        assert!(matches!(open_conversation_db(&conn, "t-p", "claude", None), Err(OpenError::NoComputer(s)) if s == "P"));
+        assert!(matches!(open_conversation_db(&conn, "missing", "claude", None, false), Err(OpenError::TodoNotFound)));
+        assert!(matches!(open_conversation_db(&conn, "t-p", "claude", None, false), Err(OpenError::NoComputer(s)) if s == "P"));
     }
 
     #[test]
@@ -1893,8 +2029,8 @@ mod tests {
             [],
         )
         .unwrap();
-        open_conversation_db(&conn, TODO, "claude", None).unwrap();
-        let second = open_conversation_db(&conn, "0f3a9c21-ffff-4bbb-8ccc-000000000000", "claude", None).unwrap();
+        open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
+        let second = open_conversation_db(&conn, "0f3a9c21-ffff-4bbb-8ccc-000000000000", "claude", None, false).unwrap();
         assert_eq!(second.tmux_name, "ai/claude/todo-0f3a9c21-ffff-4bbb-8ccc-000000000000");
     }
 
@@ -1905,7 +2041,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         let writer = pool.get().unwrap();
         writer.execute_batch("BEGIN IMMEDIATE; UPDATE todos SET title = 'renamed' WHERE id = 'nope';").unwrap();
         let handle = std::thread::spawn(move || {
@@ -1923,7 +2059,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         let read = |conn: &Connection| load_conversation_by_id(conn, &conv.id).unwrap().unwrap().paused;
         let pause = LimitPause { kind: "session".into(), resets_at: Some("2026-11-06T22:40:00Z".into()) };
         let status = |status, paused: Option<LimitPause>, turn: Option<i64>| ConversationStatusRequest {
@@ -1970,7 +2106,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         let busy = ConversationStatusRequest { status: ConversationStatus::Busy, ..Default::default() };
         let waiting = ConversationStatusRequest { status: ConversationStatus::Waiting, ..Default::default() };
         let first = set_status_db(&conn, "claude", &conv.session_id, &busy).unwrap().unwrap();
@@ -1986,7 +2122,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "codex", None).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "codex", None, false).unwrap();
         set_session_on(&conn, &conv.id, "ordered-codex").unwrap();
         let event = |status, timestamp| ConversationStatusRequest {
             status, event_timestamp_ns: timestamp, ..Default::default()
@@ -2011,7 +2147,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         set_session_on(&conn, &conv.id, "ordered-claude").unwrap();
         let event = |status, timestamp| ConversationStatusRequest {
             status, event_timestamp_ns: timestamp, ..Default::default()
@@ -2037,7 +2173,7 @@ mod tests {
             let (_db, pool) = pool();
             let conn = pool.get().unwrap();
             seed(&conn);
-            let conv = open_conversation_db(&conn, TODO, tool, None).unwrap();
+            let conv = open_conversation_db(&conn, TODO, tool, None, false).unwrap();
             set_session_on(&conn, &conv.id, "offline-turn").unwrap();
             let event = |at, turn| ConversationStatusRequest {
                 status: ConversationStatus::Idle, event_timestamp_ns: Some(at), turn_started_ns: Some(turn), ..Default::default()
@@ -2065,7 +2201,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         let idle = ConversationStatusRequest { status: ConversationStatus::Idle, ..Default::default() };
         let busy = ConversationStatusRequest { status: ConversationStatus::Busy, ..Default::default() };
         set_status_db(&conn, "claude", &conv.session_id, &idle).unwrap();
@@ -2092,7 +2228,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
 
         let req = ConversationStatusRequest {
             status: ConversationStatus::Waiting,
@@ -2111,7 +2247,7 @@ mod tests {
         assert_eq!(set_status_db(&conn, "claude", &conv.session_id, &late).unwrap(), None);
         assert_eq!(load_conversation(&conn, TODO).unwrap().unwrap().status, ConversationStatus::Closed);
 
-        let reopened = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let reopened = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         assert_eq!(reopened.status, ConversationStatus::Unknown);
         assert_eq!(reopened.claude_session_id, conv.claude_session_id);
     }
@@ -2121,7 +2257,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
 
         let err = conn.execute("DELETE FROM computers WHERE id = 'm1'", []).unwrap_err();
         assert!(is_constraint_violation(&err));
@@ -2161,7 +2297,7 @@ mod tests {
         // Linking the same conversation again is a no-op; opening keeps it.
         let again = link_conversation_db(&conn, TODO, &target("codex", "019f8b4e-ff53"), false).unwrap();
         assert_eq!(again.session_id, conv.session_id);
-        assert_eq!(open_conversation_db(&conn, TODO, "claude", None).unwrap().tool, "codex");
+        assert_eq!(open_conversation_db(&conn, TODO, "claude", None, false).unwrap().tool, "codex");
     }
 
     #[test]
@@ -2169,7 +2305,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let started = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let started = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         assert!(matches!(
             link_conversation_db(&conn, TODO, &target("claude", "other-id"), false),
             Err(LinkError::TodoHasConversation)
@@ -2326,7 +2462,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "codex", None).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "codex", None, false).unwrap();
         assert_eq!(conv.tool, "codex");
         assert!(conv.session_id.is_empty());
         assert_eq!(conv.cwd, "~/programming");
@@ -2342,7 +2478,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        let conv = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let conv = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         assert!(Uuid::parse_str(&conv.session_id).is_ok());
     }
 
@@ -2351,10 +2487,10 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        open_conversation_db(&conn, TODO, "codex", None).unwrap();
+        open_conversation_db(&conn, TODO, "codex", None, false).unwrap();
         let set = set_conversation_session_db(&conn, TODO, "019f8b4e").unwrap();
         assert_eq!(set.session_id, "019f8b4e");
-        let again = open_conversation_db(&conn, TODO, "claude", None).unwrap();
+        let again = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         assert_eq!(again.session_id, "019f8b4e");
         assert_eq!(again.tool, "codex");
         let rows: i64 = conn.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0)).unwrap();
@@ -2366,8 +2502,8 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        assert!(matches!(open_conversation_db(&conn, TODO, "vim", None), Err(OpenError::UnsupportedTool)));
-        assert!(matches!(open_conversation_db(&conn, TODO, "", None), Err(OpenError::UnsupportedTool)));
+        assert!(matches!(open_conversation_db(&conn, TODO, "vim", None, false), Err(OpenError::UnsupportedTool)));
+        assert!(matches!(open_conversation_db(&conn, TODO, "", None, false), Err(OpenError::UnsupportedTool)));
     }
 
     #[test]

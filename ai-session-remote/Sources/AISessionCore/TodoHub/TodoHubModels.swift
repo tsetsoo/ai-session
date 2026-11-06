@@ -159,6 +159,17 @@ public struct Conversation: Codable, Equatable, Sendable {
     /// The last turn stopped on a usage limit (the status is then `idle`). `nil` otherwise,
     /// and from hubs that predate pauses.
     public var paused: LimitPause?
+    /// The project folder this conversation's own git worktree is made from; `cwd` is then the
+    /// worktree, which `ai-todo-open --worktree` makes on the first open. `nil`: `cwd` is used as is.
+    public var worktreeSource: String?
+    /// The worktree's branch, with `worktreeSource`.
+    public var branch: String?
+
+    /// What `ai-todo-open --worktree` needs, when the conversation has its own worktree.
+    public var worktree: (folder: String, branch: String)? {
+        guard let worktreeSource, !worktreeSource.isEmpty, let branch, !branch.isEmpty else { return nil }
+        return (worktreeSource, branch)
+    }
 
     /// Row identity. A conversation from a hub that omits `id` is still the only one on its todo.
     public var listKey: String { id.isEmpty ? todoId : id }
@@ -184,7 +195,9 @@ public struct Conversation: Codable, Equatable, Sendable {
         mcpServers: [String]? = nil,
         statusRevision: Int = 0,
         reviewed: Bool = false,
-        paused: LimitPause? = nil
+        paused: LimitPause? = nil,
+        worktreeSource: String? = nil,
+        branch: String? = nil
     ) {
         self.id = id
         self.todoId = todoId
@@ -203,13 +216,15 @@ public struct Conversation: Codable, Equatable, Sendable {
         self.statusRevision = statusRevision
         self.reviewed = reviewed
         self.paused = paused
+        self.worktreeSource = worktreeSource
+        self.branch = branch
     }
 
     // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
     private enum CodingKeys: String, CodingKey {
         case id, todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
         case status, statusMessage, statusUpdatedAt, createdAt, projectId, label, mcpServers
-        case statusRevision, reviewed, paused
+        case statusRevision, reviewed, paused, worktreeSource, branch
     }
 
     public init(from decoder: Decoder) throws {
@@ -238,6 +253,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         mcpServers = try c.decodeIfPresent([String].self, forKey: .mcpServers)
         // A pause this app can't read is shown as finished, never as a failed list.
         paused = (try? c.decodeIfPresent(LimitPause.self, forKey: .paused)) ?? nil
+        worktreeSource = try c.decodeIfPresent(String.self, forKey: .worktreeSource)
+        branch = try c.decodeIfPresent(String.self, forKey: .branch)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -259,6 +276,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         try c.encodeIfPresent(label, forKey: .label)
         try c.encodeIfPresent(mcpServers, forKey: .mcpServers)
         try c.encodeIfPresent(paused, forKey: .paused)
+        try c.encodeIfPresent(worktreeSource, forKey: .worktreeSource)
+        try c.encodeIfPresent(branch, forKey: .branch)
     }
 }
 
@@ -471,6 +490,9 @@ public struct OpenConversationRequest: Encodable, Sendable {
     public var tool: String
     /// Omitted when `nil` (not managed).
     public var mcpServers: [String]?
+    /// This app passes `--worktree` to `ai-todo-open`, so the hub may give a new conversation
+    /// its own worktree.
+    public var worktrees = true
 
     public init(tool: String, mcpServers: [String]? = nil) {
         self.tool = tool

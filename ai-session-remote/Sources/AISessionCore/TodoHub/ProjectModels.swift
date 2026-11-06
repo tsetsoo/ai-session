@@ -113,13 +113,22 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
     public var dailyUpdates: Bool
     /// How that summary should read; empty: a plain bullet list.
     public var updateStyle: String
+    /// New conversations open in their own git worktree. Applies only to a git project (one with
+    /// a repo URL); others always share the folder.
+    public var worktrees: Bool
+
+    /// Whether new conversations here get their own worktree.
+    public var opensWorktrees: Bool {
+        worktrees && !(repoUrl ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+    }
 
     public init(
         id: String, name: String, computer: Computer, folder: String, section: TodoSection = .si,
         repoUrl: String? = nil,
         digestEnabled: Bool = true, createdAt: String = "", updatedAt: String = "",
         openTodos: Int = 0, sessions: Int = 0, memories: Int = 0, lastActivity: String? = nil,
-        mcpDefault: [String]? = nil, dailyUpdates: Bool = false, updateStyle: String = ""
+        mcpDefault: [String]? = nil, dailyUpdates: Bool = false, updateStyle: String = "",
+        worktrees: Bool = true
     ) {
         self.id = id
         self.name = name
@@ -137,11 +146,12 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
         self.mcpDefault = mcpDefault
         self.dailyUpdates = dailyUpdates
         self.updateStyle = updateStyle
+        self.worktrees = worktrees
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, section, computer, folder, repoUrl, digestEnabled, createdAt, updatedAt
-        case openTodos, sessions, memories, lastActivity, mcpDefault, dailyUpdates, updateStyle
+        case openTodos, sessions, memories, lastActivity, mcpDefault, dailyUpdates, updateStyle, worktrees
     }
 
     public init(from decoder: Decoder) throws {
@@ -162,6 +172,7 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
         mcpDefault = try c.decodeIfPresent([String].self, forKey: .mcpDefault)
         dailyUpdates = try c.decodeIfPresent(Bool.self, forKey: .dailyUpdates) ?? false
         updateStyle = try c.decodeIfPresent(String.self, forKey: .updateStyle) ?? ""
+        worktrees = try c.decodeIfPresent(Bool.self, forKey: .worktrees) ?? true
     }
 
     public var lastActivityDate: Date? { HubDates.date(from: lastActivity) }
@@ -242,9 +253,11 @@ public struct UpdateProjectRequest: Encodable, Sendable {
     public var mcpDefault: MCPDefaultChange?
     public var dailyUpdates: Bool?
     public var updateStyle: String?
+    public var worktrees: Bool?
 
     public init(name: String? = nil, folder: String? = nil, repoUrl: NullableChange<String>? = nil, digestEnabled: Bool? = nil,
-                mcpDefault: MCPDefaultChange? = nil, dailyUpdates: Bool? = nil, updateStyle: String? = nil) {
+                mcpDefault: MCPDefaultChange? = nil, dailyUpdates: Bool? = nil, updateStyle: String? = nil,
+                worktrees: Bool? = nil) {
         self.name = name
         self.folder = folder
         self.repoUrl = repoUrl
@@ -252,10 +265,11 @@ public struct UpdateProjectRequest: Encodable, Sendable {
         self.mcpDefault = mcpDefault
         self.dailyUpdates = dailyUpdates
         self.updateStyle = updateStyle
+        self.worktrees = worktrees
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, folder, repoUrl, digestEnabled, mcpDefault, dailyUpdates, updateStyle
+        case name, folder, repoUrl, digestEnabled, mcpDefault, dailyUpdates, updateStyle, worktrees
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -267,6 +281,7 @@ public struct UpdateProjectRequest: Encodable, Sendable {
         try c.encodeMCPDefault(mcpDefault, forKey: .mcpDefault)
         try c.encodeIfPresent(dailyUpdates, forKey: .dailyUpdates)
         try c.encodeIfPresent(updateStyle, forKey: .updateStyle)
+        try c.encodeIfPresent(worktrees, forKey: .worktrees)
     }
 }
 

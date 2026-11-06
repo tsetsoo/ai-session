@@ -75,8 +75,8 @@ final class MCPServersTests: XCTestCase {
     }
 
     func testOpenAndSetServersBodies() throws {
-        XCTAssertEqual(try json(OpenConversationRequest(tool: "claude")), #"{"tool":"claude"}"#)
-        XCTAssertEqual(try json(OpenConversationRequest(tool: "claude", mcpServers: [])), #"{"mcp_servers":[],"tool":"claude"}"#)
+        XCTAssertEqual(try json(OpenConversationRequest(tool: "claude")), #"{"tool":"claude","worktrees":true}"#)
+        XCTAssertEqual(try json(OpenConversationRequest(tool: "claude", mcpServers: [])), #"{"mcp_servers":[],"tool":"claude","worktrees":true}"#)
         XCTAssertEqual(try json(SetConversationServersRequest(mcpServers: nil)), #"{"mcp_servers":null}"#)
         XCTAssertEqual(try json(SetConversationServersRequest(mcpServers: ["a"])), #"{"mcp_servers":["a"]}"#)
     }

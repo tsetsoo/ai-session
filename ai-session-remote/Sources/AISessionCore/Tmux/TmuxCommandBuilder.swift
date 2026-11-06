@@ -63,11 +63,16 @@ public enum TmuxCommandBuilder {
     ///
     /// `mcpServers` adds `--mcp <comma-joined names>` as the first argument (`--mcp ''` = managed,
     /// none), except for cursor, which has no MCP management. `nil` leaves the arguments as before.
+    ///
+    /// `worktree` (the conversation's own worktree) adds `--worktree <folder> <branch>`: the script
+    /// makes the worktree at `cwd` from `folder`'s repo when it is missing.
     public static func openTodoConversation(
-        tmuxName: String, cwd: String, sessionId: String, tool: String = "claude", mcpServers: [String]? = nil
+        tmuxName: String, cwd: String, sessionId: String, tool: String = "claude", mcpServers: [String]? = nil,
+        worktree: (folder: String, branch: String)? = nil
     ) -> String {
         var command = "exec \"$HOME/.ai-remote/bin/ai-todo-open\""
         if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
+        command += worktreeArguments(worktree)
         command += " \(shellQuote(tmuxName)) \(shellQuote(cwd)) \(shellQuote(sessionId))"
         if tool != "claude" { command += " \(shellQuote(tool))" }
         return wrap(command)
@@ -182,12 +187,20 @@ public enum TmuxCommandBuilder {
     /// `openTodoConversation` (none for cursor). This is the call that starts the tool, so it is
     /// where the selection takes effect. `nil` leaves the command as before.
     public static func freshTodoConversation(
-        tmuxName: String, cwd: String, tool: String, mcpServers: [String]? = nil
+        tmuxName: String, cwd: String, tool: String, mcpServers: [String]? = nil,
+        worktree: (folder: String, branch: String)? = nil
     ) -> String {
-        var command = "AI_TODO_OPEN_DETACH=1 exec \"$HOME/.ai-remote/bin/ai-todo-open\" "
-        if let mcpServers, tool != "cursor" { command += "--mcp \(shellQuote(mcpServers.joined(separator: ","))) " }
+        var command = "AI_TODO_OPEN_DETACH=1 exec \"$HOME/.ai-remote/bin/ai-todo-open\""
+        if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
+        command += worktreeArguments(worktree) + " "
         command += "\(shellQuote(tmuxName)) \(shellQuote(cwd)) - \(shellQuote(tool))"
         return wrap(command)
+    }
+
+    /// ` --worktree <folder> <branch>`, or nothing. A `~` folder is quoted; the script expands it.
+    private static func worktreeArguments(_ worktree: (folder: String, branch: String)?) -> String {
+        guard let worktree else { return "" }
+        return " --worktree \(shellQuote(worktree.folder)) \(shellQuote(worktree.branch))"
     }
 
     /// Exit status when the host-side scripts aren't installed (`command not found`).
