@@ -402,7 +402,7 @@ fn session_endpoints() -> Vec<Value> {
         json!({
             "method": "POST",
             "path": "/api/sessions/stats",
-            "description": "Bulk upsert of conversation stats from a computer (ai-todo-memory / ai-todo-sessions stats --json). Stats are a full recompute per transcript, so the upsert is idempotent; days replaces all of that conversation's day rows. A conversation without a project override is matched to the project whose folder is the longest prefix of its cwd. 200 {upserted, sessions: [{tool, session_id, project_id}]}. 404 for an unknown computer_id, 400 for an unknown tool, empty session_id/cwd or a bad day",
+            "description": "Bulk upsert of conversation stats from a computer (ai-todo-memory / ai-todo-sessions stats --json). Stats are a full recompute per transcript, so the upsert is idempotent; days replaces all of that conversation's day rows. A conversation without a project override is matched to the project whose folder is the longest prefix of its cwd. Optional per conversation: by_model ({model: {input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens}}, the conversation's own), workers ([{id, kind: agent|internal, type, title, depth, stats, days, by_model}], its sub-agents) and copied_entries_skipped; each that is sent replaces what is stored, each that is left out keeps it. 200 {upserted, sessions: [{tool, session_id, project_id}]}. 404 for an unknown computer_id, 400 for an unknown tool, empty session_id/cwd or a bad day",
             "example_request": {"computer_id": "<uuid>", "sessions": [{"tool": "claude", "session_id": "<id>", "cwd": "~/programming/todo-app", "title": "Add projects", "repo_root": "~/programming/todo-app", "repo_url": "git@github.com:tsetsoo/todo-app.git",
                 "stats": {"prompts": 12, "assistant_turns": 12, "input_tokens": 4021, "output_tokens": 51234, "cache_read_tokens": 9_123_456, "cache_creation_tokens": 402_311, "active_seconds": 5400, "first_activity": "2026-10-16T07:01:12Z", "last_activity": "2026-10-16T09:12:03Z", "files_touched": ["crates/todo-server/src/db.rs"], "models": ["claude-opus-5-5"]},
                 "days": [{"day": "2026-10-16", "prompts": 12, "assistant_turns": 12, "input_tokens": 4021, "output_tokens": 51234, "cache_read_tokens": 9_123_456, "cache_creation_tokens": 402_311, "active_seconds": 5400, "files_touched": 1}]}]}
@@ -427,7 +427,7 @@ fn session_endpoints() -> Vec<Value> {
         json!({
             "method": "GET",
             "path": "/api/stats/weekly",
-            "description": "Usage of one week (Monday to Sunday), summed from the per-day rows: totals and by_project, by_section, by_computer. sessions counts distinct conversations with activity that week. Token sums are null when every value is null. A conversation's section is its todo's section, else the only section mapped to its computer, else null. 400 when week_start is not a Monday",
+            "description": "Usage of one week (Monday to Sunday), summed from the per-day rows: totals and by_project, by_section, by_computer. sessions counts distinct conversations with activity that week. totals and every rollup are the conversations' own usage; workers (top level and on each rollup) is their sub-agents' usage on the week's days, with sessions counting workers. Token sums are null when every value is null. A conversation's section is its todo's section, else the only section mapped to its computer, else null. 400 when week_start is not a Monday",
             "parameters": [
                 {"name": "week_start", "in": "query", "required": false, "type": "string (YYYY-MM-DD, a Monday)", "description": "Default: the Monday of the server's local today"},
                 {"name": "project_id", "in": "query", "required": false, "type": "string", "description": "Restrict every grouping to this project's conversations"}
@@ -437,6 +437,22 @@ fn session_endpoints() -> Vec<Value> {
                 "by_project": [{"project_id": "<uuid>", "name": "todo-app", "sessions": 5}, {"project_id": null, "name": null, "sessions": 18}],
                 "by_section": [{"section": "Sp", "sessions": 4}, {"section": null, "sessions": 19}],
                 "by_computer": [{"computer_id": "<uuid>", "name": "spreads-macbook-pro", "sessions": 4}]}
+        }),
+        json!({
+            "method": "GET",
+            "path": "/api/todos/{id}/usage",
+            "description": "Usage of a todo's conversations: own (the conversations themselves) and workers (their sub-agents), by_model and worker_types heaviest first (output + cache-creation tokens), first_activity/last_activity/elapsed_seconds (workers included; own.active_seconds is the busy time), stats_updated_at (the oldest upload among them), unread_conversations and conversations [{conversation_id, tool, session_id, computer_id, label, title, reading: uploaded|cursor|no_session|not_uploaded, own, workers, …}]. Counts, never prices. 404 for an unknown todo",
+            "example_response": {"todo_id": "<uuid>", "own": {"sessions": 1, "output_tokens": 51234, "cache_creation_tokens": 402_311, "active_seconds": 5400}, "workers": {"sessions": 3, "output_tokens": 20_100},
+                "by_model": [{"model": "claude-opus-5-5", "output_tokens": 51234}], "worker_types": [{"kind": "agent", "type": "Explore", "sessions": 3}],
+                "elapsed_seconds": 9000, "unread_conversations": 0, "conversations": []}
+        }),
+        json!({
+            "method": "GET",
+            "path": "/api/jobs/{id}/usage",
+            "description": "A job's usage: the same summary as a todo's, over every run's todo, plus runs: the newest runs one by one [{run_id, due_at, state, todo_id, …summary}]. 404 for an unknown job",
+            "parameters": [
+                {"name": "runs", "in": "query", "required": false, "type": "integer", "description": "How many of the newest runs to list; default 20, at most 200"}
+            ]
         }),
     ]
 }
@@ -650,6 +666,8 @@ mod tests {
             ("GET", "/api/sessions"),
             ("PUT", "/api/sessions/{tool}/{session_id}/project"),
             ("GET", "/api/stats/weekly"),
+            ("GET", "/api/todos/{id}/usage"),
+            ("GET", "/api/jobs/{id}/usage"),
             ("GET", "/api/memories"),
             ("POST", "/api/memories"),
             ("POST", "/api/memories/bulk"),

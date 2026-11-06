@@ -24,6 +24,7 @@ mod scheduler;
 mod sessions;
 mod today;
 mod updates;
+mod usage;
 mod watch;
 mod weekly;
 #[cfg(test)]
@@ -186,6 +187,8 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/sessions/stats", web::post().to(sessions::upload_stats))
         .route("/api/sessions/{tool}/{session_id}/project", web::put().to(sessions::set_session_project))
         .route("/api/stats/weekly", web::get().to(sessions::weekly_stats))
+        .route("/api/todos/{id}/usage", web::get().to(usage::todo_usage))
+        .route("/api/jobs/{id}/usage", web::get().to(usage::job_usage))
         // Usage limits shared per tool account
         .route("/api/limits/{key}/claim", web::post().to(limits::claim_limits))
         .route("/api/limits/{key}", web::put().to(limits::report_limits));

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// For PATCH fields that can be cleared: absent → `None` (unchanged), `null` → `Some(None)`
@@ -699,6 +701,57 @@ pub struct SessionUpload {
     /// Replaces all of the session's day rows
     #[serde(default)]
     pub days: Vec<SessionDay>,
+    /// The conversation's own tokens per model. Absent (an older collector): the stored
+    /// rows are kept; present: they are replaced.
+    #[serde(default)]
+    pub by_model: Option<BTreeMap<String, ModelTokens>>,
+    /// Sub-agents and internal threads. Absent: the stored workers are kept; present
+    /// (even empty): they are replaced.
+    #[serde(default)]
+    pub workers: Option<Vec<WorkerUpload>>,
+    /// Entries copied from another transcript (resume, fork) that were not counted
+    #[serde(default)]
+    pub copied_entries_skipped: Option<i64>,
+}
+
+/// Token fields of one model. A field the tool doesn't report is null.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelTokens {
+    #[serde(default)]
+    pub input_tokens: Option<i64>,
+    #[serde(default)]
+    pub output_tokens: Option<i64>,
+    #[serde(default)]
+    pub cache_read_tokens: Option<i64>,
+    #[serde(default)]
+    pub cache_creation_tokens: Option<i64>,
+}
+
+/// One sub-agent (Claude `subagents/agent-*.jsonl`, a Codex child thread) of an uploaded
+/// conversation; nested workers are already flattened under the top conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerUpload {
+    pub id: String,
+    /// `agent` (a sub-agent the conversation started) or `internal` (e.g. Codex guardian)
+    #[serde(default = "default_worker_kind")]
+    pub kind: String,
+    /// Agent type, e.g. `Explore`, `general-purpose`
+    #[serde(default, rename = "type")]
+    pub worker_type: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub depth: Option<i64>,
+    #[serde(default)]
+    pub stats: SessionStats,
+    #[serde(default)]
+    pub days: Vec<SessionDay>,
+    #[serde(default)]
+    pub by_model: BTreeMap<String, ModelTokens>,
+}
+
+fn default_worker_kind() -> String {
+    "agent".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -807,6 +860,8 @@ pub struct ProjectRollup {
     pub name: Option<String>,
     #[serde(flatten)]
     pub counters: StatsCounters,
+    #[serde(default)]
+    pub workers: StatsCounters,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -814,6 +869,8 @@ pub struct SectionRollup {
     pub section: Option<Section>,
     #[serde(flatten)]
     pub counters: StatsCounters,
+    #[serde(default)]
+    pub workers: StatsCounters,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -822,6 +879,8 @@ pub struct ComputerRollup {
     pub name: String,
     #[serde(flatten)]
     pub counters: StatsCounters,
+    #[serde(default)]
+    pub workers: StatsCounters,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -830,10 +889,132 @@ pub struct WeeklyStats {
     pub week_start: String,
     /// Sunday, YYYY-MM-DD
     pub week_end: String,
+    /// The conversations' own usage
     pub totals: StatsCounters,
+    /// Their sub-agents' usage on the week's days (`sessions` counts workers); add it to
+    /// `totals` for everything the week cost. Rollups carry the same split.
+    #[serde(default)]
+    pub workers: StatsCounters,
     pub by_project: Vec<ProjectRollup>,
     pub by_section: Vec<SectionRollup>,
     pub by_computer: Vec<ComputerRollup>,
+}
+
+// ---------------------------------------------------------------------------
+// Usage of a todo or job: its conversations' own usage and their workers'
+// ---------------------------------------------------------------------------
+
+/// Tokens of one model over a todo's or job's conversations (own + workers).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelUsage {
+    pub model: String,
+    #[serde(flatten)]
+    pub tokens: ModelTokens,
+}
+
+/// Workers of one kind and type, e.g. 7 `agent`/`Explore`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkerTypeUsage {
+    pub kind: String,
+    #[serde(rename = "type")]
+    pub worker_type: Option<String>,
+    #[serde(flatten)]
+    pub counters: StatsCounters,
+}
+
+/// Why a conversation has numbers or not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageReading {
+    /// Its computer uploaded stats for it
+    Uploaded,
+    /// Cursor keeps no token counts
+    Cursor,
+    /// The tool hasn't reported a session id yet
+    NoSession,
+    /// Known session, but no stats upload yet
+    NotUploaded,
+}
+
+/// One conversation of a todo, with its own and its workers' usage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationUsage {
+    pub conversation_id: String,
+    pub todo_id: String,
+    pub tool: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub computer_id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub reading: UsageReading,
+    pub own: StatsCounters,
+    pub workers: StatsCounters,
+    #[serde(default)]
+    pub first_activity: Option<String>,
+    #[serde(default)]
+    pub last_activity: Option<String>,
+    #[serde(default)]
+    pub stats_updated_at: Option<String>,
+}
+
+/// Usage summed over a set of conversations.
+///
+/// `own` is the conversations' own usage, `workers` their sub-agents'. Add them for the
+/// total. `own.active_seconds` is time someone or the agent was busy in the conversation;
+/// `elapsed_seconds` spans first to last activity (workers included). Never a price:
+/// subscription quota isn't money per conversation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UsageSummary {
+    pub own: StatsCounters,
+    pub workers: StatsCounters,
+    /// Own + workers per model, the heaviest (output + cache-creation tokens) first
+    pub by_model: Vec<ModelUsage>,
+    /// The heaviest (output + cache-creation tokens) first
+    pub worker_types: Vec<WorkerTypeUsage>,
+    #[serde(default)]
+    pub first_activity: Option<String>,
+    #[serde(default)]
+    pub last_activity: Option<String>,
+    #[serde(default)]
+    pub elapsed_seconds: Option<i64>,
+    /// The oldest upload among the conversations with numbers: everything is at least this fresh
+    #[serde(default)]
+    pub stats_updated_at: Option<String>,
+    /// Conversations without numbers (Cursor, no session id yet, never uploaded)
+    pub unread_conversations: i64,
+    pub conversations: Vec<ConversationUsage>,
+}
+
+/// `GET /api/todos/{id}/usage`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoUsage {
+    pub todo_id: String,
+    #[serde(flatten)]
+    pub usage: UsageSummary,
+}
+
+/// One run of a job with its todo's usage. A run without a todo has empty usage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunUsage {
+    pub run_id: String,
+    pub due_at: String,
+    pub state: String,
+    #[serde(default)]
+    pub todo_id: Option<String>,
+    #[serde(flatten)]
+    pub usage: UsageSummary,
+}
+
+/// `GET /api/jobs/{id}/usage`: all runs summed, then the newest runs one by one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobUsage {
+    pub job_id: String,
+    #[serde(flatten)]
+    pub usage: UsageSummary,
+    pub runs: Vec<RunUsage>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1839,12 +2020,12 @@ mod tests {
 
     #[test]
     fn rollups_flatten_counters() {
-        let rollup = ProjectRollup { project_id: None, name: None, counters: StatsCounters::default() };
+        let rollup = ProjectRollup { project_id: None, name: None, counters: StatsCounters::default(), workers: StatsCounters::default() };
         let json = serde_json::to_value(rollup).unwrap();
         assert!(json["project_id"].is_null() && json["name"].is_null());
         assert_eq!(json["sessions"], 0);
         assert!(json["input_tokens"].is_null());
-        let section = SectionRollup { section: Some(Section::Sp), counters: StatsCounters::default() };
+        let section = SectionRollup { section: Some(Section::Sp), counters: StatsCounters::default(), workers: StatsCounters::default() };
         assert_eq!(serde_json::to_value(section).unwrap()["section"], "Sp");
     }
 

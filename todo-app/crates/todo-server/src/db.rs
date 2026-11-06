@@ -137,6 +137,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v23_objects(&conn).expect("Failed to add the usage-limit pause columns");
     create_v24_objects(&conn).expect("Failed to add worktree columns");
     conn.execute_batch(crate::health::V25_OBJECTS).expect("Failed to create the computer health table");
+    create_v26_objects(&conn).expect("Failed to create the worker and model usage tables");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -643,6 +644,15 @@ fn create_v22_objects(conn: &Connection) -> rusqlite::Result<()> {
 
 /// v24: a project's worktree setting (on by default) and a conversation's worktree source
 /// and branch. Only adds.
+/// v26: workers and per-model tokens of sessions (additive).
+fn create_v26_objects(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(crate::sessions::V26_OBJECTS)?;
+    if !column_exists(conn, "sessions", "copied_entries_skipped")? {
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN copied_entries_skipped INTEGER;")?;
+    }
+    Ok(())
+}
+
 fn create_v24_objects(conn: &Connection) -> rusqlite::Result<()> {
     for (table, column, ddl) in [
         ("projects", "worktrees", "INTEGER NOT NULL DEFAULT 1"),
@@ -851,9 +861,11 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///   `memories_fts` (the memories table is rebuilt for its new CHECKs)
 /// - v19..v22: daily updates, failed summaries, weekly recaps, the untallied-runs index (additive)
 /// - v25: `computer_health`, each computer's last doctor report (additive)
+/// - v26: `session_workers`, `session_worker_days`, `session_models`,
+///   `sessions.copied_entries_skipped` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 25;
+pub const SCHEMA_VERSION: i64 = 26;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -872,6 +884,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
             if table_sql(conn, "weekly_recaps")?.is_some() {
                 if column_exists(conn, "conversations", "worktree_source")? {
                     if table_sql(conn, "computer_health")?.is_some() {
+                        if table_sql(conn, "session_workers")?.is_some() {
+                            return Ok(26);
+                        }
                         return Ok(25);
                     }
                     return Ok(24);
@@ -2908,6 +2923,8 @@ mod tests {
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 26);
+        conn.execute_batch("DROP TABLE session_worker_days; DROP TABLE session_workers;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 25);
         conn.execute_batch("DROP TABLE computer_health;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 24);
@@ -2928,8 +2945,32 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 25);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(table_sql(&conn, "computer_health").unwrap().is_some());
+    }
+
+    #[test]
+    fn migrates_to_v26() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(
+            "DROP TABLE session_models; DROP TABLE session_worker_days; DROP TABLE session_workers;
+             ALTER TABLE sessions DROP COLUMN copied_entries_skipped; PRAGMA user_version = 25;",
+        )
+        .unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 26);
+        for table in ["session_workers", "session_worker_days", "session_models"] {
+            assert!(table_sql(&conn, table).unwrap().is_some(), "{table}");
+        }
+        assert!(column_exists(&conn, "sessions", "copied_entries_skipped").unwrap());
+        drop(conn);
+        drop(pool);
+        // A second start changes nothing.
+        assert_eq!(user_version(&db.pool().get().unwrap()), 26);
     }
 
     #[test]

@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
-    ComputerRollup, ConversationStatus, ProjectRollup, Section, SectionRollup, Session, SessionProjectRef,
-    SessionStatsResponse, SessionStatsUpload, SetSessionProjectRequest, StatsCounters, WeeklyStats,
+    ComputerRollup, ConversationStatus, ModelTokens, ProjectRollup, Section, SectionRollup, Session, SessionDay,
+    SessionProjectRef, SessionStatsResponse, SessionStatsUpload, SetSessionProjectRequest, StatsCounters, WeeklyStats,
+    WorkerUpload,
 };
 
 use crate::broadcast::Broadcaster;
@@ -24,6 +25,65 @@ const MAX_FILES_TOUCHED: usize = 200;
 const MAX_TITLE_CHARS: usize = 120;
 const DEFAULT_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 1000;
+const MAX_WORKERS: usize = 2000;
+const MAX_MODEL_CHARS: usize = 120;
+
+/// v26: a conversation's workers (sub-agents, internal threads) with their day rows, and
+/// tokens per model (`worker_id` '' = the conversation's own). Only adds, so it is safe on
+/// every start; `create_v26_objects` also adds `sessions.copied_entries_skipped`.
+pub(crate) const V26_OBJECTS: &str = "
+    CREATE TABLE IF NOT EXISTS session_workers (
+        tool                  TEXT NOT NULL,
+        session_id            TEXT NOT NULL,
+        worker_id             TEXT NOT NULL,
+        kind                  TEXT NOT NULL DEFAULT 'agent' CHECK(kind IN ('agent','internal')),
+        worker_type           TEXT,
+        title                 TEXT,
+        depth                 INTEGER NOT NULL DEFAULT 1,
+        prompts               INTEGER NOT NULL DEFAULT 0,
+        assistant_turns       INTEGER NOT NULL DEFAULT 0,
+        input_tokens          INTEGER,
+        output_tokens         INTEGER,
+        cache_read_tokens     INTEGER,
+        cache_creation_tokens INTEGER,
+        active_seconds        INTEGER NOT NULL DEFAULT 0,
+        first_activity        TEXT,
+        last_activity         TEXT,
+        files_touched         INTEGER NOT NULL DEFAULT 0,
+        models                TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (tool, session_id, worker_id),
+        FOREIGN KEY (tool, session_id) REFERENCES sessions(tool, session_id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS session_worker_days (
+        tool                  TEXT NOT NULL,
+        session_id            TEXT NOT NULL,
+        worker_id             TEXT NOT NULL,
+        day                   TEXT NOT NULL,
+        prompts               INTEGER NOT NULL DEFAULT 0,
+        assistant_turns       INTEGER NOT NULL DEFAULT 0,
+        input_tokens          INTEGER,
+        output_tokens         INTEGER,
+        cache_read_tokens     INTEGER,
+        cache_creation_tokens INTEGER,
+        active_seconds        INTEGER NOT NULL DEFAULT 0,
+        files_touched         INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (tool, session_id, worker_id, day),
+        FOREIGN KEY (tool, session_id, worker_id) REFERENCES session_workers(tool, session_id, worker_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS session_worker_days_day ON session_worker_days(day);
+    CREATE TABLE IF NOT EXISTS session_models (
+        tool                  TEXT NOT NULL,
+        session_id            TEXT NOT NULL,
+        worker_id             TEXT NOT NULL DEFAULT '',
+        model                 TEXT NOT NULL,
+        input_tokens          INTEGER,
+        output_tokens         INTEGER,
+        cache_read_tokens     INTEGER,
+        cache_creation_tokens INTEGER,
+        PRIMARY KEY (tool, session_id, worker_id, model),
+        FOREIGN KEY (tool, session_id) REFERENCES sessions(tool, session_id) ON DELETE CASCADE
+    );
+";
 
 /// Session columns (0..=21), then the linked todo's id and conversation status (22, 23).
 const SESSION_SELECT: &str = "SELECT s.tool, s.session_id, s.computer_id, s.cwd, s.title, s.repo_root, s.repo_url,
@@ -152,6 +212,20 @@ pub(crate) fn upload_stats_db(conn: &Connection, upload: &SessionStatsUpload) ->
         if let Some(d) = s.days.iter().find(|d| !valid_date(&d.day)) {
             return Err(SessionError::BadRequest(format!("Invalid day: {} (YYYY-MM-DD)", d.day)));
         }
+        for w in s.workers.iter().flatten() {
+            if w.id.trim().is_empty() {
+                return Err(SessionError::BadRequest("A worker's id is required".into()));
+            }
+            if !matches!(w.kind.as_str(), "agent" | "internal") {
+                return Err(SessionError::BadRequest(format!("Unknown worker kind: {} (agent or internal)", w.kind)));
+            }
+            if let Some(d) = w.days.iter().find(|d| !valid_date(&d.day)) {
+                return Err(SessionError::BadRequest(format!("Invalid day: {} (YYYY-MM-DD)", d.day)));
+            }
+        }
+        if s.workers.as_ref().is_some_and(|w| w.len() > MAX_WORKERS) {
+            return Err(SessionError::BadRequest(format!("At most {MAX_WORKERS} workers per conversation")));
+        }
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let computer_id = upload.computer_id.trim();
@@ -237,6 +311,22 @@ pub(crate) fn upload_stats_db(conn: &Connection, upload: &SessionStatsUpload) ->
                 ],
             )?;
         }
+        if let Some(skipped) = s.copied_entries_skipped {
+            tx.execute(
+                "UPDATE sessions SET copied_entries_skipped = ?3 WHERE tool = ?1 AND session_id = ?2",
+                params![tool, session_id, skipped],
+            )?;
+        }
+        if let Some(by_model) = &s.by_model {
+            tx.execute(
+                "DELETE FROM session_models WHERE tool = ?1 AND session_id = ?2 AND worker_id = ''",
+                params![tool, session_id],
+            )?;
+            insert_models(&tx, tool, session_id, "", by_model.iter())?;
+        }
+        if let Some(workers) = &s.workers {
+            replace_workers(&tx, tool, session_id, workers)?;
+        }
         let project_id: Option<String> = tx.query_row(
             "SELECT project_id FROM sessions WHERE tool = ?1 AND session_id = ?2",
             params![tool, session_id],
@@ -246,6 +336,107 @@ pub(crate) fn upload_stats_db(conn: &Connection, upload: &SessionStatsUpload) ->
     }
     tx.commit()?;
     Ok(result)
+}
+
+fn insert_models<'a>(
+    tx: &Transaction,
+    tool: &str,
+    session_id: &str,
+    worker_id: &str,
+    models: impl Iterator<Item = (&'a String, &'a ModelTokens)>,
+) -> rusqlite::Result<()> {
+    for (model, t) in models {
+        let model: String = model.trim().chars().take(MAX_MODEL_CHARS).collect();
+        if model.is_empty() {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO session_models (tool, session_id, worker_id, model, input_tokens, output_tokens,
+                                         cache_read_tokens, cache_creation_tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(tool, session_id, worker_id, model) DO UPDATE SET
+                input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
+                cache_read_tokens = excluded.cache_read_tokens, cache_creation_tokens = excluded.cache_creation_tokens",
+            params![tool, session_id, worker_id, model, t.input_tokens, t.output_tokens, t.cache_read_tokens, t.cache_creation_tokens],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_worker_day(tx: &Transaction, tool: &str, session_id: &str, worker_id: &str, d: &SessionDay) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO session_worker_days (tool, session_id, worker_id, day, prompts, assistant_turns, input_tokens,
+                                          output_tokens, cache_read_tokens, cache_creation_tokens, active_seconds, files_touched)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(tool, session_id, worker_id, day) DO UPDATE SET
+            prompts = excluded.prompts, assistant_turns = excluded.assistant_turns,
+            input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
+            cache_read_tokens = excluded.cache_read_tokens, cache_creation_tokens = excluded.cache_creation_tokens,
+            active_seconds = excluded.active_seconds, files_touched = excluded.files_touched",
+        params![
+            tool,
+            session_id,
+            worker_id,
+            d.day,
+            d.prompts,
+            d.assistant_turns,
+            d.input_tokens,
+            d.output_tokens,
+            d.cache_read_tokens,
+            d.cache_creation_tokens,
+            d.active_seconds,
+            d.files_touched
+        ],
+    )?;
+    Ok(())
+}
+
+/// Replace a conversation's workers, their day rows and their per-model tokens.
+fn replace_workers(tx: &Transaction, tool: &str, session_id: &str, workers: &[WorkerUpload]) -> rusqlite::Result<()> {
+    tx.execute("DELETE FROM session_workers WHERE tool = ?1 AND session_id = ?2", params![tool, session_id])?;
+    tx.execute(
+        "DELETE FROM session_models WHERE tool = ?1 AND session_id = ?2 AND worker_id != ''",
+        params![tool, session_id],
+    )?;
+    for w in workers {
+        let id = w.id.trim();
+        let st = &w.stats;
+        let title = w.title.as_deref().map(|t| t.trim().chars().take(MAX_TITLE_CHARS).collect::<String>());
+        let worker_type = w.worker_type.as_deref().map(str::trim).filter(|t| !t.is_empty());
+        tx.execute(
+            "INSERT INTO session_workers (tool, session_id, worker_id, kind, worker_type, title, depth, prompts,
+                                          assistant_turns, input_tokens, output_tokens, cache_read_tokens,
+                                          cache_creation_tokens, active_seconds, first_activity, last_activity,
+                                          files_touched, models)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+             ON CONFLICT(tool, session_id, worker_id) DO NOTHING",
+            params![
+                tool,
+                session_id,
+                id,
+                w.kind,
+                worker_type,
+                title,
+                w.depth.unwrap_or(1).max(1),
+                st.prompts,
+                st.assistant_turns,
+                st.input_tokens,
+                st.output_tokens,
+                st.cache_read_tokens,
+                st.cache_creation_tokens,
+                st.active_seconds,
+                st.first_activity,
+                st.last_activity,
+                i64::try_from(st.files_touched.len()).unwrap_or(i64::MAX),
+                serde_json::to_string(&st.models).unwrap_or_else(|_| "[]".into()),
+            ],
+        )?;
+        for d in &w.days {
+            insert_worker_day(tx, tool, session_id, id, d)?;
+        }
+        insert_models(tx, tool, session_id, id, w.by_model.iter())?;
+    }
+    Ok(())
 }
 
 /// Set (`project_id`), clear to none (`project_id: null`) or remove (`auto`) a session's
@@ -329,26 +520,39 @@ fn add_opt(total: &mut Option<i64>, value: Option<i64>) {
     }
 }
 
-impl SessionWeek {
-    fn add_to(&self, c: &mut StatsCounters) {
-        c.sessions += self.counters.sessions;
-        c.prompts += self.counters.prompts;
-        c.assistant_turns += self.counters.assistant_turns;
-        add_opt(&mut c.input_tokens, self.counters.input_tokens);
-        add_opt(&mut c.output_tokens, self.counters.output_tokens);
-        add_opt(&mut c.cache_read_tokens, self.counters.cache_read_tokens);
-        add_opt(&mut c.cache_creation_tokens, self.counters.cache_creation_tokens);
-        c.active_seconds += self.counters.active_seconds;
-        c.files_touched += self.counters.files_touched;
+impl StatsCountersExt for StatsCounters {
+    fn add(&mut self, other: &StatsCounters) {
+        self.sessions += other.sessions;
+        self.prompts += other.prompts;
+        self.assistant_turns += other.assistant_turns;
+        add_opt(&mut self.input_tokens, other.input_tokens);
+        add_opt(&mut self.output_tokens, other.output_tokens);
+        add_opt(&mut self.cache_read_tokens, other.cache_read_tokens);
+        add_opt(&mut self.cache_creation_tokens, other.cache_creation_tokens);
+        self.active_seconds += other.active_seconds;
+        self.files_touched += other.files_touched;
     }
 }
 
-/// One session's sums over the week's days, with what it is grouped by.
+/// Adding one set of counters to another (`todo_shared` has no behaviour of its own).
+pub(crate) trait StatsCountersExt {
+    fn add(&mut self, other: &StatsCounters);
+}
+
+/// One session's sums over the week's days, with what it is grouped by: either its own
+/// usage or its workers' (`counters.sessions` is then the number of workers).
 struct SessionWeek {
     project: Option<(String, String)>,
     computer: (String, String),
     section: Option<Section>,
+    workers: bool,
     counters: StatsCounters,
+}
+
+impl SessionWeek {
+    fn add_to(&self, own: &mut StatsCounters, workers: &mut StatsCounters) {
+        if self.workers { workers } else { own }.add(&self.counters);
+    }
 }
 
 /// The week's Monday and Sunday: `week_start` when it is a valid Monday, else a 400;
@@ -391,81 +595,99 @@ pub(crate) fn weekly_db(conn: &Connection, week_start: Option<&str>, project_id:
         }
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT s.project_id, p.name, s.computer_id, m.name,
-                (SELECT t.section FROM conversations c JOIN todos t ON t.id = c.todo_id
-                 WHERE c.tool = s.tool AND c.session_id = s.session_id),
-                SUM(d.prompts), SUM(d.assistant_turns), SUM(d.input_tokens), SUM(d.output_tokens),
-                SUM(d.cache_read_tokens), SUM(d.cache_creation_tokens), SUM(d.active_seconds), SUM(d.files_touched)
-         FROM session_days d
-         JOIN sessions s ON s.tool = d.tool AND s.session_id = d.session_id
-         JOIN computers m ON m.id = s.computer_id
-         LEFT JOIN projects p ON p.id = s.project_id
-         WHERE d.day >= ?1 AND d.day <= ?2 AND (?3 IS NULL OR s.project_id = ?3)
-         GROUP BY s.tool, s.session_id",
-    )?;
-    let weeks = stmt.query_map(params![start, end, project_id], |r| {
-        let project_id: Option<String> = r.get(0)?;
-        let project_name: Option<String> = r.get(1)?;
-        let computer_id: String = r.get(2)?;
-        let linked_section: Option<String> = r.get(4)?;
-        let section = match linked_section.as_deref().and_then(Section::parse) {
-            Some(section) => Some(section),
-            None => match computer_sections.get(&computer_id).map(Vec::as_slice) {
-                Some([only]) => Some(*only),
-                _ => None,
-            },
-        };
-        Ok(SessionWeek {
-            project: project_id.map(|id| (id, project_name.unwrap_or_default())),
-            computer: (computer_id, r.get(3)?),
-            section,
-            counters: StatsCounters {
-                sessions: 1,
-                prompts: r.get(5)?,
-                assistant_turns: r.get(6)?,
-                input_tokens: r.get(7)?,
-                output_tokens: r.get(8)?,
-                cache_read_tokens: r.get(9)?,
-                cache_creation_tokens: r.get(10)?,
-                active_seconds: r.get(11)?,
-                files_touched: r.get(12)?,
-            },
-        })
-    })?;
+    let mut weeks = Vec::new();
+    // The conversations' own day rows, then their workers' (one row per session each).
+    for (days_table, sessions_expr, workers) in
+        [("session_days", "1", false), ("session_worker_days", "COUNT(DISTINCT d.worker_id)", true)]
+    {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT s.project_id, p.name, s.computer_id, m.name,
+                    (SELECT t.section FROM conversations c JOIN todos t ON t.id = c.todo_id
+                     WHERE c.tool = s.tool AND c.session_id = s.session_id),
+                    SUM(d.prompts), SUM(d.assistant_turns), SUM(d.input_tokens), SUM(d.output_tokens),
+                    SUM(d.cache_read_tokens), SUM(d.cache_creation_tokens), SUM(d.active_seconds), SUM(d.files_touched),
+                    {sessions_expr}
+             FROM {days_table} d
+             JOIN sessions s ON s.tool = d.tool AND s.session_id = d.session_id
+             JOIN computers m ON m.id = s.computer_id
+             LEFT JOIN projects p ON p.id = s.project_id
+             WHERE d.day >= ?1 AND d.day <= ?2 AND (?3 IS NULL OR s.project_id = ?3)
+             GROUP BY s.tool, s.session_id"
+        ))?;
+        let rows = stmt.query_map(params![start, end, project_id], |r| {
+            let project_id: Option<String> = r.get(0)?;
+            let project_name: Option<String> = r.get(1)?;
+            let computer_id: String = r.get(2)?;
+            let linked_section: Option<String> = r.get(4)?;
+            let section = match linked_section.as_deref().and_then(Section::parse) {
+                Some(section) => Some(section),
+                None => match computer_sections.get(&computer_id).map(Vec::as_slice) {
+                    Some([only]) => Some(*only),
+                    _ => None,
+                },
+            };
+            Ok(SessionWeek {
+                project: project_id.map(|id| (id, project_name.unwrap_or_default())),
+                computer: (computer_id, r.get(3)?),
+                section,
+                workers,
+                counters: StatsCounters {
+                    sessions: r.get(13)?,
+                    prompts: r.get(5)?,
+                    assistant_turns: r.get(6)?,
+                    input_tokens: r.get(7)?,
+                    output_tokens: r.get(8)?,
+                    cache_read_tokens: r.get(9)?,
+                    cache_creation_tokens: r.get(10)?,
+                    active_seconds: r.get(11)?,
+                    files_touched: r.get(12)?,
+                },
+            })
+        })?;
+        for week in rows {
+            weeks.push(week?);
+        }
+    }
 
     let mut totals = StatsCounters::default();
+    let mut worker_totals = StatsCounters::default();
     // Keys sort the groups: projects by name (no project last), sections in code order
     // (none last), computers by name.
     let mut by_project: BTreeMap<(bool, String, String), ProjectRollup> = BTreeMap::new();
     let mut by_section: BTreeMap<usize, SectionRollup> = BTreeMap::new();
     let mut by_computer: BTreeMap<(String, String), ComputerRollup> = BTreeMap::new();
     for week in weeks {
-        let week = week?;
-        week.add_to(&mut totals);
+        week.add_to(&mut totals, &mut worker_totals);
         let (pid, pname) = week.project.clone().map_or((None, None), |(id, name)| (Some(id), Some(name)));
         let key = (pid.is_none(), pname.clone().unwrap_or_default().to_lowercase(), pid.clone().unwrap_or_default());
-        let project = by_project
-            .entry(key)
-            .or_insert_with(|| ProjectRollup { project_id: pid, name: pname, counters: StatsCounters::default() });
-        week.add_to(&mut project.counters);
+        let project = by_project.entry(key).or_insert_with(|| ProjectRollup {
+            project_id: pid,
+            name: pname,
+            counters: StatsCounters::default(),
+            workers: StatsCounters::default(),
+        });
+        week.add_to(&mut project.counters, &mut project.workers);
         let order = week.section.map_or(Section::all().len(), |s| Section::all().iter().position(|x| *x == s).unwrap_or(0));
-        let section = by_section
-            .entry(order)
-            .or_insert_with(|| SectionRollup { section: week.section, counters: StatsCounters::default() });
-        week.add_to(&mut section.counters);
+        let section = by_section.entry(order).or_insert_with(|| SectionRollup {
+            section: week.section,
+            counters: StatsCounters::default(),
+            workers: StatsCounters::default(),
+        });
+        week.add_to(&mut section.counters, &mut section.workers);
         let (cid, cname) = week.computer.clone();
         let computer = by_computer.entry((cname.to_lowercase(), cid.clone())).or_insert_with(|| ComputerRollup {
             computer_id: cid,
             name: cname,
             counters: StatsCounters::default(),
+            workers: StatsCounters::default(),
         });
-        week.add_to(&mut computer.counters);
+        week.add_to(&mut computer.counters, &mut computer.workers);
     }
     Ok(WeeklyStats {
         week_start: start,
         week_end: end,
         totals,
+        workers: worker_totals,
         by_project: by_project.into_values().collect(),
         by_section: by_section.into_values().collect(),
         by_computer: by_computer.into_values().collect(),
