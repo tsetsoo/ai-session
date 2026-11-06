@@ -134,6 +134,18 @@ out="$(AI_TODO_OPEN_DETACH=1 "$OPEN" "$NAME" '~/programming' "$SID")"
   || fail "attaching did not turn off the status bar of an older session"
 pass "conversation sessions have no tmux status bar, older ones lose it on attach"
 
+# A hand-off reaches a new Claude conversation as its first message (Add agent).
+HO_NAME="ai/claude/todo-0f3a9c23"; HO_SID="9b2f6c3e-1d4a-4e7b-8c55-2f0e8a1b7d93"
+printf 'Summary: fix the login.\nSecond line' >"${SANDBOX}/handoff.txt"
+before=$(wc -l <"$CLAUDE_LOG")
+out="$(AI_TODO_OPEN_DETACH=1 "$OPEN" --prompt-file "${SANDBOX}/handoff.txt" "$HO_NAME" '~/programming' "$HO_SID")"
+[[ "$out" == created ]] || fail "hand-off open printed '$out'"
+wait_for_log_lines $((before + 1))
+grep -q -- "--session-id ${HO_SID} Summary: fix the login." "$CLAUDE_LOG" || fail "claude did not get the hand-off as its first message: $(tail -n 2 "$CLAUDE_LOG")"
+[[ ! -e "${SANDBOX}/handoff.txt" ]] || fail "the hand-off file was left behind"
+tmux -L "$SOCK" kill-session -t "=$HO_NAME"
+pass "ai-todo-open gives a new Claude conversation its hand-off as the first message, and deletes the file"
+
 # The running-session fast path comes before the tool lookup: no claude binary needed.
 out="$(AI_TODO_CLAUDE_BIN=/nonexistent PATH=/usr/bin:/bin:"$(dirname "$(command -v tmux)")" \
   AI_TODO_OPEN_DETACH=1 "$OPEN" "$NAME" '~/programming' "$SID")"

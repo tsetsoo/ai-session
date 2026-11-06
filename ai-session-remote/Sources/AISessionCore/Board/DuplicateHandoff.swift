@@ -43,6 +43,15 @@ public enum DuplicateHandoff {
         return .askForSummary
     }
 
+    /// The text the new conversation gets as its first message (`ai-todo-open --prompt-file`),
+    /// or nil: a fork sends nothing, and Cursor's start takes no first message (its text is still
+    /// typed into the terminal).
+    public static func firstPrompt(_ plan: Plan, tool: String) -> String? {
+        guard case let .start(text, _) = plan, TmuxCommandBuilder.takesFirstPrompt(tool: tool),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return text
+    }
+
     /// `confirmedSummary == nil` while the decision is `askForSummary` cancels and describes no row.
     public static func plan(
         source: Conversation,

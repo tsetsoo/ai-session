@@ -1,3 +1,4 @@
+import Foundation
 public enum TmuxCommandBuilder {
     /// Non-interactive SSH sessions often omit Homebrew paths that login shells have
     /// (e.g. `/opt/homebrew/bin` on Apple Silicon). Prefix every remote command so
@@ -66,13 +67,16 @@ public enum TmuxCommandBuilder {
     ///
     /// `worktree` (the conversation's own worktree) adds `--worktree <folder> <branch>`: the script
     /// makes the worktree at `cwd` from `folder`'s repo when it is missing.
+    ///
+    /// `promptFile` (from `writePromptFile`) is the first message of a conversation this starts;
+    /// `detached` starts it without attaching (prints `created` or `attach`).
     public static func openTodoConversation(
         tmuxName: String, cwd: String, sessionId: String, tool: String = "claude", mcpServers: [String]? = nil,
-        worktree: (folder: String, branch: String)? = nil
+        worktree: (folder: String, branch: String)? = nil, promptFile: String? = nil, detached: Bool = false
     ) -> String {
-        var command = "exec \"$HOME/.ai-remote/bin/ai-todo-open\""
+        var command = (detached ? "AI_TODO_OPEN_DETACH=1 " : "") + "exec \"$HOME/.ai-remote/bin/ai-todo-open\""
         if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
-        command += worktreeArguments(worktree)
+        command += worktreeArguments(worktree) + promptFileArgument(promptFile)
         command += " \(shellQuote(tmuxName)) \(shellQuote(cwd)) \(shellQuote(sessionId))"
         if tool != "claude" { command += " \(shellQuote(tool))" }
         return wrap(command)
@@ -196,13 +200,36 @@ public enum TmuxCommandBuilder {
     /// where the selection takes effect. `nil` leaves the command as before.
     public static func freshTodoConversation(
         tmuxName: String, cwd: String, tool: String, mcpServers: [String]? = nil,
-        worktree: (folder: String, branch: String)? = nil
+        worktree: (folder: String, branch: String)? = nil, promptFile: String? = nil
     ) -> String {
         var command = "AI_TODO_OPEN_DETACH=1 exec \"$HOME/.ai-remote/bin/ai-todo-open\""
         if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
-        command += worktreeArguments(worktree) + " "
+        command += worktreeArguments(worktree) + promptFileArgument(promptFile) + " "
         command += "\(shellQuote(tmuxName)) \(shellQuote(cwd)) - \(shellQuote(tool))"
         return wrap(command)
+    }
+
+    /// ` --prompt-file <path>`, or nothing.
+    private static func promptFileArgument(_ path: String?) -> String {
+        guard let path, !path.isEmpty else { return "" }
+        return " --prompt-file \(shellQuote(path))"
+    }
+
+    /// Whether `ai-todo-open` gives this tool a first message (`--prompt-file`). Cursor's start
+    /// has none, so its hand-off is still typed into the terminal.
+    public static func takesFirstPrompt(tool: String) -> Bool {
+        tool == "claude" || tool == "codex"
+    }
+
+    /// Writes `text` to a new private file under `~/.ai-remote/prompts` and prints its path, for
+    /// `--prompt-file` (which deletes it). The text travels base64-encoded, so no quoting of it
+    /// can break the command.
+    public static func writePromptFile(text: String) -> String {
+        let encoded = Data(text.utf8).base64EncodedString()
+        let script = "umask 077 && mkdir -p \"$HOME/.ai-remote/prompts\" && "
+            + "f=$(mktemp \"$HOME/.ai-remote/prompts/handoff.XXXXXX\") && "
+            + "printf '%s' \(shellQuote(encoded)) | base64 --decode >\"$f\" && printf '%s\\n' \"$f\""
+        return wrap(script)
     }
 
     /// ` --worktree <folder> <branch>`, or nothing. A `~` folder is quoted; the script expands it.

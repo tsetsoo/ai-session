@@ -1238,7 +1238,8 @@ struct ConversationFrame: View {
         }
         guard let created else { return }
         let ready = try await store.prepareDuplicate(created, plan: plan, config: config)
-        if case let .start(text, _) = plan {
+        // Claude and Codex got the text as their first message; only Cursor's is typed in.
+        if case let .start(text, _) = plan, DuplicateHandoff.firstPrompt(plan, tool: tool) == nil {
             duplicateLaunch = DuplicateLaunch(conversationID: ready.id, attachCommand: nil, paste: text)
         } else {
             duplicateLaunch = nil

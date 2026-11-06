@@ -556,23 +556,49 @@ final class TodoHubStore {
     /// Gives the new row the session id the tool is actually using, then the terminal can attach.
     /// A fork's minted id is replaced with the transcript the fork created. A Codex or Cursor row
     /// has none until the fresh start prints one. A failure removes the row and the tmux session.
+    ///
+    /// A hand-off text (transcript or summary) for Claude or Codex is the new tool's first
+    /// message: written to a file on the computer and started with `--prompt-file`, so it never
+    /// depends on typing into a tool that may not be ready yet.
     func prepareDuplicate(
         _ created: Conversation, plan: DuplicateHandoff.Plan, config: HostConnectionConfig
     ) async throws -> Conversation {
+        let firstPrompt = DuplicateHandoff.firstPrompt(plan, tool: created.tool)
         switch DuplicateIn.followUp(plan: plan, created: created) {
         case .resume:
-            return created
+            guard let firstPrompt else { return created }
+            do {
+                let path = try await writeHandoff(firstPrompt, on: created, config: config)
+                let result = try await NIOSSHClient().exec(config, command: TmuxCommandBuilder.openTodoConversation(
+                    tmuxName: created.tmuxName, cwd: created.cwd, sessionId: created.sessionId, tool: created.tool,
+                    mcpServers: created.mcpServers, worktree: created.worktree, promptFile: path, detached: true
+                ))
+                try RemoteConversations.check(result, computerName: created.computer.name)
+                return created
+            } catch {
+                await discardStart(created, config: config)
+                throw error
+            }
         case .captureFresh:
+            var path: String?
+            if let firstPrompt {
+                do {
+                    path = try await writeHandoff(firstPrompt, on: created, config: config)
+                } catch {
+                    await discardStart(created, config: config)
+                    throw error
+                }
+            }
             return try await captureNewSession(
                 created, config: config,
                 command: TmuxCommandBuilder.freshTodoConversation(
                     tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool,
-                    mcpServers: created.mcpServers, worktree: created.worktree
+                    mcpServers: created.mcpServers, worktree: created.worktree, promptFile: path
                 ),
                 fallbackCommand: Self.shouldOfferFallback(created)
                     ? TmuxCommandBuilder.freshTodoConversation(
                         tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool,
-                        worktree: created.worktree
+                        worktree: created.worktree, promptFile: path
                     ) : nil
             )
         case let .captureFork(sourceSessionId):
@@ -601,6 +627,22 @@ final class TodoHubStore {
             tmuxName: created.tmuxName, cwd: created.cwd, arguments: arguments, mcpServers: created.mcpServers,
             worktree: created.worktree
         )
+    }
+
+    /// The hand-off text in a private file on the conversation's computer; its path.
+    private func writeHandoff(_ text: String, on conversation: Conversation, config: HostConnectionConfig) async throws -> String {
+        try await remoteStdout(
+            TmuxCommandBuilder.writePromptFile(text: text), config: config, computerName: conversation.computer.name
+        )
+    }
+
+    /// A start that failed: its tmux session (if any) and its hub row go.
+    private func discardStart(_ conversation: Conversation, config: HostConnectionConfig) async {
+        _ = try? await NIOSSHClient().exec(
+            config, command: TmuxCommandBuilder.killSessionExact(tmuxName: conversation.tmuxName)
+        )
+        if let client = hubClient() { try? await forgetOnHub(client, conversation) }
+        forget(conversation)
     }
 
     private func captureNewSession(
