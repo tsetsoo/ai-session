@@ -326,6 +326,51 @@ pub struct SetConversationMcpRequest {
     pub mcp_servers: Option<Vec<String>>,
 }
 
+/// Switch a conversation's resume after a session limit on or off.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetConversationResumeRequest {
+    pub resume_on_reset: bool,
+}
+
+/// Sent by the status service on the computer about a paused conversation, found by tool
+/// and session id. See `ResumeAction`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ConversationResumeRequest {
+    pub tool: String,
+    pub session_id: String,
+    pub action: String,
+    /// `arm`: when it will be resumed (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_at: Option<String>,
+    /// `claim`, `sent`, `release`: the lease token the computer made up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// `claim`: the user tapped Resume, so the toggle and the cap don't apply.
+    #[serde(default)]
+    pub manual: bool,
+}
+
+/// What the computer needs to resume a paused conversation, and the answer to its action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationResumeState {
+    pub conversation_id: String,
+    pub tmux_name: String,
+    pub cwd: String,
+    pub status: ConversationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<LimitPause>,
+    pub reviewed: bool,
+    pub resume_on_reset: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_off_reason: Option<String>,
+    /// `claim`: the lease is this computer's; type the message.
+    pub granted: bool,
+    /// Why a claim wasn't granted: not_paused, closed, toggle_off, not_session, reviewed,
+    /// cap, leased.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Sent by the host script after it starts a conversation: the servers it actually passed.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReportConversationMcpRequest {
@@ -394,10 +439,16 @@ pub struct Conversation {
     /// The worktree's branch, with `worktree_source`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// Resume on its own once a session (5-hour) limit resets. Off by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resume_on_reset: bool,
+    /// Why the hub switched `resume_on_reset` off: `cap` (3 resumes in 24 hours).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_off_reason: Option<String>,
 }
 
 /// A conversation stopped by a subscription or API usage limit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LimitPause {
     /// `session` (the 5-hour window), `weekly`, or `limit` (no reset time known: a plain
     /// rate limit, or one whose message couldn't be read).
@@ -405,6 +456,12 @@ pub struct LimitPause {
     /// When the limit resets (RFC 3339, UTC), if known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<String>,
+    /// When the computer plans to resume it (RFC 3339, UTC). Only on hub replies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_at: Option<String>,
+    /// The limit has reset and a one-tap Resume is offered. Only on hub replies.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub offer: bool,
 }
 
 impl LimitPause {

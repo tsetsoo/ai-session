@@ -179,6 +179,14 @@ public struct TodoHubClient: Sendable {
         )
     }
 
+    /// Switches resuming after a session limit on or off for one conversation.
+    public func setConversationResume(id: String, on: Bool) async throws -> Conversation {
+        try await decode(
+            Conversation.self,
+            send("PUT", "/api/conversations/\(escape(id))/resume", body: SetConversationResumeRequest(resumeOnReset: on))
+        )
+    }
+
     /// Stores the id a new Codex or Cursor conversation reported.
     public func setConversationSession(todoId: String, sessionId: String) async throws -> Conversation {
         try await decode(

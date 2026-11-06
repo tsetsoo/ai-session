@@ -664,7 +664,7 @@ struct ConversationFrame: View {
     private func toolbarActions(showsCopy: Bool, showsPopOut: Bool, copyInMenu: Bool) -> some View {
         ConversationToolbarActions(
             status: displayStatus,
-            statusDetail: conversation?.paused.map { RowText.pauseText($0, now: Date()) },
+            statusDetail: conversation.flatMap { RowText.pauseDetail($0, now: Date()) },
             showsCopy: showsCopy,
             canCopy: conversation != nil,
             showsPopOut: showsPopOut,
@@ -693,8 +693,35 @@ struct ConversationFrame: View {
             ),
             onDuplicate: { tool, name in beginDuplicate(tool: tool, name: name) },
             isDuplicating: isDuplicating,
-            onReview: reviewAction
+            onReview: reviewAction,
+            resumeOnReset: ConversationToolbar.resumeToggle(conversation),
+            onToggleResume: toggleResume,
+            showsResumeNow: conversation?.paused?.offer == true && !store.isOffline,
+            onResumeNow: resumeNow
         )
+    }
+
+    /// Resume After Session Limit on or off for the conversation on screen.
+    private func toggleResume() {
+        guard let conversation, !conversation.id.isEmpty else { return }
+        let on = !conversation.resumeOnReset
+        Task {
+            do {
+                try await store.setResumeOnReset(on, for: conversation)
+            } catch {
+                failure = ActionFailure(title: "Couldn't Change Resume", message: TodoHubStore.message(for: error))
+            }
+        }
+    }
+
+    /// The one-tap Resume: the computer types the resume message if the conversation can take it.
+    private func resumeNow() {
+        perform("Couldn't Resume") { conversation, config in
+            let outcome = try await store.resumeAfterLimit(conversation, config: config)
+            guard !outcome.resumed else { return }
+            failure = ActionFailure(title: "Not Resumed", message: RowText.resumeRefusal(
+                reason: outcome.reason, resetsAt: outcome.resetDate, tool: conversation.tool, now: Date()))
+        }
     }
 
     private var reviewAction: (() -> Void)? {
@@ -719,6 +746,8 @@ struct ConversationFrame: View {
         case .copyScreen: copyScreen()
         case .paste: terminal.paste()
         case .review: reviewAction?()
+        case .toggleResume: toggleResume()
+        case .resumeNow: resumeNow()
         case let .duplicate(tool, name): beginDuplicate(tool: tool, name: name)
         }
     }

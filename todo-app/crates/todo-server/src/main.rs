@@ -19,6 +19,7 @@ mod models;
 mod paths;
 mod projects;
 mod push;
+mod resume;
 mod runner_api;
 mod scheduler;
 mod sessions;
@@ -83,6 +84,8 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/conversations/status", web::post().to(conversations::post_conversation_status))
         .route("/api/conversations/mcp", web::post().to(conversations::report_conversation_mcp))
         .route("/api/conversations/{id}/mcp", web::put().to(conversations::set_conversation_mcp_by_id))
+        .route("/api/conversations/resume", web::post().to(resume::post_conversation_resume))
+        .route("/api/conversations/{id}/resume", web::put().to(resume::set_conversation_resume_by_id))
         .route("/api/conversations/{id}/close", web::post().to(conversations::close_conversation_by_id))
         .route("/api/conversations/{id}/review", web::post().to(conversations::review_conversation_by_id))
         .route("/api/conversations/{id}/session", web::put().to(conversations::set_conversation_session_by_id))

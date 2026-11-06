@@ -57,6 +57,17 @@ final class ConversationRowActions {
         }
     }
 
+    /// The one-tap Resume after a weekly or unknown usage limit. A refusal (still limited, a
+    /// question on screen…) is shown in the alert; success needs nothing: the row turns busy.
+    func resumeAfterLimit(_ conversation: Conversation, store: TodoHubStore, hosts: [HostEntity]) {
+        run("Couldn't Resume", conversation, hosts: hosts) { [weak self] config in
+            let outcome = try await store.resumeAfterLimit(conversation, config: config)
+            guard !outcome.resumed else { return }
+            self?.failure = Failure(title: "Not Resumed", message: RowText.resumeRefusal(
+                reason: outcome.reason, resetsAt: outcome.resetDate, tool: conversation.tool, now: Date()))
+        }
+    }
+
     func copyResumeCommand(_ conversation: Conversation) {
         PlatformSupport.pasteboardString = ResumeCommand.string(for: conversation)
         copied.show(true)
@@ -278,6 +289,14 @@ private struct ConversationRowMenu: ViewModifier {
     func body(content: Content) -> some View {
         content
             .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                if conversation.paused?.offer == true, !store.isOffline {
+                    Button {
+                        actions.resumeAfterLimit(conversation, store: store, hosts: hosts)
+                    } label: {
+                        Label("Resume", systemImage: "play.fill")
+                    }
+                    .tint(DS.accentSolid)
+                }
                 Button {
                     actions.copyResumeCommand(conversation)
                 } label: {
@@ -317,6 +336,13 @@ private struct ConversationRowMenu: ViewModifier {
                 if let open {
                     Button(action: open) {
                         Label("Open", systemImage: "arrow.up.forward.app")
+                    }
+                }
+                if conversation.paused?.offer == true, !store.isOffline {
+                    Button {
+                        actions.resumeAfterLimit(conversation, store: store, hosts: hosts)
+                    } label: {
+                        Label("Resume", systemImage: "play.fill")
                     }
                 }
                 Button {

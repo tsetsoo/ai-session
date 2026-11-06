@@ -30,6 +30,52 @@ final class RowTextTests: XCTestCase {
         XCTAssertEqual(RowText.todoSubtitle(paused, status: .paused, now: now), "Usage limit")
     }
 
+    func testPauseTextSaysWhenItResumesOrThatItIsReady() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Sofia")!
+        let locale = Locale(identifier: "en_GB")
+        let text = { (pause: LimitPause) in RowText.pauseText(pause, now: self.now, calendar: calendar, locale: locale) }
+        XCTAssertEqual(text(LimitPause(kind: "session", resetsAt: "2026-10-17T13:40:00Z", resumeAt: "2026-10-17T13:42:30Z")),
+                       "Session limit · resumes 16:42")
+        // A planned time already past: the computer is about to type it, or it wasn't possible.
+        XCTAssertEqual(text(LimitPause(kind: "session", resetsAt: "2026-10-17T08:00:00Z", resumeAt: "2026-10-17T08:02:00Z")),
+                       "Session limit · resetting")
+        XCTAssertEqual(text(LimitPause(kind: "weekly", resetsAt: "2026-10-17T08:00:00Z", offer: true)),
+                       "Weekly limit · ready to resume")
+        var capped = conv(status: .idle)
+        capped.paused = LimitPause(kind: "session", resetsAt: "2026-10-17T13:40:00Z")
+        capped.resumeOffReason = "cap"
+        XCTAssertEqual(RowText.pauseDetail(capped, now: now, calendar: calendar, locale: locale),
+                       "Session limit · resets 16:40 · auto-resume off after 3 today")
+        capped.resumeOnReset = true
+        capped.resumeOffReason = nil
+        XCTAssertEqual(RowText.pauseDetail(capped, now: now, calendar: calendar, locale: locale), "Session limit · resets 16:40")
+        XCTAssertNil(RowText.pauseDetail(conv(status: .idle), now: now))
+    }
+
+    func testResumeRefusalSaysWhatToDo() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Sofia")!
+        let reset = ISO8601DateFormatter().date(from: "2026-10-17T13:40:00Z")
+        XCTAssertEqual(RowText.resumeRefusal(reason: "limit", resetsAt: reset, tool: "claude", now: now, calendar: calendar,
+                                             locale: Locale(identifier: "en_GB")),
+                       "The usage limit hasn't reset yet. It resets 16:40.")
+        XCTAssertEqual(RowText.resumeRefusal(reason: "question", resetsAt: nil, tool: "codex", now: now),
+                       "Codex is asking something on screen. Answer it in the conversation.")
+        XCTAssertEqual(RowText.resumeRefusal(reason: "whatever", resetsAt: nil, tool: "claude", now: now),
+                       "Couldn't resume it. Open the conversation and continue there.")
+    }
+
+    func testResumeOutcomeParsesTheHelpersJSON() {
+        XCTAssertEqual(LimitResumeOutcome.parse(stdout: "{\"resumed\": true}\n", exitCode: 0), LimitResumeOutcome(resumed: true))
+        let refused = LimitResumeOutcome.parse(
+            stdout: #"{"resumed": false, "reason": "limit", "resets_at": "2026-10-17T13:40:00Z"}"#, exitCode: 75)
+        XCTAssertEqual(refused?.reason, "limit")
+        XCTAssertEqual(refused?.resetDate, ISO8601DateFormatter().date(from: "2026-10-17T13:40:00Z"))
+        XCTAssertNil(LimitResumeOutcome.parse(stdout: "usage: ...", exitCode: 64), "an older helper")
+        XCTAssertEqual(TmuxCommandBuilder.resumeAfterLimit(tool: "claude", sessionId: "a b").contains("resume 'claude' 'a b'"), true)
+    }
+
     func testComputerLine() {
         XCTAssertEqual(RowText.computerLine(working: 3, review: 2, needsYou: 1), "1 needs you · 2 to review · 3 working")
         XCTAssertEqual(RowText.computerLine(working: 2, review: 0, needsYou: 0), "2 working")

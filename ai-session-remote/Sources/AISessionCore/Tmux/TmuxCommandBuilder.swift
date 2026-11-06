@@ -267,6 +267,13 @@ public enum TmuxCommandBuilder {
         return wrap(command)
     }
 
+    /// The one-tap Resume of a conversation paused by a usage limit: the computer checks it
+    /// (no question on screen, nothing typed, the limit has reset), takes the hub's lease and
+    /// types the resume message. Exit 0 when typed, 75 when not now, with JSON on stdout.
+    public static func resumeAfterLimit(tool: String, sessionId: String) -> String {
+        wrap("\"$HOME/.ai-remote/bin/ai-todo-status\" resume \(shellQuote(tool)) \(shellQuote(sessionId))")
+    }
+
     /// Deletes a conversation on the computer (Claude: its files; Codex: `codex archive`) in
     /// one exec: the script ends the todo's tmux session, waits up to `waitSeconds` for the
     /// conversation to stop, then deletes it. A conversation that doesn't exist counts as

@@ -111,6 +111,29 @@ final class BoardTests: XCTestCase {
         let odd = json.replacingOccurrences(of: #""paused":{"kind":"weekly","resets_at":"2026-11-06T23:00:00Z"}"#,
                                             with: #""paused":"soon""#)
         XCTAssertNil(try decoder.decode(Conversation.self, from: Data(odd.utf8)).paused)
+        XCTAssertFalse(decoded.resumeOnReset)
+    }
+
+    func testResumeFieldsDecode() throws {
+        let json = #"""
+        {"id":"c","todo_id":"t","cwd":"~","tool":"claude","tmux_name":"x","session_id":"s","status":"idle",
+         "computer":{"id":"m","name":"Mac","hostname":"mac","port":22,"username":"me","created_at":"","updated_at":""},
+         "created_at":"","resume_on_reset":true,"resume_off_reason":"cap",
+         "paused":{"kind":"session","resets_at":"2026-11-06T23:00:00Z","resume_at":"2026-11-06T23:02:10Z","offer":true}}
+        """#
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let decoded = try decoder.decode(Conversation.self, from: Data(json.utf8))
+        XCTAssertTrue(decoded.resumeOnReset)
+        XCTAssertEqual(decoded.resumeOffReason, "cap")
+        XCTAssertEqual(decoded.paused, LimitPause(kind: "session", resetsAt: "2026-11-06T23:00:00Z",
+                                                  resumeAt: "2026-11-06T23:02:10Z", offer: true))
+        // Round trip through the app's own cache.
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let again = try decoder.decode(Conversation.self, from: encoder.encode(decoded))
+        XCTAssertEqual(again.paused, decoded.paused)
+        XCTAssertTrue(again.resumeOnReset)
     }
 
     func testOpenExcludesClosedAndDeadTmux() {

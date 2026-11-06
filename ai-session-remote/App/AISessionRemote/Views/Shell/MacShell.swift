@@ -918,8 +918,10 @@ private struct ConversationColumn: View {
         showsPopOut: Bool,
         copyInMenu: Bool
     ) -> some View {
-        ConversationToolbarActions(
+        let conversation = model.store.displayed(forTodo: todo.id, selectedKey: model.selectedConversationID)
+        return ConversationToolbarActions(
             status: ConversationToolbar.displayStatus(todo: todo, store: model.store, selectedKey: model.selectedConversationID),
+            statusDetail: conversation.flatMap { RowText.pauseDetail($0, now: Date()) },
             showsCopy: showsCopy,
             canCopy: hasConversation,
             showsPopOut: showsPopOut,
@@ -951,7 +953,11 @@ private struct ConversationColumn: View {
                 send(.duplicate(tool: tool, name: name), for: todo.id)
             },
             isDuplicating: state?.isDuplicating ?? false,
-            onReview: reviewAction(todo.id)
+            onReview: reviewAction(todo.id),
+            resumeOnReset: ConversationToolbar.resumeToggle(conversation),
+            onToggleResume: { send(.toggleResume, for: todo.id) },
+            showsResumeNow: conversation?.paused?.offer == true && !model.store.isOffline,
+            onResumeNow: { send(.resumeNow, for: todo.id) }
         )
     }
 

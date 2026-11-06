@@ -50,6 +50,17 @@ final class ReviewAcknowledgementTests: XCTestCase {
         XCTAssertFalse(acknowledged)
     }
 
+    func testOpeningAPausedConversationDoesNotReviewIt() async throws {
+        // Reviewing it would stop its resume after the limit.
+        var paused = conversation()
+        paused.paused = LimitPause(kind: "session", resetsAt: "2026-11-06T23:00:00Z")
+        var reviewed = paused
+        reviewed.reviewed = true
+        try respond(reviewed)
+        let acknowledged = await store().review(paused)
+        XCTAssertFalse(acknowledged)
+    }
+
     func testBusyConversationDoesNotConsumeAcknowledgement() async {
         let acknowledged = await store().review(conversation(status: .busy))
         XCTAssertFalse(acknowledged)

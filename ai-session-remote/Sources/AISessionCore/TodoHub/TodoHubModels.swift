@@ -170,6 +170,10 @@ public struct Conversation: Codable, Equatable, Sendable {
         guard let worktreeSource, !worktreeSource.isEmpty, let branch, !branch.isEmpty else { return nil }
         return (worktreeSource, branch)
     }
+    /// Resume on its own once a session (5-hour) limit resets. Off by default and from older hubs.
+    public var resumeOnReset: Bool
+    /// Why the hub switched `resumeOnReset` off: `cap` (3 automatic resumes in 24 hours).
+    public var resumeOffReason: String?
 
     /// Row identity. A conversation from a hub that omits `id` is still the only one on its todo.
     public var listKey: String { id.isEmpty ? todoId : id }
@@ -197,7 +201,9 @@ public struct Conversation: Codable, Equatable, Sendable {
         reviewed: Bool = false,
         paused: LimitPause? = nil,
         worktreeSource: String? = nil,
-        branch: String? = nil
+        branch: String? = nil,
+        resumeOnReset: Bool = false,
+        resumeOffReason: String? = nil
     ) {
         self.id = id
         self.todoId = todoId
@@ -218,13 +224,15 @@ public struct Conversation: Codable, Equatable, Sendable {
         self.paused = paused
         self.worktreeSource = worktreeSource
         self.branch = branch
+        self.resumeOnReset = resumeOnReset
+        self.resumeOffReason = resumeOffReason
     }
 
     // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
     private enum CodingKeys: String, CodingKey {
         case id, todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
         case status, statusMessage, statusUpdatedAt, createdAt, projectId, label, mcpServers
-        case statusRevision, reviewed, paused, worktreeSource, branch
+        case statusRevision, reviewed, paused, worktreeSource, branch, resumeOnReset, resumeOffReason
     }
 
     public init(from decoder: Decoder) throws {
@@ -255,6 +263,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         paused = (try? c.decodeIfPresent(LimitPause.self, forKey: .paused)) ?? nil
         worktreeSource = try c.decodeIfPresent(String.self, forKey: .worktreeSource)
         branch = try c.decodeIfPresent(String.self, forKey: .branch)
+        resumeOnReset = (try? c.decodeIfPresent(Bool.self, forKey: .resumeOnReset)) ?? false
+        resumeOffReason = try? c.decodeIfPresent(String.self, forKey: .resumeOffReason)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -278,7 +288,16 @@ public struct Conversation: Codable, Equatable, Sendable {
         try c.encodeIfPresent(paused, forKey: .paused)
         try c.encodeIfPresent(worktreeSource, forKey: .worktreeSource)
         try c.encodeIfPresent(branch, forKey: .branch)
+        if resumeOnReset { try c.encode(resumeOnReset, forKey: .resumeOnReset) }
+        try c.encodeIfPresent(resumeOffReason, forKey: .resumeOffReason)
     }
+
+    /// The hub turned resuming off after 3 automatic resumes in a day.
+    public var resumeStoppedByCap: Bool { !resumeOnReset && resumeOffReason == "cap" }
+
+    /// Only Codex is resumed by the computer after a session limit: Claude continues on its
+    /// own (its autoContinueAtUsageLimit), and Cursor reports no limits.
+    public var canAutoResumeAfterLimit: Bool { tool == "codex" }
 }
 
 /// A conversation stopped by a subscription or API usage limit.
@@ -287,13 +306,38 @@ public struct LimitPause: Codable, Equatable, Sendable {
     public var kind: String
     /// When the limit resets (RFC 3339), if known.
     public var resetsAt: String?
+    /// When the computer plans to resume it (a session limit with the toggle on).
+    public var resumeAt: String?
+    /// The limit has reset and a one-tap Resume is offered (weekly or unknown limits).
+    public var offer: Bool
 
-    public init(kind: String, resetsAt: String? = nil) {
+    public init(kind: String, resetsAt: String? = nil, resumeAt: String? = nil, offer: Bool = false) {
         self.kind = kind
         self.resetsAt = resetsAt
+        self.resumeAt = resumeAt
+        self.offer = offer
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, resetsAt, resumeAt, offer }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(String.self, forKey: .kind)
+        resetsAt = try c.decodeIfPresent(String.self, forKey: .resetsAt)
+        resumeAt = try? c.decodeIfPresent(String.self, forKey: .resumeAt)
+        offer = (try? c.decodeIfPresent(Bool.self, forKey: .offer)) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(kind, forKey: .kind)
+        try c.encodeIfPresent(resetsAt, forKey: .resetsAt)
+        try c.encodeIfPresent(resumeAt, forKey: .resumeAt)
+        if offer { try c.encode(offer, forKey: .offer) }
     }
 
     public var resetDate: Date? { resetsAt.flatMap { HubDates.date(from: $0) } }
+    public var resumeDate: Date? { resumeAt.flatMap { HubDates.date(from: $0) } }
 
     /// "Session limit", "Weekly limit", "Usage limit".
     public var title: String {
@@ -517,6 +561,15 @@ public struct UpdateComputerRequest: Encodable, Sendable {
 }
 
 /// `PUT /api/conversations/{id}/mcp`. The hub requires the key, so `nil` encodes an explicit `null`.
+/// `PUT /api/conversations/{id}/resume`.
+public struct SetConversationResumeRequest: Encodable, Sendable {
+    public var resumeOnReset: Bool
+
+    public init(resumeOnReset: Bool) {
+        self.resumeOnReset = resumeOnReset
+    }
+}
+
 public struct SetConversationServersRequest: Encodable, Sendable {
     public var mcpServers: [String]?
 

@@ -18,6 +18,9 @@
 # - StopFailure with error rate_limit (a usage limit) is idle, not waiting: the conversation
 #   is paused, not asking for you. The limit text goes to the publisher privately (_limit),
 #   which sends "paused" {kind, resets_at}. Any other StopFailure is waiting.
+# - The notification quota_auto_resume_fired (Claude continuing on its own after a limit) is
+#   busy, which cancels the status service's own resume; the other quota_auto_resume_*
+#   notifications are ignored.
 # - `tool` posts busy only when the last status this hook sent for the session
 #   was not busy, so a long turn doesn't post once per tool call. The last sent
 #   status is kept in ~/.ai-remote/hook-state/<session_id>.
@@ -239,8 +242,12 @@ status, tool = sys.argv[1], sys.argv[2]
 event = data.get("hook_event_name")
 if tool == "claude" and data.get("agent_id") and event in ("Stop", "UserPromptSubmit", "SessionEnd", "StopFailure"):
     sys.exit(1)  # A subagent ending must not mark the parent conversation complete.
-if tool == "claude" and event == "Notification" and data.get("notification_type") in ("auth_success", "local_command"):
+if tool == "claude" and event == "Notification" and data.get("notification_type") in ("auth_success", "local_command", "quota_auto_resume_stale", "quota_auto_resume_disabled"):
     sys.exit(1)
+if tool == "claude" and event == "Notification" and data.get("notification_type") == "quota_auto_resume_fired":
+    # Claude continues on its own after the limit: busy, which cancels our pending resume so
+    # the two never both type.
+    status = "busy"
 msg = data.get("message")
 msg = msg if isinstance(msg, str) else ""
 if status == "waiting" and (
@@ -268,6 +275,8 @@ else:
     out = {"claude_session_id": sid, "status": status, "attended": False}
 if isinstance(event, str):
     out["_hook_event"] = event
+if tool == "claude" and event == "Notification" and data.get("notification_type") == "quota_auto_resume_fired":
+    out["_auto_resumed"] = True  # The publisher drops our pending resume, whatever the status.
 if tool == "claude" and event == "StopFailure" and data.get("error") == "rate_limit":
     text = data.get("last_assistant_message")
     path = data.get("transcript_path")

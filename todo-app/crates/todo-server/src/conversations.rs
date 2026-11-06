@@ -31,13 +31,14 @@ pub(crate) const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
 pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at, mcp_default";
 
 /// Conversation columns (0..=11), its computer (12..=19), then whether its session is known
-/// and that session's project (20, 21), its review state (22, 23) limit pause (24, 25) and
-/// worktree source and branch (26, 27).
+/// and that session's project (20, 21), its review state (22, 23), limit pause (24, 25),
+/// worktree source and branch (26, 27) and resume after the pause (28..=31).
 const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
         c.status_message, c.status_updated_at, c.created_at, c.label, c.mcp_servers,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default,
         s.session_id IS NOT NULL, s.project_id, c.status_revision, c.reviewed,
-        c.paused_kind, c.paused_until, c.worktree_source, c.branch
+        c.paused_kind, c.paused_until, c.worktree_source, c.branch,
+        c.resume_on_reset, c.resume_off_reason, c.resume_at, c.resume_offer
      FROM conversations c JOIN computers m ON m.id = c.computer_id
      LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id";
 
@@ -147,9 +148,15 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
         mcp_servers: mcp_from_sql(row, 11)?,
         computer: computer_at(row, 12)?,
         project_id: row.get(21)?,
-        paused: pause_from_sql(row.get(24)?, row.get(25)?),
         worktree_source: row.get(26)?,
         branch: row.get(27)?,
+        paused: pause_from_sql(row.get(24)?, row.get(25)?).map(|pause| LimitPause {
+            resume_at: row.get(30).ok().flatten(),
+            offer: row.get(31).unwrap_or(false),
+            ..pause
+        }),
+        resume_on_reset: row.get(28)?,
+        resume_off_reason: row.get(29)?,
     };
     Ok((conversation, row.get(20)?))
 }
@@ -157,7 +164,7 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
 /// The stored pause, if any. Only an idle conversation is paused: a closed one keeps the
 /// columns but isn't shown as paused.
 fn pause_from_sql(kind: Option<String>, resets_at: Option<String>) -> Option<LimitPause> {
-    kind.map(|kind| LimitPause { kind, resets_at })
+    kind.map(|kind| LimitPause { kind, resets_at, ..Default::default() })
 }
 
 /// A known pause kind and, if given, an RFC 3339 reset time (stored as UTC `...Z`).
@@ -174,7 +181,7 @@ pub(crate) fn normalize_pause(pause: &LimitPause) -> Result<LimitPause, &'static
                 .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         ),
     };
-    Ok(LimitPause { kind: pause.kind.clone(), resets_at })
+    Ok(LimitPause { kind: pause.kind.clone(), resets_at, ..Default::default() })
 }
 
 /// A conversation whose session isn't known yet gets its project matched on the fly.
@@ -753,14 +760,16 @@ pub(crate) fn set_status_db(
     // IMMEDIATE: take the write lock before reading, so a concurrent writer makes this wait
     // (busy timeout) instead of failing the update on a stale read snapshot.
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let current: Option<(String, String, Option<i64>, Option<i64>)> = tx
+    type Current = (String, String, Option<i64>, Option<i64>, String, Option<String>, Option<String>);
+    let current: Option<Current> = tx
         .query_row(
-            "SELECT todo_id, status, status_event_ns, status_turn_ns FROM conversations WHERE tool = ?1 AND session_id = ?2 AND status != 'closed'",
+            "SELECT todo_id, status, status_event_ns, status_turn_ns, id, paused_kind, paused_until
+             FROM conversations WHERE tool = ?1 AND session_id = ?2 AND status != 'closed'",
             params![tool, session_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )
         .optional()?;
-    let Some((todo_id, old, event_ns, turn_ns)) = current else { return Ok(None) };
+    let Some((todo_id, old, event_ns, turn_ns, conversation_id, stored_kind, stored_until)) = current else { return Ok(None) };
     let old = ConversationStatus::parse(&old).unwrap_or(ConversationStatus::Unknown);
     if event_ns.is_some_and(|previous| req.event_timestamp_ns.is_some_and(|next| next < previous || (next == previous && req.status != old))
         || (matches!(tool, "codex" | "claude") && req.event_timestamp_ns.is_none())) {
@@ -769,6 +778,13 @@ pub(crate) fn set_status_db(
     let new_turn = req.turn_started_ns.is_some_and(|next| turn_ns.is_none_or(|previous| next > previous));
     // Only an idle conversation is paused; the caller validated the pause.
     let pause = req.paused.as_ref().filter(|_| req.status == ConversationStatus::Idle);
+    // The same pause reported again (Codex's Stop hook and notify both send it) is not a new
+    // limit hit: it keeps the plan, the offer and the lease, and isn't counted twice.
+    let repeat = pause.is_some_and(|p| {
+        old == ConversationStatus::Idle && !new_turn && stored_kind.as_deref() == Some(p.kind.as_str())
+            && stored_until.as_deref() == p.resets_at.as_deref()
+    });
+    let fresh = pause.filter(|_| !repeat);
     tx.execute(
         "UPDATE conversations SET
          status_revision = status_revision + CASE WHEN status != ?1 OR ?7 THEN 1 ELSE 0 END,
@@ -777,7 +793,11 @@ pub(crate) fn set_status_db(
          status = ?1, status_message = ?2, status_event_ns = COALESCE(?5, status_event_ns),
          status_turn_ns = CASE WHEN ?7 THEN ?6 ELSE status_turn_ns END,
          paused_kind = CASE WHEN ?8 IS NOT NULL THEN ?8 WHEN status != ?1 OR ?7 THEN NULL ELSE paused_kind END,
-         paused_until = CASE WHEN ?8 IS NOT NULL THEN ?9 WHEN status != ?1 OR ?7 THEN NULL ELSE paused_until END
+         paused_until = CASE WHEN ?8 IS NOT NULL THEN ?9 WHEN status != ?1 OR ?7 THEN NULL ELSE paused_until END,
+         resume_at = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN NULL ELSE resume_at END,
+         resume_offer = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN 0 ELSE resume_offer END,
+         resume_token = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN NULL ELSE resume_token END,
+         resume_lease_until = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN NULL ELSE resume_lease_until END
          WHERE tool = ?3 AND session_id = ?4 AND status != 'closed'",
         params![
             req.status.as_str(),
@@ -787,10 +807,13 @@ pub(crate) fn set_status_db(
             req.event_timestamp_ns,
             req.turn_started_ns,
             new_turn,
-            pause.as_ref().map(|p| p.kind.as_str()),
-            pause.as_ref().and_then(|p| p.resets_at.as_deref()),
+            fresh.map(|p| p.kind.as_str()),
+            fresh.and_then(|p| p.resets_at.as_deref()),
         ],
     )?;
+    if fresh.is_some() {
+        crate::resume::note_limit_hit(&tx, &conversation_id, chrono::Utc::now())?;
+    }
     tx.commit()?;
     Ok(Some(StatusChange { todo_id, old, applied: true, paused: pause.is_some() }))
 }
@@ -1593,6 +1616,8 @@ mod tests {
             paused: None,
             worktree_source: None,
             branch: None,
+            resume_on_reset: false,
+            resume_off_reason: None,
         }
     }
 
@@ -2061,7 +2086,7 @@ mod tests {
         seed(&conn);
         let conv = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         let read = |conn: &Connection| load_conversation_by_id(conn, &conv.id).unwrap().unwrap().paused;
-        let pause = LimitPause { kind: "session".into(), resets_at: Some("2026-11-06T22:40:00Z".into()) };
+        let pause = LimitPause { kind: "session".into(), resets_at: Some("2026-11-06T22:40:00Z".into()), ..Default::default() };
         let status = |status, paused: Option<LimitPause>, turn: Option<i64>| ConversationStatusRequest {
             status, paused, turn_started_ns: turn, ..Default::default()
         };
@@ -2091,7 +2116,7 @@ mod tests {
 
     #[test]
     fn a_pause_needs_a_known_kind_and_an_rfc3339_time() {
-        let pause = |kind: &str, at: Option<&str>| LimitPause { kind: kind.into(), resets_at: at.map(Into::into) };
+        let pause = |kind: &str, at: Option<&str>| LimitPause { kind: kind.into(), resets_at: at.map(Into::into), ..Default::default() };
         assert_eq!(
             normalize_pause(&pause("weekly", Some("2026-11-07T01:00:00+02:00"))).unwrap().resets_at.as_deref(),
             Some("2026-11-06T23:00:00Z")

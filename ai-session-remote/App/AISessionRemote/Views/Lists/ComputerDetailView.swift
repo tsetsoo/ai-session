@@ -190,6 +190,12 @@ struct ComputerDetailView: View {
         }
     }
 
+    /// The row's Resume while its usage limit's reset is offered (and the hub is reachable).
+    private func resumeAction(_ conversation: Conversation) -> (() -> Void)? {
+        guard conversation.paused?.offer == true, !store.isOffline else { return nil }
+        return { actions.resumeAfterLimit(conversation, store: store, hosts: hosts) }
+    }
+
     private func row(_ conversation: Conversation, todo: Todo?, board: ConversationBoard) -> some View {
         let status = board.status(of: conversation)
         let open: (() -> Void)? = todo.flatMap { todo in
@@ -208,7 +214,8 @@ struct ComputerDetailView: View {
             isBusy: actions.inFlight.contains(conversation.listKey),
             onDone: todo.flatMap { todo in
                 todo.completed || store.isOffline ? nil : { Task { await store.toggle(todo) } }
-            }
+            },
+            onResume: resumeAction(conversation)
         )
         .tag(conversation.listKey)
         .rowTap(selection == nil ? open : nil)

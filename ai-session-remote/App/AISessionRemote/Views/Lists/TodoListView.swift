@@ -198,7 +198,11 @@ struct TodoListView: View {
             canToggle: canChange,
             projectName: store.project(id: todo.projectId)?.name,
             scheduledLabel: store.scheduledLabel(for: todo),
-            onToggle: { toggle(todo) }
+            onToggle: { toggle(todo) },
+            onResume: conversation.flatMap { conversation in
+                conversation.paused?.offer == true && canChange
+                    ? { actions.resumeAfterLimit(conversation, store: store, hosts: hosts) } : nil
+            }
         )
         .tag(todo.id)
         .rowTap(selection == nil ? { onOpen(todo) } : nil)

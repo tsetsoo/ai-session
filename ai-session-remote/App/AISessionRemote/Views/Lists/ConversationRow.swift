@@ -14,6 +14,8 @@ struct ConversationRow: View {
     var onDone: (() -> Void)?
     /// Its ⌘n in the Mac's conversation lists.
     var shortcut: Int?
+    /// The one-tap Resume, while a weekly or unknown limit's reset is offered.
+    var onResume: (() -> Void)?
 
     /// Width of the dot column; the lines under the title start after it.
     private static let dotColumn: CGFloat = 21
@@ -39,6 +41,8 @@ struct ConversationRow: View {
                     Spacer(minLength: DS.spacing.s)
                     if isBusy {
                         ProgressView().controlSize(.small)
+                    } else if let onResume {
+                        ResumeAfterLimitButton(action: onResume)
                     } else if isHovering, let onDone {
                         Button(action: onDone) {
                             Image(systemName: "checkmark.circle")
@@ -76,10 +80,27 @@ struct ConversationRow: View {
         .onHover { isHovering = $0 }
         .accessibilityElement(children: .combine)
         .accessibilityActions {
+            if let onResume {
+                Button("Resume", action: onResume)
+            }
             if let onDone {
                 Button("Mark Todo Done", action: onDone)
             }
         }
+    }
+}
+
+/// "Resume" in a row once a usage limit has reset. Quiet: a small bordered button, no badge.
+struct ResumeAfterLimitButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button("Resume", action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            #if os(macOS)
+            .help("Continue where it stopped at the usage limit")
+            #endif
     }
 }
 

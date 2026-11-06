@@ -15,6 +15,8 @@ struct TodoRow: View {
     /// "Scheduled · <job>" for a todo a scheduler job created.
     var scheduledLabel: String?
     let onToggle: () -> Void
+    /// The one-tap Resume, while a weekly or unknown limit's reset is offered.
+    var onResume: (() -> Void)? = nil
 
     private static let toolIconSide: CGFloat = 20
 
@@ -63,6 +65,8 @@ struct TodoRow: View {
 
             if isBusy {
                 ProgressView().controlSize(.small)
+            } else if let onResume {
+                ResumeAfterLimitButton(action: onResume)
             } else if let status {
                 // Only Needs you gets the pill; the dots leave the title room in the Mac's
                 // narrow list column.

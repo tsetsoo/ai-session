@@ -138,6 +138,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v24_objects(&conn).expect("Failed to add worktree columns");
     conn.execute_batch(crate::health::V25_OBJECTS).expect("Failed to create the computer health table");
     create_v26_objects(&conn).expect("Failed to create the worker and model usage tables");
+    create_v27_objects(&conn).expect("Failed to add the resume-after-limit columns");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -217,7 +218,15 @@ fn conversations_ddl(table: &str) -> String {
             status_event_ns   INTEGER,
             status_turn_ns    INTEGER,
             paused_kind       TEXT,
-            paused_until      TEXT
+            paused_until      TEXT,
+            resume_on_reset   INTEGER NOT NULL DEFAULT 0,
+            resume_off_reason TEXT,
+            resume_attempts   TEXT,
+            resume_last_at    TEXT,
+            resume_at         TEXT,
+            resume_offer      INTEGER NOT NULL DEFAULT 0,
+            resume_token      TEXT,
+            resume_lease_until TEXT
         )"
     )
 }
@@ -623,6 +632,32 @@ fn create_v21_objects(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The v27 conversation columns: resume after a usage limit resets.
+const V27_COLUMNS: &[(&str, &str)] = &[
+    ("resume_on_reset", "INTEGER NOT NULL DEFAULT 0"),
+    ("resume_off_reason", "TEXT"),
+    ("resume_attempts", "TEXT"),
+    ("resume_last_at", "TEXT"),
+    ("resume_at", "TEXT"),
+    ("resume_offer", "INTEGER NOT NULL DEFAULT 0"),
+    ("resume_token", "TEXT"),
+    ("resume_lease_until", "TEXT"),
+];
+
+/// v27: resume after a usage limit: the per-conversation toggle, the attempt count, the
+/// planned time, the one-tap offer and the lease.
+fn create_v27_objects(conn: &Connection) -> rusqlite::Result<()> {
+    if table_sql(conn, "conversations")?.is_none() {
+        return Ok(());
+    }
+    for (column, ty) in V27_COLUMNS {
+        if !column_exists(conn, "conversations", column)? {
+            conn.execute_batch(&format!("ALTER TABLE conversations ADD COLUMN {column} {ty};"))?;
+        }
+    }
+    Ok(())
+}
+
 /// v23: a conversation paused by a usage limit: its kind and when the limit resets.
 fn create_v23_objects(conn: &Connection) -> rusqlite::Result<()> {
     for column in ["paused_kind", "paused_until"] {
@@ -863,9 +898,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v25: `computer_health`, each computer's last doctor report (additive)
 /// - v26: `session_workers`, `session_worker_days`, `session_models`,
 ///   `sessions.copied_entries_skipped` (additive)
+/// - v27: conversations gain resume after a usage limit (toggle, plan, offer, lease; additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 26;
+pub const SCHEMA_VERSION: i64 = 27;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -885,6 +921,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
                 if column_exists(conn, "conversations", "worktree_source")? {
                     if table_sql(conn, "computer_health")?.is_some() {
                         if table_sql(conn, "session_workers")?.is_some() {
+                            if column_exists(conn, "conversations", "resume_lease_until")? {
+                                return Ok(27);
+                            }
                             return Ok(26);
                         }
                         return Ok(25);
@@ -2918,11 +2957,31 @@ mod tests {
     }
 
     #[test]
+    fn migrates_to_v27() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        for (column, _) in V27_COLUMNS {
+            conn.execute_batch(&format!("ALTER TABLE conversations DROP COLUMN {column};")).unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version = 26;").unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 27);
+        for (column, _) in V27_COLUMNS {
+            assert!(column_exists(&conn, "conversations", column).unwrap(), "{column}");
+        }
+    }
+
+    #[test]
     fn schema_version_sniffs_v22() {
         let db = TestDb::new("migrate");
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 27);
+        conn.execute_batch("ALTER TABLE conversations DROP COLUMN resume_lease_until;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 26);
         conn.execute_batch("DROP TABLE session_worker_days; DROP TABLE session_workers;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 25);
@@ -2962,7 +3021,7 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 26);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         for table in ["session_workers", "session_worker_days", "session_models"] {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table}");
         }
@@ -2970,7 +3029,7 @@ mod tests {
         drop(conn);
         drop(pool);
         // A second start changes nothing.
-        assert_eq!(user_version(&db.pool().get().unwrap()), 26);
+        assert_eq!(user_version(&db.pool().get().unwrap()), SCHEMA_VERSION);
     }
 
     #[test]

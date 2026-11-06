@@ -227,6 +227,18 @@ fn base_description() -> Value {
                 "example_request": {"mcp_servers": ["grafana", "slack"]}
             },
             {
+                "method": "PUT",
+                "path": "/api/conversations/{id}/resume",
+                "description": "Switch resume after a session (5-hour) usage limit on or off for one Codex conversation (off by default; Claude continues on its own). On clears resume_off_reason and the attempt count; off cancels a planned resume. Weekly and unknown limits are never resumed automatically. Returns the Conversation; 404 if unknown",
+                "example_request": {"resume_on_reset": true}
+            },
+            {
+                "method": "POST",
+                "path": "/api/conversations/resume",
+                "description": "The computer's status service about a paused conversation, found by tool and session_id. action: state; arm {resume_at} (kept only for a session pause with the toggle on; shown as paused.resume_at); disarm; offer (raise the one-tap Resume, paused.offer); claim {token, manual} (a 3-minute lease: granted to one claimant; automatic claims need a Codex conversation (Claude: reason claude_continues), the toggle, a session pause, not reviewed and fewer than 3 automatic resumes in 24 h, and at that cap the toggle goes off with resume_off_reason cap and the offer is raised); sent {token}; release {token}. Returns {conversation_id, tmux_name, cwd, status, paused, reviewed, resume_on_reset, resume_off_reason, granted, reason}. A new pause, a new turn or another status clears resume_at, the offer and the lease. 404 for an unknown session, 400 for an unknown action, a bad time or a claim without a token. Never sends a push",
+                "example_request": {"tool": "claude", "session_id": "<uuid>", "action": "claim", "token": "<random>"}
+            },
+            {
                 "method": "POST",
                 "path": "/api/conversations/mcp",
                 "description": "Host-script report of the MCP servers a conversation was started with, found by tool and session_id. 204 on success, 404 when no conversation has that tool and session_id, 400 for an invalid name",
@@ -662,6 +674,8 @@ mod tests {
             ("POST", "/api/updates/reports"),
             ("PUT", "/api/conversations/{id}/mcp"),
             ("POST", "/api/conversations/mcp"),
+            ("PUT", "/api/conversations/{id}/resume"),
+            ("POST", "/api/conversations/resume"),
             ("POST", "/api/sessions/stats"),
             ("GET", "/api/sessions"),
             ("PUT", "/api/sessions/{tool}/{session_id}/project"),

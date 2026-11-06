@@ -72,6 +72,13 @@ enum ConversationToolbar {
         return pending.command
     }
 
+    /// The menu's Resume After Session Limit: shown for a Codex conversation the hub has
+    /// stored, with its current value. Claude continues on its own.
+    static func resumeToggle(_ conversation: Conversation?) -> Bool? {
+        guard let conversation, conversation.canAutoResumeAfterLimit, !conversation.id.isEmpty else { return nil }
+        return conversation.resumeOnReset
+    }
+
     @MainActor
     static func displayStatus(todo: Todo, store: TodoHubStore, selectedKey: String? = nil) -> ConversationDisplayStatus? {
         let conversation = store.displayed(forTodo: todo.id, selectedKey: selectedKey)
@@ -99,6 +106,10 @@ enum ConversationToolbarCommand: Equatable {
     case paste
     /// Review Changes… (Mac): the frame knows the conversation, including one the hub hasn't listed yet.
     case review
+    /// Resume After Session Limit on or off.
+    case toggleResume
+    /// The one-tap Resume once a weekly or unknown limit has reset.
+    case resumeNow
     case duplicate(tool: String, name: String)
 }
 
@@ -154,6 +165,9 @@ struct ConversationMenu: View {
     let onPaste: () -> Void
     /// Review Changes… (Mac): the conversation's worktree changes in their own window.
     var onReview: (() -> Void)? = nil
+    /// Resume After Session Limit: nil hides it (no conversation, or not Codex).
+    var resumeOnReset: Bool? = nil
+    var onToggleResume: () -> Void = {}
 
     @AppStorage(TextSizeShortcuts.fontSizeKey) private var fontSize = TerminalAppearance.defaultFontSize
 
@@ -187,6 +201,13 @@ struct ConversationMenu: View {
                 Label("Restart…", systemImage: "arrow.triangle.2.circlepath")
             }
             .disabled(!canRestart)
+            if let resumeOnReset {
+                // Continues on its own once a 5-hour limit resets. Weekly limits always ask.
+                Toggle(isOn: Binding(get: { resumeOnReset }, set: { _ in onToggleResume() })) {
+                    Label("Resume After Session Limit", systemImage: "arrow.clockwise.circle")
+                }
+                .disabled(!canChange)
+            }
             Button(action: onClose) {
                 Label("Close Conversation", systemImage: "xmark.circle")
             }
@@ -300,12 +321,21 @@ struct ConversationToolbarActions: View {
     /// A duplicate is being made. The frame shows its progress; a second one waits.
     var isDuplicating = false
     var onReview: (() -> Void)? = nil
+    /// Resume After Session Limit in the menu: nil hides it.
+    var resumeOnReset: Bool? = nil
+    var onToggleResume: () -> Void = {}
+    /// A weekly or unknown limit has reset: the one-tap Resume.
+    var showsResumeNow = false
+    var onResumeNow: () -> Void = {}
 
     var body: some View {
         HStack(spacing: ConversationToolbar.controlSpacing) {
             if let status {
                 StatusBadge(status, style: .pill, detail: statusDetail)
                     .padding(.horizontal, DS.spacing.xs)
+            }
+            if showsResumeNow {
+                ResumeAfterLimitButton(action: onResumeNow)
             }
             if showsCopy {
                 Button(action: onCopy) {
@@ -348,7 +378,9 @@ struct ConversationToolbarActions: View {
                 onReconnect: onReconnect,
                 onCopyScreen: onCopyScreen,
                 onPaste: onPaste,
-                onReview: onReview
+                onReview: onReview,
+                resumeOnReset: resumeOnReset,
+                onToggleResume: onToggleResume
             )
         }
     }

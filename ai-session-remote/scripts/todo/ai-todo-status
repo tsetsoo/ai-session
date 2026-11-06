@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor | report | launch save|resume-args|show … | restart NAME ID TOOL [--force] [--chrome on|off|default] [--reopen CWD [--mcp NAMES]] | writer NAME ID | reap | loaded NAME."""
+"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor | report | launch save|resume-args|show … | restart NAME ID TOOL [--force] [--chrome on|off|default] [--reopen CWD [--mcp NAMES]] | writer NAME ID | reap | loaded NAME | resume TOOL ID.
+
+resume TOOL ID  the app's one-tap Resume for a conversation paused by a usage limit: check it
+                (no question card, nothing typed, the limit has reset), take the hub's lease
+                and type the resume message into its tmux session. Prints JSON; exit 0 when
+                typed, 75 when not now ({"resumed": false, "reason": ...})."""
 import json
 import os
 from pathlib import Path
@@ -24,6 +29,11 @@ def main(args):
     elif args[:1] == ["loaded"] and len(args) == 2:
         for sid in terminal_threads(args[1]):
             print(sid)
+    elif args[:1] == ["resume"] and len(args) == 3 and args[1] in ("claude", "codex"):
+        import ai_todo_resume
+        code, result = ai_todo_resume.resume_now(args[1], args[2])
+        print(json.dumps(result))
+        return code
     elif args == ["reap"]:
         # The status service does this every minute; by hand it prints the pids it stopped.
         print(json.dumps(reap_backends()))

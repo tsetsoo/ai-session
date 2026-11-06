@@ -505,12 +505,21 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
     hook_event = body.pop("_hook_event", None)
     claude_metadata = body.pop("_claude", {})
     limit = body.pop("_limit", None)
+    auto_resumed = body.pop("_auto_resumed", None)
     body.pop("paused", None)  # Only this publisher decides a pause.
     instance = body.pop("_claude_instance", None)
     observed = int(observed_ns if observed_ns is not None else time.time_ns())
     if not 0 <= observed <= 2**63 - 1:
         raise ValueError("invalid event timestamp")
     with session_lock(sid, tool=tool) as path:
+        if auto_resumed:
+            # Claude continued on its own: never type a second "continue", even if this report
+            # turns out stale or idle.
+            try:
+                import ai_todo_resume
+                ai_todo_resume.forget(tool, sid, "claude_auto_resumed")
+            except (ImportError, OSError):
+                pass
         previous = read_json(path, {})
         previous_body = previous.get("body", {})
         previous_time = previous_body.get("event_timestamp_ns", -1)
@@ -574,6 +583,14 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
         body["event_timestamp_ns"] = observed
         if turn_started:
             body["turn_started_ns"] = turn_started
+        try:
+            import ai_todo_resume
+            if body.get("paused") and not auto_resumed:
+                ai_todo_resume.note_pause(tool, sid, body["paused"], observed)
+            elif body["status"] != "idle" or new_turn:
+                ai_todo_resume.forget(tool, sid, "new_turn" if new_turn else body["status"])
+        except (ImportError, OSError, ValueError):
+            pass  # Resuming is a nicety; the status must still go out.
         attended_ns = previous.get("attended_ns", 0)
         if source != "runtime" and body.get("attended"):
             attended_ns = time.time_ns()
@@ -1352,6 +1369,15 @@ def watch():
                 pass
     if "codex" in enabled:
         threading.Thread(target=reap_loop, daemon=True).start()
+    def resume_loop():
+        import ai_todo_resume
+        while True:
+            time.sleep(15)
+            try:
+                ai_todo_resume.tick()
+            except Exception:
+                pass  # One bad entry or a hub outage must not stop the loop.
+    threading.Thread(target=resume_loop, daemon=True).start()
     while True:
         health = {"protocol_version": 2, "checked_ns": time.time_ns(), "runtime_connected": False}
         try:

@@ -4819,6 +4819,7 @@ assert messages == [
 PY
 pass "chat transcript preserves roles, blank lines and indentation"
 python3 "${SCRIPT_DIR}/test-status.py" || fail "Codex status delivery/runtime regressions"
+python3 "${SCRIPT_DIR}/test-resume.py" || fail "resume after a usage limit"
 pass "Codex runtime state, concurrency, durable retries and executable discovery"
 python3 "${SCRIPT_DIR}/test-doctor.py" || fail "doctor regressions"
 pass "doctor: install methods, running versions, deliveries, helpers digest, auth, hub report"

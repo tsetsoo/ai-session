@@ -89,16 +89,54 @@ public enum RowText {
 
     /// "Session limit · resets 00:40", "Weekly limit · resets Mon 01:00", "Usage limit".
     /// A reset already past reads "resetting": the limit is over, the turn hasn't resumed.
+    /// A planned resume reads "Session limit · resumes 00:42"; an offered one "… · ready to resume".
     public static func pauseText(_ pause: LimitPause, now: Date, calendar: Calendar = .current,
                                  locale: Locale = .current) -> String {
+        if pause.offer { return "\(pause.title) · ready to resume" }
+        if let resume = pause.resumeDate, resume > now {
+            return "\(pause.title) · resumes \(clock(resume, now: now, calendar: calendar, locale: locale))"
+        }
         guard let reset = pause.resetDate else { return pause.title }
         if reset <= now { return "\(pause.title) · resetting" }
+        return "\(pause.title) · resets \(clock(reset, now: now, calendar: calendar, locale: locale))"
+    }
+
+    /// The conversation toolbar's line under "Paused": `pauseText`, and why it won't resume on
+    /// its own when the hub stopped it.
+    public static func pauseDetail(_ conversation: Conversation, now: Date, calendar: Calendar = .current,
+                                   locale: Locale = .current) -> String? {
+        guard let pause = conversation.paused else { return nil }
+        let text = pauseText(pause, now: now, calendar: calendar, locale: locale)
+        return conversation.resumeStoppedByCap && !pause.offer ? text + " · auto-resume off after 3 today" : text
+    }
+
+    /// The failure line for a Resume tap that the computer turned down (`ai-todo-status resume`).
+    public static func resumeRefusal(reason: String?, resetsAt: Date?, tool: String, now: Date,
+                                     calendar: Calendar = .current, locale: Locale = .current) -> String {
+        let name = toolName(tool)
+        switch reason {
+        case "limit":
+            guard let resetsAt else { return "The usage limit hasn't reset yet." }
+            return "The usage limit hasn't reset yet. It resets \(clock(resetsAt, now: now, calendar: calendar, locale: locale))."
+        case "question": return "\(name) is asking something on screen. Answer it in the conversation."
+        case "draft": return "There is text in \(name)'s prompt. Send or clear it in the conversation."
+        case "busy": return "\(name) isn't at its prompt. Open the conversation to see what it is doing."
+        case "not_paused": return "It isn't paused any more."
+        case "closed": return "The conversation is closed."
+        case "leased": return "It is already being resumed."
+        case "no_session": return "Couldn't reopen the conversation on its computer."
+        case "hub_unavailable": return "The computer couldn't reach the todo server."
+        default: return "Couldn't resume it. Open the conversation and continue there."
+        }
+    }
+
+    private static func clock(_ date: Date, now: Date, calendar: Calendar, locale: Locale) -> String {
         var style = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone)
             .hour().minute()
-        if !calendar.isDate(reset, inSameDayAs: now) {
-            style = reset.timeIntervalSince(now) < 6 * 24 * 3600 ? style.weekday(.abbreviated) : style.day().month(.abbreviated)
+        if !calendar.isDate(date, inSameDayAs: now) {
+            style = date.timeIntervalSince(now) < 6 * 24 * 3600 ? style.weekday(.abbreviated) : style.day().month(.abbreviated)
         }
-        return "\(pause.title) · resets \(reset.formatted(style))"
+        return date.formatted(style)
     }
 
     /// A todo row's second line: the status message when it needs you, else "mac-studio · 3m".

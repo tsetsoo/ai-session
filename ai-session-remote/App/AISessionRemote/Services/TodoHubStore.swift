@@ -718,6 +718,37 @@ final class TodoHubStore {
         }
     }
 
+    /// Switches resuming after a session (5-hour) limit on or off for one conversation. Off
+    /// cancels a planned resume.
+    func setResumeOnReset(_ on: Bool, for conversation: Conversation) async throws {
+        try await perform { client in
+            let updated = try await client.setConversationResume(id: conversation.id, on: on)
+            localChanges += 1
+            remember(updated)
+        }
+    }
+
+    /// The one-tap Resume of a paused conversation: its computer checks it, takes the hub's
+    /// lease and types the resume message. Reopening a closed session can take a minute.
+    func resumeAfterLimit(_ conversation: Conversation, config: HostConnectionConfig) async throws -> LimitResumeOutcome {
+        #if DEBUG
+        if demo != nil { return LimitResumeOutcome(resumed: true) }
+        #endif
+        let result = try await NIOSSHClient(execTimeoutSeconds: 300).exec(
+            config,
+            command: TmuxCommandBuilder.resumeAfterLimit(tool: conversation.tool, sessionId: conversation.sessionId)
+        )
+        guard let outcome = LimitResumeOutcome.parse(stdout: result.stdout, exitCode: result.exitCode) else {
+            // 64: helpers from before resuming; 127: none at all.
+            if result.exitCode == 64 || result.exitCode == TmuxCommandBuilder.scriptMissingExitCode {
+                throw RemoteConversations.ScriptMissing(computer: conversation.computer.name)
+            }
+            throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
+        }
+        refreshSoon()
+        return outcome
+    }
+
     /// Sets (or, with nil, clears) the MCP servers new conversations in the project start with.
     func setDefaultServers(_ names: [String]?, for project: Project) async throws {
         let change: MCPDefaultChange = names.map { .set($0) } ?? .clear
@@ -757,8 +788,9 @@ final class TodoHubStore {
         #if DEBUG
         if DemoFixtures.isEnabled { return true }
         #endif
-        guard conversation.status == .idle, !conversation.reviewed, !conversation.id.isEmpty,
-              !isOffline, let client = hubClient() else { return conversation.reviewed }
+        // A paused conversation isn't a result yet: looking at it must not stop its resume.
+        guard conversation.status == .idle, conversation.paused == nil, !conversation.reviewed,
+              !conversation.id.isEmpty, !isOffline, let client = hubClient() else { return conversation.reviewed }
         do {
             let updated = try await client.reviewConversation(id: conversation.id, statusRevision: conversation.statusRevision)
             let key = Self.storageKey(conversation)
