@@ -80,6 +80,7 @@ final class ReviewSession {
         }
         isLoading = true
         defer { if generation == loadGeneration { isLoading = false } }
+        let knownAtStart = Set(record.comments.map(\.id))
         do {
             let status: ReviewStatus = try await run(TmuxCommandBuilder.reviewStatus(cwd: conversation.cwd), config: config)
             guard generation == loadGeneration else { return }
@@ -93,7 +94,14 @@ final class ReviewSession {
             self.status = status
             self.result = result
             diff = UnifiedDiff(parsing: result.patch)
-            anchors = placed
+            // Comments written while this load ran aren't in `placed`. One on the revision now
+            // on screen stays where it is; one on the old revision is placed by the next load.
+            var merged = placed
+            for comment in record.comments where !knownAtStart.contains(comment.id) && comment.side == .new
+                && comment.revision == result.to {
+                merged[comment.id] = .moved(path: comment.path, startLine: comment.startLine, endLine: comment.endLine)
+            }
+            anchors = merged
             failure = nil
         } catch {
             guard generation == loadGeneration else { return }
@@ -215,10 +223,9 @@ final class ReviewSession {
                 guard movedPath == path else { return false }
                 guard let start else { return true }
                 return !shownNew.contains(end ?? start)
-            case .stale?:
-                return comment.path == path
-            case nil:
-                return comment.path == path
+            case .stale?, nil:
+                // Not followed to this revision: under the name it had, which a rename changed.
+                return comment.path == path || comment.path == file.oldPath
             }
         }
     }
@@ -261,15 +268,22 @@ final class ReviewSession {
         }
     }
 
+    /// Drafts on another revision that couldn't be followed to the one on screen (their
+    /// comparison failed or that revision is gone). Stale ones were checked and did change.
+    func unchecked() -> Set<UUID> {
+        Set(drafts.filter { $0.side == .new && $0.revision != result?.to && anchors[$0.id] == nil }.map(\.id))
+    }
+
     func message() -> String {
         ReviewMessage.render(outgoing(), branch: status?.branch, revision: result?.to ?? status?.revision ?? "",
-                             includesUncommitted: status.map { !$0.clean } ?? false)
+                             includesUncommitted: status.map { !$0.clean } ?? false, unchecked: unchecked())
     }
 
     /// Keeps the revision on the computer, types the message into the conversation, and marks
     /// the drafts sent. Nothing is marked when the message didn't go.
     func send(config: HostConnectionConfig) async {
-        guard sendBlocker == nil, let revision = result?.to else { return }
+        // Return pressed twice queues two sends before either has marked anything sent.
+        guard !isSending, sendBlocker == nil, let revision = result?.to else { return }
         isSending = true
         defer { isSending = false }
         let outgoing = outgoing()

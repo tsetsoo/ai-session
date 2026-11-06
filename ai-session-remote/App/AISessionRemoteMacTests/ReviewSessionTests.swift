@@ -11,6 +11,12 @@ final class ReviewSessionTests: XCTestCase {
     private var sendExit: Int32 = 0
     private var revision = "rev2"
     private var mappingTruncated = false
+    private var mappingFails = false
+    /// The diff on screen renames the file.
+    private var renamed = false
+    /// While set, `send` waits for the second press to arrive.
+    private var holdSend = false
+    private var heldSend: CheckedContinuation<Void, Never>?
     /// While set, the uncommitted diff waits for `release()`.
     private var holdUncommitted = false
     private var held: CheckedContinuation<Void, Never>?
@@ -34,6 +40,7 @@ final class ReviewSessionTests: XCTestCase {
             return json(["root": "/w", "branch": "feat", "head": "head1", "revision": revision, "clean": false])
         }
         if command.contains(" diff "), command.contains("--unified 0") {
+            if mappingFails { return SSHExecResult(exitCode: 65, stdout: "", stderr: "gone") }
             let patch = mappingTruncated ? "" : mapping
             return json(["from": "rev1", "to": revision, "scope": "since", "patch": patch, "truncated": mappingTruncated])
         }
@@ -42,11 +49,16 @@ final class ReviewSessionTests: XCTestCase {
             if scope == "uncommitted", holdUncommitted {
                 await withCheckedContinuation { held = $0 }
             }
-            let patch = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,3 @@\n a\n+inserted\n b\n"
+            let patch = renamed
+                ? "diff --git a/f.txt b/g.txt\nsimilarity index 90%\nrename from f.txt\nrename to g.txt\n--- a/f.txt\n+++ b/g.txt\n@@ -1,2 +1,3 @@\n a\n+inserted\n b\n"
+                : "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,3 @@\n a\n+inserted\n b\n"
             return json(["from": "head1", "to": revision, "scope": scope, "patch": patch, "truncated": false])
         }
         if command.contains(" keep ") { return json(["kept": revision]) }
-        if command.contains(" send ") { return SSHExecResult(exitCode: sendExit, stdout: "{}", stderr: "") }
+        if command.contains(" send ") {
+            if holdSend { await withCheckedContinuation { heldSend = $0 } }
+            return SSHExecResult(exitCode: sendExit, stdout: "{}", stderr: "")
+        }
         return SSHExecResult(exitCode: 1, stdout: "", stderr: "unexpected")
     }
 
@@ -100,6 +112,63 @@ final class ReviewSessionTests: XCTestCase {
         await session.load(config: config)
         XCTAssertNil(session.anchors[old.id])
         XCTAssertEqual(session.otherComments(file: session.diff.files[0]).map(\.id), [old.id])
+    }
+
+    func testASecondSendWhileTheFirstRunsDoesNothing() async {
+        let (session, store) = makeSession()
+        await session.load(config: config)
+        session.addComment(path: "f.txt", side: .new, lines: 2...2, quote: ["inserted"], body: "x")
+        holdSend = true
+        let first = Task { await session.send(config: config) }
+        while heldSend == nil { await Task.yield() }
+        await session.send(config: config)
+        heldSend?.resume()
+        await first.value
+        XCTAssertEqual(commands.filter { $0.contains(" send ") }.count, 1)
+        XCTAssertEqual(store.record(session.key).batches.count, 1)
+    }
+
+    func testACommentAddedDuringALoadKeepsItsPlace() async {
+        let (session, _) = makeSession()
+        await session.load(config: config)
+        holdUncommitted = true
+        let reload = Task { await session.load(config: config) }
+        while held == nil { await Task.yield() }
+        session.addComment(path: "f.txt", side: .new, lines: 2...2, quote: ["inserted"], body: "x")
+        held?.resume()
+        await reload.value
+        let id = session.drafts[0].id
+        XCTAssertEqual(session.anchors[id], .moved(path: "f.txt", startLine: 2, endLine: nil))
+        XCTAssertFalse(session.message().contains("changed since"))
+    }
+
+    func testAStaleCommentOnARenamedFileStillShows() async {
+        let (session, store) = makeSession()
+        renamed = true
+        let old = ReviewComment(path: "f.txt", startLine: 1, endLine: nil, revision: "rev1", quote: ["a"], body: "x")
+        store.update(session.key) { $0.comments.append(old) }
+        mappingFails = true
+        await session.load(config: config)
+        XCTAssertEqual(session.diff.files.map(\.path), ["g.txt"])
+        XCTAssertEqual(session.otherComments(file: session.diff.files[0]).map(\.id), [old.id])
+        XCTAssertTrue(session.commentsOutsideDiff().isEmpty)
+        // Its comparison failed: the message says so instead of claiming the lines changed.
+        XCTAssertEqual(session.unchecked(), [old.id])
+        XCTAssertTrue(session.message().contains("not checked against the current code"), session.message())
+    }
+
+    func testAnUnreadableStoreFileIsKeptAside() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("review-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("review-comments.json")
+        try Data("{not json".utf8).write(to: url)
+        let store = ReviewStore(fileURL: url)
+        store.update("k") { $0.comments.append(ReviewComment(path: "a", startLine: 1, endLine: nil, revision: "r", quote: [], body: "b")) }
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        XCTAssertEqual(names.count, 2, "\(names)")
+        let aside = try XCTUnwrap(names.first { $0.contains("unreadable") })
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent(aside), encoding: .utf8), "{not json")
     }
 
     func testSinceWithoutABatchFallsBackToUncommitted() async {

@@ -75,14 +75,21 @@ struct ReviewView: View {
         .task(id: session.scope) { await reload() }
         .onChange(of: conversation) { _, updated in session.refresh(updated) }
         .sheet(isPresented: $showingSend) {
-            SendPreview(message: session.message(), count: session.drafts.count, isSending: session.isSending) {
+            // A failed send is shown in the sheet: macOS doesn't present the window's alert over it.
+            SendPreview(message: session.message(), count: session.drafts.count, isSending: session.isSending,
+                        error: session.failure?.errorDescription) {
                 Task {
+                    session.failure = nil
                     await withConfig { await session.send(config: $0) }
                     if session.failure == nil { showingSend = false }
                 }
-            } onCancel: { showingSend = false }
+            } onCancel: {
+                session.failure = nil
+                showingSend = false
+            }
         }
-        .alert("Review", isPresented: Binding(get: { session.failure != nil }, set: { if !$0 { session.failure = nil } })) {
+        .alert("Review", isPresented: Binding(get: { session.failure != nil && !showingSend },
+                                              set: { if !$0 { session.failure = nil } })) {
             Button("OK", role: .cancel) { session.failure = nil }
         } message: {
             Text(session.failure?.errorDescription ?? "")
@@ -124,6 +131,13 @@ struct ReviewView: View {
                     .buttonStyle(.link)
                 }
             }
+            if session.result?.truncated == true {
+                Section {
+                    Label("This diff is too large to show whole. Files after the last one listed are left out.",
+                          systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(DS.warning)
+                }
+            }
             Section(filesHeader) {
                 ForEach(session.diff.files) { file in
                     FileRow(file: file, comments: session.commentCount(file: file))
@@ -132,7 +146,8 @@ struct ReviewView: View {
             }
             let elsewhere = session.commentsOutsideDiff()
             if !elsewhere.isEmpty {
-                Section("Comments on Other Files") {
+                // In a cut-off diff these files may have changes that just aren't listed.
+                Section(session.result?.truncated == true ? "Comments on Files Not Listed" : "Comments on Other Files") {
                     ForEach(elsewhere) { comment in
                         CommentCard(comment: comment, isStale: session.isStale(comment), session: session)
                     }
@@ -600,6 +615,7 @@ private struct SendPreview: View {
     let message: String
     let count: Int
     let isSending: Bool
+    let error: String?
     let onSend: () -> Void
     let onCancel: () -> Void
 
@@ -618,6 +634,11 @@ private struct SendPreview: View {
                     .padding(DS.spacing.s)
             }
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(DS.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)

@@ -8,15 +8,17 @@ public enum ReviewMessage {
     /// - Parameters:
     ///   - branch: the worktree's branch, when it has one.
     ///   - revision: the revision the comments are on now; `includesUncommitted` when it is a snapshot.
+    ///   - unchecked: comments on another revision that couldn't be followed to this one (the
+    ///     comparison failed or that revision is gone), as opposed to ones whose lines changed.
     public static func render(_ comments: [ReviewComment], branch: String?, revision: String,
-                              includesUncommitted: Bool) -> String {
+                              includesUncommitted: Bool, unchecked: Set<UUID> = []) -> String {
         let at = [branch.map { "on \($0)" }, "at \(revision.prefix(8))"].compactMap { $0 }.joined(separator: " ")
         let count = comments.count == 1 ? "1 comment" : "\(comments.count) comments"
         let uncommitted = includesUncommitted ? ", including uncommitted changes" : ""
         var parts = ["Review feedback \(at)\(uncommitted) (\(count)). Address each numbered item; "
             + "then reply with what you changed for each number, or why you didn't."]
         for (index, comment) in comments.enumerated() {
-            var lines = ["\(index + 1). \(heading(comment, revision: revision))"]
+            var lines = ["\(index + 1). \(heading(comment, revision: revision, unchecked: unchecked.contains(comment.id)))"]
             let quote = comment.quote.prefix(maxQuotedLines).map { "> " + $0 }
             lines += quote
             if comment.quote.count > maxQuotedLines { lines.append("> …") }
@@ -28,10 +30,13 @@ public enum ReviewMessage {
 
     /// A comment still on another revision (its lines changed, or couldn't be followed) names
     /// that revision, so its line numbers aren't read against the one in the first line.
-    private static func heading(_ comment: ReviewComment, revision: String) -> String {
+    private static func heading(_ comment: ReviewComment, revision: String, unchecked: Bool) -> String {
         if comment.startLine == nil { return "\(comment.path) (whole file)" }
         if comment.side == .old { return "\(comment.location) (removed lines, at \(comment.revision.prefix(8)))" }
         if comment.revision != revision {
+            if unchecked {
+                return "\(comment.location) (at \(comment.revision.prefix(8)); not checked against the current code)"
+            }
             return "\(comment.location) (at \(comment.revision.prefix(8)); these lines have changed since)"
         }
         return comment.location

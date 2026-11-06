@@ -950,13 +950,11 @@ private struct ConversationColumn: View {
         toolbarRequest = ConversationToolbarRequest(command: command, todoID: todoID)
     }
 
+    /// Through the frame, like the other actions: it resolves the conversation (also one
+    /// just started that the hub hasn't listed yet).
     private func reviewAction(_ todoID: String) -> (() -> Void)? {
         #if os(macOS)
-        return {
-            model.openReview(todoID: todoID,
-                             conversation: model.store.displayed(forTodo: todoID, selectedKey: model.selectedConversationID),
-                             openWindow: openWindow)
-        }
+        return { send(.review, for: todoID) }
         #else
         return nil
         #endif

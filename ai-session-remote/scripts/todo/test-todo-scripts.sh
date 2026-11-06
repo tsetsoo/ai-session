@@ -3667,6 +3667,9 @@ grep -q '^+B$' <<<"$("$REVIEW" diff "$RV_REPO" --scope branch | rv_field patch)"
 printf 'a\nB\nc\nd\n' >"${RV_REPO}/f.txt"
 since="$("$REVIEW" diff "$RV_REPO" --scope since --from "$rev1" --unified 0 | rv_field patch)"
 grep -q '^@@ -3,0 +4 @@' <<<"$since" || fail "since diff: $since"
+# Over the limit: whole files only, never the first file cut mid-hunk.
+cut="$("$REVIEW" diff "$RV_REPO" --scope since --from "$rev1" --max-bytes 10)"
+[[ "$(rv_field truncated <<<"$cut")" == True && -z "$(rv_field patch <<<"$cut")" ]] || fail "cut diff: $cut"
 pass "review_diff_scopes_uncommitted_branch_since"
 
 "$REVIEW" keep "$RV_REPO" "$rev1" >/dev/null || fail "keep failed"

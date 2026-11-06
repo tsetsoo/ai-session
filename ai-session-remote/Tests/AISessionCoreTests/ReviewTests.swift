@@ -204,6 +204,9 @@ struct ReviewTests {
                                    quote: ["old"], body: "b")]
         #expect(ReviewMessage.render(stale, branch: nil, revision: "bbbbbbbb2222", includesUncommitted: false)
             .contains("1. f.swift:40 (at aaaaaaaa; these lines have changed since)"))
+        #expect(ReviewMessage.render(stale, branch: nil, revision: "bbbbbbbb2222", includesUncommitted: false,
+                                     unchecked: [stale[0].id])
+            .contains("1. f.swift:40 (at aaaaaaaa; not checked against the current code)"))
     }
 
     @Test func messageWithoutBranch() {

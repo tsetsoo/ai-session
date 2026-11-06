@@ -693,6 +693,7 @@ struct ConversationFrame: View {
         case .reconnect: terminal.reconnect()
         case .copyScreen: copyScreen()
         case .paste: terminal.paste()
+        case .review: reviewAction?()
         case let .duplicate(tool, name): beginDuplicate(tool: tool, name: name)
         }
     }

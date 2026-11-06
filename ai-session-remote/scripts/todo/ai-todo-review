@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 SNAPSHOT_IDENT = {
     "GIT_AUTHOR_NAME": "ai-review", "GIT_AUTHOR_EMAIL": "ai-review@localhost",
@@ -235,7 +236,8 @@ def cmd_diff(args):
     truncated = len(patch) > max_bytes
     if truncated:
         cut = patch.rfind(b"\ndiff --git ", 0, max_bytes)
-        patch = patch[:cut + 1] if cut > 0 else patch[:max_bytes]
+        # Whole files only: a file cut mid-hunk would move comments as if its tail were unchanged.
+        patch = patch[:cut + 1] if cut > 0 else b""
     print(json.dumps({
         "from": from_sha,
         "to": to_sha,
@@ -266,6 +268,7 @@ def tmux(*args, stdin=None):
 
 
 PASTE_END = b"\x1b[201~"
+PASTE_SETTLE_SECONDS = float(os.environ.get("AI_TODO_REVIEW_PASTE_SETTLE", "0.3"))
 
 
 def cmd_send(args):
@@ -299,6 +302,8 @@ def cmd_send(args):
     if pasted.returncode != 0:
         tmux("delete-buffer", "-b", buffer)
         die("couldn't paste into %s" % name, 75)
+    # A TUI may still be taking in a long paste; Return inside that would only add a line.
+    time.sleep(PASTE_SETTLE_SECONDS)
     tmux("send-keys", "-t", target, "Enter")
     print(json.dumps({"sent": len(message)}))
 

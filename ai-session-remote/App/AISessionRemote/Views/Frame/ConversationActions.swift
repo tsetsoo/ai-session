@@ -96,6 +96,8 @@ enum ConversationToolbarCommand: Equatable {
     case reconnect
     case copyScreen
     case paste
+    /// Review Changes… (Mac): the frame knows the conversation, including one the hub hasn't listed yet.
+    case review
     case duplicate(tool: String, name: String)
 }
 
