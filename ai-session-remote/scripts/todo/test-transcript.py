@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 
 loader = importlib.machinery.SourceFileLoader("transcript", os.path.join(os.path.dirname(__file__), "ai-todo-transcript"))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -175,6 +176,209 @@ class TranscriptTests(unittest.TestCase):
             second = list(transcript.claude_lines(handle.name, activity=True))
         self.assertEqual(second[:len(first)], first)
         self.assertEqual(len(second), len(first) + 1)
+
+
+NOW = 1_800_000_000.0
+
+
+def stamp(seconds):
+    return transcript.iso_of(seconds)
+
+
+def write_jsonl(path, rows, mtime=None):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+
+
+def agent_call(use_id, description, at, **extra):
+    return {"type": "assistant", "timestamp": stamp(at), "message": {"content": [
+        {"type": "tool_use", "id": use_id, "name": "Agent",
+         "input": dict({"description": description, "subagent_type": "general-purpose", "prompt": "Do " + description}, **extra)}]}}
+
+
+def agent_result(use_id, outcome, at, is_error=False, text="ok"):
+    part = {"type": "tool_result", "tool_use_id": use_id, "content": [{"type": "text", "text": text}]}
+    if is_error:
+        part["is_error"] = True
+    return {"type": "user", "timestamp": stamp(at), "toolUseResult": outcome, "message": {"content": [part]}}
+
+
+def notice(agent, use_id, status, at, summary="", result="", usage=""):
+    return {"type": "queue-operation", "operation": "enqueue", "timestamp": stamp(at), "content":
+            "<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>%s</tool-use-id>\n<status>%s</status>\n"
+            "<summary>%s</summary>\n<result>%s</result>\n%s</task-notification>" % (agent, use_id, status, summary, result, usage)}
+
+
+def handback(agent, report, at):
+    body = "\n".join("  " + line for line in report.splitlines())
+    return {"type": "queue-operation", "operation": "enqueue", "timestamp": stamp(at), "content":
+            '<agent-message from="%s">\n[Subagent hand-back] Frame text. The report follows:\n%s\n</agent-message>' % (agent, body)}
+
+
+class DelegationTests(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        self.projects = os.path.join(self.home.name, "claude")
+        self.sessions = os.path.join(self.home.name, "codex")
+        for name, value in (("CLAUDE_PROJECTS", self.projects), ("CODEX_SESSIONS", self.sessions)):
+            old = getattr(transcript, name)
+            setattr(transcript, name, value)
+            self.addCleanup(setattr, transcript, name, old)
+        self.parent = os.path.join(self.projects, "proj", "sid.jsonl")
+        self.agents = os.path.join(self.projects, "proj", "sid", "subagents")
+
+    def agent(self, ident, meta, rows, mtime):
+        os.makedirs(self.agents, exist_ok=True)
+        with open(os.path.join(self.agents, "agent-%s.meta.json" % ident), "w") as handle:
+            json.dump(meta, handle)
+        write_jsonl(os.path.join(self.agents, "agent-%s.jsonl" % ident), rows, mtime)
+
+    def workers(self, tool="claude", sid="sid"):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), unittest.mock.patch("time.time", return_value=NOW):
+            self.assertEqual(transcript.main([tool, sid, "--subagents"]), 0)
+        return {worker["id"]: worker for worker in json.loads(out.getvalue())}
+
+    def sub_rows(self, task, last, at):
+        return [{"type": "user", "timestamp": stamp(at), "isSidechain": True, "message": {"content": task}}, last]
+
+    def end_turn(self, text, at):
+        return {"type": "assistant", "timestamp": stamp(at), "isSidechain": True,
+                "message": {"stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}}
+
+    def test_claude_background_agent_handed_back_with_totals(self):
+        write_jsonl(self.parent, [
+            agent_call("tu1", "Review branch", NOW - 900, run_in_background=True),
+            agent_result("tu1", {"status": "async_launched", "agentId": "a1", "description": "Review branch",
+                                 "resolvedModel": "claude-opus-5-5", "isAsync": True}, NOW - 899),
+            handback("a1", "Found 2 bugs.\n\n  - indented item", NOW - 300),
+            notice("a1", "tu1", "completed", NOW - 300, 'Agent "Review branch" finished',
+                   "This agent's report was delivered to you as a message",
+                   "<usage><subagent_tokens>6000</subagent_tokens><tool_uses>16</tool_uses><duration_ms>600000</duration_ms></usage>"),
+        ])
+        self.agent("a1", {"agentType": "general-purpose", "description": "Review branch", "toolUseId": "tu1",
+                          "requestShape": "background", "finished": True},
+                   self.sub_rows("Do Review branch", self.end_turn("Found 2 bugs.", NOW - 301), NOW - 899), NOW - 301)
+        worker = self.workers()["a1"]
+        self.assertEqual((worker["state"], worker["evidence"]), ("done", "handed back its report"))
+        self.assertEqual(worker["result"], "Found 2 bugs.\n\n  - indented item")
+        self.assertEqual((worker["tokens"], worker["toolCount"], worker["durationMs"]), (6000, 16, 600000))
+        self.assertEqual((worker["title"], worker["kind"], worker["model"], worker["background"]),
+                         ("Review branch", "general-purpose", "claude-opus-5-5", True))
+        self.assertEqual(worker["task"], "Do Review branch")
+
+    def test_claude_states_without_a_report(self):
+        write_jsonl(self.parent, [agent_call("tu%d" % n, "job %d" % n, NOW - 2000) for n in range(1, 4)])
+        running = {"type": "assistant", "timestamp": stamp(NOW - 5), "isSidechain": True,
+                   "message": {"stop_reason": "tool_use", "content": [{"type": "tool_use", "name": "Bash", "input": {}}]}}
+        self.agent("a1", {"description": "job 1", "toolUseId": "tu1", "requestShape": "foreground"},
+                   self.sub_rows("t", running, NOW - 60), NOW - 5)
+        self.agent("a2", {"description": "job 2", "toolUseId": "tu2", "requestShape": "background"},
+                   self.sub_rows("t", dict(running, timestamp=stamp(NOW - 3600)), NOW - 4000), NOW - 3600)
+        # Older Claude Code writes no "finished": a last message that ended the turn means done.
+        self.agent("a3", {"description": "job 3", "toolUseId": "tu3"},
+                   self.sub_rows("t", self.end_turn("All set.", NOW - 3600), NOW - 4000), NOW - 3600)
+        workers = self.workers()
+        self.assertEqual(set(workers), {"a1", "a2", "a3"})
+        self.assertEqual(workers["a1"]["state"], "working")
+        self.assertIn("last write 5 s ago", workers["a1"]["evidence"])
+        self.assertEqual(workers["a2"]["state"], "stale")
+        self.assertEqual(workers["a2"]["lastSeenAt"], stamp(NOW - 3600))
+        self.assertEqual((workers["a3"]["state"], workers["a3"]["result"]), ("done", "All set."))
+        self.assertTrue(workers["a3"]["evidence"].startswith("inferred"))
+
+    def test_claude_failures_give_the_reason_not_a_mid_work_line(self):
+        write_jsonl(self.parent, [
+            agent_call("tu1", "stalls", NOW - 2000),
+            agent_result("tu1", {"status": "async_launched", "agentId": "a1"}, NOW - 1999),
+            notice("a1", "tu1", "failed", NOW - 1000, 'Agent "stalls" failed: Agent stalled: no progress for 600s',
+                   "Now I'll write the test first."),
+            agent_call("tu2", "no worktree", NOW - 900),
+            agent_result("tu2", "Error: Cannot create agent worktree", NOW - 899, is_error=True,
+                         text="Cannot create agent worktree: not in a git repository"),
+            agent_call("tu3", "killed", NOW - 800),
+            agent_result("tu3", {"status": "async_launched", "agentId": "a3"}, NOW - 799),
+            notice("a3", "tu3", "killed", NOW - 700),
+        ])
+        self.agent("a1", {"description": "stalls", "toolUseId": "tu1"},
+                   self.sub_rows("t", self.end_turn("Now I'll write the test first.", NOW - 1001), NOW - 1999), NOW - 1001)
+        workers = self.workers()
+        self.assertEqual((workers["a1"]["state"], workers["a1"]["evidence"], workers["a1"]["result"]),
+                         ("failed", "Agent stalled: no progress for 600s", None))
+        self.assertEqual(workers["tu2"]["state"], "failed")
+        self.assertIn("not in a git repository", workers["tu2"]["evidence"])
+        self.assertEqual((workers["a3"]["state"], workers["a3"]["evidence"]), ("failed", "stopped"))
+
+    def test_claude_agent_resumed_after_its_report_is_working_again(self):
+        write_jsonl(self.parent, [
+            agent_call("tu1", "review", NOW - 2000),
+            agent_result("tu1", {"status": "async_launched", "agentId": "a1"}, NOW - 1999),
+            handback("a1", "First report.", NOW - 600),
+        ])
+        self.agent("a1", {"description": "review", "toolUseId": "tu1", "finished": True},
+                   self.sub_rows("t", self.end_turn("First report.", NOW - 20), NOW - 1999), NOW - 20)
+        worker = self.workers()["a1"]
+        self.assertEqual(worker["state"], "working")
+        self.assertTrue(worker["evidence"].startswith("resumed after its last report"))
+
+    def test_claude_worker_transcript_and_unsafe_ids(self):
+        write_jsonl(self.parent, [{"type": "user", "message": {"content": "hi"}}])
+        self.agent("a1", {}, self.sub_rows("Do it", self.end_turn("Done it", NOW), NOW), NOW)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(transcript.main(["claude", "sid/a1", "--json"]), 0)
+        self.assertEqual([m["text"] for m in json.loads(out.getvalue())], ["Do it", "Done it"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(transcript.main(["claude", "sid/../sid", "--json"]), 94)
+            self.assertEqual(transcript.main(["claude", "sid/missing", "--json"]), 94)
+            self.assertEqual(transcript.main(["cursor", "sid", "--subagents"]), 64)
+
+    def codex_message(self, role, text, at):
+        return {"timestamp": stamp(at), "type": "response_item",
+                "payload": {"type": "message", "role": role, "content": [{"type": "input_text", "text": text}]}}
+
+    def codex_event(self, kind, at, **payload):
+        return {"timestamp": stamp(at), "type": "event_msg", "payload": dict(payload, type=kind)}
+
+    def test_codex_child_skips_the_copied_parent_history(self):
+        parent_id, child_id = "0000-parent", "0000-child"
+        write_jsonl(os.path.join(self.sessions, "2026", "11", "06", "rollout-x-%s.jsonl" % parent_id), [
+            {"timestamp": stamp(NOW - 5000), "type": "session_meta", "payload": {"id": parent_id, "source": "cli"}}])
+        inherited = [self.codex_message("user", "parent question", NOW - 4000),
+                     self.codex_event("task_complete", NOW - 3999, last_agent_message="parent answer")]
+        spawn = {"thread_spawn": {"parent_thread_id": parent_id, "depth": 1, "agent_path": "/root/probe", "agent_nickname": "Kuhn"}}
+        write_jsonl(os.path.join(self.sessions, "2026", "11", "06", "rollout-y-%s.jsonl" % child_id), [
+            {"timestamp": stamp(NOW - 3000), "type": "session_meta", "payload": {"id": child_id, "source": {"subagent": spawn}}},
+            *inherited,
+            self.codex_message("developer", "You are now a newly spawned child agent. The preceding conversation is inherited.", NOW - 3000),
+            self.codex_event("task_started", NOW - 3000),
+            {"timestamp": stamp(NOW - 2990), "type": "turn_context", "payload": {"model": "gpt-6.1-sol"}},
+            {"timestamp": stamp(NOW - 2980), "type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\": \"ls\"}"}},
+            self.codex_message("assistant", "first task done", NOW - 2000),
+            self.codex_event("task_complete", NOW - 2000, last_agent_message="first task done"),
+            self.codex_event("task_started", NOW - 1500),
+            self.codex_event("task_complete", NOW - 1000, last_agent_message=None, error={"message": "You've hit your usage limit."}),
+        ], NOW - 1000)
+        # Not a child of this parent: a guardian reviewer.
+        write_jsonl(os.path.join(self.sessions, "2026", "11", "06", "rollout-z-0000-guard.jsonl"), [
+            {"timestamp": stamp(NOW - 3000), "type": "session_meta", "payload": {"id": "0000-guard", "source": {"subagent": {"other": "guardian"}}}}])
+        workers = self.workers("codex", parent_id)
+        self.assertEqual(list(workers), [child_id])
+        worker = workers[child_id]
+        self.assertEqual((worker["title"], worker["kind"], worker["model"]), ("probe", "Kuhn", "gpt-6.1-sol"))
+        self.assertEqual((worker["state"], worker["evidence"], worker["result"]), ("failed", "You've hit your usage limit.", None))
+        self.assertEqual((worker["startedAt"], worker["durationMs"], worker["toolCount"]), (stamp(NOW - 3000), 2_000_000, 1))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(transcript.main(["codex", parent_id + "/" + child_id, "--json"]), 0)
+        self.assertEqual([m["text"] for m in json.loads(out.getvalue())], ["first task done"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(transcript.main(["codex", "0000-other/" + child_id, "--json"]), 94)
 
 
 if __name__ == "__main__":

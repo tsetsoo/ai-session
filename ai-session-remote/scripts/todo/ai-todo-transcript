@@ -7,6 +7,16 @@ stay the same as the transcript grows. Without it, --json prints only messages, 
 --after <line> prints only entries from later jsonl lines (an id's first number), so a client
 polling a long conversation fetches what is new. Cursor ignores it and prints everything.
 Exit 94 when that conversation has no transcript on this machine, or one with no text.
+
+ai-todo-transcript <claude|codex> <session_id> --subagents
+  Lists the work this conversation delegated (Claude subagents and forked skills, Codex
+  spawned agents) as JSON: id, title, kind, model, background, state, evidence, startedAt,
+  lastSeenAt, durationMs, tokens, toolCount, task, result. state is working, done, failed or
+  stale. A transcript cannot show a pending approval, so it never says waiting. stale means
+  no finish was recorded and nothing was written for a while: unknown, not failed.
+ai-todo-transcript <claude|codex> <session_id>/<worker_id> [--json [--activity [--after <line>]]]
+  Reads one worker's own transcript. A Codex worker starts with a copy of its parent's
+  history; that copy is left out.
 """
 import glob
 import json
@@ -210,6 +220,424 @@ def cursor_lines(path, activity=False):
                 yield with_meta(item, "%d.%d.0" % (file_number, number), entry) if activity else item
 
 
+# --- Delegated work ------------------------------------------------------------------
+# Claude: <project>/<sid>/subagents/agent-<id>.jsonl (+ .meta.json with description,
+#   agentType, toolUseId, requestShape, model, finished). The parent records the Agent call,
+#   its toolUseResult (agentId, status completed|async_launched|forked, totals, hand-back),
+#   <agent-message from="<id>"> hand-backs and <task-notification> rows by tool-use id.
+#   "finished" exists only in newer meta files; an older one whose last row ended its turn
+#   is reported done with evidence "inferred".
+# Codex: a child rollout's session_meta.source.subagent.thread_spawn names parent_thread_id
+#   and agent_path. Its file starts with the parent's history up to the "newly spawned
+#   child agent" developer message. The task text itself is encrypted.
+
+STALE_SECONDS = 600
+RESULT_LIMIT = 20000
+TASK_LIMIT = 2000
+WORKER_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+SPAWN_MARKER = "You are now a newly spawned child agent"
+HANDBACK = re.compile(r'^\s*<agent-message from="([A-Za-z0-9_-]+)">')
+NOTIFICATION_TAG = re.compile(r"<(task-id|tool-use-id|status|summary|result|subagent_tokens|total_tokens|tool_uses|duration_ms)>(.*?)</\1>", re.S)
+DELIVERED_ELSEWHERE = "This agent's report was delivered"
+RESUME_SLACK = 5
+
+
+def iso_seconds(stamp):
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def iso_of(seconds):
+    from datetime import datetime, timezone
+    if seconds is None:
+        return None
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def clip(value, limit):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value if len(value) <= limit else value[:limit] + "…"
+
+
+def handback_text(message):
+    """The report inside a hand-back frame: after its 'report follows:' line, unindented."""
+    head, _, report = message.partition("The report follows:\n")
+    if not report:
+        report = head.split("\n", 1)[1] if "\n" in head else ""
+    report = report.rsplit("</agent-message>", 1)[0]
+    return "\n".join(line[2:] if line.startswith("  ") else line for line in report.splitlines()).strip()
+
+
+def queued_texts(entry):
+    """Text the harness queued for the parent: hand-backs and task notifications."""
+    if entry.get("type") == "queue-operation" and entry.get("operation") == "enqueue":
+        yield entry.get("content")
+    elif entry.get("type") == "user":
+        content = (entry.get("message") or {}).get("content")
+        if isinstance(content, str):
+            yield content
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    yield part.get("text")
+
+
+def result_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return text_of(value) or None
+    return None
+
+
+def file_window(path):
+    """(first timestamp, last timestamp, last row) of a jsonl, reading only its ends."""
+    first = last = last_row = None
+    try:
+        with open(path, "rb") as handle:
+            for line in handle:
+                try:
+                    first = iso_seconds(json.loads(line).get("timestamp"))
+                except (ValueError, AttributeError):
+                    continue
+                if first is not None:
+                    break
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - 262144))
+            for line in handle.read().splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    last_row = row
+                    last = iso_seconds(row.get("timestamp")) or last
+    except OSError:
+        pass
+    return first, last, last_row
+
+
+def settle(worker, now):
+    """Fill state and evidence from what was observed, most certain first."""
+    if worker.get("failure"):
+        worker["state"], worker["evidence"] = "failed", worker.pop("failure")
+    elif worker.get("finish"):
+        worker["state"], worker["evidence"] = "done", worker.pop("finish")
+    else:
+        seen = worker.get("_seen")
+        if seen is not None and now - seen < STALE_SECONDS:
+            worker["state"] = "working"
+            worker["evidence"] = ("resumed after its last report; " if worker.pop("resumed", False) else "no finish recorded; ") + \
+                "last write %d s ago" % max(0, now - seen)
+        else:
+            worker["state"] = "stale"
+            worker["evidence"] = "no finish recorded and no recent writes" if seen is not None else "no transcript for this worker"
+    for key in ("failure", "finish", "resumed"):
+        worker.pop(key, None)
+    worker["lastSeenAt"] = iso_of(worker.pop("_seen", None))
+    return worker
+
+
+def blank_worker(ident):
+    return {"id": ident, "title": None, "kind": None, "model": None, "background": None,
+            "state": None, "evidence": None, "startedAt": None, "lastSeenAt": None,
+            "durationMs": None, "tokens": None, "toolCount": None, "task": None, "result": None}
+
+
+def claude_workers(parent_path, now):
+    uses = {}      # tool_use_id -> call input and time
+    by_use = {}    # tool_use_id -> worker id
+    workers = {}
+    notes = {}     # tool_use_id -> (status, result)
+    handbacks = {}
+    order = []
+
+    def worker(ident):
+        if ident not in workers:
+            workers[ident] = blank_worker(ident)
+            order.append(ident)
+        return workers[ident]
+
+    for _, entry in read_jsonl(parent_path):
+        if not isinstance(entry, dict) or entry.get("isSidechain"):
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if entry.get("type") == "assistant" and isinstance(content, list):
+            for part in content:
+                if (isinstance(part, dict) and part.get("type") == "tool_use"
+                        and part.get("name") in ("Agent", "Task") and isinstance(part.get("id"), str)):
+                    uses[part["id"]] = dict(part.get("input") or {}, _at=iso_seconds(entry.get("timestamp")))
+        if entry.get("type") == "user" and isinstance(content, list):
+            outcome = entry.get("toolUseResult")
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "tool_result":
+                    continue
+                use_id = part.get("tool_use_id")
+                if isinstance(outcome, dict) and isinstance(outcome.get("agentId"), str):
+                    item = worker(outcome["agentId"])
+                    by_use[use_id] = item["id"]
+                    item["_use"] = use_id
+                    status = outcome.get("status")
+                    item["title"] = item["title"] or outcome.get("description") or outcome.get("commandName")
+                    item["kind"] = item["kind"] or outcome.get("agentType") or ("skill" if status == "forked" else None)
+                    item["model"] = outcome.get("resolvedModel") or item["model"]
+                    item["durationMs"] = outcome.get("totalDurationMs", item["durationMs"])
+                    item["tokens"] = outcome.get("totalTokens", item["tokens"])
+                    item["toolCount"] = outcome.get("totalToolUseCount", item["toolCount"])
+                    item["task"] = item["task"] or clip(outcome.get("prompt"), TASK_LIMIT)
+                    if status in ("async_launched", "forked"):
+                        item["background"] = True
+                    if status == "completed":
+                        item["background"] = bool(outcome.get("isAsync")) if item["background"] is None else item["background"]
+                        report = (outcome.get("handbackReport") or {}).get("text") if isinstance(outcome.get("handbackReport"), dict) else None
+                        item["result"] = clip(report or result_text(outcome.get("content")), RESULT_LIMIT) or item["result"]
+                        item["finish"] = "the agent call returned"
+                elif use_id in uses and part.get("is_error"):
+                    item = worker(use_id)
+                    by_use[use_id] = use_id
+                    item["_use"] = use_id
+                    item["failure"] = clip(result_text(part.get("content")), 200) or "the agent call returned an error"
+        for text in queued_texts(entry):
+            if not isinstance(text, str):
+                continue
+            match = HANDBACK.match(text)
+            at = iso_seconds(entry.get("timestamp"))
+            if match:
+                handbacks[match.group(1)] = (handback_text(text), at)
+            elif "<task-notification>" in text[:200]:
+                tags = dict((name, value.strip()) for name, value in NOTIFICATION_TAG.findall(text))
+                tags["_at"] = at
+                # A resumed agent notifies again under the same id: the last notice wins.
+                for key in (tags.get("task-id"), tags.get("tool-use-id")):
+                    if key:
+                        notes[key] = tags
+
+    folder = os.path.join(os.path.dirname(parent_path), os.path.basename(parent_path)[:-len(".jsonl")], "subagents")
+    for meta_path in sorted(glob.glob(os.path.join(glob.escape(folder), "agent-*.meta.json"))):
+        ident = os.path.basename(meta_path)[len("agent-"):-len(".meta.json")]
+        try:
+            with open(meta_path) as handle:
+                meta = json.load(handle)
+        except (OSError, ValueError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        item = worker(ident)
+        if isinstance(meta.get("toolUseId"), str):
+            by_use.setdefault(meta["toolUseId"], ident)
+            item["_use"] = meta["toolUseId"]
+        item["title"] = meta.get("description") or item["title"]
+        item["kind"] = item["kind"] or meta.get("name") or meta.get("agentType")
+        item["model"] = item["model"] or meta.get("model")
+        if meta.get("requestShape") in ("background", "foreground"):
+            item["background"] = meta["requestShape"] == "background"
+        transcript = meta_path[:-len(".meta.json")] + ".jsonl"
+        first, last, last_row = file_window(transcript)
+        item["startedAt"] = item["startedAt"] or iso_of(first)
+        try:
+            item["_seen"] = os.path.getmtime(transcript)
+        except OSError:
+            item["_seen"] = last
+        if item["task"] is None:
+            for _, row in read_jsonl(transcript):
+                if isinstance(row, dict) and row.get("type") == "user":
+                    item["task"] = clip(text_of((row.get("message") or {}).get("content")), TASK_LIMIT)
+                    break
+        if meta.get("finished") is True and not item.get("finish"):
+            item["finish"] = "marked finished"
+        message = (last_row or {}).get("message") or {}
+        if (last_row or {}).get("isApiErrorMessage") and not item.get("finish"):
+            item["failure"] = "the last request failed: " + (text_of(message.get("content")) or "API error")[:200]
+        elif ("finished" not in meta and not item.get("finish") and (last_row or {}).get("type") == "assistant"
+              and message.get("stop_reason") == "end_turn"):
+            item["finish"] = "inferred: its last message ended the turn"
+        if item["result"] is None and message.get("stop_reason") == "end_turn":
+            item["result"] = clip(text_of(message.get("content")), RESULT_LIMIT)
+
+    for use_id, call in uses.items():
+        ident = by_use.get(use_id)
+        if ident is None:
+            # An agent call with no id yet: a foreground agent still running, or an old format.
+            ident = use_id
+            by_use[use_id] = ident
+            worker(ident)["_seen"] = call.get("_at")
+        item = workers[ident]
+        item["title"] = item["title"] or call.get("description")
+        item["kind"] = item["kind"] or call.get("subagent_type")
+        item["model"] = item["model"] or call.get("model")
+        item["task"] = item["task"] or clip(call.get("prompt"), TASK_LIMIT)
+        if item["background"] is None and "run_in_background" in call:
+            item["background"] = bool(call["run_in_background"])
+        item["startedAt"] = item["startedAt"] or iso_of(call.get("_at"))
+
+    for ident in order:
+        item = workers[ident]
+        note = notes.get(ident) or notes.get(item.get("_use")) or {}
+        status = note.get("status")
+        reported = [note.get("_at")]
+        if ident in handbacks:
+            text, at = handbacks[ident]
+            reported.append(at)
+            item["result"] = clip(text, RESULT_LIMIT) or item["result"]
+            if not item.get("failure"):
+                item["finish"] = "handed back its report"
+        if status == "completed" and not item.get("failure"):
+            item["finish"] = item.get("finish") or "completion notice"
+        elif status in ("failed", "killed"):
+            item.pop("finish", None)
+            reason = note.get("summary", "").partition(" failed: ")[2].strip()
+            item["failure"] = "stopped" if status == "killed" else (reason[:200] or "failure notice")
+        for key, field in (("subagent_tokens", "tokens"), ("total_tokens", "tokens"),
+                           ("tool_uses", "toolCount"), ("duration_ms", "durationMs")):
+            if item[field] is None and note.get(key, "").isdigit():
+                item[field] = int(note[key])
+        result = note.get("result")
+        if status == "completed" and result and not result.startswith(DELIVERED_ELSEWHERE) and not item["result"]:
+            item["result"] = clip(result, RESULT_LIMIT)
+        if item.get("failure") and ident not in handbacks:
+            item["result"] = None  # The last line of a failed run is mid-work; the reason is in evidence.
+        last_report = max([at for at in reported if at is not None], default=None)
+        seen = item.get("_seen")
+        if (last_report is not None and seen is not None and seen > last_report + RESUME_SLACK
+                and now - seen < STALE_SECONDS and (item.get("finish") or item.get("failure"))):
+            # Sent another message after it reported: working again until its next report.
+            item.pop("finish", None)
+            item.pop("failure", None)
+            item["resumed"] = True
+        item.pop("_use", None)
+        settle(item, now)
+    return [workers[ident] for ident in order]
+
+
+def codex_child_meta(path):
+    """(parent thread id, spawn info) from a rollout's first line, or (None, None)."""
+    try:
+        with open(path, errors="replace") as handle:
+            first = json.loads(handle.readline())
+        spawn = first["payload"]["source"]["subagent"]["thread_spawn"]
+        return spawn.get("parent_thread_id"), spawn
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, None
+
+
+def codex_spawn_line(path):
+    """The line of the spawn marker that ends the copied parent history, or -1."""
+    for number, row in read_jsonl(path):
+        payload = row.get("payload") if isinstance(row, dict) and isinstance(row.get("payload"), dict) else {}
+        if payload.get("type") == "message" and payload.get("role") == "developer" and SPAWN_MARKER in text_of(payload.get("content")):
+            return number
+    return -1
+
+
+def codex_own_rows(path):
+    """(line, row) after the copy of the parent's history at the top of a child rollout."""
+    start = codex_spawn_line(path)
+    return [(number, row) for number, row in read_jsonl(path) if number > start and isinstance(row, dict)]
+
+
+def codex_workers(parent_id, parent_path, now):
+    # Children are written after the parent started: skip older rollouts without opening them.
+    since = 0
+    try:
+        with open(parent_path, errors="replace") as handle:
+            since = iso_seconds(json.loads(handle.readline()).get("timestamp")) or 0
+    except (OSError, ValueError, AttributeError):
+        pass
+    found = []
+    for path in glob.glob(os.path.join(CODEX_SESSIONS, "**", "rollout-*.jsonl"), recursive=True):
+        try:
+            if os.path.getmtime(path) < since - 60:
+                continue
+        except OSError:
+            continue
+        parent, spawn = codex_child_meta(path)
+        if parent == parent_id:
+            found.append((path, spawn))
+    workers = []
+    for path, spawn in found:
+        ident = None
+        try:
+            with open(path, errors="replace") as handle:
+                ident = json.loads(handle.readline())["payload"].get("id")
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        if not ident:
+            continue
+        item = blank_worker(ident)
+        agent_path = spawn.get("agent_path") or ""
+        item["title"] = agent_path.rsplit("/", 1)[-1] or spawn.get("agent_nickname")
+        item["kind"] = spawn.get("agent_role") or spawn.get("agent_nickname")
+        item["background"] = True
+        state = None
+        started = finished = None
+        turns = 0
+        for _, row in codex_own_rows(path):
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            stamp = iso_seconds(row.get("timestamp"))
+            if row.get("type") == "turn_context" and payload.get("model"):
+                item["model"] = payload["model"]
+            kind = payload.get("type")
+            if kind == "task_started":
+                turns += 1
+                started = started or stamp
+                state = ("running", None)
+            elif kind == "task_complete":
+                finished = stamp
+                if payload.get("error"):
+                    error = payload["error"]
+                    message = error.get("message") if isinstance(error, dict) else str(error)
+                    state = ("failed", (message or "error")[:200])
+                    item["result"] = None  # An earlier task's answer is not this task's result.
+                else:
+                    state = ("done", None)
+                    item["result"] = clip(payload.get("last_agent_message"), RESULT_LIMIT) or item["result"]
+            elif kind == "turn_aborted":
+                finished = stamp
+                state = ("failed", "interrupted")
+            elif kind == "token_count":
+                total = ((payload.get("info") or {}).get("total_token_usage") or {}).get("total_tokens")
+                if isinstance(total, int):
+                    item["tokens"] = total
+            elif kind in ("function_call", "custom_tool_call", "local_shell_call"):
+                item["toolCount"] = (item["toolCount"] or 0) + 1
+        item["startedAt"] = iso_of(started)
+        if started and finished and finished >= started:
+            item["durationMs"] = int((finished - started) * 1000)
+        try:
+            item["_seen"] = os.path.getmtime(path)
+        except OSError:
+            item["_seen"] = finished or started
+        if state and state[0] == "failed":
+            item["failure"] = state[1]
+        elif state and state[0] == "done":
+            item["finish"] = "turn complete" + (" (%d tasks)" % turns if turns > 1 else "")
+        workers.append(settle(item, now))
+    workers.sort(key=lambda item: item["startedAt"] or "")
+    return workers
+
+
+def worker_path(tool, parent_id, worker_id):
+    """A worker's own transcript, only when it belongs to that parent on this machine."""
+    if not WORKER_ID.match(worker_id):
+        return None
+    parents = find_paths(tool, parent_id)
+    if not parents:
+        return None
+    parent = max(parents, key=os.path.getmtime)
+    if tool == "claude":
+        path = os.path.join(parent[:-len(".jsonl")], "subagents", "agent-" + worker_id + ".jsonl")
+        return path if os.path.isfile(path) else None
+    if tool == "codex":
+        for path in find_paths("codex", worker_id):
+            if codex_child_meta(path)[0] == parent_id:
+                return path
+    return None
+
+
 def find_paths(tool, session_id):
     escaped = glob.escape(session_id)
     if tool == "claude":
@@ -225,7 +653,39 @@ def find_paths(tool, session_id):
     return []
 
 
+def list_workers(tool, session_id, now=None):
+    import time
+    paths = find_paths(tool, session_id)
+    if not paths:
+        print("no transcript for %s %s" % (tool, session_id), file=sys.stderr)
+        return 94
+    path = max(paths, key=os.path.getmtime)
+    now = time.time() if now is None else now
+    workers = claude_workers(path, now) if tool == "claude" else codex_workers(session_id, path, now)
+    print(json.dumps(workers, ensure_ascii=False))
+    return 0
+
+
 def main(argv):
+    if len(argv) == 3 and argv[2] == "--subagents":
+        if argv[0] not in ("claude", "codex"):
+            print("usage: ai-todo-transcript <claude|codex> <session_id> --subagents", file=sys.stderr)
+            return 64
+        return list_workers(argv[0], argv[1])
+    skip_through = -1
+    if len(argv) >= 2 and "/" in argv[1]:
+        parent_id, _, worker_id = argv[1].partition("/")
+        path = worker_path(argv[0], parent_id, worker_id) if argv[0] in ("claude", "codex") else None
+        if path is None:
+            print("no worker %s for %s %s" % (worker_id, argv[0], parent_id), file=sys.stderr)
+            return 94
+        if argv[0] == "codex":
+            skip_through = codex_spawn_line(path)
+        return print_transcript(argv, path, skip_through)
+    return print_transcript(argv, None, skip_through)
+
+
+def print_transcript(argv, path, skip_through):
     after = None
     if argv[2:4] == ["--json", "--activity"] and len(argv) == 6 and argv[4] == "--after" and argv[5].isdigit():
         after = int(argv[5])
@@ -238,19 +698,26 @@ def main(argv):
         print("usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json [--activity [--after <line>]]]", file=sys.stderr)
         return 64
     tool, session_id = argv
-    paths = find_paths(tool, session_id)
-    if not paths:
-        print("no transcript for %s %s" % (tool, session_id), file=sys.stderr)
-        return 94
-    path = max(paths, key=os.path.getmtime)
+    if path is None:
+        paths = find_paths(tool, session_id)
+        if not paths:
+            print("no transcript for %s %s" % (tool, session_id), file=sys.stderr)
+            return 94
+        path = max(paths, key=os.path.getmtime)
     reader = {"claude": claude_lines, "codex": codex_lines, "cursor": cursor_lines}[tool]
     if activity:
         entries = list(reader(path, activity=True))
-        if after is not None and tool != "cursor":
-            entries = [entry for entry in entries if int(entry["id"].split(".")[0]) > after]
+        if tool != "cursor" and (after is not None or skip_through >= 0):
+            bound = max(-1 if after is None else after, skip_through)
+            entries = [entry for entry in entries if int(entry["id"].split(".")[0]) > bound]
         print(json.dumps(entries, ensure_ascii=False))
         return 0
-    messages = list(reader(path))
+    if skip_through >= 0:
+        # A Codex worker: leave out the parent history copied above its spawn marker.
+        messages = [{"role": entry["role"], "text": entry["text"]} for entry in reader(path, activity=True)
+                    if entry["role"] != "activity" and int(entry["id"].split(".")[0]) > skip_through]
+    else:
+        messages = list(reader(path))
     if structured:
         # Empty is valid for a new chat. IDs are stable while polling and preserve scroll position.
         print(json.dumps([dict(message, id=str(i)) for i, message in enumerate(messages)], ensure_ascii=False))
