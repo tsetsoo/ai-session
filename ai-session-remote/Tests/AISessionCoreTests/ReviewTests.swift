@@ -322,4 +322,62 @@ struct ReviewTests {
         #expect(TmuxCommandBuilder.reviewResult(id: "r-1").hasSuffix("result 'r-1'"))
         #expect(TmuxCommandBuilder.reviewCancel(id: "r-1").hasSuffix("cancel 'r-1'"))
     }
+
+    // MARK: Hub sync
+
+    @Test func recordRoundTripsThroughHubRowsWithItsBatches() throws {
+        let run = ReviewRun(tool: "claude", model: "m", scope: "branch", baseSHA: "b", reviewedSHA: "r", state: .done,
+                            startedAt: Date(timeIntervalSince1970: 1_000), usage: ReviewUsage(inputTokens: 1, costUSD: 0.25),
+                            findingCount: 1, addedCount: 1)
+        var sent = ReviewComment(path: "a", side: .old, startLine: 1, endLine: 3, revision: "r0", quote: ["q"], body: "mine",
+                                 createdAt: Date(timeIntervalSince1970: 500))
+        let batch = ReviewBatch(commentIDs: [sent.id], revision: "r1", sentAt: Date(timeIntervalSince1970: 900), statusRevision: 4)
+        sent.state = .sent
+        sent.sentAt = batch.sentAt
+        sent.batchID = batch.id
+        let finding = ReviewComment(author: "reviewer:claude", path: "b", startLine: nil, endLine: nil, revision: "r", quote: [],
+                                    body: "f", state: .new, createdAt: Date(timeIntervalSince1970: 1_100), severity: "low",
+                                    category: "docs", title: "T", fingerprint: "fp", runID: run.id)
+        let record = ReviewRecord(comments: [sent, finding], batches: [batch], runs: [run])
+        let upload = ReviewSync.everything(record, conversationID: "c")
+        #expect(upload.items.first { $0.body == "mine" }?.sentInTurn == 4)
+        // Through JSON as the client sends and the hub returns it.
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let json = try encoder.encode(HubReviewRecord(reviews: upload.reviews, items: upload.items))
+        #expect(String(decoding: json, as: UTF8.self).contains("\"cost_usd\":0.25"))
+        let back = ReviewSync.record(try decoder.decode(HubReviewRecord.self, from: json))
+        #expect(back == record)
+    }
+
+    @Test func touchedFindsChangedNewAndDeletedRows() {
+        let a = ReviewComment(path: "a", startLine: 1, endLine: nil, revision: "r", quote: [], body: "a")
+        let b = ReviewComment(path: "b", startLine: 1, endLine: nil, revision: "r", quote: [], body: "b")
+        let old = ReviewRecord(comments: [a, b])
+        var changed = a
+        changed.body = "a2"
+        let c = ReviewComment(path: "c", startLine: 1, endLine: nil, revision: "r", quote: [], body: "c")
+        let run = ReviewRun(tool: "codex", scope: "uncommitted", baseSHA: "x", reviewedSHA: "y")
+        let new = ReviewRecord(comments: [changed, c], runs: [run])
+        let touched = ReviewSync.touched(from: old, to: new)
+        #expect(touched.items == [a.id, c.id] && touched.deletedItems == [b.id] && touched.runs == [run.id])
+        let request = ReviewSync.request(touched, in: new, conversationID: "k")
+        #expect(Set(request.items.map(\.body)) == ["a2", "c"] && request.deleteItems == [b.id.uuidString])
+        // Hub rows with a pending local change keep the local version.
+        var hubA = a
+        hubA.state = .dismissed
+        let merged = ReviewSync.merge(hub: ReviewRecord(comments: [hubA, b]), local: new,
+                                      pending: .init(items: [a.id], deletedItems: [b.id]))
+        #expect(merged.comments.map(\.body) == ["a2"])
+    }
+
+    @Test func summaryLabel() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let at = ReviewSync.string(from: now.addingTimeInterval(-240))
+        #expect(ReviewSummary(conversationId: "c", open: 2, reviewing: false, lastReviewedAt: at).label(now: now) == "2 open · reviewed 4m ago")
+        #expect(ReviewSummary(conversationId: "c", open: 0, reviewing: true, lastReviewedAt: at).label(now: now) == "reviewing…")
+        #expect(ReviewSummary(conversationId: "c", open: 0, reviewing: false, lastReviewedAt: nil).label(now: now) == nil)
+    }
 }

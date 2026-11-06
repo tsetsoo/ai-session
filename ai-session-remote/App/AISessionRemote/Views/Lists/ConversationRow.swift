@@ -16,6 +16,8 @@ struct ConversationRow: View {
     var shortcut: Int?
     /// The one-tap Resume, while a weekly or unknown limit's reset is offered.
     var onResume: (() -> Void)?
+    /// Its review at a glance: "2 open · reviewed 4m ago", "reviewing…".
+    var review: ReviewSummary?
 
     /// Width of the dot column; the lines under the title start after it.
     private static let dotColumn: CGFloat = 21
@@ -59,6 +61,9 @@ struct ConversationRow: View {
                 HStack(spacing: DS.spacing.s) {
                     Text(RowText.conversationMeta(conversation, section: section))
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    if let review {
+                        ReviewBadge(summary: review)
+                    }
                     if let shortcut {
                         Text("⌘\(shortcut)")
                             .monospacedDigit()
@@ -101,6 +106,24 @@ struct ResumeAfterLimitButton: View {
             #if os(macOS)
             .help("Continue where it stopped at the usage limit")
             #endif
+    }
+}
+
+/// "2 open · reviewed 4m ago" with a checklist icon; nothing when there's nothing to say.
+struct ReviewBadge: View {
+    let summary: ReviewSummary
+
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            if let label = summary.label(now: context.date) {
+                Label(label, systemImage: summary.reviewing ? "sparkle.magnifyingglass" : "checklist")
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(summary.open > 0 ? AnyShapeStyle(DS.accent) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                    .accessibilityLabel("Review: \(label)")
+            }
+        }
     }
 }
 

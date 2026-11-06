@@ -71,8 +71,13 @@ final class ReviewSession {
         return conversation.status == .idle && conversation.statusRevision > sentAt
     }
 
+    /// Reviews are read-only while the hub can't be reached: what changes here couldn't be
+    /// kept where the phone and other Macs see it.
+    static let offlineMessage = "The hub can't be reached, so reviews are read-only until it's back."
+
     /// Why Send is off, or nil.
     var sendBlocker: String? {
+        if store.isOffline { return Self.offlineMessage }
         if drafts.isEmpty { return "Write a comment first." }
         if conversation.tmuxName.isEmpty { return "This conversation has no terminal session." }
         if conversation.status == .waiting { return "The agent is waiting on a question. Answer it first." }
@@ -116,6 +121,9 @@ final class ReviewSession {
         }
         isLoading = true
         defer { if generation == loadGeneration { isLoading = false } }
+        // The hub's copy first: comments and findings from the phone or another Mac.
+        await store.refresh(key)
+        guard generation == loadGeneration else { return }
         let knownAtStart = Set(record.comments.map(\.id))
         do {
             let status = try await locate(config: config)
@@ -272,7 +280,7 @@ final class ReviewSession {
 
     /// Adds a draft on lines of the diff on screen.
     func addComment(path: String, side: DiffSide, lines: ClosedRange<Int>?, quote: [String], body: String) {
-        guard let result else { return }
+        guard editable(), let result else { return }
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         let comment = ReviewComment(
@@ -287,6 +295,7 @@ final class ReviewSession {
     }
 
     func editComment(_ id: UUID, body: String) {
+        guard editable() else { return }
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         store.update(key) { record in
@@ -297,6 +306,7 @@ final class ReviewSession {
     }
 
     func deleteComment(_ id: UUID) {
+        guard editable() else { return }
         store.update(key) { $0.comments.removeAll { $0.id == id && $0.state == .draft } }
         anchors[id] = nil
     }
@@ -304,16 +314,30 @@ final class ReviewSession {
     /// Hides a sent comment or a finding from the diff; a sent one stays in the batch's
     /// history, a finding stays known so a later review doesn't bring it back.
     func dismissComment(_ id: UUID) {
+        guard editable() else { return }
         store.update(key) { record in
             if let index = record.comments.firstIndex(where: { $0.id == id }) { record.comments[index].state = .dismissed }
         }
         anchors[id] = nil
     }
 
+    /// False, with the reason shown, while the hub is offline.
+    private func editable() -> Bool {
+        guard store.isOffline else { return true }
+        failure = Failure(errorDescription: Self.offlineMessage)
+        return false
+    }
+
+    /// The hub's newer copy of this conversation's review (another device changed it).
+    func refreshFromHub() async {
+        await store.refresh(key)
+    }
+
     // MARK: Findings
 
     /// A reviewer's finding joins the next batch (Send), or leaves it again.
     func queueFinding(_ id: UUID, _ queued: Bool = true) {
+        guard editable() else { return }
         store.update(key) { record in
             guard let index = record.comments.firstIndex(where: { $0.id == id }),
                   record.comments[index].reviewer != nil,
@@ -325,6 +349,7 @@ final class ReviewSession {
     /// A dismissed finding back in the list. It is placed again by the next load unless its
     /// lines are on the revision on screen.
     func restoreFinding(_ id: UUID) {
+        guard editable() else { return }
         store.update(key) { record in
             guard let index = record.comments.firstIndex(where: { $0.id == id && $0.state == .dismissed }),
                   record.comments[index].reviewer != nil else { return }
@@ -410,6 +435,7 @@ final class ReviewSession {
 
     /// Why Review is off, or nil.
     var reviewBlocker: String? {
+        if store.isOffline { return Self.offlineMessage }
         if activeRun != nil { return "A review is running." }
         guard let result else { return "Load the changes first." }
         if diff.files.isEmpty || result.from == result.to { return "There are no changes to review." }

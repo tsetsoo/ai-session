@@ -36,6 +36,9 @@ final class TodoHubStore {
     /// Watcher issues still open (or resolving). Loaded with every refresh: badge on
     /// Automation → Watchers.
     private(set) var openWatchIssues: [WatchIssue] = []
+    /// Each conversation's review at a glance (open items, reviewing), by conversation id.
+    /// Empty from a hub before reviews.
+    private(set) var reviewSummaries: [String: ReviewSummary] = [:]
     /// Watcher issues cleared in the last 7 days, loaded on demand.
     private(set) var recentWatchIssues: [WatchIssue] = []
     var openWatchIssueCount: Int { openWatchIssues.count }
@@ -221,9 +224,11 @@ final class TodoHubStore {
             async let loadedJobs = try? client.listJobs()
             async let pendingIdeasList = try? client.listIdeas(projectId: nil, pending: true)
             async let watchIssues = try? client.listWatchIssues(state: "open")
+            async let reviews = try? client.reviewSummaries()
             let (t, c, m, comps) = try await (todos, conversations, mappings, computers)
             let (p, sugg, pend, jobList, pendIdeas) = await (projects, suggestions, pending, loadedJobs, pendingIdeasList)
             let openIssues = await watchIssues
+            let reviewList = await reviews
             // A refresh that started later has newer data; don't overwrite it.
             guard generation == refreshGeneration else { return }
             guard changesAtStart == localChanges else { return }
@@ -236,6 +241,10 @@ final class TodoHubStore {
             if let jobList { jobs = jobList }
             if let pendIdeas { pendingIdeaCount = pendIdeas.filter(\.pending).count }
             if let openIssues { openWatchIssues = openIssues }
+            if let reviewList {
+                let byID = Dictionary(reviewList.map { ($0.conversationId, $0) }, uniquingKeysWith: { $1 })
+                if byID != reviewSummaries { reviewSummaries = byID }
+            }
             if wantsLiveUpdates && eventsTask == nil { startEventsTask() }
         } catch TodoHubError.unreachable {
             guard generation == refreshGeneration else { return }

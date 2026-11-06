@@ -163,7 +163,8 @@ struct ConversationMenu: View {
     let onReconnect: () -> Void
     let onCopyScreen: () -> Void
     let onPaste: () -> Void
-    /// Review Changes… (Mac): the conversation's worktree changes in their own window.
+    /// Review Changes… (Mac): the conversation's worktree changes in their own window. On
+    /// the phone: its open review items.
     var onReview: (() -> Void)? = nil
     /// Resume After Session Limit: nil hides it (no conversation, or not Codex).
     var resumeOnReset: Bool? = nil
@@ -189,7 +190,11 @@ struct ConversationMenu: View {
             .disabled(!hasConversation)
             if let onReview {
                 Button(action: onReview) {
+                    #if os(macOS)
                     Label("Review Changes…", systemImage: "text.badge.checkmark")
+                    #else
+                    Label("Review", systemImage: "text.badge.checkmark")
+                    #endif
                 }
                 .disabled(!hasConversation)
             }

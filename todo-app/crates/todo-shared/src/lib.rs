@@ -2008,6 +2008,156 @@ pub struct WeeklyRecap {
     pub jobs: Option<WeeklyJobs>,
 }
 
+// --- Reviews ---------------------------------------------------------------------------
+
+/// Tokens and cost of one reviewer run, as far as its tool reported them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReviewUsage {
+    #[serde(default)]
+    pub input_tokens: Option<i64>,
+    #[serde(default)]
+    pub output_tokens: Option<i64>,
+    #[serde(default)]
+    pub cache_read_tokens: Option<i64>,
+    #[serde(default)]
+    pub cache_write_tokens: Option<i64>,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+}
+
+/// One reviewer agent run on a conversation's changes. The app runs it on the computer and
+/// records it here; the hub only stores it. Times the app sets are ISO 8601 as it sent them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Review {
+    pub id: String,
+    pub conversation_id: String,
+    /// `claude` or `codex`
+    pub tool: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The review window's scope: uncommitted, conversation, branch, since, commit.
+    pub scope: String,
+    pub base_sha: String,
+    pub reviewed_sha: String,
+    /// `running`, `done`, `failed` or `cancelled`
+    pub state: String,
+    pub started_at: String,
+    #[serde(default)]
+    pub finished_at: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub usage: Option<ReviewUsage>,
+    #[serde(default)]
+    pub finding_count: Option<i64>,
+    #[serde(default)]
+    pub added_count: Option<i64>,
+    /// Set by the hub.
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+/// A comment on a conversation's changes: the user's own (`author` = `user`) or a
+/// reviewer's finding (`reviewer:<tool>`). Its lines are in `path` as it is at `revision`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewItem {
+    pub id: String,
+    /// The run it came from (findings only).
+    #[serde(default)]
+    pub review_id: Option<String>,
+    pub conversation_id: String,
+    pub author: String,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub path: String,
+    /// `new` or `old`
+    pub side: String,
+    #[serde(default)]
+    pub line_start: Option<i64>,
+    #[serde(default)]
+    pub line_end: Option<i64>,
+    pub revision: String,
+    #[serde(default)]
+    pub quote: Vec<String>,
+    pub body: String,
+    /// `new` (a finding nobody acted on), `draft`, `sent`, `addressed`, `stale`, `dismissed`
+    pub state: String,
+    #[serde(default)]
+    pub sent_at: Option<String>,
+    /// The conversation's status revision when it was sent: a later idle turn is the answer.
+    #[serde(default)]
+    pub sent_in_turn: Option<i64>,
+    /// The "Send to agent" it went out in, and the worktree revision then.
+    #[serde(default)]
+    pub batch_id: Option<String>,
+    #[serde(default)]
+    pub sent_revision: Option<String>,
+    pub created_at: String,
+    /// Set by the hub.
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+/// Everything about one conversation's review: `GET /api/reviews?conversation_id=`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReviewRecord {
+    pub reviews: Vec<Review>,
+    pub items: Vec<ReviewItem>,
+}
+
+/// `POST /api/reviews/batch`: upserts (by id, whole rows) and deletes in one transaction.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReviewBatchRequest {
+    #[serde(default)]
+    pub reviews: Vec<Review>,
+    #[serde(default)]
+    pub items: Vec<ReviewItem>,
+    #[serde(default)]
+    pub delete_reviews: Vec<String>,
+    #[serde(default)]
+    pub delete_items: Vec<String>,
+}
+
+/// `PATCH /api/review-items/{id}`: what the phone changes (Send, Dismiss) and edits.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpdateReviewItemRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_in_turn: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_revision: Option<String>,
+}
+
+/// A conversation's review at a glance, for its row: `GET /api/reviews/summary`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewSummary {
+    pub conversation_id: String,
+    /// Findings and comments not sent or dismissed yet (`new` or `draft`).
+    pub open: i64,
+    /// A reviewer run is going (one started in the last 45 minutes, not finished).
+    pub reviewing: bool,
+    /// When the last finished run started, ISO 8601 as the app sent it.
+    #[serde(default)]
+    pub last_reviewed_at: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

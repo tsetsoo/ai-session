@@ -11,6 +11,7 @@ mod describe;
 mod handlers;
 mod health;
 mod ideas;
+mod reviews;
 mod jobs;
 mod limits;
 mod memories;
@@ -140,6 +141,15 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/ideas/{id}", web::delete().to(ideas::delete_idea))
         .route("/api/ideas/{id}/todo", web::post().to(ideas::idea_to_todo))
         .route("/api/ideas/{id}/research", web::post().to(ideas::research_idea))
+        .route("/api/reviews", web::get().to(reviews::list_reviews))
+        .route("/api/reviews", web::post().to(reviews::put_review))
+        // Before /api/reviews/{id}.
+        .route("/api/reviews/summary", web::get().to(reviews::review_summaries))
+        .route("/api/reviews/batch", web::post().to(reviews::batch))
+        .route("/api/reviews/{id}", web::delete().to(reviews::delete_review))
+        .route("/api/review-items", web::post().to(reviews::put_item))
+        .route("/api/review-items/{id}", web::patch().to(reviews::update_item))
+        .route("/api/review-items/{id}", web::delete().to(reviews::delete_item))
         .route("/api/reminders", web::get().to(today::list_reminders))
         .route("/api/reminders", web::post().to(today::create_reminder))
         .route("/api/reminders/{id}", web::patch().to(today::update_reminder))

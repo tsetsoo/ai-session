@@ -70,6 +70,7 @@ struct ReviewView: View {
     let brief: String?
 
     @Query private var hosts: [HostEntity]
+    @Environment(AppModel.self) private var model
     @State private var session: ReviewSession
     @State private var selectedPath: String?
     @State private var showingSend = false
@@ -103,6 +104,10 @@ struct ReviewView: View {
         .task(id: session.activeRun?.id) {
             guard session.activeRun != nil else { return }
             await withConfig { await session.followReview(config: $0) }
+        }
+        // Another device changed this review (the phone sent or dismissed an item).
+        .onChange(of: model.store.reviewSummaries[conversation.listKey]) { _, _ in
+            Task { await session.refreshFromHub() }
         }
         .onChange(of: session.record.lastRun?.state) { _, state in
             if state == .done, (session.record.lastRun?.findingCount ?? 0) > 0 { showingFindings = true }

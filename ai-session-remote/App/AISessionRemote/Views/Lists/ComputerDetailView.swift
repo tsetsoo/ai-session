@@ -215,7 +215,8 @@ struct ComputerDetailView: View {
             onDone: todo.flatMap { todo in
                 todo.completed || store.isOffline ? nil : { Task { await store.toggle(todo) } }
             },
-            onResume: resumeAction(conversation)
+            onResume: resumeAction(conversation),
+            review: store.reviewSummaries[conversation.listKey]
         )
         .tag(conversation.listKey)
         .rowTap(selection == nil ? open : nil)

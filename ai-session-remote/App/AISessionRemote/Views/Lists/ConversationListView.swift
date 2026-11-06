@@ -172,7 +172,8 @@ struct ConversationListView: View {
                 todo.completed || store.isOffline ? nil : { Task { await store.toggle(todo) } }
             },
             shortcut: shortcut,
-            onResume: resumeAction(conversation)
+            onResume: resumeAction(conversation),
+            review: store.reviewSummaries[conversation.listKey]
         )
         .tag(conversation.listKey)
         .rowTap(selection == nil ? open : nil)

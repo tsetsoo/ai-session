@@ -41,6 +41,8 @@
 		19C8B2ADB49568C98E8EE5A5 /* RemoteConversations.swift in Sources */ = {isa = PBXBuildFile; fileRef = B24103E63B65EE5783B9E334 /* RemoteConversations.swift */; };
 		1A3E64E52EA5549DB38D1521 /* ComputerHealthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3754F8B6B262430428143EDC /* ComputerHealthView.swift */; };
 		1A857ECC035AA702F05AE617 /* TerminalReconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA8B20C587DEA3DCF7492AD7 /* TerminalReconnectTests.swift */; };
+		1AD71FC41F617407C8585AEA /* ReviewItemsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB8A7C64530E46D436A3D3A8 /* ReviewItemsSheet.swift */; };
+		1AF24721F851D000BC658951 /* ReviewStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F538A47A9E801D82DC090741 /* ReviewStoreTests.swift */; };
 		2010BBF69DDB52210D4DAB2F /* ConversationRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E36AD351C0A22DEC339CAE5 /* ConversationRow.swift */; };
 		211FB7AE45A3D3197F1AA0BF /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0002157EA5ADE38E9ADEDD3E /* SidebarView.swift */; };
 		21AA7F7C909E4283BEFDDDFD /* TerminalSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B1150B78937B45875C56973 /* TerminalSelectionTests.swift */; };
@@ -267,6 +269,7 @@
 		D79DE02B46788FD6DFE84901 /* TerminalPromptFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A9F6811353C523EB26675EF /* TerminalPromptFixtures.swift */; };
 		D82D4390F574464A6DDD30B3 /* AISessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 77160CCBC36C696C9AE77B08 /* AISessionCore */; };
 		D83BED1012CFC26D4F60CFEE /* TodoHoldDropTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0318083FCE727F91B9342F3 /* TodoHoldDropTests.swift */; };
+		D9729BE332BD4630C48AA9D0 /* ReviewItemsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB8A7C64530E46D436A3D3A8 /* ReviewItemsSheet.swift */; };
 		DA408A318D222D81ABFD2D5E /* ChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C647D4B8CFECA8B98E376D /* ChatComposer.swift */; };
 		DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3B756FF0192985AADAFF36 /* HostRepository.swift */; };
 		DC59755DB0F6EA0F7566C0A9 /* AISessionRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */; };
@@ -457,6 +460,7 @@
 		BA54D98ADC3ACCD267883621 /* DemoFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoFixtures.swift; sourceTree = "<group>"; };
 		BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
 		BB775BB4D3645609923CB4D6 /* PlatformSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformSupport.swift; sourceTree = "<group>"; };
+		BB8A7C64530E46D436A3D3A8 /* ReviewItemsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewItemsSheet.swift; sourceTree = "<group>"; };
 		BDC0C15755494AAA0C43292F /* RemoteRestart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteRestart.swift; sourceTree = "<group>"; };
 		BDECEE903A5E03F5371FB37C /* VisiblePresenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisiblePresenceTests.swift; sourceTree = "<group>"; };
 		BEC0FF09B4815F076FB3472E /* TextSizeShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextSizeShortcuts.swift; sourceTree = "<group>"; };
@@ -502,6 +506,7 @@
 		F0E92D9DEB7C4816EBDB4B77 /* LocalConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalConnection.swift; sourceTree = "<group>"; };
 		F359B9E7301AF9D445728DC0 /* ReviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSession.swift; sourceTree = "<group>"; };
 		F4325A2838E2861F98B34246 /* PooledSSHConnectionCloseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PooledSSHConnectionCloseTests.swift; sourceTree = "<group>"; };
+		F538A47A9E801D82DC090741 /* ReviewStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewStoreTests.swift; sourceTree = "<group>"; };
 		F6DF7A48AF9E2D3EED9528A2 /* FrameStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameStateView.swift; sourceTree = "<group>"; };
 		F734A46121C5F35DAB720843 /* TodayPanes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayPanes.swift; sourceTree = "<group>"; };
 		F7B4DE59A842C29732755FED /* TerminalOutputCoalescer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalOutputCoalescer.swift; sourceTree = "<group>"; };
@@ -661,6 +666,7 @@
 				E0DF0833DA5B869A23C5B327 /* ConversationListLayoutTests.swift */,
 				337895D3F488A9A1EDF8095D /* ReviewAcknowledgementTests.swift */,
 				AB63BB7D6D55C6F90946359A /* ReviewSessionTests.swift */,
+				F538A47A9E801D82DC090741 /* ReviewStoreTests.swift */,
 				E0376DF73A5814B23C3C80EE /* ShellWorkspaceTests.swift */,
 				8B1150B78937B45875C56973 /* TerminalSelectionTests.swift */,
 				B0318083FCE727F91B9342F3 /* TodoHoldDropTests.swift */,
@@ -712,6 +718,7 @@
 		61AEE066075A7F2D1D0036A7 /* Review */ = {
 			isa = PBXGroup;
 			children = (
+				BB8A7C64530E46D436A3D3A8 /* ReviewItemsSheet.swift */,
 				F359B9E7301AF9D445728DC0 /* ReviewSession.swift */,
 				069864B039E21288F0AD21AA /* ReviewView.swift */,
 			);
@@ -1214,6 +1221,7 @@
 				278C9FE2E986245E02258F0F /* RemoteLimits.swift in Sources */,
 				3D7A44B4B3D6A2068F76FFD3 /* RemoteRestart.swift in Sources */,
 				381174EAEAAB226799F0A307 /* RestartSheet.swift in Sources */,
+				D9729BE332BD4630C48AA9D0 /* ReviewItemsSheet.swift in Sources */,
 				5E1BA3A92F17441A72CB47CD /* ReviewSession.swift in Sources */,
 				7D64D265546982D380678EF5 /* ReviewStore.swift in Sources */,
 				A42A10F59D0F513381FF64CC /* ReviewView.swift in Sources */,
@@ -1350,6 +1358,7 @@
 				8FDFD567428FABBFBA8F8EE2 /* RemoteLimits.swift in Sources */,
 				7D6E28D51FE6B8D16066DE09 /* RemoteRestart.swift in Sources */,
 				FB41F9C0595CD3909C87CD33 /* RestartSheet.swift in Sources */,
+				1AD71FC41F617407C8585AEA /* ReviewItemsSheet.swift in Sources */,
 				82B52C7E9AD31D5C7F5F4E70 /* ReviewSession.swift in Sources */,
 				478F8176A1390E19B571A8C7 /* ReviewStore.swift in Sources */,
 				5BEBD32F0776AB10C74CF0E5 /* ReviewView.swift in Sources */,
@@ -1443,6 +1452,7 @@
 				EB236DE577928368F7DCF3E2 /* ConversationListLayoutTests.swift in Sources */,
 				0713A5A621B24DFD7E77273B /* ReviewAcknowledgementTests.swift in Sources */,
 				B2E3FF58288F25ED9645E58C /* ReviewSessionTests.swift in Sources */,
+				1AF24721F851D000BC658951 /* ReviewStoreTests.swift in Sources */,
 				F8E1B6C4DFB2FFCDE521132F /* ShellWorkspaceTests.swift in Sources */,
 				21AA7F7C909E4283BEFDDDFD /* TerminalSelectionTests.swift in Sources */,
 				D83BED1012CFC26D4F60CFEE /* TodoHoldDropTests.swift in Sources */,

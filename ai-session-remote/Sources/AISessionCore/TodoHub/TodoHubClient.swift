@@ -603,6 +603,27 @@ public struct TodoHubClient: Sendable {
         try await decode(JobRun.self, send("POST", "/api/ideas/shape", body: ShapeIdeaRequest(projectId: projectId, hint: hint)))
     }
 
+    // MARK: Reviews
+
+    /// One conversation's reviewer runs and review items.
+    public func reviewRecord(conversationId: String) async throws -> HubReviewRecord {
+        try await decode(HubReviewRecord.self, send("GET", "/api/reviews", query: [URLQueryItem(name: "conversation_id", value: conversationId)]))
+    }
+
+    /// Every conversation with review items or runs, at a glance.
+    public func reviewSummaries() async throws -> [ReviewSummary] {
+        try await decode([ReviewSummary].self, send("GET", "/api/reviews/summary"))
+    }
+
+    /// Writes whole rows by id and deletes others, all or nothing.
+    public func reviewBatch(_ request: ReviewBatchRequest) async throws {
+        _ = try await send("POST", "/api/reviews/batch", body: request)
+    }
+
+    public func updateReviewItem(id: String, _ request: UpdateReviewItemRequest) async throws -> HubReviewItem {
+        try await decode(HubReviewItem.self, send("PATCH", "/api/review-items/\(escape(id))", body: request))
+    }
+
     // MARK: Transport
 
     static func makeDecoder() -> JSONDecoder {

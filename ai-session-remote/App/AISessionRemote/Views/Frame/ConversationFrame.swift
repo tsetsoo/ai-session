@@ -730,7 +730,9 @@ struct ConversationFrame: View {
         guard let appModel else { return nil }
         return { appModel.openReview(todoID: todo.id, conversation: conversation, openWindow: openWindow) }
         #else
-        return nil
+        // The phone: the open comments and findings, with Send and Dismiss.
+        guard let conversation else { return nil }
+        return { sheet = .review(conversation) }
         #endif
     }
 
@@ -1143,6 +1145,8 @@ struct ConversationFrame: View {
         case let .editHost(host):
             // Its Forget Host Key clears the identity this device trusted.
             HostEditorView(host: host)
+        case let .review(conversation):
+            ReviewItemsSheet(conversation: conversation)
         }
     }
 
@@ -1360,9 +1364,11 @@ private enum FrameSheet: Identifiable {
     case settings(SettingsDestination)
     case hostEditor(HostEditorPrefill)
     case editHost(HostEntity)
+    case review(Conversation)
 
     var id: String {
         switch self {
+        case let .review(conversation): "review-\(conversation.listKey)"
         case let .settings(destination): "settings-\(destination)"
         case let .hostEditor(prefill): "host-\(prefill.id)"
         case let .editHost(host): "edit-host-\(host.id)"

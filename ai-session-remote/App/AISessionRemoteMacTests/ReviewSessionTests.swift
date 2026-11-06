@@ -111,7 +111,7 @@ final class ReviewSessionTests: XCTestCase {
     private func makeSession(status: ConversationStatus = .idle, worktree: Bool = false) -> (ReviewSession, ReviewStore) {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("review-\(UUID().uuidString).json")
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
-        let store = ReviewStore(fileURL: url)
+        let store = ReviewStore(fileURL: url, makeClient: { nil })
         var conversation = DemoFixtures.conversations[0]
         conversation.status = status
         conversation.statusRevision = 4
@@ -213,7 +213,7 @@ final class ReviewSessionTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         let url = folder.appendingPathComponent("review-comments.json")
         try Data("{not json".utf8).write(to: url)
-        let store = ReviewStore(fileURL: url)
+        let store = ReviewStore(fileURL: url, makeClient: { nil })
         store.update("k") { $0.comments.append(ReviewComment(path: "a", startLine: 1, endLine: nil, revision: "r", quote: [], body: "b")) }
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
         XCTAssertEqual(names.count, 2, "\(names)")
