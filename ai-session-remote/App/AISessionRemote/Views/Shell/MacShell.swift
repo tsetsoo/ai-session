@@ -937,7 +937,8 @@ private struct ConversationColumn: View {
             onDuplicate: { tool, name in
                 send(.duplicate(tool: tool, name: name), for: todo.id)
             },
-            isDuplicating: state?.isDuplicating ?? false
+            isDuplicating: state?.isDuplicating ?? false,
+            onReview: reviewAction(todo.id)
         )
     }
 
@@ -947,6 +948,18 @@ private struct ConversationColumn: View {
             return
         }
         toolbarRequest = ConversationToolbarRequest(command: command, todoID: todoID)
+    }
+
+    private func reviewAction(_ todoID: String) -> (() -> Void)? {
+        #if os(macOS)
+        return {
+            model.openReview(todoID: todoID,
+                             conversation: model.store.displayed(forTodo: todoID, selectedKey: model.selectedConversationID),
+                             openWindow: openWindow)
+        }
+        #else
+        return nil
+        #endif
     }
 
     private func popOut(_ todoID: String) -> () -> Void {

@@ -89,6 +89,14 @@ struct AISessionRemoteApp: App {
         .modelContainer(HostStore.shared)
         .defaultSize(width: 960, height: 640)
 
+        // ⋯ ▸ Review Changes…: a conversation's worktree changes, keyed by todo and conversation.
+        WindowGroup(id: ReviewWindow.id, for: ReviewTarget.self) { $target in
+            ReviewWindow(target: target)
+                .environment(model)
+        }
+        .modelContainer(HostStore.shared)
+        .defaultSize(width: 1100, height: 760)
+
         // ⌘, and the sidebar's Settings row.
         Settings {
             SettingsView()

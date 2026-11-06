@@ -45,6 +45,9 @@ struct ConversationFrame: View {
     @Environment(\.frameOwnsWindow) private var ownsWindow
     /// Absent in previews.
     @Environment(AppModel.self) private var appModel: AppModel?
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
     @State private var terminal = TerminalHandle()
     @State private var clipboardSessionID: String?
     @State private var copied = TransientValue<Bool>(for: .toast)
@@ -665,8 +668,18 @@ struct ConversationFrame: View {
                 existingLabels: store.conversations(forTodo: todo.id).compactMap(\.label)
             ),
             onDuplicate: { tool, name in beginDuplicate(tool: tool, name: name) },
-            isDuplicating: isDuplicating
+            isDuplicating: isDuplicating,
+            onReview: reviewAction
         )
+    }
+
+    private var reviewAction: (() -> Void)? {
+        #if os(macOS)
+        guard let appModel else { return nil }
+        return { appModel.openReview(todoID: todo.id, conversation: conversation, openWindow: openWindow) }
+        #else
+        return nil
+        #endif
     }
 
     private func performToolbar(_ command: ConversationToolbarCommand) {

@@ -146,6 +146,8 @@ struct ConversationMenu: View {
     let onReconnect: () -> Void
     let onCopyScreen: () -> Void
     let onPaste: () -> Void
+    /// Review Changes… (Mac): the conversation's worktree changes in their own window.
+    var onReview: (() -> Void)? = nil
 
     @AppStorage(TextSizeShortcuts.fontSizeKey) private var fontSize = TerminalAppearance.defaultFontSize
 
@@ -165,6 +167,12 @@ struct ConversationMenu: View {
                 Label("Memories", systemImage: "lightbulb")
             }
             .disabled(!hasConversation)
+            if let onReview {
+                Button(action: onReview) {
+                    Label("Review Changes…", systemImage: "text.badge.checkmark")
+                }
+                .disabled(!hasConversation)
+            }
             Button(action: onServers) {
                 Label("Servers…", systemImage: "server.rack")
             }
@@ -279,6 +287,7 @@ struct ConversationToolbarActions: View {
     var onDuplicate: (String, String) -> Void
     /// A duplicate is being made. The frame shows its progress; a second one waits.
     var isDuplicating = false
+    var onReview: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: ConversationToolbar.controlSpacing) {
@@ -324,7 +333,8 @@ struct ConversationToolbarActions: View {
                 onDelete: onDelete,
                 onReconnect: onReconnect,
                 onCopyScreen: onCopyScreen,
-                onPaste: onPaste
+                onPaste: onPaste,
+                onReview: onReview
             )
         }
     }
