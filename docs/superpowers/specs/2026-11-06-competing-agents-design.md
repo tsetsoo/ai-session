@@ -50,7 +50,7 @@ Throughout this document, "starting with one agent stays as today" means as in t
 **Worktree cleanup must know about todos.** The existing sweep, `cleanup_worktrees` in `ai_todo_workspace.py`, removes clean worktrees with no commits after about 3 days, and merged ones. Most closed research attempts have no commits, so the sweep would delete them while their todo is still open and they're meant to be reopenable. Change it as follows *(my call)*:
 - The sweep **skips** any worktree whose conversation belongs to a todo that isn't Done. The hub tells hosts which ones those are, for example in the runner's tick answer or through an endpoint the sweep calls.
 - When a todo is Done, its conversations' worktrees become eligible and are removed on the next sweep, under the existing dirty/unpushed safeguards.
-- Reopening a conversation whose worktree is missing recreates it from its branch when the branch still exists. Otherwise it says the worktree is gone and offers to start in the project folder.
+- Reopening a conversation whose worktree is missing recreates it from its branch when the branch still exists. Otherwise it starts a fresh worktree on the same branch name from origin/HEAD and says so in the terminal. It never falls back to the shared project folder. *(Changed while planning: the shared folder is the anti-goal.)*
 
 ### Stage 1: the multi-conversation todo view and "Add agent"
 
