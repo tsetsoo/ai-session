@@ -47,6 +47,11 @@ struct TodoConversationScreen: View {
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @State private var hostList: HostList
     @State private var loader: ConversationLoader
+    /// Mac: the todo's open conversations side by side instead of one at a time.
+    @State private var sideBySide = false
+    /// Continue with This was asked for while others are still working: confirm first.
+    @State private var continuing: Conversation?
+    @State private var switcherError: String?
 
     init(todo: Todo, store: TodoHubStore, request: Binding<FrameRequest?> = .constant(nil),
          placeholder: FramePlaceholder? = nil, isSuspended: Bool = false, isFrontmost: Bool = true,
@@ -71,8 +76,52 @@ struct TodoConversationScreen: View {
         _loader = State(initialValue: ConversationLoader(todo: todo, dependencies: dependencies))
     }
 
+    private var todoConversations: [Conversation] { store.conversations(forTodo: todo.id) }
+
     var body: some View {
-        frame
+        VStack(spacing: 0) {
+            if !isSuspended {
+                ConversationSwitcherBar(
+                    conversations: todoConversations,
+                    selectedKey: shown?.listKey,
+                    sideBySide: $sideBySide,
+                    onSelect: { appModel?.selectedConversationID = $0.listKey },
+                    onContinue: askToContinue,
+                    onReopenClosed: reopenClosed
+                )
+            }
+            #if os(macOS)
+            if sideBySide, ConversationSwitcherModel.showsSwitcher(todoConversations), !isSuspended {
+                ConversationGrid(todo: todo, store: store, conversations: ConversationSwitcherModel.tabs(todoConversations),
+                                 hostList: hostList, onContinue: askToContinue)
+            } else {
+                frame
+            }
+            #else
+            frame
+            #endif
+        }
+            .confirmationDialog(
+                continuingTitle,
+                isPresented: Binding(get: { continuing != nil }, set: { if !$0 { continuing = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Close Them and Continue", role: .destructive) {
+                    if let chosen = continuing { continueWith(chosen) }
+                }
+            } message: {
+                Text("They stop now and can be opened again from this todo.")
+            }
+            .alert("Couldn't Switch Conversations", isPresented: Binding(
+                get: { switcherError != nil }, set: { if !$0 { switcherError = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(switcherError ?? "")
+            }
+            .onChange(of: ConversationSwitcherModel.showsSwitcher(todoConversations)) { _, shows in
+                if !shows { sideBySide = false }
+            }
             .onChange(of: hosts) { _, hosts in hostList.hosts = hosts }
             .onChange(of: request, initial: true) { _, request in handle(request) }
             .onChange(of: shown?.listKey) { _, _ in
@@ -114,6 +163,48 @@ struct TodoConversationScreen: View {
         }
     }
 
+    private var continuingTitle: String {
+        guard let chosen = continuing else { return "" }
+        let busy = ConversationSwitcherModel.busyOthers(continuing: chosen, in: todoConversations)
+        let names = busy.map(ConversationSwitcherModel.label).joined(separator: ", ")
+        return busy.count == 1 ? "\(names) is still working. Close it?" : "\(names) are still working. Close them?"
+    }
+
+    /// Continue with This: asks first when another conversation is still working.
+    private func askToContinue(_ chosen: Conversation) {
+        if ConversationSwitcherModel.busyOthers(continuing: chosen, in: todoConversations).isEmpty {
+            continueWith(chosen)
+        } else {
+            continuing = chosen
+        }
+    }
+
+    private func continueWith(_ chosen: Conversation) {
+        continuing = nil
+        sideBySide = false
+        appModel?.selectedConversationID = chosen.listKey
+        let hosts = self.hosts
+        Task {
+            do {
+                try await store.continueWith(chosen) { try HostLookup.config(for: $0.computer, in: hosts) }
+                if case .ready = loader.phase { loader.show(chosen) } else { loader.attachIfRunning(chosen) }
+            } catch {
+                switcherError = TodoHubStore.message(for: error)
+            }
+        }
+    }
+
+    private func reopenClosed() {
+        let closed = todoConversations.filter { $0.status == .closed }
+        Task {
+            do {
+                try await store.reopen(closed)
+            } catch {
+                switcherError = TodoHubStore.message(for: error)
+            }
+        }
+    }
+
     private var isProblem: Bool {
         if case .problem = loader.phase { return true }
         return false
@@ -140,3 +231,63 @@ struct TodoConversationScreen: View {
 private final class HostList {
     var hosts: [HostEntity] = []
 }
+
+#if os(macOS)
+/// Side by side: each open conversation in its own pane, two columns, rows as needed. Only these
+/// panes are mounted (hidden views would still lay out).
+private struct ConversationGrid: View {
+    let todo: Todo
+    let store: TodoHubStore
+    let conversations: [Conversation]
+    let hostList: HostList
+    let onContinue: (Conversation) -> Void
+
+    var body: some View {
+        let columns = Array(
+            repeating: GridItem(.flexible(), spacing: 6),
+            count: ConversationSwitcherModel.gridColumns(conversations.count)
+        )
+        GeometryReader { geometry in
+            let rows = (conversations.count + columns.count - 1) / columns.count
+            LazyVGrid(columns: columns, spacing: 6) {
+                ForEach(conversations, id: \.listKey) { conversation in
+                    ConversationPane(todo: todo, store: store, conversation: conversation, hostList: hostList,
+                                     onContinue: { onContinue(conversation) })
+                        .frame(height: max(200, (geometry.size.height - CGFloat(rows - 1) * 6) / CGFloat(rows)))
+                }
+            }
+        }
+        .padding(6)
+    }
+}
+
+/// One conversation of the grid: its header and its own terminal.
+private struct ConversationPane: View {
+    let todo: Todo
+    let store: TodoHubStore
+    let conversation: Conversation
+    let onContinue: () -> Void
+    @State private var loader: ConversationLoader
+
+    init(todo: Todo, store: TodoHubStore, conversation: Conversation, hostList: HostList, onContinue: @escaping () -> Void) {
+        self.todo = todo
+        self.store = store
+        self.conversation = conversation
+        self.onContinue = onContinue
+        _loader = State(initialValue: ConversationLoader(
+            todo: todo, dependencies: .live(store: store, hosts: { hostList.hosts })
+        ))
+    }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ConversationPaneHeader(conversation: store.conversation(withKey: conversation.listKey) ?? conversation, onContinue: onContinue)
+                .padding(.horizontal, 6)
+            ConversationFrame(todo: todo, loader: loader, store: store, placeholder: nil, onPopOut: nil,
+                              isFrontmost: true, sharesColumn: true, onDeleted: {})
+        }
+        .background(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
+        .onAppear { loader.attachIfRunning(conversation) }
+    }
+}
+#endif

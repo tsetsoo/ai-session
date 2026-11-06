@@ -471,7 +471,8 @@ final class TodoHubStore {
         if let selectedKey, let match = conversations.values.first(where: { $0.listKey == selectedKey }), match.todoId == id {
             return match
         }
-        return mostUrgent(forTodo: id)
+        // The one the user continued with, while it is open; else the most urgent.
+        return ConversationSwitcherModel.preferred(conversations(forTodo: id)) ?? mostUrgent(forTodo: id)
     }
 
     /// Get-or-create the todo's conversation on the hub. An existing conversation is resumed
@@ -907,6 +908,45 @@ final class TodoHubStore {
             ? client.closeConversation(todoId: conversation.todoId)
             : client.closeConversation(id: conversation.id)
         remember(closed)
+        refreshSoon()
+    }
+
+    /// "Continue with this": `chosen` becomes the todo's main conversation; the others are closed
+    /// on the hub (kept, reopenable) and their tmux sessions stopped on their computers.
+    func continueWith(_ chosen: Conversation, config: (Conversation) throws -> HostConnectionConfig) async throws {
+        guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
+        let closed = try await client.continueWith(conversationId: chosen.id)
+        for conversation in closed {
+            remember(conversation)
+            #if DEBUG
+            if demo != nil { continue }
+            #endif
+            // Already gone (exit 1) is fine; a computer that can't be reached keeps a session
+            // the hub has closed, which the next open of it reattaches to.
+            if let config = try? config(conversation) {
+                _ = try? await NIOSSHClient().exec(
+                    config, command: TmuxCommandBuilder.killSessionExact(tmuxName: conversation.tmuxName)
+                )
+            }
+        }
+        if var main = conversations.values.first(where: { $0.listKey == chosen.listKey }) {
+            main.main = true
+            remember(main)
+        }
+        refreshSoon()
+    }
+
+    /// The stored copy of a conversation (its latest status), by its row key.
+    func conversation(withKey key: String) -> Conversation? {
+        conversations.values.first { $0.listKey == key }
+    }
+
+    /// Opens closed attempts again (the switcher shows them); attaching starts each as usual.
+    func reopen(_ closed: [Conversation]) async throws {
+        guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
+        for conversation in closed {
+            remember(try await client.reopenConversation(id: conversation.id))
+        }
         refreshSoon()
     }
 
