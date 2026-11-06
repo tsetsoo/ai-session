@@ -4343,7 +4343,7 @@ cat >"$PR_GH" <<'FAKE'
 #!/bin/sh
 echo "$*" >>"$PR_LOG"
 case "$1 $2" in
-  "pr list") echo '[{"number":7,"state":"CLOSED","updatedAt":"2026-11-01"},{"number":9,"state":"OPEN","updatedAt":"2026-10-01"}]' ;;
+  "pr list") echo '[{"url":"https://github.com/o/r/pull/7","number":7,"state":"CLOSED","updatedAt":"2026-11-01"},{"url":"https://github.com/o/r/pull/9","number":9,"state":"OPEN","updatedAt":"2026-10-01"}]' ;;
   "pr view") cat <<'JSON'
 {"number":9,"url":"https://github.com/o/r/pull/9","title":"Add it","body":"Why: **because**","state":"OPEN","isDraft":false,
  "author":{"login":"alice"},"reviewDecision":"CHANGES_REQUESTED","mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE",
@@ -4355,9 +4355,9 @@ JSON
   ;;
   "api user") echo '{"login":"me"}' ;;
   "api graphql") cat <<'JSON'
-{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+{"data":{"repository":{"pullRequest":{"baseRefOid":"base999","headRefOid":"abc123","reviewThreads":{"nodes":[
  {"id":"T1","isResolved":false,"isOutdated":false,"path":"src/a.rs","line":12,"startLine":10,"originalLine":12,"originalStartLine":10,"diffSide":"RIGHT",
-  "comments":{"nodes":[{"author":{"login":"bob"},"body":"Rename this","createdAt":"2026-11-05T10:00:00Z","url":"https://github.com/o/r/pull/9#r1","commit":{"oid":"abc123"},"originalCommit":{"oid":"abc000"}},
+  "comments":{"nodes":[{"author":{"login":"bob"},"body":"Rename this","createdAt":"2026-11-05T10:00:00Z","url":"https://github.com/o/r/pull/9#r1","commit":{"oid":"zzz"},"originalCommit":{"oid":"abc000"}},
                        {"author":{"login":"alice"},"body":"Why?","createdAt":"2026-11-05T11:00:00Z","url":"u2","commit":{"oid":"abc123"},"originalCommit":{"oid":"abc000"}}]}},
  {"id":"T2","isResolved":true,"isOutdated":true,"path":"src/b.rs","line":null,"startLine":null,"originalLine":3,"originalStartLine":null,"diffSide":"LEFT",
   "comments":{"nodes":[{"author":null,"body":"old","createdAt":"2026-11-04T10:00:00Z","url":"u3","commit":null,"originalCommit":{"oid":"def456"}}]}}
@@ -4388,8 +4388,19 @@ assert d["access"] and d["pr"] == 9, d
 a, b = d["threads"]
 assert (a["id"], a["path"], a["side"], a["line_start"], a["line_end"], a["commit"], a["resolved"]) == ("T1", "src/a.rs", "new", 10, 12, "abc123", False), a
 assert [c["author"] for c in a["comments"]] == ["bob", "alice"], a
-assert (b["side"], b["line_start"], b["line_end"], b["commit"], b["resolved"], b["outdated"], b["comments"][0]["author"]) == ("old", 3, 3, "def456", True, True, "ghost"), b
+assert (b["side"], b["line_start"], b["line_end"], b["commit"], b["resolved"], b["outdated"], b["comments"][0]["author"]) == ("old", 3, 3, "base999", True, True, "ghost"), b
 PY
+# With what `pr` printed, threads is one GraphQL call: no second look at the PR.
+: >"$PR_LOG"
+AI_TODO_GH_BIN="$PR_GH" "$REVIEW" threads "$PR_REPO" --number 9 --url https://github.com/o/r/pull/9 >/dev/null || fail "threads --number --url"
+grep -q "^api graphql" "$PR_LOG" && ! grep -q "^pr " "$PR_LOG" || fail "threads with --url asked: $(cat "$PR_LOG")"
+# An outdated thread on the head side is on the commit it was written on.
+sed -e 's/"line":12,"startLine":10/"line":null,"startLine":null/' "$PR_GH" >"${PR_GH}2" && chmod +x "${PR_GH}2"
+[[ "$(AI_TODO_GH_BIN="${PR_GH}2" "$REVIEW" threads "$PR_REPO" | python3 -c 'import json,sys; t=json.load(sys.stdin)["threads"][0]; print(t["commit"], t["line_start"], t["line_end"])')" == "abc000 10 12" ]] || fail "outdated thread commit"
+# A detached HEAD has no PR: not an access problem.
+git -C "$PR_REPO" checkout -q --detach
+[[ "$(AI_TODO_GH_BIN="$PR_GH" "$REVIEW" pr "$PR_REPO")" == *'"access": true, "error": null'*'"pr": null'* ]] || fail "detached: $(AI_TODO_GH_BIN="$PR_GH" "$REVIEW" pr "$PR_REPO")"
+git -C "$PR_REPO" checkout -q feat
 # GitLab, by origin's URL.
 git -C "$PR_REPO" remote set-url origin https://gitlab.example.com/g/r.git
 git -C "$PR_REPO" config ai-remote.forge gitlab
@@ -4397,10 +4408,10 @@ PR_GLAB="${SANDBOX}/bin/fake-review-glab"
 cat >"$PR_GLAB" <<'FAKE'
 #!/bin/sh
 case "$1 $2" in
-  "mr list") echo '[{"iid":4,"state":"opened","source_branch":"feat","updated_at":"2026-11-05"}]' ;;
+  "mr list") echo '[{"iid":4,"web_url":"https://gitlab.example.com/g/r/-/merge_requests/4","state":"opened","source_branch":"feat","updated_at":"2026-11-05"}]' ;;
   "mr view") echo '{"iid":4,"project_id":77,"web_url":"https://gitlab.example.com/g/r/-/merge_requests/4","title":"T","description":"D","state":"opened","draft":true,
     "author":{"username":"dan"},"detailed_merge_status":"ci_still_running","sha":"fff111","source_branch":"feat","target_branch":"main","head_pipeline":{"status":"failed"}}' ;;
-  "api projects/77/merge_requests/4/approvals") echo '{"approved_by":[{"user":{"username":"erin"}}]}' ;;
+  "api projects/77/merge_requests/4/approvals") echo '{"approved":false,"approvals_left":1,"approved_by":[{"user":{"username":"erin"}}]}' ;;
   "api user") echo '{"username":"me2"}' ;;
   "api projects/77/merge_requests/4/discussions?per_page=100") cat <<'JSON'
 [{"id":"D1","notes":[{"id":5,"system":false,"resolvable":true,"resolved":false,"author":{"username":"erin"},"body":"Fix","created_at":"2026-11-05T10:00:00Z",
@@ -4421,6 +4432,8 @@ d = json.loads(sys.argv[1])
 p = d["pr"]
 assert (d["provider"], d["viewer"], p["number"], p["state"], p["draft"], p["author"], p["approvals"]) == ("gitlab", "me2", 4, "open", True, "dan", ["erin"]), d
 assert p["checks"]["state"] == "failing" and p["mergeable"] == "ci_still_running" and p["head_sha"] == "fff111", p
+# One of two approvals: not approved yet.
+assert p["review_decision"] == "review_required", p
 PY
 gl_th="$(AI_TODO_GLAB_BIN="$PR_GLAB" "$REVIEW" threads "$PR_REPO")"
 python3 - "$gl_th" <<'PY' || fail "gitlab threads: $gl_th"

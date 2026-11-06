@@ -65,7 +65,10 @@ pr      the pull/merge request of the branch (GitHub with gh, GitLab with glab, 
         when the CLI is missing, logged out or failing: nothing else depends on it. Read-only.
 threads its review threads on lines: {provider, access, error, pr, threads: [{id, path, side,
         line_start, line_end, commit, resolved, outdated, url, comments [{author, body,
-        created_at}]}]}. GitHub: GraphQL reviewThreads; GitLab: the MR's discussions.
+        created_at}]}]}. GitHub: GraphQL reviewThreads; GitLab: the MR's discussions. The lines
+        are in `commit`: the head (base for removed lines), or for an outdated GitHub thread
+        the commit it was written on. --number with --url (GitHub) or --project (GitLab), as
+        `pr` printed them, skips looking the PR up again.
 cancel  stops a running reviewer (its whole process group). Prints what `result` does: a run
         that finished first stays done, with its findings.
 
@@ -491,6 +494,7 @@ GITHUB_THREADS = """
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      baseRefOid headRefOid
       reviewThreads(first: 100) {
         nodes {
           id isResolved isOutdated path line startLine originalLine originalStartLine diffSide
@@ -508,15 +512,29 @@ class NoAccess(Exception):
     """The forge's CLI is missing, logged out, or can't reach it."""
 
 
+def workspace_module():
+    """ai_todo_workspace, installed next to this script: the runner's forge and PR lookup."""
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import ai_todo_workspace
+    return ai_todo_workspace
+
+
 def forge_kind(root):
-    """github | gitlab | None, as the runner decides it (ai_todo_workspace.forge)."""
+    """github | gitlab | None, as the runner decides it."""
+    return workspace_module().forge(root)
+
+
+def find_number(kind, root, branch):
+    """The number of the branch's PR/MR the runner would pick (an open one, else the latest),
+    or None. NoAccess, with why, when the CLI can't be asked."""
+    workspace = workspace_module()
     try:
-        sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-        import ai_todo_workspace
-        return ai_todo_workspace.forge(root)
-    except ImportError:
-        url = line(root, "remote", "get-url", "origin") or ""
-        return "github" if "github" in url else "gitlab" if "gitlab" in url else None
+        found = workspace.find_pr(root, branch)
+    except workspace.PRUnknown:
+        # find_pr says only that it failed: ask once more to say why (missing, logged out).
+        forge_json(kind, root, "api", "user")
+        raise NoAccess("%s couldn't list the pull requests" % os.path.basename(forge_cli(kind)))
+    return found.get("number") if found else None
 
 
 def forge_cli(kind):
@@ -588,13 +606,9 @@ def branch_for(root, ref):
 
 def github_pr(root, branch, number):
     if number is None:
-        rows = forge_json("github", root, "pr", "list", "--head", branch, "--state", "all", "--limit", "20",
-                          "--json", "number,state,updatedAt")
-        rows = [r for r in rows or [] if isinstance(r, dict)]
-        if not rows:
+        number = find_number("github", root, branch)
+        if number is None:
             return None
-        rows.sort(key=lambda r: (r.get("state") == "OPEN", r.get("updatedAt") or ""), reverse=True)
-        number = rows[0].get("number")
     view = forge_json("github", root, "pr", "view", str(number), "--json",
                       "number,url,title,body,state,isDraft,author,reviewDecision,mergeStateStatus,mergeable,"
                       "statusCheckRollup,headRefOid,headRefName,baseRefName,latestReviews")
@@ -615,21 +629,24 @@ def github_pr(root, branch, number):
 
 def gitlab_pr(root, branch, number):
     if number is None:
-        rows = forge_json("gitlab", root, "mr", "list", "--source-branch", branch, "--all", "-F", "json", "--per-page", "20")
-        rows = [r for r in rows or [] if isinstance(r, dict) and r.get("source_branch") in (None, branch)]
-        if not rows:
+        number = find_number("gitlab", root, branch)
+        if number is None:
             return None
-        rows.sort(key=lambda r: (r.get("state") == "opened", r.get("updated_at") or ""), reverse=True)
-        number = rows[0].get("iid")
     view = forge_json("gitlab", root, "mr", "view", str(number), "-F", "json")
     if not isinstance(view, dict):
         return None
     approvals = []
+    decision = None
     project = view.get("project_id")
     if project:
         try:
-            data = forge_json("gitlab", root, "api", "projects/%s/merge_requests/%s/approvals" % (project, number))
-            approvals = sorted({((a or {}).get("user") or {}).get("username") for a in (data or {}).get("approved_by") or []} - {None})
+            data = forge_json("gitlab", root, "api", "projects/%s/merge_requests/%s/approvals" % (project, number)) or {}
+            approvals = sorted({((a or {}).get("user") or {}).get("username") for a in data.get("approved_by") or []} - {None})
+            # Approved only when the MR's approval rules are met, not at the first approval.
+            if data.get("approved") is True or (data.get("approvals_left") == 0 and approvals):
+                decision = "approved"
+            elif (data.get("approvals_left") or 0) > 0:
+                decision = "review_required"
         except NoAccess:
             pass
     state = {"opened": "open", "locked": "open"}.get(view.get("state"), view.get("state") or "")
@@ -638,7 +655,7 @@ def gitlab_pr(root, branch, number):
         "body": view.get("description") or "", "state": state,
         "draft": bool(view.get("draft") or view.get("work_in_progress")),
         "author": (view.get("author") or {}).get("username"),
-        "review_decision": "approved" if approvals else None, "approvals": approvals,
+        "review_decision": decision, "approvals": approvals,
         "mergeable": (view.get("detailed_merge_status") or view.get("merge_status") or "").lower() or None,
         "checks": pipeline_summary((view.get("head_pipeline") or view.get("pipeline") or {}).get("status")),
         "head_sha": view.get("sha"), "head_ref": view.get("source_branch"), "base_ref": view.get("target_branch"),
@@ -669,23 +686,38 @@ def take_number(args):
     return rest, number
 
 
+def take_option(args, name):
+    rest = list(args)
+    if name not in rest:
+        return rest, None
+    at = rest.index(name)
+    if at + 1 >= len(rest) or not rest[at + 1]:
+        die("%s needs a value" % name, 64)
+    value = rest[at + 1]
+    del rest[at:at + 2]
+    return rest, value
+
+
 def forge_context(args, usage):
     args, ref = take_ref(args)
     args, number = take_number(args)
+    args, url = take_option(args, "--url")
+    args, project = take_option(args, "--project")
     if len(args) != 1:
         die(usage, 64)
     root = repo_root(args[0])
     branch = branch_for(root, ref)
-    return root, branch, number, forge_kind(root)
+    return root, branch, number, forge_kind(root), url, project
 
 
 def cmd_pr(args):
-    root, branch, number, kind = forge_context(args, "usage: ai-todo-review pr <cwd> [--ref <branch>] [--number N]")
+    root, branch, number, kind, _, _ = forge_context(args, "usage: ai-todo-review pr <cwd> [--ref <branch>] [--number N]")
     out = {"provider": kind, "access": False, "error": None, "viewer": None, "branch": branch, "pr": None}
     if kind is None:
         out["error"] = "origin is neither GitHub nor GitLab"
     elif not branch and number is None:
-        out["error"] = "no branch checked out"
+        # A detached HEAD has no PR of its own; that's not an access problem.
+        out["access"] = True
     else:
         try:
             out["pr"] = (github_pr if kind == "github" else gitlab_pr)(root, branch, number)
@@ -702,20 +734,29 @@ def github_threads(root, pr):
         return []
     data = forge_json("github", root, "api", "graphql", "-f", "query=" + GITHUB_THREADS,
                       "-F", "owner=" + m.group(1), "-F", "name=" + m.group(2), "-F", "number=" + m.group(3))
-    nodes = ((((data or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {}).get("reviewThreads") or {}
+    request = (((data or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+    nodes = request.get("reviewThreads") or {}
     threads = []
     for node in nodes.get("nodes") or []:
         comments = ((node or {}).get("comments") or {}).get("nodes") or []
         if not comments or not node.get("path"):
             continue
         first = comments[0]
-        line_no = node.get("line") or node.get("originalLine")
-        start = node.get("startLine") or node.get("originalStartLine") or line_no
+        old_side = node.get("diffSide") == "LEFT"
+        if node.get("line"):
+            # Current: lines of the PR's head (or its base, for removed lines).
+            line_no, start = node["line"], node.get("startLine") or node["line"]
+            commit = request.get("baseRefOid") if old_side else request.get("headRefOid")
+        else:
+            # Outdated: where it was written, on the commit it was written on.
+            line_no = node.get("originalLine")
+            start = node.get("originalStartLine") or line_no
+            commit = request.get("baseRefOid") if old_side else (first.get("originalCommit") or {}).get("oid")
         threads.append({
             "id": node.get("id"), "path": node["path"],
-            "side": "old" if node.get("diffSide") == "LEFT" else "new",
+            "side": "old" if old_side else "new",
             "line_start": start, "line_end": line_no,
-            "commit": ((first.get("commit") or first.get("originalCommit")) or {}).get("oid"),
+            "commit": commit,
             "resolved": bool(node.get("isResolved")), "outdated": bool(node.get("isOutdated")),
             "url": first.get("url"),
             "comments": [{"author": (c.get("author") or {}).get("login") or "ghost", "body": c.get("body") or "",
@@ -757,13 +798,18 @@ def gitlab_threads(root, pr):
 
 
 def cmd_threads(args):
-    root, branch, number, kind = forge_context(args, "usage: ai-todo-review threads <cwd> [--ref <branch>] [--number N]")
+    root, branch, number, kind, url, project = forge_context(
+        args, "usage: ai-todo-review threads <cwd> [--ref <branch>] [--number N [--url U | --project P]]")
     out = {"provider": kind, "access": False, "error": None, "pr": None, "threads": []}
     if kind is None:
         out["error"] = "origin is neither GitHub nor GitLab"
     else:
         try:
-            pr = (github_pr if kind == "github" else gitlab_pr)(root, branch, number) if (branch or number) else None
+            if number is not None and (url if kind == "github" else project):
+                # What `pr` already said: one call for the threads, no second look at the PR.
+                pr = {"number": number, "url": url, "project_id": project}
+            else:
+                pr = (github_pr if kind == "github" else gitlab_pr)(root, branch, number) if (branch or number) else None
             out["access"] = True
             if pr:
                 out["pr"] = pr["number"]

@@ -75,6 +75,9 @@ struct ReviewView: View {
     @State private var selectedPath: String?
     @State private var showingSend = false
     @State private var showingFindings = false
+    /// Bumped by Refresh: the PR/MR is read when the window opens and on Refresh, not on
+    /// every scope change.
+    @State private var pullRequestReads = 0
     @State private var focus: DiffFocus?
 
     init(conversation: Conversation, brief: String? = nil) {
@@ -100,6 +103,10 @@ struct ReviewView: View {
         .toolbar { toolbar }
         // Another commit in Compare With is a new load too, though the scope stays `.commit`.
         .task(id: "\(session.scope.rawValue)|\(session.baseCommit?.sha ?? "")") { await reload() }
+        // The PR/MR and its threads, beside the diff: never holds it up; stops with the window.
+        .task(id: pullRequestReads) {
+            await withConfig { await session.loadPullRequest(config: $0) }
+        }
         // A run started here or by an earlier window: followed while the window is open.
         .task(id: session.activeRun?.id) {
             guard session.activeRun != nil else { return }
@@ -143,8 +150,6 @@ struct ReviewView: View {
 
     private func reload() async {
         await withConfig { await session.load(config: $0) }
-        // The PR/MR and its threads after the diff: never holds it up.
-        Task { await withConfig { await session.loadPullRequest(config: $0) } }
         if selectedPath == nil || !session.diff.files.contains(where: { $0.path == selectedPath }) {
             selectedPath = session.diff.files.first?.path
         }
@@ -332,6 +337,7 @@ struct ReviewView: View {
         }
         ToolbarItem(placement: .primaryAction) {
             Button {
+                pullRequestReads += 1
                 Task { await reload() }
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")

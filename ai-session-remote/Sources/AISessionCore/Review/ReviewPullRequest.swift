@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// `ai-todo-review pr`: the branch's pull/merge request, as far as the computer's gh or glab
@@ -38,10 +39,13 @@ public struct ReviewPullRequestInfo: Codable, Equatable, Sendable {
         public var headSHA: String?
         public var headRef: String?
         public var baseRef: String?
+        /// GitLab's project id, for asking about the MR again.
+        public var projectID: Int?
 
         private enum CodingKeys: String, CodingKey {
             case number, url, title, body, state, draft, author, approvals, mergeable, checks
             case reviewDecision = "review_decision", headSHA = "head_sha", headRef = "head_ref", baseRef = "base_ref"
+            case projectID = "project_id"
         }
 
         public init(number: Int, url: String?, title: String, body: String, state: String, draft: Bool, author: String?,
@@ -165,17 +169,31 @@ public enum ReviewThreadItems {
 
     public static func fingerprint(_ thread: ReviewThreadsResult.Thread) -> String { "thread:\(thread.id)" }
 
+    /// The same id for the same thread of the same conversation on every device, so two
+    /// devices adding it write one row on the hub, not two.
+    public static func itemID(conversationKey: String, thread: ReviewThreadsResult.Thread) -> UUID {
+        var bytes = Array(SHA256.hash(data: Data("review-thread\u{0}\(conversationKey)\u{0}\(thread.id)".utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50  // version 5 (name-based)
+        bytes[8] = (bytes[8] & 0x3F) | 0x80  // RFC 4122 variant
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+    }
+
     /// The thread's conversation as one body: `bob: Rename this` / `alice: Why?`.
     public static func body(_ thread: ReviewThreadsResult.Thread) -> String {
-        thread.comments.map { "\($0.author): \($0.body.trimmingCharacters(in: .whitespacesAndNewlines))" }
+        let text = thread.comments.map { "\($0.author): \($0.body.trimmingCharacters(in: .whitespacesAndNewlines))" }
             .joined(separator: "\n\n")
+        // As the hub keeps it, so it compares equal after a round trip.
+        return String(text.prefix(ReviewSync.maxBody))
     }
 
     /// What changes in `existing` for these threads: new unresolved threads to add, open
     /// items whose thread got replies (their body follows), and open items whose thread was
     /// resolved (dismissed). Items the user sent, picked or dismissed stay as they are.
+    /// Replies follow only while the body is still the thread's own text (the user hasn't
+    /// edited it): the new text then starts with the old.
     public static func apply(_ result: ReviewThreadsResult, provider: String?, fallbackRevision: String,
-                             to comments: inout [ReviewComment], at date: Date = .now) -> Int {
+                             conversationKey: String, to comments: inout [ReviewComment], at date: Date = .now) -> Int {
         var changed = 0
         let label = provider == "gitlab" ? "GitLab" : "GitHub"
         for thread in result.threads where !thread.comments.isEmpty {
@@ -185,7 +203,7 @@ public enum ReviewThreadItems {
                 if thread.resolved {
                     comments[index].state = .dismissed
                     changed += 1
-                } else if comments[index].body != body(thread) {
+                } else if comments[index].body != body(thread), body(thread).hasPrefix(comments[index].body) {
                     comments[index].body = body(thread)
                     changed += 1
                 }
@@ -194,6 +212,7 @@ public enum ReviewThreadItems {
             guard !thread.resolved else { continue }
             let start = thread.lineStart ?? thread.lineEnd
             comments.append(ReviewComment(
+                id: itemID(conversationKey: conversationKey, thread: thread),
                 author: authorPrefix + thread.comments[0].author, path: thread.path, side: thread.side,
                 startLine: start, endLine: thread.lineEnd.flatMap { $0 == start ? nil : $0 },
                 revision: thread.commit ?? fallbackRevision, quote: [], body: body(thread), state: .new,
@@ -224,10 +243,15 @@ extension TmuxCommandBuilder {
         wrap("exec \(prHelper) pr \(shellQuotePath(cwd))" + (ref.map { " --ref \(shellQuote($0))" } ?? ""))
     }
 
-    public static func reviewThreads(cwd: String, ref: String? = nil, number: Int? = nil) -> String {
+    /// With `number` and the PR's `url` (GitHub) or `projectID` (GitLab) from `pr`, the
+    /// helper doesn't look the PR up again.
+    public static func reviewThreads(cwd: String, ref: String? = nil, number: Int? = nil, url: String? = nil,
+                                     projectID: Int? = nil) -> String {
         var command = "exec \(prHelper) threads \(shellQuotePath(cwd))"
         if let ref { command += " --ref \(shellQuote(ref))" }
         if let number { command += " --number \(number)" }
+        if let url { command += " --url \(shellQuote(url))" }
+        if let projectID { command += " --project \(projectID)" }
         return wrap(command)
     }
 }

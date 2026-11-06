@@ -436,25 +436,30 @@ final class ReviewSession {
     private(set) var pullRequest: ReviewPullRequestInfo?
 
     /// Reads the PR/MR and its review threads (read-only) and adds the open threads on lines
-    /// as items. Quiet on failure: local review doesn't depend on it.
+    /// as items. Quiet on failure: local review doesn't depend on it. One at a time.
     func loadPullRequest(config: HostConnectionConfig) async {
+        guard !isLoadingPullRequest else { return }
+        isLoadingPullRequest = true
+        defer { isLoadingPullRequest = false }
         let (cwd, ref) = source
-        guard let info: ReviewPullRequestInfo = try? await run(TmuxCommandBuilder.reviewPullRequest(cwd: cwd, ref: ref), config: config)
+        guard let info: ReviewPullRequestInfo = try? await run(TmuxCommandBuilder.reviewPullRequest(cwd: cwd, ref: ref), config: config),
+              !Task.isCancelled
         else { return }
         pullRequest = info
         guard info.access, let pr = info.pr else { return }
         guard let threads: ReviewThreadsResult = try? await run(
-            TmuxCommandBuilder.reviewThreads(cwd: cwd, ref: ref, number: pr.number), config: config
-        ), threads.access, !threads.threads.isEmpty else { return }
-        var comments = record.comments
+            TmuxCommandBuilder.reviewThreads(cwd: cwd, ref: ref, number: pr.number, url: pr.url, projectID: pr.projectID),
+            config: config
+        ), threads.access, !threads.threads.isEmpty, !Task.isCancelled, !hubOffline else { return }
         let fallback = pr.headSHA ?? result?.to ?? ""
-        guard ReviewThreadItems.apply(threads, provider: info.provider, fallbackRevision: fallback, to: &comments) > 0 else { return }
-        // A thread already here as a draft or sent stays as it is; only these change.
-        guard !hubOffline else { return }
-        store.update(key) { $0.comments = comments }
+        // On the record as it is now: it may have changed during the lookups.
+        store.update(key) { record in
+            _ = ReviewThreadItems.apply(threads, provider: info.provider, fallbackRevision: fallback,
+                                        conversationKey: key, to: &record.comments)
+        }
         // On the revision on screen: placed now. Older ones: worked out from their revision.
         var older = false
-        for comment in comments where comment.isFinding && comment.state.isOpen && comment.side == .new && anchors[comment.id] == nil {
+        for comment in record.comments where comment.isFinding && comment.state.isOpen && comment.side == .new && anchors[comment.id] == nil {
             if comment.revision == result?.to {
                 anchors[comment.id] = .moved(path: comment.path, startLine: comment.startLine, endLine: comment.endLine)
             } else {
@@ -463,6 +468,8 @@ final class ReviewSession {
         }
         if older { placeUnplaced() }
     }
+
+    @ObservationIgnored private var isLoadingPullRequest = false
 
     /// "No PR access on <computer>: gh isn't logged in", or nil.
     var pullRequestProblem: String? {

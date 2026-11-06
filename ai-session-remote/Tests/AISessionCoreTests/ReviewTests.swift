@@ -423,29 +423,41 @@ struct ReviewTests {
                               comments: [.init(author: "bob", body: "old")])
         var comments: [ReviewComment] = []
         let first = ReviewThreadsResult(provider: "github", access: true, pr: 9, threads: [open, resolved])
-        #expect(ReviewThreadItems.apply(first, provider: "github", fallbackRevision: "head", to: &comments) == 1)
+        #expect(ReviewThreadItems.apply(first, provider: "github", fallbackRevision: "head", conversationKey: "c", to: &comments) == 1)
         let item = comments[0]
         #expect(item.author == "pr:bob" && item.prAuthor == "bob" && item.isFinding && item.reviewer == nil)
         #expect(item.state == .new && item.startLine == 10 && item.endLine == 12 && item.revision == "c1")
         #expect(item.body == "bob: Rename this\n\nalice: Why?" && item.title == "GitHub thread by bob" && item.fingerprint == "thread:T1")
         // Again: nothing new. A reply updates it; resolving dismisses it while it's untouched.
-        #expect(ReviewThreadItems.apply(first, provider: "github", fallbackRevision: "head", to: &comments) == 0)
+        #expect(ReviewThreadItems.apply(first, provider: "github", fallbackRevision: "head", conversationKey: "c", to: &comments) == 0)
         var replied = open
         replied.comments.append(.init(author: "bob", body: "Because."))
         #expect(ReviewThreadItems.apply(.init(provider: "github", access: true, pr: 9, threads: [replied]),
-                                        provider: "github", fallbackRevision: "head", to: &comments) == 1)
+                                        provider: "github", fallbackRevision: "head", conversationKey: "c", to: &comments) == 1)
         #expect(comments[0].body.hasSuffix("bob: Because."))
         var done = replied
         done.resolved = true
         _ = ReviewThreadItems.apply(.init(provider: "github", access: true, pr: 9, threads: [done]),
-                                    provider: "github", fallbackRevision: "head", to: &comments)
+                                    provider: "github", fallbackRevision: "head", conversationKey: "c", to: &comments)
         #expect(comments[0].state == .dismissed)
         // One the user already sent stays sent.
         comments[0].state = .sent
         _ = ReviewThreadItems.apply(.init(provider: "github", access: true, pr: 9, threads: [done]),
-                                    provider: "github", fallbackRevision: "head", to: &comments)
+                                    provider: "github", fallbackRevision: "head", conversationKey: "c", to: &comments)
         #expect(comments[0].state == .sent)
         #expect(TmuxCommandBuilder.reviewThreads(cwd: "/w", ref: "b", number: 9).hasSuffix("threads '/w' --ref 'b' --number 9"))
+        #expect(TmuxCommandBuilder.reviewThreads(cwd: "/w", number: 4, url: "https://x/4", projectID: 77)
+            .hasSuffix("--number 4 --url 'https://x/4' --project 77"))
+        // The same thread is the same item on every device; another conversation's isn't.
+        #expect(ReviewThreadItems.itemID(conversationKey: "c", thread: open) == ReviewThreadItems.itemID(conversationKey: "c", thread: open))
+        #expect(ReviewThreadItems.itemID(conversationKey: "c", thread: open) != ReviewThreadItems.itemID(conversationKey: "d", thread: open))
+        // The user's own edit isn't overwritten by a reply.
+        var edited: [ReviewComment] = []
+        _ = ReviewThreadItems.apply(first, provider: "github", fallbackRevision: "head", conversationKey: "c", to: &edited)
+        edited[0].body = "Do what bob says, but keep the old name in the API."
+        _ = ReviewThreadItems.apply(.init(provider: "github", access: true, pr: 9, threads: [replied]),
+                                    provider: "github", fallbackRevision: "head", conversationKey: "c", to: &edited)
+        #expect(edited[0].body == "Do what bob says, but keep the old name in the API.")
         #expect(TmuxCommandBuilder.reviewPullRequest(cwd: "/w").hasSuffix("pr '/w'"))
     }
 }
