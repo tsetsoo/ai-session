@@ -2,6 +2,7 @@
 # Install the todo-conversation helpers on a computer that hosts Claude sessions.
 #
 #   ~/.ai-remote/bin/ai-todo-open    started by the iPhone / Mac app over SSH
+#   ~/.ai-remote/bin/ai-todo-review  a conversation's changes for the review view; types review feedback into its tmux pane
 #   ~/.ai-remote/bin/ai-todo-hook    Claude Code and Codex hook reporting busy/waiting/idle
 #   ~/.ai-remote/bin/ai-todo-sessions  list / delete / prune / stats of Claude and Codex; delete also removes Cursor chats
 #   ~/.ai-remote/bin/ai-todo-limits    5h / weekly / monthly usage for the chat's tool on this computer
@@ -51,7 +52,7 @@ BIN_DIR="${AI_DIR}/bin"
 HUB_CONF="${AI_DIR}/todo-hub.conf"
 TMUX_SNIPPET="${AI_DIR}/tmux.conf"
 # Every helper copied to BIN_DIR, for install and uninstall alike. Programs are 755, modules 644.
-HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status ai-todo-runner ai-todo-idea ai-todo-watch ai-todo-remind ai-todo-updates ai-todo-workspace)
+HELPERS=(ai-todo-open ai-todo-review ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status ai-todo-runner ai-todo-idea ai-todo-watch ai-todo-remind ai-todo-updates ai-todo-workspace)
 MODULES=(ai_todo_redact.py ai_todo_status.py ai_todo_updates.py ai_todo_workspace.py)
 TMUX_CONF="${HOME}/.tmux.conf"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"

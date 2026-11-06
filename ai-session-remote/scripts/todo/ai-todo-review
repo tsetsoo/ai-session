@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""A conversation's changes for the review view, and review feedback typed into its tmux pane.
+
+Usage:
+  ai-todo-review status <cwd>
+  ai-todo-review diff <cwd> [--scope uncommitted|branch|since] [--from <sha>] [--to <sha>]
+                            [--unified N] [--max-bytes N]
+  ai-todo-review keep <cwd> <sha>
+  ai-todo-review send <tmux_name>          (the message on stdin)
+
+Every command but send prints JSON.
+
+A revision is a commit sha. With nothing uncommitted it is HEAD. Otherwise it is a snapshot
+commit on top of HEAD, made from a temporary index (`git add -A`), so untracked files are in
+it and neither the real index, the working tree nor the stash stack is touched. The snapshot
+has a fixed author, committer, date and message, so the same worktree gives the same sha.
+
+status  root, branch, head, upstream with ahead/behind, the branch's base (merge-base with
+        origin's default branch) and the current revision.
+diff    a unified diff of the repository (paths from its root) from --from to --to (default:
+        the current revision). --scope picks --from: uncommitted = HEAD (default), branch = the
+        base, since = --from as given. --unified 0 is for moving comments between revisions.
+keep    refs/ai-review/<sha> -> sha, so a revision feedback was sent against survives gc.
+send    pastes stdin into the tmux session `<tmux_name>` as a bracketed paste, then Return.
+        Refused (exit 75) while the program there hasn't turned bracketed paste on: line by
+        line, every newline would submit.
+
+Exit codes: 64 bad arguments, 66 no such tmux session, 69 not a git repository (or cwd
+missing), 75 the pane isn't ready for a paste, 90 git or tmux missing.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+SNAPSHOT_IDENT = {
+    "GIT_AUTHOR_NAME": "ai-review", "GIT_AUTHOR_EMAIL": "ai-review@localhost",
+    "GIT_COMMITTER_NAME": "ai-review", "GIT_COMMITTER_EMAIL": "ai-review@localhost",
+    "GIT_AUTHOR_DATE": "@0 +0000", "GIT_COMMITTER_DATE": "@0 +0000",
+}
+SNAPSHOT_MESSAGE = "ai-review snapshot\n"
+KEEP_PREFIX = "refs/ai-review/"
+DEFAULT_MAX_BYTES = 4 * 1024 * 1024
+# The user's git config must not change what is parsed: no colour, prefixes, external diffs.
+DIFF_CONFIG = ["-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+               "-c", "diff.external=", "-c", "color.ui=never", "-c", "core.quotePath=false"]
+
+
+def die(message, code):
+    sys.stderr.write("ai-todo-review: %s\n" % message)
+    sys.exit(code)
+
+
+def git(cwd, *args, env=None, check=True, text=True):
+    full_env = dict(os.environ)
+    full_env.pop("GIT_DIR", None)
+    full_env.pop("GIT_WORK_TREE", None)
+    full_env.pop("GIT_INDEX_FILE", None)
+    full_env["GIT_OPTIONAL_LOCKS"] = "0"
+    if env:
+        full_env.update(env)
+    try:
+        result = subprocess.run(["git", "-C", cwd] + list(args), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, env=full_env)
+    except FileNotFoundError:
+        die("git not found", 90)
+    if check and result.returncode != 0:
+        raise GitError(result.stderr.decode("utf-8", "replace").strip())
+    out = result.stdout
+    return (out.decode("utf-8", "replace") if text else out), result.returncode
+
+
+class GitError(Exception):
+    pass
+
+
+def line(cwd, *args):
+    """First line of output, or None when the command fails."""
+    try:
+        out, _ = git(cwd, *args)
+    except GitError:
+        return None
+    out = out.strip()
+    return out.splitlines()[0] if out else None
+
+
+def repo_root(cwd):
+    path = os.path.expanduser(cwd)
+    if not os.path.isdir(path):
+        die("no folder %s" % cwd, 69)
+    root = line(path, "rev-parse", "--show-toplevel")
+    if not root:
+        die("%s is not in a git repository" % cwd, 69)
+    return root
+
+
+def head_sha(root):
+    return line(root, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+
+
+def snapshot(root):
+    """(revision sha, clean). The temporary index starts as a copy of the real one, so files
+    whose stat data didn't change aren't hashed again."""
+    head = head_sha(root)
+    index = line(root, "rev-parse", "--path-format=absolute", "--git-path", "index")
+    tmpdir = tempfile.mkdtemp(prefix="ai-review-")
+    try:
+        tmp_index = os.path.join(tmpdir, "index")
+        if index and os.path.exists(index):
+            # copy2 keeps the mtime: git re-checks entries as new as the index (racy-git)
+            shutil.copy2(index, tmp_index)
+        env = {"GIT_INDEX_FILE": tmp_index}
+        git(root, "add", "-A", "--", ".", env=env)
+        tree, _ = git(root, "write-tree", env=env)
+        tree = tree.strip()
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    if head and line(root, "rev-parse", head + "^{tree}") == tree:
+        return head, True
+    args = ["commit-tree", tree, "-m", SNAPSHOT_MESSAGE.strip()]
+    if head:
+        args[2:2] = ["-p", head]
+    env = dict(SNAPSHOT_IDENT)
+    sha, _ = git(root, *args, env=env)
+    return sha.strip(), False
+
+
+def default_branch_ref(root):
+    ref = line(root, "symbolic-ref", "-q", "refs/remotes/origin/HEAD")
+    candidates = ([ref] if ref else []) + ["refs/remotes/origin/main", "refs/remotes/origin/master",
+                                           "refs/heads/main", "refs/heads/master"]
+    for candidate in candidates:
+        if line(root, "rev-parse", "--verify", "-q", candidate):
+            return candidate
+    return None
+
+
+def short_ref(ref):
+    for prefix in ("refs/remotes/", "refs/heads/"):
+        if ref.startswith(prefix):
+            return ref[len(prefix):]
+    return ref
+
+
+def base_of(root, head):
+    ref = default_branch_ref(root)
+    if not ref or not head:
+        return None
+    sha = line(root, "merge-base", head, ref)
+    return {"ref": short_ref(ref), "sha": sha} if sha else None
+
+
+def cmd_status(args):
+    if len(args) != 1:
+        die("usage: ai-todo-review status <cwd>", 64)
+    root = repo_root(args[0])
+    head = head_sha(root)
+    branch = line(root, "symbolic-ref", "-q", "--short", "HEAD")
+    upstream = line(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    ahead = behind = None
+    if upstream and head:
+        counts = line(root, "rev-list", "--left-right", "--count", "%s...@{upstream}" % head)
+        if counts and len(counts.split()) == 2:
+            ahead, behind = (int(n) for n in counts.split())
+    revision, clean = snapshot(root)
+    print(json.dumps({
+        "root": root,
+        "branch": branch,
+        "head": head,
+        "upstream": upstream,
+        "ahead": ahead,
+        "behind": behind,
+        "base": base_of(root, head),
+        "revision": revision,
+        "clean": clean,
+    }))
+
+
+def cmd_diff(args):
+    cwd = None
+    scope = "uncommitted"
+    from_sha = to_sha = None
+    unified = 3
+    max_bytes = DEFAULT_MAX_BYTES
+    rest = list(args)
+    try:
+        while rest:
+            arg = rest.pop(0)
+            if arg == "--scope":
+                scope = rest.pop(0)
+            elif arg == "--from":
+                from_sha = rest.pop(0)
+            elif arg == "--to":
+                to_sha = rest.pop(0)
+            elif arg == "--unified":
+                unified = int(rest.pop(0))
+            elif arg == "--max-bytes":
+                max_bytes = int(rest.pop(0))
+            elif arg.startswith("-") or cwd is not None:
+                raise ValueError(arg)
+            else:
+                cwd = arg
+    except (IndexError, ValueError):
+        die("usage: ai-todo-review diff <cwd> [--scope uncommitted|branch|since] [--from <sha>] "
+            "[--to <sha>] [--unified N] [--max-bytes N]", 64)
+    if cwd is None or scope not in ("uncommitted", "branch", "since") or unified < 0 or max_bytes < 1:
+        die("usage: ai-todo-review diff <cwd> [--scope uncommitted|branch|since] ...", 64)
+    root = repo_root(cwd)
+    head = head_sha(root)
+    if to_sha is None:
+        to_sha, _ = snapshot(root)
+    if scope == "since":
+        if not from_sha:
+            die("--scope since needs --from <sha>", 64)
+    elif scope == "branch":
+        base = base_of(root, head)
+        from_sha = base["sha"] if base else head
+    elif from_sha is None:
+        from_sha = head
+    for sha in (from_sha, to_sha):
+        if sha and not line(root, "rev-parse", "--verify", "-q", sha + "^{commit}"):
+            die("unknown revision %s" % sha, 64)
+    if from_sha is None:
+        # No commits yet: everything is new.
+        from_sha = line(root, "hash-object", "-t", "tree", "/dev/null")
+    patch, _ = git(root, *DIFF_CONFIG, "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                   "-M", "--unified=%d" % unified, from_sha, to_sha, "--", text=False)
+    truncated = len(patch) > max_bytes
+    if truncated:
+        cut = patch.rfind(b"\ndiff --git ", 0, max_bytes)
+        patch = patch[:cut + 1] if cut > 0 else patch[:max_bytes]
+    print(json.dumps({
+        "from": from_sha,
+        "to": to_sha,
+        "scope": scope,
+        "patch": patch.decode("utf-8", "replace"),
+        "truncated": truncated,
+    }))
+
+
+def cmd_keep(args):
+    if len(args) != 2:
+        die("usage: ai-todo-review keep <cwd> <sha>", 64)
+    root = repo_root(args[0])
+    sha = line(root, "rev-parse", "--verify", "-q", args[1] + "^{commit}")
+    if not sha:
+        die("unknown revision %s" % args[1], 64)
+    git(root, "update-ref", KEEP_PREFIX + sha, sha)
+    print(json.dumps({"kept": sha}))
+
+
+def tmux(*args, stdin=None):
+    socket = os.environ.get("AI_TODO_TMUX_SOCKET")
+    command = ["tmux"] + (["-L", socket] if socket else []) + list(args)
+    try:
+        return subprocess.run(command, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        die("tmux not found", 90)
+
+
+def cmd_send(args):
+    if len(args) != 1 or not args[0]:
+        die("usage: ai-todo-review send <tmux_name> < message", 64)
+    name = args[0]
+    message = sys.stdin.buffer.read()
+    if not message.strip():
+        die("empty message", 64)
+    target = "=%s:" % name
+    if tmux("has-session", "-t", "=" + name).returncode != 0:
+        die("no tmux session %s" % name, 66)
+    flag = tmux("display-message", "-p", "-t", target, "#{bracket_paste_flag}")
+    if flag.returncode != 0 or flag.stdout.decode().strip() != "1":
+        die("%s isn't ready for a paste" % name, 75)
+    buffer = "ai-review-%d" % os.getpid()
+    if tmux("load-buffer", "-b", buffer, "-", stdin=message.rstrip(b"\n")).returncode != 0:
+        die("couldn't load the message into tmux", 75)
+    pasted = tmux("paste-buffer", "-p", "-d", "-b", buffer, "-t", target)
+    if pasted.returncode != 0:
+        tmux("delete-buffer", "-b", buffer)
+        die("couldn't paste into %s" % name, 75)
+    tmux("send-keys", "-t", target, "Enter")
+    print(json.dumps({"sent": len(message)}))
+
+
+def main(argv):
+    commands = {"status": cmd_status, "diff": cmd_diff, "keep": cmd_keep, "send": cmd_send}
+    if not argv or argv[0] not in commands:
+        die("usage: ai-todo-review status|diff|keep|send ... (see the header of this script)", 64)
+    try:
+        commands[argv[0]](argv[1:])
+    except GitError as error:
+        die(str(error)[:300] or "git failed", 69)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

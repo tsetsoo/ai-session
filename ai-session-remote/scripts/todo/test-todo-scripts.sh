@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Offline tests for scripts/todo: ai-todo-open, ai-todo-sessions, ai-todo-hook, ai-todo-mcp, tmux.conf, install.sh.
+# Offline tests for scripts/todo: ai-todo-open, ai-todo-review, ai-todo-sessions, ai-todo-hook, ai-todo-mcp, tmux.conf, install.sh.
 # Fully sandboxed: temp HOME, fake claude + codex, fake todo-server, private tmux socket.
 # Never touches the real ~/.claude, ~/.tmux.conf, ~/.ai-remote or tmux server.
 set -euo pipefail
@@ -3633,6 +3633,86 @@ runs_reset
 
 # --- end of the ai-todo-memory sections -------------------------------------------------
 export HOME="$SAVED_HOME"
+
+# --- ai-todo-review ----------------------------------------------------------------------
+REVIEW="${SCRIPT_DIR}/ai-todo-review"
+RV_REPO="${SANDBOX}/review-repo"
+rv_git() { git -C "$RV_REPO" -c user.name=t -c user.email=t@t "$@"; }
+rv_field() { python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
+mkdir -p "$RV_REPO"
+rv_git init -q -b main
+printf 'a\nb\nc\n' >"${RV_REPO}/f.txt"
+rv_git add -A && rv_git commit -qm init
+rv_git checkout -qb feat
+# Same size and (likely) the same second as the index: only the racy-git check catches it.
+printf 'a\nB\nc\n' >"${RV_REPO}/f.txt"
+echo new >"${RV_REPO}/u.txt"
+rv_status="$("$REVIEW" status "$RV_REPO")" || fail "review status failed"
+rev1="$(rv_field revision <<<"$rv_status")"
+[[ "$(rv_field clean <<<"$rv_status")" == False && "$rev1" != "$(rv_field head <<<"$rv_status")" ]] || fail "dirty status: $rv_status"
+[[ "$(rv_field branch <<<"$rv_status")" == feat ]] || fail "branch: $rv_status"
+[[ "$("$REVIEW" status "$RV_REPO" | rv_field revision)" == "$rev1" ]] || fail "snapshot sha is not stable"
+[[ -z "$(git -C "$RV_REPO" stash list)" ]] || fail "status touched the stash"
+[[ "$(git -C "$RV_REPO" status --porcelain | tr '\n' ' ')" == " M f.txt ?? u.txt " ]] || fail "status touched the index: $(git -C "$RV_REPO" status --porcelain)"
+pass "review_status_snapshot_is_stable_and_leaves_index_alone"
+
+rv_patch="$("$REVIEW" diff "$RV_REPO" | rv_field patch)"
+grep -q '^+B$' <<<"$rv_patch" && grep -q '^+++ b/u.txt$' <<<"$rv_patch" || fail "uncommitted diff: $rv_patch"
+rv_git add -A && rv_git commit -qm second
+rv_status="$("$REVIEW" status "$RV_REPO")"
+[[ "$(rv_field clean <<<"$rv_status")" == True && "$(rv_field revision <<<"$rv_status")" == "$(rv_field head <<<"$rv_status")" ]] || fail "clean status: $rv_status"
+[[ -z "$("$REVIEW" diff "$RV_REPO" | rv_field patch)" ]] || fail "clean worktree has an uncommitted diff"
+grep -q '^+B$' <<<"$("$REVIEW" diff "$RV_REPO" --scope branch | rv_field patch)" || fail "branch diff misses the commit"
+# The revision feedback was sent against is the starting point of "since".
+printf 'a\nB\nc\nd\n' >"${RV_REPO}/f.txt"
+since="$("$REVIEW" diff "$RV_REPO" --scope since --from "$rev1" --unified 0 | rv_field patch)"
+grep -q '^@@ -3,0 +4 @@' <<<"$since" || fail "since diff: $since"
+pass "review_diff_scopes_uncommitted_branch_since"
+
+"$REVIEW" keep "$RV_REPO" "$rev1" >/dev/null || fail "keep failed"
+[[ "$(git -C "$RV_REPO" rev-parse "refs/ai-review/${rev1}")" == "$rev1" ]] || fail "keep made no ref"
+for bad in 'nope' 'status' 'diff' "diff $RV_REPO --scope since" "diff $RV_REPO --scope weird" "keep $RV_REPO 0000000"; do
+  status=0; eval "\"\$REVIEW\" $bad" >/dev/null 2>&1 || status=$?
+  [[ $status -eq 64 ]] || fail "review $bad exit $status"
+done
+status=0; "$REVIEW" status "${SANDBOX}/no-such-folder" >/dev/null 2>&1 || status=$?
+[[ $status -eq 69 ]] || fail "missing folder exit $status"
+status=0; "$REVIEW" status "$SANDBOX" >/dev/null 2>&1 || status=$?
+[[ $status -eq 69 ]] || fail "not a repository exit $status"
+pass "review_keep_and_bad_args"
+
+# send: a pane whose program turned bracketed paste on gets the whole message as one paste.
+RV_OUT="${SANDBOX}/review-pane.out"
+RV_PANE="${SANDBOX}/review-pane.sh"
+cat >"$RV_PANE" <<PANE
+#!/bin/sh
+stty raw -echo
+printf '\033[?2004h'
+exec cat >"$RV_OUT"
+PANE
+chmod +x "$RV_PANE"
+tmux -L "$SOCK" new-session -d -s rv-ready -x 80 -y 24 "$RV_PANE"
+for _ in $(seq 1 50); do
+  [[ "$(tmux -L "$SOCK" display-message -p -t '=rv-ready:' '#{bracket_paste_flag}')" == 1 ]] && break
+  sleep 0.1
+done
+printf 'Review feedback\n1. f.txt:2\nfix it\n' | "$REVIEW" send rv-ready >/dev/null || fail "send failed"
+for _ in $(seq 1 50); do grep -q 'fix it' "$RV_OUT" 2>/dev/null && break; sleep 0.1; done
+python3 - "$RV_OUT" <<'PY' || fail "pasted bytes: $(od -c "$RV_OUT" | head)"
+import sys
+data = open(sys.argv[1], "rb").read()
+assert data == b"\x1b[200~Review feedback\r1. f.txt:2\rfix it\x1b[201~\r", data
+PY
+tmux -L "$SOCK" new-session -d -s rv-plain -x 80 -y 24 "sleep 300"
+status=0; printf 'x\ny\n' | "$REVIEW" send rv-plain >/dev/null 2>&1 || status=$?
+[[ $status -eq 75 ]] || fail "send without bracketed paste exit $status"
+status=0; printf 'x\n' | "$REVIEW" send rv-missing >/dev/null 2>&1 || status=$?
+[[ $status -eq 66 ]] || fail "send to a missing session exit $status"
+status=0; printf '  \n' | "$REVIEW" send rv-ready >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "send of nothing exit $status"
+tmux -L "$SOCK" kill-session -t '=rv-ready' 2>/dev/null || true
+tmux -L "$SOCK" kill-session -t '=rv-plain' 2>/dev/null || true
+pass "review_send_pastes_bracketed_or_refuses"
 
 # --- tmux.conf ----------------------------------------------------------------
 
