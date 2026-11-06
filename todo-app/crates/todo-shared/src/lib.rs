@@ -385,6 +385,16 @@ pub struct DuplicateConversationRequest {
     pub source_id: String,
     pub tool: String,
     pub label: String,
+    /// Add agent: the new conversation gets its own worktree (when the source has one) instead
+    /// of sharing the source's. Older apps don't send it and share, as before.
+    #[serde(default)]
+    pub own_worktree: bool,
+    /// The tool's model; `None`: its default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The commit the new worktree starts from (a snapshot of the source, or its base).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_sha: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -449,6 +459,15 @@ pub struct Conversation {
     /// works on, as its computer's runner last found it. Absent until one is found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pull_request: Option<PullRequest>,
+    /// The tool's model, when one was chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The commit this conversation's worktree started from, when it was added from another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_base: Option<String>,
+    /// The conversation the user continued with ("Continue with this") on its todo.
+    #[serde(default)]
+    pub main: bool,
 }
 
 /// A conversation's pull or merge request.

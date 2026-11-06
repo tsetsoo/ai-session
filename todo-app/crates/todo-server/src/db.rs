@@ -142,6 +142,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     conn.execute_batch(crate::usage::V28_OBJECTS).expect("Failed to create the session history table");
     create_v29_objects(&conn).expect("Failed to add the pull request columns");
     conn.execute_batch(crate::reviews::V30_OBJECTS).expect("Failed to create the review tables");
+    create_v31_objects(&conn).expect("Failed to add the competing-agents columns");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -714,6 +715,18 @@ fn create_v24_objects(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v31: several agents on one todo. `conversations.model` (the tool's model, when chosen),
+/// `conversations.worktree_base` (the commit an added agent's worktree starts from) and
+/// `todos.main_conversation_id` (the conversation the user continued with).
+fn create_v31_objects(conn: &Connection) -> rusqlite::Result<()> {
+    for (table, column) in [("conversations", "model"), ("conversations", "worktree_base"), ("todos", "main_conversation_id")] {
+        if table_sql(conn, table)?.is_some() && !column_exists(conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT;"))?;
+        }
+    }
+    Ok(())
+}
+
 fn index_exists(conn: &Connection, index: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
@@ -915,9 +928,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v28: `session_todos` and its triggers on `conversations`: each session's last todo (additive)
 /// - v29: `conversations.pr_url`, `conversations.pr_state` (additive)
 /// - v30: `reviews`, `review_items`: reviewer runs and review comments per conversation (additive)
+/// - v31: `conversations.model`, `conversations.worktree_base`, `todos.main_conversation_id` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 30;
+pub const SCHEMA_VERSION: i64 = 31;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -941,6 +955,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
                                 if table_sql(conn, "session_todos")?.is_some() {
                                     if column_exists(conn, "conversations", "pr_url")? {
                                         if table_sql(conn, "review_items")?.is_some() {
+                                            if column_exists(conn, "conversations", "worktree_base")? {
+                                                return Ok(31);
+                                            }
                                             return Ok(30);
                                         }
                                         return Ok(29);
@@ -3005,6 +3022,8 @@ mod tests {
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 31);
+        conn.execute_batch("ALTER TABLE conversations DROP COLUMN worktree_base;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 30);
         conn.execute_batch("DROP TABLE review_items; DROP TABLE reviews;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 29);
@@ -3038,7 +3057,7 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 30);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(table_sql(&conn, "reviews").unwrap().is_some());
         assert!(table_sql(&conn, "review_items").unwrap().is_some());
     }
@@ -3130,6 +3149,27 @@ mod tests {
         }
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_to_v31() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE conversations DROP COLUMN model; ALTER TABLE conversations DROP COLUMN worktree_base;
+             ALTER TABLE todos DROP COLUMN main_conversation_id; PRAGMA user_version = 30;",
+        )
+        .unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 31);
+        for (table, column) in [("conversations", "model"), ("conversations", "worktree_base"), ("todos", "main_conversation_id")] {
+            assert!(column_exists(&conn, table, column).unwrap(), "{table}.{column}");
+        }
+        conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 31);
     }
 
     #[test]

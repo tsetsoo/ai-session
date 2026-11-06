@@ -88,6 +88,8 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/conversations/resume", web::post().to(resume::post_conversation_resume))
         .route("/api/conversations/{id}/resume", web::put().to(resume::set_conversation_resume_by_id))
         .route("/api/conversations/{id}/close", web::post().to(conversations::close_conversation_by_id))
+        .route("/api/conversations/{id}/continue", web::post().to(conversations::continue_with_conversation))
+        .route("/api/conversations/{id}/reopen", web::post().to(conversations::reopen_conversation))
         .route("/api/conversations/{id}/review", web::post().to(conversations::review_conversation_by_id))
         .route("/api/conversations/{id}/session", web::put().to(conversations::set_conversation_session_by_id))
         .route("/api/conversations/{id}", web::delete().to(conversations::delete_conversation_by_id))

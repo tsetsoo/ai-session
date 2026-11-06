@@ -32,16 +32,19 @@ pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, crea
 
 /// Conversation columns (0..=11), its computer (12..=19), then whether its session is known
 /// and that session's project (20, 21), its review state (22, 23), limit pause (24, 25),
-/// worktree source and branch (26, 27), resume after the pause (28..=31) and pull request
-/// url and state (32, 33).
+/// worktree source and branch (26, 27), resume after the pause (28..=31), pull request
+/// url and state (32, 33), model (34), worktree base (35) and whether it's its todo's main
+/// conversation (36).
 const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
         c.status_message, c.status_updated_at, c.created_at, c.label, c.mcp_servers,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default,
         s.session_id IS NOT NULL, s.project_id, c.status_revision, c.reviewed,
         c.paused_kind, c.paused_until, c.worktree_source, c.branch,
-        c.resume_on_reset, c.resume_off_reason, c.resume_at, c.resume_offer, c.pr_url, c.pr_state
+        c.resume_on_reset, c.resume_off_reason, c.resume_at, c.resume_offer, c.pr_url, c.pr_state,
+        c.model, c.worktree_base, COALESCE(tm.main_conversation_id = c.id, 0)
      FROM conversations c JOIN computers m ON m.id = c.computer_id
-     LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id";
+     LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id
+     LEFT JOIN todos tm ON tm.id = c.todo_id";
 
 /// Section mapping columns (0) followed by its computer (1..=8).
 const SECTION_COMPUTER_SELECT: &str = "SELECT s.section,
@@ -162,6 +165,9 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
             (Some(url), Some(state)) => Some(PullRequest { url, state }),
             _ => None,
         },
+        model: row.get(34)?,
+        worktree_base: row.get(35)?,
+        main: row.get::<_, i64>(36)? != 0,
     };
     Ok((conversation, row.get(20)?))
 }
@@ -386,20 +392,51 @@ fn plan_worktree(conn: &Connection, id: &str, project_id: &str, folder: &str, ti
     Ok(())
 }
 
-pub(crate) fn duplicate_conversation_db(
+/// At most this many conversations on one todo.
+pub(crate) const MAX_AGENTS: i64 = 10;
+
+/// What Add agent asks for beyond a duplicate.
+#[derive(Default)]
+pub(crate) struct AddAgentOptions<'a> {
+    pub own_worktree: bool,
+    pub model: Option<&'a str>,
+    pub base_sha: Option<&'a str>,
+}
+
+pub(crate) fn add_agent_db(
     conn: &Connection,
     todo_id: &str,
     source_id: &str,
     tool: &str,
     label: &str,
+    options: &AddAgentOptions,
 ) -> Result<Conversation, OpenError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let created = duplicate_in(&tx, todo_id, source_id, tool, label)?;
+    let created = duplicate_in(&tx, todo_id, source_id, tool, label, options)?;
     tx.commit()?;
     Ok(created)
 }
 
-fn duplicate_in(conn: &Connection, todo_id: &str, source_id: &str, tool: &str, label: &str) -> Result<Conversation, OpenError> {
+fn duplicate_in(
+    conn: &Connection,
+    todo_id: &str,
+    source_id: &str,
+    tool: &str,
+    label: &str,
+    options: &AddAgentOptions,
+) -> Result<Conversation, OpenError> {
+    let model = options.model.map(str::trim).filter(|m| !m.is_empty());
+    if model.is_some_and(|m| !m.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))) {
+        return Err(OpenError::BadRequest("model may only use letters, digits, '.', '_' and '-'"));
+    }
+    let base_sha = options.base_sha.map(str::trim).filter(|b| !b.is_empty());
+    if base_sha.is_some_and(|b| b.len() < 7 || b.len() > 40 || !b.chars().all(|c| c.is_ascii_hexdigit())) {
+        return Err(OpenError::BadRequest("base_sha must be a commit sha"));
+    }
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM conversations WHERE todo_id = ?1", params![todo_id], |r| r.get(0))?;
+    if count >= MAX_AGENTS {
+        return Err(OpenError::Conflict("A todo has at most 10 agents"));
+    }
     let label = label.trim();
     if label.is_empty() {
         return Err(OpenError::BadRequest("label is required"));
@@ -430,12 +467,26 @@ fn duplicate_in(conn: &Connection, todo_id: &str, source_id: &str, tool: &str, l
     else {
         return Err(OpenError::NoTmuxName);
     };
-    // A duplicate works in the same folder, so it shares the source's worktree.
-    if source.worktree_source.is_some() {
-        conn.execute(
-            "UPDATE conversations SET worktree_source = ?2, branch = ?3 WHERE id = ?1",
-            params![id, source.worktree_source, source.branch],
-        )?;
+    match (&source.worktree_source, options.own_worktree) {
+        // Add agent: a worktree of its own, from the given commit (the computer makes it).
+        (Some(folder), true) => {
+            let (project_id, title): (Option<String>, String) =
+                conn.query_row("SELECT project_id, title FROM todos WHERE id = ?1", params![todo_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let project_id = project_id.ok_or(OpenError::NoProject)?;
+            plan_worktree(conn, &id, &project_id, folder, &title)?;
+            conn.execute("UPDATE conversations SET worktree_base = ?2 WHERE id = ?1", params![id, base_sha])?;
+        }
+        // A duplicate works in the same folder, so it shares the source's worktree.
+        (Some(_), false) => {
+            conn.execute(
+                "UPDATE conversations SET worktree_source = ?2, branch = ?3 WHERE id = ?1",
+                params![id, source.worktree_source, source.branch],
+            )?;
+        }
+        (None, _) => {}
+    }
+    if model.is_some() {
+        conn.execute("UPDATE conversations SET model = ?2 WHERE id = ?1", params![id, model])?;
     }
     load_conversation_by_id(conn, &id)?.ok_or(OpenError::TodoNotFound)
 }
@@ -1180,7 +1231,12 @@ pub async fn duplicate_conversation(
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match duplicate_conversation_db(&conn, &path.into_inner(), &body.source_id, &body.tool, &body.label) {
+    let options = AddAgentOptions {
+        own_worktree: body.own_worktree,
+        model: body.model.as_deref(),
+        base_sha: body.base_sha.as_deref(),
+    };
+    match add_agent_db(&conn, &path.into_inner(), &body.source_id, &body.tool, &body.label, &options) {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)
@@ -1301,6 +1357,77 @@ fn close_conversation_id(conn: &Connection, id: &str) -> Result<Conversation, Op
         return Err(OpenError::TodoNotFound);
     }
     load_conversation_by_id(conn, id)?.ok_or(OpenError::TodoNotFound)
+}
+
+/// "Continue with this": `id` becomes its todo's main conversation and every other open
+/// conversation of the todo is closed (rows, sessions, worktrees and branches are kept).
+/// Returns the ones it closed, so the app can stop their tmux sessions.
+pub(crate) fn continue_with_db(conn: &Connection, id: &str) -> Result<Vec<Conversation>, OpenError> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let todo_id: String = tx
+        .query_row("SELECT todo_id FROM conversations WHERE id = ?1", params![id], |r| r.get(0))
+        .optional()?
+        .ok_or(OpenError::TodoNotFound)?;
+    tx.execute("UPDATE todos SET main_conversation_id = ?2 WHERE id = ?1", params![todo_id, id])?;
+    let others: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT id FROM conversations WHERE todo_id = ?1 AND id != ?2 AND status != 'closed' ORDER BY created_at, id")?;
+        let rows = stmt.query_map(params![todo_id, id], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut closed = Vec::new();
+    for other in others {
+        closed.push(close_conversation_id(&tx, &other)?);
+    }
+    tx.commit()?;
+    Ok(closed)
+}
+
+/// A closed conversation opens again (its status is unknown until its hooks report).
+pub(crate) fn reopen_db(conn: &Connection, id: &str) -> Result<Conversation, OpenError> {
+    conn.execute(
+        "UPDATE conversations SET status = 'unknown', status_message = NULL, status_updated_at = datetime('now')
+         WHERE id = ?1 AND status = 'closed'",
+        params![id],
+    )?;
+    load_conversation_by_id(conn, id)?.ok_or(OpenError::TodoNotFound)
+}
+
+pub async fn continue_with_conversation(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match continue_with_db(&conn, &path.into_inner()) {
+        Ok(closed) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(closed)
+        }
+        Err(OpenError::TodoNotFound) => not_found("Conversation not found"),
+        Err(e) => open_error(e),
+    }
+}
+
+pub async fn reopen_conversation(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    match reopen_db(&conn, &path.into_inner()) {
+        Ok(c) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(c)
+        }
+        Err(OpenError::TodoNotFound) => not_found("Conversation not found"),
+        Err(e) => open_error(e),
+    }
 }
 
 fn review_conversation(conn: &Connection, id: &str, revision: i64) -> Result<Conversation, OpenError> {
@@ -1624,6 +1751,9 @@ mod tests {
             resume_on_reset: false,
             resume_off_reason: None,
             pull_request: None,
+            model: None,
+            worktree_base: None,
+            main: false,
         }
     }
 
@@ -1783,6 +1913,125 @@ mod tests {
         assert_eq!(created["cwd"], source["cwd"]);
         assert_eq!(created["worktree_source"], "~/app");
         assert_eq!(created["branch"], source["branch"]);
+    }
+
+    /// A git project with worktrees on, todo t1 "Do it", and its first conversation (claude).
+    async fn source_in_worktree(pool: &DbPool) -> serde_json::Value {
+        {
+            let conn = pool.get().unwrap();
+            crate::test_support::seed_computers(&conn);
+            conn.execute(
+                "INSERT INTO projects (id, name, section, folder, repo_url) VALUES ('p1', 'app', 'P', '~/app', 'git@x:a.git')",
+                [],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'P', 'Do it', 'p1')", []).unwrap();
+        }
+        let (status, source) =
+            crate::test_support::post(pool, "/api/todos/t1/conversation", serde_json::json!({"tool": "claude", "worktrees": true})).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{source}");
+        source
+    }
+
+    async fn add_agent(pool: &DbPool, source: &serde_json::Value, body: serde_json::Value) -> (actix_web::http::StatusCode, serde_json::Value) {
+        let mut body = body;
+        body["source_id"] = source["id"].clone();
+        crate::test_support::post(pool, "/api/todos/t1/conversations", body).await
+    }
+
+    #[actix_web::test]
+    async fn add_agent_gets_own_worktree() {
+        let (_db, pool) = crate::test_support::pool("add-wt");
+        let source = source_in_worktree(&pool).await;
+        let (status, created) = add_agent(
+            &pool,
+            &source,
+            serde_json::json!({"tool": "codex", "label": "Codex", "own_worktree": true, "model": "gpt-6.1-terra", "base_sha": "abc1234"}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{created}");
+        let id = created["id"].as_str().unwrap();
+        assert_eq!(created["cwd"], format!("~/.ai-remote/worktrees/p1/{id}"));
+        assert_ne!(created["branch"], source["branch"]);
+        assert_eq!(created["branch"], format!("ai/do-it-{}", &id[..8]));
+        assert_eq!(created["worktree_source"], "~/app");
+        assert_eq!(created["worktree_base"], "abc1234");
+        assert_eq!(created["model"], "gpt-6.1-terra");
+    }
+
+    #[actix_web::test]
+    async fn add_agent_without_own_worktree_shares() {
+        let (_db, pool) = crate::test_support::pool("add-share");
+        let source = source_in_worktree(&pool).await;
+        let (_, created) = add_agent(&pool, &source, serde_json::json!({"tool": "codex", "label": "Codex"})).await;
+        assert_eq!((&created["cwd"], &created["branch"]), (&source["cwd"], &source["branch"]));
+        assert!(created["worktree_base"].is_null() && created["model"].is_null(), "{created}");
+    }
+
+    #[actix_web::test]
+    async fn add_agent_rejects_bad_model_and_sha() {
+        let (_db, pool) = crate::test_support::pool("add-bad");
+        let source = source_in_worktree(&pool).await;
+        let (status, _) = add_agent(&pool, &source, serde_json::json!({"tool": "codex", "label": "x", "model": "a b"})).await;
+        assert_eq!(status, actix_web::http::StatusCode::BAD_REQUEST);
+        let (status, _) = add_agent(&pool, &source, serde_json::json!({"tool": "codex", "label": "x", "own_worktree": true, "base_sha": "not-hex"})).await;
+        assert_eq!(status, actix_web::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn add_agent_cap_is_10() {
+        let (_db, pool) = crate::test_support::pool("add-cap");
+        let source = source_in_worktree(&pool).await;
+        for n in 2..=10 {
+            let (status, v) = add_agent(&pool, &source, serde_json::json!({"tool": "codex", "label": format!("n{n}")})).await;
+            assert_eq!(status, actix_web::http::StatusCode::OK, "{n}: {v}");
+        }
+        let (status, v) = add_agent(&pool, &source, serde_json::json!({"tool": "codex", "label": "eleven"})).await;
+        assert_eq!(status, actix_web::http::StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["error"], "A todo has at most 10 agents");
+    }
+
+    #[actix_web::test]
+    async fn continue_closes_the_others() {
+        let (_db, pool) = crate::test_support::pool("continue");
+        let one = source_in_worktree(&pool).await;
+        let (_, two) = add_agent(&pool, &one, serde_json::json!({"tool": "codex", "label": "two", "own_worktree": true})).await;
+        let (_, three) = add_agent(&pool, &one, serde_json::json!({"tool": "claude", "label": "three", "own_worktree": true})).await;
+        let (status, closed) = crate::test_support::post(&pool, &format!("/api/conversations/{}/continue", two["id"].as_str().unwrap()), serde_json::json!({})).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{closed}");
+        let mut ids: Vec<String> = closed.as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().to_string()).collect();
+        ids.sort();
+        let mut want = vec![one["id"].as_str().unwrap().to_string(), three["id"].as_str().unwrap().to_string()];
+        want.sort();
+        assert_eq!(ids, want);
+        let (_, rows) = crate::test_support::get(&pool, "/api/todos/t1/conversations").await;
+        for row in rows.as_array().unwrap() {
+            let is_two = row["id"] == two["id"];
+            assert_eq!(row["status"] == "closed", !is_two, "{row}");
+            assert_eq!(row["main"], is_two, "{row}");
+            // Kept: the worktree, branch and session of a closed attempt.
+            assert!(row["branch"].is_string(), "{row}");
+        }
+        let (status, _) = crate::test_support::post(&pool, "/api/conversations/nope/continue", serde_json::json!({})).await;
+        assert_eq!(status, actix_web::http::StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn reopen_by_id() {
+        let (_db, pool) = crate::test_support::pool("reopen-id");
+        let one = source_in_worktree(&pool).await;
+        let (_, two) = add_agent(&pool, &one, serde_json::json!({"tool": "codex", "label": "two"})).await;
+        crate::test_support::post(&pool, &format!("/api/conversations/{}/continue", two["id"].as_str().unwrap()), serde_json::json!({})).await;
+        let (status, reopened) = crate::test_support::post(&pool, &format!("/api/conversations/{}/reopen", one["id"].as_str().unwrap()), serde_json::json!({})).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{reopened}");
+        assert_eq!(reopened["status"], "unknown");
+        assert_eq!(reopened["main"], false);
+        let (_, rows) = crate::test_support::get(&pool, "/api/todos/t1/conversations").await;
+        let two_row = rows.as_array().unwrap().iter().find(|r| r["id"] == two["id"]).unwrap();
+        assert_ne!(two_row["status"], "closed");
+        assert_eq!(two_row["main"], true);
+        let (status, _) = crate::test_support::post(&pool, "/api/conversations/nope/reopen", serde_json::json!({})).await;
+        assert_eq!(status, actix_web::http::StatusCode::NOT_FOUND);
     }
 
     #[actix_web::test]
