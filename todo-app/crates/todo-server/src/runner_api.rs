@@ -30,6 +30,8 @@ pub struct DueResponse {
     pub runs: Vec<DueRun>,
     /// Issues the user asked to resolve, whose watcher runs on this computer.
     pub resolves: Vec<DueResolve>,
+    /// Worktree folders (`~/.ai-remote/worktrees/...`) of conversations whose todo isn't done.
+    pub keep_worktrees: Vec<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -234,7 +236,20 @@ pub(crate) fn due_db(conn: &Connection, computer_id: &str) -> rusqlite::Result<D
         }
         out
     };
-    Ok(DueResponse { settings, runs, resolves })
+    let keep_worktrees = keep_worktrees(conn, computer_id)?;
+    Ok(DueResponse { settings, runs, resolves, keep_worktrees })
+}
+
+/// The folders of this computer's conversations that work in a worktree and whose todo isn't
+/// done: the runner's cleanup never removes those, so a closed one can be reopened.
+fn keep_worktrees(conn: &Connection, computer_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT c.cwd FROM conversations c JOIN todos t ON t.id = c.todo_id
+         WHERE c.computer_id = ?1 AND t.completed = 0 AND c.cwd LIKE '~/.ai-remote/worktrees/%'
+         ORDER BY c.cwd",
+    )?;
+    let rows = stmt.query_map(params![computer_id], |r| r.get(0))?;
+    rows.collect()
 }
 
 enum RunError {
@@ -655,6 +670,27 @@ mod tests {
 
     const ALWAYS: &str = r#"{"mode":"always"}"#;
     const WAIT: &str = r#"{"mode":"wait","five_hour":null,"weekly":null}"#;
+
+    #[actix_web::test]
+    async fn due_lists_keep_worktrees() {
+        let (_db, pool) = pool("runner-keep");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute_batch(
+            "INSERT INTO todos (id, section, title, project_id) VALUES ('open', 'Si', 'o', 'pa'), ('plain', 'Si', 'p', 'pa'),
+                 ('other', 'Si', 'x', 'pa');
+             INSERT INTO todos (id, section, title, project_id, completed) VALUES ('done', 'Si', 'd', 'pa', 1);
+             INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id) VALUES
+                 ('open', 'mac', '~/.ai-remote/worktrees/pa/c-open/app', 'claude', 'ai/claude/todo-open', 's1'),
+                 ('done', 'mac', '~/.ai-remote/worktrees/pa/c-done', 'claude', 'ai/claude/todo-done', 's2'),
+                 ('plain', 'mac', '~/a', 'claude', 'ai/claude/todo-plain', 's3'),
+                 ('other', 'spread', '~/.ai-remote/worktrees/pa/c-other', 'claude', 'ai/claude/todo-other', 's4');",
+        )
+        .unwrap();
+        drop(conn);
+        let (_, v) = get(&pool, "/api/runner/due?computer_id=mac").await;
+        assert_eq!(v["keep_worktrees"], json!(["~/.ai-remote/worktrees/pa/c-open/app"]));
+    }
 
     #[actix_web::test]
     async fn due_records_runner_seen_at() {

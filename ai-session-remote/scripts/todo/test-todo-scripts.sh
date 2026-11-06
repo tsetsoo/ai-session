@@ -3281,6 +3281,34 @@ runner tick || fail "cleanup tick failed"
 grep -q "cleaned run=r-mrg00001 reason=merged" "${R_STATE}/runner.log" || fail "merged cleanup not logged"
 pass "runner_cleans_merged_worktrees (squash merge counts; unmerged commits and ones in use by tmux kept)"
 
+# Cleanup keeps the worktrees the hub lists (open todos), and doesn't run when due failed.
+runs_reset
+due_run r-keep0001 proj-merged '{"mode":"always"}'
+runner tick || fail "tick failed"
+K_WT="${R_TREES}/proj-merged/r-keep0001"
+[[ -d "$K_WT" ]] || fail "keep worktree not made"
+python3 - "${R_STATE}/worktrees.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+for e in d.values():
+    if e.get("path", "").endswith("/r-keep0001"):
+        e["created"] -= 4 * 86400
+        e.pop("opened", None)
+json.dump(d, open(p, "w"))
+PY
+runs_reset
+hub_edit "s['keep_worktrees'] = ['~/.ai-remote/worktrees/proj-merged/r-keep0001/sub']"
+runner tick || fail "tick failed"
+[[ -d "$K_WT" ]] || fail "a worktree the hub keeps was removed"
+hub_edit "s.pop('keep_worktrees', None); s['fail'] = {'GET /api/runner/due': 500}"
+runner tick || true
+[[ -d "$K_WT" ]] || fail "cleanup ran although the hub's due answer failed"
+hub_edit "s.pop('fail', None)"
+runner tick || fail "tick failed"
+[[ ! -e "$K_WT" ]] || fail "an old clean worktree nobody keeps stayed"
+pass "runner_keeps_listed_worktrees (kept while the hub lists it or a folder in it, no cleanup when due failed)"
+
 # A conversation's own worktree: ai-todo-open --worktree makes it on the first open, the
 # tool starts in it, later opens reuse it, and the runner's sweep knows it.
 C_ID="c0ffee00-1111-4222-8333-444455556666"

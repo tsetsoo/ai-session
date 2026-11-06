@@ -19,7 +19,8 @@
 #      (a monorepo component) opens at that subfolder inside the worktree. A folder that is
 #      not a git repository is used as it is. The repo's gitignored local files named in
 #      .worktreeinclude (copied) and .worktreelink (symlinked) are brought in
-#      (ai_todo_workspace.py). Each tick removes worktrees older than 3 days that are clean and
+#      (ai_todo_workspace.py). Each tick that reached the hub removes worktrees older than 3 days
+#      that no not-done todo's conversation works in (the due answer's keep_worktrees), are clean and
 #      have no commits, or whose work is already merged into origin/HEAD.
 #   4. POST /api/runs/<id>/start {cwd, is_git}: the hub creates the scheduled todo and its
 #      conversation and answers the tmux name, session id and first prompt.
@@ -321,11 +322,13 @@ def registry_path():
     return os.path.join(STATE_DIR, "worktrees.json")
 
 
-def cleanup_worktrees():
-    """Remove scheduled worktrees older than 3 days that hold nothing, or whose work is already
-    merged into origin/HEAD. Any with uncommitted changes or unmerged commits are kept."""
+def cleanup_worktrees(keep):
+    """Remove worktrees older than 3 days that hold nothing, or whose work is already merged
+    into origin/HEAD. Any with uncommitted changes or unmerged commits are kept, and so is every
+    one the hub lists in `keep` (a conversation of a todo that isn't done works in it)."""
     try:
-        workspace.sweep(registry_path(), CLEANUP_AFTER, log)
+        workspace.sweep(registry_path(), CLEANUP_AFTER, log,
+                        keep=[expand(k) for k in keep or [] if isinstance(k, str)])
     except Exception as e:  # never cost the tick its status
         log("cleanup_failed", error=type(e).__name__)
 
@@ -707,7 +710,9 @@ def cmd_tick(args):
         report_job_templates(hub, computer_id)
         maybe_start_updates()
         maybe_report_health()
-    cleanup_worktrees()
+        # Only with the hub's answer: without its keep list, a closed conversation's worktree
+        # could go.
+        cleanup_worktrees(due.get("keep_worktrees"))
     status["started"] = [t for t in status.get("started", []) if t > now() - 86400]
     save_json(status_path, status)
 

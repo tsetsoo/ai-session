@@ -386,8 +386,20 @@ def _opening(path):
     return False
 
 
-def sweep(registry_path, older_than, log=lambda *a, **k: None):
-    """Remove old worktrees that hold nothing or whose work is merged; keep the rest."""
+def _kept(path, keep):
+    """True when `path` is, or holds, one of the `keep` paths."""
+    real = os.path.realpath(path)
+    for k in keep:
+        k = os.path.realpath(k)
+        if k == real or k.startswith(real + "/"):
+            return True
+    return False
+
+
+def sweep(registry_path, older_than, log=lambda *a, **k: None, keep=()):
+    """Remove old worktrees that hold nothing or whose work is merged; keep the rest, and
+    always keep one that is, or holds, a path in `keep` (an open todo's conversation)."""
+    keep = list(keep)
     with locked_registry(registry_path) as registry:
         now = time.time()
         due = []
@@ -397,7 +409,7 @@ def sweep(registry_path, older_than, log=lambda *a, **k: None):
             except (AttributeError, TypeError, ValueError):
                 registry.pop(key)
                 continue
-            if old:
+            if old and not _kept(entry.get("path") or "", keep):
                 due.append(key)
         if not due:
             return

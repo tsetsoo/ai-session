@@ -125,7 +125,8 @@ class Hub(BaseHTTPRequestHandler):
             return self.reply(200, {"settings": state.get("scheduler_settings") or
                                     {"five_hour": 60, "weekly": 80, "pause_waiting": False},
                                     "runs": state.get("due_runs", []),
-                                    "resolves": state.get("resolves", [])})
+                                    "resolves": state.get("resolves", []),
+                                    **({"keep_worktrees": state["keep_worktrees"]} if "keep_worktrees" in state else {})})
         if path in ("/api/reminders", "/api/people"):
             key = path.rsplit("/", 1)[1]
             if method == "GET":
