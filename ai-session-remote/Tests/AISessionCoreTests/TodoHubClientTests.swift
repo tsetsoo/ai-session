@@ -134,6 +134,30 @@ final class TodoHubClientTests: XCTestCase {
         XCTAssertEqual(reviewed.statusRevision, 7)
     }
 
+    func testContinueWithAndReopenCallTheConversationRoutes() async throws {
+        StubURLProtocol.handler = { _ in .init(status: 200, body: "[" + Self.conversationJSON + "]") }
+        let closed = try await client().continueWith(conversationId: "c1")
+        XCTAssertEqual(closed.count, 1)
+        XCTAssertEqual(StubURLProtocol.requests.last?.httpMethod, "POST")
+        XCTAssertEqual(StubURLProtocol.requests.last?.url?.path, "/api/conversations/c1/continue")
+        StubURLProtocol.handler = { _ in .init(status: 200, body: Self.conversationJSON) }
+        _ = try await client().reopenConversation(id: "c2")
+        XCTAssertEqual(StubURLProtocol.requests.last?.url?.path, "/api/conversations/c2/reopen")
+    }
+
+    func testAddAgentSendsOwnWorktreeModelAndBase() async throws {
+        StubURLProtocol.handler = { _ in .init(status: 200, body: Self.conversationJSON) }
+        _ = try await client().duplicateConversation(
+            todoId: "t1", sourceId: "s", tool: "codex", label: "Codex", ownWorktree: true, model: "m1", baseSha: "abc1234"
+        )
+        let request = try XCTUnwrap(StubURLProtocol.requests.last)
+        XCTAssertEqual(request.url?.path, "/api/todos/t1/conversations")
+        let sent = try XCTUnwrap(request.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        XCTAssertEqual(sent["own_worktree"] as? Bool, true)
+        XCTAssertEqual(sent["model"] as? String, "m1")
+        XCTAssertEqual(sent["base_sha"] as? String, "abc1234")
+    }
+
     func testOpenSendsTheToolAndSessionUpdateSendsTheId() async throws {
         StubURLProtocol.handler = { _ in .init(status: 200, body: Self.conversationJSON) }
         _ = try await client().openConversation(todoId: "t1", tool: "codex")

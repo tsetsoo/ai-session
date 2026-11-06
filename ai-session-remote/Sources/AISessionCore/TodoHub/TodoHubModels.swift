@@ -166,6 +166,12 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var branch: String?
     /// The pull/merge request of the conversation's branch, as its computer last found it.
     public var pullRequest: PullRequestLink?
+    /// The tool's model, when one was chosen.
+    public var model: String?
+    /// The commit this conversation's worktree started from, when it was added from another.
+    public var worktreeBase: String?
+    /// The conversation the user continued with on its todo.
+    public var main: Bool
 
     /// What `ai-todo-open --worktree` needs, when the conversation has its own worktree.
     public var worktree: (folder: String, branch: String)? {
@@ -206,7 +212,10 @@ public struct Conversation: Codable, Equatable, Sendable {
         branch: String? = nil,
         resumeOnReset: Bool = false,
         resumeOffReason: String? = nil,
-        pullRequest: PullRequestLink? = nil
+        pullRequest: PullRequestLink? = nil,
+        model: String? = nil,
+        worktreeBase: String? = nil,
+        main: Bool = false
     ) {
         self.id = id
         self.todoId = todoId
@@ -230,6 +239,9 @@ public struct Conversation: Codable, Equatable, Sendable {
         self.resumeOnReset = resumeOnReset
         self.resumeOffReason = resumeOffReason
         self.pullRequest = pullRequest
+        self.model = model
+        self.worktreeBase = worktreeBase
+        self.main = main
     }
 
     // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
@@ -237,7 +249,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         case id, todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
         case status, statusMessage, statusUpdatedAt, createdAt, projectId, label, mcpServers
         case statusRevision, reviewed, paused, worktreeSource, branch, resumeOnReset, resumeOffReason
-        case pullRequest
+        case pullRequest, model, worktreeBase, main
     }
 
     public init(from decoder: Decoder) throws {
@@ -271,6 +283,9 @@ public struct Conversation: Codable, Equatable, Sendable {
         resumeOnReset = (try? c.decodeIfPresent(Bool.self, forKey: .resumeOnReset)) ?? false
         resumeOffReason = try? c.decodeIfPresent(String.self, forKey: .resumeOffReason)
         pullRequest = (try? c.decodeIfPresent(PullRequestLink.self, forKey: .pullRequest)) ?? nil
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        worktreeBase = try c.decodeIfPresent(String.self, forKey: .worktreeBase)
+        main = try c.decodeIfPresent(Bool.self, forKey: .main) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -297,6 +312,9 @@ public struct Conversation: Codable, Equatable, Sendable {
         if resumeOnReset { try c.encode(resumeOnReset, forKey: .resumeOnReset) }
         try c.encodeIfPresent(resumeOffReason, forKey: .resumeOffReason)
         try c.encodeIfPresent(pullRequest, forKey: .pullRequest)
+        try c.encodeIfPresent(model, forKey: .model)
+        try c.encodeIfPresent(worktreeBase, forKey: .worktreeBase)
+        if main { try c.encode(main, forKey: .main) }
     }
 
     /// The hub turned resuming off after 3 automatic resumes in a day.
@@ -627,11 +645,19 @@ public struct DuplicateConversationRequest: Encodable, Sendable {
     public var sourceId: String
     public var tool: String
     public var label: String
+    /// Add agent: a worktree of its own. Omitted (shares, as Duplicate) when false.
+    public var ownWorktree: Bool?
+    public var model: String?
+    /// The commit the new worktree starts from.
+    public var baseSha: String?
 
-    public init(sourceId: String, tool: String, label: String) {
+    public init(sourceId: String, tool: String, label: String, ownWorktree: Bool = false, model: String? = nil, baseSha: String? = nil) {
         self.sourceId = sourceId
         self.tool = tool
         self.label = label
+        self.ownWorktree = ownWorktree ? true : nil
+        self.model = model
+        self.baseSha = baseSha
     }
 }
 

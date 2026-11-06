@@ -143,14 +143,30 @@ public struct TodoHubClient: Sendable {
         try await decode([Conversation].self, send("GET", "/api/todos/\(escape(id))/conversations"))
     }
 
-    public func duplicateConversation(todoId: String, sourceId: String, tool: String, label: String) async throws -> Conversation {
+    public func duplicateConversation(
+        todoId: String, sourceId: String, tool: String, label: String,
+        ownWorktree: Bool = false, model: String? = nil, baseSha: String? = nil
+    ) async throws -> Conversation {
         try await decode(
             Conversation.self,
             send(
                 "POST", "/api/todos/\(escape(todoId))/conversations",
-                body: DuplicateConversationRequest(sourceId: sourceId, tool: tool, label: label)
+                body: DuplicateConversationRequest(
+                    sourceId: sourceId, tool: tool, label: label, ownWorktree: ownWorktree, model: model, baseSha: baseSha
+                )
             )
         )
+    }
+
+    /// "Continue with this": the conversation becomes its todo's main one and the others are
+    /// closed (kept, reopenable). Returns the ones that were closed.
+    public func continueWith(conversationId: String) async throws -> [Conversation] {
+        try await decode([Conversation].self, send("POST", "/api/conversations/\(escape(conversationId))/continue"))
+    }
+
+    /// Opens a closed conversation again.
+    public func reopenConversation(id: String) async throws -> Conversation {
+        try await decode(Conversation.self, send("POST", "/api/conversations/\(escape(id))/reopen"))
     }
 
     /// Returns `nil` when the todo has no conversation yet.

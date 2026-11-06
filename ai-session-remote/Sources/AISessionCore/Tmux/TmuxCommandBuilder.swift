@@ -72,11 +72,13 @@ public enum TmuxCommandBuilder {
     /// `detached` starts it without attaching (prints `created` or `attach`).
     public static func openTodoConversation(
         tmuxName: String, cwd: String, sessionId: String, tool: String = "claude", mcpServers: [String]? = nil,
-        worktree: (folder: String, branch: String)? = nil, promptFile: String? = nil, detached: Bool = false
+        worktree: (folder: String, branch: String)? = nil, promptFile: String? = nil, detached: Bool = false,
+        model: String? = nil, worktreeBase: String? = nil
     ) -> String {
         var command = (detached ? "AI_TODO_OPEN_DETACH=1 " : "") + "exec \"$HOME/.ai-remote/bin/ai-todo-open\""
         if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
-        command += worktreeArguments(worktree) + promptFileArgument(promptFile)
+        command += worktreeArguments(worktree) + startArguments(worktreeBase: worktreeBase, model: model)
+            + promptFileArgument(promptFile)
         command += " \(shellQuote(tmuxName)) \(shellQuote(cwd)) \(shellQuote(sessionId))"
         if tool != "claude" { command += " \(shellQuote(tool))" }
         return wrap(command)
@@ -200,13 +202,24 @@ public enum TmuxCommandBuilder {
     /// where the selection takes effect. `nil` leaves the command as before.
     public static func freshTodoConversation(
         tmuxName: String, cwd: String, tool: String, mcpServers: [String]? = nil,
-        worktree: (folder: String, branch: String)? = nil, promptFile: String? = nil
+        worktree: (folder: String, branch: String)? = nil, promptFile: String? = nil,
+        model: String? = nil, worktreeBase: String? = nil
     ) -> String {
         var command = "AI_TODO_OPEN_DETACH=1 exec \"$HOME/.ai-remote/bin/ai-todo-open\""
         if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
-        command += worktreeArguments(worktree) + promptFileArgument(promptFile) + " "
+        command += worktreeArguments(worktree) + startArguments(worktreeBase: worktreeBase, model: model)
+            + promptFileArgument(promptFile) + " "
         command += "\(shellQuote(tmuxName)) \(shellQuote(cwd)) - \(shellQuote(tool))"
         return wrap(command)
+    }
+
+    /// ` --worktree-base <sha>` (a new worktree's starting commit) and ` --model <id>` (a new
+    /// conversation's model), each only when given.
+    private static func startArguments(worktreeBase: String?, model: String?) -> String {
+        var out = ""
+        if let worktreeBase, !worktreeBase.isEmpty { out += " --worktree-base \(shellQuote(worktreeBase))" }
+        if let model, !model.isEmpty { out += " --model \(shellQuote(model))" }
+        return out
     }
 
     /// ` --prompt-file <path>`, or nothing.
