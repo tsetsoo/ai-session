@@ -4102,6 +4102,151 @@ status=0; printf 'x' | PATH="${SANDBOX}/no-tmux" "$rv_python" "$REVIEW" send rv-
 [[ $status -eq 90 && "$(cat "${SANDBOX}/rv-notmux.err")" == "tmux not found" ]] || fail "missing tmux: $status $(cat "${SANDBOX}/rv-notmux.err")"
 pass "review_send_pastes_bracketed_or_refuses"
 
+# ai-todo-review run / result / cancel, with fake reviewers.
+RR_REPO="${SANDBOX}/review-run-repo"
+rr_git() { git -C "$RR_REPO" -c user.name=t -c user.email=t@t "$@"; }
+mkdir -p "$RR_REPO/sub"
+rr_git init -q -b main
+printf 'one\ntwo\nthree\n' >"${RR_REPO}/sub/f.txt"
+echo "be careful" >"${RR_REPO}/AGENTS.md"
+echo "sub notes" >"${RR_REPO}/sub/CLAUDE.md"
+rr_git add -A && rr_git commit -qm init
+rr_from="$(rr_git rev-parse HEAD)"
+printf 'one\nTWO\nthree\nfour\n' >"${RR_REPO}/sub/f.txt"
+rr_git commit -qam change
+rr_to="$(rr_git rev-parse HEAD)"
+export AI_TODO_REVIEW_RUNS_DIR="${SANDBOX}/review-runs"
+RR_CLAUDE="${SANDBOX}/bin/fake-review-claude"
+mkdir -p "${SANDBOX}/bin"
+cat >"$RR_CLAUDE" <<'FAKE'
+#!/bin/sh
+# Records its arguments, folder and prompt; answers like `claude -p --output-format json`.
+printf '%s\n' "$@" >"$AI_TODO_REVIEW_RUNS_DIR/claude.args"
+pwd >"$AI_TODO_REVIEW_RUNS_DIR/claude.cwd"
+cat >"$AI_TODO_REVIEW_RUNS_DIR/claude.prompt"
+[ -n "${RR_SLEEP:-}" ] && sleep "$RR_SLEEP"
+cat <<'JSON'
+{"type":"result","subtype":"success","is_error":false,"result":"","total_cost_usd":0.5,
+ "usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":40},
+ "modelUsage":{"claude-small":{"outputTokens":1},"claude-big":{"outputTokens":19}},
+ "structured_output":{"summary":"Changes TWO.","findings":[
+  {"path":"b/sub/f.txt","side":"new","line_start":2,"line_end":9,"severity":"HIGH","category":"Correctness!","title":"TWO is shouted","body":"Lower it.","quote":["made up"]},
+  {"path":"sub/f.txt","side":"new","line_start":2,"line_end":2,"severity":"high","category":"x","title":"TWO is shouted","body":"Same again.","quote":[]},
+  {"path":"sub/f.txt","side":"old","line_start":2,"line_end":2,"severity":"odd","category":"tests","title":"two removed","body":"Was two.","quote":[]},
+  {"path":"missing.txt","side":"new","line_start":1,"line_end":1,"severity":"low","category":"x","title":"gone","body":"x","quote":[]},
+  {"path":"sub/f.txt","side":"new","line_start":99,"line_end":null,"severity":"low","category":"docs","title":"whole file","body":"Document it.","quote":[]}]}}
+JSON
+FAKE
+chmod +x "$RR_CLAUDE"
+rr_wait() {
+  local out
+  for _ in $(seq 1 100); do
+    out="$("$REVIEW" result "$1")"
+    [[ "$out" != *'"state": "running"'* ]] && { printf '%s' "$out"; return; }
+    sleep 0.1
+  done
+  printf '%s' "$out"
+}
+printf 'Fix the case\nnotes here' | base64 >"${SANDBOX}/rr-brief"
+rr_start="$(AI_TODO_REVIEW_CLAUDE_BIN="$RR_CLAUDE" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to "$rr_to" --tool claude \
+  --id run-1 --model opus --context docs/none.md --context AGENTS.md --brief-base64 <"${SANDBOX}/rr-brief")" || fail "review run failed"
+[[ "$rr_start" == '{"id": "run-1", "state": "running"}' ]] || fail "run printed $rr_start"
+rr_out="$(rr_wait run-1)"
+python3 - "$rr_out" "$rr_from" "$rr_to" "$AI_TODO_REVIEW_RUNS_DIR" "$RR_REPO" <<'PY' || fail "review run result: $rr_out"
+import json, os, sys
+out, frm, to, runs, repo = sys.argv[1:]
+data = json.loads(out)
+assert data["state"] == "done", data
+r = data["result"]
+assert (r["tool"], r["model"], r["from"], r["to"], r["summary"]) == ("claude", "claude-big", frm, to, "Changes TWO."), r
+assert r["usage"] == {"input_tokens": 10, "output_tokens": 20, "cache_read_tokens": 30, "cache_write_tokens": 40, "cost_usd": 0.5}, r["usage"]
+f = r["findings"]
+# The duplicate (same path, title, code) and the finding on a file that isn't there are dropped.
+assert [x["title"] for x in f] == ["TWO is shouted", "two removed", "whole file"], f
+a, b, c = f
+assert (a["path"], a["side"], a["line_start"], a["line_end"], a["severity"], a["category"]) == ("sub/f.txt", "new", 2, 4, "high", "correctness"), a
+assert a["quote"] == ["TWO", "three", "four"], a  # from git, clamped to the file
+assert (b["side"], b["quote"], b["severity"]) == ("old", ["two"], "medium"), b
+assert (c["line_start"], c["line_end"], c["quote"]) == (None, None, []), c
+assert len({x["fingerprint"] for x in f}) == 3
+args = open(os.path.join(runs, "claude.args")).read().split("\n")
+for flag in ("-p", "--no-session-persistence", "--strict-mcp-config", "--json-schema"):
+    assert flag in args, args
+assert args[args.index("--tools") + 1] == "Read,Grep,Glob", args
+assert args[args.index("--model") + 1] == "opus", args
+# HEAD is the reviewed revision and nothing is uncommitted: the repository itself is read.
+assert os.path.realpath(open(os.path.join(runs, "claude.cwd")).read().strip()) == os.path.realpath(repo)
+prompt = open(os.path.join(runs, "claude.prompt")).read()
+for path in ("run-1/brief.md", "run-1/changes.patch", repo + "/AGENTS.md", repo + "/sub/CLAUDE.md"):
+    assert path in prompt, (path, prompt)
+assert "docs/none.md" not in prompt and prompt.count("/AGENTS.md") == 1, prompt
+assert open(os.path.join(runs, "run-1", "brief.md")).read() == "Fix the case\nnotes here"
+PY
+# The same finding on moved lines keeps its fingerprint; a reworded one doesn't.
+fp1="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["result"]["findings"][0]["fingerprint"])' "$rr_out")"
+printf 'zero\none\nTWO\nthree\nfour\n' >"${RR_REPO}/sub/f.txt"
+rr_git commit -qam shift
+sed -e 's/"line_start":2,"line_end":9/"line_start":3,"line_end":3/' "$RR_CLAUDE" >"${RR_CLAUDE}2" && chmod +x "${RR_CLAUDE}2"
+AI_TODO_REVIEW_CLAUDE_BIN="${RR_CLAUDE}2" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to HEAD --tool claude --id run-2 >/dev/null || fail "run-2 failed"
+fp2="$(rr_wait run-2 | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["findings"][0]["fingerprint"])')"
+[[ -n "$fp1" && "$fp1" == "$fp2" ]] || fail "fingerprint moved with its lines: $fp1 vs $fp2"
+# An older --to with changes on top: the reviewer reads an export of that revision, which then goes.
+echo dirty >>"${RR_REPO}/sub/f.txt"
+AI_TODO_REVIEW_CLAUDE_BIN="$RR_CLAUDE" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to "$rr_to" --tool claude --id run-3 >/dev/null || fail "run-3 failed"
+[[ "$(rr_wait run-3)" == *'"state": "done"'* ]] || fail "run-3 not done"
+[[ "$(cat "${AI_TODO_REVIEW_RUNS_DIR}/claude.cwd")" == "${AI_TODO_REVIEW_RUNS_DIR}/run-3/tree" ]] || fail "run-3 read $(cat "${AI_TODO_REVIEW_RUNS_DIR}/claude.cwd")"
+[[ ! -e "${AI_TODO_REVIEW_RUNS_DIR}/run-3/tree" ]] || fail "run-3 left its export"
+[[ "$(rr_git status --porcelain)" == " M sub/f.txt" && -z "$(rr_git worktree list | sed 1d)" ]] || fail "run touched the repository"
+# Cancel stops the reviewer and keeps the state cancelled.
+RR_SLEEP=30 AI_TODO_REVIEW_CLAUDE_BIN="$RR_CLAUDE" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to "$rr_to" --tool claude --id run-4 >/dev/null
+for _ in $(seq 1 50); do [[ -s "${AI_TODO_REVIEW_RUNS_DIR}/claude.prompt" ]] && grep -q run-4 "${AI_TODO_REVIEW_RUNS_DIR}/claude.prompt" && break; sleep 0.1; done
+[[ "$("$REVIEW" result run-4)" == *'"state": "running"'* ]] || fail "run-4 not running"
+[[ "$("$REVIEW" cancel run-4)" == '{"id": "run-4", "state": "cancelled"}' ]] || fail "cancel output"
+sleep 0.5
+[[ "$("$REVIEW" result run-4)" == *'"state": "cancelled"'* ]] || fail "run-4 after cancel: $("$REVIEW" result run-4)"
+! pgrep -f "sleep 30" >/dev/null 2>&1 || ! pgrep -f "fake-review-claude" >/dev/null || fail "the reviewer outlived cancel"
+# Codex: read-only sandbox, schema, last message; usage from the JSON events.
+RR_CODEX="${SANDBOX}/bin/fake-review-codex"
+cat >"$RR_CODEX" <<'FAKE'
+#!/bin/sh
+printf '%s\n' "$@" >"$AI_TODO_REVIEW_RUNS_DIR/codex.args"
+last=""
+while [ $# -gt 0 ]; do [ "$1" = --output-last-message ] && last=$2; shift; done
+cat >/dev/null
+printf '```json\n{"summary":"ok","findings":[{"path":"sub/f.txt","side":"new","line_start":1,"line_end":1,"severity":"low","category":"design","title":"t","body":"b","quote":[]}]}\n```\n' >"$last"
+echo '{"type":"thread.started","thread_id":"x"}'
+echo '{"type":"turn.completed","usage":{"input_tokens":5,"cached_input_tokens":2,"output_tokens":3}}'
+FAKE
+chmod +x "$RR_CODEX"
+AI_TODO_REVIEW_CODEX_BIN="$RR_CODEX" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to "$rr_to" --tool codex --id run-5 >/dev/null || fail "codex run failed"
+rr_out="$(rr_wait run-5)"
+python3 - "$rr_out" "$AI_TODO_REVIEW_RUNS_DIR" <<'PY' || fail "codex result: $rr_out"
+import json, os, sys
+data = json.loads(sys.argv[1])
+assert data["state"] == "done", data
+r = data["result"]
+assert r["usage"] == {"input_tokens": 5, "output_tokens": 3, "cache_read_tokens": 2, "cache_write_tokens": None, "cost_usd": None}, r
+assert [f["quote"] for f in r["findings"]] == [["one"]], r
+args = open(os.path.join(sys.argv[2], "codex.args")).read().split("\n")
+assert args[0] == "exec" and args[args.index("--sandbox") + 1] == "read-only" and "--output-schema" in args, args
+PY
+# A failing reviewer is a failed run with its words; usage errors and unknown ids have exit codes.
+printf '#!/bin/sh\necho "not logged in" >&2\nexit 3\n' >"${SANDBOX}/bin/fake-review-broken" && chmod +x "${SANDBOX}/bin/fake-review-broken"
+AI_TODO_REVIEW_CLAUDE_BIN="${SANDBOX}/bin/fake-review-broken" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to "$rr_to" --tool claude --id run-6 >/dev/null
+[[ "$(rr_wait run-6)" == *'"state": "failed", "error": "fake-review-broken exited 3: not logged in"'* ]] || fail "failed run: $(rr_wait run-6)"
+status=0; AI_TODO_REVIEW_CLAUDE_BIN="$RR_CLAUDE" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to "$rr_to" --tool claude --id run-6 >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "reused run id exit $status"
+status=0; "$REVIEW" run "$RR_REPO" --from nope --to "$rr_to" --tool claude --id run-7 >/dev/null 2>&1 || status=$?
+[[ $status -eq 65 ]] || fail "unknown --from exit $status"
+status=0; AI_TODO_REVIEW_CODEX_BIN="${SANDBOX}/missing" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to "$rr_to" --tool codex --id run-8 >/dev/null 2>"${SANDBOX}/rr.err" || status=$?
+[[ $status -eq 90 && "$(cat "${SANDBOX}/rr.err")" == "codex not found" ]] || fail "missing codex: $status $(cat "${SANDBOX}/rr.err")"
+status=0; "$REVIEW" result nope >/dev/null 2>&1 || status=$?
+[[ $status -eq 65 ]] || fail "unknown run exit $status"
+status=0; "$REVIEW" result ../x >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "bad run id exit $status"
+unset AI_TODO_REVIEW_RUNS_DIR
+pass "review_run_finds_and_cancels"
+
 # --- tmux.conf ----------------------------------------------------------------
 
 tmux -L "${SOCK}-conf" -f /dev/null new-session -d -s conftest

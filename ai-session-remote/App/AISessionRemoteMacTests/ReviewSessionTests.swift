@@ -28,6 +28,12 @@ final class ReviewSessionTests: XCTestCase {
     /// While set, the uncommitted diff waits for `release()`.
     private var holdUncommitted = false
     private var held: CheckedContinuation<Void, Never>?
+    /// `result` answers running this many times before it is done.
+    private var runningPolls = 0
+    private var resultPolls = 0
+    private var reviewerMissing = false
+    /// The revision the fake reviewer read.
+    private var reviewedRevision = "rev2"
 
     private let mapping = """
     diff --git a/f.txt b/f.txt
@@ -77,6 +83,22 @@ final class ReviewSessionTests: XCTestCase {
             return json(["from": "head1", "to": revision, "scope": scope, "patch": patch, "truncated": false])
         }
         if command.contains(" keep ") { return json(["kept": revision]) }
+        if command.contains(" run ") {
+            if reviewerMissing { return SSHExecResult(exitCode: 90, stdout: "", stderr: "codex not found") }
+            return json(["id": "x", "state": "running"])
+        }
+        if command.contains(" result ") {
+            resultPolls += 1
+            if resultPolls <= runningPolls { return json(["id": "x", "state": "running"]) }
+            let finding: (String, Int, String) -> [String: Any] = { title, line, fingerprint in
+                ["path": "f.txt", "side": "new", "line_start": line, "line_end": line, "severity": title == "Low one" ? "low" : "high", "category": "correctness",
+                 "title": title, "body": "fix", "quote": ["x"], "fingerprint": fingerprint]
+            }
+            let output: [String: Any] = ["tool": "claude", "model": "m", "from": "head1", "to": reviewedRevision, "summary": "ok",
+                                         "usage": NSNull(), "findings": [finding("Inserted is wrong", 2, "fp-a"), finding("Low one", 1, "fp-b")]]
+            return json(["id": "x", "state": "done", "error": NSNull(), "result": output])
+        }
+        if command.contains(" cancel ") { return json(["id": "x", "state": "cancelled"]) }
         if command.contains(" send ") {
             if holdSend { await withCheckedContinuation { heldSend = $0 } }
             return SSHExecResult(exitCode: sendExit, stdout: "{}", stderr: "")
@@ -356,5 +378,105 @@ final class ReviewSessionTests: XCTestCase {
         later.status = .idle
         session.refresh(later)
         XCTAssertTrue(session.agentAnswered)
+    }
+
+    // MARK: Reviewer
+
+    func testAReviewRunsFollowsAndAddsItsFindingsOnce() async throws {
+        let (session, store) = makeSession()
+        session.pollInterval = .milliseconds(1)
+        await session.load(config: config)
+        runningPolls = 2
+        await session.startReview(tool: "claude", brief: "Fix it", config: config)
+        let run = try XCTUnwrap(session.activeRun)
+        XCTAssertEqual(session.reviewBlocker, "A review is running.")
+        let start = try XCTUnwrap(commands.first { $0.contains(" run ") })
+        XCTAssertTrue(start.contains("--from 'head1' --to 'rev2' --tool 'claude' --id '\(run.hostID)'"), start)
+        XCTAssertTrue(start.contains("--brief-base64"), start)
+        await session.followReview(config: config)
+        XCTAssertNil(session.activeRun)
+        XCTAssertEqual(resultPolls, 3)
+        let finished = try XCTUnwrap(store.record(session.key).lastRun)
+        XCTAssertEqual(finished.state, .done)
+        XCTAssertEqual(finished.findingCount, 2)
+        XCTAssertEqual(finished.addedCount, 2)
+        // Highest severity first; placed where they are, so the diff shows them on their lines.
+        let found = session.findings(.new)
+        XCTAssertEqual(found.map(\.title), ["Inserted is wrong", "Low one"])
+        XCTAssertEqual(session.comments(atPath: "f.txt", side: .new, endLine: 2).map(\.id), [found[0].id])
+        XCTAssertEqual(session.findingMarks(file: session.diff.files[0]), [1: "low", 2: "high"])
+        // Findings aren't drafts until picked: nothing to send yet.
+        XCTAssertEqual(session.sendBlocker, "Write a comment first.")
+
+        // The same findings again: nothing new.
+        resultPolls = 0
+        runningPolls = 0
+        await session.startReview(tool: "claude", brief: nil, config: config)
+        await session.followReview(config: config)
+        XCTAssertEqual(store.record(session.key).lastRun?.addedCount, 0)
+        XCTAssertEqual(store.record(session.key).comments.count, 2)
+        XCTAssertTrue(commands.last { $0.contains(" run ") }?.contains("</dev/null") == true)
+    }
+
+    func testPickedFindingsGoOutWithTheUsersComments() async throws {
+        let (session, store) = makeSession()
+        session.pollInterval = .milliseconds(1)
+        await session.load(config: config)
+        await session.startReview(tool: "claude", brief: nil, config: config)
+        await session.followReview(config: config)
+        let found = session.findings(.new)
+        session.queueFinding(found[0].id)
+        session.dismissComment(found[1].id)
+        XCTAssertEqual(session.findings(.dismissed).map(\.id), [found[1].id])
+        XCTAssertTrue(session.findingMarks(file: session.diff.files[0]).isEmpty == false)
+        session.addComment(path: "f.txt", side: .new, lines: 1...1, quote: ["a"], body: "mine")
+        XCTAssertNil(session.sendBlocker)
+        XCTAssertTrue(session.message().contains("[high] Inserted is wrong\nfix"), session.message())
+        let sent = await session.send(config: config)
+        XCTAssertTrue(sent)
+        XCTAssertEqual(session.findings(.sent).map(\.id), [found[0].id])
+        XCTAssertEqual(store.record(session.key).batches.last?.commentIDs.count, 2)
+        // Restored, it is new again; unpicking moves a picked one back.
+        session.restoreFinding(found[1].id)
+        XCTAssertEqual(session.findings(.new).map(\.id), [found[1].id])
+        session.queueFinding(found[1].id)
+        XCTAssertEqual(session.drafts.map(\.id), [found[1].id])
+        session.queueFinding(found[1].id, false)
+        XCTAssertTrue(session.drafts.isEmpty)
+    }
+
+    func testFindingsOnAnOlderRevisionMoveWithTheirLines() async throws {
+        let (session, _) = makeSession()
+        session.pollInterval = .milliseconds(1)
+        reviewedRevision = "rev1"
+        await session.load(config: config)
+        await session.startReview(tool: "claude", brief: nil, config: config)
+        await session.followReview(config: config)
+        // finishRun reloads to place them. rev1 → rev2 inserted a line after line 1: rev1's
+        // line 2 is line 3 now.
+        func inserted() -> ReviewComment? { session.findings(.new).first { $0.title == "Inserted is wrong" } }
+        for _ in 0..<400 where inserted().map({ session.place(of: $0).line }) != 3 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(session.findings(.new).map(\.title), ["Inserted is wrong", "Low one"])
+        XCTAssertEqual(inserted().map { session.place(of: $0).line }, 3)
+        XCTAssertTrue(session.findings(.stale).isEmpty)
+    }
+
+    func testAMissingReviewerAndCancel() async throws {
+        let (session, store) = makeSession()
+        await session.load(config: config)
+        reviewerMissing = true
+        await session.startReview(tool: "codex", brief: nil, config: config)
+        XCTAssertEqual(session.failure?.errorDescription, "codex isn't installed on \(session.conversation.computer.name), so it can't review there.")
+        XCTAssertNil(session.activeRun)
+        reviewerMissing = false
+        session.failure = nil
+        await session.startReview(tool: "claude", brief: nil, config: config)
+        XCTAssertNotNil(session.activeRun)
+        await session.cancelReview(config: config)
+        XCTAssertNil(session.activeRun)
+        XCTAssertEqual(store.record(session.key).lastRun?.state, .cancelled)
+        XCTAssertTrue(session.findings(.new).isEmpty)
     }
 }

@@ -147,11 +147,13 @@ public enum DiffSide: String, Codable, Sendable {
     case old
 }
 
-/// A comment on a conversation's changes: the user's own, or later a reviewer's finding.
+/// A comment on a conversation's changes: the user's own, or a reviewer agent's finding.
 /// Its lines are in the file `path` as it is at `revision`; `ReviewAnchor` moves them to a
 /// newer revision, or says they changed.
 public struct ReviewComment: Codable, Equatable, Identifiable, Sendable {
     public enum State: String, Codable, Sendable {
+        /// A reviewer's finding nobody has acted on: not in the next batch until Send picks it.
+        case new
         case draft, sent, dismissed
     }
 
@@ -173,10 +175,20 @@ public struct ReviewComment: Codable, Equatable, Identifiable, Sendable {
     public var sentAt: Date?
     /// The batch it went out in.
     public var batchID: UUID?
+    /// A reviewer's finding: `high` / `medium` / `low`, a one-word category, a one-line title,
+    /// and the fingerprint that recognises it in a later review. Nil for the user's comments.
+    public var severity: String?
+    public var category: String?
+    public var title: String?
+    public var fingerprint: String?
+    /// The review run it came from.
+    public var runID: UUID?
 
     public init(id: UUID = UUID(), author: String = "user", path: String, side: DiffSide = .new,
                 startLine: Int?, endLine: Int?, revision: String, quote: [String], body: String,
-                state: State = .draft, createdAt: Date = .now, sentAt: Date? = nil, batchID: UUID? = nil) {
+                state: State = .draft, createdAt: Date = .now, sentAt: Date? = nil, batchID: UUID? = nil,
+                severity: String? = nil, category: String? = nil, title: String? = nil,
+                fingerprint: String? = nil, runID: UUID? = nil) {
         self.id = id
         self.author = author
         self.path = path
@@ -190,6 +202,16 @@ public struct ReviewComment: Codable, Equatable, Identifiable, Sendable {
         self.createdAt = createdAt
         self.sentAt = sentAt
         self.batchID = batchID
+        self.severity = severity
+        self.category = category
+        self.title = title
+        self.fingerprint = fingerprint
+        self.runID = runID
+    }
+
+    /// `reviewer:claude` → `claude`; nil for the user's own comments.
+    public var reviewer: String? {
+        author.hasPrefix(ReviewFindings.authorPrefix) ? String(author.dropFirst(ReviewFindings.authorPrefix.count)) : nil
     }
 
     /// `src/a.rs:12`, `src/a.rs:12-18`, or `src/a.rs`.
@@ -223,12 +245,26 @@ public struct ReviewBatch: Codable, Equatable, Identifiable, Sendable {
 public struct ReviewRecord: Codable, Equatable, Sendable {
     public var comments: [ReviewComment]
     public var batches: [ReviewBatch]
+    /// Reviewer agent runs, oldest first.
+    public var runs: [ReviewRun]
 
-    public init(comments: [ReviewComment] = [], batches: [ReviewBatch] = []) {
+    public init(comments: [ReviewComment] = [], batches: [ReviewBatch] = [], runs: [ReviewRun] = []) {
         self.comments = comments
         self.batches = batches
+        self.runs = runs
+    }
+
+    private enum CodingKeys: String, CodingKey { case comments, batches, runs }
+
+    /// Files written before reviewer runs existed have no `runs`.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        comments = try container.decode([ReviewComment].self, forKey: .comments)
+        batches = try container.decode([ReviewBatch].self, forKey: .batches)
+        runs = try container.decodeIfPresent([ReviewRun].self, forKey: .runs) ?? []
     }
 
     public var drafts: [ReviewComment] { comments.filter { $0.state == .draft } }
     public var lastBatch: ReviewBatch? { batches.max { $0.sentAt < $1.sentAt } }
+    public var lastRun: ReviewRun? { runs.max { $0.startedAt < $1.startedAt } }
 }

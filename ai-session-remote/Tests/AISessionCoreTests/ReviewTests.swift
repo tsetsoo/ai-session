@@ -260,4 +260,66 @@ struct ReviewTests {
         let status = try JSONDecoder().decode(ReviewStatus.self, from: Data(json.utf8))
         #expect(status == ReviewStatus(root: "/w", branch: "feat", head: "h", base: .init(ref: "origin/main", sha: "b"), revision: "r", clean: false))
     }
+
+    // MARK: Reviewer findings
+
+    static let runJSON = #"""
+    {"id": "r1", "state": "done", "error": null, "result": {"tool": "claude", "model": "claude-big", "from": "f0", "to": "t1",
+     "summary": "Fine.", "usage": {"input_tokens": 10, "output_tokens": 2500, "cache_read_tokens": 1000, "cache_write_tokens": null, "cost_usd": 0.42},
+     "findings": [
+      {"path": "src/a.rs", "side": "new", "line_start": 3, "line_end": 3, "severity": "high", "category": "correctness",
+       "title": "Off by one", "body": "Use <=.", "quote": ["x < n"], "fingerprint": "fp1"},
+      {"path": "src/a.rs", "side": "old", "line_start": 7, "line_end": 9, "severity": "low", "category": "tests",
+       "title": "Test removed", "body": "Keep it.", "quote": ["a", "b", "c"], "fingerprint": "fp2"},
+      {"path": "README.md", "side": "new", "line_start": null, "line_end": null, "severity": "medium", "category": "docs",
+       "title": "Docs", "body": "Mention it.", "quote": [], "fingerprint": "fp3"}]}}
+    """#
+
+    @Test func runResultDecodesAndBecomesComments() throws {
+        let state = try JSONDecoder().decode(ReviewRunResult.self, from: Data(Self.runJSON.utf8))
+        let output = try #require(state.result)
+        #expect(state.state == .done && output.usage?.summary == "1.0k in · 2.5k out · $0.42")
+        let run = UUID()
+        // fp2 was dismissed before: a later review doesn't bring it back.
+        let dismissed = ReviewComment(author: "reviewer:codex", path: "src/a.rs", startLine: 1, endLine: nil, revision: "t0",
+                                      quote: [], body: "x", state: .dismissed, fingerprint: "fp2")
+        let added = ReviewFindings.comments(from: output, runID: run, existing: [dismissed])
+        #expect(added.map(\.fingerprint) == ["fp1", "fp3"])
+        let first = added[0]
+        #expect(first.author == "reviewer:claude" && first.reviewer == "claude" && first.state == .new)
+        #expect(first.revision == "t1" && first.startLine == 3 && first.endLine == nil && first.runID == run)
+        #expect(first.title == "Off by one" && first.severity == "high" && first.quote == ["x < n"])
+        #expect(added[1].startLine == nil && added[1].endLine == nil)
+        // Removed lines are in the older revision.
+        let old = ReviewFindings.comments(from: output, runID: run, existing: [])[1]
+        #expect(old.side == .old && old.revision == "f0" && old.endLine == 9)
+        #expect(ReviewComment(path: "a", startLine: 1, endLine: nil, revision: "r", quote: [], body: "b").reviewer == nil)
+    }
+
+    @Test func recordsWithoutRunsStillDecode() throws {
+        let json = #"{"comments": [{"id": "6F9619FF-8B86-D011-B42D-00C04FC964FF", "author": "user", "path": "a", "side": "new", "startLine": 1, "revision": "r", "quote": [], "body": "b", "state": "draft", "createdAt": 0}], "batches": []}"#
+        let record = try JSONDecoder().decode(ReviewRecord.self, from: Data(json.utf8))
+        #expect(record.runs.isEmpty && record.comments.count == 1 && record.comments[0].fingerprint == nil)
+        let again = try JSONDecoder().decode(ReviewRecord.self, from: try JSONEncoder().encode(record))
+        #expect(again == record)
+    }
+
+    @Test func aPassedOnFindingCarriesItsTitle() {
+        let finding = ReviewComment(author: "reviewer:claude", path: "a.rs", startLine: 2, endLine: nil, revision: "r1",
+                                    quote: ["x"], body: "Use <=.", severity: "high", title: "Off by one")
+        let message = ReviewMessage.render([finding], branch: nil, revision: "r1", includesUncommitted: false)
+        #expect(message.hasSuffix("1. a.rs:2\n> x\n[high] Off by one\nUse <=."), "\(message)")
+    }
+
+    @Test func reviewRunCommands() {
+        let plain = TmuxCommandBuilder.reviewRun(cwd: "~/w", from: "a", to: "b", tool: "claude", id: "r-1")
+        #expect(plain.hasSuffix(#"exec "$HOME/.ai-remote/bin/ai-todo-review" run "$HOME"/'w' --from 'a' --to 'b' --tool 'claude' --id 'r-1' </dev/null"#), "\(plain)")
+        let full = TmuxCommandBuilder.reviewRun(cwd: "/p", from: "a", to: "b", tool: "codex", id: "r-2", ref: "ai/x",
+                                                model: "m", context: ["docs/x.md"], brief: "Fix 'it'")
+        let encoded = Data("Fix 'it'".utf8).base64EncodedString()
+        #expect(full.contains("printf '%s' '\(encoded)' | "), "\(full)")
+        #expect(full.hasSuffix("--tool 'codex' --id 'r-2' --ref 'ai/x' --model 'm' --context 'docs/x.md' --brief-base64"), "\(full)")
+        #expect(TmuxCommandBuilder.reviewResult(id: "r-1").hasSuffix("result 'r-1'"))
+        #expect(TmuxCommandBuilder.reviewCancel(id: "r-1").hasSuffix("cancel 'r-1'"))
+    }
 }

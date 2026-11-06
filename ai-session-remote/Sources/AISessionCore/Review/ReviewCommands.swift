@@ -14,6 +14,8 @@ extension TmuxCommandBuilder {
     public static let reviewUnknownRevisionExitCode: Int32 = 65
     /// git itself failed; its message is on stderr.
     public static let reviewGitFailedExitCode: Int32 = 70
+    /// git, tmux, or the reviewer's tool (`claude not found`) isn't installed.
+    public static let reviewMissingProgramExitCode: Int32 = 90
 
     /// `ref`: review that branch of the repository instead of its working tree.
     public static func reviewStatus(cwd: String, ref: String? = nil) -> String {
@@ -49,5 +51,29 @@ extension TmuxCommandBuilder {
     public static func reviewSend(tmuxName: String, message: String) -> String {
         let encoded = Data(message.utf8).base64EncodedString()
         return wrap("printf '%s' \(shellQuote(encoded)) | \(reviewHelper) send --base64 \(shellQuote(tmuxName))")
+    }
+
+    /// Starts a reviewer agent on `from`..`to`, detached; `reviewResult` reads how it went.
+    /// The brief (the todo's title and notes) travels base64-encoded on stdin, like `send`.
+    public static func reviewRun(cwd: String, from: String, to: String, tool: String, id: String,
+                                 ref: String? = nil, model: String? = nil, context: [String] = [],
+                                 brief: String? = nil) -> String {
+        var command = "\(reviewHelper) run \(shellQuotePath(cwd)) --from \(shellQuote(from)) --to \(shellQuote(to))"
+            + " --tool \(shellQuote(tool)) --id \(shellQuote(id))" + refFlag(ref)
+        if let model { command += " --model \(shellQuote(model))" }
+        for path in context { command += " --context \(shellQuotePath(path))" }
+        if let brief, !brief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let encoded = Data(brief.utf8).base64EncodedString()
+            return wrap("printf '%s' \(shellQuote(encoded)) | \(command) --brief-base64")
+        }
+        return wrap("exec \(command) </dev/null")
+    }
+
+    public static func reviewResult(id: String) -> String {
+        wrap("exec \(reviewHelper) result \(shellQuote(id))")
+    }
+
+    public static func reviewCancel(id: String) -> String {
+        wrap("exec \(reviewHelper) cancel \(shellQuote(id))")
     }
 }

@@ -8,6 +8,10 @@ Usage:
   ai-todo-review keep <cwd> <sha>
   ai-todo-review log <cwd> [--limit N] [--before <ISO time>] [--ref <branch>]
   ai-todo-review send [--base64] <tmux_name>   (the message on stdin)
+  ai-todo-review run <cwd> --from <sha> --to <sha> --tool claude|codex --id <id> [--ref <branch>]
+                         [--model M] [--context <path>]... [--brief-base64]   (the brief on stdin)
+  ai-todo-review result <id>
+  ai-todo-review cancel <id>
 
 Every command but send prints JSON.
 
@@ -37,15 +41,34 @@ send    pastes stdin into the tmux session `<tmux_name>` as a bracketed paste, t
         early. Refused (exit 75) while the program there hasn't turned bracketed paste on:
         line by line, every newline would submit.
 
+run     starts a reviewer agent on the changes --from..--to, detached, and prints {"id", "state"}
+        at once. claude runs as `claude -p` with only Read, Grep and Glob; codex as `codex exec`
+        in its read-only sandbox. It reads the files as of --to: the repository itself when --to
+        is its current revision, else an export of --to in the run's folder. Context goes in
+        as paths it may read: the brief (the todo's title and notes, base64 on stdin with
+        --brief-base64), AGENTS.md / CLAUDE.md (the root's and those above changed files),
+        docs/adr and spec folders, and every --context path. The run's files are in
+        ~/.ai-remote/review-runs/<id> (AI_TODO_REVIEW_RUNS_DIR); runs older than 7 days go.
+result  {"id", "state": running|done|failed|cancelled, "error", "result"}. A done run's result:
+        tool, model, from, to, summary, usage (tokens and cost when the tool reports them, else
+        null) and findings: path, side (new|old), line_start, line_end (null for the whole
+        file), severity (high|medium|low), category, title, body, quote (the lines, from git,
+        not the model) and fingerprint (path + title + nearby code, not line numbers, so the
+        same finding on moved lines matches).
+cancel  stops a running reviewer (its whole process group); {"id", "state"}.
+
 Exit codes: 64 bad arguments, 65 unknown revision or empty message, 66 no such tmux
 session, 69 not a git repository (or cwd missing), 70 git failed (its message on stderr),
-75 the pane isn't ready for a paste, 90 git or tmux missing.
+75 the pane isn't ready for a paste, 90 git, tmux, claude or codex missing.
 """
 import base64
 import binascii
+import hashlib
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -447,10 +470,534 @@ def cmd_send(args):
     print(json.dumps({"sent": len(message)}))
 
 
+# --- reviewer runs ---------------------------------------------------------------------------
+
+RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
+RUN_KEEP_SECONDS = 7 * 24 * 3600
+RUN_TIMEOUT_SECONDS = float(os.environ.get("AI_TODO_REVIEW_TIMEOUT", "1800"))
+SEVERITIES = ("high", "medium", "low")
+MAX_FINDINGS = 100
+MAX_QUOTE_LINES = 20
+
+FINDINGS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["summary", "findings"],
+    "properties": {
+        "summary": {"type": "string"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "side", "line_start", "line_end", "severity", "category", "title", "body", "quote"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "side": {"type": "string", "enum": ["new", "old"]},
+                    "line_start": {"type": ["integer", "null"]},
+                    "line_end": {"type": ["integer", "null"]},
+                    "severity": {"type": "string", "enum": list(SEVERITIES)},
+                    "category": {"type": "string"},
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                    "quote": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    },
+}
+
+PROMPT = """You are reviewing a change to the git repository in the current folder. You may only read: \
+don't edit, create or delete files, and don't run commands that change anything.
+
+The change is the unified diff in {patch} (from {from_sha} to {to_sha}; paths in it are relative to \
+the repository root). The current folder holds the files as they are after the change.
+
+Read what helps you judge the change; these are the project's own notes and decisions:
+{context}
+
+Report the problems a careful senior reviewer would raise before this is merged: bugs, wrong \
+behaviour, missing error handling, security issues, race conditions, data loss, broken or missing \
+tests, and places that contradict the project's notes or decisions above. Only report problems in \
+the changed code or caused by it. Skip style nits and anything a formatter or linter would catch. \
+Say nothing about what is fine. If you find nothing worth raising, return no findings.
+
+For each finding give:
+- path: the file, relative to the repository root
+- side: "new" for lines of the changed files (added or unchanged lines), "old" only for removed lines
+- line_start, line_end: the lines on that side (line_end = line_start for one line), or both null \
+for the whole file
+- severity: high (wrong results, crashes, data loss, security), medium (likely to bite), low (worth a look)
+- category: one word, such as correctness, security, performance, tests, docs, design
+- title: one line
+- body: what is wrong, why, and what to do about it; plain text, a few sentences
+- quote: the lines you mean, copied exactly
+And a one-sentence summary of the change and its state."""
+
+
+def runs_dir():
+    return os.environ.get("AI_TODO_REVIEW_RUNS_DIR") or os.path.join(os.path.expanduser("~"), ".ai-remote", "review-runs")
+
+
+def run_dir_for(run_id):
+    if not RUN_ID.match(run_id or ""):
+        die("bad run id %r" % run_id, 64)
+    return os.path.join(runs_dir(), run_id)
+
+
+def write_json(path, value):
+    tmp = path + ".tmp-%d" % os.getpid()
+    with open(tmp, "w") as handle:
+        json.dump(value, handle)
+    os.replace(tmp, path)
+
+
+def read_json(path):
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def tool_binary(tool):
+    override = os.environ.get("AI_TODO_REVIEW_%s_BIN" % tool.upper())
+    if override:
+        return override if os.access(override, os.X_OK) else None
+    return shutil.which(tool)
+
+
+def prune_runs():
+    folder = runs_dir()
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    now = time.time()
+    for name in names:
+        path = os.path.join(folder, name)
+        try:
+            if now - os.stat(path).st_mtime < RUN_KEEP_SECONDS:
+                continue
+        except OSError:
+            continue
+        state = read_json(os.path.join(path, "state.json")) or {}
+        if state.get("state") == "running" and pid_alive(run_pid(path)):
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def run_pid(folder):
+    try:
+        with open(os.path.join(folder, "pid")) as handle:
+            return int(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def pid_alive(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def cmd_run(args):
+    args, ref = take_ref(args)
+    cwd = None
+    options = {"from": None, "to": None, "tool": None, "id": None, "model": None}
+    context = []
+    brief_on_stdin = False
+    rest = list(args)
+    try:
+        while rest:
+            arg = rest.pop(0)
+            if arg in ("--from", "--to", "--tool", "--id", "--model"):
+                options[arg[2:]] = rest.pop(0)
+            elif arg == "--context":
+                context.append(rest.pop(0))
+            elif arg == "--brief-base64":
+                brief_on_stdin = True
+            elif arg.startswith("-") or cwd is not None:
+                raise ValueError(arg)
+            else:
+                cwd = arg
+    except (IndexError, ValueError):
+        cwd = None
+    if cwd is None or not options["from"] or not options["to"] or not options["id"] \
+            or options["tool"] not in ("claude", "codex"):
+        die("usage: ai-todo-review run <cwd> --from <sha> --to <sha> --tool claude|codex --id <id> "
+            "[--ref <branch>] [--model M] [--context <path>]... [--brief-base64]", 64)
+    folder = run_dir_for(options["id"])
+    root = repo_root(cwd)
+    shas = {}
+    for key in ("from", "to"):
+        sha = line(root, "rev-parse", "--verify", "-q", options[key] + "^{commit}")
+        if not sha:
+            die("unknown revision %s" % options[key], 65)
+        shas[key] = sha
+    if ref:
+        ref_sha(root, ref)
+    if not tool_binary(options["tool"]):
+        die_missing(options["tool"])
+    brief = ""
+    if brief_on_stdin:
+        try:
+            brief = base64.b64decode(sys.stdin.buffer.read().strip(), validate=True).decode("utf-8", "replace")
+        except (binascii.Error, ValueError):
+            die("the brief isn't base64", 64)
+    prune_runs()
+    try:
+        os.makedirs(folder)
+    except FileExistsError:
+        die("run %s exists" % options["id"], 64)
+    request = {"root": root, "ref": ref, "from": shas["from"], "to": shas["to"], "tool": options["tool"],
+               "model": options["model"], "context": context, "brief": brief}
+    write_json(os.path.join(folder, "request.json"), request)
+    write_json(os.path.join(folder, "state.json"), {"state": "running", "started_at": time.time()})
+    log = open(os.path.join(folder, "worker.log"), "wb")
+    # Its own session: it outlives this SSH command, and cancel stops it and the tool together.
+    worker = subprocess.Popen([sys.executable, os.path.abspath(__file__), "_worker", folder],
+                              stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                              close_fds=True)
+    log.close()
+    with open(os.path.join(folder, "pid"), "w") as handle:
+        handle.write(str(worker.pid))
+    print(json.dumps({"id": options["id"], "state": "running"}))
+
+
+def cmd_result(args):
+    if len(args) != 1:
+        die("usage: ai-todo-review result <id>", 64)
+    folder = run_dir_for(args[0])
+    state = read_json(os.path.join(folder, "state.json"))
+    if state is None:
+        die("no run %s" % args[0], 65)
+    pid = run_pid(folder)
+    # No pid yet: `run` is still starting it.
+    if state.get("state") == "running" and pid and not pid_alive(pid):
+        # Read again: the worker may have finished between the two reads.
+        state = read_json(os.path.join(folder, "state.json")) or state
+        if state.get("state") == "running":
+            state = {"state": "failed", "error": "The reviewer stopped without a result."}
+    print(json.dumps({"id": args[0], "state": state.get("state"), "error": state.get("error"),
+                      "result": state.get("result")}))
+
+
+def cmd_cancel(args):
+    if len(args) != 1:
+        die("usage: ai-todo-review cancel <id>", 64)
+    folder = run_dir_for(args[0])
+    path = os.path.join(folder, "state.json")
+    state = read_json(path)
+    if state is None:
+        die("no run %s" % args[0], 65)
+    if state.get("state") == "running":
+        pid = run_pid(folder)
+        if pid_alive(pid):
+            # Cancelled first, so the worker's own exit doesn't write a result over it.
+            state = {"state": "cancelled", "error": None, "result": None}
+            write_json(path, state)
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        else:
+            # It ended just now: whatever it wrote stands.
+            state = read_json(path) or state
+            if state.get("state") == "running":
+                state = {"state": "cancelled", "error": None, "result": None}
+                write_json(path, state)
+    print(json.dumps({"id": args[0], "state": state.get("state")}))
+
+
+# The worker: runs detached, writes state.json when it ends.
+
+def revision_lines(root, sha, path, cache):
+    key = (sha, path)
+    if key not in cache:
+        try:
+            out, code = git(root, "show", "%s:%s" % (sha, path), check=False, text=False)
+        except GitError:
+            out, code = b"", 1
+        cache[key] = out.decode("utf-8", "replace").split("\n") if code == 0 else None
+        if cache[key] and cache[key][-1] == "":
+            cache[key].pop()
+    return cache[key]
+
+
+def normalized(text):
+    return " ".join(re.sub(r"[^0-9a-z]+", " ", text.lower()).split())
+
+
+def fingerprint(path, title, nearby):
+    code = "\n".join(" ".join(row.split()) for row in nearby)
+    digest = hashlib.sha256("\n".join([path, normalized(title), code]).encode("utf-8")).hexdigest()
+    return digest[:20]
+
+
+def clean_finding(raw, root, request, cache):
+    """A finding checked against the repository, or None. Lines and quote come from git."""
+    if not isinstance(raw, dict):
+        return None
+    path = str(raw.get("path") or "").strip()
+    for prefix in ("./", "a/", "b/"):
+        if path.startswith(prefix) and not revision_lines(root, request["to"], path, cache):
+            path = path[len(prefix):]
+    if path.startswith(root + "/"):
+        path = path[len(root) + 1:]
+    title = " ".join(str(raw.get("title") or "").split())[:200]
+    body = str(raw.get("body") or "").strip()
+    if not path or not (title or body):
+        return None
+    side = "old" if raw.get("side") == "old" else "new"
+    lines = revision_lines(root, request["from" if side == "old" else "to"], path, cache)
+    if lines is None and side == "old":
+        side, lines = "new", revision_lines(root, request["to"], path, cache)
+    if lines is None:
+        return None
+    start, end = raw.get("line_start"), raw.get("line_end")
+    start = start if isinstance(start, int) and not isinstance(start, bool) and 1 <= start <= len(lines) else None
+    if start is None:
+        end = None
+    else:
+        end = end if isinstance(end, int) and not isinstance(end, bool) and start <= end else start
+        end = min(end, len(lines))
+    if start is not None:
+        quote = lines[start - 1:min(end, start - 1 + MAX_QUOTE_LINES)]
+        nearby = lines[max(start - 2, 0):start + 1]
+    else:
+        quote = []
+        nearby = []
+    severity = str(raw.get("severity") or "").lower()
+    category = normalized(str(raw.get("category") or "")) or "other"
+    return {
+        "path": path, "side": side, "line_start": start, "line_end": end,
+        "severity": severity if severity in SEVERITIES else "medium",
+        "category": category.split()[0],
+        "title": title or body.split("\n")[0][:120], "body": body or title,
+        "quote": quote, "fingerprint": fingerprint(path, title or body, nearby),
+    }
+
+
+def parse_findings(text):
+    """The JSON object in a reply: the whole text, or the outermost {...} in it."""
+    if isinstance(text, dict):
+        return text
+    text = (text or "").strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except ValueError:
+            pass
+    raise ReviewerError("The reviewer's answer wasn't the findings it was asked for.")
+
+
+class ReviewerError(Exception):
+    pass
+
+
+def context_paths(root, workdir, request, changed):
+    """The paths the reviewer is pointed at, as they are in `workdir`."""
+    found = []
+
+    def add(path):
+        if path not in found and os.path.exists(path):
+            found.append(path)
+
+    folders = {""}
+    for path in changed:
+        parts = path.split("/")[:-1]
+        for depth in range(len(parts) + 1):
+            folders.add("/".join(parts[:depth]))
+    for folder in sorted(folders, key=lambda f: (f.count("/"), f)):
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            add(os.path.join(workdir, folder, name) if folder else os.path.join(workdir, name))
+    for name in ("docs/adr", "docs/adrs", "docs/decisions", "docs/specs", "docs/spec", "specs", "spec"):
+        add(os.path.join(workdir, name))
+    for extra in request.get("context") or []:
+        extra = os.path.expanduser(extra)
+        add(extra if os.path.isabs(extra) else os.path.join(workdir, extra))
+    return found
+
+
+def run_claude(binary, workdir, folder, request, prompt):
+    command = [binary, "-p", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "",
+               "--tools", "Read,Grep,Glob", "--add-dir", folder, "--output-format", "json",
+               "--json-schema", json.dumps(FINDINGS_SCHEMA)]
+    if request.get("model"):
+        command += ["--model", request["model"]]
+    env = dict(os.environ)
+    for name in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+        env.pop(name, None)
+    out = run_tool(command, workdir, prompt, env)
+    try:
+        reply = json.loads(out)
+    except ValueError:
+        raise ReviewerError("claude's output wasn't JSON.")
+    if reply.get("is_error") or reply.get("subtype") not in (None, "success"):
+        raise ReviewerError("claude failed: %s" % str(reply.get("result") or reply.get("subtype"))[:300])
+    findings = parse_findings(reply.get("structured_output") or reply.get("result"))
+    usage = reply.get("usage") or {}
+    models = reply.get("modelUsage") or {}
+    model = max(models, key=lambda name: (models[name] or {}).get("outputTokens") or 0) if models else request.get("model")
+    return findings, model, {
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+        "cache_read_tokens": usage.get("cache_read_input_tokens"),
+        "cache_write_tokens": usage.get("cache_creation_input_tokens"),
+        "cost_usd": reply.get("total_cost_usd"),
+    }
+
+
+def run_codex(binary, workdir, folder, request, prompt):
+    schema = os.path.join(folder, "schema.json")
+    last = os.path.join(folder, "last-message.txt")
+    write_json(schema, FINDINGS_SCHEMA)
+    command = [binary, "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
+               "--cd", workdir, "--add-dir", folder, "--output-schema", schema, "--output-last-message", last, "--json"]
+    if request.get("model"):
+        command += ["--model", request["model"]]
+    out = run_tool(command + ["-"], workdir, prompt, dict(os.environ))
+    usage = None
+    model = request.get("model")
+    for row in out.splitlines():
+        try:
+            event = json.loads(row)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "turn.completed" and isinstance(event.get("usage"), dict):
+            totals = usage or {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+                               "cache_write_tokens": None, "cost_usd": None}
+            totals["input_tokens"] += event["usage"].get("input_tokens") or 0
+            totals["output_tokens"] += event["usage"].get("output_tokens") or 0
+            totals["cache_read_tokens"] += event["usage"].get("cached_input_tokens") or 0
+            usage = totals
+        elif event.get("type") == "turn.failed":
+            message = (event.get("error") or {}).get("message") if isinstance(event.get("error"), dict) else None
+            raise ReviewerError("codex failed: %s" % str(message or "turn failed")[:300])
+        if isinstance(event.get("model"), str) and not model:
+            model = event["model"]
+    try:
+        with open(last) as handle:
+            text = handle.read()
+    except OSError:
+        raise ReviewerError("codex finished without an answer.")
+    return parse_findings(text), model, usage
+
+
+def run_tool(command, workdir, prompt, env):
+    try:
+        result = subprocess.run(command, cwd=workdir, input=prompt.encode("utf-8"), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, env=env, timeout=RUN_TIMEOUT_SECONDS)
+    except FileNotFoundError:
+        raise ReviewerError("%s not found" % os.path.basename(command[0]))
+    except subprocess.TimeoutExpired:
+        raise ReviewerError("The reviewer took longer than %d minutes." % (RUN_TIMEOUT_SECONDS // 60))
+    if result.returncode != 0:
+        detail = (result.stderr.decode("utf-8", "replace").strip().splitlines() or [""])[-1]
+        raise ReviewerError("%s exited %d%s" % (os.path.basename(command[0]), result.returncode,
+                                                ": " + detail[:300] if detail else ""))
+    return result.stdout.decode("utf-8", "replace")
+
+
+def worker(folder):
+    state_path = os.path.join(folder, "state.json")
+    tree = os.path.join(folder, "tree")
+    started = (read_json(state_path) or {}).get("started_at") or time.time()
+
+    def finish(state):
+        shutil.rmtree(tree, ignore_errors=True)
+        current = read_json(state_path) or {}
+        if current.get("state") == "cancelled":
+            return
+        state.setdefault("error", None)
+        state.setdefault("result", None)
+        state["started_at"] = started
+        state["finished_at"] = time.time()
+        write_json(state_path, state)
+
+    def on_term(signum, frame):
+        finish({"state": "cancelled"})
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, on_term)
+    request = read_json(os.path.join(folder, "request.json"))
+    try:
+        if not request:
+            raise ReviewerError("The run's request is missing.")
+        root = request["root"]
+        patch, _ = git(root, *DIFF_CONFIG, "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                       "--src-prefix=a/", "--dst-prefix=b/", "-M", request["from"], request["to"], "--", text=False)
+        if not patch.strip():
+            finish({"state": "done", "result": {
+                "tool": request["tool"], "model": None, "from": request["from"], "to": request["to"],
+                "summary": "No changes to review.", "usage": None, "findings": []}})
+            return
+        patch_path = os.path.join(folder, "changes.patch")
+        with open(patch_path, "wb") as handle:
+            handle.write(patch)
+        names, _ = git(root, "diff", "--name-only", "--no-renames", request["from"], request["to"], "--")
+        changed = [name for name in names.splitlines() if name]
+        # The reviewer reads the files as of --to: the repository itself when that's what it holds.
+        workdir = root
+        if request.get("ref") or snapshot(root)[0] != request["to"]:
+            os.makedirs(tree)
+            archive = subprocess.Popen(["git", "-C", root, "archive", "--format=tar", request["to"]], stdout=subprocess.PIPE)
+            unpacked = subprocess.run(["tar", "-x", "-C", tree], stdin=archive.stdout)
+            archive.stdout.close()
+            if archive.wait() != 0 or unpacked.returncode != 0:
+                raise ReviewerError("Couldn't export %s to review it." % request["to"][:12])
+            workdir = tree
+        context = context_paths(root, workdir, request, changed)
+        if request.get("brief", "").strip():
+            brief_path = os.path.join(folder, "brief.md")
+            with open(brief_path, "w") as handle:
+                handle.write(request["brief"])
+            context.insert(0, brief_path)
+        prompt = PROMPT.format(patch=patch_path, from_sha=request["from"], to_sha=request["to"],
+                               context="\n".join("- " + path for path in context) or "- (none)")
+        binary = tool_binary(request["tool"])
+        if not binary:
+            raise ReviewerError("%s not found" % request["tool"])
+        runner = run_claude if request["tool"] == "claude" else run_codex
+        reply, model, usage = runner(binary, workdir, folder, request, prompt)
+        if not isinstance(reply, dict) or not isinstance(reply.get("findings"), list):
+            raise ReviewerError("The reviewer's answer had no findings list.")
+        cache = {}
+        findings, seen = [], set()
+        for raw in reply["findings"][:MAX_FINDINGS]:
+            finding = clean_finding(raw, root, request, cache)
+            if finding and finding["fingerprint"] not in seen:
+                seen.add(finding["fingerprint"])
+                findings.append(finding)
+        finish({"state": "done", "result": {
+            "tool": request["tool"], "model": model, "from": request["from"], "to": request["to"],
+            "summary": str(reply.get("summary") or "").strip()[:1000], "usage": usage, "findings": findings}})
+    except (ReviewerError, GitError, OSError, KeyError) as error:
+        finish({"state": "failed", "error": str(error)[:500] or "The reviewer failed."})
+
+
 def main(argv):
-    commands = {"status": cmd_status, "diff": cmd_diff, "keep": cmd_keep, "log": cmd_log, "send": cmd_send}
+    if len(argv) == 2 and argv[0] == "_worker":
+        worker(argv[1])
+        return
+    commands = {"status": cmd_status, "diff": cmd_diff, "keep": cmd_keep, "log": cmd_log, "send": cmd_send,
+                "run": cmd_run, "result": cmd_result, "cancel": cmd_cancel}
     if not argv or argv[0] not in commands:
-        die("usage: ai-todo-review status|diff|keep|log|send ... (see the header of this script)", 64)
+        die("usage: ai-todo-review status|diff|keep|log|send|run|result|cancel ... (see the header of this script)", 64)
     try:
         commands[argv[0]](argv[1:])
     except GitError as error:

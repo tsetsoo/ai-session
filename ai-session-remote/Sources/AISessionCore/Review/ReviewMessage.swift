@@ -22,6 +22,10 @@ public enum ReviewMessage {
             let quote = comment.quote.prefix(maxQuotedLines).map { "> " + $0 }
             lines += quote
             if comment.quote.count > maxQuotedLines { lines.append("> …") }
+            // A reviewer's finding the user passed on: its headline, then its explanation.
+            if let title = comment.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                lines.append((comment.severity.map { "[\($0)] " } ?? "") + title)
+            }
             lines.append(comment.body.trimmingCharacters(in: .whitespacesAndNewlines))
             parts.append(lines.joined(separator: "\n"))
         }

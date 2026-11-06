@@ -27,7 +27,7 @@ struct ReviewWindow: View {
             if let target, let conversation = model.store.conversations(forTodo: target.todoID)
                 .first(where: { $0.listKey == target.conversationKey }) ?? Self.opened[target.conversationKey] {
                 let title = model.store.todos.first { $0.id == target.todoID }?.title ?? "Conversation"
-                ReviewView(conversation: conversation)
+                ReviewView(conversation: conversation, brief: "The todo this conversation works on: \(title)")
                     .navigationTitle("Review · \(title)")
             } else if model.isConfigured, !model.store.hasLoadedOnce {
                 FrameLoadingView(title: "Loading conversation…")
@@ -55,16 +55,29 @@ struct LineSelection: Equatable {
     var lines: ClosedRange<Int>
 }
 
+/// A line to bring into view in the diff (a finding picked in the Findings pane).
+struct DiffFocus: Equatable {
+    var path: String
+    var line: Int
+    /// A new value each pick, so picking the same line again scrolls again.
+    var token = UUID()
+}
+
 struct ReviewView: View {
     let conversation: Conversation
+    /// What the conversation is for, handed to a reviewer agent.
+    let brief: String?
 
     @Query private var hosts: [HostEntity]
     @State private var session: ReviewSession
     @State private var selectedPath: String?
     @State private var showingSend = false
+    @State private var showingFindings = false
+    @State private var focus: DiffFocus?
 
-    init(conversation: Conversation) {
+    init(conversation: Conversation, brief: String? = nil) {
         self.conversation = conversation
+        self.brief = brief
         _session = State(initialValue: ReviewSession(conversation: conversation))
     }
 
@@ -75,9 +88,24 @@ struct ReviewView: View {
         } detail: {
             detail
         }
+        .inspector(isPresented: $showingFindings) {
+            // A hidden inspector still lays its content out: build it only while shown.
+            if showingFindings {
+                FindingsPane(session: session) { comment in pick(comment) }
+                    .inspectorColumnWidth(min: 280, ideal: 360, max: 560)
+            }
+        }
         .toolbar { toolbar }
         // Another commit in Compare With is a new load too, though the scope stays `.commit`.
         .task(id: "\(session.scope.rawValue)|\(session.baseCommit?.sha ?? "")") { await reload() }
+        // A run started here or by an earlier window: followed while the window is open.
+        .task(id: session.activeRun?.id) {
+            guard session.activeRun != nil else { return }
+            await withConfig { await session.followReview(config: $0) }
+        }
+        .onChange(of: session.record.lastRun?.state) { _, state in
+            if state == .done, (session.record.lastRun?.findingCount ?? 0) > 0 { showingFindings = true }
+        }
         .onChange(of: conversation) { _, updated in session.refresh(updated) }
         .sheet(isPresented: $showingSend) {
             // A failed send is shown in the sheet: macOS doesn't present the window's alert over it.
@@ -107,6 +135,15 @@ struct ReviewView: View {
         if selectedPath == nil || !session.diff.files.contains(where: { $0.path == selectedPath }) {
             selectedPath = session.diff.files.first?.path
         }
+    }
+
+    /// Shows a finding in the diff: its file, scrolled to its line.
+    private func pick(_ comment: ReviewComment) {
+        let place = session.place(of: comment)
+        let path = session.diff.files.first { $0.path == place.path || $0.oldPath == place.path }?.path
+        guard let path else { return }
+        selectedPath = path
+        if let line = place.line { focus = DiffFocus(path: path, line: line) }
     }
 
     private func withConfig(_ body: (HostConnectionConfig) async -> Void) async {
@@ -207,7 +244,7 @@ struct ReviewView: View {
     @ViewBuilder
     private var detail: some View {
         if let path = selectedPath, let file = session.diff.files.first(where: { $0.path == path }) {
-            FileDiffView(file: file, session: session)
+            FileDiffView(file: file, session: session, focus: focus)
                 // By file only: a reload with new revisions keeps a half-written comment.
                 .id(path)
         } else if session.isLoading {
@@ -259,6 +296,17 @@ struct ReviewView: View {
                 .lineLimit(1)
         }
         ToolbarItem(placement: .primaryAction) {
+            reviewControl
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                showingFindings.toggle()
+            } label: {
+                Label(findingsTitle, systemImage: "checklist")
+            }
+            .help("Show or hide the reviewer's findings.")
+        }
+        ToolbarItem(placement: .primaryAction) {
             Button {
                 Task { await reload() }
             } label: {
@@ -278,6 +326,53 @@ struct ReviewView: View {
             .disabled(session.sendBlocker != nil || session.result == nil)
             .help(session.sendBlocker ?? "Type these comments into the conversation as one message.")
         }
+    }
+
+    @ViewBuilder
+    private var reviewControl: some View {
+        if let run = session.activeRun {
+            HStack(spacing: DS.spacing.s) {
+                ProgressView().controlSize(.small)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text("Reviewing with \(run.tool.capitalized)… \(Self.elapsed(from: run.startedAt, to: context.date))")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                Button("Cancel") {
+                    Task { await withConfig { await session.cancelReview(config: $0) } }
+                }
+            }
+            .help(session.reviewProblem.map { "Couldn't check on the review: \($0). Trying again." }
+                  ?? "A reviewer agent is reading these changes on \(conversation.computer.name). It only reads; it changes nothing.")
+        } else {
+            Menu {
+                ForEach(["claude", "codex"], id: \.self) { tool in
+                    Button("Review with \(tool.capitalized)") {
+                        Task {
+                            await withConfig { await session.startReview(tool: tool, brief: brief, config: $0) }
+                        }
+                    }
+                }
+            } label: {
+                Label("Review", systemImage: "sparkle.magnifyingglass")
+                    .labelStyle(.titleAndIcon)
+            } primaryAction: {
+                Task { await withConfig { await session.startReview(tool: "claude", brief: brief, config: $0) } }
+            }
+            .disabled(session.reviewBlocker != nil || session.isLoading)
+            .help(session.reviewBlocker ?? "Have a reviewer agent read the changes on screen and list what it would raise. "
+                  + "Its findings go to you, not to the agent, until you send them.")
+        }
+    }
+
+    private var findingsTitle: String {
+        let count = session.findings(.new).count
+        return count == 0 ? "Findings" : "Findings (\(count))"
+    }
+
+    static func elapsed(from start: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     private var sendTitle: String {
@@ -370,12 +465,15 @@ private struct FileRow: View {
 private struct FileDiffView: View {
     let file: DiffFile
     let session: ReviewSession
+    var focus: DiffFocus?
 
     @State private var selection: LineSelection?
     @State private var draft = ""
     @State private var fileComment = false
 
     var body: some View {
+        let marks = session.findingMarks(file: file)
+        ScrollViewReader { proxy in
         ScrollView([.vertical]) {
             LazyVStack(alignment: .leading, spacing: 0) {
                 header
@@ -403,7 +501,7 @@ private struct FileDiffView: View {
                         .foregroundStyle(.secondary)
                         .padding(DS.spacing.l)
                 }
-                ForEach(Array(file.hunks.enumerated()), id: \.offset) { _, hunk in
+                ForEach(Array(file.hunks.enumerated()), id: \.offset) { hunkIndex, hunk in
                     Text("@@ -\(hunk.oldStart),\(hunk.oldCount) +\(hunk.newStart),\(hunk.newCount) @@ \(hunk.section)")
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -411,15 +509,26 @@ private struct FileDiffView: View {
                         .padding(.horizontal, DS.spacing.s)
                         .padding(.vertical, DS.spacing.xs)
                         .background(Color.secondary.opacity(0.08))
-                    ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
-                        lineRow(line)
+                    ForEach(Array(hunk.lines.enumerated()), id: \.offset) { lineIndex, line in
+                        lineRow(line, mark: line.kind == .removed ? nil : line.newLine.flatMap { marks[$0] },
+                                rowID: line.kind == .removed ? nil : line.newLine.map(Self.lineID) ?? "h\(hunkIndex)-\(lineIndex)")
                     }
                 }
             }
             .padding(.bottom, DS.spacing.xl)
         }
+        .onAppear { scroll(proxy) }
+        .onChange(of: focus) { _, _ in scroll(proxy) }
+        }
         .onExitCommand { selection = nil }
     }
+
+    private func scroll(_ proxy: ScrollViewProxy) {
+        guard let focus, focus.path == file.path else { return }
+        withAnimation { proxy.scrollTo(Self.lineID(focus.line), anchor: .center) }
+    }
+
+    static func lineID(_ newLine: Int) -> String { "new-\(newLine)" }
 
     private var header: some View {
         HStack {
@@ -439,13 +548,14 @@ private struct FileDiffView: View {
     }
 
     @ViewBuilder
-    private func lineRow(_ line: DiffLine) -> some View {
+    private func lineRow(_ line: DiffLine, mark: String?, rowID: String?) -> some View {
         let side: DiffSide = line.kind == .removed ? .old : .new
         let number = side == .old ? line.oldLine : line.newLine
         // Removed lines are in the old revision, where a renamed file had its old name.
         let path = side == .old ? file.oldPath ?? file.path : file.path
         let isSelected = number.map { n in selection.map { $0.side == side && $0.lines.contains(n) } ?? false } ?? false
-        DiffLineRow(line: line, isSelected: isSelected)
+        DiffLineRow(line: line, isSelected: isSelected, mark: mark)
+            .id(rowID ?? "old-\(line.oldLine ?? 0)")
             .contentShape(Rectangle())
             .onTapGesture {
                 guard let number, line.kind != .noNewline else { return }
@@ -504,9 +614,14 @@ private struct FileDiffView: View {
 private struct DiffLineRow: View {
     let line: DiffLine
     let isSelected: Bool
+    /// The highest severity of the unsent findings on this line, or nil.
+    var mark: String?
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
+            Rectangle()
+                .fill(mark.map(FindingBadge.color) ?? .clear)
+                .frame(width: 3)
             number(line.oldLine)
             number(line.newLine)
             Text(marker)
@@ -556,13 +671,14 @@ private struct CommentCard: View {
 
     var body: some View {
         if editing {
-            CommentComposer(text: $text, title: "Edit comment on \(comment.location)") {
+            CommentComposer(text: $text, title: "Edit comment on \(comment.location)", saveTitle: "Save") {
                 session.editComment(comment.id, body: text)
                 editing = false
             } onCancel: { editing = false }
         } else {
             VStack(alignment: .leading, spacing: DS.spacing.xs) {
                 HStack(spacing: DS.spacing.s) {
+                    if comment.reviewer != nil { FindingBadge(comment: comment) }
                     Text(comment.location)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
@@ -573,7 +689,12 @@ private struct CommentCard: View {
                             .foregroundStyle(DS.warning)
                     }
                     Spacer()
-                    if comment.state == .draft {
+                    if comment.reviewer != nil {
+                        FindingActions(comment: comment, session: session) {
+                            text = comment.body
+                            editing = true
+                        }
+                    } else if comment.state == .draft {
                         Button("Edit") {
                             text = comment.body
                             editing = true
@@ -593,23 +714,36 @@ private struct CommentCard: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(4)
                 }
+                if let title = comment.title {
+                    Text(title)
+                        .font(.callout.weight(.semibold))
+                        .textSelection(.enabled)
+                }
                 Text(comment.body)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(DS.spacing.s)
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(comment.state == .draft ? DS.accent.opacity(0.5) : Color.secondary.opacity(0.2)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(border))
         }
+    }
+
+    private var border: Color {
+        if comment.state == .draft { return DS.accent.opacity(0.5) }
+        if comment.state == .new { return FindingBadge.color(comment.severity ?? "medium").opacity(0.5) }
+        return Color.secondary.opacity(0.2)
     }
 
     @ViewBuilder
     private var stateLabel: some View {
         switch comment.state {
         case .draft:
-            Text("Draft")
+            Text(comment.reviewer == nil ? "Draft" : "In next batch")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(DS.accent)
+        case .new:
+            EmptyView()
         case .sent:
             if let sentAt = comment.sentAt {
                 Text("Sent \(sentAt, style: .relative) ago")
@@ -625,6 +759,7 @@ private struct CommentCard: View {
 private struct CommentComposer: View {
     @Binding var text: String
     let title: String
+    var saveTitle = "Add Comment"
     let onSave: () -> Void
     let onCancel: () -> Void
 
@@ -644,7 +779,7 @@ private struct CommentComposer: View {
                 Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                Button("Add Comment", action: onSave)
+                Button(saveTitle, action: onSave)
                     .keyboardShortcut(.return, modifiers: .command)
                     .buttonStyle(.borderedProminent)
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -700,6 +835,193 @@ private struct SendPreview: View {
         }
         .padding(DS.spacing.l)
         .frame(minWidth: 520, idealWidth: 640, minHeight: 360, idealHeight: 480)
+    }
+}
+// MARK: - Findings
+
+/// `HIGH` / `MED` / `LOW` and the reviewer's name.
+private struct FindingBadge: View {
+    let comment: ReviewComment
+
+    var body: some View {
+        let severity = comment.severity ?? "medium"
+        Text(Self.short(severity))
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Self.color(severity), in: Capsule())
+            .help("\(severity.capitalized) · \(comment.category ?? "finding") · found by \(comment.reviewer?.capitalized ?? "a reviewer")")
+    }
+
+    static func short(_ severity: String) -> String {
+        switch severity {
+        case "high": "HIGH"
+        case "low": "LOW"
+        default: "MED"
+        }
+    }
+
+    static func color(_ severity: String) -> Color {
+        switch severity {
+        case "high": DS.error
+        case "low": .secondary
+        default: DS.warning
+        }
+    }
+}
+
+/// Send (joins the next batch) / Edit / Dismiss, or Remove from batch, or Restore.
+private struct FindingActions: View {
+    let comment: ReviewComment
+    let session: ReviewSession
+    let onEdit: () -> Void
+
+    var body: some View {
+        switch comment.state {
+        case .new:
+            Button("Send") { session.queueFinding(comment.id) }
+                .buttonStyle(.link)
+                .help("Add it to the comments that go to the agent with Send to Agent.")
+            Button("Edit", action: onEdit)
+                .buttonStyle(.link)
+            Button("Dismiss") { session.dismissComment(comment.id) }
+                .buttonStyle(.link)
+                .help("Not worth raising. A later review won't bring it back.")
+        case .draft:
+            Button("Edit", action: onEdit)
+                .buttonStyle(.link)
+            Button("Remove from Batch") { session.queueFinding(comment.id, false) }
+                .buttonStyle(.link)
+        case .sent:
+            Button("Hide") { session.dismissComment(comment.id) }
+                .buttonStyle(.link)
+        case .dismissed:
+            Button("Restore") { session.restoreFinding(comment.id) }
+                .buttonStyle(.link)
+        }
+    }
+}
+
+/// The reviewers' findings beside the diff: the last run, a filter, findings by file.
+private struct FindingsPane: View {
+    let session: ReviewSession
+    let onPick: (ReviewComment) -> Void
+
+    @State private var filter: ReviewSession.FindingFilter = .new
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            runHeader
+                .padding(DS.spacing.m)
+            Picker("Show", selection: $filter) {
+                ForEach(ReviewSession.FindingFilter.allCases) { filter in
+                    Text("\(filter.title) \(session.findings(filter).count)").tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, DS.spacing.m)
+            .padding(.bottom, DS.spacing.s)
+            Divider()
+            let findings = session.findings(filter)
+            if findings.isEmpty {
+                ContentUnavailableView(emptyTitle, systemImage: "checklist")
+                    .frame(maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(byFile(findings), id: \.path) { group in
+                        Section(group.path) {
+                            ForEach(group.findings) { comment in
+                                CommentCard(comment: comment, isStale: session.isStale(comment), session: session)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { onPick(comment) }
+                                    .listRowSeparator(.hidden)
+                            }
+                        }
+                    }
+                }
+                .listStyle(.sidebar)
+            }
+        }
+    }
+
+    private var emptyTitle: String {
+        switch filter {
+        case .new: session.record.runs.isEmpty ? "No Review Yet" : "Nothing New"
+        case .sent: "None Sent"
+        case .stale: "None Stale"
+        case .dismissed: "None Dismissed"
+        }
+    }
+
+    private func byFile(_ findings: [ReviewComment]) -> [(path: String, findings: [ReviewComment])] {
+        var order: [String] = []
+        var groups: [String: [ReviewComment]] = [:]
+        for comment in findings {
+            let path = session.place(of: comment).path
+            if groups[path] == nil { order.append(path) }
+            groups[path, default: []].append(comment)
+        }
+        return order.sorted().map { ($0, groups[$0] ?? []) }
+    }
+
+    @ViewBuilder
+    private var runHeader: some View {
+        if let run = session.record.lastRun {
+            VStack(alignment: .leading, spacing: DS.spacing.xs) {
+                HStack {
+                    Text("\(run.tool.capitalized)\(run.model.map { " · \($0)" } ?? "")")
+                        .font(.headline)
+                    Spacer()
+                    Text(run.startedAt, style: .relative)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(revisionLine(run))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                switch run.state {
+                case .running:
+                    Text("Reviewing…").foregroundStyle(.secondary)
+                case .failed:
+                    Label(run.error ?? "The review failed.", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(DS.error)
+                case .cancelled:
+                    Text("Cancelled.").foregroundStyle(.secondary)
+                case .done:
+                    if let summary = run.summary, !summary.isEmpty {
+                        Text(summary).font(.callout)
+                    }
+                    Text(countLine(run))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text("Review asks Claude or Codex to read the changes on screen. Its findings land here for you to send, edit or dismiss.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// `reviewed a1b2c3d · showing e4f5a6b` (the same: `reviewed a1b2c3d, on screen`).
+    private func revisionLine(_ run: ReviewRun) -> String {
+        let reviewed = String(run.reviewedSHA.prefix(7))
+        guard let current = session.result?.to else { return "reviewed \(reviewed)" }
+        if current == run.reviewedSHA { return "reviewed \(reviewed), the revision on screen" }
+        return "reviewed \(reviewed) · on screen \(current.prefix(7))"
+    }
+
+    private func countLine(_ run: ReviewRun) -> String {
+        var parts: [String] = []
+        let found = run.findingCount ?? 0
+        parts.append(found == 1 ? "1 finding" : "\(found) findings")
+        if let added = run.addedCount, added != found { parts.append("\(found - added) already listed") }
+        if let usage = run.usage, !usage.summary.isEmpty { parts.append(usage.summary) }
+        return parts.joined(separator: " · ")
     }
 }
 #endif

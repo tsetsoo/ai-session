@@ -88,6 +88,7 @@ final class ReviewSession {
     /// whatever this one gets back after that is dropped, so the window never shows one
     /// scope's diff under another's name.
     func load(config: HostConnectionConfig) async {
+        lastConfig = config
         loadGeneration += 1
         let generation = loadGeneration
         let scope = scope
@@ -166,6 +167,7 @@ final class ReviewSession {
     }
 
     @ObservationIgnored private var loadGeneration = 0
+    @ObservationIgnored private var lastConfig: HostConnectionConfig?
 
     /// The conversation's folder when it is in git. When it isn't: the kept branch of its
     /// worktree in the project folder, or a failure that says why there's nothing to review.
@@ -288,7 +290,7 @@ final class ReviewSession {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         store.update(key) { record in
-            if let index = record.comments.firstIndex(where: { $0.id == id && $0.state == .draft }) {
+            if let index = record.comments.firstIndex(where: { $0.id == id && ($0.state == .draft || $0.state == .new) }) {
                 record.comments[index].body = text
             }
         }
@@ -299,12 +301,196 @@ final class ReviewSession {
         anchors[id] = nil
     }
 
-    /// Hides a sent comment from the diff; it stays in the batch's history.
+    /// Hides a sent comment or a finding from the diff; a sent one stays in the batch's
+    /// history, a finding stays known so a later review doesn't bring it back.
     func dismissComment(_ id: UUID) {
         store.update(key) { record in
             if let index = record.comments.firstIndex(where: { $0.id == id }) { record.comments[index].state = .dismissed }
         }
         anchors[id] = nil
+    }
+
+    // MARK: Findings
+
+    /// A reviewer's finding joins the next batch (Send), or leaves it again.
+    func queueFinding(_ id: UUID, _ queued: Bool = true) {
+        store.update(key) { record in
+            guard let index = record.comments.firstIndex(where: { $0.id == id }),
+                  record.comments[index].reviewer != nil,
+                  record.comments[index].state == (queued ? .new : .draft) else { return }
+            record.comments[index].state = queued ? .draft : .new
+        }
+    }
+
+    /// A dismissed finding back in the list. It is placed again by the next load unless its
+    /// lines are on the revision on screen.
+    func restoreFinding(_ id: UUID) {
+        store.update(key) { record in
+            guard let index = record.comments.firstIndex(where: { $0.id == id && $0.state == .dismissed }),
+                  record.comments[index].reviewer != nil else { return }
+            record.comments[index].state = .new
+        }
+        if let comment = record.comments.first(where: { $0.id == id }), comment.side == .new, comment.revision == result?.to {
+            anchors[id] = .moved(path: comment.path, startLine: comment.startLine, endLine: comment.endLine)
+        }
+    }
+
+    enum FindingFilter: String, CaseIterable, Identifiable {
+        case new, sent, stale, dismissed
+        var id: String { rawValue }
+        var title: String { rawValue.capitalized }
+    }
+
+    /// The reviewers' findings under one filter, highest severity first, then by place.
+    /// New: not acted on yet, or picked for the next batch. Stale: unsent ones whose lines
+    /// changed since the review.
+    func findings(_ filter: FindingFilter) -> [ReviewComment] {
+        record.comments.filter { comment in
+            guard comment.reviewer != nil else { return false }
+            switch filter {
+            case .new: return (comment.state == .new || comment.state == .draft) && !isStale(comment)
+            case .stale: return (comment.state == .new || comment.state == .draft) && isStale(comment)
+            case .sent: return comment.state == .sent
+            case .dismissed: return comment.state == .dismissed
+            }
+        }
+        .sorted {
+            (ReviewFindings.rank($0.severity), $0.path, $0.startLine ?? 0) < (ReviewFindings.rank($1.severity), $1.path, $1.startLine ?? 0)
+        }
+    }
+
+    /// Where a finding is in the diff on screen: its file there, and its last line on the new
+    /// side, or nil when it isn't shown on a line.
+    func place(of comment: ReviewComment) -> (path: String, line: Int?) {
+        if comment.side == .new, case let .moved(path, start, end)? = anchors[comment.id] {
+            return (path, start.map { end ?? $0 })
+        }
+        return (comment.path, comment.side == .old && comment.revision == result?.from ? comment.endLine ?? comment.startLine : nil)
+    }
+
+    /// New-side lines of `file` that unsent findings are about, with the highest severity on each.
+    func findingMarks(file: DiffFile) -> [Int: String] {
+        var marks: [Int: String] = [:]
+        for comment in record.comments where comment.reviewer != nil && (comment.state == .new || comment.state == .draft) {
+            guard comment.side == .new, case let .moved(path, start?, end)? = anchors[comment.id], path == file.path else { continue }
+            for line in start...max(start, end ?? start) {
+                let severity = comment.severity ?? "medium"
+                if let current = marks[line], ReviewFindings.rank(current) <= ReviewFindings.rank(severity) { continue }
+                marks[line] = severity
+            }
+        }
+        return marks
+    }
+
+    // MARK: Reviewer runs
+
+    /// The run in progress, if any.
+    var activeRun: ReviewRun? {
+        guard let run = record.lastRun, run.state == .running else { return nil }
+        return run
+    }
+
+    /// Why Review is off, or nil.
+    var reviewBlocker: String? {
+        if activeRun != nil { return "A review is running." }
+        guard let result else { return "Load the changes first." }
+        if diff.files.isEmpty || result.from == result.to { return "There are no changes to review." }
+        return nil
+    }
+
+    @ObservationIgnored var pollInterval: Duration = .seconds(3)
+
+    /// Starts a reviewer on the changes on screen (`result.from`..`result.to`). The window's
+    /// `followReview` reads how it went.
+    func startReview(tool: String, brief: String?, config: HostConnectionConfig) async {
+        guard reviewBlocker == nil, let result, !isStartingReview else { return }
+        isStartingReview = true
+        defer { isStartingReview = false }
+        let run = ReviewRun(tool: tool, scope: scope.rawValue, baseSHA: result.from, reviewedSHA: result.to)
+        let (cwd, ref) = source
+        do {
+            let output = try await exec(config, TmuxCommandBuilder.reviewRun(
+                cwd: cwd, from: result.from, to: result.to, tool: tool, id: run.hostID, ref: ref, brief: brief
+            ))
+            if output.exitCode == TmuxCommandBuilder.reviewMissingProgramExitCode {
+                let program = output.stderr.split(separator: "\n").last.map { $0.replacingOccurrences(of: " not found", with: "") } ?? tool
+                throw Failure(errorDescription: "\(program) isn't installed on \(conversation.computer.name), so it can't review there.")
+            }
+            let _: [String: String] = try await decode(output)
+        } catch {
+            failure = Failure(errorDescription: message(for: error))
+            return
+        }
+        store.update(key) { $0.runs.append(run) }
+    }
+
+    @ObservationIgnored private var isStartingReview = false
+
+    /// Follows the running review until it ends or the caller's task is cancelled (the window
+    /// closed: the run goes on on the computer, and the next window picks it up).
+    func followReview(config: HostConnectionConfig) async {
+        while let run = activeRun, !Task.isCancelled {
+            do {
+                let output = try await exec(config, TmuxCommandBuilder.reviewResult(id: run.hostID))
+                if output.exitCode == TmuxCommandBuilder.reviewUnknownRevisionExitCode {
+                    finishRun(run.id, ReviewRunResult(id: run.hostID, state: .failed,
+                                                       error: "The review is gone from \(conversation.computer.name)."))
+                    return
+                }
+                let state: ReviewRunResult = try await decode(output)
+                reviewProblem = nil
+                if state.state != .running {
+                    finishRun(run.id, state)
+                    return
+                }
+            } catch {
+                // Keep trying: the computer may be asleep or the network down for a moment.
+                reviewProblem = message(for: error)
+            }
+            try? await Task.sleep(for: pollInterval)
+        }
+    }
+
+    /// The last failure to read a running review's state, while it is retried.
+    private(set) var reviewProblem: String?
+
+    func cancelReview(config: HostConnectionConfig) async {
+        guard let active = activeRun else { return }
+        do {
+            let state: ReviewRunResult = try await run(TmuxCommandBuilder.reviewCancel(id: active.hostID), config: config)
+            finishRun(active.id, state)
+        } catch {
+            failure = Failure(errorDescription: message(for: error))
+        }
+    }
+
+    /// Records how a run ended and adds its new findings.
+    func finishRun(_ id: UUID, _ outcome: ReviewRunResult) {
+        let now = Date.now
+        var added: [ReviewComment] = []
+        store.update(key) { record in
+            guard let index = record.runs.firstIndex(where: { $0.id == id }), record.runs[index].state == .running else { return }
+            record.runs[index].state = outcome.state
+            record.runs[index].finishedAt = now
+            record.runs[index].error = outcome.error
+            if let output = outcome.result, outcome.state == .done {
+                added = ReviewFindings.comments(from: output, runID: id, existing: record.comments, at: now)
+                record.runs[index].model = output.model
+                record.runs[index].summary = output.summary
+                record.runs[index].usage = output.usage
+                record.runs[index].findingCount = output.findings.count
+                record.runs[index].addedCount = added.count
+                record.comments += added
+            }
+        }
+        reviewProblem = nil
+        for comment in added where comment.side == .new && comment.revision == result?.to {
+            anchors[comment.id] = .moved(path: comment.path, startLine: comment.startLine, endLine: comment.endLine)
+        }
+        if added.contains(where: { $0.side == .new && $0.revision != result?.to }), let config = lastConfig {
+            // Reviewed an older revision than the one on screen: place them by reloading.
+            Task { await load(config: config) }
+        }
     }
 
     /// Comments shown at a line of the diff on screen: new-side ones where they were placed,
@@ -446,7 +632,10 @@ final class ReviewSession {
     // MARK: Remote
 
     private func run<T: Decodable>(_ command: String, config: HostConnectionConfig) async throws -> T {
-        let output = try await exec(config, command)
+        try await decode(try await exec(config, command))
+    }
+
+    private func decode<T: Decodable>(_ output: SSHExecResult) async throws -> T {
         switch output.exitCode {
         case TmuxCommandBuilder.reviewNoRepositoryExitCode:
             throw NotARepository()
