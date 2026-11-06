@@ -143,6 +143,8 @@ struct ReviewView: View {
 
     private func reload() async {
         await withConfig { await session.load(config: $0) }
+        // The PR/MR and its threads after the diff: never holds it up.
+        Task { await withConfig { await session.loadPullRequest(config: $0) } }
         if selectedPath == nil || !session.diff.files.contains(where: { $0.path == selectedPath }) {
             selectedPath = session.diff.files.first?.path
         }
@@ -702,7 +704,7 @@ private struct CommentCard: View {
         } else {
             VStack(alignment: .leading, spacing: DS.spacing.xs) {
                 HStack(spacing: DS.spacing.s) {
-                    if comment.reviewer != nil { FindingBadge(comment: comment) }
+                    if comment.isFinding { FindingBadge(comment: comment) }
                     Text(comment.location)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
@@ -713,7 +715,7 @@ private struct CommentCard: View {
                             .foregroundStyle(DS.warning)
                     }
                     Spacer()
-                    if comment.reviewer != nil {
+                    if comment.isFinding {
                         FindingActions(comment: comment, session: session) {
                             text = comment.body
                             editing = true
@@ -763,7 +765,7 @@ private struct CommentCard: View {
     private var stateLabel: some View {
         switch comment.state {
         case .draft:
-            Text(comment.reviewer == nil ? "Draft" : "In next batch")
+            Text(comment.isFinding ? "In next batch" : "Draft")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(DS.accent)
         case .new, .stale:
@@ -872,6 +874,21 @@ private struct FindingBadge: View {
     let comment: ReviewComment
 
     var body: some View {
+        if let author = comment.prAuthor {
+            Text("PR")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(DS.accent, in: Capsule())
+                .help("A review thread by \(author) on the pull/merge request")
+        } else {
+            reviewerBadge
+        }
+    }
+
+    @ViewBuilder
+    private var reviewerBadge: some View {
         let severity = comment.severity ?? "medium"
         Text(Self.short(severity))
             .font(.caption2.weight(.bold))
@@ -940,6 +957,7 @@ private struct FindingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            PullRequestSection(session: session)
             runHeader
                 .padding(DS.spacing.m)
             Picker("Show", selection: $filter) {
@@ -1050,6 +1068,101 @@ private struct FindingsPane: View {
         if let added = run.addedCount, added != found { parts.append("\(found - added) already listed") }
         if let usage = run.usage, !usage.summary.isEmpty { parts.append(usage.summary) }
         return parts.joined(separator: " · ")
+    }
+}
+/// The branch's PR/MR at the top of the Findings pane: state, reviews, checks, who gh/glab act
+/// as, and its description as evidence for the review. Read-only.
+private struct PullRequestSection: View {
+    let session: ReviewSession
+
+    @State private var showsDescription = false
+
+    var body: some View {
+        if let problem = session.pullRequestProblem {
+            Label(problem, systemImage: "person.crop.circle.badge.exclamationmark")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding([.horizontal, .top], DS.spacing.m)
+        } else if let info = session.pullRequest, let pr = info.pr {
+            VStack(alignment: .leading, spacing: DS.spacing.xs) {
+                HStack(alignment: .firstTextBaseline) {
+                    if let url = pr.url.flatMap(URL.init(string:)) {
+                        Link(pr.name(provider: info.provider), destination: url)
+                            .font(.headline)
+                    } else {
+                        Text(pr.name(provider: info.provider)).font(.headline)
+                    }
+                    Text(pr.title)
+                        .font(.headline)
+                        .lineLimit(2)
+                }
+                Text(statusLine(pr))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: DS.spacing.s) {
+                    Label(checksLine(pr.checks), systemImage: checksSymbol(pr.checks.state))
+                        .foregroundStyle(pr.checks.state == "failing" ? DS.error : pr.checks.state == "pending" ? DS.warning : .secondary)
+                    if let viewer = info.viewer {
+                        Text("· you are \(viewer) there")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption)
+                if !pr.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    DisclosureGroup("Description", isExpanded: $showsDescription) {
+                        if showsDescription {
+                            ScrollView {
+                                Text(Self.markdown(pr.body))
+                                    .font(.callout)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 260)
+                        }
+                    }
+                    .font(.caption)
+                }
+            }
+            .padding([.horizontal, .top], DS.spacing.m)
+        }
+    }
+
+    private func statusLine(_ pr: ReviewPullRequestInfo.PullRequest) -> String {
+        var parts = [pr.draft ? "\(pr.state) · draft" : pr.state]
+        if let author = pr.author { parts.append("by \(author)") }
+        switch pr.reviewDecision {
+        case "approved": parts.append("approved")
+        case "changes_requested": parts.append("changes requested")
+        case "review_required": parts.append("review required")
+        default: break
+        }
+        if !pr.approvals.isEmpty { parts.append("approved by \(pr.approvals.joined(separator: ", "))") }
+        if let mergeable = pr.mergeable, pr.state == "open" { parts.append(mergeable.replacingOccurrences(of: "_", with: " ")) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func checksLine(_ checks: ReviewPullRequestInfo.Checks) -> String {
+        switch checks.state {
+        case "passing": return "checks passing"
+        case "failing": return "\(checks.failed) of \(checks.total) checks failing"
+        case "pending": return "\(checks.pending) of \(checks.total) checks running"
+        default: return "no checks"
+        }
+    }
+
+    private func checksSymbol(_ state: String) -> String {
+        switch state {
+        case "passing": "checkmark.circle"
+        case "failing": "xmark.circle"
+        case "pending": "clock"
+        default: "circle.dashed"
+        }
+    }
+
+    /// Markdown as far as Text shows it; the raw text when it doesn't parse.
+    static func markdown(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
     }
 }
 #endif

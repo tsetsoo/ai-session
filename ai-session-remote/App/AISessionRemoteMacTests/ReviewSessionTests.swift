@@ -32,6 +32,8 @@ final class ReviewSessionTests: XCTestCase {
     private var runningPolls = 0
     private var resultPolls = 0
     private var reviewerMissing = false
+    /// `pr` answers no access (gh logged out).
+    private var prAccess = true
     /// The run finished just before Cancel reached it.
     private var cancelFindsItDone = false
     /// The revision the fake reviewer read.
@@ -101,6 +103,18 @@ final class ReviewSessionTests: XCTestCase {
             return json(["id": "x", "state": "done", "error": NSNull(), "result": output])
         }
         if command.contains(" cancel ") { return json(["id": "x", "state": "cancelled"]) }
+        if command.contains(" pr ") {
+            if prAccess == false { return json(["provider": "github", "access": false, "error": "gh isn't logged in", "pr": NSNull()]) }
+            let pr: [String: Any] = ["number": 9, "url": "https://github.com/o/r/pull/9", "title": "T", "body": "**B**", "state": "open",
+                                     "draft": false, "author": "alice", "approvals": [String](), "head_sha": "rev2",
+                                     "checks": ["state": "passing", "passed": 1, "failed": 0, "pending": 0, "total": 1]]
+            return json(["provider": "github", "access": true, "viewer": "me", "branch": "feat", "pr": pr])
+        }
+        if command.contains(" threads ") {
+            let thread: [String: Any] = ["id": "T1", "path": "f.txt", "side": "new", "line_start": 2, "line_end": 2, "commit": "rev2",
+                                         "resolved": false, "outdated": false, "comments": [["author": "bob", "body": "Why inserted?"]]]
+            return json(["provider": "github", "access": true, "pr": 9, "threads": [thread]])
+        }
         if command.contains(" send ") {
             if holdSend { await withCheckedContinuation { heldSend = $0 } }
             return SSHExecResult(exitCode: sendExit, stdout: "{}", stderr: "")
@@ -490,5 +504,27 @@ final class ReviewSessionTests: XCTestCase {
         await session.cancelReview(config: config)
         XCTAssertEqual(store.record(session.key).lastRun?.state, .done)
         XCTAssertEqual(session.findings(.new).count, 2)
+    }
+
+    func testPullRequestThreadsBecomeItemsAndNoAccessIsSaid() async throws {
+        let (session, store) = makeSession()
+        await session.load(config: config)
+        await session.loadPullRequest(config: config)
+        XCTAssertEqual(session.pullRequest?.pr?.number, 9)
+        XCTAssertNil(session.pullRequestProblem)
+        let thread = try XCTUnwrap(session.findings(.new).first)
+        XCTAssertEqual(thread.prAuthor, "bob")
+        XCTAssertEqual(session.comments(atPath: "f.txt", side: .new, endLine: 2).map(\.id), [thread.id])
+        XCTAssertTrue(commands.contains { $0.contains(" threads ") && $0.contains("--number 9") })
+        // Again: not added twice.
+        await session.loadPullRequest(config: config)
+        XCTAssertEqual(store.record(session.key).comments.count, 1)
+        // Picked and sent like a finding, with who started the thread.
+        session.queueFinding(thread.id)
+        XCTAssertTrue(session.message().contains("GitHub thread by bob\nbob: Why inserted?"), session.message())
+
+        prAccess = false
+        await session.loadPullRequest(config: config)
+        XCTAssertEqual(session.pullRequestProblem, "No PR access on \(session.conversation.computer.name): gh isn't logged in.")
     }
 }

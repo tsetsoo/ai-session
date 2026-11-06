@@ -12,6 +12,8 @@ Usage:
                          [--model M] [--context <path>]... [--brief-base64]   (the brief on stdin)
   ai-todo-review result <id>
   ai-todo-review cancel <id>
+  ai-todo-review pr <cwd> [--ref <branch>] [--number N]
+  ai-todo-review threads <cwd> [--ref <branch>] [--number N]
 
 Every command but send prints JSON.
 
@@ -55,6 +57,15 @@ result  {"id", "state": running|done|failed|cancelled, "error", "result"}. A don
         file), severity (high|medium|low), category, title, body, quote (the lines, from git,
         not the model) and fingerprint (path + title + nearby code, not line numbers, so the
         same finding on moved lines matches).
+pr      the pull/merge request of the branch (GitHub with gh, GitLab with glab, by origin's URL or
+        `git config ai-remote.forge`): {provider, access, error, viewer (who gh/glab act as),
+        branch, pr}. pr: number, url, title, body, state (open|merged|closed), draft, author,
+        review_decision, approvals, mergeable, checks {state passing|failing|pending|none, counts},
+        head_sha, head_ref, base_ref; null when the branch has none. access false with error
+        when the CLI is missing, logged out or failing: nothing else depends on it. Read-only.
+threads its review threads on lines: {provider, access, error, pr, threads: [{id, path, side,
+        line_start, line_end, commit, resolved, outdated, url, comments [{author, body,
+        created_at}]}]}. GitHub: GraphQL reviewThreads; GitLab: the MR's discussions.
 cancel  stops a running reviewer (its whole process group). Prints what `result` does: a run
         that finished first stays done, with its findings.
 
@@ -469,6 +480,298 @@ def cmd_send(args):
     time.sleep(PASTE_SETTLE_SECONDS)
     tmux("send-keys", "-t", target, "Enter")
     print(json.dumps({"sent": len(message)}))
+
+
+# --- pull / merge requests (read-only) -------------------------------------------------
+
+FORGE_TIMEOUT = float(os.environ.get("AI_TODO_REVIEW_FORGE_TIMEOUT", "30"))
+CHECK_FAILED = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR", "STALE"}
+
+GITHUB_THREADS = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          id isResolved isOutdated path line startLine originalLine originalStartLine diffSide
+          comments(first: 50) {
+            nodes { author { login } body createdAt url commit { oid } originalCommit { oid } }
+          }
+        }
+      }
+    }
+  }
+}"""
+
+
+class NoAccess(Exception):
+    """The forge's CLI is missing, logged out, or can't reach it."""
+
+
+def forge_kind(root):
+    """github | gitlab | None, as the runner decides it (ai_todo_workspace.forge)."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+        import ai_todo_workspace
+        return ai_todo_workspace.forge(root)
+    except ImportError:
+        url = line(root, "remote", "get-url", "origin") or ""
+        return "github" if "github" in url else "gitlab" if "gitlab" in url else None
+
+
+def forge_cli(kind):
+    name = "gh" if kind == "github" else "glab"
+    return os.environ.get("AI_TODO_GH_BIN" if kind == "github" else "AI_TODO_GLAB_BIN") or shutil.which(name) or name
+
+
+def forge_json(kind, root, *args):
+    """The CLI's JSON answer, or NoAccess with why."""
+    binary = forge_cli(kind)
+    try:
+        p = subprocess.run([binary] + list(args), cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           stdin=subprocess.DEVNULL, timeout=FORGE_TIMEOUT)
+    except FileNotFoundError:
+        raise NoAccess("%s isn't installed" % os.path.basename(binary))
+    except subprocess.TimeoutExpired:
+        raise NoAccess("%s didn't answer in %d s" % (os.path.basename(binary), FORGE_TIMEOUT))
+    err = p.stderr.decode("utf-8", "replace").strip()
+    if p.returncode != 0:
+        lowered = err.lower()
+        if "auth" in lowered or "login" in lowered or "401" in lowered or "token" in lowered:
+            raise NoAccess("%s isn't logged in" % os.path.basename(binary))
+        raise NoAccess("%s failed: %s" % (os.path.basename(binary), (err.splitlines() or [""])[-1][:200]))
+    try:
+        return json.loads(p.stdout.decode("utf-8", "replace") or "null")
+    except ValueError:
+        raise NoAccess("%s's answer wasn't JSON" % os.path.basename(binary))
+
+
+def checks_summary(rollup):
+    """{state: passing|failing|pending|none, passed, failed, pending, total} of GitHub's rollup."""
+    passed = failed = pending = 0
+    for check in rollup or []:
+        if not isinstance(check, dict):
+            continue
+        if check.get("__typename") == "StatusContext" or "state" in check and "status" not in check:
+            state = str(check.get("state") or "").upper()
+            if state == "SUCCESS":
+                passed += 1
+            elif state in ("PENDING", "EXPECTED"):
+                pending += 1
+            else:
+                failed += 1
+            continue
+        if str(check.get("status") or "").upper() != "COMPLETED":
+            pending += 1
+        elif str(check.get("conclusion") or "").upper() in CHECK_FAILED:
+            failed += 1
+        else:
+            passed += 1
+    total = passed + failed + pending
+    state = "none" if total == 0 else "failing" if failed else "pending" if pending else "passing"
+    return {"state": state, "passed": passed, "failed": failed, "pending": pending, "total": total}
+
+
+def pipeline_summary(status):
+    """GitLab's head pipeline status as the same summary."""
+    status = str(status or "").lower()
+    if not status:
+        return {"state": "none", "passed": 0, "failed": 0, "pending": 0, "total": 0}
+    state = {"success": "passing", "failed": "failing", "canceled": "failing"}.get(status, "pending")
+    return {"state": state, "passed": int(state == "passing"), "failed": int(state == "failing"),
+            "pending": int(state == "pending"), "total": 1}
+
+
+def branch_for(root, ref):
+    return ref or line(root, "symbolic-ref", "-q", "--short", "HEAD")
+
+
+def github_pr(root, branch, number):
+    if number is None:
+        rows = forge_json("github", root, "pr", "list", "--head", branch, "--state", "all", "--limit", "20",
+                          "--json", "number,state,updatedAt")
+        rows = [r for r in rows or [] if isinstance(r, dict)]
+        if not rows:
+            return None
+        rows.sort(key=lambda r: (r.get("state") == "OPEN", r.get("updatedAt") or ""), reverse=True)
+        number = rows[0].get("number")
+    view = forge_json("github", root, "pr", "view", str(number), "--json",
+                      "number,url,title,body,state,isDraft,author,reviewDecision,mergeStateStatus,mergeable,"
+                      "statusCheckRollup,headRefOid,headRefName,baseRefName,latestReviews")
+    if not isinstance(view, dict):
+        return None
+    approvals = sorted({(r.get("author") or {}).get("login") for r in view.get("latestReviews") or []
+                        if isinstance(r, dict) and r.get("state") == "APPROVED"} - {None})
+    return {
+        "number": view.get("number"), "url": view.get("url"), "title": view.get("title") or "",
+        "body": view.get("body") or "", "state": str(view.get("state") or "").lower(),
+        "draft": bool(view.get("isDraft")), "author": (view.get("author") or {}).get("login"),
+        "review_decision": (view.get("reviewDecision") or "").lower() or None, "approvals": approvals,
+        "mergeable": (view.get("mergeStateStatus") or view.get("mergeable") or "").lower() or None,
+        "checks": checks_summary(view.get("statusCheckRollup")), "head_sha": view.get("headRefOid"),
+        "head_ref": view.get("headRefName"), "base_ref": view.get("baseRefName"),
+    }
+
+
+def gitlab_pr(root, branch, number):
+    if number is None:
+        rows = forge_json("gitlab", root, "mr", "list", "--source-branch", branch, "--all", "-F", "json", "--per-page", "20")
+        rows = [r for r in rows or [] if isinstance(r, dict) and r.get("source_branch") in (None, branch)]
+        if not rows:
+            return None
+        rows.sort(key=lambda r: (r.get("state") == "opened", r.get("updated_at") or ""), reverse=True)
+        number = rows[0].get("iid")
+    view = forge_json("gitlab", root, "mr", "view", str(number), "-F", "json")
+    if not isinstance(view, dict):
+        return None
+    approvals = []
+    project = view.get("project_id")
+    if project:
+        try:
+            data = forge_json("gitlab", root, "api", "projects/%s/merge_requests/%s/approvals" % (project, number))
+            approvals = sorted({((a or {}).get("user") or {}).get("username") for a in (data or {}).get("approved_by") or []} - {None})
+        except NoAccess:
+            pass
+    state = {"opened": "open", "locked": "open"}.get(view.get("state"), view.get("state") or "")
+    return {
+        "number": view.get("iid"), "url": view.get("web_url"), "title": view.get("title") or "",
+        "body": view.get("description") or "", "state": state,
+        "draft": bool(view.get("draft") or view.get("work_in_progress")),
+        "author": (view.get("author") or {}).get("username"),
+        "review_decision": "approved" if approvals else None, "approvals": approvals,
+        "mergeable": (view.get("detailed_merge_status") or view.get("merge_status") or "").lower() or None,
+        "checks": pipeline_summary((view.get("head_pipeline") or view.get("pipeline") or {}).get("status")),
+        "head_sha": view.get("sha"), "head_ref": view.get("source_branch"), "base_ref": view.get("target_branch"),
+        "project_id": project,
+    }
+
+
+def viewer(kind, root):
+    try:
+        user = forge_json(kind, root, "api", "user")
+    except NoAccess:
+        return None
+    if not isinstance(user, dict):
+        return None
+    return user.get("login") if kind == "github" else user.get("username")
+
+
+def take_number(args):
+    rest = list(args)
+    if "--number" not in rest:
+        return rest, None
+    at = rest.index("--number")
+    try:
+        number = int(rest[at + 1])
+    except (IndexError, ValueError):
+        die("--number needs a number", 64)
+    del rest[at:at + 2]
+    return rest, number
+
+
+def forge_context(args, usage):
+    args, ref = take_ref(args)
+    args, number = take_number(args)
+    if len(args) != 1:
+        die(usage, 64)
+    root = repo_root(args[0])
+    branch = branch_for(root, ref)
+    return root, branch, number, forge_kind(root)
+
+
+def cmd_pr(args):
+    root, branch, number, kind = forge_context(args, "usage: ai-todo-review pr <cwd> [--ref <branch>] [--number N]")
+    out = {"provider": kind, "access": False, "error": None, "viewer": None, "branch": branch, "pr": None}
+    if kind is None:
+        out["error"] = "origin is neither GitHub nor GitLab"
+    elif not branch and number is None:
+        out["error"] = "no branch checked out"
+    else:
+        try:
+            out["pr"] = (github_pr if kind == "github" else gitlab_pr)(root, branch, number)
+            out["access"] = True
+            out["viewer"] = viewer(kind, root)
+        except NoAccess as error:
+            out["error"] = str(error)
+    print(json.dumps(out))
+
+
+def github_threads(root, pr):
+    m = re.match(r"https://[^/]+/([^/]+)/([^/]+)/pull/(\d+)", pr.get("url") or "")
+    if not m:
+        return []
+    data = forge_json("github", root, "api", "graphql", "-f", "query=" + GITHUB_THREADS,
+                      "-F", "owner=" + m.group(1), "-F", "name=" + m.group(2), "-F", "number=" + m.group(3))
+    nodes = ((((data or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {}).get("reviewThreads") or {}
+    threads = []
+    for node in nodes.get("nodes") or []:
+        comments = ((node or {}).get("comments") or {}).get("nodes") or []
+        if not comments or not node.get("path"):
+            continue
+        first = comments[0]
+        line_no = node.get("line") or node.get("originalLine")
+        start = node.get("startLine") or node.get("originalStartLine") or line_no
+        threads.append({
+            "id": node.get("id"), "path": node["path"],
+            "side": "old" if node.get("diffSide") == "LEFT" else "new",
+            "line_start": start, "line_end": line_no,
+            "commit": ((first.get("commit") or first.get("originalCommit")) or {}).get("oid"),
+            "resolved": bool(node.get("isResolved")), "outdated": bool(node.get("isOutdated")),
+            "url": first.get("url"),
+            "comments": [{"author": (c.get("author") or {}).get("login") or "ghost", "body": c.get("body") or "",
+                          "created_at": c.get("createdAt")} for c in comments],
+        })
+    return threads
+
+
+def gitlab_threads(root, pr):
+    project = pr.get("project_id")
+    if not project:
+        return []
+    data = forge_json("gitlab", root, "api", "projects/%s/merge_requests/%s/discussions?per_page=100" % (project, pr["number"]))
+    threads = []
+    for discussion in data or []:
+        notes = [n for n in (discussion or {}).get("notes") or [] if isinstance(n, dict) and not n.get("system")]
+        positioned = [n for n in notes if isinstance(n.get("position"), dict)]
+        if not positioned:
+            continue
+        position = positioned[0]["position"]
+        new_line, old_line = position.get("new_line"), position.get("old_line")
+        side = "new" if new_line else "old"
+        line_no = new_line or old_line
+        start = line_no
+        range_start = ((position.get("line_range") or {}).get("start") or {})
+        if range_start.get("new_line" if side == "new" else "old_line"):
+            start = range_start.get("new_line" if side == "new" else "old_line")
+        threads.append({
+            "id": discussion.get("id"),
+            "path": position.get("new_path") if side == "new" else position.get("old_path") or position.get("new_path"),
+            "side": side, "line_start": start, "line_end": line_no,
+            "commit": position.get("head_sha") if side == "new" else position.get("base_sha"),
+            "resolved": all(n.get("resolved") for n in notes if n.get("resolvable")) and any(n.get("resolvable") for n in notes),
+            "outdated": False, "url": (pr.get("url") or "") + "#note_%s" % notes[0].get("id"),
+            "comments": [{"author": (n.get("author") or {}).get("username") or "ghost", "body": n.get("body") or "",
+                          "created_at": n.get("created_at")} for n in notes],
+        })
+    return threads
+
+
+def cmd_threads(args):
+    root, branch, number, kind = forge_context(args, "usage: ai-todo-review threads <cwd> [--ref <branch>] [--number N]")
+    out = {"provider": kind, "access": False, "error": None, "pr": None, "threads": []}
+    if kind is None:
+        out["error"] = "origin is neither GitHub nor GitLab"
+    else:
+        try:
+            pr = (github_pr if kind == "github" else gitlab_pr)(root, branch, number) if (branch or number) else None
+            out["access"] = True
+            if pr:
+                out["pr"] = pr["number"]
+                out["threads"] = (github_threads if kind == "github" else gitlab_threads)(root, pr)
+        except NoAccess as error:
+            out["access"] = False
+            out["error"] = str(error)
+    print(json.dumps(out))
 
 
 # --- reviewer runs ---------------------------------------------------------------------------
@@ -1021,9 +1324,9 @@ def main(argv):
         worker(argv[1])
         return
     commands = {"status": cmd_status, "diff": cmd_diff, "keep": cmd_keep, "log": cmd_log, "send": cmd_send,
-                "run": cmd_run, "result": cmd_result, "cancel": cmd_cancel}
+                "run": cmd_run, "result": cmd_result, "cancel": cmd_cancel, "pr": cmd_pr, "threads": cmd_threads}
     if not argv or argv[0] not in commands:
-        die("usage: ai-todo-review status|diff|keep|log|send|run|result|cancel ... (see the header of this script)", 64)
+        die("usage: ai-todo-review status|diff|keep|log|send|run|result|cancel|pr|threads ... (see the header of this script)", 64)
     try:
         commands[argv[0]](argv[1:])
     except GitError as error:

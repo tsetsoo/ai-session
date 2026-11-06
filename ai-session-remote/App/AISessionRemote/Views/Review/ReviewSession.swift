@@ -344,7 +344,7 @@ final class ReviewSession {
         guard editable() else { return }
         store.update(key) { record in
             guard let index = record.comments.firstIndex(where: { $0.id == id }),
-                  record.comments[index].reviewer != nil,
+                  record.comments[index].isFinding,
                   queued ? [.new, .stale].contains(record.comments[index].state) : record.comments[index].state == .draft
             else { return }
             record.comments[index].state = queued ? .draft : .new
@@ -357,7 +357,7 @@ final class ReviewSession {
         guard editable() else { return }
         store.update(key) { record in
             guard let index = record.comments.firstIndex(where: { $0.id == id && $0.state == .dismissed }),
-                  record.comments[index].reviewer != nil else { return }
+                  record.comments[index].isFinding else { return }
             record.comments[index].state = .new
         }
         if let comment = record.comments.first(where: { $0.id == id }), comment.side == .new {
@@ -393,7 +393,7 @@ final class ReviewSession {
     /// changed since the review.
     func findings(_ filter: FindingFilter) -> [ReviewComment] {
         record.comments.filter { comment in
-            guard comment.reviewer != nil else { return false }
+            guard comment.isFinding else { return false }
             switch filter {
             case .new: return comment.state.isOpen && comment.state != .stale && !isStale(comment)
             case .stale: return comment.state == .stale || (comment.state.isOpen && isStale(comment))
@@ -419,7 +419,7 @@ final class ReviewSession {
     /// New-side lines of `file` that unsent findings are about, with the highest severity on each.
     func findingMarks(file: DiffFile) -> [Int: String] {
         var marks: [Int: String] = [:]
-        for comment in record.comments where comment.reviewer != nil && comment.state.isOpen {
+        for comment in record.comments where comment.isFinding && comment.state.isOpen {
             guard comment.side == .new, case let .moved(path, start?, end)? = anchors[comment.id], path == file.path else { continue }
             for line in start...max(start, end ?? start) {
                 let severity = comment.severity ?? "medium"
@@ -428,6 +428,46 @@ final class ReviewSession {
             }
         }
         return marks
+    }
+
+    // MARK: Pull / merge request
+
+    /// The branch's PR/MR from the computer's gh or glab, after the last load. Nil: not asked yet.
+    private(set) var pullRequest: ReviewPullRequestInfo?
+
+    /// Reads the PR/MR and its review threads (read-only) and adds the open threads on lines
+    /// as items. Quiet on failure: local review doesn't depend on it.
+    func loadPullRequest(config: HostConnectionConfig) async {
+        let (cwd, ref) = source
+        guard let info: ReviewPullRequestInfo = try? await run(TmuxCommandBuilder.reviewPullRequest(cwd: cwd, ref: ref), config: config)
+        else { return }
+        pullRequest = info
+        guard info.access, let pr = info.pr else { return }
+        guard let threads: ReviewThreadsResult = try? await run(
+            TmuxCommandBuilder.reviewThreads(cwd: cwd, ref: ref, number: pr.number), config: config
+        ), threads.access, !threads.threads.isEmpty else { return }
+        var comments = record.comments
+        let fallback = pr.headSHA ?? result?.to ?? ""
+        guard ReviewThreadItems.apply(threads, provider: info.provider, fallbackRevision: fallback, to: &comments) > 0 else { return }
+        // A thread already here as a draft or sent stays as it is; only these change.
+        guard !hubOffline else { return }
+        store.update(key) { $0.comments = comments }
+        // On the revision on screen: placed now. Older ones: worked out from their revision.
+        var older = false
+        for comment in comments where comment.isFinding && comment.state.isOpen && comment.side == .new && anchors[comment.id] == nil {
+            if comment.revision == result?.to {
+                anchors[comment.id] = .moved(path: comment.path, startLine: comment.startLine, endLine: comment.endLine)
+            } else {
+                older = true
+            }
+        }
+        if older { placeUnplaced() }
+    }
+
+    /// "No PR access on <computer>: gh isn't logged in", or nil.
+    var pullRequestProblem: String? {
+        guard let info = pullRequest, !info.access, info.provider != nil, let error = info.error else { return nil }
+        return "No PR access on \(conversation.computer.name): \(error)."
     }
 
     // MARK: Reviewer runs

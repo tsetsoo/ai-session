@@ -248,7 +248,11 @@ private struct ItemRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.spacing.xs) {
             HStack(spacing: DS.spacing.s) {
-                if let severity = comment.severity {
+                if let author = comment.prAuthor {
+                    Text("PR · \(author)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DS.accent)
+                } else if let severity = comment.severity {
                     Text(severity.uppercased())
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.white)

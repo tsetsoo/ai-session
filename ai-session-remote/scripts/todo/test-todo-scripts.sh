@@ -4332,6 +4332,116 @@ AI_TODO_REVIEW_CLAUDE_BIN="${SANDBOX}/bin/fake-review-list" "$REVIEW" run "$RR_R
 unset AI_TODO_REVIEW_RUNS_DIR
 pass "review_run_finds_and_cancels"
 
+# ai-todo-review pr / threads, with fake gh and glab.
+PR_REPO="${SANDBOX}/review-pr-repo"
+mkdir -p "$PR_REPO"
+git -C "$PR_REPO" init -q -b feat
+git -C "$PR_REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$PR_REPO" remote add origin git@github.com:o/r.git
+PR_GH="${SANDBOX}/bin/fake-review-gh"
+cat >"$PR_GH" <<'FAKE'
+#!/bin/sh
+echo "$*" >>"$PR_LOG"
+case "$1 $2" in
+  "pr list") echo '[{"number":7,"state":"CLOSED","updatedAt":"2026-11-01"},{"number":9,"state":"OPEN","updatedAt":"2026-10-01"}]' ;;
+  "pr view") cat <<'JSON'
+{"number":9,"url":"https://github.com/o/r/pull/9","title":"Add it","body":"Why: **because**","state":"OPEN","isDraft":false,
+ "author":{"login":"alice"},"reviewDecision":"CHANGES_REQUESTED","mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE",
+ "statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""},
+   {"__typename":"StatusContext","state":"SUCCESS"}],
+ "headRefOid":"abc123","headRefName":"feat","baseRefName":"main",
+ "latestReviews":[{"author":{"login":"bob"},"state":"APPROVED"},{"author":{"login":"carol"},"state":"CHANGES_REQUESTED"}]}
+JSON
+  ;;
+  "api user") echo '{"login":"me"}' ;;
+  "api graphql") cat <<'JSON'
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+ {"id":"T1","isResolved":false,"isOutdated":false,"path":"src/a.rs","line":12,"startLine":10,"originalLine":12,"originalStartLine":10,"diffSide":"RIGHT",
+  "comments":{"nodes":[{"author":{"login":"bob"},"body":"Rename this","createdAt":"2026-11-05T10:00:00Z","url":"https://github.com/o/r/pull/9#r1","commit":{"oid":"abc123"},"originalCommit":{"oid":"abc000"}},
+                       {"author":{"login":"alice"},"body":"Why?","createdAt":"2026-11-05T11:00:00Z","url":"u2","commit":{"oid":"abc123"},"originalCommit":{"oid":"abc000"}}]}},
+ {"id":"T2","isResolved":true,"isOutdated":true,"path":"src/b.rs","line":null,"startLine":null,"originalLine":3,"originalStartLine":null,"diffSide":"LEFT",
+  "comments":{"nodes":[{"author":null,"body":"old","createdAt":"2026-11-04T10:00:00Z","url":"u3","commit":null,"originalCommit":{"oid":"def456"}}]}}
+]}}}}}
+JSON
+  ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+FAKE
+chmod +x "$PR_GH"
+export PR_LOG="${SANDBOX}/review-pr.log"
+pr_out="$(AI_TODO_GH_BIN="$PR_GH" "$REVIEW" pr "$PR_REPO")" || fail "review pr failed"
+python3 - "$pr_out" <<'PY' || fail "review pr: $pr_out"
+import json, sys
+d = json.loads(sys.argv[1])
+assert (d["provider"], d["access"], d["viewer"], d["branch"]) == ("github", True, "me", "feat"), d
+p = d["pr"]
+assert (p["number"], p["state"], p["author"], p["review_decision"], p["mergeable"], p["head_sha"]) == (9, "open", "alice", "changes_requested", "blocked", "abc123"), p
+assert p["approvals"] == ["bob"] and p["body"] == "Why: **because**", p
+assert p["checks"] == {"state": "pending", "passed": 2, "failed": 0, "pending": 1, "total": 3}, p["checks"]
+PY
+grep -q "pr view 9 " "$PR_LOG" || fail "the open PR wasn't the one viewed: $(cat "$PR_LOG")"
+th_out="$(AI_TODO_GH_BIN="$PR_GH" "$REVIEW" threads "$PR_REPO")" || fail "review threads failed"
+python3 - "$th_out" <<'PY' || fail "review threads: $th_out"
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["access"] and d["pr"] == 9, d
+a, b = d["threads"]
+assert (a["id"], a["path"], a["side"], a["line_start"], a["line_end"], a["commit"], a["resolved"]) == ("T1", "src/a.rs", "new", 10, 12, "abc123", False), a
+assert [c["author"] for c in a["comments"]] == ["bob", "alice"], a
+assert (b["side"], b["line_start"], b["line_end"], b["commit"], b["resolved"], b["outdated"], b["comments"][0]["author"]) == ("old", 3, 3, "def456", True, True, "ghost"), b
+PY
+# GitLab, by origin's URL.
+git -C "$PR_REPO" remote set-url origin https://gitlab.example.com/g/r.git
+git -C "$PR_REPO" config ai-remote.forge gitlab
+PR_GLAB="${SANDBOX}/bin/fake-review-glab"
+cat >"$PR_GLAB" <<'FAKE'
+#!/bin/sh
+case "$1 $2" in
+  "mr list") echo '[{"iid":4,"state":"opened","source_branch":"feat","updated_at":"2026-11-05"}]' ;;
+  "mr view") echo '{"iid":4,"project_id":77,"web_url":"https://gitlab.example.com/g/r/-/merge_requests/4","title":"T","description":"D","state":"opened","draft":true,
+    "author":{"username":"dan"},"detailed_merge_status":"ci_still_running","sha":"fff111","source_branch":"feat","target_branch":"main","head_pipeline":{"status":"failed"}}' ;;
+  "api projects/77/merge_requests/4/approvals") echo '{"approved_by":[{"user":{"username":"erin"}}]}' ;;
+  "api user") echo '{"username":"me2"}' ;;
+  "api projects/77/merge_requests/4/discussions?per_page=100") cat <<'JSON'
+[{"id":"D1","notes":[{"id":5,"system":false,"resolvable":true,"resolved":false,"author":{"username":"erin"},"body":"Fix","created_at":"2026-11-05T10:00:00Z",
+   "position":{"new_path":"x.py","old_path":"x.py","new_line":8,"old_line":null,"head_sha":"fff111","base_sha":"eee000","line_range":{"start":{"new_line":6}}}}]},
+ {"id":"D2","notes":[{"id":6,"system":false,"author":{"username":"erin"},"body":"General remark"}]},
+ {"id":"D3","notes":[{"id":7,"system":false,"resolvable":true,"resolved":true,"author":{"username":"erin"},"body":"Gone","created_at":"x",
+   "position":{"new_path":"y.py","old_path":"y.py","new_line":null,"old_line":4,"head_sha":"fff111","base_sha":"eee000"}}]}]
+JSON
+  ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+FAKE
+chmod +x "$PR_GLAB"
+gl_out="$(AI_TODO_GLAB_BIN="$PR_GLAB" "$REVIEW" pr "$PR_REPO")"
+python3 - "$gl_out" <<'PY' || fail "gitlab pr: $gl_out"
+import json, sys
+d = json.loads(sys.argv[1])
+p = d["pr"]
+assert (d["provider"], d["viewer"], p["number"], p["state"], p["draft"], p["author"], p["approvals"]) == ("gitlab", "me2", 4, "open", True, "dan", ["erin"]), d
+assert p["checks"]["state"] == "failing" and p["mergeable"] == "ci_still_running" and p["head_sha"] == "fff111", p
+PY
+gl_th="$(AI_TODO_GLAB_BIN="$PR_GLAB" "$REVIEW" threads "$PR_REPO")"
+python3 - "$gl_th" <<'PY' || fail "gitlab threads: $gl_th"
+import json, sys
+d = json.loads(sys.argv[1])
+a, b = d["threads"]
+assert (a["id"], a["path"], a["side"], a["line_start"], a["line_end"], a["commit"], a["resolved"]) == ("D1", "x.py", "new", 6, 8, "fff111", False), a
+assert (b["side"], b["line_end"], b["commit"], b["resolved"]) == ("old", 4, "eee000", True), b
+PY
+# A missing or logged-out CLI: no access, said plainly; local review isn't affected.
+na_out="$(AI_TODO_GLAB_BIN="${SANDBOX}/missing-glab" "$REVIEW" pr "$PR_REPO")" || fail "pr without glab failed"
+[[ "$na_out" == *'"access": false, "error": "missing-glab isn'"'"'t installed"'* ]] || fail "no glab: $na_out"
+printf '#!/bin/sh\necho "glab: 401 Unauthorized; run glab auth login" >&2\nexit 1\n' >"${SANDBOX}/bin/fake-glab-out" && chmod +x "${SANDBOX}/bin/fake-glab-out"
+lo_out="$(AI_TODO_GLAB_BIN="${SANDBOX}/bin/fake-glab-out" "$REVIEW" threads "$PR_REPO")"
+[[ "$lo_out" == *'"access": false, "error": "fake-glab-out isn'"'"'t logged in"'* ]] || fail "logged out: $lo_out"
+git -C "$PR_REPO" config --unset ai-remote.forge
+git -C "$PR_REPO" remote set-url origin https://example.com/r.git
+[[ "$("$REVIEW" pr "$PR_REPO")" == *'"provider": null, "access": false, "error": "origin is neither GitHub nor GitLab"'* ]] || fail "other forge"
+unset PR_LOG
+pass "review_pr_and_threads_read_github_and_gitlab"
+
 # --- tmux.conf ----------------------------------------------------------------
 
 tmux -L "${SOCK}-conf" -f /dev/null new-session -d -s conftest

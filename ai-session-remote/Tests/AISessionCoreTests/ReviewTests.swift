@@ -402,4 +402,50 @@ struct ReviewTests {
         let cut = ReviewSync.item(long, conversationID: "c", batch: nil)
         #expect(cut.quote.count == 200 && cut.body.count == 20_000)
     }
+
+    // MARK: PR / MR threads
+
+    @Test func prOutputDecodes() throws {
+        let json = #"{"provider": "github", "access": true, "error": null, "viewer": "me", "branch": "feat", "pr": {"number": 9, "url": "https://x/pull/9", "title": "T", "body": "B", "state": "open", "draft": false, "author": "alice", "review_decision": "approved", "approvals": ["bob"], "mergeable": "clean", "checks": {"state": "passing", "passed": 2, "failed": 0, "pending": 0, "total": 2}, "head_sha": "abc", "head_ref": "feat", "base_ref": "main"}}"#
+        let info = try JSONDecoder().decode(ReviewPullRequestInfo.self, from: Data(json.utf8))
+        #expect(info.pr?.reviewDecision == "approved" && info.pr?.headSHA == "abc" && info.pr?.checks.total == 2)
+        #expect(info.pr?.name(provider: "github") == "PR #9" && info.pr?.name(provider: "gitlab") == "MR !9")
+        let none = try JSONDecoder().decode(ReviewPullRequestInfo.self,
+                                            from: Data(#"{"provider": "gitlab", "access": false, "error": "glab isn't logged in", "viewer": null, "branch": "b", "pr": null}"#.utf8))
+        #expect(!none.access && none.pr == nil)
+    }
+
+    @Test func threadsBecomeItemsOnceAndFollowTheirThread() {
+        typealias Thread = ReviewThreadsResult.Thread
+        let open = Thread(id: "T1", path: "a.rs", lineStart: 10, lineEnd: 12, commit: "c1",
+                          comments: [.init(author: "bob", body: "Rename this "), .init(author: "alice", body: "Why?")])
+        let resolved = Thread(id: "T2", path: "b.rs", side: .old, lineStart: 3, lineEnd: 3, commit: nil, resolved: true,
+                              comments: [.init(author: "bob", body: "old")])
+        var comments: [ReviewComment] = []
+        let first = ReviewThreadsResult(provider: "github", access: true, pr: 9, threads: [open, resolved])
+        #expect(ReviewThreadItems.apply(first, provider: "github", fallbackRevision: "head", to: &comments) == 1)
+        let item = comments[0]
+        #expect(item.author == "pr:bob" && item.prAuthor == "bob" && item.isFinding && item.reviewer == nil)
+        #expect(item.state == .new && item.startLine == 10 && item.endLine == 12 && item.revision == "c1")
+        #expect(item.body == "bob: Rename this\n\nalice: Why?" && item.title == "GitHub thread by bob" && item.fingerprint == "thread:T1")
+        // Again: nothing new. A reply updates it; resolving dismisses it while it's untouched.
+        #expect(ReviewThreadItems.apply(first, provider: "github", fallbackRevision: "head", to: &comments) == 0)
+        var replied = open
+        replied.comments.append(.init(author: "bob", body: "Because."))
+        #expect(ReviewThreadItems.apply(.init(provider: "github", access: true, pr: 9, threads: [replied]),
+                                        provider: "github", fallbackRevision: "head", to: &comments) == 1)
+        #expect(comments[0].body.hasSuffix("bob: Because."))
+        var done = replied
+        done.resolved = true
+        _ = ReviewThreadItems.apply(.init(provider: "github", access: true, pr: 9, threads: [done]),
+                                    provider: "github", fallbackRevision: "head", to: &comments)
+        #expect(comments[0].state == .dismissed)
+        // One the user already sent stays sent.
+        comments[0].state = .sent
+        _ = ReviewThreadItems.apply(.init(provider: "github", access: true, pr: 9, threads: [done]),
+                                    provider: "github", fallbackRevision: "head", to: &comments)
+        #expect(comments[0].state == .sent)
+        #expect(TmuxCommandBuilder.reviewThreads(cwd: "/w", ref: "b", number: 9).hasSuffix("threads '/w' --ref 'b' --number 9"))
+        #expect(TmuxCommandBuilder.reviewPullRequest(cwd: "/w").hasSuffix("pr '/w'"))
+    }
 }
