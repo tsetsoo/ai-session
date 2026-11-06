@@ -17,7 +17,10 @@
 #      branch scheduled/<job>-<YYYYMMDD>-<run id first 8>, from origin/HEAD (else HEAD). The
 #      live checkout is never switched or changed. A folder that is a subfolder of its repo
 #      (a monorepo component) opens at that subfolder inside the worktree. A folder that is
-#      not a git repository is used as it is.
+#      not a git repository is used as it is. The repo's gitignored local files named in
+#      .worktreeinclude (copied) and .worktreelink (symlinked) are brought in
+#      (ai_todo_workspace.py). Each tick removes worktrees older than 3 days that are clean and
+#      have no commits, or whose work is already merged into origin/HEAD.
 #   4. POST /api/runs/<id>/start {cwd, is_git}: the hub creates the scheduled todo and its
 #      conversation and answers the tmux name, session id and first prompt.
 #   5. ai-todo-open --detached --auto-approve --prompt-file <file> <tmux> <cwd> <id|-> <tool>
@@ -77,12 +80,15 @@ LIMITS_BIN = os.environ.get("AI_TODO_LIMITS_BIN") or os.path.join(LIB_DIR, "ai-t
 WATCHERS = os.environ.get("AI_TODO_WATCHERS_DIR") or os.path.join(AI_DIR, "watchers")
 JOBS = os.environ.get("AI_TODO_JOBS_DIR") or os.path.join(AI_DIR, "jobs")
 UPDATES_BIN = os.environ.get("AI_TODO_UPDATES_BIN") or os.path.join(LIB_DIR, "ai-todo-updates")
+sys.path.insert(0, LIB_DIR)
+import ai_todo_workspace as workspace  # noqa: E402
+
 UPDATES_EVERY = 300
 WATCH_TIMEOUT = 60
 LIMITS_TIMEOUT = float(os.environ.get("AI_TODO_LIMITS_TIMEOUT") or 20)
 MAX_STARTS = 3
 OPEN_TIMEOUT = float(os.environ.get("AI_TODO_OPEN_TIMEOUT") or 180)
-# A worktree older than this with no changes and no commits of its own is removed.
+# A worktree older than this that is clean and has no unmerged commits is removed.
 CLEANUP_AFTER = 3 * 86400
 NO_READING_CAP = 3
 PROJECTS_TTL = 600
@@ -279,15 +285,10 @@ def wait_reason(due, settings, started_now):
     return None, False
 
 
-# --- Worktrees ----------------------------------------------------------------------
+# --- Worktrees (ai_todo_workspace.py) ----------------------------------------------
 
 def git(folder, *args, timeout=60):
-    try:
-        p = subprocess.run(["git", "-C", folder] + list(args), capture_output=True, text=True,
-                           timeout=timeout, stdin=subprocess.DEVNULL)
-        return p.returncode, p.stdout.strip(), p.stderr.strip()
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return 1, "", type(e).__name__
+    return workspace.git(folder, *args, timeout=timeout)
 
 
 def slug(name):
@@ -300,23 +301,15 @@ def make_worktree(folder, project_id, run_id, job_name):
     the repo root. Raises RuntimeError when a git worktree can't be made."""
     if git(folder, "rev-parse", "--show-toplevel")[0] != 0:
         return folder, folder, False, None
-    code, prefix, _ = git(folder, "rev-parse", "--show-prefix")
-    prefix = prefix.strip().strip("/") if code == 0 else ""
-    if git(folder, "remote", "get-url", "origin")[0] == 0:
-        git(folder, "fetch", "--quiet", "origin", timeout=30)
-    base = "origin/HEAD" if git(folder, "rev-parse", "--verify", "--quiet", "origin/HEAD")[0] == 0 else "HEAD"
     branch = "scheduled/%s-%s-%s" % (slug(job_name), time.strftime("%Y%m%d"), run_id[:8])
     path = os.path.join(TREES, project_id, run_id)
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    base_sha = git(folder, "rev-parse", base)[1]
-    code, _, err = git(folder, "worktree", "add", "-b", branch, path, base)
-    if code != 0:
-        raise RuntimeError("git worktree add failed: %s" % err[:200])
-    registry = load_json(registry_path(), {}) or {}
-    registry[run_id] = {"path": path, "folder": folder, "branch": branch, "base": base_sha, "created": now()}
-    save_json(registry_path(), registry)
-    # A subfolder the base commit doesn't have (untracked in the live checkout) opens at the root.
-    cwd = os.path.join(path, prefix) if prefix and os.path.isdir(os.path.join(path, prefix)) else path
+    cwd, entry = workspace.create(folder, path, branch)
+    registry = workspace.load_registry(registry_path())
+    registry[run_id] = entry
+    workspace.save_registry(registry_path(), registry)
+    if entry.get("copied") or entry.get("linked"):
+        log("local_files", run=run_id, copied=len(entry.get("copied") or {}), linked=len(entry.get("linked") or []),
+            skipped=len(entry.get("skipped") or []))
     return path, cwd, True, branch
 
 
@@ -325,33 +318,13 @@ def registry_path():
 
 
 def remove_worktree(folder, path, branch):
-    git(folder, "worktree", "remove", "--force", path)
-    if branch:
-        git(folder, "branch", "-D", branch)
+    workspace.remove({"folder": folder, "path": path, "branch": branch})
 
 
 def cleanup_worktrees():
-    """Remove scheduled worktrees older than 3 days that hold nothing: no uncommitted changes
-    and no commits beyond the base they started from. Any with work in them are kept."""
-    registry = load_json(registry_path(), {}) or {}
-    changed = False
-    for run_id, entry in list(registry.items()):
-        if now() - float(entry.get("created") or now()) < CLEANUP_AFTER:
-            continue
-        path, folder = entry.get("path") or "", entry.get("folder") or ""
-        if not os.path.isdir(path):
-            registry.pop(run_id)
-            changed = True
-            continue
-        dirty = git(path, "status", "--porcelain")
-        ahead = git(path, "rev-list", "--count", "%s..HEAD" % entry.get("base")) if entry.get("base") else (1, "", "")
-        if dirty[0] == 0 and not dirty[1] and ahead[0] == 0 and ahead[1] == "0":
-            remove_worktree(folder, path, entry.get("branch"))
-            registry.pop(run_id)
-            changed = True
-            log("cleaned", run=run_id)
-    if changed:
-        save_json(registry_path(), registry)
+    """Remove scheduled worktrees older than 3 days that hold nothing, or whose work is already
+    merged into origin/HEAD. Any with uncommitted changes or unmerged commits are kept."""
+    workspace.sweep(registry_path(), CLEANUP_AFTER, log)
 
 
 # --- Watchers -----------------------------------------------------------------------

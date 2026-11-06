@@ -21,6 +21,8 @@
 #   ~/Library/LaunchAgents/com.ai-remote.todo-memory.plist  `ai-todo-memory nightly` at 03:30 (macOS)
 #   ~/Library/LaunchAgents/com.ai-remote.todo-runner.plist  `ai-todo-runner tick` every 60 s (macOS)
 #   ~/.ai-remote/worktrees/          scheduled conversations' git worktrees (mode 700; kept on uninstall)
+#   ~/.ai-remote/bin/ai-todo-workspace  lists those worktrees, re-syncs their copied local files
+#                                    (+ ai_todo_workspace.py, also used by ai-todo-runner)
 #
 # Usage:
 #   install.sh [--hub-url URL] [--token TOKEN] [--computer-id ID] [--chain-codex-notify]
@@ -49,8 +51,8 @@ BIN_DIR="${AI_DIR}/bin"
 HUB_CONF="${AI_DIR}/todo-hub.conf"
 TMUX_SNIPPET="${AI_DIR}/tmux.conf"
 # Every helper copied to BIN_DIR, for install and uninstall alike. Programs are 755, modules 644.
-HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status ai-todo-runner ai-todo-idea ai-todo-watch ai-todo-remind ai-todo-updates)
-MODULES=(ai_todo_redact.py ai_todo_status.py ai_todo_updates.py)
+HELPERS=(ai-todo-open ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status ai-todo-runner ai-todo-idea ai-todo-watch ai-todo-remind ai-todo-updates ai-todo-workspace)
+MODULES=(ai_todo_redact.py ai_todo_status.py ai_todo_updates.py ai_todo_workspace.py)
 TMUX_CONF="${HOME}/.tmux.conf"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
 SETTINGS="${CLAUDE_DIR}/settings.json"

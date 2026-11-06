@@ -3142,6 +3142,85 @@ runner tick || fail "cleanup tick failed"
 [[ -d "${R_TREES}/proj-app/r-work0001" ]] || fail "a worktree with scheduled work was removed"
 pass "runner_cleans_old_unused_worktrees (keeps ones with commits or changes)"
 
+# Local files: .worktreeinclude copies, .worktreelink symlinks, only paths git ignores.
+WSP="${SCRIPT_DIR}/ai-todo-workspace"
+R_LOCAL="${HOME}/work/local"
+mkdir -p "${R_LOCAL}/sub" && git_q -C "$R_LOCAL" init -q && git_q -C "$R_LOCAL" commit -q --allow-empty -m init
+printf '.env\n/CLAUDE.md\nlocal/\nsecret.txt\n.worktreeinclude\n.worktreelink\n' >>"${R_LOCAL}/.git/info/exclude"
+printf '.env\nsub/.env\nsecret-not-listed\ndraft.txt\n' >"${R_LOCAL}/.worktreeinclude"
+printf '/CLAUDE.md\nlocal/\n' >"${R_LOCAL}/.worktreelink"
+echo "TOKEN=1" >"${R_LOCAL}/.env"; echo "SUB=1" >"${R_LOCAL}/sub/.env"; echo "s" >"${R_LOCAL}/secret.txt"
+echo "untracked, not ignored" >"${R_LOCAL}/draft.txt"; echo "# local rules" >"${R_LOCAL}/CLAUDE.md"
+mkdir -p "${R_LOCAL}/local/notes" && echo n >"${R_LOCAL}/local/notes/a.md"
+printf 'sub/.env\n' >>"${R_LOCAL}/.git/info/exclude"
+hub_edit "s['projects'].append(dict(id='proj-local', name='local', computer=dict(id='comp-1', name='test-mac'), folder='~/work/local', repo_url=None, digest_enabled=True))"
+rm -f "${R_STATE}/projects.json"
+runs_reset
+due_run r-local001 proj-local '{"mode":"always"}'
+runner tick || fail "tick failed"
+L_WT="${R_TREES}/proj-local/r-local001"
+[[ -f "${L_WT}/.env" && ! -L "${L_WT}/.env" && "$(cat "${L_WT}/.env")" == "TOKEN=1" ]] || fail ".env was not copied"
+[[ -f "${L_WT}/sub/.env" && ! -L "${L_WT}/sub/.env" ]] || fail "sub/.env was not copied"
+[[ -L "${L_WT}/CLAUDE.md" && "$(readlink "${L_WT}/CLAUDE.md")" == "${R_LOCAL}/CLAUDE.md" ]] || fail "CLAUDE.md was not symlinked"
+# local/ is ignored as a directory, so it is a real directory of symlinks (a symlink would be untracked).
+[[ -d "${L_WT}/local" && ! -L "${L_WT}/local" && -L "${L_WT}/local/notes" && -f "${L_WT}/local/notes/a.md" ]] || fail "local/ was not linked entry by entry"
+[[ ! -e "${L_WT}/secret.txt" ]] || fail "an ignored file not listed was brought over"
+[[ ! -e "${L_WT}/draft.txt" ]] || fail "an untracked file git doesn't ignore was copied"
+[[ -z "$(git -C "$L_WT" status --porcelain)" ]] || fail "local files made the worktree dirty: $(git -C "$L_WT" status --porcelain)"
+grep -q "local_files run=r-local001 copied=2 linked=2" "${R_STATE}/runner.log" || fail "local files not logged"
+pass "runner_brings_local_files (include copies, link symlinks, a dir/ pattern links its entries, only ignored paths, worktree stays clean)"
+
+echo "TOKEN=2" >"${R_LOCAL}/.env"
+out=$("$WSP" sync "${L_WT}/sub") || fail "sync failed"
+[[ "$out" == "updated .env" && "$(cat "${L_WT}/.env")" == "TOKEN=2" ]] || fail "an untouched copy was not refreshed: $out"
+echo "TOKEN=mine" >"${L_WT}/.env"; echo "TOKEN=3" >"${R_LOCAL}/.env"
+set +e; out=$("$WSP" sync "$L_WT"); status=$?; set -e
+[[ $status -eq 3 && "$out" == "differs .env"* && "$(cat "${L_WT}/.env")" == "TOKEN=mine" ]] || fail "an edited copy was overwritten or not reported: $status $out"
+set +e; "$WSP" sync "$R_LOCAL" 2>/dev/null; status=$?; set -e
+[[ $status -eq 65 ]] || fail "sync outside a worktree should exit 65: $status"
+"$WSP" list --json | python3 -c '
+import json, sys
+r = [x for x in json.load(sys.stdin) if x["id"] == "r-local001"][0]
+assert r["state"] == "clean" and r["copied"] == [".env", "sub/.env"] and r["linked"] == ["CLAUDE.md", "local"], r' || fail "list --json wrong"
+pass "workspace_sync_refreshes_untouched_copies (keeps and reports edited ones; list shows state)"
+
+# Merged work is cleaned; unmerged commits are kept.
+R_BARE="${SANDBOX}/merged-origin.git"
+R_MERGED="${HOME}/work/merged"
+git_q init -q --bare "$R_BARE"
+git_q clone -q "$R_BARE" "${SANDBOX}/merged-seed" && git_q -C "${SANDBOX}/merged-seed" commit -q --allow-empty -m init && git_q -C "${SANDBOX}/merged-seed" push -q origin HEAD:main
+git_q -C "$R_BARE" symbolic-ref HEAD refs/heads/main
+git_q clone -q "$R_BARE" "$R_MERGED"
+hub_edit "s['projects'].append(dict(id='proj-merged', name='merged', computer=dict(id='comp-1', name='test-mac'), folder='~/work/merged', repo_url=None, digest_enabled=True))"
+rm -f "${R_STATE}/projects.json"
+runs_reset
+due_run r-mrg00001 proj-merged '{"mode":"always"}'
+due_run r-unm00001 proj-merged '{"mode":"always"}'
+hub_edit "s['due_runs'][1]['job']['id'] = 'job-other3'"
+runner tick || fail "tick failed"
+for r in r-mrg00001 r-unm00001; do
+  echo "$r" >"${R_TREES}/proj-merged/${r}/a.txt"; git_q -C "${R_TREES}/proj-merged/${r}" add a.txt
+  git_q -C "${R_TREES}/proj-merged/${r}" commit -q -m "work 1"; echo more >>"${R_TREES}/proj-merged/${r}/a.txt"
+  git_q -C "${R_TREES}/proj-merged/${r}" commit -q -am "work 2"
+done
+# Squash-merge r-mrg00001's work into main from another clone.
+printf 'r-mrg00001\nmore\n' >"${SANDBOX}/merged-seed/a.txt"
+git_q -C "${SANDBOX}/merged-seed" add a.txt && git_q -C "${SANDBOX}/merged-seed" commit -q -m "squashed" && git_q -C "${SANDBOX}/merged-seed" push -q origin HEAD:main
+python3 - "${R_STATE}/worktrees.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+for run in ("r-mrg00001", "r-unm00001"):
+    d[run]["created"] -= 4 * 86400
+json.dump(d, open(p, "w"))
+PY
+runs_reset
+runner tick || fail "cleanup tick failed"
+[[ ! -e "${R_TREES}/proj-merged/r-mrg00001" ]] && ! git -C "$R_MERGED" branch --list 'scheduled/*' | grep -q r-mrg000 || fail "a squash-merged worktree was kept"
+[[ -d "${R_TREES}/proj-merged/r-unm00001" ]] || fail "a worktree with unmerged commits was removed"
+grep -q "cleaned run=r-mrg00001 reason=merged" "${R_STATE}/runner.log" || fail "merged cleanup not logged"
+pass "runner_cleans_merged_worktrees (squash merge counts; unmerged commits kept)"
+
 runs_reset
 due_run r-codex001 proj-app '{"mode":"always"}' 0 codex
 FAKE_OPEN_ID=01a1cccc-0000-7000-8000-00000000c0de runner tick || fail "tick failed"
