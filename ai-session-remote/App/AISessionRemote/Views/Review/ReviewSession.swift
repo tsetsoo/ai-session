@@ -71,13 +71,17 @@ final class ReviewSession {
         return conversation.status == .idle && conversation.statusRevision > sentAt
     }
 
+    /// The hub store's offline state (the window keeps it current): reviews are read-only
+    /// while it is set.
+    var hubOffline = false
+
     /// Reviews are read-only while the hub can't be reached: what changes here couldn't be
     /// kept where the phone and other Macs see it.
     static let offlineMessage = "The hub can't be reached, so reviews are read-only until it's back."
 
     /// Why Send is off, or nil.
     var sendBlocker: String? {
-        if store.isOffline { return Self.offlineMessage }
+        if hubOffline { return Self.offlineMessage }
         if drafts.isEmpty { return "Write a comment first." }
         if conversation.tmuxName.isEmpty { return "This conversation has no terminal session." }
         if conversation.status == .waiting { return "The agent is waiting on a question. Answer it first." }
@@ -323,7 +327,7 @@ final class ReviewSession {
 
     /// False, with the reason shown, while the hub is offline.
     private func editable() -> Bool {
-        guard store.isOffline else { return true }
+        guard hubOffline else { return true }
         failure = Failure(errorDescription: Self.offlineMessage)
         return false
     }
@@ -341,7 +345,8 @@ final class ReviewSession {
         store.update(key) { record in
             guard let index = record.comments.firstIndex(where: { $0.id == id }),
                   record.comments[index].reviewer != nil,
-                  record.comments[index].state == (queued ? .new : .draft) else { return }
+                  queued ? [.new, .stale].contains(record.comments[index].state) : record.comments[index].state == .draft
+            else { return }
             record.comments[index].state = queued ? .draft : .new
         }
     }
@@ -390,9 +395,9 @@ final class ReviewSession {
         record.comments.filter { comment in
             guard comment.reviewer != nil else { return false }
             switch filter {
-            case .new: return (comment.state == .new || comment.state == .draft) && !isStale(comment)
-            case .stale: return (comment.state == .new || comment.state == .draft) && isStale(comment)
-            case .sent: return comment.state == .sent
+            case .new: return comment.state.isOpen && comment.state != .stale && !isStale(comment)
+            case .stale: return comment.state == .stale || (comment.state.isOpen && isStale(comment))
+            case .sent: return comment.state.wasSent
             case .dismissed: return comment.state == .dismissed
             }
         }
@@ -414,7 +419,7 @@ final class ReviewSession {
     /// New-side lines of `file` that unsent findings are about, with the highest severity on each.
     func findingMarks(file: DiffFile) -> [Int: String] {
         var marks: [Int: String] = [:]
-        for comment in record.comments where comment.reviewer != nil && (comment.state == .new || comment.state == .draft) {
+        for comment in record.comments where comment.reviewer != nil && comment.state.isOpen {
             guard comment.side == .new, case let .moved(path, start?, end)? = anchors[comment.id], path == file.path else { continue }
             for line in start...max(start, end ?? start) {
                 let severity = comment.severity ?? "medium"
@@ -435,7 +440,7 @@ final class ReviewSession {
 
     /// Why Review is off, or nil.
     var reviewBlocker: String? {
-        if store.isOffline { return Self.offlineMessage }
+        if hubOffline { return Self.offlineMessage }
         if activeRun != nil { return "A review is running." }
         guard let result else { return "Load the changes first." }
         if diff.files.isEmpty || result.from == result.to { return "There are no changes to review." }

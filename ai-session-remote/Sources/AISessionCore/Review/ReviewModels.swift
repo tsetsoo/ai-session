@@ -155,6 +155,14 @@ public struct ReviewComment: Codable, Equatable, Identifiable, Sendable {
         /// A reviewer's finding nobody has acted on: not in the next batch until Send picks it.
         case new
         case draft, sent, dismissed
+        /// Hub states nothing here sets yet; kept as they are. `addressed` is a sent item the
+        /// agent dealt with; `stale` an unsent one whose lines are gone.
+        case addressed, stale
+
+        /// Not sent or dismissed: still for the user to act on.
+        public var isOpen: Bool { self == .new || self == .draft || self == .stale }
+        /// Went to the agent.
+        public var wasSent: Bool { self == .sent || self == .addressed }
     }
 
     public var id: UUID

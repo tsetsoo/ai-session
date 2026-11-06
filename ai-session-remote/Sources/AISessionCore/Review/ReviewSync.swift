@@ -27,13 +27,21 @@ public enum ReviewSync {
 
     // MARK: Rows
 
+    /// The hub's limits (reviews.rs): longer text is cut here rather than refused there.
+    public static let maxQuoteLines = 200
+    public static let maxBody = 20_000
+    public static let maxShort = 500
+
     public static func item(_ comment: ReviewComment, conversationID: String, batch: ReviewBatch?) -> HubReviewItem {
-        HubReviewItem(
+        func short(_ text: String?) -> String? { text.map { String($0.prefix(maxShort)) } }
+        return HubReviewItem(
             id: comment.id.uuidString, reviewId: comment.runID?.uuidString, conversationId: conversationID,
-            author: comment.author, fingerprint: comment.fingerprint, severity: comment.severity,
-            category: comment.category, title: comment.title, path: comment.path, side: comment.side.rawValue,
-            lineStart: comment.startLine, lineEnd: comment.endLine, revision: comment.revision, quote: comment.quote,
-            body: comment.body, state: comment.state.rawValue, sentAt: comment.sentAt.map(string(from:)),
+            author: String(comment.author.prefix(maxShort)), fingerprint: short(comment.fingerprint),
+            severity: short(comment.severity), category: short(comment.category), title: short(comment.title),
+            path: String(comment.path.prefix(maxShort)), side: comment.side.rawValue,
+            lineStart: comment.startLine, lineEnd: comment.endLine, revision: String(comment.revision.prefix(maxShort)),
+            quote: Array(comment.quote.prefix(maxQuoteLines)),
+            body: String(comment.body.prefix(maxBody)), state: comment.state.rawValue, sentAt: comment.sentAt.map(string(from:)),
             sentInTurn: batch?.statusRevision, batchId: comment.batchID?.uuidString, sentRevision: batch?.revision,
             createdAt: string(from: comment.createdAt)
         )
@@ -42,12 +50,8 @@ public enum ReviewSync {
     /// Nil for a row this version can't read (a bad id).
     public static func comment(_ item: HubReviewItem) -> ReviewComment? {
         guard let id = UUID(uuidString: item.id) else { return nil }
-        let state: ReviewComment.State = switch item.state {
-        case "new", "stale": .new
-        case "draft": .draft
-        case "dismissed": .dismissed
-        default: .sent  // sent, addressed
-        }
+        // A state of a newer hub: open if it wasn't sent, as far as this version can tell.
+        let state = ReviewComment.State(rawValue: item.state) ?? (item.sentAt == nil ? .new : .sent)
         return ReviewComment(
             id: id, author: item.author, path: item.path, side: DiffSide(rawValue: item.side) ?? .new,
             startLine: item.lineStart, endLine: item.lineEnd, revision: item.revision, quote: item.quote,
@@ -181,10 +185,18 @@ public enum ReviewSync {
         merged.runs.removeAll { pending.runs.contains($0.id) }
         merged.runs += pending.runs.compactMap { localRuns[$0] }
         merged.runs.sort { $0.startedAt < $1.startedAt }
-        // Batches of pending items come from here; the hub may not have them yet.
-        let hubBatchIDs = Set(merged.batches.map(\.id))
-        for batch in local.batches where !hubBatchIDs.contains(batch.id) && batch.commentIDs.contains(where: pending.items.contains) {
-            merged.batches.append(batch)
+        // Batches of pending items come from here: the hub may not have them, or not all
+        // their items yet.
+        for batch in local.batches {
+            let pendingMembers = batch.commentIDs.filter(pending.items.contains)
+            guard !pendingMembers.isEmpty else { continue }
+            if let index = merged.batches.firstIndex(where: { $0.id == batch.id }) {
+                for id in pendingMembers where !merged.batches[index].commentIDs.contains(id) {
+                    merged.batches[index].commentIDs.append(id)
+                }
+            } else {
+                merged.batches.append(batch)
+            }
         }
         merged.batches.sort { $0.sentAt < $1.sentAt }
         return merged

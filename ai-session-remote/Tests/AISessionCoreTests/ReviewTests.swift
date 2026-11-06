@@ -380,4 +380,26 @@ struct ReviewTests {
         #expect(ReviewSummary(conversationId: "c", open: 0, reviewing: true, lastReviewedAt: at).label(now: now) == "reviewing…")
         #expect(ReviewSummary(conversationId: "c", open: 0, reviewing: false, lastReviewedAt: nil).label(now: now) == nil)
     }
+
+    @Test func aPendingItemKeepsItsBatchWhenTheHubHasThatBatchWithoutIt() {
+        let one = ReviewComment(path: "a", startLine: 1, endLine: nil, revision: "r", quote: [], body: "1", state: .sent)
+        let two = ReviewComment(path: "b", startLine: 1, endLine: nil, revision: "r", quote: [], body: "2", state: .sent)
+        let batch = ReviewBatch(commentIDs: [one.id, two.id], revision: "r9", statusRevision: 3)
+        let hub = ReviewRecord(comments: [one], batches: [ReviewBatch(id: batch.id, commentIDs: [one.id], revision: "r9", statusRevision: 3)])
+        let local = ReviewRecord(comments: [one, two], batches: [batch])
+        let merged = ReviewSync.merge(hub: hub, local: local, pending: .init(items: [two.id]))
+        #expect(merged.batches.count == 1 && Set(merged.batches[0].commentIDs) == [one.id, two.id])
+        let row = ReviewSync.request(.init(items: [two.id]), in: merged, conversationID: "c").items[0]
+        #expect(row.sentInTurn == 3 && row.sentRevision == "r9")
+        // Hub states this version only keeps go back unchanged.
+        var addressed = ReviewSync.item(one, conversationID: "c", batch: nil)
+        addressed.state = "addressed"
+        #expect(ReviewSync.comment(addressed).map { ReviewSync.item($0, conversationID: "c", batch: nil).state } == "addressed")
+        // Over-long text is cut to the hub's limits.
+        var long = one
+        long.quote = Array(repeating: "x", count: 300)
+        long.body = String(repeating: "b", count: 30_000)
+        let cut = ReviewSync.item(long, conversationID: "c", batch: nil)
+        #expect(cut.quote.count == 200 && cut.body.count == 20_000)
+    }
 }

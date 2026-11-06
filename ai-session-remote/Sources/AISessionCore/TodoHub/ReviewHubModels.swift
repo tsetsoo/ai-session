@@ -157,15 +157,21 @@ public struct UpdateReviewItemRequest: Codable, Equatable, Sendable {
     public var sentInTurn: Int?
     public var batchId: String?
     public var sentRevision: String?
+    /// Applied only while the item is still in this state; else the hub answers 409.
+    public var expectedState: String?
+    /// Clears what a send set (sent at, batch, turn, revision): a send that didn't go out.
+    public var clearSent: Bool?
 
     public init(state: String? = nil, body: String? = nil, sentAt: String? = nil, sentInTurn: Int? = nil,
-                batchId: String? = nil, sentRevision: String? = nil) {
+                batchId: String? = nil, sentRevision: String? = nil, expectedState: String? = nil, clearSent: Bool? = nil) {
         self.state = state
         self.body = body
         self.sentAt = sentAt
         self.sentInTurn = sentInTurn
         self.batchId = batchId
         self.sentRevision = sentRevision
+        self.expectedState = expectedState
+        self.clearSent = clearSent
     }
 }
 

@@ -1146,7 +1146,7 @@ struct ConversationFrame: View {
             // Its Forget Host Key clears the identity this device trusted.
             HostEditorView(host: host)
         case let .review(conversation):
-            ReviewItemsSheet(conversation: conversation)
+            ReviewItemsSheet(opened: conversation, hub: store)
         }
     }
 

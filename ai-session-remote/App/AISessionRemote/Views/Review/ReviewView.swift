@@ -109,6 +109,11 @@ struct ReviewView: View {
         .onChange(of: model.store.reviewSummaries[conversation.listKey]) { _, _ in
             Task { await session.refreshFromHub() }
         }
+        .onChange(of: model.store.isOffline, initial: true) { _, offline in
+            session.hubOffline = offline
+            // Back: whatever waited goes now, and the hub's copy comes in.
+            if !offline { Task { await session.store.pushAll(); await session.refreshFromHub() } }
+        }
         .onChange(of: session.record.lastRun?.state) { _, state in
             if state == .done, (session.record.lastRun?.findingCount ?? 0) > 0 { showingFindings = true }
         }
@@ -164,6 +169,12 @@ struct ReviewView: View {
 
     private var sidebar: some View {
         List(selection: $selectedPath) {
+            if let problem = session.store.problem {
+                Section {
+                    Label(problem, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(DS.warning)
+                }
+            }
             if let notice = session.notice {
                 Section {
                     Label(notice, systemImage: "paperplane")
@@ -744,7 +755,7 @@ private struct CommentCard: View {
 
     private var border: Color {
         if comment.state == .draft { return DS.accent.opacity(0.5) }
-        if comment.state == .new { return FindingBadge.color(comment.severity ?? "medium").opacity(0.5) }
+        if comment.state == .new || comment.state == .stale { return FindingBadge.color(comment.severity ?? "medium").opacity(0.5) }
         return Color.secondary.opacity(0.2)
     }
 
@@ -755,8 +766,12 @@ private struct CommentCard: View {
             Text(comment.reviewer == nil ? "Draft" : "In next batch")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(DS.accent)
-        case .new:
+        case .new, .stale:
             EmptyView()
+        case .addressed:
+            Text("Addressed")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         case .sent:
             if let sentAt = comment.sentAt {
                 Text("Sent \(sentAt, style: .relative) ago")
@@ -892,7 +907,7 @@ private struct FindingActions: View {
 
     var body: some View {
         switch comment.state {
-        case .new:
+        case .new, .stale:
             Button("Send") { session.queueFinding(comment.id) }
                 .buttonStyle(.link)
                 .help("Add it to the comments that go to the agent with Send to Agent.")
@@ -906,7 +921,7 @@ private struct FindingActions: View {
                 .buttonStyle(.link)
             Button("Remove from Batch") { session.queueFinding(comment.id, false) }
                 .buttonStyle(.link)
-        case .sent:
+        case .sent, .addressed:
             Button("Hide") { session.dismissComment(comment.id) }
                 .buttonStyle(.link)
         case .dismissed:

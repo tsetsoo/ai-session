@@ -2,8 +2,10 @@
 //! comments and the reviewers' findings). The app runs reviews on the conversation's computer
 //! and keeps the results here, so every device sees them; the hub only stores them.
 //!
-//! Rows are written whole by id (`POST /api/reviews/batch`), as the Mac's review window keeps
-//! them; the phone changes an item's state with `PATCH /api/review-items/{id}` (Send, Dismiss).
+//! Rows are written whole by id (`POST /api/reviews/batch`), as the review window keeps them.
+//! Send and Dismiss on the phone go through `PATCH /api/review-items/{id}` with the state the
+//! phone saw (`expected_state`), so one device can't undo what another just did. A row
+//! stays with the conversation it was created for.
 //! A conversation id is `conversations.id`, kept as text: reviews outlive a conversation row
 //! that is replaced (relinking), and go only when deleted here.
 
@@ -270,8 +272,7 @@ fn upsert_item(conn: &Connection, item: &ReviewItem) -> rusqlite::Result<()> {
              line_start = excluded.line_start, line_end = excluded.line_end, revision = excluded.revision,
              quote = excluded.quote, body = excluded.body, state = excluded.state, sent_at = excluded.sent_at,
              sent_in_turn = excluded.sent_in_turn, batch_id = excluded.batch_id,
-             sent_revision = excluded.sent_revision, created_at = excluded.created_at,
-             updated_at = datetime('now')",
+             sent_revision = excluded.sent_revision, updated_at = datetime('now')",
         params![
             item.id, item.review_id, item.conversation_id, item.author, item.fingerprint, item.severity,
             item.category, item.title, item.path, item.side, item.line_start, item.line_end, item.revision, quote,
@@ -285,6 +286,7 @@ fn upsert_item(conn: &Connection, item: &ReviewItem) -> rusqlite::Result<()> {
 pub(crate) enum ReviewError {
     BadRequest(String),
     NotFound(&'static str),
+    Conflict(&'static str),
     Db(rusqlite::Error),
 }
 
@@ -298,6 +300,7 @@ fn respond(e: ReviewError) -> HttpResponse {
     match e {
         ReviewError::BadRequest(m) => bad_request(&m),
         ReviewError::NotFound(m) => not_found(m),
+        ReviewError::Conflict(m) => crate::conversations::conflict(m),
         ReviewError::Db(e) => server_error(e),
     }
 }
@@ -315,6 +318,20 @@ pub(crate) fn batch_db(conn: &Connection, req: &ReviewBatchRequest) -> Result<()
         validate_item(item).map_err(ReviewError::BadRequest)?;
     }
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    // A row stays with its conversation: the same id for another one is a mistake, not a move.
+    for (table, id, conversation) in req
+        .reviews
+        .iter()
+        .map(|r| ("reviews", &r.id, &r.conversation_id))
+        .chain(req.items.iter().map(|i| ("review_items", &i.id, &i.conversation_id)))
+    {
+        let owner: Option<String> = tx
+            .query_row(&format!("SELECT conversation_id FROM {table} WHERE id = ?1"), params![id], |r| r.get(0))
+            .optional()?;
+        if owner.is_some_and(|owner| &owner != conversation) {
+            return Err(ReviewError::BadRequest(format!("{id} belongs to another conversation")));
+        }
+    }
     for review in &req.reviews {
         upsert_review(&tx, review)?;
     }
@@ -343,6 +360,9 @@ fn load_review(conn: &Connection, id: &str) -> rusqlite::Result<Option<Review>> 
 
 pub(crate) fn update_item_db(conn: &Connection, id: &str, req: &UpdateReviewItemRequest) -> Result<ReviewItem, ReviewError> {
     let mut item = load_item(conn, id)?.ok_or(ReviewError::NotFound("Review item not found"))?;
+    if req.expected_state.as_ref().is_some_and(|expected| expected != &item.state) {
+        return Err(ReviewError::Conflict("The item changed on another device"));
+    }
     if let Some(state) = &req.state {
         item.state = state.clone();
     }
@@ -360,6 +380,12 @@ pub(crate) fn update_item_db(conn: &Connection, id: &str, req: &UpdateReviewItem
     }
     if req.sent_revision.is_some() {
         item.sent_revision = req.sent_revision.clone();
+    }
+    if req.clear_sent == Some(true) {
+        item.sent_at = None;
+        item.sent_in_turn = None;
+        item.batch_id = None;
+        item.sent_revision = None;
     }
     validate_item(&item).map_err(ReviewError::BadRequest)?;
     upsert_item(conn, &item)?;
@@ -553,6 +579,15 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (_, v) = get(&pool, "/api/reviews?conversation_id=c1").await;
         assert_eq!(v["items"], json!([]));
+        // An id of another conversation's row is refused, not moved.
+        post(&pool, "/api/reviews/batch", json!({"items": [item("i5", "new")]})).await;
+        let mut moved = item("i5", "new");
+        moved["conversation_id"] = json!("c2");
+        moved["created_at"] = json!("2030-01-01T00:00:00Z");
+        let (status, _) = post(&pool, "/api/reviews/batch", json!({"items": [moved]})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, v) = get(&pool, "/api/reviews?conversation_id=c1").await;
+        assert_eq!(v["items"][0]["created_at"], "2026-11-06T20:00:00Z");
     }
 
     #[actix_web::test]
@@ -563,6 +598,12 @@ mod tests {
             json!({"state": "sent", "sent_at": "2026-11-06T21:00:00Z", "sent_in_turn": 3, "batch_id": "b9", "sent_revision": "abc"})).await;
         assert_eq!(status, StatusCode::OK, "{v}");
         assert_eq!((v["state"].as_str(), v["batch_id"].as_str(), v["title"].as_str()), (Some("sent"), Some("b9"), Some("Off by one")));
+        // Another device acted first: the phone's view of it was "new".
+        let (status, _) = patch(&pool, "/api/review-items/i1", json!({"state": "dismissed", "expected_state": "new"})).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        // A send that didn't go out puts it back as it was.
+        let (_, v) = patch(&pool, "/api/review-items/i1", json!({"state": "new", "expected_state": "sent", "clear_sent": true})).await;
+        assert_eq!((v["state"].as_str(), v["batch_id"].as_str(), v["sent_in_turn"].as_i64()), (Some("new"), None, None));
         let (status, _) = patch(&pool, "/api/review-items/i1", json!({"state": "gone"})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _) = patch(&pool, "/api/review-items/nope", json!({"state": "dismissed"})).await;

@@ -132,19 +132,26 @@ final class ReviewStoreTests: XCTestCase {
         XCTAssertTrue(FakeReviewHub.record(key).items.isEmpty)
     }
 
+    private let host = HostConnectionConfig(host: "h", port: 22, username: "u", privateKeyPEM: Data())
+
+    private func phoneConversation(status: ConversationStatus = .idle) -> Conversation {
+        var conversation = DemoFixtures.conversations[0]
+        conversation.id = key
+        conversation.status = status
+        conversation.statusRevision = 12
+        return conversation
+    }
+
     func testThePhoneSendsOneItemInABatchOfItsOwn() async throws {
         let (store, _) = makeStore()
         await store.refresh(key)
         let finding = ReviewComment(author: "reviewer:claude", path: "a.swift", startLine: 2, endLine: nil, revision: "rev1",
                                     quote: ["x"], body: "Fix it.", state: .new, title: "Bug", fingerprint: "fp")
         store.update(key) { $0.comments.append(finding) }
-        var conversation = DemoFixtures.conversations[0]
-        conversation.id = key
-        conversation.status = .idle
-        conversation.statusRevision = 12
+        await settle(store)
         var commands: [String] = []
-        try await ReviewItemSender.send(finding.id, conversation: conversation, store: store,
-                                        config: HostConnectionConfig(host: "h", port: 22, username: "u", privateKeyPEM: Data())) { _, command in
+        try await ReviewItemSender.send(finding.id, conversation: phoneConversation(), store: store, hubOffline: false,
+                                        config: host) { _, command in
             commands.append(command)
             return SSHExecResult(exitCode: 0, stdout: "{}", stderr: "")
         }
@@ -154,18 +161,70 @@ final class ReviewStoreTests: XCTestCase {
         XCTAssertEqual(record.comments[0].state, .sent)
         XCTAssertEqual(record.lastBatch?.commentIDs, [finding.id])
         XCTAssertEqual(record.lastBatch?.statusRevision, 12)
-        await settle(store)
-        XCTAssertEqual(FakeReviewHub.record(key).items.first?.state, "sent")
+        let row = try XCTUnwrap(FakeReviewHub.record(key).items.first)
+        XCTAssertEqual(row.state, "sent")
+        XCTAssertEqual(row.sentInTurn, 12)
 
-        conversation.status = .busy
+        // Busy: nothing runs.
         do {
-            try await ReviewItemSender.send(finding.id, conversation: conversation, store: store,
-                                            config: HostConnectionConfig(host: "h", port: 22, username: "u", privateKeyPEM: Data())) { _, _ in
+            try await ReviewItemSender.send(finding.id, conversation: phoneConversation(status: .busy), store: store,
+                                            hubOffline: false, config: host) { _, _ in
                 XCTFail("nothing runs while the agent works")
                 return SSHExecResult(exitCode: 0, stdout: "", stderr: "")
             }
             XCTFail("sent while busy")
         } catch {}
+    }
+
+    func testThePhoneDoesntSendWhatAnotherDeviceAlreadyActedOn() async throws {
+        let (store, _) = makeStore()
+        await store.refresh(key)
+        let finding = ReviewComment(author: "reviewer:claude", path: "a.swift", startLine: 2, endLine: nil, revision: "rev1",
+                                    quote: [], body: "Fix it.", state: .new, fingerprint: "fp")
+        store.update(key) { $0.comments.append(finding) }
+        await settle(store)
+        // The Mac sent it meanwhile; the phone still shows it as new.
+        FakeReviewHub.change(key) { $0.items[0].state = "sent"; $0.items[0].batchId = "mac-batch" }
+        do {
+            try await ReviewItemSender.send(finding.id, conversation: phoneConversation(), store: store, hubOffline: false,
+                                            config: host) { _, _ in
+                XCTFail("typed twice")
+                return SSHExecResult(exitCode: 0, stdout: "", stderr: "")
+            }
+            XCTFail("no conflict")
+        } catch {}
+        XCTAssertEqual(FakeReviewHub.record(key).items[0].batchId, "mac-batch")
+        XCTAssertEqual(store.record(key).comments[0].state, .sent, "the list shows it as it is now")
+
+        // A send that fails puts it back.
+        FakeReviewHub.change(key) { $0.items[0].state = "new"; $0.items[0].batchId = nil }
+        await store.refresh(key)
+        do {
+            try await ReviewItemSender.send(finding.id, conversation: phoneConversation(), store: store, hubOffline: false,
+                                            config: host) { _, command in
+                SSHExecResult(exitCode: command.contains(" send ") ? 66 : 0, stdout: "", stderr: "")
+            }
+            XCTFail("sent to a missing session")
+        } catch {}
+        XCTAssertEqual(FakeReviewHub.record(key).items[0].state, "new")
+        XCTAssertNil(FakeReviewHub.record(key).items[0].batchId)
+    }
+
+    func testAMixedBatchLetsTheGoodRowsThrough() async throws {
+        let (store, _) = makeStore()
+        await store.refresh(key)
+        let good = comment("good")
+        var bad = comment("bad")
+        bad.path = "refuse-me"
+        store.update(key) { $0.comments += [good, bad] }
+        await settle(store)
+        XCTAssertEqual(FakeReviewHub.record(key).items.map(\.body), ["good"])
+        XCTAssertNotNil(store.problem)
+        XCTAssertFalse(store.isSyncing(key), "a refused row isn't retried forever")
+        // Later changes still go.
+        store.update(key) { $0.comments.append(self.comment("later")) }
+        await settle(store)
+        XCTAssertEqual(FakeReviewHub.record(key).items.map(\.body).sorted(), ["good", "later"])
     }
 }
 
@@ -224,6 +283,38 @@ private final class FakeReviewHub: URLProtocol, @unchecked Sendable {
         } else if request.httpMethod == "GET", url.path == "/api/reviews" {
             let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "conversation_id" }?.value ?? ""
             body = try! encoder.encode(Self.record(id))
+        } else if request.httpMethod == "PATCH", url.path.hasPrefix("/api/review-items/"), let data = bodyData(),
+                  let patch = try? decoder.decode(UpdateReviewItemRequest.self, from: data) {
+            let id = url.lastPathComponent
+            Self.lock.lock()
+            var found: HubReviewItem?
+            for key in Self.records.keys {
+                guard let index = Self.records[key]?.items.firstIndex(where: { $0.id == id }) else { continue }
+                var item = Self.records[key]!.items[index]
+                if let expected = patch.expectedState, expected != item.state {
+                    code = 409
+                    break
+                }
+                if let state = patch.state { item.state = state }
+                if patch.clearSent == true { item.sentAt = nil; item.sentInTurn = nil; item.batchId = nil; item.sentRevision = nil }
+                if let value = patch.sentAt { item.sentAt = value }
+                if let value = patch.sentInTurn { item.sentInTurn = value }
+                if let value = patch.batchId { item.batchId = value }
+                if let value = patch.sentRevision { item.sentRevision = value }
+                Self.records[key]!.items[index] = item
+                found = item
+            }
+            Self.lock.unlock()
+            if code == 200 {
+                if let found { body = try! encoder.encode(found) } else { code = 404 }
+            } else {
+                body = Data(#"{"error":"changed"}"#.utf8)
+            }
+        } else if request.httpMethod == "POST", url.path == "/api/reviews/batch", let data = bodyData(),
+                  let batch = try? decoder.decode(ReviewBatchRequest.self, from: data),
+                  batch.items.contains(where: { $0.path == "refuse-me" }) {
+            code = 400
+            body = Data(#"{"error":"path refused"}"#.utf8)
         } else if request.httpMethod == "POST", url.path == "/api/reviews/batch", let data = bodyData(),
                   let batch = try? decoder.decode(ReviewBatchRequest.self, from: data) {
             Self.lock.lock()

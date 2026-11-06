@@ -2143,6 +2143,12 @@ pub struct UpdateReviewItemRequest {
     pub batch_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent_revision: Option<String>,
+    /// Applied only while the item is still in this state; else 409 (another device acted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_state: Option<String>,
+    /// Clears sent_at, sent_in_turn, batch_id and sent_revision (a send that didn't go out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_sent: Option<bool>,
 }
 
 /// A conversation's review at a glance, for its row: `GET /api/reviews/summary`.
