@@ -3638,6 +3638,42 @@ for args in "--worktree" "--worktree ~/work/merged" "--worktree ~/work/merged ba
 done
 pass "open_makes_the_conversation_worktree (once, from origin/HEAD, branch kept when remade; non-git folder exits 96)"
 
+# Add agent: a worktree that starts from a given commit, e.g. a snapshot of another
+# conversation's worktree with its uncommitted work (ai-todo-review status + keep).
+B_SRC="${R_TREES}/proj-merged/b-source"
+AI_TODO_RUNNER_STATE_DIR="$R_STATE" "$WSP" ensure "$B_SRC" "${HOME}/work/merged" ai/source-b0000001 2>/dev/null || fail "source worktree failed"
+echo "uncommitted" >"${B_SRC}/draft.txt"
+snap=$("${SCRIPT_DIR}/ai-todo-review" status "$B_SRC" | python3 -c 'import json,sys; print(json.load(sys.stdin)["revision"])') || fail "snapshot failed"
+"${SCRIPT_DIR}/ai-todo-review" keep "$B_SRC" "$snap" >/dev/null || fail "keep failed"
+B_NEW="${R_TREES}/proj-merged/b-added"
+AI_TODO_RUNNER_STATE_DIR="$R_STATE" "$WSP" ensure "$B_NEW" "${HOME}/work/merged" ai/added-b0000002 --base "$snap" 2>/dev/null || fail "ensure --base failed"
+[[ "$(git -C "$B_NEW" rev-parse HEAD)" == "$snap" ]] || fail "the added worktree did not start at the snapshot"
+[[ "$(cat "${B_NEW}/draft.txt")" == uncommitted ]] || fail "the source's uncommitted file is missing"
+[[ -z "$(git -C "$B_NEW" status --porcelain)" ]] || fail "the added worktree is not clean"
+# An existing branch is reused as it is; --base only matters for a new one.
+git_q -C "$R_MERGED" worktree remove --force "$B_NEW"
+AI_TODO_RUNNER_STATE_DIR="$R_STATE" "$WSP" ensure "$B_NEW" "${HOME}/work/merged" ai/added-b0000002 --base "$(git -C "$R_MERGED" rev-parse origin/main)" 2>/dev/null || fail "remake failed"
+[[ "$(git -C "$B_NEW" rev-parse HEAD)" == "$snap" ]] || fail "a remake moved the kept branch to the new base"
+set +e
+AI_TODO_RUNNER_STATE_DIR="$R_STATE" "$WSP" ensure "${R_TREES}/proj-merged/b-bad" "${HOME}/work/merged" ai/bad-b0000003 --base 'not a sha' >/dev/null 2>&1
+code=$?
+set -e
+[[ $code -eq 64 ]] || fail "a malformed --base should exit 64, got $code"
+# ai-todo-open passes it on.
+printf '#!/bin/sh\necho "$*" >"%s/ws-base.log"\nexit 0\n' "$SANDBOX" >"${SANDBOX}/ws-base-stub"
+chmod +x "${SANDBOX}/ws-base-stub"
+B_NAME="ai/claude/todo-b0000004"; B_SID="9b2f6c3e-1d4a-4e7b-8c55-2f0e8a1b7d94"
+mkdir -p "${R_TREES}/proj-merged/b-open"
+AI_TODO_WORKSPACE_BIN="${SANDBOX}/ws-base-stub" AI_TODO_OPEN_DETACH=1 "$OPEN" --worktree '~/work/merged' ai/open-b0000004 --worktree-base "$snap" \
+  "$B_NAME" "~/.ai-remote/worktrees/proj-merged/b-open" "$B_SID" >/dev/null 2>&1 || fail "open with --worktree-base failed"
+[[ "$(cat "${SANDBOX}/ws-base.log")" == "ensure ${R_TREES}/proj-merged/b-open ${HOME}/work/merged ai/open-b0000004 --base ${snap}" ]] \
+  || fail "ai-todo-open did not pass the base: $(cat "${SANDBOX}/ws-base.log")"
+tmux -L "$SOCK" kill-session -t "=$B_NAME" 2>/dev/null || true
+if AI_TODO_OPEN_DETACH=1 "$OPEN" --worktree '~/work/merged' ai/x --worktree-base 'zz' "$B_NAME" '~/x' "$B_SID" >/dev/null 2>&1; then
+  fail "ai-todo-open accepted a malformed --worktree-base"
+fi
+pass "workspace_ensure_from_a_base (a snapshot with uncommitted work, kept branch not moved, bad sha 64, ai-todo-open passes it on)"
+
 runs_reset
 due_run r-codex001 proj-app '{"mode":"always"}' 0 codex
 FAKE_OPEN_ID=01a1cccc-0000-7000-8000-00000000c0de runner tick || fail "tick failed"

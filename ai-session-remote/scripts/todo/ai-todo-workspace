@@ -17,6 +17,7 @@ folder is not in a git repository, 1 git could not make the worktree, 3 sync lef
 differ from the project folder (ensure: only reported, exit 0).
 Test hook: AI_TODO_RUNNER_STATE_DIR (where worktrees.json lives)."""
 import json
+import re
 import os
 import subprocess
 import sys
@@ -77,6 +78,13 @@ def expand(path):
 
 
 def cmd_ensure(args):
+    base = None
+    if len(args) == 5 and args[3] == "--base":
+        base = args[4]
+        if not re.fullmatch(r"[0-9a-f]{7,40}", base):
+            print("ai-todo-workspace: --base must be a commit sha", file=sys.stderr)
+            return 64
+        args = args[:3]
     if len(args) != 3 or not all(a.strip() for a in args):
         return usage()
     path, folder, branch = expand(args[0]), expand(args[1]), args[2]
@@ -85,7 +93,7 @@ def cmd_ensure(args):
         return 64
     say = lambda msg: print(msg, file=sys.stderr, flush=True)  # noqa: E731
     try:
-        made, updated, differs = workspace.ensure(REGISTRY, path, folder, branch, say)
+        made, updated, differs = workspace.ensure(REGISTRY, path, folder, branch, say, base=base)
     except workspace.NotARepo:
         say("ai-todo-workspace: %s is not in a git repository" % tilde(folder))
         return 66
@@ -106,7 +114,7 @@ def git_check_branch(branch):
 
 
 def usage():
-    print("usage: ai-todo-workspace list [--json] | sync <path> | ensure <path> <folder> <branch>", file=sys.stderr)
+    print("usage: ai-todo-workspace list [--json] | sync <path> | ensure <path> <folder> <branch> [--base <sha>]", file=sys.stderr)
     return 64
 
 

@@ -113,9 +113,9 @@ def sha256(path):
     return h.hexdigest()
 
 
-def create(folder, path, branch):
-    """Make a worktree of `folder`'s repo at `path` on a new `branch` from origin/HEAD (else
-    HEAD), with the repo's local files brought in. Returns (cwd, entry): cwd is `folder`'s place
+def create(folder, path, branch, base=None):
+    """Make a worktree of `folder`'s repo at `path` on a new `branch` from `base` (a commit;
+    default origin/HEAD, else HEAD), with the repo's local files brought in. Returns (cwd, entry): cwd is `folder`'s place
     inside the worktree (a monorepo subfolder opens there, or at the root when the base commit
     lacks it); entry is the registry record. Raises NotARepo for a folder outside git and
     RuntimeError when git can't make the worktree."""
@@ -126,7 +126,10 @@ def create(folder, path, branch):
     prefix = prefix.strip().strip("/") if code == 0 else ""
     if git(folder, "remote", "get-url", "origin")[0] == 0:
         git(folder, "fetch", "--quiet", "origin", timeout=30)
-    base = "origin/HEAD" if git(folder, "rev-parse", "--verify", "--quiet", "origin/HEAD")[0] == 0 else "HEAD"
+    if base is None:
+        base = "origin/HEAD" if git(folder, "rev-parse", "--verify", "--quiet", "origin/HEAD")[0] == 0 else "HEAD"
+    elif git(folder, "rev-parse", "--verify", "--quiet", base + "^{commit}")[0] != 0:
+        raise RuntimeError("no commit %s in %s" % (base, folder))
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     base_sha = git(folder, "rev-parse", base)[1]
     reused = git(folder, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch)[0] == 0
@@ -289,10 +292,11 @@ def _lock_path(path):
     return os.path.join(os.path.dirname(path), "." + os.path.basename(path) + ".lock")
 
 
-def ensure(registry_path, path, folder, branch, log=lambda msg: None):
+def ensure(registry_path, path, folder, branch, log=lambda msg: None, base=None):
     """A conversation's own worktree at `path` (of `folder`'s repo, on `branch`): made and
     registered when missing, its local files synced when present. Safe to call on every open
-    and from two devices at once (a lock per path). Returns (made, updated, differs).
+    and from two devices at once (a lock per path). A new branch starts at `base` when given
+    (an existing one is used as it is). Returns (made, updated, differs).
     Raises NotARepo or RuntimeError as create() does."""
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     with open(_lock_path(path), "a") as lock:
@@ -305,7 +309,7 @@ def ensure(registry_path, path, folder, branch, log=lambda msg: None):
                 updated, differs = sync(entry) if entry else ([], [])
             return False, updated, differs
         log("Preparing a worktree of %s on branch %s" % (folder, branch))
-        _, entry = create(folder, path, branch)
+        _, entry = create(folder, path, branch, base)
         reused = entry.pop("reused_branch", False)
         entry["opened"] = entry["created"]
         try:
