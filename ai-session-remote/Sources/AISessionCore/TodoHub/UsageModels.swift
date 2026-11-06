@@ -102,6 +102,8 @@ public struct ConversationUsage: Decodable, Hashable, Sendable, Identifiable {
     public var firstActivity: String?
     public var lastActivity: String?
     public var statsUpdatedAt: String?
+    /// No longer on the todo (deleted, or replaced by a restart), but its session still counts
+    public var removed: Bool?
 
     public var id: String { conversationId }
 }
@@ -217,4 +219,79 @@ public struct JobUsage: Decodable, Hashable, Sendable {
         runs = try c.decodeIfPresent([RunUsage].self, forKey: .runs) ?? []
         usage = try UsageSummary(from: decoder)
     }
+}
+
+// MARK: Heaviest of a week
+
+/// `GET /api/stats/heaviest`: what used the most of one week, each list heaviest first.
+public struct HeavyUsage: Decodable, Hashable, Sendable {
+    public var weekStart: String
+    public var weekEnd: String
+    public var own: StatsCounters
+    public var workers: StatsCounters
+    public var todos: [HeavyTodo]
+    public var jobs: [HeavyJob]
+    public var workerTypes: [WorkerTypeUsage]
+    public var conversations: [HeavyConversation]
+
+    /// Output + cache writes of everything that week, the base for shares.
+    public var totalWeight: Int { own.weight + workers.weight }
+
+    private enum CodingKeys: String, CodingKey {
+        case weekStart, weekEnd, own, workers, todos, jobs, workerTypes, conversations
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        weekStart = try c.decode(String.self, forKey: .weekStart)
+        weekEnd = try c.decode(String.self, forKey: .weekEnd)
+        own = try c.decodeIfPresent(StatsCounters.self, forKey: .own) ?? StatsCounters()
+        workers = try c.decodeIfPresent(StatsCounters.self, forKey: .workers) ?? StatsCounters()
+        todos = try c.decodeIfPresent([HeavyTodo].self, forKey: .todos) ?? []
+        jobs = try c.decodeIfPresent([HeavyJob].self, forKey: .jobs) ?? []
+        workerTypes = try c.decodeIfPresent([WorkerTypeUsage].self, forKey: .workerTypes) ?? []
+        conversations = try c.decodeIfPresent([HeavyConversation].self, forKey: .conversations) ?? []
+    }
+
+    /// `weight` as a share of the week, 0...1.
+    public func share(_ weight: Int) -> Double {
+        totalWeight > 0 ? Double(weight) / Double(totalWeight) : 0
+    }
+}
+
+public struct HeavyTodo: Decodable, Hashable, Sendable, Identifiable {
+    public var todoId: String
+    public var title: String
+    public var section: TodoSection?
+    public var projectId: String?
+    public var own: StatsCounters
+    public var workers: StatsCounters
+
+    public var id: String { todoId }
+    public var weight: Int { own.weight + workers.weight }
+}
+
+public struct HeavyJob: Decodable, Hashable, Sendable, Identifiable {
+    public var jobId: String
+    public var name: String
+    public var runs: Int
+    public var own: StatsCounters
+    public var workers: StatsCounters
+
+    public var id: String { jobId }
+    public var weight: Int { own.weight + workers.weight }
+}
+
+public struct HeavyConversation: Decodable, Hashable, Sendable, Identifiable {
+    public var tool: String
+    public var sessionId: String
+    public var computerId: String
+    public var title: String?
+    public var projectId: String?
+    public var todoId: String?
+    public var own: StatsCounters
+    public var workers: StatsCounters
+
+    public var id: String { "\(tool)|\(sessionId)" }
+    public var weight: Int { own.weight + workers.weight }
 }

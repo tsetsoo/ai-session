@@ -364,6 +364,14 @@ public struct TodoHubClient: Sendable {
         return try await decode(WeeklyStats.self, send("GET", "/api/stats/weekly", query: query))
     }
 
+    /// What used the most of a week (`weekStart` a Monday; `nil` = this week), `limit` rows per list.
+    public func heaviest(weekStart: String? = nil, limit: Int? = nil) async throws -> HeavyUsage {
+        var query: [URLQueryItem] = []
+        if let weekStart { query.append(URLQueryItem(name: "week_start", value: weekStart)) }
+        if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
+        return try await decode(HeavyUsage.self, send("GET", "/api/stats/heaviest", query: query))
+    }
+
     /// A todo's conversations: own usage, their workers', by model. 404 for an unknown todo.
     public func todoUsage(todoId: String) async throws -> TodoUsage {
         try await decode(TodoUsage.self, send("GET", "/api/todos/\(escape(todoId))/usage"))

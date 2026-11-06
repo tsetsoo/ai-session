@@ -519,6 +519,7 @@ struct UsageLimitsPane: View {
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle").foregroundStyle(DS.warning)
             }
+            HeavyUsageSections(store: store)
         }
         .formStyle(.grouped)
         .navigationTitle("Usage limits")

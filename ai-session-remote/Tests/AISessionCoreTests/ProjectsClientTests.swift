@@ -425,6 +425,28 @@ final class ProjectsClientTests: XCTestCase {
         XCTAssertNil(usage.runs[1].todoId)
     }
 
+    func testHeaviestDecodesAndRequests() async throws {
+        respond("""
+        {"week_start":"2026-11-02","week_end":"2026-11-08",
+         "own":{\(Self.counters)},"workers":{"sessions":2,"output_tokens":1000,"cache_creation_tokens":0},
+         "todos":[{"todo_id":"t1","title":"One","section":"Si","project_id":"p1","own":{\(Self.counters)},"workers":{"sessions":0}}],
+         "jobs":[{"job_id":"j1","name":"Gardener","runs":2,"own":{\(Self.counters)},"workers":{"sessions":0}}],
+         "worker_types":[{"kind":"agent","type":"Explore",\(Self.counters)}],
+         "conversations":[{"tool":"claude","session_id":"s1","computer_id":"mac","title":null,"todo_id":null,
+                           "own":{\(Self.counters)},"workers":{"sessions":0}}]}
+        """)
+        let h = try await client().heaviest(weekStart: "2026-11-02", limit: 5)
+        XCTAssertEqual(lastRequest.url?.path, "/api/stats/heaviest")
+        XCTAssertEqual(queryItems(), ["week_start": "2026-11-02", "limit": "5"])
+        XCTAssertEqual(h.totalWeight, 1050 + 1000)
+        XCTAssertEqual(h.todos.first?.section, .si)
+        XCTAssertEqual(h.todos.first?.weight, 1050)
+        XCTAssertEqual(h.share(1025), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(h.jobs.first?.runs, 2)
+        XCTAssertEqual(h.workerTypes.first?.title, "Explore")
+        XCTAssertNil(h.conversations.first?.todoId)
+    }
+
     func testWeeklyWorkers() throws {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase

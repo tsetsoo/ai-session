@@ -182,3 +182,120 @@ struct UsageDetailView: View {
         }
     }
 }
+
+/// Usage limits pane: what used the most of this week or last, by todo, job, sub-agent type
+/// and conversation. Ranked and shared by output + cache writes; token counts, never money.
+struct HeavyUsageSections: View {
+    let store: TodoHubStore
+
+    @State private var lastWeek = false
+    @State private var heavy: HeavyUsage?
+    @State private var failed = false
+
+    private var weekStart: String {
+        let monday = WeekMath.monday(of: .now)
+        return lastWeek ? (WeekMath.shift(monday, byWeeks: -1) ?? monday) : monday
+    }
+
+    var body: some View {
+        Section {
+            Picker("Week", selection: $lastWeek) {
+                Text("This week").tag(false)
+                Text("Last week").tag(true)
+            }
+            .pickerStyle(.segmented)
+            if let heavy {
+                if heavy.totalWeight == 0 {
+                    Text("No usage uploaded for this week.").foregroundStyle(.secondary)
+                } else {
+                    LabeledContent("Conversations", value: "\(StatsFormat.tokens(heavy.own.outputTokens)) out")
+                    if heavy.workers.sessions > 0 {
+                        LabeledContent("\(heavy.workers.sessions) sub-agents",
+                                       value: "\(StatsFormat.tokens(heavy.workers.outputTokens)) out")
+                    }
+                }
+            } else if failed {
+                Text("Couldn't load usage from the hub.").foregroundStyle(.secondary)
+            } else {
+                ProgressView().frame(maxWidth: .infinity)
+            }
+        } header: {
+            Text("Used most")
+        } footer: {
+            Text("Ranked by output + cache writes, which use up limits; cheap cache reads are left out. Token counts, not money.")
+        }
+        .task(id: weekStart) { await poll() }
+        if let heavy, heavy.totalWeight > 0 {
+            if !heavy.todos.isEmpty {
+                Section("Todos") {
+                    ForEach(heavy.todos) { t in
+                        row(t.title, own: t.own, workers: t.workers, share: heavy.share(t.weight))
+                    }
+                }
+            }
+            if !heavy.jobs.isEmpty {
+                Section("Jobs") {
+                    ForEach(heavy.jobs) { j in
+                        row(j.runs == 1 ? j.name : "\(j.name) · \(j.runs) runs", own: j.own, workers: j.workers,
+                            share: heavy.share(j.weight))
+                    }
+                }
+            }
+            if !heavy.workerTypes.isEmpty {
+                Section("Sub-agents") {
+                    ForEach(heavy.workerTypes) { w in
+                        row("\(w.title) ×\(w.counters.sessions)", own: w.counters, workers: StatsCounters(),
+                            share: heavy.share(w.counters.weight))
+                    }
+                }
+            }
+            if !heavy.conversations.isEmpty {
+                Section("Conversations") {
+                    ForEach(heavy.conversations) { c in
+                        row(conversationTitle(c), own: c.own, workers: c.workers, share: heavy.share(c.weight))
+                    }
+                }
+            }
+        }
+    }
+
+    private func conversationTitle(_ c: HeavyConversation) -> String {
+        if let todoId = c.todoId, let todo = store.todos.first(where: { $0.id == todoId }) { return todo.title }
+        return c.title ?? "\(c.tool.capitalized) \(c.sessionId.prefix(8))"
+    }
+
+    private func row(_ title: String, own: StatsCounters, workers: StatsCounters, share: Double) -> some View {
+        let summary = UsageSummary(own: own, workers: workers)
+        return HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).lineLimit(1)
+                Text(UsageText.compactTokens(summary))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(share.formatted(.percent.precision(.fractionLength(0))))
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(share >= 0.25 ? DS.accent : Color.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Computers upload every few minutes, so a slow refresh while the pane is open is enough.
+    private func poll() async {
+        heavy = nil
+        failed = false
+        while !Task.isCancelled {
+            do {
+                let next = try await store.heaviest(weekStart: weekStart)
+                guard !Task.isCancelled else { return }
+                heavy = next
+                failed = next == nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                if heavy == nil { failed = true }
+            }
+            try? await Task.sleep(for: .seconds(120))
+        }
+    }
+}

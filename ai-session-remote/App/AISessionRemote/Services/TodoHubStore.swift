@@ -1011,6 +1011,14 @@ final class TodoHubStore {
         return try await requireClient().todoUsage(todoId: todoId).usage
     }
 
+    /// What used the most of a week; `nil` in the demo.
+    func heaviest(weekStart: String?, limit: Int = 5) async throws -> HeavyUsage? {
+        #if DEBUG
+        if demo != nil { return nil }
+        #endif
+        return try await requireClient().heaviest(weekStart: weekStart, limit: limit)
+    }
+
     /// A job's usage over all runs and its newest runs one by one.
     func jobUsage(jobId: String, runs: Int = 20) async throws -> JobUsage? {
         #if DEBUG
