@@ -14,6 +14,9 @@ struct ReviewTarget: Codable, Hashable {
 /// ⋯ ▸ Review Changes…: the conversation's worktree changes in a window of their own.
 struct ReviewWindow: View {
     static let id = "review"
+    /// The conversation each window was opened for, until the hub lists it (one just started
+    /// is known to its frame before the store has it).
+    @MainActor static var opened: [String: Conversation] = [:]
 
     let target: ReviewTarget?
 
@@ -22,7 +25,7 @@ struct ReviewWindow: View {
     var body: some View {
         Group {
             if let target, let conversation = model.store.conversations(forTodo: target.todoID)
-                .first(where: { $0.listKey == target.conversationKey }) {
+                .first(where: { $0.listKey == target.conversationKey }) ?? Self.opened[target.conversationKey] {
                 let title = model.store.todos.first { $0.id == target.todoID }?.title ?? "Conversation"
                 ReviewView(conversation: conversation)
                     .navigationTitle("Review · \(title)")
@@ -40,6 +43,7 @@ struct ReviewWindow: View {
 extension AppModel {
     func openReview(todoID: String, conversation: Conversation?, openWindow: OpenWindowAction) {
         guard let conversation else { return }
+        ReviewWindow.opened[conversation.listKey] = conversation
         openWindow(id: ReviewWindow.id, value: ReviewTarget(todoID: todoID, conversationKey: conversation.listKey))
     }
 }
@@ -80,8 +84,9 @@ struct ReviewView: View {
                         error: session.failure?.errorDescription) {
                 Task {
                     session.failure = nil
-                    await withConfig { await session.send(config: $0) }
-                    if session.failure == nil { showingSend = false }
+                    var sent = false
+                    await withConfig { sent = await session.send(config: $0) }
+                    if sent { showingSend = false }
                 }
             } onCancel: {
                 session.failure = nil
@@ -196,7 +201,8 @@ struct ReviewView: View {
     private var detail: some View {
         if let path = selectedPath, let file = session.diff.files.first(where: { $0.path == path }) {
             FileDiffView(file: file, session: session)
-                .id("\(path)|\(session.result?.from ?? "")|\(session.result?.to ?? "")")
+                // By file only: a reload with new revisions keeps a half-written comment.
+                .id(path)
         } else if session.isLoading {
             ProgressView()
         } else if session.result?.truncated == true {

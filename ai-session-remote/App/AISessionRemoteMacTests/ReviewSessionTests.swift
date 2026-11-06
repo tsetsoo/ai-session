@@ -213,6 +213,26 @@ final class ReviewSessionTests: XCTestCase {
         XCTAssertTrue(store.record(session.key).batches.isEmpty)
     }
 
+    func testABusyAgentCantBeSentToAndSaysWhy() async {
+        let (session, _) = makeSession(status: .busy)
+        await session.load(config: config)
+        session.addComment(path: "f.txt", side: .new, lines: 1...1, quote: ["a"], body: "x")
+        let sent = await session.send(config: config)
+        XCTAssertFalse(sent)
+        XCTAssertNotNil(session.failure, "a blocked send must say why, or the sheet closes as if it went")
+        XCTAssertFalse(commands.contains { $0.contains(" send ") })
+    }
+
+    func testAMappingIsFetchedOncePerPairOfRevisions() async {
+        let (session, store) = makeSession()
+        let old = ReviewComment(path: "f.txt", startLine: 2, endLine: nil, revision: "rev1", quote: ["b"], body: "x")
+        store.update(session.key) { $0.comments.append(old) }
+        await session.load(config: config)
+        await session.load(config: config)
+        XCTAssertEqual(commands.filter { $0.contains("--unified 0") }.count, 1)
+        XCTAssertEqual(session.anchors[old.id], .moved(path: "f.txt", startLine: 3, endLine: nil))
+    }
+
     func testWaitingConversationCantBeSentTo() async {
         let (session, _) = makeSession(status: .waiting)
         await session.load(config: config)

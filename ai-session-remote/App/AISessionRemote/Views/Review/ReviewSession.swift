@@ -56,6 +56,8 @@ final class ReviewSession {
         if drafts.isEmpty { return "Write a comment first." }
         if conversation.tmuxName.isEmpty { return "This conversation has no terminal session." }
         if conversation.status == .waiting { return "The agent is waiting on a question. Answer it first." }
+        // Sent mid-turn, the turn's own end would read as the answer to the feedback.
+        if conversation.status == .busy { return "The agent is working. Send once it has finished its turn." }
         if conversation.status == .closed { return "The conversation is closed. Open it first." }
         return nil
     }
@@ -110,6 +112,8 @@ final class ReviewSession {
     }
 
     @ObservationIgnored private var loadGeneration = 0
+    @ObservationIgnored private var mappingCache: [String: ReviewDiffResult] = [:]
+    static let mappingConcurrency = 4
 
     /// Where every kept new-side comment is in `revision`: one `--unified 0` diff per older
     /// revision, fetched at the same time. A comment stays unplaced when its revision is gone
@@ -124,8 +128,16 @@ final class ReviewSession {
         }
         let older = byRevision.keys.filter { $0 != revision }
         let cwd = conversation.cwd
-        let mappings = await withTaskGroup(of: (String, ReviewDiffResult?).self) { group in
-            for commentRevision in older {
+        var mappings: [String: ReviewDiffResult] = [:]
+        var missing: [String] = []
+        for commentRevision in older {
+            if let known = mappingCache[commentRevision + "|" + revision] { mappings[commentRevision] = known } else { missing.append(commentRevision) }
+        }
+        // A few at a time: each is an exec channel on the one SSH connection (sshd allows ~10).
+        let fetched = await withTaskGroup(of: (String, ReviewDiffResult?).self) { group in
+            var all: [String: ReviewDiffResult] = [:]
+            var queue = missing[...]
+            func start(_ commentRevision: String) {
                 group.addTask {
                     let between: ReviewDiffResult? = try? await self.run(
                         TmuxCommandBuilder.reviewDiff(cwd: cwd, scope: .since, from: commentRevision, to: revision, unified: 0),
@@ -134,9 +146,17 @@ final class ReviewSession {
                     return (commentRevision, between)
                 }
             }
-            var all: [String: ReviewDiffResult] = [:]
-            for await (commentRevision, between) in group { all[commentRevision] = between }
+            for _ in 0..<Self.mappingConcurrency { if let next = queue.popFirst() { start(next) } }
+            for await (commentRevision, between) in group {
+                all[commentRevision] = between
+                if let next = queue.popFirst() { start(next) }
+            }
             return all
+        }
+        for (commentRevision, between) in fetched {
+            mappings[commentRevision] = between
+            // Two commits never change: the same pair always maps the same way.
+            mappingCache[commentRevision + "|" + revision] = between
         }
         // A failed diff left no entry: its comments stay unplaced.
         for (commentRevision, between) in mappings {
@@ -280,10 +300,17 @@ final class ReviewSession {
     }
 
     /// Keeps the revision on the computer, types the message into the conversation, and marks
-    /// the drafts sent. Nothing is marked when the message didn't go.
-    func send(config: HostConnectionConfig) async {
+    /// the drafts sent. Nothing is marked when the message didn't go. True only when it went:
+    /// a press while another send runs returns false and leaves `failure` alone.
+    @discardableResult
+    func send(config: HostConnectionConfig) async -> Bool {
         // Return pressed twice queues two sends before either has marked anything sent.
-        guard !isSending, sendBlocker == nil, let revision = result?.to else { return }
+        guard !isSending else { return false }
+        if let sendBlocker {
+            failure = Failure(errorDescription: sendBlocker)
+            return false
+        }
+        guard let revision = result?.to else { return false }
         isSending = true
         defer { isSending = false }
         let outgoing = outgoing()
@@ -301,7 +328,7 @@ final class ReviewSession {
             }
         } catch {
             failure = Failure(errorDescription: message(for: error))
-            return
+            return false
         }
         let batch = ReviewBatch(commentIDs: outgoing.map(\.id), revision: revision, statusRevision: conversation.statusRevision)
         let byID = Dictionary(uniqueKeysWithValues: outgoing.map { ($0.id, $0) })
@@ -316,6 +343,7 @@ final class ReviewSession {
             record.batches.append(batch)
         }
         notice = outgoing.count == 1 ? "Sent 1 comment to the agent." : "Sent \(outgoing.count) comments to the agent."
+        return true
     }
 
     // MARK: Remote

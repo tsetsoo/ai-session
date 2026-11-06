@@ -3700,8 +3700,13 @@ exec cat >"$RV_OUT"
 PANE
 chmod +x "$RV_PANE"
 tmux -L "$SOCK" new-session -d -s rv-ready -x 80 -y 24 "$RV_PANE"
+# A shell window opened later and left current must not get the paste.
+RV_SHELL_OUT="${SANDBOX}/review-shell.out"
+sed "s|$RV_OUT|$RV_SHELL_OUT|" "$RV_PANE" >"${RV_PANE}.shell"
+chmod +x "${RV_PANE}.shell"
+tmux -L "$SOCK" new-window -t '=rv-ready:' "${RV_PANE}.shell"
 for _ in $(seq 1 50); do
-  [[ "$(tmux -L "$SOCK" display-message -p -t '=rv-ready:' '#{bracket_paste_flag}')" == 1 ]] && break
+  [[ "$(tmux -L "$SOCK" list-panes -s -t '=rv-ready' -F '#{bracket_paste_flag}' | sort -u | tr -d '\n')" == 1 ]] && break
   sleep 0.1
 done
 # Base64 in, as the app sends it; an end marker in a quoted line must not end the paste.
@@ -3723,6 +3728,10 @@ status=0; printf 'not base64!' | "$REVIEW" send --base64 rv-ready >/dev/null 2>&
 [[ $status -eq 64 ]] || fail "send of bad base64 exit $status"
 tmux -L "$SOCK" kill-session -t '=rv-ready' 2>/dev/null || true
 tmux -L "$SOCK" kill-session -t '=rv-plain' 2>/dev/null || true
+[[ ! -s "$RV_SHELL_OUT" ]] || fail "the paste went to the current window: $(od -c "$RV_SHELL_OUT" | head -3)"
+rv_python="$(command -v python3)"
+status=0; printf 'x' | PATH="${SANDBOX}/no-tmux" "$rv_python" "$REVIEW" send rv-ready >/dev/null 2>"${SANDBOX}/rv-notmux.err" || status=$?
+[[ $status -eq 90 && "$(cat "${SANDBOX}/rv-notmux.err")" == "tmux not found" ]] || fail "missing tmux: $status $(cat "${SANDBOX}/rv-notmux.err")"
 pass "review_send_pastes_bracketed_or_refuses"
 
 # --- tmux.conf ----------------------------------------------------------------
