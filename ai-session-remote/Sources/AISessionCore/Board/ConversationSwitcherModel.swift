@@ -65,4 +65,28 @@ public enum ConversationSwitcherModel {
     public static func busyOthers(continuing chosen: Conversation, in conversations: [Conversation]) -> [Conversation] {
         conversations.filter { $0.listKey != chosen.listKey && $0.status == .busy }
     }
+
+    // MARK: Side by side panes
+
+    /// The conversation a frame acts on: a pane's own, else the todo's selected one, else
+    /// the one its terminal shows.
+    public static func frameConversation(pinned: Conversation?, displayed: Conversation?, ready: Conversation?) -> Conversation? {
+        pinned ?? displayed ?? ready
+    }
+
+    /// The pane the column toolbar acts on: the selected tab, else the first.
+    public static func toolbarKey(tabs: [Conversation], selectedKey: String?) -> String? {
+        tabs.first { $0.listKey == selectedKey }?.listKey ?? tabs.first?.listKey
+    }
+
+    /// Only one pane is frontmost (its sheets, focus and toolbar state), and none while the
+    /// todo isn't the one on screen.
+    public static func paneIsFrontmost(screenFrontmost: Bool, suspended: Bool, paneKey: String, toolbarKey: String?) -> Bool {
+        screenFrontmost && !suspended && paneKey == toolbarKey
+    }
+
+    /// A pane attaches an open conversation whose tool has started (it has an id).
+    public static func paneCanAttach(_ conversation: Conversation) -> Bool {
+        conversation.status != .closed && ConversationStart.hasStartedSession(conversation.sessionId)
+    }
 }

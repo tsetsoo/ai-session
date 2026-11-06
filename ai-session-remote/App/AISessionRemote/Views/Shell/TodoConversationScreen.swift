@@ -93,7 +93,12 @@ struct TodoConversationScreen: View {
             #if os(macOS)
             if sideBySide, ConversationSwitcherModel.showsSwitcher(todoConversations), !isSuspended {
                 ConversationGrid(todo: todo, store: store, conversations: ConversationSwitcherModel.tabs(todoConversations),
-                                 hostList: hostList, onContinue: askToContinue)
+                                 hostList: hostList,
+                                 toolbarKey: ConversationSwitcherModel.toolbarKey(
+                                     tabs: ConversationSwitcherModel.tabs(todoConversations), selectedKey: shown?.listKey
+                                 ),
+                                 screenFrontmost: isFrontmost && !isSuspended,
+                                 toolbarRequest: toolbarRequest, onContinue: askToContinue)
             } else {
                 frame
             }
@@ -240,6 +245,10 @@ private struct ConversationGrid: View {
     let store: TodoHubStore
     let conversations: [Conversation]
     let hostList: HostList
+    /// The pane the column toolbar acts on (the selected tab); the only frontmost one.
+    let toolbarKey: String?
+    let screenFrontmost: Bool
+    let toolbarRequest: Binding<ConversationToolbarRequest?>
     let onContinue: (Conversation) -> Void
 
     var body: some View {
@@ -249,45 +258,67 @@ private struct ConversationGrid: View {
         )
         GeometryReader { geometry in
             let rows = (conversations.count + columns.count - 1) / columns.count
-            LazyVGrid(columns: columns, spacing: 6) {
-                ForEach(conversations, id: \.listKey) { conversation in
-                    ConversationPane(todo: todo, store: store, conversation: conversation, hostList: hostList,
-                                     onContinue: { onContinue(conversation) })
-                        .frame(height: max(200, (geometry.size.height - CGFloat(rows - 1) * 6) / CGFloat(rows)))
+            // Up to two rows fill the height; more scroll (each pane keeps a usable height).
+            let height = max(240, (geometry.size.height - 6) / CGFloat(min(rows, 2)) - 6)
+            ScrollView(.vertical) {
+                LazyVGrid(columns: columns, spacing: 6) {
+                    ForEach(conversations, id: \.listKey) { conversation in
+                        let frontmost = ConversationSwitcherModel.paneIsFrontmost(
+                            screenFrontmost: screenFrontmost, suspended: false,
+                            paneKey: conversation.listKey, toolbarKey: toolbarKey
+                        )
+                        ConversationPane(todo: todo, store: store, conversation: conversation, hostList: hostList,
+                                         isFrontmost: frontmost,
+                                         toolbarRequest: frontmost ? toolbarRequest : .constant(nil),
+                                         onContinue: { onContinue(conversation) })
+                            .frame(height: height)
+                    }
                 }
+                .padding(6)
             }
         }
-        .padding(6)
     }
 }
 
-/// One conversation of the grid: its header and its own terminal.
+/// One conversation of the grid: its header and its own terminal, acting on that conversation.
 private struct ConversationPane: View {
     let todo: Todo
     let store: TodoHubStore
     let conversation: Conversation
+    let isFrontmost: Bool
+    let toolbarRequest: Binding<ConversationToolbarRequest?>
     let onContinue: () -> Void
     @State private var loader: ConversationLoader
 
-    init(todo: Todo, store: TodoHubStore, conversation: Conversation, hostList: HostList, onContinue: @escaping () -> Void) {
+    init(todo: Todo, store: TodoHubStore, conversation: Conversation, hostList: HostList, isFrontmost: Bool,
+         toolbarRequest: Binding<ConversationToolbarRequest?>, onContinue: @escaping () -> Void) {
         self.todo = todo
         self.store = store
         self.conversation = conversation
+        self.isFrontmost = isFrontmost
+        self.toolbarRequest = toolbarRequest
         self.onContinue = onContinue
         _loader = State(initialValue: ConversationLoader(
             todo: todo, dependencies: .live(store: store, hosts: { hostList.hosts })
         ))
     }
 
+    private var current: Conversation { store.conversation(withKey: conversation.listKey) ?? conversation }
+
     var body: some View {
         VStack(spacing: 4) {
-            ConversationPaneHeader(conversation: store.conversation(withKey: conversation.listKey) ?? conversation, onContinue: onContinue)
+            ConversationPaneHeader(conversation: current, onContinue: onContinue)
                 .padding(.horizontal, 6)
             ConversationFrame(todo: todo, loader: loader, store: store, placeholder: nil, onPopOut: nil,
-                              isFrontmost: true, sharesColumn: true, onDeleted: {})
+                              isFrontmost: isFrontmost, sharesColumn: true, toolbarRequest: toolbarRequest,
+                              pinnedConversationKey: conversation.listKey, onDeleted: {})
         }
         .background(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
-        .onAppear { loader.attachIfRunning(conversation) }
+        // Attach once the tool has started (a Codex or Cursor id arrives a moment later).
+        .task(id: "\(current.sessionId)|\(current.status.rawValue)") {
+            guard loader.phase == .idle, ConversationSwitcherModel.paneCanAttach(current) else { return }
+            loader.attachIfRunning(current)
+        }
     }
 }
 #endif

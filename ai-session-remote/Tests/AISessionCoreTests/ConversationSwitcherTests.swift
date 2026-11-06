@@ -72,4 +72,35 @@ final class ConversationSwitcherTests: XCTestCase {
         XCTAssertEqual(ConversationSwitcherModel.busyOthers(continuing: all[1], in: all).map(\.id), ["a"])
         XCTAssertEqual(ConversationSwitcherModel.busyOthers(continuing: all[0], in: all).map(\.id), [])
     }
+
+    // MARK: Side by side panes
+
+    func testAPaneActsOnItsOwnConversation() {
+        let pane = c("b", "codex", .busy)
+        let selected = c("a", "claude", .idle)
+        XCTAssertEqual(ConversationSwitcherModel.frameConversation(pinned: pane, displayed: selected, ready: nil)?.id, "b")
+        XCTAssertEqual(ConversationSwitcherModel.frameConversation(pinned: nil, displayed: selected, ready: pane)?.id, "a")
+        XCTAssertEqual(ConversationSwitcherModel.frameConversation(pinned: nil, displayed: nil, ready: pane)?.id, "b")
+    }
+
+    func testOnlyTheSelectedPaneOfAVisibleTodoIsFrontmost() {
+        XCTAssertTrue(ConversationSwitcherModel.paneIsFrontmost(screenFrontmost: true, suspended: false, paneKey: "a", toolbarKey: "a"))
+        XCTAssertFalse(ConversationSwitcherModel.paneIsFrontmost(screenFrontmost: true, suspended: false, paneKey: "b", toolbarKey: "a"))
+        XCTAssertFalse(ConversationSwitcherModel.paneIsFrontmost(screenFrontmost: false, suspended: false, paneKey: "a", toolbarKey: "a"))
+        XCTAssertFalse(ConversationSwitcherModel.paneIsFrontmost(screenFrontmost: true, suspended: true, paneKey: "a", toolbarKey: "a"))
+    }
+
+    func testTheToolbarActsOnTheSelectedTabOrTheFirst() {
+        let tabs = [c("a", "claude", .idle), c("b", "codex", .busy)]
+        XCTAssertEqual(ConversationSwitcherModel.toolbarKey(tabs: tabs, selectedKey: "b"), "b")
+        XCTAssertEqual(ConversationSwitcherModel.toolbarKey(tabs: tabs, selectedKey: "gone"), "a")
+    }
+
+    func testAPaneAttachesOnlyAStartedOpenConversation() {
+        XCTAssertTrue(ConversationSwitcherModel.paneCanAttach(c("a", "claude", .idle)))
+        var starting = c("b", "codex", .unknown)
+        starting.sessionId = ""
+        XCTAssertFalse(ConversationSwitcherModel.paneCanAttach(starting))
+        XCTAssertFalse(ConversationSwitcherModel.paneCanAttach(c("d", "claude", .closed)))
+    }
 }

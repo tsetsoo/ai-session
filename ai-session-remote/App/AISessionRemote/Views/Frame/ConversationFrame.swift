@@ -35,6 +35,8 @@ struct ConversationFrame: View {
     /// The detail column keeps other conversations mounted. Only the one on screen names
     /// itself in the window and takes the keyboard.
     private let isFrontmost: Bool
+    /// A side-by-side pane: this frame acts on that conversation, not the todo's selected one.
+    private let pinnedConversationKey: String?
     /// Several frames share the detail column, so the column owns the window title and the
     /// toolbar. A phone screen and a pop-out window are the only frame in their navigation.
     private let sharesColumn: Bool
@@ -97,6 +99,7 @@ struct ConversationFrame: View {
         isFrontmost: Bool = true,
         sharesColumn: Bool = false,
         toolbarRequest: Binding<ConversationToolbarRequest?> = .constant(nil),
+        pinnedConversationKey: String? = nil,
         onDeleted: @escaping () -> Void,
         makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
             SSHTerminalSession(config: $0, mode: $1)
@@ -110,6 +113,7 @@ struct ConversationFrame: View {
         self.isFrontmost = isFrontmost
         self.sharesColumn = sharesColumn
         self._toolbarRequest = toolbarRequest
+        self.pinnedConversationKey = pinnedConversationKey
         self.onDeleted = onDeleted
         self.makeTransport = makeTransport
     }
@@ -613,7 +617,7 @@ struct ConversationFrame: View {
                     : "Starts \(tool) in \(target.folder) on \(target.computer)."
             },
             primary: FrameStateButton(title: Self.startTitle) {
-                Task { await loader.start() }
+                startConversation()
             }
         )
     }
@@ -853,7 +857,23 @@ struct ConversationFrame: View {
     }
 
     private var conversation: Conversation? {
-        store.displayed(forTodo: todo.id, selectedKey: appModel?.selectedConversationID) ?? readyConversation?.conversation
+        let pinned = pinnedConversationKey.flatMap { store.conversation(withKey: $0) }
+        return ConversationSwitcherModel.frameConversation(
+            pinned: pinned,
+            displayed: pinnedConversationKey == nil
+                ? store.displayed(forTodo: todo.id, selectedKey: appModel?.selectedConversationID) : nil,
+            ready: readyConversation?.conversation
+        )
+    }
+
+    /// Start or resume: a pane brings back its own conversation; otherwise the todo's (hub
+    /// get-or-create).
+    private func startConversation() {
+        if pinnedConversationKey != nil, let conversation {
+            loader.restart(conversation)
+        } else {
+            Task { await loader.start() }
+        }
     }
 
     /// Warm frames stay mounted. Only the one on screen refreshes limits. A popped-out
@@ -938,7 +958,7 @@ struct ConversationFrame: View {
                     openSettings(.access)
                 }
             },
-            retry: { Task { await loader.start() } },
+            retry: { startConversation() },
             copy: copy,
             unlink: unlinkConversation
         )
@@ -956,7 +976,7 @@ struct ConversationFrame: View {
             loader.reset()
             return
         }
-        Task { await loader.start() }
+        startConversation()
     }
 
     private func copyResumeCommand() {
