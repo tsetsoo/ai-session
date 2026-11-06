@@ -4174,10 +4174,12 @@ for flag in ("-p", "--no-session-persistence", "--strict-mcp-config", "--json-sc
     assert flag in args, args
 assert args[args.index("--tools") + 1] == "Read,Grep,Glob", args
 assert args[args.index("--model") + 1] == "opus", args
-# HEAD is the reviewed revision and nothing is uncommitted: the repository itself is read.
-assert os.path.realpath(open(os.path.join(runs, "claude.cwd")).read().strip()) == os.path.realpath(repo)
+# Always an export of --to: the working tree may change while the reviewer reads.
+tree = os.path.join(runs, "run-1", "tree")
+assert open(os.path.join(runs, "claude.cwd")).read().strip() == tree
+assert not os.path.exists(tree)
 prompt = open(os.path.join(runs, "claude.prompt")).read()
-for path in ("run-1/brief.md", "run-1/changes.patch", repo + "/AGENTS.md", repo + "/sub/CLAUDE.md"):
+for path in ("run-1/brief.md", "run-1/changes.patch", tree + "/AGENTS.md", tree + "/sub/CLAUDE.md"):
     assert path in prompt, (path, prompt)
 assert "docs/none.md" not in prompt and prompt.count("/AGENTS.md") == 1, prompt
 assert open(os.path.join(runs, "run-1", "brief.md")).read() == "Fix the case\nnotes here"
@@ -4190,18 +4192,22 @@ sed -e 's/"line_start":2,"line_end":9/"line_start":3,"line_end":3/' "$RR_CLAUDE"
 AI_TODO_REVIEW_CLAUDE_BIN="${RR_CLAUDE}2" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to HEAD --tool claude --id run-2 >/dev/null || fail "run-2 failed"
 fp2="$(rr_wait run-2 | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["findings"][0]["fingerprint"])')"
 [[ -n "$fp1" && "$fp1" == "$fp2" ]] || fail "fingerprint moved with its lines: $fp1 vs $fp2"
-# An older --to with changes on top: the reviewer reads an export of that revision, which then goes.
+# An older --to with changes on top: an export of that revision, which then goes; a
+# context file outside it is a folder claude may read.
 echo dirty >>"${RR_REPO}/sub/f.txt"
-AI_TODO_REVIEW_CLAUDE_BIN="$RR_CLAUDE" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to "$rr_to" --tool claude --id run-3 >/dev/null || fail "run-3 failed"
+mkdir -p "${SANDBOX}/rr-notes" && echo spec >"${SANDBOX}/rr-notes/spec.md"
+AI_TODO_REVIEW_CLAUDE_BIN="$RR_CLAUDE" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to "$rr_to" --tool claude --id run-3 \
+  --context "${SANDBOX}/rr-notes/spec.md" >/dev/null || fail "run-3 failed"
 [[ "$(rr_wait run-3)" == *'"state": "done"'* ]] || fail "run-3 not done"
 [[ "$(cat "${AI_TODO_REVIEW_RUNS_DIR}/claude.cwd")" == "${AI_TODO_REVIEW_RUNS_DIR}/run-3/tree" ]] || fail "run-3 read $(cat "${AI_TODO_REVIEW_RUNS_DIR}/claude.cwd")"
 [[ ! -e "${AI_TODO_REVIEW_RUNS_DIR}/run-3/tree" ]] || fail "run-3 left its export"
+grep -qx "${SANDBOX}/rr-notes" "${AI_TODO_REVIEW_RUNS_DIR}/claude.args" || fail "context folder not added: $(cat "${AI_TODO_REVIEW_RUNS_DIR}/claude.args")"
 [[ "$(rr_git status --porcelain)" == " M sub/f.txt" && -z "$(rr_git worktree list | sed 1d)" ]] || fail "run touched the repository"
 # Cancel stops the reviewer and keeps the state cancelled.
 RR_SLEEP=30 AI_TODO_REVIEW_CLAUDE_BIN="$RR_CLAUDE" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to "$rr_to" --tool claude --id run-4 >/dev/null
 for _ in $(seq 1 50); do [[ -s "${AI_TODO_REVIEW_RUNS_DIR}/claude.prompt" ]] && grep -q run-4 "${AI_TODO_REVIEW_RUNS_DIR}/claude.prompt" && break; sleep 0.1; done
 [[ "$("$REVIEW" result run-4)" == *'"state": "running"'* ]] || fail "run-4 not running"
-[[ "$("$REVIEW" cancel run-4)" == '{"id": "run-4", "state": "cancelled"}' ]] || fail "cancel output"
+[[ "$("$REVIEW" cancel run-4)" == '{"id": "run-4", "state": "cancelled", "error": null, "result": null}' ]] || fail "cancel output: $("$REVIEW" result run-4)"
 sleep 0.5
 [[ "$("$REVIEW" result run-4)" == *'"state": "cancelled"'* ]] || fail "run-4 after cancel: $("$REVIEW" result run-4)"
 ! pgrep -f "sleep 30" >/dev/null 2>&1 || ! pgrep -f "fake-review-claude" >/dev/null || fail "the reviewer outlived cancel"
@@ -4225,7 +4231,7 @@ import json, os, sys
 data = json.loads(sys.argv[1])
 assert data["state"] == "done", data
 r = data["result"]
-assert r["usage"] == {"input_tokens": 5, "output_tokens": 3, "cache_read_tokens": 2, "cache_write_tokens": None, "cost_usd": None}, r
+assert r["usage"] == {"input_tokens": 3, "output_tokens": 3, "cache_read_tokens": 2, "cache_write_tokens": None, "cost_usd": None}, r
 assert [f["quote"] for f in r["findings"]] == [["one"]], r
 args = open(os.path.join(sys.argv[2], "codex.args")).read().split("\n")
 assert args[0] == "exec" and args[args.index("--sandbox") + 1] == "read-only" and "--output-schema" in args, args
@@ -4244,6 +4250,12 @@ status=0; "$REVIEW" result nope >/dev/null 2>&1 || status=$?
 [[ $status -eq 65 ]] || fail "unknown run exit $status"
 status=0; "$REVIEW" result ../x >/dev/null 2>&1 || status=$?
 [[ $status -eq 64 ]] || fail "bad run id exit $status"
+# Cancel after the run finished keeps it done, with its findings.
+[[ "$("$REVIEW" cancel run-5)" == *'"state": "done"'*'"fingerprint"'* ]] || fail "cancel of a done run: $("$REVIEW" cancel run-5)"
+# A reply that isn't an object fails the run with a reason and leaves no export.
+printf '#!/bin/sh\ncat >/dev/null\necho "[1, 2]"\n' >"${SANDBOX}/bin/fake-review-list" && chmod +x "${SANDBOX}/bin/fake-review-list"
+AI_TODO_REVIEW_CLAUDE_BIN="${SANDBOX}/bin/fake-review-list" "$REVIEW" run "$RR_REPO" --from "$rr_from" --to "$rr_to" --tool claude --id run-9 >/dev/null
+[[ "$(rr_wait run-9)" == *'"state": "failed", "error": "claude'* && ! -e "${AI_TODO_REVIEW_RUNS_DIR}/run-9/tree" ]] || fail "list reply: $(rr_wait run-9)"
 unset AI_TODO_REVIEW_RUNS_DIR
 pass "review_run_finds_and_cancels"
 

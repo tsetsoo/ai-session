@@ -32,6 +32,8 @@ final class ReviewSessionTests: XCTestCase {
     private var runningPolls = 0
     private var resultPolls = 0
     private var reviewerMissing = false
+    /// The run finished just before Cancel reached it.
+    private var cancelFindsItDone = false
     /// The revision the fake reviewer read.
     private var reviewedRevision = "rev2"
 
@@ -87,7 +89,7 @@ final class ReviewSessionTests: XCTestCase {
             if reviewerMissing { return SSHExecResult(exitCode: 90, stdout: "", stderr: "codex not found") }
             return json(["id": "x", "state": "running"])
         }
-        if command.contains(" result ") {
+        if command.contains(" result ") || (command.contains(" cancel ") && cancelFindsItDone) {
             resultPolls += 1
             if resultPolls <= runningPolls { return json(["id": "x", "state": "running"]) }
             let finding: (String, Int, String) -> [String: Any] = { title, line, fingerprint in
@@ -478,5 +480,15 @@ final class ReviewSessionTests: XCTestCase {
         XCTAssertNil(session.activeRun)
         XCTAssertEqual(store.record(session.key).lastRun?.state, .cancelled)
         XCTAssertTrue(session.findings(.new).isEmpty)
+    }
+
+    func testCancellingARunThatJustFinishedKeepsItsFindings() async throws {
+        let (session, store) = makeSession()
+        await session.load(config: config)
+        await session.startReview(tool: "claude", brief: nil, config: config)
+        cancelFindsItDone = true
+        await session.cancelReview(config: config)
+        XCTAssertEqual(store.record(session.key).lastRun?.state, .done)
+        XCTAssertEqual(session.findings(.new).count, 2)
     }
 }

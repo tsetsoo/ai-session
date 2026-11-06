@@ -330,8 +330,25 @@ final class ReviewSession {
                   record.comments[index].reviewer != nil else { return }
             record.comments[index].state = .new
         }
-        if let comment = record.comments.first(where: { $0.id == id }), comment.side == .new, comment.revision == result?.to {
-            anchors[id] = .moved(path: comment.path, startLine: comment.startLine, endLine: comment.endLine)
+        if let comment = record.comments.first(where: { $0.id == id }), comment.side == .new {
+            if comment.revision == result?.to {
+                anchors[id] = .moved(path: comment.path, startLine: comment.startLine, endLine: comment.endLine)
+            } else {
+                placeUnplaced()
+            }
+        }
+    }
+
+    /// Places comments that have no anchor yet (new findings from an older revision, restored
+    /// ones) in the diff on screen, without reloading it. Mappings already fetched are reused.
+    private func placeUnplaced() {
+        guard let config = lastConfig, let revision = result?.to else { return }
+        let generation = loadGeneration
+        Task {
+            let placed = await placeComments(at: revision, config: config)
+            // A load since then placed everything itself.
+            guard generation == loadGeneration, result?.to == revision else { return }
+            for (id, anchor) in placed where anchors[id] == nil { anchors[id] = anchor }
         }
     }
 
@@ -359,13 +376,14 @@ final class ReviewSession {
         }
     }
 
-    /// Where a finding is in the diff on screen: its file there, and its last line on the new
-    /// side, or nil when it isn't shown on a line.
-    func place(of comment: ReviewComment) -> (path: String, line: Int?) {
+    /// Where a finding is in the diff on screen: its file there, and its last line (on its
+    /// side), or nil when it isn't shown on a line.
+    func place(of comment: ReviewComment) -> (path: String, side: DiffSide, line: Int?) {
         if comment.side == .new, case let .moved(path, start, end)? = anchors[comment.id] {
-            return (path, start.map { end ?? $0 })
+            return (path, .new, start.map { end ?? $0 })
         }
-        return (comment.path, comment.side == .old && comment.revision == result?.from ? comment.endLine ?? comment.startLine : nil)
+        let line = comment.side == .old && comment.revision == result?.from ? comment.endLine ?? comment.startLine : nil
+        return (comment.path, comment.side, line)
     }
 
     /// New-side lines of `file` that unsent findings are about, with the highest severity on each.
@@ -487,9 +505,9 @@ final class ReviewSession {
         for comment in added where comment.side == .new && comment.revision == result?.to {
             anchors[comment.id] = .moved(path: comment.path, startLine: comment.startLine, endLine: comment.endLine)
         }
-        if added.contains(where: { $0.side == .new && $0.revision != result?.to }), let config = lastConfig {
-            // Reviewed an older revision than the one on screen: place them by reloading.
-            Task { await load(config: config) }
+        if added.contains(where: { $0.side == .new && $0.revision != result?.to }) {
+            // Reviewed an older revision than the one on screen.
+            placeUnplaced()
         }
     }
 

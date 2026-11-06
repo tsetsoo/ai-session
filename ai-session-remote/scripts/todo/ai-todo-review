@@ -43,8 +43,8 @@ send    pastes stdin into the tmux session `<tmux_name>` as a bracketed paste, t
 
 run     starts a reviewer agent on the changes --from..--to, detached, and prints {"id", "state"}
         at once. claude runs as `claude -p` with only Read, Grep and Glob; codex as `codex exec`
-        in its read-only sandbox. It reads the files as of --to: the repository itself when --to
-        is its current revision, else an export of --to in the run's folder. Context goes in
+        in its read-only sandbox. It reads the files as of --to, exported into the run's folder
+        (the working tree may change while it reads). Context goes in
         as paths it may read: the brief (the todo's title and notes, base64 on stdin with
         --brief-base64), AGENTS.md / CLAUDE.md (the root's and those above changed files),
         docs/adr and spec folders, and every --context path. The run's files are in
@@ -55,7 +55,8 @@ result  {"id", "state": running|done|failed|cancelled, "error", "result"}. A don
         file), severity (high|medium|low), category, title, body, quote (the lines, from git,
         not the model) and fingerprint (path + title + nearby code, not line numbers, so the
         same finding on moved lines matches).
-cancel  stops a running reviewer (its whole process group); {"id", "state"}.
+cancel  stops a running reviewer (its whole process group). Prints what `result` does: a run
+        that finished first stays done, with its findings.
 
 Exit codes: 64 bad arguments, 65 unknown revision or empty message, 66 no such tmux
 session, 69 not a git repository (or cwd missing), 70 git failed (its message on stderr),
@@ -582,7 +583,7 @@ def prune_runs():
         except OSError:
             continue
         state = read_json(os.path.join(path, "state.json")) or {}
-        if state.get("state") == "running" and pid_alive(run_pid(path)):
+        if state.get("state") == "running" and pid_alive(run_pid(path), path):
             continue
         shutil.rmtree(path, ignore_errors=True)
 
@@ -595,7 +596,8 @@ def run_pid(folder):
         return None
 
 
-def pid_alive(pid):
+def pid_alive(pid, folder=None):
+    """The process runs; with `folder`, it is that run's worker (not a process that got its pid later)."""
     if not isinstance(pid, int) or pid <= 0:
         return False
     try:
@@ -603,8 +605,15 @@ def pid_alive(pid):
     except ProcessLookupError:
         return False
     except PermissionError:
+        return False
+    if folder is None:
         return True
-    return True
+    try:
+        command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL).stdout.decode("utf-8", "replace")
+    except OSError:
+        return True
+    return "_worker" in command and os.path.basename(folder) in command
 
 
 def cmd_run(args):
@@ -680,7 +689,7 @@ def cmd_result(args):
         die("no run %s" % args[0], 65)
     pid = run_pid(folder)
     # No pid yet: `run` is still starting it.
-    if state.get("state") == "running" and pid and not pid_alive(pid):
+    if state.get("state") == "running" and pid and not pid_alive(pid, folder):
         # Read again: the worker may have finished between the two reads.
         state = read_json(os.path.join(folder, "state.json")) or state
         if state.get("state") == "running":
@@ -699,7 +708,7 @@ def cmd_cancel(args):
         die("no run %s" % args[0], 65)
     if state.get("state") == "running":
         pid = run_pid(folder)
-        if pid_alive(pid):
+        if pid_alive(pid, folder):
             # Cancelled first, so the worker's own exit doesn't write a result over it.
             state = {"state": "cancelled", "error": None, "result": None}
             write_json(path, state)
@@ -713,7 +722,9 @@ def cmd_cancel(args):
             if state.get("state") == "running":
                 state = {"state": "cancelled", "error": None, "result": None}
                 write_json(path, state)
-    print(json.dumps({"id": args[0], "state": state.get("state")}))
+    # The same shape as `result`: a run that finished first keeps its findings.
+    print(json.dumps({"id": args[0], "state": state.get("state"), "error": state.get("error"),
+                      "result": state.get("result")}))
 
 
 # The worker: runs detached, writes state.json when it ends.
@@ -741,7 +752,7 @@ def fingerprint(path, title, nearby):
     return digest[:20]
 
 
-def clean_finding(raw, root, request, cache):
+def clean_finding(raw, root, request, cache, workdir=None):
     """A finding checked against the repository, or None. Lines and quote come from git."""
     if not isinstance(raw, dict):
         return None
@@ -749,19 +760,21 @@ def clean_finding(raw, root, request, cache):
     for prefix in ("./", "a/", "b/"):
         if path.startswith(prefix) and not revision_lines(root, request["to"], path, cache):
             path = path[len(prefix):]
-    if path.startswith(root + "/"):
-        path = path[len(root) + 1:]
+    for prefix in {root, workdir or root}:
+        if path.startswith(prefix + "/"):
+            path = path[len(prefix) + 1:]
     title = " ".join(str(raw.get("title") or "").split())[:200]
     body = str(raw.get("body") or "").strip()
     if not path or not (title or body):
         return None
     side = "old" if raw.get("side") == "old" else "new"
     lines = revision_lines(root, request["from" if side == "old" else "to"], path, cache)
+    start, end = raw.get("line_start"), raw.get("line_end")
     if lines is None and side == "old":
-        side, lines = "new", revision_lines(root, request["to"], path, cache)
+        # Not in --from under that name (a rename): about the file, as its lines would be the wrong ones.
+        side, lines, start, end = "new", revision_lines(root, request["to"], path, cache), None, None
     if lines is None:
         return None
-    start, end = raw.get("line_start"), raw.get("line_end")
     start = start if isinstance(start, int) and not isinstance(start, bool) and 1 <= start <= len(lines) else None
     if start is None:
         end = None
@@ -832,8 +845,15 @@ def context_paths(root, workdir, request, changed):
 
 
 def run_claude(binary, workdir, folder, request, prompt):
+    # Read is refused outside these folders: the run's own, and every context path elsewhere.
+    extra = []
+    for path in request.get("context_paths") or []:
+        place = path if os.path.isdir(path) else os.path.dirname(path)
+        if not (place + "/").startswith(workdir + "/") and not (place + "/").startswith(folder + "/") and place not in extra:
+            extra.append(place)
     command = [binary, "-p", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "",
-               "--tools", "Read,Grep,Glob", "--add-dir", folder, "--output-format", "json",
+               "--tools", "Read,Grep,Glob", "--add-dir", folder] + [arg for place in extra for arg in ("--add-dir", place)] + [
+               "--output-format", "json",
                "--json-schema", json.dumps(FINDINGS_SCHEMA)]
     if request.get("model"):
         command += ["--model", request["model"]]
@@ -845,6 +865,8 @@ def run_claude(binary, workdir, folder, request, prompt):
         reply = json.loads(out)
     except ValueError:
         raise ReviewerError("claude's output wasn't JSON.")
+    if not isinstance(reply, dict):
+        raise ReviewerError("claude's output wasn't the expected JSON object.")
     if reply.get("is_error") or reply.get("subtype") not in (None, "success"):
         raise ReviewerError("claude failed: %s" % str(reply.get("result") or reply.get("subtype"))[:300])
     findings = parse_findings(reply.get("structured_output") or reply.get("result"))
@@ -881,9 +903,11 @@ def run_codex(binary, workdir, folder, request, prompt):
         if event.get("type") == "turn.completed" and isinstance(event.get("usage"), dict):
             totals = usage or {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
                                "cache_write_tokens": None, "cost_usd": None}
-            totals["input_tokens"] += event["usage"].get("input_tokens") or 0
+            cached = event["usage"].get("cached_input_tokens") or 0
+            # codex's input_tokens include the cached ones; claude's (and this result's) don't.
+            totals["input_tokens"] += max(0, (event["usage"].get("input_tokens") or 0) - cached)
             totals["output_tokens"] += event["usage"].get("output_tokens") or 0
-            totals["cache_read_tokens"] += event["usage"].get("cached_input_tokens") or 0
+            totals["cache_read_tokens"] += cached
             usage = totals
         elif event.get("type") == "turn.failed":
             message = (event.get("error") or {}).get("message") if isinstance(event.get("error"), dict) else None
@@ -951,17 +975,17 @@ def worker(folder):
             handle.write(patch)
         names, _ = git(root, "diff", "--name-only", "--no-renames", request["from"], request["to"], "--")
         changed = [name for name in names.splitlines() if name]
-        # The reviewer reads the files as of --to: the repository itself when that's what it holds.
-        workdir = root
-        if request.get("ref") or snapshot(root)[0] != request["to"]:
-            os.makedirs(tree)
-            archive = subprocess.Popen(["git", "-C", root, "archive", "--format=tar", request["to"]], stdout=subprocess.PIPE)
-            unpacked = subprocess.run(["tar", "-x", "-C", tree], stdin=archive.stdout)
-            archive.stdout.close()
-            if archive.wait() != 0 or unpacked.returncode != 0:
-                raise ReviewerError("Couldn't export %s to review it." % request["to"][:12])
-            workdir = tree
+        # The reviewer reads the files as of --to, in an export: the working tree may change
+        # under it while it reads (the conversation's agent goes on working).
+        workdir = tree
+        os.makedirs(tree)
+        archive = subprocess.Popen(["git", "-C", root, "archive", "--format=tar", request["to"]], stdout=subprocess.PIPE)
+        unpacked = subprocess.run(["tar", "-x", "-C", tree], stdin=archive.stdout)
+        archive.stdout.close()
+        if archive.wait() != 0 or unpacked.returncode != 0:
+            raise ReviewerError("Couldn't export %s to review it." % request["to"][:12])
         context = context_paths(root, workdir, request, changed)
+        request["context_paths"] = context
         if request.get("brief", "").strip():
             brief_path = os.path.join(folder, "brief.md")
             with open(brief_path, "w") as handle:
@@ -979,7 +1003,7 @@ def worker(folder):
         cache = {}
         findings, seen = [], set()
         for raw in reply["findings"][:MAX_FINDINGS]:
-            finding = clean_finding(raw, root, request, cache)
+            finding = clean_finding(raw, root, request, cache, workdir)
             if finding and finding["fingerprint"] not in seen:
                 seen.add(finding["fingerprint"])
                 findings.append(finding)
@@ -988,6 +1012,8 @@ def worker(folder):
             "summary": str(reply.get("summary") or "").strip()[:1000], "usage": usage, "findings": findings}})
     except (ReviewerError, GitError, OSError, KeyError) as error:
         finish({"state": "failed", "error": str(error)[:500] or "The reviewer failed."})
+    except Exception as error:  # anything unforeseen still ends the run, with its cause
+        finish({"state": "failed", "error": ("%s: %s" % (type(error).__name__, error))[:500]})
 
 
 def main(argv):

@@ -58,6 +58,7 @@ struct LineSelection: Equatable {
 /// A line to bring into view in the diff (a finding picked in the Findings pane).
 struct DiffFocus: Equatable {
     var path: String
+    var side: DiffSide
     var line: Int
     /// A new value each pick, so picking the same line again scrolls again.
     var token = UUID()
@@ -143,7 +144,7 @@ struct ReviewView: View {
         let path = session.diff.files.first { $0.path == place.path || $0.oldPath == place.path }?.path
         guard let path else { return }
         selectedPath = path
-        if let line = place.line { focus = DiffFocus(path: path, line: line) }
+        if let line = place.line { focus = DiffFocus(path: path, side: place.side, line: line) }
     }
 
     private func withConfig(_ body: (HostConnectionConfig) async -> Void) async {
@@ -525,10 +526,12 @@ private struct FileDiffView: View {
 
     private func scroll(_ proxy: ScrollViewProxy) {
         guard let focus, focus.path == file.path else { return }
-        withAnimation { proxy.scrollTo(Self.lineID(focus.line), anchor: .center) }
+        let id = focus.side == .old ? Self.oldLineID(focus.line) : Self.lineID(focus.line)
+        withAnimation { proxy.scrollTo(id, anchor: .center) }
     }
 
     static func lineID(_ newLine: Int) -> String { "new-\(newLine)" }
+    static func oldLineID(_ oldLine: Int) -> String { "old-\(oldLine)" }
 
     private var header: some View {
         HStack {
@@ -555,7 +558,7 @@ private struct FileDiffView: View {
         let path = side == .old ? file.oldPath ?? file.path : file.path
         let isSelected = number.map { n in selection.map { $0.side == side && $0.lines.contains(n) } ?? false } ?? false
         DiffLineRow(line: line, isSelected: isSelected, mark: mark)
-            .id(rowID ?? "old-\(line.oldLine ?? 0)")
+            .id(rowID ?? Self.oldLineID(line.oldLine ?? 0))
             .contentShape(Rectangle())
             .onTapGesture {
                 guard let number, line.kind != .noNewline else { return }
