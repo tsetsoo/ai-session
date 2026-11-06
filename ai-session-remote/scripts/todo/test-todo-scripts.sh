@@ -3147,7 +3147,9 @@ WSP="${SCRIPT_DIR}/ai-todo-workspace"
 R_LOCAL="${HOME}/work/local"
 mkdir -p "${R_LOCAL}/sub" && git_q -C "$R_LOCAL" init -q && git_q -C "$R_LOCAL" commit -q --allow-empty -m init
 printf '.env\n/CLAUDE.md\nlocal/\nsecret.txt\n.worktreeinclude\n.worktreelink\n' >>"${R_LOCAL}/.git/info/exclude"
-printf '.env\nsub/.env\nsecret-not-listed\ndraft.txt\n' >"${R_LOCAL}/.worktreeinclude"
+printf '.env\nsub/.env\nsecret-not-listed\ndraft.txt\nnotyet.env\n' >"${R_LOCAL}/.worktreeinclude"
+# Ignored only by an uncommitted .gitignore: the worktree (from the base commit) wouldn't ignore it.
+echo notyet.env >"${R_LOCAL}/.gitignore"; echo "SECRET=1" >"${R_LOCAL}/notyet.env"
 printf '/CLAUDE.md\nlocal/\n' >"${R_LOCAL}/.worktreelink"
 echo "TOKEN=1" >"${R_LOCAL}/.env"; echo "SUB=1" >"${R_LOCAL}/sub/.env"; echo "s" >"${R_LOCAL}/secret.txt"
 echo "untracked, not ignored" >"${R_LOCAL}/draft.txt"; echo "# local rules" >"${R_LOCAL}/CLAUDE.md"
@@ -3166,9 +3168,10 @@ L_WT="${R_TREES}/proj-local/r-local001"
 [[ -d "${L_WT}/local" && ! -L "${L_WT}/local" && -L "${L_WT}/local/notes" && -f "${L_WT}/local/notes/a.md" ]] || fail "local/ was not linked entry by entry"
 [[ ! -e "${L_WT}/secret.txt" ]] || fail "an ignored file not listed was brought over"
 [[ ! -e "${L_WT}/draft.txt" ]] || fail "an untracked file git doesn't ignore was copied"
+[[ ! -e "${L_WT}/notyet.env" ]] || fail "a file the worktree doesn't ignore was copied (it could be committed)"
 [[ -z "$(git -C "$L_WT" status --porcelain)" ]] || fail "local files made the worktree dirty: $(git -C "$L_WT" status --porcelain)"
-grep -q "local_files run=r-local001 copied=2 linked=2" "${R_STATE}/runner.log" || fail "local files not logged"
-pass "runner_brings_local_files (include copies, link symlinks, a dir/ pattern links its entries, only ignored paths, worktree stays clean)"
+grep -q "local_files run=r-local001 copied=2 linked=2 skipped=1" "${R_STATE}/runner.log" || fail "local files not logged"
+pass "runner_brings_local_files (include copies, link symlinks, a dir/ pattern links its entries, only paths ignored in the folder and the worktree, worktree stays clean)"
 
 echo "TOKEN=2" >"${R_LOCAL}/.env"
 out=$("$WSP" sync "${L_WT}/sub") || fail "sync failed"
@@ -3181,8 +3184,18 @@ set +e; "$WSP" sync "$R_LOCAL" 2>/dev/null; status=$?; set -e
 "$WSP" list --json | python3 -c '
 import json, sys
 r = [x for x in json.load(sys.stdin) if x["id"] == "r-local001"][0]
-assert r["state"] == "clean" and r["copied"] == [".env", "sub/.env"] and r["linked"] == ["CLAUDE.md", "local"], r' || fail "list --json wrong"
-pass "workspace_sync_refreshes_untouched_copies (keeps and reports edited ones; list shows state)"
+assert r["state"] == "dirty" and r["copied"] == [".env", "sub/.env"] and r["linked"] == ["CLAUDE.md", "local"], r' || fail "list --json wrong"
+python3 - "${R_STATE}/worktrees.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["r-local001"]["created"] -= 4 * 86400
+json.dump(d, open(p, "w"))
+PY
+runs_reset
+runner tick || fail "tick failed"
+[[ -d "$L_WT" ]] || fail "a worktree whose copied .env was edited was removed"
+pass "workspace_sync_refreshes_untouched_copies (keeps and reports edited ones; an edited copy is dirty and kept)"
 
 # Merged work is cleaned; unmerged commits are kept.
 R_BARE="${SANDBOX}/merged-origin.git"
@@ -3215,11 +3228,15 @@ for run in ("r-mrg00001", "r-unm00001"):
 json.dump(d, open(p, "w"))
 PY
 runs_reset
+tmux -L "$AI_TODO_TMUX_SOCKET" new-session -d -s inmerged -c "${R_TREES}/proj-merged/r-mrg00001"
+runner tick || fail "cleanup tick failed"
+[[ -d "${R_TREES}/proj-merged/r-mrg00001" ]] || fail "a worktree a tmux pane works in was removed"
+tmux -L "$AI_TODO_TMUX_SOCKET" kill-session -t inmerged
 runner tick || fail "cleanup tick failed"
 [[ ! -e "${R_TREES}/proj-merged/r-mrg00001" ]] && ! git -C "$R_MERGED" branch --list 'scheduled/*' | grep -q r-mrg000 || fail "a squash-merged worktree was kept"
 [[ -d "${R_TREES}/proj-merged/r-unm00001" ]] || fail "a worktree with unmerged commits was removed"
 grep -q "cleaned run=r-mrg00001 reason=merged" "${R_STATE}/runner.log" || fail "merged cleanup not logged"
-pass "runner_cleans_merged_worktrees (squash merge counts; unmerged commits kept)"
+pass "runner_cleans_merged_worktrees (squash merge counts; unmerged commits and ones in use by tmux kept)"
 
 runs_reset
 due_run r-codex001 proj-app '{"mode":"always"}' 0 codex

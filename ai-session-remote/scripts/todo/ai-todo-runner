@@ -287,10 +287,6 @@ def wait_reason(due, settings, started_now):
 
 # --- Worktrees (ai_todo_workspace.py) ----------------------------------------------
 
-def git(folder, *args, timeout=60):
-    return workspace.git(folder, *args, timeout=timeout)
-
-
 def slug(name):
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "job"
 
@@ -299,15 +295,19 @@ def make_worktree(folder, project_id, run_id, job_name):
     """(worktree root, cwd, is_git, branch or None). The cwd is the folder's place inside the
     worktree: a folder that is a subfolder of its repo (a monorepo component) opens there, not at
     the repo root. Raises RuntimeError when a git worktree can't be made."""
-    if git(folder, "rev-parse", "--show-toplevel")[0] != 0:
-        return folder, folder, False, None
     branch = "scheduled/%s-%s-%s" % (slug(job_name), time.strftime("%Y%m%d"), run_id[:8])
     path = os.path.join(TREES, project_id, run_id)
-    cwd, entry = workspace.create(folder, path, branch)
-    registry = workspace.load_registry(registry_path())
-    registry[run_id] = entry
-    workspace.save_registry(registry_path(), registry)
-    if entry.get("copied") or entry.get("linked"):
+    try:
+        cwd, entry = workspace.create(folder, path, branch)
+    except workspace.NotARepo:
+        return folder, folder, False, None
+    try:
+        with workspace.locked_registry(registry_path()) as registry:
+            registry[run_id] = entry
+    except Exception:
+        workspace.remove(entry)
+        raise
+    if entry.get("copied") or entry.get("linked") or entry.get("skipped"):
         log("local_files", run=run_id, copied=len(entry.get("copied") or {}), linked=len(entry.get("linked") or []),
             skipped=len(entry.get("skipped") or []))
     return path, cwd, True, branch
@@ -317,14 +317,13 @@ def registry_path():
     return os.path.join(STATE_DIR, "worktrees.json")
 
 
-def remove_worktree(folder, path, branch):
-    workspace.remove({"folder": folder, "path": path, "branch": branch})
-
-
 def cleanup_worktrees():
     """Remove scheduled worktrees older than 3 days that hold nothing, or whose work is already
     merged into origin/HEAD. Any with uncommitted changes or unmerged commits are kept."""
-    workspace.sweep(registry_path(), CLEANUP_AFTER, log)
+    try:
+        workspace.sweep(registry_path(), CLEANUP_AFTER, log)
+    except Exception as e:  # never cost the tick its status
+        log("cleanup_failed", error=type(e).__name__)
 
 
 # --- Watchers -----------------------------------------------------------------------
@@ -595,7 +594,7 @@ def start_run(hub, computer_id, due, folders):
                 log("session_report_failed", run=run["id"], error=e)
     except Exception as e:
         if is_git and "timed out" not in str(e):
-            remove_worktree(folder, root, branch)
+            workspace.remove({"folder": folder, "path": root, "branch": branch})
         raise
     return "started %s in %s" % (started.get("tool") or action.get("tool"), tilde(path))
 

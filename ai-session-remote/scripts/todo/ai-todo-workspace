@@ -3,7 +3,7 @@
 
 Usage:
   ai-todo-workspace list [--json]   each registered worktree: path, branch, state
-                                    (clean | dirty | ahead N | missing), local files
+                                    (clean | dirty | in use | ahead N | missing), local files
   ai-todo-workspace sync <path>     re-copy .worktreeinclude files whose source changed while
                                     the worktree's copy was untouched; names ones that differ
 
@@ -27,9 +27,9 @@ def tilde(path):
 
 
 def cmd_list(args):
-    rows = []
+    rows, panes = [], workspace.tmux_paths()
     for key, entry in sorted(workspace.load_registry(REGISTRY).items(), key=lambda kv: kv[1].get("created") or 0):
-        kind, ahead = workspace.state(entry)
+        kind, ahead = workspace.state(entry, panes)
         rows.append({"id": key, "path": tilde(entry.get("path") or ""), "branch": entry.get("branch"),
                      "state": kind, "ahead": ahead, "copied": sorted(entry.get("copied") or {}),
                      "linked": entry.get("linked") or []})
@@ -46,20 +46,21 @@ def cmd_sync(args):
     if len(args) != 1:
         return usage()
     target = os.path.realpath(os.path.expanduser(args[0]))
-    registry = workspace.load_registry(REGISTRY)
-    for key, entry in registry.items():
-        root = os.path.realpath(entry.get("path") or "")
-        if target == root or target.startswith(root + "/"):
-            updated, differs = workspace.sync(entry)
-            if updated:
-                workspace.save_registry(REGISTRY, registry)
-            for rel in updated:
-                print("updated %s" % rel)
-            for rel in differs:
-                print("differs %s (edited here and in the project folder; kept this copy)" % rel)
-            return 3 if differs else 0
-    print("ai-todo-workspace: %s is not a registered worktree" % tilde(target), file=sys.stderr)
-    return 65
+    updated = differs = None
+    with workspace.locked_registry(REGISTRY) as registry:
+        for entry in registry.values():
+            root = os.path.realpath(entry.get("path") or "")
+            if target == root or target.startswith(root + "/"):
+                updated, differs = workspace.sync(entry)
+                break
+    if updated is None:
+        print("ai-todo-workspace: %s is not a registered worktree" % tilde(target), file=sys.stderr)
+        return 65
+    for rel in updated:
+        print("updated %s" % rel)
+    for rel in differs:
+        print("differs %s (edited here and in the project folder; kept this copy)" % rel)
+    return 3 if differs else 0
 
 
 def usage():
