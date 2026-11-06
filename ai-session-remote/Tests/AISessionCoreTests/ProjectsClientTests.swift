@@ -366,6 +366,75 @@ final class ProjectsClientTests: XCTestCase {
         XCTAssertNil(lastRequest.url?.query)
     }
 
+    // MARK: Usage
+
+    static let counters = """
+    "sessions":1,"prompts":2,"assistant_turns":3,"input_tokens":10,"output_tokens":1000,"cache_read_tokens":5000,"cache_creation_tokens":50,"active_seconds":600,"files_touched":2
+    """
+
+    static let summaryJSON = """
+    "own":{\(counters)},
+    "workers":{"sessions":3,"prompts":3,"assistant_turns":6,"input_tokens":3,"output_tokens":405,"cache_read_tokens":15,"cache_creation_tokens":21,"active_seconds":180,"files_touched":0},
+    "by_model":[{"model":"claude-opus-5-5","input_tokens":10,"output_tokens":1000,"cache_read_tokens":1000,"cache_creation_tokens":50},
+                {"model":"gpt-5.5-codex","input_tokens":1,"output_tokens":405,"cache_read_tokens":5,"cache_creation_tokens":null}],
+    "worker_types":[{"kind":"agent","type":"Explore",\(counters)},{"kind":"internal","type":null,\(counters)}],
+    "first_activity":"2026-11-02T10:00:00Z","last_activity":"2026-11-02T12:00:00Z","elapsed_seconds":7200,
+    "stats_updated_at":"2026-11-06 20:07:56","unread_conversations":1,
+    "conversations":[{"conversation_id":"c1","todo_id":"t1","tool":"claude","session_id":"s1","computer_id":"mac","title":"Do it",
+                      "reading":"uploaded","own":{\(counters)},"workers":{"sessions":0,"prompts":0,"assistant_turns":0,"active_seconds":0,"files_touched":0}},
+                     {"conversation_id":"c2","todo_id":"t1","tool":"cursor","session_id":"x","computer_id":"mac",
+                      "reading":"cursor","own":{"sessions":0},"workers":{"sessions":0}},
+                     {"conversation_id":"c3","todo_id":"t1","tool":"codex","computer_id":"mac","reading":"later","own":{},"workers":{}}]
+    """
+
+    func testTodoUsageDecodesAndRequests() async throws {
+        respond("{\"todo_id\":\"t1\",\(Self.summaryJSON)}")
+        let usage = try await client().todoUsage(todoId: "t 1")
+        XCTAssertEqual(lastRequest.url?.path, "/api/todos/t 1/usage")
+        XCTAssertEqual(usage.todoId, "t1")
+        let u = usage.usage
+        XCTAssertEqual(u.own.outputTokens, 1000)
+        XCTAssertEqual(u.workers.sessions, 3)
+        XCTAssertEqual(u.total.outputTokens, 1405)
+        XCTAssertEqual(u.total.weight, 1405 + 71)
+        XCTAssertEqual(u.byModel.map(\.shortName), ["opus-5-5", "gpt-5.5-codex"])
+        XCTAssertEqual(u.byModel[1].weight, 405, "a null cache-creation counts as 0")
+        XCTAssertEqual(u.workerTypes.map(\.title), ["Explore", "internal"])
+        XCTAssertEqual(u.workerTypes[0].counters.outputTokens, 1000)
+        XCTAssertEqual(u.elapsedSeconds, 7200)
+        XCTAssertEqual(u.conversations.map(\.reading), [.uploaded, .cursor, .unknown])
+        XCTAssertNil(u.conversations[0].reading.missingReason)
+        XCTAssertNotNil(u.conversations[1].reading.missingReason)
+        XCTAssertFalse(u.isEmpty)
+    }
+
+    func testJobUsageDecodesRuns() async throws {
+        respond("""
+        {"job_id":"j1",\(Self.summaryJSON),
+         "runs":[{"run_id":"r2","due_at":"2026-11-02T08:00:00Z","state":"done","todo_id":"t1",\(Self.summaryJSON)},
+                 {"run_id":"r1","due_at":"2026-11-01T08:00:00Z","state":"skipped","todo_id":null,
+                  "own":{"sessions":0},"workers":{"sessions":0},"by_model":[],"worker_types":[],"unread_conversations":0,"conversations":[]}]}
+        """)
+        let usage = try await client().jobUsage(jobId: "j1", runs: 5)
+        XCTAssertEqual(lastRequest.url?.path, "/api/jobs/j1/usage")
+        XCTAssertEqual(queryItems(), ["runs": "5"])
+        XCTAssertEqual(usage.usage.own.outputTokens, 1000)
+        XCTAssertEqual(usage.runs.map(\.runId), ["r2", "r1"])
+        XCTAssertEqual(usage.runs[0].usage.workers.outputTokens, 405)
+        XCTAssertTrue(usage.runs[1].usage.isEmpty)
+        XCTAssertNil(usage.runs[1].todoId)
+    }
+
+    func testWeeklyWorkers() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        XCTAssertEqual(try decoder.decode(WeeklyStats.self, from: Data(Self.weeklyJSON.utf8)).workers, StatsCounters(),
+                       "an older hub sends no workers")
+        var json = Self.weeklyJSON
+        json.insert(contentsOf: "\"workers\":{\(Self.counters)},", at: json.index(after: json.firstIndex(of: "{")!))
+        XCTAssertEqual(try decoder.decode(WeeklyStats.self, from: Data(json.utf8)).workers.outputTokens, 1000)
+    }
+
     // MARK: Memories
 
     func testMemoriesQueryKinds() async throws {

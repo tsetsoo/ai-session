@@ -122,6 +122,12 @@ public enum StatsFormat {
         return hours > 0 ? "\(hours)h \(minutes % 60)m" : "\(minutes)m"
     }
 
+    /// Wall-clock spans that can run for days: `3d 4h`, else like `duration`.
+    public static func span(seconds: Int) -> String {
+        let hours = max(seconds, 0) / 3600
+        return hours >= 48 ? "\(hours / 24)d \(hours % 24)h" : duration(seconds: seconds)
+    }
+
     /// `950`, `51.2k`, `9.1M`; `–` when unknown.
     public static func tokens(_ value: Int?) -> String {
         guard let value else { return "–" }

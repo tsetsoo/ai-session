@@ -555,23 +555,27 @@ public struct WeeklyStats: Decodable, Hashable, Sendable {
     /// `YYYY-MM-DD`, a Monday.
     public var weekStart: String
     public var weekEnd: String
+    /// The conversations' own usage
     public var totals: StatsCounters
+    /// Their sub-agents' usage on the week's days (`sessions` counts workers); older hubs send none
+    public var workers: StatsCounters
     public var byProject: [ProjectRollup]
     public var bySection: [SectionRollup]
     public var byComputer: [ComputerRollup]
 
-    public init(weekStart: String, weekEnd: String, totals: StatsCounters,
+    public init(weekStart: String, weekEnd: String, totals: StatsCounters, workers: StatsCounters = StatsCounters(),
                 byProject: [ProjectRollup] = [], bySection: [SectionRollup] = [], byComputer: [ComputerRollup] = []) {
         self.weekStart = weekStart
         self.weekEnd = weekEnd
         self.totals = totals
+        self.workers = workers
         self.byProject = byProject
         self.bySection = bySection
         self.byComputer = byComputer
     }
 
     private enum CodingKeys: String, CodingKey {
-        case weekStart, weekEnd, totals, byProject, bySection, byComputer
+        case weekStart, weekEnd, totals, workers, byProject, bySection, byComputer
     }
 
     public init(from decoder: Decoder) throws {
@@ -579,6 +583,7 @@ public struct WeeklyStats: Decodable, Hashable, Sendable {
         weekStart = try c.decode(String.self, forKey: .weekStart)
         weekEnd = try c.decode(String.self, forKey: .weekEnd)
         totals = try c.decodeIfPresent(StatsCounters.self, forKey: .totals) ?? StatsCounters()
+        workers = try c.decodeIfPresent(StatsCounters.self, forKey: .workers) ?? StatsCounters()
         byProject = try c.decodeIfPresent([ProjectRollup].self, forKey: .byProject) ?? []
         bySection = try c.decodeIfPresent([SectionRollup].self, forKey: .bySection) ?? []
         byComputer = try c.decodeIfPresent([ComputerRollup].self, forKey: .byComputer) ?? []

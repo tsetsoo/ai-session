@@ -50,6 +50,8 @@ struct ConversationFrame: View {
     #endif
     @State private var terminal = TerminalHandle()
     @State private var clipboardSessionID: String?
+    /// This todo's usage (own + sub-agents), shown at the right of the limits strip.
+    @State private var todoUsage: UsageSummary?
     @State private var copied = TransientValue<Bool>(for: .toast)
     @State private var showingDeleteConfirmation = false
     @State private var renameTarget: Todo?
@@ -830,8 +832,24 @@ struct ConversationFrame: View {
                 computer: target.computer,
                 tool: target.tool,
                 sessionId: target.sessionId,
-                polls: isFrontmost
+                polls: isFrontmost,
+                usage: todoUsage
             )
+            .task(id: "\(todo.id)|\(isFrontmost)") {
+                guard isFrontmost else { return }
+                await pollTodoUsage()
+            }
+        }
+    }
+
+    /// The todo's usage from the hub while this frame is in front. Computers upload stats
+    /// every few minutes, so a slow poll is enough; a failed read keeps the last numbers.
+    private func pollTodoUsage() async {
+        while !Task.isCancelled {
+            if let usage = try? await store.todoUsage(todoId: todo.id), !Task.isCancelled {
+                todoUsage = usage
+            }
+            try? await Task.sleep(for: .seconds(120))
         }
     }
 

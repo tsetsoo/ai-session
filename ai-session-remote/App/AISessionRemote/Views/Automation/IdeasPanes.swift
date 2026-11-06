@@ -395,6 +395,8 @@ struct ActivityDetail: View {
     /// nil where a job can't be opened from here (the phone).
     let onOpenJob: ((String) -> Void)?
     let onOpenTodo: (String) -> Void
+    /// What the run's todo used (its conversations and their sub-agents).
+    @State private var usage: UsageSummary?
 
     var body: some View {
         if let recent = store.recentRuns?.first(where: { $0.id == runID }) {
@@ -415,6 +417,11 @@ struct ActivityDetail: View {
                     if let reason = run.waitingReason { LabeledContent("Waiting because", value: reason) }
                     if let result = run.result { LabeledContent("Result", value: result) }
                 }
+                if let usage, !usage.isEmpty {
+                    Section("Usage") {
+                        UsageDetailView(usage: usage, title: "This run")
+                    }
+                }
                 Section {
                     if let onOpenJob {
                         Button("Open Job", systemImage: "clock.arrow.circlepath") { onOpenJob(run.jobId) }
@@ -426,6 +433,11 @@ struct ActivityDetail: View {
             }
             .formStyle(.grouped)
             .navigationTitle(recent.jobName)
+            .task(id: "\(run.id)|\(run.state)") {
+                usage = nil
+                guard let todoId = run.todoId else { return }
+                usage = try? await store.todoUsage(todoId: todoId)
+            }
         } else {
             AutomationEmpty(text: "Choose a run to see what happened.")
         }

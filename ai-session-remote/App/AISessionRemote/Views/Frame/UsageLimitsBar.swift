@@ -5,7 +5,8 @@ import SwiftUI
 /// 5-hour, weekly and monthly limits for this chat's tool, read on the
 /// computer the chat runs on. A window that login does not have is absent,
 /// and a computer without the script shows nothing. A failed read with no
-/// earlier numbers says the limits are unavailable.
+/// earlier numbers says the limits are unavailable. On the right, what this todo's
+/// conversations used (`usage`, from the hub), when there is a reading.
 struct UsageLimitsBar: View {
     let computer: Computer
     let tool: String
@@ -13,12 +14,14 @@ struct UsageLimitsBar: View {
     /// Off for a conversation that is mounted but not the one on screen. Included in `taskID`,
     /// so turning it off cancels an in-flight loop and turning it on starts a load.
     let polls: Bool
+    let usage: UsageSummary?
 
-    init(computer: Computer, tool: String, sessionId: String?, polls: Bool = true) {
+    init(computer: Computer, tool: String, sessionId: String?, polls: Bool = true, usage: UsageSummary? = nil) {
         self.computer = computer
         self.tool = tool
         self.sessionId = sessionId
         self.polls = polls
+        self.usage = usage
     }
 
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
@@ -27,13 +30,19 @@ struct UsageLimitsBar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let windows = limits?.windows, !windows.isEmpty {
-                chips(windows)
-            } else if limits == nil, unavailable {
+            if shows {
                 strip {
-                    Text("Limits unavailable")
-                        .foregroundStyle(.secondary)
-                        .help("Couldn't read this tool's usage limits on \(computer.name).")
+                    if let windows = limits?.windows, !windows.isEmpty {
+                        chips(windows)
+                    } else if limits == nil, unavailable {
+                        Text("Limits unavailable")
+                            .foregroundStyle(.secondary)
+                            .help("Couldn't read this tool's usage limits on \(computer.name).")
+                    }
+                } trailing: {
+                    if let usage = shownUsage {
+                        TodoUsageChip(usage: usage)
+                    }
                 }
             }
         }
@@ -44,8 +53,13 @@ struct UsageLimitsBar: View {
         }
     }
 
+    private var shownUsage: UsageSummary? {
+        guard let usage, !usage.isEmpty else { return nil }
+        return usage
+    }
+
     private var shows: Bool {
-        !(limits?.windows.isEmpty ?? true) || (limits == nil && unavailable)
+        !(limits?.windows.isEmpty ?? true) || (limits == nil && unavailable) || shownUsage != nil
     }
 
     /// Reloads when the chat's computer, tool, saved host, or polling gate changes.
@@ -55,22 +69,22 @@ struct UsageLimitsBar: View {
     }
 
     private func chips(_ windows: [UsageLimitWindow]) -> some View {
-        strip {
-            ForEach(windows) { window in
-                Text("\(window.title) \(window.percentText)")
-                    .foregroundStyle(window.isElevated ? DS.accent : Color.secondary)
-                    .fontWeight(window.isHigh ? .semibold : .regular)
-                    .help(window.accessibilityText)
-                    .accessibilityLabel(window.accessibilityText)
-            }
+        ForEach(windows) { window in
+            Text("\(window.title) \(window.percentText)")
+                .foregroundStyle(window.isElevated ? DS.accent : Color.secondary)
+                .fontWeight(window.isHigh ? .semibold : .regular)
+                .help(window.accessibilityText)
+                .accessibilityLabel(window.accessibilityText)
         }
     }
 
-    private func strip(@ViewBuilder _ content: () -> some View) -> some View {
+    private func strip(@ViewBuilder _ content: () -> some View,
+                       @ViewBuilder trailing: () -> some View) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: DS.spacing.m) {
                 content()
                 Spacer(minLength: 0)
+                trailing()
             }
             .font(.caption.monospacedDigit())
             .lineLimit(1)

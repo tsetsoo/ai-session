@@ -23,6 +23,7 @@
 		0E084439FFE2FCB9C1C81AF4 /* ProjectsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F85D0650002C6172FF438409 /* ProjectsView.swift */; };
 		0EBEF766C754B360334DAFB5 /* NotificationSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D37845B7FF254EEC7823E4C /* NotificationSettingsView.swift */; };
 		0F574FC3E0F0251E54C8862E /* TodayPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = F734A46121C5F35DAB720843 /* TodayPanes.swift */; };
+		0FC884486FF53C6BD991F5C4 /* UsageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2968A6B93F6B7D9AFCADC8BA /* UsageViews.swift */; };
 		0FE1099683E149F3C6E0F861 /* AccentButtonStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 953A88DC4DA95609F6AA1F02 /* AccentButtonStyle.swift */; };
 		10BE5487C7B5DE001354E7ED /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B5CF5ADABEA184DD911533 /* SessionsListView.swift */; };
 		1257CFF715CF5669E68422AC /* ComputerDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0593DCB097C923A73341EB68 /* ComputerDetailView.swift */; };
@@ -120,6 +121,7 @@
 		628C5E7A29AFB611090667CE /* DuplicateInTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14970B2EF5E5E12D8AF519CD /* DuplicateInTests.swift */; };
 		62BF5DE110162E7CAB151ADD /* InlineTodoAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D77F4B71B24E6F3E37B3E21 /* InlineTodoAdd.swift */; };
 		62EE3364D3A7193767345B7E /* UsageLimitsBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = CACA4D506127E0997E071460 /* UsageLimitsBar.swift */; };
+		6365372D4059FBA5C8C4B31E /* UsageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2968A6B93F6B7D9AFCADC8BA /* UsageViews.swift */; };
 		6415FD15B68D544FA70B2E5B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BB9F3F1B36EAC5FB8B07504 /* SettingsView.swift */; };
 		65C0A2A9CE36C21502A5B5EF /* ShellWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 723A156714397550BA2826C4 /* ShellWorkspace.swift */; };
 		65FA33B8E87008A416400E66 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 9A15C4D410D8FBA24EA1F462 /* Crypto */; };
@@ -366,6 +368,7 @@
 		24947A77BA8C57130367110F /* OnThisComputerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnThisComputerView.swift; sourceTree = "<group>"; };
 		2795545DB4B7B10EE099084F /* ConversationLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationLoader.swift; sourceTree = "<group>"; };
 		28722A0C4FEBE10DC336E84A /* ChatPromptCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPromptCard.swift; sourceTree = "<group>"; };
+		2968A6B93F6B7D9AFCADC8BA /* UsageViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageViews.swift; sourceTree = "<group>"; };
 		2B30BC89B3A1D2CE46EB6921 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		2BFD9EB6DE7519501FD14139 /* ListActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListActions.swift; sourceTree = "<group>"; };
 		2EEA147830218031EA1DDBEF /* ChatMessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessageView.swift; sourceTree = "<group>"; };
@@ -741,6 +744,14 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
+		674C17420FF696A44A5A48C5 /* Usage */ = {
+			isa = PBXGroup;
+			children = (
+				2968A6B93F6B7D9AFCADC8BA /* UsageViews.swift */,
+			);
+			path = Usage;
+			sourceTree = "<group>";
+		};
 		6E55E3A121D4C5A5B7EE47AC /* Persistence */ = {
 			isa = PBXGroup;
 			children = (
@@ -800,6 +811,7 @@
 				A4B2104B1A5873ADA85FEEEF /* Shell */,
 				7701A9BFBBF8EF85269293DB /* Today */,
 				B2A43EC64BFDB004D55DEF52 /* Todos */,
+				674C17420FF696A44A5A48C5 /* Usage */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -1238,6 +1250,7 @@
 				43742E0FFAA3656D1B6E80B8 /* TodoRow.swift in Sources */,
 				F2E7CD434C69783BD0D1B0EF /* TransientValue.swift in Sources */,
 				62EE3364D3A7193767345B7E /* UsageLimitsBar.swift in Sources */,
+				6365372D4059FBA5C8C4B31E /* UsageViews.swift in Sources */,
 				737E82EA63D17DED7D7A1E5E /* VisiblePresence.swift in Sources */,
 				A833E425DF3BF7260B05B895 /* WatchersPanes.swift in Sources */,
 				7676E04E635A23C1677E618F /* WeeklyStatsCard.swift in Sources */,
@@ -1372,6 +1385,7 @@
 				2C88335BD42E331992BF6C04 /* TodoRow.swift in Sources */,
 				47BA8BDD90F1E015257BC3BE /* TransientValue.swift in Sources */,
 				962ADDED4007BC69B8EB2B10 /* UsageLimitsBar.swift in Sources */,
+				0FC884486FF53C6BD991F5C4 /* UsageViews.swift in Sources */,
 				80A8F55A26E2FCA12D648A3E /* VisiblePresence.swift in Sources */,
 				94E5EF07291C54BCF762A5BE /* WatchersPanes.swift in Sources */,
 				5BA3E1B8237FDA5412EAC38D /* WeeklyStatsCard.swift in Sources */,

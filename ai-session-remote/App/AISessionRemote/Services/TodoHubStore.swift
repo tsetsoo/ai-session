@@ -971,6 +971,22 @@ final class TodoHubStore {
         return try await requireClient().weeklyStats(weekStart: weekStart, projectId: projectId)
     }
 
+    /// What a todo's conversations and their sub-agents used. The demo has no readings.
+    func todoUsage(todoId: String) async throws -> UsageSummary {
+        #if DEBUG
+        if demo != nil { return UsageSummary() }
+        #endif
+        return try await requireClient().todoUsage(todoId: todoId).usage
+    }
+
+    /// A job's usage over all runs and its newest runs one by one.
+    func jobUsage(jobId: String, runs: Int = 20) async throws -> JobUsage? {
+        #if DEBUG
+        if demo != nil { return nil }
+        #endif
+        return try await requireClient().jobUsage(jobId: jobId, runs: runs)
+    }
+
     /// Any memory query: the panel next to a conversation asks for pages and sources.
     func memories(_ query: MemoryQuery) async throws -> [Memory] {
         #if DEBUG

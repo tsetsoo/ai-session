@@ -356,6 +356,17 @@ public struct TodoHubClient: Sendable {
         return try await decode(WeeklyStats.self, send("GET", "/api/stats/weekly", query: query))
     }
 
+    /// A todo's conversations: own usage, their workers', by model. 404 for an unknown todo.
+    public func todoUsage(todoId: String) async throws -> TodoUsage {
+        try await decode(TodoUsage.self, send("GET", "/api/todos/\(escape(todoId))/usage"))
+    }
+
+    /// A job's usage over all runs, and its newest `runs` runs one by one.
+    public func jobUsage(jobId: String, runs: Int? = nil) async throws -> JobUsage {
+        let query = runs.map { [URLQueryItem(name: "runs", value: String($0))] } ?? []
+        return try await decode(JobUsage.self, send("GET", "/api/jobs/\(escape(jobId))/usage", query: query))
+    }
+
     // MARK: Memories
 
     /// Pinned first, then newest.

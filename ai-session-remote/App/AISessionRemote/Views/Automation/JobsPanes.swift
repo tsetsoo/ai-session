@@ -153,6 +153,7 @@ struct JobDetailPane: View {
     let onOpenTodo: (String) -> Void
 
     @State private var runs: [JobRun]?
+    @State private var usage: JobUsage?
     @State private var confirmingDelete = false
     @State private var errorMessage: String?
 
@@ -197,11 +198,17 @@ struct JobDetailPane: View {
             Section("Does") {
                 Text(JobText.does(job, store: store))
             }
+            if let usage, !usage.usage.isEmpty {
+                Section("Usage") {
+                    UsageDetailView(usage: usage.usage, title: "All runs")
+                }
+            }
             Section("Runs") {
                 if let runs {
                     if runs.isEmpty { Text("No runs yet.").foregroundStyle(.secondary) }
                     ForEach(runs) { run in
-                        RunRow(run: run, store: store, onOpenTodo: onOpenTodo)
+                        RunRow(run: run, store: store, usage: usage?.runs.first { $0.runId == run.id }?.usage,
+                               onOpenTodo: onOpenTodo)
                     }
                 } else {
                     ProgressView().frame(maxWidth: .infinity)
@@ -212,6 +219,9 @@ struct JobDetailPane: View {
         .navigationTitle(job.name)
         .task(id: "\(job.id)|\(store.revision)|\(job.lastRun?.id ?? "")|\(job.lastRun?.state ?? "")") {
             runs = try? await store.jobRuns(job)
+            if let next = try? await store.jobUsage(jobId: job.id, runs: max(runs?.count ?? 0, 20)) {
+                usage = next
+            }
         }
         .confirmationDialog("Delete \(job.name)?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {
@@ -247,6 +257,8 @@ struct RunRow: View {
     let run: JobRun
     let store: TodoHubStore
     var jobName: String?
+    /// The run's todo's usage, when the pane loaded it.
+    var usage: UsageSummary?
     let onOpenTodo: (String) -> Void
 
     var body: some View {
@@ -260,6 +272,12 @@ struct RunRow: View {
             }
             if let detail = run.waitingReason ?? run.result {
                 Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            if let usage, let line = UsageText.runLine(usage) {
+                Label(line, systemImage: "gauge.with.dots.needle.33percent")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .help(UsageText.spoken(usage))
             }
             if let todoId = run.todoId, let todo = store.todos.first(where: { $0.id == todoId }) {
                 Button {

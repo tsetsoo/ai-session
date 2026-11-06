@@ -17,7 +17,7 @@ struct WeeklyStatsCard: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             if let stats {
-                grid(stats.totals)
+                grid(stats.totals, workers: stats.workers)
             } else if let error {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.footnote)
@@ -61,14 +61,22 @@ struct WeeklyStatsCard: View {
         return "\(start.formatted(format)) – \(end.formatted(format))"
     }
 
-    private func grid(_ totals: StatsCounters) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), alignment: .leading)], alignment: .leading, spacing: 12) {
+    /// `totals` are the conversations' own; sub-agents' output is added and shown on its own.
+    private func grid(_ totals: StatsCounters, workers: StatsCounters) -> some View {
+        let all = totals + workers
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), alignment: .leading)], alignment: .leading, spacing: 12) {
             metric("Active", StatsFormat.duration(seconds: totals.activeSeconds))
             metric("Prompts", "\(totals.prompts)")
             metric("Turns", "\(totals.assistantTurns)")
-            metric("Output tokens", StatsFormat.tokens(totals.outputTokens))
-            metric("Total tokens", StatsFormat.tokens(totals.totalTokens))
+            metric("Output tokens", StatsFormat.tokens(all.outputTokens))
+            if workers.sessions > 0 {
+                metric("Sub-agent output", StatsFormat.tokens(workers.outputTokens))
+            }
+            metric("Total tokens", StatsFormat.tokens(all.totalTokens))
             metric("Sessions", "\(totals.sessions)")
+            if workers.sessions > 0 {
+                metric("Sub-agents", "\(workers.sessions)")
+            }
             metric("Files", "\(totals.filesTouched)")
         }
     }
