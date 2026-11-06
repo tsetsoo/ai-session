@@ -3,6 +3,8 @@ public enum OpenFailure: Equatable, Sendable {
     case helpersMissing, toolMissing, folderMissing, conversationNotFound
     /// Another Codex holds the conversation (its writer lock).
     case openElsewhere
+    /// The conversation's own git worktree couldn't be made (`ai-todo-open --worktree`).
+    case worktreeFailed
 
     public init?(exitStatus: Int?) {
         switch exitStatus {
@@ -11,6 +13,7 @@ public enum OpenFailure: Equatable, Sendable {
         case 93: self = .folderMissing
         case 94: self = .conversationNotFound
         case 95: self = .openElsewhere
+        case 96: self = .worktreeFailed
         default: return nil
         }
     }

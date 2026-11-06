@@ -195,6 +195,13 @@ struct FrameStateView: View {
                 primary: FrameStateButton(title: "Change Folder") { actions.openSettings(.sections(nil)) },
                 secondary: FrameStateButton(title: "Try Again", action: actions.retry)
             )
+        case let .worktreeFailed(name, folder):
+            FrameStateBlock(
+                systemImage: "arrow.triangle.branch",
+                title: "Couldn't make this conversation's worktree on \(name)",
+                message: "It is made from \(folder) with git. Check that the folder is a git repository that can fetch, or turn off own worktrees in the project's settings.",
+                primary: FrameStateButton(title: "Try Again", action: actions.retry)
+            )
         case let .conversationNotFound(name):
             FrameStateBlock(
                 systemImage: "questionmark.bubble",

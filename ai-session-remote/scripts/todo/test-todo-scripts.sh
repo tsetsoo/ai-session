@@ -3270,12 +3270,35 @@ AI_TODO_RUNNER_STATE_DIR="$R_STATE" AI_TODO_OPEN_DETACH=1 "$OPEN" --worktree '~/
   "$C_NAME" "~/.ai-remote/worktrees/proj-merged/${C_ID}" "$C_SID" >/dev/null 2>"${SANDBOX}/wt.err" || fail "remake failed: $(cat "${SANDBOX}/wt.err")"
 [[ "$(git -C "$C_WT" rev-parse --abbrev-ref HEAD)" == ai/fix-login-c0ffee00 ]] || fail "remade worktree not on its kept branch"
 tmux -L "$SOCK" kill-session -t "=$C_NAME"
-# A folder outside git: exit 93, nothing started.
+# A remake that fails after git made the worktree keeps the branch (it may hold commits).
+echo kept >"${C_WT}/k.txt"; git_q -C "$C_WT" add k.txt; git_q -C "$C_WT" commit -q -m "conversation work"
+kept_sha=$(git -C "$C_WT" rev-parse HEAD)
+git_q -C "$R_MERGED" worktree remove --force "$C_WT"
+PYTHONPATH="$SCRIPT_DIR" python3 - "$R_STATE/worktrees.json" "$C_WT" "${HOME}/work/merged" <<'PY' && fail "a failing remake should raise" || true
+import sys, ai_todo_workspace as w
+def boom(top, path): raise RuntimeError("local files failed")
+w.bring_local_files = boom
+w.ensure(sys.argv[1], sys.argv[2], sys.argv[3], "ai/fix-login-c0ffee00")
+PY
+[[ ! -e "$C_WT" && "$(git -C "$R_MERGED" rev-parse ai/fix-login-c0ffee00)" == "$kept_sha" ]] || fail "a failed remake deleted the kept branch"
+[[ ! -e "${R_TREES}/proj-merged/.${C_ID}.lock" ]] || fail "a removed worktree left its lock file"
+# The sweep counts a conversation's age from its last open.
+AI_TODO_RUNNER_STATE_DIR="$R_STATE" "$WSP" ensure "$C_WT" "${HOME}/work/merged" ai/fix-login-c0ffee00 2>/dev/null || fail "remake failed"
+python3 - "${R_STATE}/worktrees.json" "$C_ID" <<'PY'
+import json, sys, time
+d = json.load(open(sys.argv[1])); e = d[sys.argv[2]]
+e["created"] -= 10 * 86400; e["opened"] = time.time()
+json.dump(d, open(sys.argv[1], "w"))
+PY
+git_q -C "$C_WT" reset -q --hard origin/main  # nothing past base: clean, sweepable by age
+runs_reset; runner tick || fail "tick failed"
+[[ -d "$C_WT" ]] || fail "a conversation worktree opened just now was swept for its creation age"
+# A folder outside git: exit 96, nothing started.
 set +e
 AI_TODO_RUNNER_STATE_DIR="$R_STATE" AI_TODO_OPEN_DETACH=1 "$OPEN" --worktree '~/work/plain' ai/x-c0ffee01 \
   ai/claude/todo-c0ffee01 "~/.ai-remote/worktrees/proj-plain/c0ffee01" "$C_SID" >/dev/null 2>"${SANDBOX}/wt.err"
 status=$?; set -e
-[[ $status -eq 93 ]] && grep -q "not in a git repository" "${SANDBOX}/wt.err" || fail "non-git worktree open: $status $(cat "${SANDBOX}/wt.err")"
+[[ $status -eq 96 ]] && grep -q "not in a git repository" "${SANDBOX}/wt.err" || fail "non-git worktree open: $status $(cat "${SANDBOX}/wt.err")"
 ! tmux -L "$SOCK" has-session -t "=ai/claude/todo-c0ffee01" 2>/dev/null || fail "a session started without its worktree"
 for args in "--worktree" "--worktree ~/work/merged" "--worktree ~/work/merged bad..branch $C_NAME ~ $C_SID"; do
   # shellcheck disable=SC2086
@@ -3283,7 +3306,7 @@ for args in "--worktree" "--worktree ~/work/merged" "--worktree ~/work/merged ba
     fail "ai-todo-open accepted bad --worktree arguments: $args"
   fi
 done
-pass "open_makes_the_conversation_worktree (once, from origin/HEAD, branch kept when remade; non-git folder exits 93)"
+pass "open_makes_the_conversation_worktree (once, from origin/HEAD, branch kept when remade; non-git folder exits 96)"
 
 runs_reset
 due_run r-codex001 proj-app '{"mode":"always"}' 0 codex

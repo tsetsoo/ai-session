@@ -299,6 +299,7 @@ def make_worktree(folder, project_id, run_id, job_name):
     path = os.path.join(TREES, project_id, run_id)
     try:
         cwd, entry = workspace.create(folder, path, branch)
+        entry.pop("reused_branch", None)
     except workspace.NotARepo:
         return folder, folder, False, None
     try:

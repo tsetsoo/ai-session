@@ -38,7 +38,7 @@
 #                   The conversation has its own git worktree: <cwd> is its path, made from
 #                   <folder>'s repo on <branch> when missing (ai-todo-workspace ensure, which
 #                   prints progress), its local files synced otherwise. A running session
-#                   attaches without it. Exit 93 when it can't be made.
+#                   attaches without it. Exit 96 when it can't be made (stderr says why).
 # --mcp <names>     Comma-separated MCP servers from ~/.ai-remote/mcp (see ai-todo-mcp);
 #                   '' = managed, none. Only as the first argument: older versions of this
 #                   script exit 64 for it, and the app then retries without it. It applies
@@ -56,7 +56,8 @@
 # Exit codes: 64 bad arguments, 90 tmux / claude / codex / agent missing, 93 cwd not usable,
 #             94 no Codex or Cursor conversation with that id, or a new one
 #             did not appear within 30 seconds,
-#             95 another Codex holds that Codex conversation (its writer lock).
+#             95 another Codex holds that Codex conversation (its writer lock),
+#             96 the conversation's worktree could not be made (--worktree).
 #
 # Test hooks (not for normal use):
 #   AI_TODO_TMUX_SOCKET  use a private tmux server (tmux -L <name>)
@@ -400,7 +401,7 @@ if [ -n "$wt_folder" ]; then
   esac
   "${AI_TODO_WORKSPACE_BIN:-$(dirname "$0")/ai-todo-workspace}" ensure "$cwd" "$wt_folder" "$wt_branch" || {
     echo "could not prepare the worktree $cwd" >&2
-    exit 93
+    exit 96
   }
 fi
 

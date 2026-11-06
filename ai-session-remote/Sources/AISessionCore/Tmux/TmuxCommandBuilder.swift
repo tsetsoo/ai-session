@@ -133,7 +133,12 @@ public enum TmuxCommandBuilder {
     /// claude arguments, ahead of `arguments`, and (as `ai-todo-open` does) runs claude through
     /// `/bin/sh` to read `~/.ai-remote/mcp/env` when that file exists: the tmux server's
     /// environment lacks the variables the server files reference.
-    public static func forkDetached(tmuxName: String, cwd: String, arguments: [String], mcpServers: [String]? = nil) -> String {
+    /// `worktree` makes the conversation's worktree at `cwd` first when it is missing (swept, or
+    /// removed by hand), as `ai-todo-open --worktree` does; exit 96 when it can't be made.
+    public static func forkDetached(
+        tmuxName: String, cwd: String, arguments: [String], mcpServers: [String]? = nil,
+        worktree: (folder: String, branch: String)? = nil
+    ) -> String {
         var argv = arguments.map(shellQuote).joined(separator: " ")
         var mcpSetup = ""
         if let mcpServers {
@@ -155,9 +160,12 @@ public enum TmuxCommandBuilder {
         let name = shellQuote(tmuxName)
         let exact = shellQuote("=" + tmuxName)
         let folder = shellQuotePath(cwd)
+        let ensure = worktree.map {
+            "\"$HOME/.ai-remote/bin/ai-todo-workspace\" ensure \(folder) \(shellQuotePath($0.folder)) \(shellQuote($0.branch)) || exit 96\n"
+        } ?? ""
         return wrap(
             """
-            \(mcpSetup)list_sessions() { find "$HOME/.claude/projects" -maxdepth 2 -name '*.jsonl' -print 2>/dev/null | LC_ALL=C sort; }
+            \(ensure)\(mcpSetup)list_sessions() { find "$HOME/.claude/projects" -maxdepth 2 -name '*.jsonl' -print 2>/dev/null | LC_ALL=C sort; }
             before=$(list_sessions)
             tmux new-session -d -s \(name) -c \(folder) -- env PATH="$PATH" LANG="${LANG:-en_US.UTF-8}" LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}" LC_ALL="${LC_ALL:-en_US.UTF-8}" \(argv) || exit $?
             deadline=$(( $(date +%s) + 30 ))

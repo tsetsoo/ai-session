@@ -60,6 +60,8 @@ enum FrameProblem: Equatable {
     case helpersMissing(String)
     case toolMissing(String)
     case folderMissing(String, String)
+    /// Computer name, and the project folder the worktree is made from.
+    case worktreeFailed(String, String)
     case conversationNotFound(String)
     /// Another Codex holds the conversation. The command names it.
     case openElsewhere(String, check: String)
@@ -256,6 +258,8 @@ final class ConversationLoader {
         case .helpersMissing: phase = .problem(.helpersMissing(name))
         case .toolMissing: phase = .problem(.toolMissing(name))
         case .folderMissing: phase = .problem(.folderMissing(name, open.conversation.cwd))
+        case .worktreeFailed:
+            phase = .problem(.worktreeFailed(name, open.conversation.worktreeSource ?? open.conversation.cwd))
         case .conversationNotFound: phase = .problem(.conversationNotFound(name))
         case .openElsewhere: phase = .problem(.openElsewhere(name, check: ResumeCommand.writerCheck(for: open.conversation)))
         }

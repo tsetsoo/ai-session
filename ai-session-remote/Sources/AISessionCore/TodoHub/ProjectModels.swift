@@ -117,11 +117,6 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
     /// a repo URL); others always share the folder.
     public var worktrees: Bool
 
-    /// Whether new conversations here get their own worktree.
-    public var opensWorktrees: Bool {
-        worktrees && !(repoUrl ?? "").trimmingCharacters(in: .whitespaces).isEmpty
-    }
-
     public init(
         id: String, name: String, computer: Computer, folder: String, section: TodoSection = .si,
         repoUrl: String? = nil,

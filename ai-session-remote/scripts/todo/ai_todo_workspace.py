@@ -20,7 +20,7 @@ path the worktree already has is left alone; one that can't be read is skipped.
 Copies are recorded with their source's hash; sync() re-copies a file whose source changed
 while the worktree's copy was not edited, and reports one where both changed.
 
-Sweep. A worktree older than the cleanup age is removed when it is clean and either has no
+Sweep. A worktree older than the cleanup age (a conversation's: since it was last opened) is removed when it is clean and either has no
 commits past its base or its work is already in origin/HEAD (merging it would change nothing:
 a fast-forward, rebase or squash merge all count). Clean means: no uncommitted changes, still
 on its own branch, no copied local file edited, and no tmux pane working inside it. Anything
@@ -118,7 +118,8 @@ def create(folder, path, branch):
     base = "origin/HEAD" if git(folder, "rev-parse", "--verify", "--quiet", "origin/HEAD")[0] == 0 else "HEAD"
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     base_sha = git(folder, "rev-parse", base)[1]
-    if git(folder, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch)[0] == 0:
+    reused = git(folder, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch)[0] == 0
+    if reused:
         # A conversation's worktree made again (swept, or deleted by hand): its branch is
         # kept with whatever it has.
         git(folder, "worktree", "prune")
@@ -132,8 +133,9 @@ def create(folder, path, branch):
     try:
         entry.update(bring_local_files(top, path))
     except Exception:
-        remove(entry)
+        undo_create(entry, reused)
         raise
+    entry["reused_branch"] = reused
     cwd = os.path.join(path, prefix) if prefix and os.path.isdir(os.path.join(path, prefix)) else path
     return cwd, entry
 
@@ -266,29 +268,42 @@ def sync(entry):
     return updated, differs
 
 
+def undo_create(entry, reused_branch):
+    """Remove a worktree create() just made. A branch it did not make (reused) is kept: it may
+    hold the conversation's commits."""
+    remove(dict(entry, branch=None) if reused_branch else entry)
+
+
+def _lock_path(path):
+    return os.path.join(os.path.dirname(path), "." + os.path.basename(path) + ".lock")
+
+
 def ensure(registry_path, path, folder, branch, log=lambda msg: None):
     """A conversation's own worktree at `path` (of `folder`'s repo, on `branch`): made and
     registered when missing, its local files synced when present. Safe to call on every open
     and from two devices at once (a lock per path). Returns (made, updated, differs).
     Raises NotARepo or RuntimeError as create() does."""
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    lock_path = os.path.join(os.path.dirname(path), "." + os.path.basename(path) + ".lock")
-    with open(lock_path, "a") as lock:
+    with open(_lock_path(path), "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if os.path.isdir(path):
             with locked_registry(registry_path) as registry:
                 entry = next((e for e in registry.values() if e.get("path") == path), None)
+                if entry:
+                    entry["opened"] = time.time()  # the sweep counts its age from here
                 updated, differs = sync(entry) if entry else ([], [])
             return False, updated, differs
         log("Preparing a worktree of %s on branch %s" % (folder, branch))
         _, entry = create(folder, path, branch)
+        reused = entry.pop("reused_branch", False)
+        entry["opened"] = entry["created"]
         try:
             with locked_registry(registry_path) as registry:
                 for key in [k for k, e in registry.items() if e.get("path") == path]:
                     registry.pop(key)
                 registry[os.path.basename(path)] = entry
         except Exception:
-            remove(entry)
+            undo_create(entry, reused)
             raise
         return True, [], []
 
@@ -300,6 +315,8 @@ def remove(entry):
     folder = entry.get("folder") or ""
     if git(folder, "worktree", "remove", "--force", entry.get("path") or "")[0] != 0:
         return False
+    with contextlib.suppress(OSError):
+        os.unlink(_lock_path(entry.get("path") or ""))
     if entry.get("branch"):
         git(folder, "branch", "-D", entry["branch"])
     return True
@@ -355,6 +372,20 @@ def state(entry, panes=None):
     return ("ahead" if ahead else "clean"), ahead
 
 
+def _opening(path):
+    """True while ensure() holds this worktree's lock (an open is about to start a tool in it)."""
+    try:
+        with open(_lock_path(path)) as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    return False
+
+
 def sweep(registry_path, older_than, log=lambda *a, **k: None):
     """Remove old worktrees that hold nothing or whose work is merged; keep the rest."""
     with locked_registry(registry_path) as registry:
@@ -362,7 +393,7 @@ def sweep(registry_path, older_than, log=lambda *a, **k: None):
         due = []
         for key, entry in list(registry.items()):
             try:
-                old = now - float(entry.get("created") or now) >= older_than
+                old = now - max(float(entry.get("created") or now), float(entry.get("opened") or 0)) >= older_than
             except (AttributeError, TypeError, ValueError):
                 registry.pop(key)
                 continue
@@ -373,6 +404,8 @@ def sweep(registry_path, older_than, log=lambda *a, **k: None):
         panes, fetched = tmux_paths(), set()
         for key in due:
             entry = registry[key]
+            if _opening(entry.get("path") or ""):
+                continue
             kind, _ = state(entry, panes)
             if kind == "missing":
                 registry.pop(key)

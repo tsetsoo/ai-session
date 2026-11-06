@@ -589,7 +589,8 @@ final class TodoHubStore {
     /// same servers as the conversation it was forked from.
     static func forkCommand(_ created: Conversation, arguments: [String]) -> String {
         TmuxCommandBuilder.forkDetached(
-            tmuxName: created.tmuxName, cwd: created.cwd, arguments: arguments, mcpServers: created.mcpServers
+            tmuxName: created.tmuxName, cwd: created.cwd, arguments: arguments, mcpServers: created.mcpServers,
+            worktree: created.worktree
         )
     }
 
