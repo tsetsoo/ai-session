@@ -3,7 +3,8 @@
 
 Usage:
   ai-todo-workspace list [--json]   each registered worktree: path, branch, state
-                                    (clean | dirty | in use | ahead N | missing), local files
+                                    (clean | dirty | in use | ahead N | missing), local files,
+                                    its pull/merge request when the runner found one
   ai-todo-workspace sync <path>     re-copy .worktreeinclude files whose source changed while
                                     the worktree's copy was untouched; names ones that differ
   ai-todo-workspace ensure <path> <project folder> <branch>
@@ -38,13 +39,15 @@ def cmd_list(args):
         kind, ahead = workspace.state(entry, panes)
         rows.append({"id": key, "path": tilde(entry.get("path") or ""), "branch": entry.get("branch"),
                      "state": kind, "ahead": ahead, "copied": sorted(entry.get("copied") or {}),
-                     "linked": entry.get("linked") or []})
+                     "linked": entry.get("linked") or [], "pr": entry.get("pr")})
     if "--json" in args:
         print(json.dumps(rows))
         return 0
     for r in rows:
         label = "ahead %d" % r["ahead"] if r["state"] == "ahead" and r["ahead"] else r["state"]
-        print("%-9s %s  %s" % (label, r["path"], r["branch"] or "-"))
+        pr = r["pr"] or {}
+        print("%-9s %s  %s%s" % (label, r["path"], r["branch"] or "-",
+                                 "  %s (%s)" % (pr["url"], pr.get("state")) if pr.get("url") else ""))
     return 0
 
 

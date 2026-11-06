@@ -665,6 +665,7 @@ struct ConversationFrame: View {
         ConversationToolbarActions(
             status: displayStatus,
             statusDetail: conversation.flatMap { RowText.pauseDetail($0, now: Date()) },
+            pullRequest: conversation?.pullRequest,
             showsCopy: showsCopy,
             canCopy: conversation != nil,
             showsPopOut: showsPopOut,

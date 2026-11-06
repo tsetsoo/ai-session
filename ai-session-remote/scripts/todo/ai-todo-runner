@@ -21,7 +21,10 @@
 #      .worktreeinclude (copied) and .worktreelink (symlinked) are brought in
 #      (ai_todo_workspace.py). Each tick that reached the hub removes worktrees older than 3 days
 #      that no not-done todo's conversation works in (the due answer's keep_worktrees), are clean and
-#      have no commits, or whose work is already merged into origin/HEAD.
+#      have no commits, or whose work is already merged into origin/HEAD, or whose pull/merge
+#      request is merged with HEAD still at its head commit. Before that, each pushed worktree
+#      branch's PR/MR (gh, or glab for GitLab; every 10 minutes) is POSTed to
+#      /api/runner/pull-requests {computer_id, items: [{cwd, url, state}]} when new or changed.
 #   4. POST /api/runs/<id>/start {cwd, is_git}: the hub creates the scheduled todo and its
 #      conversation and answers the tmux name, session id and first prompt.
 #   5. ai-todo-open --detached --auto-approve --prompt-file <file> <tmux> <cwd> <id|-> <tool>
@@ -42,7 +45,8 @@
 #
 # Config: ~/.ai-remote/todo-hub.conf (TODO_HUB_URL, TODO_API_TOKEN, TODO_COMPUTER_ID).
 # Test hooks: AI_TODO_HUB_CONF, AI_TODO_OPEN_BIN, AI_TODO_LIMITS_BIN, AI_TODO_LIMITS_TIMEOUT,
-#   AI_TODO_RUNNER_STATE_DIR, AI_TODO_RUNNER_WORKTREES, AI_TODO_WATCHERS_DIR, AI_TODO_UPDATES_BIN
+#   AI_TODO_RUNNER_STATE_DIR, AI_TODO_RUNNER_WORKTREES, AI_TODO_WATCHERS_DIR, AI_TODO_UPDATES_BIN,
+#   AI_TODO_GH_BIN, AI_TODO_GLAB_BIN
 AI_TODO_LIB_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) && export AI_TODO_LIB_DIR
 ai_path=
 ai_ifs=$IFS
@@ -320,6 +324,31 @@ def make_worktree(folder, project_id, run_id, job_name):
 
 def registry_path():
     return os.path.join(STATE_DIR, "worktrees.json")
+
+
+def link_pull_requests(hub, computer_id):
+    """Find the PR/MR of each pushed worktree branch (gh or glab) and POST the new or changed
+    ones to /api/runner/pull-requests, which sets them on the conversations working there.
+    One that didn't reach the hub is sent again next tick."""
+    try:
+        workspace.link_prs(registry_path(), log)
+        items, keys = [], []
+        for key, entry in workspace.load_registry(registry_path()).items():
+            pr = entry.get("pr") or {}
+            if pr.get("url") and entry.get("pr_posted") != [pr["url"], pr.get("state")]:
+                items.append({"cwd": tilde(entry.get("path") or ""), "url": pr["url"], "state": pr.get("state")})
+                keys.append(key)
+        if not items:
+            return
+        hub.request("POST", "/api/runner/pull-requests", body={"computer_id": computer_id, "items": items})
+        with workspace.locked_registry(registry_path()) as registry:
+            for key, item in zip(keys, items):
+                if key in registry:
+                    registry[key]["pr_posted"] = [item["url"], item["state"]]
+    except HubError as e:
+        log("pr_post_failed", error=e)
+    except Exception as e:  # never cost the tick its status
+        log("pr_failed", error=type(e).__name__)
 
 
 def cleanup_worktrees(keep):
@@ -711,7 +740,8 @@ def cmd_tick(args):
         maybe_start_updates()
         maybe_report_health()
         # Only with the hub's answer: without its keep list, a closed conversation's worktree
-        # could go.
+        # could go. PRs first: a merged one lets the sweep remove its worktree.
+        link_pull_requests(hub, computer_id)
         cleanup_worktrees(due.get("keep_worktrees"))
     status["started"] = [t for t in status.get("started", []) if t > now() - 86400]
     save_json(status_path, status)

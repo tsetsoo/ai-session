@@ -922,6 +922,7 @@ private struct ConversationColumn: View {
         return ConversationToolbarActions(
             status: ConversationToolbar.displayStatus(todo: todo, store: model.store, selectedKey: model.selectedConversationID),
             statusDetail: conversation.flatMap { RowText.pauseDetail($0, now: Date()) },
+            pullRequest: model.store.displayed(forTodo: todo.id, selectedKey: model.selectedConversationID)?.pullRequest,
             showsCopy: showsCopy,
             canCopy: hasConversation,
             showsPopOut: showsPopOut,

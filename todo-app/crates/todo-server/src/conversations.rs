@@ -11,7 +11,7 @@
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
-    Computer, Conversation, ConversationStatus, ConversationStatusRequest, CreateComputerRequest, DeleteResponse,
+    Computer, Conversation, ConversationStatus, ConversationStatusRequest, CreateComputerRequest, DeleteResponse, PullRequest,
     DuplicateConversationRequest, Importance, LimitPause, LinkConversationRequest, OpenConversationRequest, Section, SectionComputer,
     ReportConversationMcpRequest, SetConversationMcpRequest, SetConversationSessionRequest, SetSectionComputerRequest,
     TodoFromConversationRequest, TodoWithConversation, UpdateComputerRequest,
@@ -32,13 +32,14 @@ pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, crea
 
 /// Conversation columns (0..=11), its computer (12..=19), then whether its session is known
 /// and that session's project (20, 21), its review state (22, 23), limit pause (24, 25),
-/// worktree source and branch (26, 27) and resume after the pause (28..=31).
+/// worktree source and branch (26, 27), resume after the pause (28..=31) and pull request
+/// url and state (32, 33).
 const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
         c.status_message, c.status_updated_at, c.created_at, c.label, c.mcp_servers,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default,
         s.session_id IS NOT NULL, s.project_id, c.status_revision, c.reviewed,
         c.paused_kind, c.paused_until, c.worktree_source, c.branch,
-        c.resume_on_reset, c.resume_off_reason, c.resume_at, c.resume_offer
+        c.resume_on_reset, c.resume_off_reason, c.resume_at, c.resume_offer, c.pr_url, c.pr_state
      FROM conversations c JOIN computers m ON m.id = c.computer_id
      LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id";
 
@@ -157,6 +158,10 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
         }),
         resume_on_reset: row.get(28)?,
         resume_off_reason: row.get(29)?,
+        pull_request: match (row.get::<_, Option<String>>(32)?, row.get::<_, Option<String>>(33)?) {
+            (Some(url), Some(state)) => Some(PullRequest { url, state }),
+            _ => None,
+        },
     };
     Ok((conversation, row.get(20)?))
 }
@@ -1618,6 +1623,7 @@ mod tests {
             branch: None,
             resume_on_reset: false,
             resume_off_reason: None,
+            pull_request: None,
         }
     }
 

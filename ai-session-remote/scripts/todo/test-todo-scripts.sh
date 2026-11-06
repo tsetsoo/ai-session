@@ -3455,6 +3455,79 @@ runner tick || fail "cleanup tick failed"
 grep -q "cleaned run=r-mrg00001 reason=merged" "${R_STATE}/runner.log" || fail "merged cleanup not logged"
 pass "runner_cleans_merged_worktrees (squash merge counts; unmerged commits and ones in use by tmux kept)"
 
+# Pull/merge requests: a pushed worktree branch's PR is found (gh, or glab for GitLab), POSTed
+# to the hub once per change, and a merged one whose head is HEAD lets the sweep remove it.
+P_WT="${R_TREES}/proj-merged/r-unm00001"
+P_BRANCH="$(git -C "$P_WT" rev-parse --abbrev-ref HEAD)"
+P_HEAD="$(git -C "$P_WT" rev-parse HEAD)"
+P_GH="${SANDBOX}/fake-gh"; P_GH_LOG="${SANDBOX}/gh.log"; P_GH_JSON="${SANDBOX}/gh.json"
+cat >"$P_GH" <<'SH'
+#!/bin/sh
+echo "$*" >>"$FAKE_GH_LOG"
+[ "${FAKE_GH_EXIT:-0}" = 0 ] || exit "$FAKE_GH_EXIT"
+cat "$FAKE_GH_JSON"
+SH
+chmod +x "$P_GH"; : >"$P_GH_LOG"
+prunner() { FAKE_GH_LOG="$P_GH_LOG" FAKE_GH_JSON="$P_GH_JSON" AI_TODO_GH_BIN="$P_GH" AI_TODO_GLAB_BIN="$P_GH" runner "$@"; }
+pr_json() { # <state> <head> [gitlab]
+  if [[ -n "${3:-}" ]]; then
+    printf '[{"iid":7,"web_url":"https://gitlab.com/o/r/-/merge_requests/7","state":"%s","sha":"%s","source_branch":"%s","updated_at":"2026-11-06T10:00:00Z"}]' "$1" "$2" "$P_BRANCH" >"$P_GH_JSON"
+  else
+    printf '[{"number":7,"url":"https://github.com/o/r/pull/7","state":"%s","headRefOid":"%s","updatedAt":"2026-11-06T10:00:00Z"}]' "$1" "$2" >"$P_GH_JSON"
+  fi
+}
+pr_recheck() { # forget when the PR and merge were last checked
+  python3 - "${R_STATE}/worktrees.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); e = d["r-unm00001"]
+e["pr_checked"] = 0; e["merged_checked"] = 0
+json.dump(d, open(p, "w"))
+PY
+}
+pr_posts() { python3 - "$M_HUB_LOG" "$R_MARK" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]).readlines()[int(sys.argv[2]):]]
+print(json.dumps([r["body"]["items"] for r in rows if r["path"] == "/api/runner/pull-requests"]))
+PY
+}
+git_q -C "$R_MERGED" config ai-remote.forge github
+pr_json OPEN "$P_HEAD"
+runs_reset; pr_recheck; prunner tick || fail "tick failed"
+[[ ! -s "$P_GH_LOG" ]] || fail "gh asked about a branch that isn't on origin: $(cat "$P_GH_LOG")"
+git_q -C "$R_MERGED" update-ref "refs/remotes/origin/${P_BRANCH}" "$P_HEAD"
+runs_reset; pr_recheck; FAKE_GH_EXIT=4 prunner tick || fail "tick failed"
+[[ "$(pr_posts)" == "[]" && -d "$P_WT" ]] || fail "a failing gh posted or removed: $(pr_posts)"
+grep -q "pr_unknown run=r-unm00001" "${R_STATE}/runner.log" || fail "gh failure not logged"
+runs_reset; pr_recheck; prunner tick || fail "tick failed"
+[[ "$(pr_posts)" == "[[{\"cwd\": \"~/.ai-remote/worktrees/proj-merged/r-unm00001\", \"url\": \"https://github.com/o/r/pull/7\", \"state\": \"open\"}]]" ]] \
+  || fail "open PR not posted: $(pr_posts)"
+grep -q -- "--head ${P_BRANCH} --state all" "$P_GH_LOG" || fail "gh not asked by branch: $(cat "$P_GH_LOG")"
+: >"$P_GH_LOG"; runs_reset; prunner tick || fail "tick failed"
+[[ ! -s "$P_GH_LOG" && "$(pr_posts)" == "[]" ]] || fail "PR rechecked or reposted within 10 minutes"
+# A post that didn't reach the hub is sent again.
+pr_json MERGED 0000000000000000000000000000000000000000
+hub_edit "s['prs_status'] = 500"
+runs_reset; pr_recheck; prunner tick || fail "tick failed"
+hub_edit "s.pop('prs_status', None)"
+runs_reset; prunner tick || fail "tick failed"
+[[ "$(pr_posts)" == *'"state": "merged"'* ]] || fail "a failed post was not retried: $(pr_posts)"
+# Merged, but HEAD has commits past the PR's head: kept.
+[[ -d "$P_WT" ]] || fail "a worktree with commits after its merged PR was removed"
+# A merged PR (head = HEAD) is merged even though merge-tree says otherwise.
+pr_json merged "$P_HEAD" gitlab
+git_q -C "$R_MERGED" config ai-remote.forge gitlab
+python3 - "${R_STATE}/worktrees.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d["r-unm00001"].pop("pr")
+json.dump(d, open(p, "w"))
+PY
+runs_reset; pr_recheck; prunner tick || fail "tick failed"
+grep -q -- "mr list --source-branch ${P_BRANCH} --all" "$P_GH_LOG" || fail "glab not asked for GitLab: $(cat "$P_GH_LOG")"
+[[ ! -e "$P_WT" ]] || fail "a worktree whose MR is merged at HEAD was kept"
+grep -q "cleaned run=r-unm00001 reason=merged" "${R_STATE}/runner.log" || fail "PR-merged cleanup not logged"
+[[ "$(pr_posts)" == *'merge_requests/7", "state": "merged"'* ]] || fail "merged MR not posted: $(pr_posts)"
+pass "runner_links_pull_requests (gh/glab by forge, only pushed branches, unknown never merged, retried posts, merged PR at HEAD cleans)"
+
 # Cleanup keeps the worktrees the hub lists (open todos), and doesn't run when due failed.
 runs_reset
 due_run r-keep0001 proj-merged '{"mode":"always"}'

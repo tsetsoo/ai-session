@@ -445,6 +445,18 @@ pub struct Conversation {
     /// Why the hub switched `resume_on_reset` off: `cap` (3 resumes in 24 hours).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_off_reason: Option<String>,
+    /// The pull request (GitHub) or merge request (GitLab) of the branch this conversation
+    /// works on, as its computer's runner last found it. Absent until one is found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<PullRequest>,
+}
+
+/// A conversation's pull or merge request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullRequest {
+    pub url: String,
+    /// "open", "merged" or "closed".
+    pub state: String,
 }
 
 /// A conversation stopped by a subscription or API usage limit.

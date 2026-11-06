@@ -26,6 +26,13 @@ a fast-forward, rebase or squash merge all count). Clean means: no uncommitted c
 on its own branch, no copied local file edited, and no tmux pane working inside it. Anything
 else is kept. The merged check fetches each repo at most once per sweep and reruns at most
 hourly per worktree. The registry is read and written under a lock.
+
+Pull requests. link_prs() asks GitHub (gh) or GitLab (glab, chosen by origin's URL) for the
+pull or merge request of each worktree's branch once that branch is on origin, and records
+it on the entry ("pr": url, number, state open|merged|closed, head). A missing or failing CLI
+leaves the entry as it was ("unknown"), never "merged". The sweep also counts a worktree as
+merged when its PR is merged and HEAD is still the PR's head commit (a squash merge edited
+during review, or main changing the same lines since, defeats the merge-tree check).
 """
 
 import contextlib
@@ -33,6 +40,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -44,6 +52,9 @@ COPY_MAX_FILES = 2000
 COPY_MAX_BYTES = 100 << 20
 MERGED_RECHECK = 3600
 FETCH_TIMEOUT = 15
+PR_RECHECK = 600          # an open PR, or a pushed branch without one
+PR_RECHECK_CLOSED = 3600  # a closed PR can be reopened; a merged one is final
+PR_TIMEOUT = 20
 
 
 class NotARepo(Exception):
@@ -431,7 +442,7 @@ def sweep(registry_path, older_than, log=lambda *a, **k: None, keep=()):
                     if git(folder, "remote", "get-url", "origin")[0] == 0:
                         git(folder, "fetch", "--quiet", "origin", timeout=FETCH_TIMEOUT)
                 entry["merged_checked"] = now
-                if not merged(entry["path"]):
+                if not merged(entry["path"]) and not pr_merged(entry):
                     continue
                 kind = "merged"
             if kind in ("clean", "merged"):
@@ -440,3 +451,138 @@ def sweep(registry_path, older_than, log=lambda *a, **k: None, keep=()):
                     log("cleaned", run=key, reason=kind)
                 else:
                     log("clean_failed", run=key)
+
+
+# --- Pull / merge requests -------------------------------------------------------------
+
+class PRUnknown(Exception):
+    """The forge couldn't be asked (no CLI, not logged in, offline, unreadable answer)."""
+
+
+def forge(folder):
+    """"github" | "gitlab" | None: `git config ai-remote.forge` (for a self-hosted forge whose
+    host name says neither), else from origin's URL."""
+    code, kind, _ = git(folder, "config", "--get", "ai-remote.forge")
+    if code == 0 and kind.lower() in ("github", "gitlab"):
+        return kind.lower()
+    code, url, _ = git(folder, "remote", "get-url", "origin")
+    if code != 0 or not url:
+        return None
+    # https://host/x, ssh://git@host:22/x, git@host:x
+    m = re.match(r"^(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]+@)?([^/:]+)", url, re.I)
+    host = m.group(1).lower() if m else ""
+    if "github" in host:
+        return "github"
+    if "gitlab" in host:
+        return "gitlab"
+    return None
+
+
+def _cli(argv, folder):
+    try:
+        p = subprocess.run(argv, cwd=folder, capture_output=True, text=True, timeout=PR_TIMEOUT,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise PRUnknown("%s: %s" % (os.path.basename(argv[0]), type(e).__name__))
+    if p.returncode != 0:
+        raise PRUnknown("%s exited %d" % (os.path.basename(argv[0]), p.returncode))
+    try:
+        rows = json.loads(p.stdout or "[]")
+    except ValueError:
+        raise PRUnknown("%s: not JSON" % os.path.basename(argv[0]))
+    if not isinstance(rows, list):
+        raise PRUnknown("%s: not a list" % os.path.basename(argv[0]))
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def find_pr(folder, branch):
+    """The pull/merge request of `branch` in `folder`'s origin: {url, number, state, head},
+    or None when there is none (or origin is neither GitHub nor GitLab). An open one wins,
+    else the most recently updated. Raises PRUnknown when the forge can't be asked."""
+    kind = forge(folder)
+    if kind == "github":
+        rows = _cli([os.environ.get("AI_TODO_GH_BIN") or "gh", "pr", "list", "--head", branch, "--state", "all", "--limit", "20",
+                     "--json", "url,number,state,headRefOid,updatedAt"], folder)
+        prs = [{"url": r.get("url"), "number": r.get("number"), "state": str(r.get("state") or "").lower(),
+                "head": r.get("headRefOid"), "updated": r.get("updatedAt") or ""} for r in rows]
+    elif kind == "gitlab":
+        rows = _cli([os.environ.get("AI_TODO_GLAB_BIN") or "glab", "mr", "list", "--source-branch", branch, "--all", "-F", "json",
+                     "--per-page", "20"], folder)
+        states = {"opened": "open", "locked": "open"}
+        prs = [{"url": r.get("web_url"), "number": r.get("iid"),
+                "state": states.get(r.get("state"), r.get("state")), "head": r.get("sha"),
+                "updated": r.get("updated_at") or ""} for r in rows
+               if r.get("source_branch") in (None, branch)]
+    else:
+        return None
+    prs = [p for p in prs if isinstance(p["url"], str) and p["url"].startswith("https://")
+           and p["state"] in ("open", "merged", "closed")]
+    if not prs:
+        return None
+    prs.sort(key=lambda p: (p["state"] == "open", p["updated"]), reverse=True)
+    best = prs[0]
+    best.pop("updated")
+    return best
+
+
+def _pushed(folder, branch):
+    return git(folder, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + branch)[0] == 0
+
+
+def link_prs(registry_path, log=lambda *a, **k: None, now=None):
+    """Look up the PR of each worktree whose branch is on origin (or already has a PR that
+    isn't merged), at most every PR_RECHECK, and record it. The forge is asked outside the
+    registry lock. Returns {key: pr} of the entries whose PR is new or changed state."""
+    now = time.time() if now is None else now
+    todo = []
+    for key, entry in load_registry(registry_path).items():
+        branch, folder, pr = entry.get("branch"), entry.get("folder") or "", entry.get("pr") or {}
+        if not branch or not os.path.isdir(entry.get("path") or "") or pr.get("state") == "merged":
+            continue
+        wait = PR_RECHECK_CLOSED if pr.get("state") == "closed" else PR_RECHECK
+        try:
+            if now - float(entry.get("pr_checked") or 0) < wait:
+                continue
+        except (TypeError, ValueError):
+            pass
+        if pr or _pushed(folder, branch):
+            todo.append((key, folder, branch))
+    found = {}
+    for key, folder, branch in todo:
+        try:
+            found[key] = find_pr(folder, branch)
+        except PRUnknown as e:
+            found[key] = e
+    changed = {}
+    if not found:
+        return changed
+    with locked_registry(registry_path) as registry:
+        for key, result in found.items():
+            entry = registry.get(key)
+            if entry is None:
+                continue
+            entry["pr_checked"] = now
+            if isinstance(result, PRUnknown):
+                if entry.get("pr_error") != str(result):
+                    log("pr_unknown", run=key, error=str(result))
+                entry["pr_error"] = str(result)
+                continue
+            entry.pop("pr_error", None)
+            if result is None:
+                continue  # keep a PR seen before: gh/glab never forget one, so this is a blip
+            old = entry.get("pr") or {}
+            entry["pr"] = result
+            if (old.get("url"), old.get("state")) != (result["url"], result["state"]):
+                changed[key] = result
+                log("pr", run=key, state=result["state"], number=result.get("number"))
+    return changed
+
+
+def pr_merged(entry):
+    """True when the worktree's PR is merged and HEAD is still the commit that PR merged
+    (commits made after the merge keep it)."""
+    pr = entry.get("pr") or {}
+    if pr.get("state") != "merged" or not pr.get("head"):
+        return False
+    code, head, _ = git(entry.get("path") or "", "rev-parse", "HEAD")
+    return code == 0 and head == pr["head"]

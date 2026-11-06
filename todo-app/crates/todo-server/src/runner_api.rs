@@ -560,6 +560,68 @@ pub async fn due(pool: web::Data<DbPool>, query: web::Query<std::collections::Ha
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PullRequestItem {
+    /// The worktree folder (`~/...`): conversations working in it or below it get the PR.
+    pub cwd: String,
+    pub url: String,
+    pub state: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PullRequestsRequest {
+    pub computer_id: String,
+    pub items: Vec<PullRequestItem>,
+}
+
+/// Set the pull/merge requests a runner found for its worktree branches on the conversations
+/// of that computer working in those worktrees. Answers how many conversations changed.
+pub fn pull_requests_db(conn: &Connection, req: &PullRequestsRequest) -> rusqlite::Result<usize> {
+    let mut changed = 0;
+    for item in &req.items {
+        let cwd = item.cwd.trim_end_matches('/');
+        let mut stmt = conn.prepare_cached(
+            "UPDATE conversations SET pr_url = ?3, pr_state = ?4
+             WHERE computer_id = ?1 AND (cwd = ?2 OR substr(cwd, 1, length(?2) + 1) = ?2 || '/')
+               AND (pr_url IS NOT ?3 OR pr_state IS NOT ?4)",
+        )?;
+        changed += stmt.execute(params![req.computer_id, cwd, item.url, item.state])?;
+    }
+    Ok(changed)
+}
+
+pub async fn pull_requests(
+    pool: web::Data<DbPool>,
+    broadcaster: web::Data<Broadcaster>,
+    body: web::Json<PullRequestsRequest>,
+) -> HttpResponse {
+    let req = body.into_inner();
+    if req.computer_id.trim().is_empty() {
+        return bad_request("computer_id is required");
+    }
+    for item in &req.items {
+        // Only worktree folders, so a stray item can't touch a project folder's conversations.
+        if !item.cwd.starts_with("~/.ai-remote/worktrees/") || item.cwd.contains("/../") || item.cwd.ends_with("/..") {
+            return bad_request("cwd must be a worktree folder");
+        }
+        if !item.url.starts_with("https://") || item.url.len() > 500 {
+            return bad_request("url must be an https link");
+        }
+        if !matches!(item.state.as_str(), "open" | "merged" | "closed") {
+            return bad_request("state must be open, merged or closed");
+        }
+    }
+    match pool.get().map_err(|e| e.to_string()).and_then(|c| pull_requests_db(&c, &req).map_err(|e| e.to_string())) {
+        Ok(updated) => {
+            if updated > 0 {
+                broadcaster.send();
+            }
+            HttpResponse::Ok().json(serde_json::json!({ "updated": updated }))
+        }
+        Err(e) => server_error(e),
+    }
+}
+
 macro_rules! with_conn {
     ($pool:expr, $broadcaster:expr, $body:expr, $ok:expr) => {
         match $pool.get() {
@@ -690,6 +752,51 @@ mod tests {
         drop(conn);
         let (_, v) = get(&pool, "/api/runner/due?computer_id=mac").await;
         assert_eq!(v["keep_worktrees"], json!(["~/.ai-remote/worktrees/pa/c-open/app"]));
+    }
+
+    #[actix_web::test]
+    async fn pull_requests_set_on_worktree_conversations() {
+        let (_db, pool) = pool("runner-prs");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute_batch(
+            "INSERT INTO todos (id, section, title, project_id) VALUES ('a', 'Si', 'a', 'pa'), ('b', 'Si', 'b', 'pa'),
+                 ('c', 'Si', 'c', 'pa'), ('d', 'Si', 'd', 'pa'), ('e', 'Si', 'e', 'pa');
+             INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id) VALUES
+                 ('a', 'mac', '~/.ai-remote/worktrees/pa/c1', 'claude', 'ai/claude/todo-a', 's1'),
+                 ('b', 'mac', '~/.ai-remote/worktrees/pa/c1/sub', 'claude', 'ai/claude/todo-b', 's2'),
+                 ('c', 'mac', '~/.ai-remote/worktrees/pa/c10', 'claude', 'ai/claude/todo-c', 's3'),
+                 ('d', 'spread', '~/.ai-remote/worktrees/pa/c1', 'claude', 'ai/claude/todo-d', 's4'),
+                 ('e', 'mac', '~/a', 'claude', 'ai/claude/todo-e', 's5');",
+        )
+        .unwrap();
+        drop(conn);
+        let item = |state: &str| json!({"computer_id": "mac", "items": [
+            {"cwd": "~/.ai-remote/worktrees/pa/c1", "url": "https://github.com/o/r/pull/7", "state": state}]});
+        let (status, v) = post(&pool, "/api/runner/pull-requests", item("open")).await;
+        assert_eq!((status, v["updated"].as_u64()), (StatusCode::OK, Some(2)), "{v}");
+        let (_, again) = post(&pool, "/api/runner/pull-requests", item("open")).await;
+        assert_eq!(again["updated"], 0, "an unchanged PR changes nothing");
+        let (_, v) = get(&pool, "/api/todos/a/conversation").await;
+        assert_eq!(v["pull_request"], json!({"url": "https://github.com/o/r/pull/7", "state": "open"}), "{v}");
+        let (_, v) = get(&pool, "/api/todos/b/conversation").await;
+        assert_eq!(v["pull_request"]["state"], "open", "a conversation in a subfolder of the worktree");
+        for other in ["c", "d", "e"] {
+            let (_, v) = get(&pool, &format!("/api/todos/{other}/conversation")).await;
+            assert!(v.get("pull_request").is_none(), "{other}: {v}");
+        }
+        let (_, v) = post(&pool, "/api/runner/pull-requests", item("merged")).await;
+        assert_eq!(v["updated"], 2);
+        for bad in [
+            json!({"computer_id": "mac", "items": [{"cwd": "~/a", "url": "https://x/1", "state": "open"}]}),
+            json!({"computer_id": "mac", "items": [{"cwd": "~/.ai-remote/worktrees/../a", "url": "https://x/1", "state": "open"}]}),
+            json!({"computer_id": "mac", "items": [{"cwd": "~/.ai-remote/worktrees/pa/c1", "url": "javascript:x", "state": "open"}]}),
+            json!({"computer_id": "mac", "items": [{"cwd": "~/.ai-remote/worktrees/pa/c1", "url": "https://x/1", "state": "draft"}]}),
+            json!({"computer_id": " ", "items": []}),
+        ] {
+            let (status, _) = post(&pool, "/api/runner/pull-requests", bad.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        }
     }
 
     #[actix_web::test]

@@ -291,6 +291,8 @@ struct ConversationToolbarActions: View {
     var status: ConversationDisplayStatus?
     /// Why it is paused and when it resumes, shown with a paused status.
     var statusDetail: String? = nil
+    /// The conversation branch's pull/merge request, when its computer found one.
+    var pullRequest: PullRequestLink? = nil
     var showsCopy: Bool
     var canCopy: Bool
     var showsPopOut: Bool
@@ -330,6 +332,9 @@ struct ConversationToolbarActions: View {
 
     var body: some View {
         HStack(spacing: ConversationToolbar.controlSpacing) {
+            if let pullRequest {
+                PullRequestChip(pullRequest: pullRequest, compact: copyInMenu)
+            }
             if let status {
                 StatusBadge(status, style: .pill, detail: statusDetail)
                     .padding(.horizontal, DS.spacing.xs)

@@ -296,6 +296,11 @@ struct ReviewView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
+        if let pullRequest = conversation.pullRequest {
+            ToolbarItem(placement: .status) {
+                PullRequestChip(pullRequest: pullRequest)
+            }
+        }
         ToolbarItem(placement: .primaryAction) {
             reviewControl
         }

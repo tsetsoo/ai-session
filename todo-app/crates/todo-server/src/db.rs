@@ -140,6 +140,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v26_objects(&conn).expect("Failed to create the worker and model usage tables");
     create_v27_objects(&conn).expect("Failed to add the resume-after-limit columns");
     conn.execute_batch(crate::usage::V28_OBJECTS).expect("Failed to create the session history table");
+    create_v29_objects(&conn).expect("Failed to add the pull request columns");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -689,6 +690,16 @@ fn create_v26_objects(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v29: the pull/merge request of a conversation's worktree branch (additive).
+fn create_v29_objects(conn: &Connection) -> rusqlite::Result<()> {
+    for column in ["pr_url", "pr_state"] {
+        if table_sql(conn, "conversations")?.is_some() && !column_exists(conn, "conversations", column)? {
+            conn.execute_batch(&format!("ALTER TABLE conversations ADD COLUMN {column} TEXT;"))?;
+        }
+    }
+    Ok(())
+}
+
 fn create_v24_objects(conn: &Connection) -> rusqlite::Result<()> {
     for (table, column, ddl) in [
         ("projects", "worktrees", "INTEGER NOT NULL DEFAULT 1"),
@@ -901,9 +912,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///   `sessions.copied_entries_skipped` (additive)
 /// - v27: conversations gain resume after a usage limit (toggle, plan, offer, lease; additive)
 /// - v28: `session_todos` and its triggers on `conversations`: each session's last todo (additive)
+/// - v29: `conversations.pr_url`, `conversations.pr_state` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 28;
+pub const SCHEMA_VERSION: i64 = 29;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -925,6 +937,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
                         if table_sql(conn, "session_workers")?.is_some() {
                             if column_exists(conn, "conversations", "resume_lease_until")? {
                                 if table_sql(conn, "session_todos")?.is_some() {
+                                    if column_exists(conn, "conversations", "pr_url")? {
+                                        return Ok(29);
+                                    }
                                     return Ok(28);
                                 }
                                 return Ok(27);
@@ -2985,6 +3000,8 @@ mod tests {
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 29);
+        conn.execute_batch("ALTER TABLE conversations DROP COLUMN pr_url;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 28);
         conn.execute_batch(
             "DROP TRIGGER conversations_session_todo_ai; DROP TRIGGER conversations_session_todo_au; DROP TABLE session_todos;",
@@ -3036,7 +3053,7 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 28);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         let rows: Vec<(String, String)> = conn
             .prepare("SELECT session_id, conversation_id FROM session_todos")
             .unwrap()
@@ -3069,6 +3086,29 @@ mod tests {
         drop(pool);
         // A second start changes nothing.
         assert_eq!(user_version(&db.pool().get().unwrap()), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_to_v29() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE conversations DROP COLUMN pr_url; ALTER TABLE conversations DROP COLUMN pr_state;
+             PRAGMA user_version = 0;",
+        )
+        .unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 28, "sniffed without the PR columns");
+        conn.execute_batch("PRAGMA user_version = 28;").unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 29);
+        for column in ["pr_url", "pr_state"] {
+            assert!(column_exists(&conn, "conversations", column).unwrap(), "{column}");
+        }
+        conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 29);
     }
 
     #[test]

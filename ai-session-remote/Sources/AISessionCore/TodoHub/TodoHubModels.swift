@@ -164,6 +164,8 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var worktreeSource: String?
     /// The worktree's branch, with `worktreeSource`.
     public var branch: String?
+    /// The pull/merge request of the conversation's branch, as its computer last found it.
+    public var pullRequest: PullRequestLink?
 
     /// What `ai-todo-open --worktree` needs, when the conversation has its own worktree.
     public var worktree: (folder: String, branch: String)? {
@@ -203,7 +205,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         worktreeSource: String? = nil,
         branch: String? = nil,
         resumeOnReset: Bool = false,
-        resumeOffReason: String? = nil
+        resumeOffReason: String? = nil,
+        pullRequest: PullRequestLink? = nil
     ) {
         self.id = id
         self.todoId = todoId
@@ -226,6 +229,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         self.branch = branch
         self.resumeOnReset = resumeOnReset
         self.resumeOffReason = resumeOffReason
+        self.pullRequest = pullRequest
     }
 
     // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
@@ -233,6 +237,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         case id, todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
         case status, statusMessage, statusUpdatedAt, createdAt, projectId, label, mcpServers
         case statusRevision, reviewed, paused, worktreeSource, branch, resumeOnReset, resumeOffReason
+        case pullRequest
     }
 
     public init(from decoder: Decoder) throws {
@@ -265,6 +270,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         branch = try c.decodeIfPresent(String.self, forKey: .branch)
         resumeOnReset = (try? c.decodeIfPresent(Bool.self, forKey: .resumeOnReset)) ?? false
         resumeOffReason = try? c.decodeIfPresent(String.self, forKey: .resumeOffReason)
+        pullRequest = (try? c.decodeIfPresent(PullRequestLink.self, forKey: .pullRequest)) ?? nil
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -290,6 +296,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         try c.encodeIfPresent(branch, forKey: .branch)
         if resumeOnReset { try c.encode(resumeOnReset, forKey: .resumeOnReset) }
         try c.encodeIfPresent(resumeOffReason, forKey: .resumeOffReason)
+        try c.encodeIfPresent(pullRequest, forKey: .pullRequest)
     }
 
     /// The hub turned resuming off after 3 automatic resumes in a day.
@@ -298,6 +305,37 @@ public struct Conversation: Codable, Equatable, Sendable {
     /// Only Codex is resumed by the computer after a session limit: Claude continues on its
     /// own (its autoContinueAtUsageLimit), and Cursor reports no limits.
     public var canAutoResumeAfterLimit: Bool { tool == "codex" }
+}
+
+/// A conversation's pull request (GitHub) or merge request (GitLab).
+public struct PullRequestLink: Codable, Equatable, Sendable {
+    public var url: String
+    /// `open`, `merged` or `closed`.
+    public var state: String
+
+    public init(url: String, state: String) {
+        self.url = url
+        self.state = state
+    }
+
+    public var link: URL? { URL(string: url) }
+
+    /// GitLab calls them merge requests.
+    public var isMergeRequest: Bool { url.contains("/-/merge_requests/") }
+
+    /// The number at the end of the link (`.../pull/123`, `.../merge_requests/45`).
+    public var number: Int? {
+        let last = url.split(separator: "?").first?.split(separator: "#").first?
+            .split(separator: "/").last
+        return last.flatMap { Int($0) }
+    }
+
+    /// "PR #123 · merged", "MR !45 · open".
+    public var title: String {
+        let kind = isMergeRequest ? "MR" : "PR"
+        let ref = number.map { (isMergeRequest ? " !" : " #") + String($0) } ?? ""
+        return "\(kind)\(ref) · \(state)"
+    }
 }
 
 /// A conversation stopped by a subscription or API usage limit.

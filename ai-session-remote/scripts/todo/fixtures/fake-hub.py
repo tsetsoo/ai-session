@@ -163,6 +163,8 @@ class Hub(BaseHTTPRequestHandler):
             return self.runs(state, path.split("/")[3], path.split("/")[4], body)
         if method == "PATCH" and path.startswith("/api/memories/"):
             return self.patch(state, path.rsplit("/", 1)[1], body)
+        if method == "POST" and path == "/api/runner/pull-requests":
+            return self.reply(state.get("prs_status", 200), {"updated": len(body.get("items", []))})
         if method == "POST" and path == "/api/sessions/stats":
             sessions = body.get("sessions", [])
             return self.reply(200, {"upserted": len(sessions), "sessions": [
