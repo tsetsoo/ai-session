@@ -90,7 +90,7 @@ struct AutomationDetailColumn: View {
         let store = model.store
         switch model.automationJobs {
         case .limits:
-            UsageLimitsPane(store: store)
+            UsageLimitsPane(store: store, onOpenTodo: onOpenTodo, onOpenJob: openJob)
         case let .job(id):
             if let job = store.jobs.first(where: { $0.id == id }) {
                 JobDetailPane(job: job, store: store, onEdit: { edit(job) }, onDeleted: { model.automationJobs = nil },

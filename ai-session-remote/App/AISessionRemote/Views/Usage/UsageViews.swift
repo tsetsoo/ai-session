@@ -187,6 +187,9 @@ struct UsageDetailView: View {
 /// and conversation. Ranked and shared by output + cache writes; token counts, never money.
 struct HeavyUsageSections: View {
     let store: TodoHubStore
+    let onOpenTodo: (String) -> Void
+    /// `nil`: job rows push the job's detail (the phone's navigation stack).
+    let onOpenJob: ((String) -> Void)?
 
     @State private var lastWeek = false
     @State private var heavy: HeavyUsage?
@@ -229,15 +232,24 @@ struct HeavyUsageSections: View {
             if !heavy.todos.isEmpty {
                 Section("Todos") {
                     ForEach(heavy.todos) { t in
-                        row(t.title, own: t.own, workers: t.workers, share: heavy.share(t.weight))
+                        opener({ onOpenTodo(t.todoId) }, help: "Open this todo") {
+                            row(t.title, own: t.own, workers: t.workers, share: heavy.share(t.weight))
+                        }
                     }
                 }
             }
             if !heavy.jobs.isEmpty {
                 Section("Jobs") {
                     ForEach(heavy.jobs) { j in
-                        row(j.runs == 1 ? j.name : "\(j.name) · \(j.runs) runs", own: j.own, workers: j.workers,
-                            share: heavy.share(j.weight))
+                        let label = row(j.runs == 1 ? j.name : "\(j.name) · \(j.runs) runs", own: j.own,
+                                        workers: j.workers, share: heavy.share(j.weight))
+                        if let onOpenJob {
+                            opener({ onOpenJob(j.jobId) }, help: "Open this job") { label }
+                        } else {
+                            NavigationLink {
+                                PhoneJobDetail(store: store, jobID: j.jobId, onOpenTodo: onOpenTodo)
+                            } label: { label }
+                        }
                     }
                 }
             }
@@ -252,11 +264,34 @@ struct HeavyUsageSections: View {
             if !heavy.conversations.isEmpty {
                 Section("Conversations") {
                     ForEach(heavy.conversations) { c in
-                        row(conversationTitle(c), own: c.own, workers: c.workers, share: heavy.share(c.weight))
+                        let label = row(conversationTitle(c), own: c.own, workers: c.workers, share: heavy.share(c.weight))
+                        if let todoId = c.todoId {
+                            opener({ onOpenTodo(todoId) }, help: "Open its todo") { label }
+                        } else {
+                            label
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// A whole row as a button, with a chevron so it reads as one.
+    private func opener(_ action: @escaping () -> Void, help: String,
+                        @ViewBuilder label: () -> some View) -> some View {
+        Button(action: action) {
+            HStack {
+                label()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityHint(help)
     }
 
     private func conversationTitle(_ c: HeavyConversation) -> String {

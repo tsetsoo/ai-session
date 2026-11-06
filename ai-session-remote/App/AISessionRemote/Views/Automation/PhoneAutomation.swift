@@ -36,7 +36,7 @@ private struct PhoneJobsList: View {
 
     var body: some View {
         List {
-            NavigationLink { UsageLimitsPane(store: store) } label: {
+            NavigationLink { UsageLimitsPane(store: store, onOpenTodo: onOpenTodo) } label: {
                 Label("Usage limits", systemImage: "gauge.with.dots.needle.50percent")
             }
             Section("Jobs") {
@@ -76,7 +76,7 @@ private struct PhoneJobsList: View {
     }
 }
 
-private struct PhoneJobDetail: View {
+struct PhoneJobDetail: View {
     let store: TodoHubStore
     let jobID: String
     let onOpenTodo: (String) -> Void

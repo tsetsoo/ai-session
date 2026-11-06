@@ -497,6 +497,10 @@ struct JobFormPane: View {
 /// Automation → Jobs → Usage limits, big pane. Saved as they change.
 struct UsageLimitsPane: View {
     let store: TodoHubStore
+    /// Opens a todo in Sessions mode.
+    let onOpenTodo: (String) -> Void
+    /// Opens a job in the Jobs pane; `nil` (the phone) pushes the job's detail instead.
+    var onOpenJob: ((String) -> Void)?
 
     @State private var settings: SchedulerSettings?
     @State private var errorMessage: String?
@@ -519,7 +523,7 @@ struct UsageLimitsPane: View {
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle").foregroundStyle(DS.warning)
             }
-            HeavyUsageSections(store: store)
+            HeavyUsageSections(store: store, onOpenTodo: onOpenTodo, onOpenJob: onOpenJob)
         }
         .formStyle(.grouped)
         .navigationTitle("Usage limits")
