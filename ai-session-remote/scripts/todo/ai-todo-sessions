@@ -778,6 +778,8 @@ def cmd_prune(args):
 
 ACTIVE_GAP = 600  # seconds; longer pauses are not active time
 FILES_MAX = 200
+# Tools a Claude sub-agent ends its run with (its reply to the parent), instead of end_turn.
+HANDBACK_TOOLS = {"SubagentHandback"}
 EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 CLAUDE_USAGE = (("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
                 ("cache_read_input_tokens", "cache_read_tokens"),
@@ -1130,11 +1132,15 @@ def claude_stats(path, acc, sid=None, copies=None, worker=False):
                 v = u.get(src)
                 if isinstance(v, int) and not isinstance(v, bool):
                     counts[dst] = max(counts.get(dst, 0), v)
-        if message.get("stop_reason") == "end_turn" and mid not in ended:
+        content = message.get("content")
+        parts = content if isinstance(content, list) else []
+        # A sub-agent's last response hands back through a tool call (stop_reason tool_use).
+        handback = any(isinstance(p, dict) and p.get("type") == "tool_use" and p.get("name") in HANDBACK_TOOLS
+                       for p in parts)
+        if (message.get("stop_reason") == "end_turn" or handback) and mid not in ended:
             ended.add(mid)
             acc.turn(day)
-        content = message.get("content")
-        for part in content if isinstance(content, list) else []:
+        for part in parts:
             if isinstance(part, dict) and part.get("type") == "tool_use" and part.get("name") in EDIT_TOOLS:
                 args = part.get("input") if isinstance(part.get("input"), dict) else {}
                 acc.file(day, args.get("file_path") or args.get("notebook_path"))

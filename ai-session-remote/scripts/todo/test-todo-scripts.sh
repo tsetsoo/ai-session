@@ -1774,6 +1774,13 @@ def asst(sid, uuid, ts, mid, model, usage, **kw):
                          "content": [{"type": "text", "text": "ok"}]}, **kw)
 
 
+def handback(entry):
+    """How a sub-agent ends: a SubagentHandback tool call, stop_reason tool_use (no end_turn)."""
+    entry["message"]["stop_reason"] = "tool_use"
+    entry["message"]["content"] = [{"type": "tool_use", "id": "toolu_1", "name": "SubagentHandback", "input": {}}]
+    return entry
+
+
 def write(path, rows):
     with open(path, "w") as f:
         for r in rows:
@@ -1785,8 +1792,8 @@ write(f"{proj}/{P}.jsonl", [user(P, U1, "10:00:00", "Plan it"),
                             asst(P, A1, "10:00:30", "msg_P1", "claude-opus-5-5", (10, 100, 1000, 50))])
 write(f"{proj}/{P}/subagents/agent-a1.jsonl", [
     user(P, "33333333-3333-4333-8333-333333333333", "10:00:05", "Research X", isSidechain=True),
-    asst(P, "44444444-4444-4444-8444-444444444444", "10:00:20", "msg_W1", "claude-haiku-5", (5, 40, 500, 20),
-         isSidechain=True)])
+    handback(asst(P, "44444444-4444-4444-8444-444444444444", "10:00:20", "msg_W1", "claude-haiku-5", (5, 40, 500, 20),
+                  isSidechain=True))])
 with open(f"{proj}/{P}/subagents/agent-a1.meta.json", "w") as f:
     json.dump({"agentType": "Explore", "description": "Research X", "spawnDepth": 1}, f)
 write(f"{proj}/{R}.jsonl", [user(P, U1, "10:00:00", "Plan it"),
