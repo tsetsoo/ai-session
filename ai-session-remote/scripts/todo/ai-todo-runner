@@ -700,7 +700,7 @@ def cmd_status(args):
         print(json.dumps(out))
     else:
         for key, value in out.items():
-            print("%-12s %s" % (key + ":", value if value is not None else "-"))
+            print("%-15s %s" % (key + ":", value if value is not None else "-"))
 
 
 def main(argv):
