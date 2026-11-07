@@ -1,10 +1,8 @@
-#if os(iOS)
 import AISessionCore
 import SwiftUI
 
-/// One delegated worker: its result first (Read Aloud reads it), then what it did and the task
-/// it was given, both folded. What it did is fetched only when unfolded, and kept fresh while
-/// the worker works.
+#if os(iOS)
+/// One delegated worker in a sheet over the phone chat.
 struct WorkerSheet: View {
     let worker: DelegatedWorker
     let conversation: Conversation
@@ -13,49 +11,73 @@ struct WorkerSheet: View {
     let toolName: String
 
     @Environment(\.dismiss) private var dismiss
-    @State private var showsActivity = Self.demoUnfolded
-    @State private var showsTask = false
-    @State private var activity: [ConversationMessage] = []
-    @State private var activityError: String?
-    @State private var loadingActivity = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    header
-                    result
-                    DisclosureGroup(isExpanded: $showsActivity) { activityList } label: {
-                        Text("What it did").font(.headline)
-                    }
-                    if let task = worker.task {
-                        DisclosureGroup(isExpanded: $showsTask) {
-                            Text(task)
-                                .font(.callout)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.top, 6)
-                        } label: {
-                            Text("Task").font(.headline)
-                        }
-                    }
-                    // A working worker's evidence is "last write N s ago", frozen; the header counts.
-                    if worker.state != .working, let evidence = worker.evidence {
-                        Text("How this is known: \(evidence)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding()
+                WorkerDetail(worker: worker, conversation: conversation, config: config, store: store, toolName: toolName)
+                    .padding()
             }
             .navigationTitle(worker.displayTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Close") { dismiss() } }
             }
-            .task(id: ActivityPoll(open: showsActivity, working: worker.state == .working)) { await pollActivity() }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+#endif
+
+/// One delegated worker: its result first (Read Aloud reads it on the phone), then what it did
+/// and the task it was given, both folded. What it did is fetched only when unfolded, and kept
+/// fresh while the worker works. `showsTitle` for the Mac panel, which has no navigation title.
+struct WorkerDetail: View {
+    let worker: DelegatedWorker
+    let conversation: Conversation
+    let config: HostConnectionConfig
+    let store: TodoHubStore
+    let toolName: String
+    var showsTitle = false
+    var activityOpen = Self.demoUnfolded
+
+    @State private var showsActivity = false
+    @State private var showsTask = false
+    @State private var activity: [ConversationMessage] = []
+    @State private var activityError: String?
+    @State private var loadingActivity = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if showsTitle {
+                Text(worker.displayTitle).font(.headline).textSelection(.enabled)
+            }
+            header
+            result
+            DisclosureGroup(isExpanded: $showsActivity) { activityList } label: {
+                Text("What it did").font(.headline)
+            }
+            if let task = worker.task {
+                DisclosureGroup(isExpanded: $showsTask) {
+                    Text(task)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 6)
+                } label: {
+                    Text("Task").font(.headline)
+                }
+            }
+            // A working worker's evidence is "last write N s ago", frozen; the header counts.
+            if worker.state != .working, let evidence = worker.evidence {
+                Text("How this is known: \(evidence)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear { if activityOpen { showsActivity = true } }
+        .task(id: ActivityPoll(open: showsActivity, working: worker.state == .working)) { await pollActivity() }
     }
 
     private var header: some View {
@@ -103,11 +125,15 @@ struct WorkerSheet: View {
                 if loadingActivity { ProgressView().frame(maxWidth: .infinity) }
                 else { Text("Nothing recorded yet.").font(.footnote).foregroundStyle(.secondary) }
             }
-            ForEach(ChatTimeline.items(entries: activity, pending: [], notes: [])) { item in
+            let items = ChatTimeline.items(entries: activity, pending: [], notes: [])
+            ForEach(items) { item in
                 switch item {
                 case let .time(_, date): ChatTimestamp(date: date)
                 case let .message(message): ChatMessageView(message: message, toolName: worker.displayTitle)
-                case let .activity(_, steps, summary): ChatActivityRow(steps: steps, summary: summary, isLive: false)
+                case let .activity(_, steps, summary):
+                    // The newest steps stay listed while it works, like the live chat.
+                    ChatActivityRow(steps: steps, summary: summary,
+                                    isLive: worker.state == .working && item.id == items.last?.id)
                 case .pending, .note, .delegation: EmptyView()
                 }
             }
@@ -115,7 +141,7 @@ struct WorkerSheet: View {
         .padding(.top, 6)
     }
 
-    private static var demoUnfolded: Bool {
+    static var demoUnfolded: Bool {
         #if DEBUG
         ProcessInfo.processInfo.arguments.contains("-uiDemoWorkerActivity")
         #else
@@ -156,4 +182,3 @@ struct WorkerSheet: View {
         } while !Task.isCancelled
     }
 }
-#endif

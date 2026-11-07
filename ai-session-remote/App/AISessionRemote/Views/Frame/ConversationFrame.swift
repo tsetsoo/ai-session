@@ -60,7 +60,7 @@ struct ConversationFrame: View {
     @State private var showingCloseConfirmation = false
     @State private var failure: ActionFailure?
     @State private var sheet: FrameSheet?
-    @State private var showingMemories = false
+    @State private var sidePanel: ConversationSidePanel?
     /// Arms the key bar's Approve on a fresh `waiting`; typing disarms it.
     @State private var approveGate = ApproveGate()
     /// Opened while waiting: keyboard focus goes to the terminal once it connects.
@@ -275,8 +275,9 @@ struct ConversationFrame: View {
         }
         .modifier(MemoriesPresenter(
             // A frame in the shared column leaves this to the column's single inspector.
-            isPresented: Binding(get: { !sharesColumn && isFrontmost && showingMemories },
-                                 set: { showingMemories = $0 }),
+            isPresented: Binding(get: { !sharesColumn && isFrontmost && sidePanel != nil },
+                                 set: { if !$0 { sidePanel = nil } }),
+            kind: sidePanel ?? .memories,
             todoID: todo.id, conversation: conversation, store: store
         ))
         // The conversation on screen is never alerted about, on any device.
@@ -690,7 +691,8 @@ struct ConversationFrame: View {
             onRestart: openRestart,
             onCopy: copyResumeCommand,
             onPopOut: { onPopOut?() },
-            onMemories: { showingMemories = true },
+            onMemories: { sidePanel = .memories },
+            onWorkers: workersAction,
             onClose: closeConversation,
             onDelete: { showingDeleteConfirmation = true },
             onReconnect: { terminal.reconnect() },
@@ -730,6 +732,15 @@ struct ConversationFrame: View {
         }
     }
 
+    /// Workers (Mac): the phone shows them as cards in its chat.
+    private var workersAction: (() -> Void)? {
+        #if os(macOS)
+        { sidePanel = .workers }
+        #else
+        nil
+        #endif
+    }
+
     private var reviewAction: (() -> Void)? {
         #if os(macOS)
         guard let appModel else { return nil }
@@ -747,7 +758,8 @@ struct ConversationFrame: View {
         case .servers: changeServers()
         case .restart: openRestart()
         case .copyResume: copyResumeCommand()
-        case .memories: showingMemories = true
+        case .memories: sidePanel = .memories
+        case .workers: sidePanel = .workers
         case .close: closeConversation()
         case .delete: showingDeleteConfirmation = true
         case .reconnect: terminal.reconnect()

@@ -1,4 +1,3 @@
-#if os(iOS)
 import AISessionCore
 import SwiftUI
 
@@ -67,4 +66,3 @@ struct ChatTable: View {
         }
     }
 }
-#endif

@@ -1,4 +1,3 @@
-#if os(iOS)
 import AISessionCore
 import SwiftUI
 
@@ -71,4 +70,3 @@ struct WorkerStateLabel: View {
             .foregroundStyle(Self.color(state))
     }
 }
-#endif

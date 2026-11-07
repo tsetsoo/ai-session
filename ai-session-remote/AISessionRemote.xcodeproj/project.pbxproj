@@ -92,6 +92,7 @@
 		44F3E96E02F25239D27F1CE9 /* ProjectMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */; };
 		459745DF108E3518C8BB10E3 /* NIOSSHClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */; };
 		465F34DE80D17EF111F5AE60 /* PastedPhoto.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA6283BF8B0D73C324854FCF /* PastedPhoto.swift */; };
+		46B1887ABE9869E00F4644FC /* WorkersPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D78EC19210A7AFEC39421E1 /* WorkersPanel.swift */; };
 		46D9BAF045E1DB923CD0174A /* SidebarModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77812A59712865DEA10BA4B1 /* SidebarModel.swift */; };
 		470414DC5B734CD684E3B61B /* RemoteHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71DA4230B0CF584EA75D9B33 /* RemoteHealth.swift */; };
 		478F8176A1390E19B571A8C7 /* ReviewStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A438AC37F1B7B36405D468FC /* ReviewStore.swift */; };
@@ -192,6 +193,7 @@
 		96B9226636789798183809C4 /* ComputerListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 739BB066C50D554FBFA92B3C /* ComputerListView.swift */; };
 		96BC86AE987F12B6E6A0FCAD /* ProjectEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97B7A594C8A26491ACD55735 /* ProjectEditorSheet.swift */; };
 		975D8EA555B9639228A8DB3E /* ReadAloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1793D57706890A26C94F6B6 /* ReadAloud.swift */; };
+		978BA9F0D5F212BDE0B8930E /* WorkersPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D78EC19210A7AFEC39421E1 /* WorkersPanel.swift */; };
 		98A1C69A53591DA84B0ECD48 /* FormTextField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DB375F033AD740D7FE5EEAE /* FormTextField.swift */; };
 		98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */; };
 		98E8F675B83628ACA76E96E2 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 933D60662FF1D5CFC33458A1 /* NIOSSH */; };
@@ -444,6 +446,7 @@
 		9BB9F3F1B36EAC5FB8B07504 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		9CC825CDD2BB9FFA73CAFDE4 /* PooledConnecting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PooledConnecting.swift; sourceTree = "<group>"; };
 		9D327A6203F795192D55393F /* ConversationLoaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationLoaderTests.swift; sourceTree = "<group>"; };
+		9D78EC19210A7AFEC39421E1 /* WorkersPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkersPanel.swift; sourceTree = "<group>"; };
 		9DB375F033AD740D7FE5EEAE /* FormTextField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormTextField.swift; sourceTree = "<group>"; };
 		9FD7158DD9EEFF2C436D5B5D /* NewSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionSheet.swift; sourceTree = "<group>"; };
 		A19388DFC31D114300D5C298 /* PhoneConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneConversationView.swift; sourceTree = "<group>"; };
@@ -612,6 +615,7 @@
 				D4CDA2E8FBBB71F1BB5048A8 /* RestartSheet.swift */,
 				72E273782071736284D2563C /* TerminalSurface.swift */,
 				CACA4D506127E0997E071460 /* UsageLimitsBar.swift */,
+				9D78EC19210A7AFEC39421E1 /* WorkersPanel.swift */,
 				288228CAE535B77E67EFC507 /* Chat */,
 			);
 			path = Frame;
@@ -1283,6 +1287,7 @@
 				7676E04E635A23C1677E618F /* WeeklyStatsCard.swift in Sources */,
 				2E232018A9C5138711B73B7F /* WeeklyView.swift in Sources */,
 				9C749B772CC6F3B0E4AB82EE /* WorkerSheet.swift in Sources */,
+				978BA9F0D5F212BDE0B8930E /* WorkersPanel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1423,6 +1428,7 @@
 				5BA3E1B8237FDA5412EAC38D /* WeeklyStatsCard.swift in Sources */,
 				EC9066E393BC9E84F9510AB0 /* WeeklyView.swift in Sources */,
 				5C0603C103E593CEA48804C5 /* WorkerSheet.swift in Sources */,
+				46B1887ABE9869E00F4644FC /* WorkersPanel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

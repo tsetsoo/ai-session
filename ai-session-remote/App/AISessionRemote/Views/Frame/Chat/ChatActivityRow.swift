@@ -1,4 +1,3 @@
-#if os(iOS)
 import AISessionCore
 import SwiftUI
 
@@ -100,6 +99,7 @@ struct ChatWorkingLine: View {
     }
 }
 
+#if os(iOS)
 /// Keeps the newest text in view while the user is at the bottom, and offers ↓ when they
 /// aren't. iOS 18 reads the real scroll position; iOS 17 falls back to the end marker.
 struct ChatFollowBottom: ViewModifier {

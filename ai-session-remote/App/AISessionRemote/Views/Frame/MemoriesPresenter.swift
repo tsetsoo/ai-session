@@ -5,8 +5,17 @@ import SwiftUI
 /// sheet on iOS. It needs a linked conversation. The Mac's conversation column presents one for
 /// whichever conversation is in front, so switching swaps the panel's contents instead of
 /// closing and reopening the inspector (which also resized the terminal).
+/// What the conversation's side column shows. One inspector serves both, so switching between
+/// them swaps the contents instead of stacking two inspectors.
+enum ConversationSidePanel: Equatable {
+    case memories
+    /// The Mac's delegated-work panel (the phone has the cards in its chat).
+    case workers
+}
+
 struct MemoriesPresenter: ViewModifier {
     @Binding var isPresented: Bool
+    var kind: ConversationSidePanel = .memories
     let todoID: String
     let conversation: Conversation?
     let store: TodoHubStore
@@ -24,7 +33,7 @@ struct MemoriesPresenter: ViewModifier {
                 .inspectorColumnWidth(min: 260, ideal: 340, max: 520)
             }
             #else
-            .sheet(isPresented: $isPresented) {
+            .sheet(isPresented: Binding(get: { isPresented && kind == .memories }, set: { isPresented = $0 })) {
                 NavigationStack {
                     panel
                         .toolbar {
@@ -40,13 +49,25 @@ struct MemoriesPresenter: ViewModifier {
 
     @ViewBuilder
     private var panel: some View {
-        if let conversation {
+        #if os(macOS)
+        if kind == .workers, let conversation {
+            WorkersPanel(conversation: conversation, store: store)
+                .id("workers|\(conversation.id)|\(conversation.sessionId)")
+        } else if let conversation {
             // A fresh panel per conversation on screen, including between two conversations
             // of one todo: its rows start from that conversation's cache.
             MemoriesPanel(todoId: todoID, store: store, conversation: conversation)
                 .id("\(todoID)|\(conversation.id)|\(conversation.sessionId)")
         } else {
+            ContentUnavailableView("No conversation yet", systemImage: kind == .workers ? "person.2" : "lightbulb")
+        }
+        #else
+        if let conversation {
+            MemoriesPanel(todoId: todoID, store: store, conversation: conversation)
+                .id("\(todoID)|\(conversation.id)|\(conversation.sessionId)")
+        } else {
             ContentUnavailableView("No conversation yet", systemImage: "lightbulb")
         }
+        #endif
     }
 }

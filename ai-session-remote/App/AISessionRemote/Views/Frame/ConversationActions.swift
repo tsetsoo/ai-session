@@ -99,6 +99,8 @@ enum ConversationToolbarCommand: Equatable {
     case restart
     case copyResume
     case memories
+    /// The Mac's Workers panel.
+    case workers
     case close
     case delete
     case reconnect
@@ -158,6 +160,8 @@ struct ConversationMenu: View {
     let onCopyResume: (() -> Void)?
     /// The project's (or else the todo's) memories next to the conversation.
     let onMemories: () -> Void
+    /// The conversation's delegated work (Mac); nil hides it.
+    var onWorkers: (() -> Void)? = nil
     let onClose: () -> Void
     let onDelete: () -> Void
     let onReconnect: () -> Void
@@ -188,6 +192,12 @@ struct ConversationMenu: View {
                 Label("Memories", systemImage: "lightbulb")
             }
             .disabled(!hasConversation)
+            if let onWorkers {
+                Button(action: onWorkers) {
+                    Label("Workers", systemImage: "person.2")
+                }
+                .disabled(!hasConversation)
+            }
             if let onReview {
                 Button(action: onReview) {
                     #if os(macOS)
@@ -316,6 +326,7 @@ struct ConversationToolbarActions: View {
     var onCopy: () -> Void
     var onPopOut: () -> Void
     var onMemories: () -> Void
+    var onWorkers: (() -> Void)? = nil
     var onClose: () -> Void
     var onDelete: () -> Void
     var onReconnect: () -> Void
@@ -388,6 +399,7 @@ struct ConversationToolbarActions: View {
                 isConnected: isConnected,
                 onCopyResume: copyInMenu ? onCopy : nil,
                 onMemories: onMemories,
+                onWorkers: onWorkers,
                 onClose: onClose,
                 onDelete: onDelete,
                 onReconnect: onReconnect,

@@ -1,4 +1,3 @@
-#if os(iOS)
 import AISessionCore
 import SwiftUI
 
@@ -15,7 +14,10 @@ struct ChatMessageView: View {
     @State private var selecting = false
 
     private var isUser: Bool { message.role == .user }
+    #if os(iOS)
     private var isReading: Bool { ReadAloud.shared.speakingID == message.id }
+    private var canRead: Bool { !ReadAloud.shared.isDictating }
+    #endif
     private var isLong: Bool { ChatMarkdown.isLong(message.text) }
     private var shownText: String { isLong && !expanded ? ChatMarkdown.preview(message.text) : message.text }
 
@@ -30,6 +32,7 @@ struct ChatMessageView: View {
             Button { PlatformSupport.pasteboardString = ChatMarkdown.plainText(message.text) } label: {
                 Label("Copy as Plain Text", systemImage: "text.alignleft")
             }
+            #if os(iOS)
             Button { selecting = true } label: {
                 Label("Select Text", systemImage: "selection.pin.in.out")
             }
@@ -42,11 +45,14 @@ struct ChatMessageView: View {
                     Label("Read Aloud", systemImage: "speaker.wave.2")
                 }
             }
+            #endif
             ShareLink(item: message.text) {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
         }
+        #if os(iOS)
         .sheet(isPresented: $selecting) { SelectTextSheet(text: message.text) }
+        #endif
         .accessibilityElement(children: .contain)
         .accessibilityLabel(isUser ? "You" : toolName)
     }
@@ -73,6 +79,9 @@ struct ChatMessageView: View {
                 case let .text(lines):
                     Text(ChatStyledText.make(lines))
                         .lineSpacing(4)
+                        #if os(macOS)
+                        .textSelection(.enabled)
+                        #endif
                         .frame(maxWidth: .infinity, alignment: .leading)
                 case let .code(language, code):
                     ChatCodeBlock(language: language, code: code)
@@ -81,13 +90,16 @@ struct ChatMessageView: View {
                 }
             }
             HStack(spacing: 18) {
-                if !ReadAloud.shared.isDictating { readButton }
+                #if os(iOS)
+                if canRead { readButton }
+                #endif
                 if isLong { foldButton }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    #if os(iOS)
     /// Reads the whole reply (not just the folded preview); turns into Stop while it reads.
     private var readButton: some View {
         Button {
@@ -106,6 +118,7 @@ struct ChatMessageView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(isReading ? "Stop Reading" : "Read Aloud")
     }
+    #endif
 
     private var foldButton: some View {
         Button(expanded ? "Show less" : "Show more") {
@@ -114,4 +127,3 @@ struct ChatMessageView: View {
         .font(.callout.weight(.medium))
     }
 }
-#endif

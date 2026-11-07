@@ -780,7 +780,7 @@ private struct ConversationColumn: View {
     @State private var terminalState: ConversationTerminalState?
     /// One Memories inspector for the column. It follows the conversation in front, so a
     /// switch swaps its contents instead of closing it and opening another frame's.
-    @State private var showingMemories = false
+    @State private var sidePanel: ConversationSidePanel?
 
     private var frontmostID: String? {
         // In Automation the conversation pane is hidden: nothing in it is frontmost, so its
@@ -817,7 +817,8 @@ private struct ConversationColumn: View {
         .background { windowTitle }
         .onPreferenceChange(ConversationTerminalStateKey.self) { terminalState = $0 }
         .modifier(MemoriesPresenter(
-            isPresented: Binding(get: { showingMemories && frontmostID != nil }, set: { showingMemories = $0 }),
+            isPresented: Binding(get: { sidePanel != nil && frontmostID != nil }, set: { if !$0 { sidePanel = nil } }),
+            kind: sidePanel ?? .memories,
             todoID: frontmostID ?? "",
             conversation: frontmostID.flatMap {
                 model.store.displayed(forTodo: $0, selectedKey: model.selectedConversationID)
@@ -828,6 +829,44 @@ private struct ConversationColumn: View {
             if model.appMode == .sessions { columnToolbar }
         }
         .onChange(of: model.selectedTodoID, initial: true) { _, id in syncSelection(id) }
+        #if DEBUG
+        // Screenshots: `-uiDemoPanel workers|memories` opens the side column.
+        .onAppear {
+            guard DemoFixtures.isEnabled else { return }
+            switch DemoFixtures.value(after: "-uiDemoPanel") {
+            case "workers": sidePanel = .workers
+            case "memories": sidePanel = .memories
+            default: break
+            }
+            #if os(macOS)
+            // `-uiDemoSnapshot <png path>`: the window draws itself into a file after 4 s
+            // (no screen-recording permission needed).
+            if let path = DemoFixtures.value(after: "-uiDemoSnapshot") {
+                // An inspector's backdrop doesn't draw into a snapshot: `-uiDemoPanel workers`
+                // shows the panel alone in a plain window and snapshots that.
+                var panelWindow: NSWindow?
+                if sidePanel == .workers, let id = frontmostID,
+                   let conversation = model.store.displayed(forTodo: id, selectedKey: nil) {
+                    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 720),
+                                          styleMask: [.titled], backing: .buffered, defer: false)
+                    window.contentView = NSHostingView(rootView: WorkersPanel(conversation: conversation, store: model.store)
+                        .modelContainer(for: HostEntity.self, inMemory: true))
+                    window.makeKeyAndOrderFront(nil)
+                    panelWindow = window
+                }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    guard let view = panelWindow?.contentView
+                        ?? NSApp.windows.first(where: { $0.isVisible && $0.isMainWindow })?.contentView
+                        ?? NSApp.windows.first(where: \.isVisible)?.contentView,
+                        let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                }
+            }
+            #endif
+        }
+        #endif
         .onChange(of: model.store.todos.map(\.id)) { _, ids in
             let alive = Set(ids)
             let kept = shown.filter { alive.contains($0) }
@@ -941,6 +980,7 @@ private struct ConversationColumn: View {
             onCopy: { send(.copyResume, for: todo.id) },
             onPopOut: popOut(todo.id),
             onMemories: { send(.memories, for: todo.id) },
+            onWorkers: Self.offersWorkers ? { send(.workers, for: todo.id) } : nil,
             onClose: { send(.close, for: todo.id) },
             onDelete: { send(.delete, for: todo.id) },
             onReconnect: { send(.reconnect, for: todo.id) },
@@ -957,10 +997,20 @@ private struct ConversationColumn: View {
         )
     }
 
+    /// The Mac's Workers panel; the iPad's chat has the cards.
+    private static var offersWorkers: Bool {
+        #if os(macOS)
+        true
+        #else
+        false
+        #endif
+    }
+
     private func send(_ command: ConversationToolbarCommand, for todoID: String) {
-        if case .memories = command {
-            showingMemories = true
-            return
+        switch command {
+        case .memories: sidePanel = .memories; return
+        case .workers: sidePanel = .workers; return
+        default: break
         }
         toolbarRequest = ConversationToolbarRequest(command: command, todoID: todoID)
     }
