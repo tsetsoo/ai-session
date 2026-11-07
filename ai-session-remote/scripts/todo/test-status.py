@@ -723,6 +723,48 @@ class StatusTests(unittest.TestCase):
         self.poll_at(client, previous, self.claude_now, 10)
         self.assertEqual(self.requests[-1]["status"], "busy")
 
+    def test_workers_report_working_needs_you_and_done(self):
+        client, previous = self.claude_completion_fixture([{"id": "a", "type": "subagent"}])
+        self.claude_hook("SubagentStart", "busy", 3, agent_id="b")
+        self.assertEqual(self.requests[-1]["workers"], [{"id": "b", "state": "working"}])
+        self.claude_hook("PreToolUse", "busy", 4, agent_id="a", prompt_id="t1")
+        self.claude_hook("PermissionRequest", "waiting", 5, agent_id="a", prompt_id="t1", waiting=True)
+        self.assertEqual(self.requests[-1]["status"], "waiting")
+        self.assertEqual(self.requests[-1]["workers"], [
+            {"id": "b", "state": "working"},
+            {"id": "a", "state": "working", "needs_you": True, "message": "Claude needs your attention"}])
+        # A worker silent for a long tool call is still working: no hook said otherwise.
+        self.poll_at(client, previous, self.claude_now, 900)
+        self.assertEqual([w["state"] for w in self.requests[-1]["workers"]], ["working", "working"])
+        self.claude_hook("PostToolUse", "busy", 901, agent_id="a", prompt_id="t1")
+        self.claude_hook("SubagentStop", "busy", 902, agent_id="a", background_tasks=[{"id": "b", "type": "subagent"}])
+        self.assertEqual(self.requests[-1]["workers"], [{"id": "b", "state": "working"}, {"id": "a", "state": "done"}])
+        # The main Stop's registry no longer lists b: it finished without its own hook.
+        self.claude_hook("Stop", "idle", 903, background_tasks=[], transcript_path=str(self.claude_transcript))
+        self.assertEqual([w["state"] for w in self.requests[-1]["workers"]], ["done", "done"])
+        self.claude_hook("UserPromptSubmit", "busy", 904)
+        self.assertNotIn("workers", self.requests[-1], "a new turn starts without finished workers")
+
+    def test_a_spawned_codex_agent_reports_into_its_parent(self):
+        sessions = self.home / ".codex/sessions/2026/11/07"
+        sessions.mkdir(parents=True)
+        meta = {"type": "session_meta", "payload": {"id": "child-1", "source": {"subagent": {"thread_spawn": {
+            "parent_thread_id": "parent-1", "agent_path": "/root/reviewer"}}}}}
+        (sessions / "rollout-2026-11-07T10-00-00-child-1.jsonl").write_text(json.dumps(meta) + "\n")
+        status.publish({"tool": "codex", "session_id": "parent-1", "status": "busy"}, 100)
+        status.publish({"tool": "codex", "session_id": "child-1", "status": "waiting", "message": "Codex needs your permission to use shell"}, 200)
+        parent = [r for r in self.requests if r["session_id"] == "parent-1"]
+        self.assertEqual(parent[-1]["workers"], [{"id": "child-1", "state": "working", "needs_you": True,
+                                                 "message": "Codex needs your permission to use shell"}])
+        self.assertEqual(parent[-1]["event_timestamp_ns"], 100, "the parent's own status is unchanged")
+        status.publish({"tool": "codex", "session_id": "child-1", "status": "idle"}, 300)
+        self.assertEqual([r for r in self.requests if r["session_id"] == "parent-1"][-1]["workers"],
+                         [{"id": "child-1", "state": "done"}])
+        status.publish({"tool": "codex", "session_id": "parent-1", "status": "busy", "turn_started_ns": 400}, 400)
+        self.assertEqual(self.requests[-1]["workers"], [{"id": "child-1", "state": "done"}], "kept within the turn")
+        status.publish({"tool": "codex", "session_id": "parent-1", "status": "busy", "_hook_event": "UserPromptSubmit"}, 500)
+        self.assertNotIn("workers", self.requests[-1])
+
     def test_parent_runtime_idle_does_not_finish_active_background_agents(self):
         client, previous = self.claude_completion_fixture([{"id": "a", "type": "subagent"}])
         self.claude_transcript_row()

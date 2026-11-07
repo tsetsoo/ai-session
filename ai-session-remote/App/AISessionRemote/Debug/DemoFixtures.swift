@@ -109,7 +109,8 @@ enum DemoFixtures {
         ]
     }
 
-    /// Two workers started at the end of `chatTranscript`: one handed back, one still going.
+    /// Three workers started at the end of `chatTranscript`: one handed back, two still going.
+    /// The hub's status for t1 (`demoHubWorkers`) has a2 waiting on an approval.
     static var delegatedWorkers: [DelegatedWorker] {
         let started = Date().addingTimeInterval(-7.5 * 60)
         return [
@@ -125,8 +126,21 @@ enum DemoFixtures {
                 lastSeenAt: Date().addingTimeInterval(-4), toolCount: 31,
                 task: "List every route that redirects after login and whether it keeps `next`."
             ),
+            DelegatedWorker(
+                id: "a3", title: "Run the auth test suite", kind: "general-purpose", background: true,
+                state: .stale, evidence: "no finish recorded and no recent writes", startedAt: started.addingTimeInterval(30),
+                lastSeenAt: Date().addingTimeInterval(-11 * 60), toolCount: 3,
+                task: "Run the auth tests and report failures."
+            ),
         ]
     }
+
+    /// What the computer's status hooks report for t1's workers.
+    static let demoHubWorkers: [WorkerStatus] = [
+        WorkerStatus(id: "a1", state: "done"),
+        WorkerStatus(id: "a2", state: "working", needsYou: true, message: "Claude needs your permission to use Bash"),
+        WorkerStatus(id: "a3", state: "working"),
+    ]
 
     private static let now = "2026-10-17T09:00:00Z"
 
@@ -149,7 +163,7 @@ enum DemoFixtures {
                                      tool: String, _ status: ConversationStatus, message: String? = nil) -> Conversation {
         Conversation(id: "c-\(id)", todoId: id, computer: computer, cwd: cwd(for: section), tool: tool,
                      tmuxName: "todo-\(id)", sessionId: "demo-\(id)", status: status, statusMessage: message,
-                     createdAt: now)
+                     createdAt: now, workers: id == "t1" ? demoHubWorkers : nil)
     }
 
     static let todos: [Todo] = [

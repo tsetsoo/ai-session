@@ -56,7 +56,14 @@ struct PhoneConversationView<TerminalContent: View>: View {
     }
     /// Faster while the agent works or waits, so steps and answers show up promptly.
     private var pollInterval: Duration { isBusy || needsApproval ? .seconds(1) : .seconds(3) }
-    private var items: [ChatItem] { ChatTimeline.items(entries: messages, pending: pending, notes: notes, workers: workers) }
+    private var items: [ChatItem] { ChatTimeline.items(entries: messages, pending: pending, notes: notes, workers: shownWorkers) }
+    /// The transcripts' workers with the hub's status on top: "needs you", and still working
+    /// through a long silent tool call.
+    private var shownWorkers: [DelegatedWorker] { DelegatedWorker.merging(workers, hub: conversation.workers) }
+    /// The strip's counts: from the cards once they're loaded, from the hub until then.
+    private var workerTally: WorkerTally {
+        workers.isEmpty ? WorkerTally(hub: conversation.workers) : WorkerTally(workers: shownWorkers)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -120,6 +127,11 @@ struct PhoneConversationView<TerminalContent: View>: View {
 
     private func chat(promptMaxHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
+            let tally = workerTally
+            if tally.showsStrip {
+                let waiting = shownWorkers.last { $0.needsYou }
+                WorkerStrip(tally: tally, onTap: waiting.map { worker in { openWorker = worker } })
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     // Not lazy: a lazy stack guesses unseen rows' heights, and when the keyboard
@@ -195,7 +207,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
         .sheet(item: $openWorker) { opened in
             // The list refreshes underneath, so show its newest copy of this worker.
             WorkerSheet(
-                worker: workers.first { $0.id == opened.id } ?? opened,
+                worker: shownWorkers.first { $0.id == opened.id } ?? opened,
                 conversation: conversation, config: config, store: store, toolName: RowText.toolName(conversation.tool)
             )
         }
@@ -232,7 +244,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
 
     /// Changes whenever something is added or a step arrives, for the iOS 17 follow.
     private var contentVersion: Int {
-        messages.count &* 31 &+ pending.count &* 7 &+ notes.count &+ workers.count &* 131 &+ (isBusy ? 1 : 0)
+        messages.count &* 31 &+ pending.count &* 7 &+ notes.count &+ shownWorkers.count &* 131 &+ (isBusy ? 1 : 0)
     }
 
     @ViewBuilder
@@ -288,7 +300,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
     /// the cards are extra, the chat is not.
     private func refreshWorkers(entries: [ConversationMessage], full: Bool) async {
         let due = (full && !workers.isEmpty)
-            || Delegation.needsRefresh(entries: entries, workers: workers, lastFetch: workersFetchedAt)
+            || Delegation.needsRefresh(entries: entries, workers: shownWorkers, lastFetch: workersFetchedAt, hub: conversation.workers)
         guard due else { return }
         workersFetchedAt = Date()
         guard let fetched = try? await store.delegatedWorkers(of: conversation, config: config), !Task.isCancelled else { return }

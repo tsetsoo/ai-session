@@ -468,6 +468,30 @@ pub struct Conversation {
     /// The conversation the user continued with ("Continue with this") on its todo.
     #[serde(default)]
     pub main: bool,
+    /// The work this conversation delegated (subagents, spawned agents), as its computer's
+    /// status hooks last saw it. Absent when the computer reported none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workers: Option<Vec<WorkerStatus>>,
+}
+
+/// One delegated worker in a status report: the id `ai-todo-transcript --subagents` lists.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerStatus {
+    pub id: String,
+    /// `working` or `done`. A worker silent inside one long tool call is still `working`.
+    pub state: String,
+    /// The worker waits on an approval or a question of its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_you: bool,
+    /// What it waits on, with `needs_you` ("Claude needs approval").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl WorkerStatus {
+    pub const STATES: &'static [&'static str] = &["working", "done"];
+    /// Most workers one report may list.
+    pub const MAX: usize = 50;
 }
 
 /// A conversation's pull or merge request.
@@ -531,6 +555,10 @@ pub struct ConversationStatusRequest {
     /// pause only when the status changes or a new turn starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<LimitPause>,
+    /// The conversation's delegated workers as the computer sees them now. Absent (older
+    /// computers) or empty clears what was stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workers: Option<Vec<WorkerStatus>>,
 }
 
 /// Acknowledge only the idle result the client actually displayed.

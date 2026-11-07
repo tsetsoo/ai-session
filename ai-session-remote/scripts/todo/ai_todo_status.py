@@ -163,6 +163,32 @@ def claude_tasks(value, excluding=None):
     return result
 
 
+WORKER_ID = re.compile(r"[A-Za-z0-9_-]{1,80}")
+MAX_WORKERS = 50
+
+
+def worker_summary(workers, prompts=None):
+    """The short per-worker list the hub keeps: id, state, needs_you and its message.
+    Newest last; running and waiting workers are kept before finished ones at the cap."""
+    prompts = prompts or {}
+    rows = []
+    for ident, worker in sorted(workers.items(), key=lambda item: item[1].get("ns", 0)):
+        if not WORKER_ID.fullmatch(ident) or worker.get("state") not in ("working", "done"):
+            continue
+        row = {"id": ident, "state": worker["state"]}
+        asks = [value for key, value in prompts.items() if key.startswith(ident + ":")]
+        if worker.get("needs_you") or asks and worker["state"] == "working":
+            row["needs_you"] = True
+            message = worker.get("message") or (asks[-1].get("message") if asks else None)
+            if isinstance(message, str) and message:
+                row["message"] = message[:200]
+        rows.append(row)
+    while len(rows) > MAX_WORKERS:
+        done = next((row for row in rows if row["state"] == "done"), rows[0])
+        rows.remove(done)
+    return rows
+
+
 def claude_stop_confirmed(sid, completion):
     """A Stop hook runs before other hooks can block it. Confirm the final summary.
 
@@ -256,7 +282,20 @@ def claude_hook_evidence(previous, event, metadata, observed, snapshot):
             prompts.pop(key, None)
     elif event == "UserPromptSubmit":
         prompts = {k: v for k, v in prompts.items() if not k.startswith("main:")}
+    if event == "SubagentStop" and isinstance(agent, str):
+        # A finished agent's own approvals can no longer be answered.
+        prompts = {k: v for k, v in prompts.items() if not k.startswith(agent + ":")}
     evidence["prompts"] = prompts
+    workers = {k: dict(v) for k, v in evidence.get("workers", {}).items()}
+    if isinstance(agent, str) and WORKER_ID.fullmatch(agent) and observed >= workers.get(agent, {}).get("ns", -1):
+        # Any hook from inside an agent proves it runs (a resumed agent runs again).
+        workers[agent] = {"state": "done" if event == "SubagentStop" else "working", "ns": observed}
+    elif event == "UserPromptSubmit":
+        workers = {k: v for k, v in workers.items() if v["state"] != "done"}
+    if workers:
+        evidence["workers"] = workers
+    else:
+        evidence.pop("workers", None)
     if event in ("Stop", "SubagentStart", "SubagentStop") and observed > evidence.get("tasks_ns", -1):
         tasks = claude_tasks(metadata.get("background_tasks"), excluding=agent if event == "SubagentStop" else None)
         if event == "SubagentStart":
@@ -266,6 +305,12 @@ def claude_hook_evidence(previous, event, metadata, observed, snapshot):
         elif event == "SubagentStop" and tasks is None and evidence.get("tasks") is not None:
             tasks = [task for task in evidence["tasks"] if task.get("id") != agent]
         evidence.update(tasks=tasks, tasks_ns=observed)
+        if event == "Stop" and tasks is not None:
+            # The registry lists the agents still running; a foreground agent ends before Stop.
+            running = {task.get("id") for task in tasks}
+            for ident, worker in workers.items():
+                if worker["state"] == "working" and ident not in running and worker["ns"] < observed:
+                    worker.update(state="done", ns=observed)
     if event == "Stop" and isinstance(metadata.get("transcript_path"), str):
         evidence["completion"] = {
             "stopped_ns": observed, "transcript_path": metadata["transcript_path"], "instance": snapshot,
@@ -491,7 +536,68 @@ def limit_pause_message(pause):
     return {"session": "Session limit reached", "weekly": "Weekly limit reached"}.get(pause.get("kind"), "Usage limit reached")
 
 
+def codex_parent(session_id):
+    """The parent thread of a spawned Codex agent (its rollout's session_meta), or None."""
+    path = codex_rollout(session_id)
+    if not path:
+        return None
+    try:
+        with open(path, errors="replace") as handle:
+            meta = json.loads(handle.readline()).get("payload", {})
+        spawn = ((meta.get("source") or {}).get("subagent") or {}).get("thread_spawn") or {}
+        parent = spawn.get("parent_thread_id")
+        return parent if isinstance(parent, str) and WORKER_ID.fullmatch(parent) and parent != session_id else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def note_codex_worker(parent, child, body, try_send=True):
+    """A spawned Codex agent reports as its own thread. Fold its state into the parent's
+    record and resend the parent's last status with the new worker list."""
+    status = body.get("status")
+    worker = {"state": "done" if status == "idle" else "working", "ns": body.get("event_timestamp_ns", 0)}
+    if status == "waiting":
+        worker.update(needs_you=True, message=body.get("message"))
+    with session_lock(parent, tool="codex") as path:
+        record = read_json(path, {})
+        workers = dict(record.get("codex_workers", {}))
+        if worker["ns"] < workers.get(child, {}).get("ns", -1):
+            return False
+        workers[child] = {k: v for k, v in worker.items() if v is not None}
+        record["codex_workers"] = workers
+        parent_body = record.get("body")
+        if not isinstance(parent_body, dict) or parent_body.get("session_id") != parent:
+            atomic_json(path, record)  # The parent's own next status carries the list.
+            return False
+        summary = worker_summary(workers)
+        if summary == parent_body.get("workers"):
+            atomic_json(path, record)
+            return True
+        parent_body = dict(parent_body)
+        if summary:
+            parent_body["workers"] = summary
+        else:
+            parent_body.pop("workers", None)
+        record.update(body=parent_body, pending=True)
+        atomic_json(path, record)
+        return deliver(path, record) if try_send else False
+
+
 def publish(body, observed_ns=None, source="hook", try_send=True):
+    result = _publish(body, observed_ns, source, try_send)
+    if (body.get("tool") or "codex") == "codex" and isinstance(body.get("session_id"), str):
+        sid = body["session_id"]
+        record = read_json(root() / (sid + ".json"), {})
+        parent = record.get("codex_parent")
+        if parent and isinstance(record.get("body"), dict):
+            try:
+                note_codex_worker(parent, sid, record["body"], try_send)
+            except (OSError, ValueError):
+                pass  # The worker list is a nicety; the child's own status went out.
+    return result
+
+
+def _publish(body, observed_ns=None, source="hook", try_send=True):
     sid = body.get("session_id") or body.get("claude_session_id")
     tool = body.get("tool", "claude" if body.get("claude_session_id") else "codex")
     if tool not in ("claude", "codex"):
@@ -580,6 +686,19 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
             if pause:
                 body["paused"] = pause
                 body["message"] = limit_pause_message(pause)
+        body.pop("workers", None)
+        if tool == "claude" and evidence.get("workers"):
+            if body["status"] == "idle":
+                # An idle parent has no running agents: the registry would have kept it busy.
+                evidence = dict(evidence, workers={k: dict(v, state="done") for k, v in evidence["workers"].items()})
+            summary = worker_summary(evidence["workers"], evidence.get("prompts"))
+            if summary:
+                body["workers"] = summary
+        elif tool == "codex" and previous.get("codex_workers"):
+            summary = worker_summary({k: v for k, v in previous["codex_workers"].items()
+                                      if not (new_turn and v.get("state") == "done")})
+            if summary:
+                body["workers"] = summary
         body["event_timestamp_ns"] = observed
         if turn_started:
             body["turn_started_ns"] = turn_started
@@ -599,12 +718,20 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
         record = {"body": body, "source": source, "pending": True, "attended_ns": attended_ns}
         if tool == "claude" and evidence:
             record["claude_turn"] = evidence
+        for key in ("codex_parent", "codex_workers"):
+            if key in previous:
+                record[key] = previous[key]
+        if new_turn and record.get("codex_workers"):
+            # A new turn starts a new strip; agents still running stay on it.
+            record["codex_workers"] = {k: v for k, v in record["codex_workers"].items() if v.get("state") != "done"}
+        if tool == "codex" and "codex_parent" not in record:
+            record["codex_parent"] = codex_parent(sid) or ""
         # Persist before networking; a killed hook must leave the final event recoverable.
         atomic_json(path, record)
         if overridden or source == "runtime":
             sync_legacy_state(sid, body["status"], tool=tool)
         if (tool == "claude" and hook_event in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "ElicitationResult") and not previous.get("pending", True)
-                and all(previous_body.get(key) == body.get(key) for key in ("status", "message", "turn_started_ns", "attended"))):
+                and all(previous_body.get(key) == body.get(key) for key in ("status", "message", "turn_started_ns", "attended", "workers"))):
             record.update(pending=False, delivered_ns=previous.get("delivered_ns"))
             atomic_json(path, record)
             return True

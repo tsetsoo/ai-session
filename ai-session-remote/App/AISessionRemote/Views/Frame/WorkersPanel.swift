@@ -32,8 +32,11 @@ struct WorkersPanel: View {
     }
 
     private var selected: DelegatedWorker? {
-        selectedID.flatMap { id in workers.first { $0.id == id } }
+        selectedID.flatMap { id in shown.first { $0.id == id } }
     }
+
+    /// The transcripts' workers with the hub's "needs you" and still-running on top.
+    private var shown: [DelegatedWorker] { DelegatedWorker.merging(workers, hub: conversation.workers) }
 
     private var toolName: String { RowText.toolName(conversation.tool) }
 
@@ -53,7 +56,7 @@ struct WorkersPanel: View {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     Text(summary).font(.caption).foregroundStyle(.secondary)
                     // Newest first: the one just started is the one to watch.
-                    ForEach(workers.reversed()) { worker in
+                    ForEach(shown.reversed()) { worker in
                         ChatWorkerCard(worker: worker) { selectedID = worker.id }
                     }
                 }
@@ -68,14 +71,11 @@ struct WorkersPanel: View {
             : "\(toolName) doesn’t record delegated work."
     }
 
-    /// "3 workers · 1 working · 2 done".
+    /// "3 workers · 1 working · 1 needs you · 1 done".
     private var summary: String {
-        var parts = ["\(workers.count) \(workers.count == 1 ? "worker" : "workers")"]
-        for (state, word) in [(DelegatedWorker.State.working, "working"), (.failed, "failed"), (.stale, "no news"), (.done, "done")] {
-            let n = workers.filter { $0.state == state }.count
-            if n > 0 { parts.append("\(n) \(word)") }
-        }
-        return parts.joined(separator: " · ")
+        let tally = WorkerTally(workers: shown)
+        return ["\(shown.count) \(shown.count == 1 ? "worker" : "workers")", tally.summary]
+            .filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     private func detail(_ worker: DelegatedWorker, config: HostConnectionConfig) -> some View {

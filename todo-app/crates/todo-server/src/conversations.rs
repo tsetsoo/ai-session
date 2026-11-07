@@ -11,7 +11,7 @@
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
-    Computer, Conversation, ConversationStatus, ConversationStatusRequest, CreateComputerRequest, DeleteResponse, PullRequest,
+    Computer, Conversation, ConversationStatus, ConversationStatusRequest, WorkerStatus, CreateComputerRequest, DeleteResponse, PullRequest,
     DuplicateConversationRequest, Importance, LimitPause, LinkConversationRequest, OpenConversationRequest, Section, SectionComputer,
     ReportConversationMcpRequest, SetConversationMcpRequest, SetConversationSessionRequest, SetSectionComputerRequest,
     TodoFromConversationRequest, TodoWithConversation, UpdateComputerRequest,
@@ -33,15 +33,15 @@ pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, crea
 /// Conversation columns (0..=11), its computer (12..=19), then whether its session is known
 /// and that session's project (20, 21), its review state (22, 23), limit pause (24, 25),
 /// worktree source and branch (26, 27), resume after the pause (28..=31), pull request
-/// url and state (32, 33), model (34), worktree base (35) and whether it's its todo's main
-/// conversation (36).
+/// url and state (32, 33), model (34), worktree base (35), whether it's its todo's main
+/// conversation (36) and its delegated workers (37).
 const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
         c.status_message, c.status_updated_at, c.created_at, c.label, c.mcp_servers,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default,
         s.session_id IS NOT NULL, s.project_id, c.status_revision, c.reviewed,
         c.paused_kind, c.paused_until, c.worktree_source, c.branch,
         c.resume_on_reset, c.resume_off_reason, c.resume_at, c.resume_offer, c.pr_url, c.pr_state,
-        c.model, c.worktree_base, COALESCE(tm.main_conversation_id = c.id, 0)
+        c.model, c.worktree_base, COALESCE(tm.main_conversation_id = c.id, 0), c.workers
      FROM conversations c JOIN computers m ON m.id = c.computer_id
      LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id
      LEFT JOIN todos tm ON tm.id = c.todo_id";
@@ -168,6 +168,7 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
         model: row.get(34)?,
         worktree_base: row.get(35)?,
         main: row.get::<_, i64>(36)? != 0,
+        workers: row.get::<_, Option<String>>(37)?.and_then(|text| serde_json::from_str(&text).ok()),
     };
     Ok((conversation, row.get(20)?))
 }
@@ -193,6 +194,32 @@ pub(crate) fn normalize_pause(pause: &LimitPause) -> Result<LimitPause, &'static
         ),
     };
     Ok(LimitPause { kind: pause.kind.clone(), resets_at, ..Default::default() })
+}
+
+/// A worker list as reported: ids `[A-Za-z0-9_-]{1,80}`, a known state, at most
+/// `WorkerStatus::MAX`, duplicates dropped, messages cut to 200 characters. Empty is none.
+pub(crate) fn normalize_workers(workers: &[WorkerStatus]) -> Result<Option<Vec<WorkerStatus>>, &'static str> {
+    if workers.len() > WorkerStatus::MAX {
+        return Err("at most 50 workers");
+    }
+    let mut kept: Vec<WorkerStatus> = Vec::with_capacity(workers.len());
+    for worker in workers {
+        let id_ok = (1..=80).contains(&worker.id.len())
+            && worker.id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+        if !id_ok {
+            return Err("invalid worker id");
+        }
+        if !WorkerStatus::STATES.contains(&worker.state.as_str()) {
+            return Err("worker state must be working or done");
+        }
+        if kept.iter().any(|k| k.id == worker.id) {
+            continue;
+        }
+        let message = worker.message.as_deref().map(str::trim).filter(|m| !m.is_empty() && worker.needs_you)
+            .map(|m| m.chars().take(200).collect());
+        kept.push(WorkerStatus { id: worker.id.clone(), state: worker.state.clone(), needs_you: worker.needs_you, message });
+    }
+    Ok((!kept.is_empty()).then_some(kept))
 }
 
 /// A conversation whose session isn't known yet gets its project matched on the fly.
@@ -867,7 +894,8 @@ pub(crate) fn set_status_db(
          resume_at = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN NULL ELSE resume_at END,
          resume_offer = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN 0 ELSE resume_offer END,
          resume_token = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN NULL ELSE resume_token END,
-         resume_lease_until = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN NULL ELSE resume_lease_until END
+         resume_lease_until = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN NULL ELSE resume_lease_until END,
+         workers = ?10
          WHERE tool = ?3 AND session_id = ?4 AND status != 'closed'",
         params![
             req.status.as_str(),
@@ -879,6 +907,7 @@ pub(crate) fn set_status_db(
             new_turn,
             fresh.map(|p| p.kind.as_str()),
             fresh.and_then(|p| p.resets_at.as_deref()),
+            req.workers.as_ref().filter(|w| !w.is_empty()).map(|w| serde_json::to_string(w).expect("workers serialize")),
         ],
     )?;
     if fresh.is_some() {
@@ -1657,6 +1686,12 @@ pub async fn post_conversation_status(
             Err(message) => return bad_request(message),
         }
     }
+    if let Some(workers) = &body.workers {
+        match normalize_workers(workers) {
+            Ok(workers) => body.workers = workers,
+            Err(message) => return bad_request(message),
+        }
+    }
     let Some(session_id) = body.session_id() else {
         return bad_request("session_id (or claude_session_id) is required");
     };
@@ -1768,6 +1803,7 @@ mod tests {
             model: None,
             worktree_base: None,
             main: false,
+            workers: None,
         }
     }
 
@@ -2427,6 +2463,40 @@ mod tests {
             .unwrap();
         assert!(!change.paused);
         assert_eq!(read(&conn), None);
+    }
+
+    #[test]
+    fn a_status_post_replaces_the_workers() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let conv = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
+        let read = |conn: &Connection| load_conversation_by_id(conn, &conv.id).unwrap().unwrap().workers;
+        let worker = |id: &str, state: &str, needs_you: bool| WorkerStatus {
+            id: id.into(), state: state.into(), needs_you, message: needs_you.then(|| "Claude needs approval".into()),
+        };
+        let post = |workers: Option<Vec<WorkerStatus>>| ConversationStatusRequest {
+            status: ConversationStatus::Busy, workers, ..Default::default()
+        };
+        let two = vec![worker("a1", "working", true), worker("a2", "done", false)];
+        set_status_db(&conn, "claude", &conv.session_id, &post(Some(two.clone()))).unwrap();
+        assert_eq!(read(&conn), Some(two));
+        // A computer that reports none (or predates workers) clears them.
+        set_status_db(&conn, "claude", &conv.session_id, &post(None)).unwrap();
+        assert_eq!(read(&conn), None);
+    }
+
+    #[test]
+    fn reported_workers_are_checked() {
+        let worker = |id: &str, state: &str| WorkerStatus { id: id.into(), state: state.into(), ..Default::default() };
+        assert_eq!(normalize_workers(&[]).unwrap(), None);
+        assert!(normalize_workers(&[worker("a/1", "working")]).is_err());
+        assert!(normalize_workers(&[worker("a1", "waiting")]).is_err());
+        assert!(normalize_workers(&vec![worker("a1", "done"); 51]).is_err());
+        let kept = normalize_workers(&[worker("a1", "done"), worker("a1", "working"),
+            WorkerStatus { message: Some("ignored without needs_you".into()), ..worker("a2", "working") }]).unwrap().unwrap();
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[1].message, None);
     }
 
     #[test]

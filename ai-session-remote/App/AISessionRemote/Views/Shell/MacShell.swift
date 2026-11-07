@@ -962,6 +962,7 @@ private struct ConversationColumn: View {
             status: ConversationToolbar.displayStatus(todo: todo, store: model.store, selectedKey: model.selectedConversationID),
             statusDetail: conversation.flatMap { RowText.pauseDetail($0, now: Date()) },
             pullRequest: model.store.displayed(forTodo: todo.id, selectedKey: model.selectedConversationID)?.pullRequest,
+            workers: conversation.map { WorkerTally(hub: $0.workers) },
             showsCopy: showsCopy,
             canCopy: hasConversation,
             showsPopOut: showsPopOut,

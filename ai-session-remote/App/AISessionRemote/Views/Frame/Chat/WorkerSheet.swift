@@ -83,7 +83,7 @@ struct WorkerDetail: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                WorkerStateLabel(state: worker.state)
+                WorkerStateLabel(state: worker.state, needsYou: worker.needsYou)
                 TimelineView(.periodic(from: .now, by: 5)) { context in
                     if worker.state != .done, let status = worker.statusText(now: context.date) {
                         Text(status).font(.caption).foregroundStyle(.secondary)

@@ -172,6 +172,9 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var worktreeBase: String?
     /// The conversation the user continued with on its todo.
     public var main: Bool
+    /// The work it delegated (subagents, spawned agents) as its computer's status hooks last
+    /// saw it. `nil` when none was reported, and from older hubs.
+    public var workers: [WorkerStatus]?
 
     /// What `ai-todo-open --worktree` needs, when the conversation has its own worktree.
     public var worktree: (folder: String, branch: String)? {
@@ -215,7 +218,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         pullRequest: PullRequestLink? = nil,
         model: String? = nil,
         worktreeBase: String? = nil,
-        main: Bool = false
+        main: Bool = false,
+        workers: [WorkerStatus]? = nil
     ) {
         self.id = id
         self.todoId = todoId
@@ -242,6 +246,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         self.model = model
         self.worktreeBase = worktreeBase
         self.main = main
+        self.workers = workers
     }
 
     // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
@@ -249,7 +254,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         case id, todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
         case status, statusMessage, statusUpdatedAt, createdAt, projectId, label, mcpServers
         case statusRevision, reviewed, paused, worktreeSource, branch, resumeOnReset, resumeOffReason
-        case pullRequest, model, worktreeBase, main
+        case pullRequest, model, worktreeBase, main, workers
     }
 
     public init(from decoder: Decoder) throws {
@@ -286,6 +291,8 @@ public struct Conversation: Codable, Equatable, Sendable {
         model = try c.decodeIfPresent(String.self, forKey: .model)
         worktreeBase = try c.decodeIfPresent(String.self, forKey: .worktreeBase)
         main = try c.decodeIfPresent(Bool.self, forKey: .main) ?? false
+        // A worker list this app can't read is left out, never a failed list.
+        workers = (try? c.decodeIfPresent([WorkerStatus].self, forKey: .workers)) ?? nil
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -315,6 +322,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         try c.encodeIfPresent(model, forKey: .model)
         try c.encodeIfPresent(worktreeBase, forKey: .worktreeBase)
         if main { try c.encode(main, forKey: .main) }
+        try c.encodeIfPresent(workers, forKey: .workers)
     }
 
     /// The hub turned resuming off after 3 automatic resumes in a day.
@@ -323,6 +331,45 @@ public struct Conversation: Codable, Equatable, Sendable {
     /// Only Codex is resumed by the computer after a session limit: Claude continues on its
     /// own (its autoContinueAtUsageLimit), and Cursor reports no limits.
     public var canAutoResumeAfterLimit: Bool { tool == "codex" }
+}
+
+/// One delegated worker as the computer's status hooks see it: the id
+/// `ai-todo-transcript --subagents` lists, whether it runs, and whether it waits on you.
+public struct WorkerStatus: Codable, Equatable, Sendable {
+    public var id: String
+    /// `working` or `done`. A worker silent inside one long tool call is still `working`.
+    public var state: String
+    /// It waits on an approval or a question of its own.
+    public var needsYou: Bool
+    /// What it waits on ("Claude needs approval"), with `needsYou`.
+    public var message: String?
+
+    public init(id: String, state: String, needsYou: Bool = false, message: String? = nil) {
+        self.id = id
+        self.state = state
+        self.needsYou = needsYou
+        self.message = message
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, state, needsYou, message }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? "working"
+        needsYou = try c.decodeIfPresent(Bool.self, forKey: .needsYou) ?? false
+        message = try c.decodeIfPresent(String.self, forKey: .message)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(state, forKey: .state)
+        if needsYou { try c.encode(needsYou, forKey: .needsYou) }
+        try c.encodeIfPresent(message, forKey: .message)
+    }
+
+    public var isWorking: Bool { state != "done" }
 }
 
 /// A conversation's pull request (GitHub) or merge request (GitLab).

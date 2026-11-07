@@ -308,6 +308,8 @@ struct ConversationToolbarActions: View {
     var statusDetail: String? = nil
     /// The conversation branch's pull/merge request, when its computer found one.
     var pullRequest: PullRequestLink? = nil
+    /// The conversation's delegated workers, from the hub: a chip opens Workers while one runs.
+    var workers: WorkerTally? = nil
     var showsCopy: Bool
     var canCopy: Bool
     var showsPopOut: Bool
@@ -349,6 +351,9 @@ struct ConversationToolbarActions: View {
         HStack(spacing: ConversationToolbar.controlSpacing) {
             if let pullRequest {
                 PullRequestChip(pullRequest: pullRequest, compact: copyInMenu)
+            }
+            if let workers, let onWorkers, WorkersChip.shows(workers) {
+                WorkersChip(tally: workers, action: onWorkers)
             }
             if let status {
                 StatusBadge(status, style: .pill, detail: statusDetail)

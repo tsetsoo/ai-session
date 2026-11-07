@@ -144,6 +144,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     conn.execute_batch(crate::reviews::V30_OBJECTS).expect("Failed to create the review tables");
     create_v31_objects(&conn).expect("Failed to add the competing-agents columns");
     crate::reviews::create_v32_objects(&conn).expect("Failed to add the published column");
+    create_v33_objects(&conn).expect("Failed to add the workers column");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -716,6 +717,14 @@ fn create_v24_objects(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v33: `conversations.workers`, the delegated workers its computer last reported (JSON; additive).
+fn create_v33_objects(conn: &Connection) -> rusqlite::Result<()> {
+    if table_sql(conn, "conversations")?.is_some() && !column_exists(conn, "conversations", "workers")? {
+        conn.execute_batch("ALTER TABLE conversations ADD COLUMN workers TEXT;")?;
+    }
+    Ok(())
+}
+
 /// v31: several agents on one todo. `conversations.model` (the tool's model, when chosen),
 /// `conversations.worktree_base` (the commit an added agent's worktree starts from) and
 /// `todos.main_conversation_id` (the conversation the user continued with).
@@ -931,9 +940,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v30: `reviews`, `review_items`: reviewer runs and review comments per conversation (additive)
 /// - v31: `conversations.model`, `conversations.worktree_base`, `todos.main_conversation_id` (additive)
 /// - v32: `review_items.published_at` (additive)
+/// - v33: `conversations.workers` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 32;
+pub const SCHEMA_VERSION: i64 = 33;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -959,6 +969,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
                                         if table_sql(conn, "review_items")?.is_some() {
                                             if column_exists(conn, "conversations", "worktree_base")? {
                                                 if column_exists(conn, "review_items", "published_at")? {
+                                                    if column_exists(conn, "conversations", "workers")? {
+                                                        return Ok(33);
+                                                    }
                                                     return Ok(32);
                                                 }
                                                 return Ok(31);
@@ -3027,7 +3040,7 @@ mod tests {
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 32);
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         conn.execute_batch("ALTER TABLE review_items DROP COLUMN published_at;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 31);
         conn.execute_batch("ALTER TABLE conversations DROP COLUMN worktree_base;").unwrap();
@@ -3178,6 +3191,21 @@ mod tests {
         }
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_to_v33() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch("ALTER TABLE conversations DROP COLUMN workers; PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 32, "sniffed without the workers column");
+        conn.execute_batch("PRAGMA user_version = 32;").unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert!(column_exists(&conn, "conversations", "workers").unwrap());
     }
 
     #[test]

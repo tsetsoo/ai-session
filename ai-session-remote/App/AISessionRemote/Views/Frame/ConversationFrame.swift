@@ -675,6 +675,7 @@ struct ConversationFrame: View {
             status: displayStatus,
             statusDetail: conversation.flatMap { RowText.pauseDetail($0, now: Date()) },
             pullRequest: conversation?.pullRequest,
+            workers: conversation.map { WorkerTally(hub: $0.workers) },
             showsCopy: showsCopy,
             canCopy: conversation != nil,
             showsPopOut: showsPopOut,
