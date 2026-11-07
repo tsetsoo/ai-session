@@ -16,11 +16,11 @@ Prints one JSON object: {"tool", "method", "before", "after", "result", "message
 "command"}, result one of updated | current | unsupported | failed. Exit 0, or 1 failed.
 """
 import fcntl
-import json
 import os
 import re
 import signal
 import subprocess
+import tempfile
 
 import ai_todo_doctor as doctor
 import ai_todo_status as status
@@ -42,19 +42,23 @@ def installed(tool):
 
 def run_updater(argv, env, timeout):
     """(exit code or None on a timeout, combined output). No terminal and no stdin: an
-    updater that asks a question gets end of input. Its own process group, killed on timeout."""
-    process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               text=True, env=env, start_new_session=True)
-    try:
-        output, _ = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+    updater that asks a question gets end of input. Output goes to a file, not a pipe: Codex's
+    updater may start the shared server, which would hold a pipe open after the updater ends.
+    Only the updater is waited for; on a timeout its process group is killed."""
+    with tempfile.TemporaryFile(mode="w+") as output:
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                                   text=True, env=env, start_new_session=True)
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        output, _ = process.communicate()
-        return None, output or ""
-    return process.returncode, output or ""
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            process.wait()
+            code = None
+        output.seek(0)
+        return code, output.read()
 
 
 def last_lines(text, limit=300):
@@ -82,38 +86,39 @@ def upgrade(tool, timeout=None):
         message = ("Update it there with: %s" % plan["command"]) if plan["command"] else \
             "It comes with an app; update that app."
         return 0, dict(result, result="unsupported", message=message)
-    lock_path = status.root() / ("upgrade-%s.lock" % tool)
-    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with open(lock_path, "a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return 1, dict(result, result="failed", message="An update of it is already running.")
-        # The installers warn, and Claude's may not finish, when their bin folder isn't on PATH.
-        env = doctor.tool_env(binary)
-        code, output = run_updater(plan["argv"], env, UPDATE_TIMEOUT_S if timeout is None else timeout)
+    limit = UPDATE_TIMEOUT_S if timeout is None else timeout
+    try:
+        lock_path = status.root() / ("upgrade-%s.lock" % tool)
+        lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with open(lock_path, "a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return 1, dict(result, result="failed", message="An update of it is already running.")
+            # The installers warn, and Claude's may not finish, when their bin folder isn't on PATH.
+            code, output = run_updater(plan["argv"], doctor.tool_env(binary), limit)
+    except OSError as error:
+        return 1, dict(result, result="failed", message="The update couldn't start: %s." % error)
     now = installed(tool)
     after = now[2] if now else None
     result["after"] = after
     if tool == "codex" and now and now[3] == "managed":
         # The shared server's version after the update (the updater restarts it if it ran).
-        code_v, text = doctor.run_text([now[0], "app-server", "daemon", "version"], env=doctor.tool_env(now[0]))
-        try:
-            daemon = json.loads(text) if code_v == 0 else {}
-        except ValueError:
-            daemon = {}
-        if isinstance(daemon, dict) and daemon.get("appServerVersion"):
-            result["daemon"] = daemon["appServerVersion"]
+        daemon = doctor.daemon_report(now[0])
+        if daemon and daemon.get("version"):
+            result["daemon"] = daemon["version"]
     detail = last_lines(output)
     if after and before and after != before:
         return 0, dict(result, result="updated", message=detail or "Updated.")
     if code is None:
-        limit = UPDATE_TIMEOUT_S if timeout is None else timeout
         return 1, dict(result, result="failed", message=("The update didn't finish in %d s. %s" % (limit, detail)).strip())
     if code != 0:
         return 1, dict(result, result="failed", message=detail or "The updater exited with %d." % code)
     if after is None:
         return 1, dict(result, result="failed", message="Its version can't be read after the update. " + detail)
+    if before is None:
+        # It was unreadable before, so whether this changed it can't be told: it ran fine.
+        return 0, dict(result, result="updated", message=detail or "Updated.")
     return 0, dict(result, result="current", message=detail or "It's already the latest version.")
 
 

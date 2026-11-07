@@ -78,7 +78,10 @@ def main(args):
         return code
     elif args[:1] == ["upgrade"]:
         # One CLI, on the user's request: install its latest version the way it was installed.
-        from ai_todo_upgrade import main as upgrade
+        try:
+            from ai_todo_upgrade import main as upgrade
+        except ImportError:
+            return 64  # a half-installed helper: the app says to reinstall the scripts
         code, result = upgrade(args[1:])
         if result is None:
             print(__doc__, file=sys.stderr)

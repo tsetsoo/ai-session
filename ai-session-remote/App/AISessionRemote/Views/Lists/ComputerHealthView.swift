@@ -221,7 +221,7 @@ struct ComputerHealthView: View {
                     .foregroundStyle(tool.installed == true ? .primary : .secondary)
                 if upgrading == name {
                     ProgressView().controlSize(.small)
-                } else if tool.installed == true, tool.update?.runs == true, HostLookup.host(for: computer, in: hosts) != nil {
+                } else if live != nil, tool.installed == true, tool.update?.runs == true {
                     Button("Update") {
                         confirmUpgrade = HealthUpgrade(tool: name, info: tool, computer: computer.name)
                     }
@@ -299,7 +299,7 @@ struct ComputerHealthView: View {
                                     detail: versionDetail(entry, installed: report.tools?[entry.tool]?.version) + ".")
                             }
                             .buttonStyle(.borderless)
-                            .disabled(idleProgress != nil)
+                            .disabled(idleProgress != nil || upgrading != nil)
                         }
                     }
                 }
@@ -311,7 +311,7 @@ struct ComputerHealthView: View {
                     }
                 } else if restartable(report).count > 1 {
                     Button("Restart Idle…") { prepareRestartIdle() }
-                        .disabled(!restarting.isEmpty || isChecking)
+                        .disabled(!restarting.isEmpty || isChecking || upgrading != nil)
                 }
                 if let restartNote {
                     Text(restartNote)
@@ -445,6 +445,8 @@ struct ComputerHealthView: View {
                 upgradeNotes[request.tool] = "\(request.title) wasn't updated: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
             }
             upgrading = nil
+            // A check already running may have read it before the update: wait it out, then check.
+            while isChecking { try? await Task.sleep(for: .milliseconds(300)) }
             await checkLive()
         }
     }

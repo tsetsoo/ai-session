@@ -7,8 +7,9 @@ enum RemoteUpgrade {
     /// Updated, current, unsupported and failed come back as results (with the computer's
     /// message); a computer that can't be reached or answers with no JSON throws.
     static func upgrade(_ tool: String, config: HostConnectionConfig, computerName: String) async throws -> UpgradeResult {
-        // The script gives the updater 300 s; the rest is SSH and the version checks around it.
-        let result = try await NIOSSHClient(execTimeoutSeconds: 360).exec(config, command: TmuxCommandBuilder.upgradeTool(tool))
+        // The script gives the updater 300 s; the rest is SSH and the version checks around it
+        // (finding each CLI runs its --version, up to 10 s a try).
+        let result = try await NIOSSHClient(execTimeoutSeconds: 420).exec(config, command: TmuxCommandBuilder.upgradeTool(tool))
         if result.exitCode == TmuxCommandBuilder.scriptMissingExitCode || result.exitCode == 64 {
             throw RemoteRestart.OldScripts(computer: computerName)
         }

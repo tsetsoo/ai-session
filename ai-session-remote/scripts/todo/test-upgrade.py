@@ -128,6 +128,32 @@ class UpgradeTests(unittest.TestCase):
         self.assertIn(result["command"], result["message"])
         self.assertEqual(self.updater_calls(), [])
 
+    def test_unreadable_version_before_is_not_called_current(self):
+        self.claude_native()
+        real = doctor.binary_version
+        calls = []
+        def version(binary, resolved):
+            calls.append(resolved)
+            return None if len(calls) == 1 else real(binary, resolved)
+        with patch.object(doctor, "binary_version", version):
+            code, result = upgrade.upgrade("claude")
+        self.assertEqual((code, result["result"], result["before"], result["after"]), (0, "updated", None, "2.1.319"))
+
+    def test_updater_that_leaves_a_child_holding_its_output(self):
+        # Codex's updater can start the shared server, which keeps running after it exits.
+        script = self.home / "spawner"
+        script.write_text("#!/bin/sh\n(sleep 20 &)\necho started\n")
+        script.chmod(0o755)
+        started = __import__("time").monotonic()
+        code, output = upgrade.run_updater([str(script)], dict(os.environ), 10)
+        self.assertLess(__import__("time").monotonic() - started, 5)
+        self.assertEqual((code, output.strip()), (0, "started"))
+
+    def test_npm_under_homebrew_node(self):
+        plan = doctor.update_plan("codex", "/opt/homebrew/bin/codex",
+                                  "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js", "homebrew")
+        self.assertEqual((plan["runs"], plan["command"]), (False, "npm install -g @openai/codex@latest"))
+
     def test_homebrew_command_names_the_cask_or_formula(self):
         for kind, expected in (("Caskroom", "brew upgrade --cask codex"), ("Cellar", "brew upgrade codex")):
             plan = doctor.update_plan("codex", "/opt/homebrew/bin/codex", "/opt/homebrew/%s/codex/0.160.0/codex" % kind,

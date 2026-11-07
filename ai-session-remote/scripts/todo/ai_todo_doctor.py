@@ -77,11 +77,12 @@ def update_plan(tool, binary, resolved, method):
     if argv:
         return {"runs": True, "argv": argv, "command": " ".join([shown] + [shlex.quote(a) for a in argv[1:]])}
     brew = re.search(r"/(Caskroom|Cellar)/([^/]+)/", resolved or "")
-    if brew:
-        command = "brew upgrade " + ("--cask " if brew.group(1) == "Caskroom" else "") + brew.group(2)
-    elif method == "npm":
-        package = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}.get(tool)
+    package = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}.get(tool)
+    if "/node_modules/" in (resolved or ""):
+        # npm, also under Homebrew's node (install_method says homebrew for /opt/homebrew/lib/…).
         command = "npm install -g %s@latest" % package if package else shown + " update"
+    elif brew:
+        command = "brew upgrade " + ("--cask " if brew.group(1) == "Caskroom" else "") + brew.group(2)
     elif method == "app":
         command = None  # updated with its app
     else:
@@ -180,6 +181,18 @@ def binary_version(binary, resolved):
     return version
 
 
+def daemon_report(binary):
+    """Codex's shared server as the managed `binary` reports it: {"status", "version"}, or None."""
+    code, text = run_text([binary, "app-server", "daemon", "version"], env=tool_env(binary))
+    try:
+        daemon = json.loads(text) if code == 0 else {}
+    except ValueError:
+        daemon = {}
+    if not isinstance(daemon, dict) or not daemon:
+        return None
+    return {"status": daemon.get("status"), "version": daemon.get("appServerVersion")}
+
+
 def tool_report(tool, finder):
     """One CLI as this computer would start it: where, which version, who updates it, auth."""
     try:
@@ -194,13 +207,9 @@ def tool_report(tool, finder):
               "method": method, "auth": auth(tool, binary),
               "update": {"runs": plan["runs"], "command": plan["command"]}}
     if tool == "codex" and result["method"] == "managed":
-        code, text = run_text([binary, "app-server", "daemon", "version"], env=tool_env(binary))
-        try:
-            daemon = json.loads(text) if code == 0 else {}
-        except ValueError:
-            daemon = {}
-        if isinstance(daemon, dict) and daemon:
-            result["daemon"] = {"status": daemon.get("status"), "version": daemon.get("appServerVersion")}
+        daemon = daemon_report(binary)
+        if daemon:
+            result["daemon"] = daemon
     return result
 
 
