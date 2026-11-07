@@ -551,6 +551,24 @@ def codex_parent(session_id):
         return None
 
 
+# A spawned Codex agent unheard of this long when its parent starts a turn is dropped: its
+# runtime may never have been watched, so nothing would say it ended.
+CODEX_WORKER_FORGOTTEN_NS = 30 * 60 * 1_000_000_000
+# A spawned agent's thread missing from a connected runtime this long has ended. Live threads
+# are reported every 30 s; the wait rides out one runtime reconnecting.
+CODEX_CHILD_GONE_NS = 60 * 1_000_000_000
+
+
+def codex_turn_workers(workers, new_turn, now):
+    """The parent's Codex workers for this report. A new turn starts a new strip: finished
+    agents leave it, and so do agents nothing was heard from for 30 minutes."""
+    workers = dict(workers or {})
+    if new_turn:
+        workers = {k: v for k, v in workers.items()
+                   if v.get("state") != "done" and now - v.get("ns", 0) < CODEX_WORKER_FORGOTTEN_NS}
+    return workers
+
+
 def note_codex_worker(parent, child, body, try_send=True):
     """A spawned Codex agent reports as its own thread. Fold its state into the parent's
     record and resend the parent's last status with the new worker list."""
@@ -687,6 +705,7 @@ def _publish(body, observed_ns=None, source="hook", try_send=True):
                 body["paused"] = pause
                 body["message"] = limit_pause_message(pause)
         body.pop("workers", None)
+        codex_workers = None
         if tool == "claude" and evidence.get("workers"):
             if body["status"] == "idle":
                 # An idle parent has no running agents: the registry would have kept it busy.
@@ -694,9 +713,9 @@ def _publish(body, observed_ns=None, source="hook", try_send=True):
             summary = worker_summary(evidence["workers"], evidence.get("prompts"))
             if summary:
                 body["workers"] = summary
-        elif tool == "codex" and previous.get("codex_workers"):
-            summary = worker_summary({k: v for k, v in previous["codex_workers"].items()
-                                      if not (new_turn and v.get("state") == "done")})
+        codex_workers = codex_turn_workers(previous.get("codex_workers"), new_turn, observed)
+        if tool == "codex" and codex_workers:
+            summary = worker_summary(codex_workers)
             if summary:
                 body["workers"] = summary
         body["event_timestamp_ns"] = observed
@@ -718,12 +737,10 @@ def _publish(body, observed_ns=None, source="hook", try_send=True):
         record = {"body": body, "source": source, "pending": True, "attended_ns": attended_ns}
         if tool == "claude" and evidence:
             record["claude_turn"] = evidence
-        for key in ("codex_parent", "codex_workers"):
-            if key in previous:
-                record[key] = previous[key]
-        if new_turn and record.get("codex_workers"):
-            # A new turn starts a new strip; agents still running stay on it.
-            record["codex_workers"] = {k: v for k, v in record["codex_workers"].items() if v.get("state") != "done"}
+        if "codex_parent" in previous:
+            record["codex_parent"] = previous["codex_parent"]
+        if tool == "codex" and codex_workers:
+            record["codex_workers"] = codex_workers
         if tool == "codex" and "codex_parent" not in record:
             record["codex_parent"] = codex_parent(sid) or ""
         # Persist before networking; a killed hook must leave the final event recoverable.
@@ -1501,6 +1518,19 @@ def poll_runtime(client, previous, try_send=True, tool="codex"):
         prior = previous[sid]
         if sid in listed:
             continue  # Still running, in a state we can't read: keep what was reported.
+        if tool == "codex" and prior.get("state", ("idle",))[0] != "idle":
+            record = read_json(root() / (sid + ".json"), {})
+            if record.get("codex_parent"):
+                # A spawned agent's thread that unloads reports nothing more: say it ended,
+                # so its parent's list doesn't keep it working.
+                missing_since = prior.setdefault("missing_since_ns", observed)
+                if observed - missing_since < CODEX_CHILD_GONE_NS:
+                    continue
+                previous.pop(sid)
+                if record.get("body", {}).get("event_timestamp_ns", 0) < missing_since:
+                    publish({"session_id": sid, "tool": tool, "status": "idle", "message": None, "attended": False},
+                            observed, source="runtime", try_send=try_send)
+                continue
         if tool != "claude" or prior.get("state", ("idle",))[0] == "idle":
             previous.pop(sid)
             continue

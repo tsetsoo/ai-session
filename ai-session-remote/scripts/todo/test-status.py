@@ -765,6 +765,46 @@ class StatusTests(unittest.TestCase):
         status.publish({"tool": "codex", "session_id": "parent-1", "status": "busy", "_hook_event": "UserPromptSubmit"}, 500)
         self.assertNotIn("workers", self.requests[-1])
 
+    def spawned_codex_child(self, child="child-1", parent="parent-1"):
+        sessions = self.home / ".codex/sessions/2026/11/07"
+        sessions.mkdir(parents=True, exist_ok=True)
+        meta = {"type": "session_meta", "payload": {"id": child, "source": {"subagent": {"thread_spawn": {
+            "parent_thread_id": parent, "agent_path": "/root/reviewer"}}}}}
+        (sessions / ("rollout-2026-11-07T10-00-00-" + child + ".jsonl")).write_text(json.dumps(meta) + "\n")
+
+    def parent_workers(self, parent="parent-1"):
+        return [r for r in self.requests if r["session_id"] == parent][-1].get("workers")
+
+    def test_a_codex_agent_whose_thread_unloads_is_done(self):
+        self.spawned_codex_child()
+        now = time.time_ns()
+        status.publish({"tool": "codex", "session_id": "parent-1", "status": "busy"}, now)
+        client, previous = self.Listing({"child-1": ("busy", None)}, extra=()), {}
+        self.poll_at(client, previous, now, 1, tool="codex")
+        self.assertEqual(self.parent_workers(), [{"id": "child-1", "state": "working"}])
+        # One poll without it (a runtime reconnecting) is not an ending.
+        client.value = {}
+        self.poll_at(client, previous, now, 2, tool="codex")
+        client.value = {"child-1": ("busy", None)}
+        self.poll_at(client, previous, now, 3, tool="codex")
+        client.value = {}
+        self.poll_at(client, previous, now, 4, tool="codex")
+        self.poll_at(client, previous, now, 40, tool="codex")
+        self.assertEqual(self.parent_workers(), [{"id": "child-1", "state": "working"}])
+        self.poll_at(client, previous, now, 65, tool="codex")
+        self.assertEqual(self.parent_workers(), [{"id": "child-1", "state": "done"}])
+        self.assertNotIn("child-1", previous)
+
+    def test_a_codex_agent_unheard_of_for_30_minutes_leaves_the_next_turn(self):
+        self.spawned_codex_child()
+        self.spawned_codex_child("child-2")
+        minute = 60 * 1_000_000_000
+        status.publish({"tool": "codex", "session_id": "parent-1", "status": "busy"}, minute)
+        status.publish({"tool": "codex", "session_id": "child-1", "status": "busy"}, 2 * minute)
+        status.publish({"tool": "codex", "session_id": "child-2", "status": "busy"}, 25 * minute)
+        status.publish({"tool": "codex", "session_id": "parent-1", "status": "busy", "_hook_event": "UserPromptSubmit"}, 40 * minute)
+        self.assertEqual(self.requests[-1]["workers"], [{"id": "child-2", "state": "working"}])
+
     def test_parent_runtime_idle_does_not_finish_active_background_agents(self):
         client, previous = self.claude_completion_fixture([{"id": "a", "type": "subagent"}])
         self.claude_transcript_row()
