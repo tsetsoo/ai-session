@@ -48,8 +48,9 @@ enum RemoteRestart {
             force: force, chrome: chrome, reopenCwd: reopen ? conversation.cwd : nil,
             mcpServers: reopen ? conversation.mcpServers : nil, worktree: worktree
         )
-        // Stop (10 s at most), the writer lock (10 s), and a reopen (90 s; making a worktree is in it).
-        return try await NIOSSHClient(execTimeoutSeconds: 150).exec(config, command: command)
+        // Stop (10 s at most), the writer lock (10 s), and a reopen (90 s; 240 s when it may make
+        // the worktree again).
+        return try await NIOSSHClient(execTimeoutSeconds: worktree == nil ? 150 : 300).exec(config, command: command)
     }
 
     /// nil when the computer's scripts predate launch settings.

@@ -70,6 +70,9 @@ final class RestartModelsTests: XCTestCase {
         try batch.add(result(#"{"result":"refused","reason":"background"}"#), title: "D")
         try batch.add(result(#"{"result":"failed","stage":"reopen","message":"Starting it again failed: x."}"#), title: "E")
         batch.addFailure("No connection.", title: "F")
+        var unread = RestartBatch()
+        try unread.add(result(#"{"result":"refused","reason":"unknown"}"#), title: "G")
+        XCTAssertEqual(unread.summary, "Restarted 0. Left 1 whose state couldn't be read; restart it from its row if it's idle.")
         XCTAssertEqual([batch.restarted, batch.left, batch.failures.count], [2, 2, 2])
         XCTAssertEqual(batch.summary, "Restarted 2. Left 2 that were working, waiting or running background tasks. "
             + "2 failed: E: Starting it again failed: x.; F: No connection.")

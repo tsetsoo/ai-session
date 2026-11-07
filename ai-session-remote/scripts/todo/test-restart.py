@@ -143,6 +143,17 @@ class RestartTests(unittest.TestCase):
         code, result = restart.restart(self.name, self.sid, "claude", force=True)
         self.assertEqual((code, result["result"]), (0, "stopped"))
 
+    def test_a_session_without_a_cli_it_recognises_is_unknown(self):
+        """No CLI found in the pane (starting, wrapped): its state can't be read, so refused unless forced."""
+        subprocess.run(["tmux", "-L", self.socket, "new-session", "-d", "-s", self.name, "--", "sleep", "60"], check=True)
+        self.publish("idle")
+        code, result = restart.restart(self.name, self.sid, "claude")
+        self.assertEqual((code, result["result"], result["reason"]), (75, "refused", "unknown"), result)
+        self.assertTrue(restart.session_exists(self.name))
+        code, result = restart.restart(self.name, self.sid, "claude", force=True)
+        self.assertEqual((code, result["result"]), (0, "stopped"))
+        self.assertFalse(restart.session_exists(self.name))
+
     def test_bad_arguments(self):
         with self.assertRaises(ValueError):
             restart.restart("ai/codex/todo-x", self.sid, "claude")

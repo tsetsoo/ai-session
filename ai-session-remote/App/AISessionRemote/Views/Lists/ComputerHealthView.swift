@@ -27,7 +27,10 @@ struct ComputerHealthView: View {
     @State private var restarting: Set<String> = []
     @State private var restartNote: String?
     /// Restart Idle…: asked for (confirm), then its progress ("2 of 5").
-    @State private var confirmRestartIdle = false
+    /// The targets come from a check of the computer made when the user taps it (never the
+    /// hub's older report, which may list conversations closed since), and the dialog's count
+    /// is exactly the list that runs.
+    @State private var idleTargets: [IdleTarget]?
     @State private var idleProgress: (done: Int, total: Int)?
 
     private var store: TodoHubStore { model.store }
@@ -82,13 +85,13 @@ struct ComputerHealthView: View {
         }
         .confirmationDialog(
             "Restart idle conversations?",
-            isPresented: $confirmRestartIdle,
-            titleVisibility: .visible
-        ) {
-            let count = restartable(report).count
-            Button("Restart \(count)") { runRestartIdle() }
+            isPresented: Binding(get: { idleTargets != nil }, set: { if !$0 { idleTargets = nil } }),
+            titleVisibility: .visible,
+            presenting: idleTargets
+        ) { targets in
+            Button("Restart \(targets.count)") { runRestartIdle(targets) }
             Button("Cancel", role: .cancel) {}
-        } message: {
+        } message: { _ in
             Text("Restarts each conversation on an older version, one at a time, on the installed version. One that's working, waiting for you or running background tasks is left as it is. Each resumes in the same conversation and folder; text typed but not sent is lost.")
         }
         .task(id: computer.id) {
@@ -249,6 +252,7 @@ struct ComputerHealthView: View {
                                     detail: versionDetail(entry, installed: report.tools?[entry.tool]?.version) + ".")
                             }
                             .buttonStyle(.borderless)
+                            .disabled(idleProgress != nil)
                         }
                     }
                 }
@@ -259,8 +263,8 @@ struct ComputerHealthView: View {
                             .foregroundStyle(.secondary)
                     }
                 } else if restartable(report).count > 1 {
-                    Button("Restart Idle…") { confirmRestartIdle = true }
-                        .disabled(!restarting.isEmpty)
+                    Button("Restart Idle…") { prepareRestartIdle() }
+                        .disabled(!restarting.isEmpty || isChecking)
                 }
                 if let restartNote {
                     Text(restartNote)
@@ -271,7 +275,7 @@ struct ComputerHealthView: View {
                 Text("Running an Older Version").textCase(nil)
             } footer: {
                 if !outdated.isEmpty {
-                    let others = outdated.count - outdated.filter { conversation(for: $0) != nil }.count
+                    let others = outdated.filter { conversation(for: $0) == nil }.count
                     Text("\(outdated.count) of \(running.count) running conversations. A conversation keeps the version it started with until it's restarted; installing an update doesn't change it. Restart one when it's not working on something."
                         + (others > 0 ? " \(others) of them \(others == 1 ? "isn't a todo's conversation, so it" : "aren't a todo's conversations, so they") can't be restarted here." : ""))
                 }
@@ -286,39 +290,54 @@ struct ComputerHealthView: View {
         return report.outdatedRunning.compactMap { entry in conversation(for: entry).map { (entry, $0) } }
     }
 
+    /// Checks the computer again, then asks about exactly the outdated todo conversations
+    /// that check found.
+    private func prepareRestartIdle() {
+        restartNote = nil
+        Task {
+            guard await checkLive() else {
+                restartNote = "Couldn't check \(computer.name) just now, so nothing was restarted."
+                return
+            }
+            let targets = restartable(live).map { IdleTarget(conversation: $0.conversation, title: title(for: $0.entry)) }
+            if targets.isEmpty {
+                restartNote = "No conversation needs a restart now."
+            } else {
+                idleTargets = targets
+            }
+        }
+    }
+
     /// Restarts them one after another (never forced) and sums it up in one note.
-    private func runRestartIdle() {
-        let targets = restartable(report).map { (conversation: $0.conversation, title: title(for: $0.entry)) }
-        guard !targets.isEmpty else { return }
+    private func runRestartIdle(_ targets: [IdleTarget]) {
+        guard !targets.isEmpty, idleProgress == nil else { return }
         restartNote = nil
         idleProgress = (0, targets.count)
         Task {
             var batch = RestartBatch()
-            defer { idleProgress = nil }
-            let config: HostConnectionConfig
+            var stopped: String?
             do {
-                config = try HostLookup.config(for: computer, in: hosts)
-            } catch {
-                restartNote = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                return
-            }
-            for (index, target) in targets.enumerated() {
-                idleProgress = (index, targets.count)
-                let tmux = target.conversation.tmuxName
-                restarting.insert(tmux)
-                do {
-                    let result = try await RemoteRestart.restart(target.conversation, config: config, force: false, reopen: true)
-                    batch.add(result, title: target.title)
-                } catch is RemoteRestart.OldScripts {
-                    restarting.remove(tmux)
-                    restartNote = RemoteRestart.OldScripts(computer: computer.name).errorDescription
-                    return
-                } catch {
-                    batch.addFailure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription, title: target.title)
+                let config = try HostLookup.config(for: computer, in: hosts)
+                for (index, target) in targets.enumerated() {
+                    idleProgress = (index, targets.count)
+                    let tmux = target.conversation.tmuxName
+                    restarting.insert(tmux)
+                    defer { restarting.remove(tmux) }
+                    do {
+                        let result = try await RemoteRestart.restart(target.conversation, config: config, force: false, reopen: true)
+                        batch.add(result, title: target.title)
+                    } catch let error as RemoteRestart.OldScripts {
+                        stopped = error.errorDescription
+                        break
+                    } catch {
+                        batch.addFailure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription, title: target.title)
+                    }
                 }
-                restarting.remove(tmux)
+            } catch {
+                stopped = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
-            restartNote = batch.summary
+            idleProgress = nil
+            restartNote = [batch.summary, stopped].compactMap { $0 }.joined(separator: " ")
             await checkLive()
         }
     }
@@ -444,27 +463,36 @@ struct ComputerHealthView: View {
         }
     }
 
-    private func checkLive() async {
-        guard HostLookup.host(for: computer, in: hosts) != nil, !isChecking else { return }
+    /// True when the computer answered and `live` is its report from just now.
+    @discardableResult
+    private func checkLive() async -> Bool {
+        guard HostLookup.host(for: computer, in: hosts) != nil, !isChecking else { return false }
         isChecking = true
         defer { isChecking = false }
         do {
             let config = try HostLookup.config(for: computer, in: hosts)
             let next = try await RemoteHealth.fetch(config: config, computerName: computer.name)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return false }
             live = next
             liveError = nil
+            return true
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return false }
             let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             liveError = snapshot?.report == nil
                 ? "Couldn't reach \(computer.name): \(reason)"
                 : "Couldn't reach \(computer.name), so this is its last report. \(reason)"
+            return false
         }
     }
 }
 
 /// One conversation the Health page offers to restart.
+private struct IdleTarget {
+    let conversation: Conversation
+    let title: String
+}
+
 private struct HealthRestart {
     let conversation: Conversation
     let title: String

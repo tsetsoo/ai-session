@@ -36,6 +36,7 @@ REFUSED = 75
 STOP_WAIT_S = 10
 LOCK_WAIT_S = 10
 OPEN_TIMEOUT_S = 90
+WORKTREE_OPEN_TIMEOUT_S = 240  # making a deleted worktree again can take a while in a big repo
 MESSAGES = {
     "busy": "It's working on a turn.",
     "waiting": "It's waiting for your answer or approval.",
@@ -137,7 +138,8 @@ def reopen(name, cwd, sid, tool, mcp, worktree=None):
     open_bin = os.environ.get("AI_TODO_OPEN_BIN") or str(Path(__file__).with_name("ai-todo-open"))
     argv = [open_bin, "--detached"] + (["--mcp", mcp] if mcp is not None and tool != "cursor" else []) \
         + (["--worktree", worktree[0], worktree[1]] if worktree else []) + [name, cwd, sid, tool]
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=OPEN_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    result = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                            timeout=WORKTREE_OPEN_TIMEOUT_S if worktree else OPEN_TIMEOUT_S)
     if result.returncode:
         error = RuntimeError((result.stderr or "").strip()[:300].rstrip(".") or "ai-todo-open exit %d" % result.returncode)
         error.code = result.returncode
@@ -154,6 +156,10 @@ def restart(name, sid, tool, force=False, chrome="keep", cwd=None, mcp=None, wor
     running = session_exists(name)
     entry = running_entry(name) if running else None
     result["before"] = entry.get("version") if entry else None
+    if running and not entry and not force:
+        # A session whose CLI the doctor can't find (starting, or behind a wrapper) can't be
+        # read either: it may be in a turn.
+        return REFUSED, dict(result, result="refused", reason="unknown", message=MESSAGES["unknown"])
     if running and entry:
         state = conversation_state(tool, sid)
         result["state"] = state["state"]

@@ -66,14 +66,19 @@ public struct LaunchSettings: Decodable, Equatable, Sendable {
 /// never forced.
 public struct RestartBatch: Equatable, Sendable {
     public private(set) var restarted = 0
+    /// Refused because it was working, waiting or running background tasks.
     public private(set) var left = 0
+    /// Refused because its state couldn't be read.
+    public private(set) var unreadable = 0
     /// "<title>: <why>" for each that failed.
     public private(set) var failures: [String] = []
 
     public init() {}
 
     public mutating func add(_ result: RestartResult, title: String) {
-        if result.isRefused {
+        if result.isRefused, result.reason == "unknown" {
+            unreadable += 1
+        } else if result.isRefused {
             left += 1
         } else if result.result == "failed" {
             failures.append("\(title): \(result.message ?? "The restart failed.")")
@@ -91,6 +96,9 @@ public struct RestartBatch: Equatable, Sendable {
         var parts = ["Restarted \(restarted)."]
         if left > 0 {
             parts.append("Left \(left) that \(left == 1 ? "was" : "were") working, waiting or running background tasks.")
+        }
+        if unreadable > 0 {
+            parts.append("Left \(unreadable) whose state couldn't be read; restart \(unreadable == 1 ? "it" : "them") from \(unreadable == 1 ? "its row" : "their rows") if \(unreadable == 1 ? "it's" : "they're") idle.")
         }
         if !failures.isEmpty {
             parts.append("\(failures.count) failed: " + failures.joined(separator: "; "))
