@@ -464,6 +464,8 @@ final class ReviewSession {
 
     /// The PRs/MRs the computer's gh/glab account opened in this repository, newest first.
     private(set) var pullRequests: ReviewPullRequestList?
+    /// The computer's `ai-todo-review` is too old for what the window asks of it.
+    private(set) var helperProblem: String?
     /// The PR/MR shown in the Pull Request scope.
     private(set) var selectedPullRequest: Int?
     /// The user picked something themselves: the window doesn't pick a PR for them any more.
@@ -490,9 +492,16 @@ final class ReviewSession {
     /// updated since the conversation began) unless the user already chose what to look at.
     func loadPullRequests(config: HostConnectionConfig) async {
         let asked = folder
-        guard let list: ReviewPullRequestList = try? await run(
-            TmuxCommandBuilder.reviewPullRequests(cwd: asked, since: Self.gitTime(conversation.createdAt)), config: config
-        ), asked == folder else { return }
+        guard let output = try? await exec(config, TmuxCommandBuilder.reviewPullRequests(cwd: asked, since: Self.gitTime(conversation.createdAt))),
+              asked == folder else { return }
+        // 64: a helper from before `prs`, or 127: none at all. Said, not silently empty.
+        if output.exitCode == 64 || output.exitCode == 127 {
+            helperProblem = "The review helper on \(conversation.computer.name) is older than this app, so it can't list pull requests. "
+                + "Reinstall the host scripts there (scripts/todo/install.sh)."
+            return
+        }
+        guard let list: ReviewPullRequestList = try? await decode(output) else { return }
+        helperProblem = nil
         pullRequests = list
         openLikelyPullRequest()
     }

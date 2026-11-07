@@ -314,6 +314,13 @@ struct ReviewView: View {
     /// The user's PRs/MRs in this repository: one click shows exactly that PR's changes.
     @ViewBuilder
     private var pullRequestsSection: some View {
+        if let problem = session.helperProblem {
+            Section("Pull Requests") {
+                Label(problem, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(DS.warning)
+            }
+        }
         if let list = session.pullRequests {
             if !list.access, let error = list.error, list.provider != nil {
                 Section("Pull Requests") {
