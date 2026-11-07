@@ -345,6 +345,10 @@ struct TerminalSurface: View {
     private let approveEnabled: Bool
     /// False while another conversation is the one on screen. The session stays connected.
     private let isFrontmost: Bool
+    /// On screen without being frontmost: a side-by-side pane. It draws and takes clicks;
+    /// only the frontmost pane gets the toolbar. Nil: on screen exactly when frontmost.
+    private let isOnScreen: Bool?
+    private var shown: Bool { isOnScreen ?? isFrontmost }
 
     @Environment(\.colorScheme) private var colorScheme
     /// Absent in previews and other screens that don't provide it.
@@ -393,6 +397,7 @@ struct TerminalSurface: View {
         tool: String? = nil,
         approveEnabled: Bool = false,
         isFrontmost: Bool = true,
+        isOnScreen: Bool? = nil,
         makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
             SSHTerminalSession(config: $0, mode: $1)
         }
@@ -410,6 +415,7 @@ struct TerminalSurface: View {
         self.tool = tool
         self.approveEnabled = approveEnabled
         self.isFrontmost = isFrontmost
+        self.isOnScreen = isOnScreen
         _coordinator = State(initialValue: TerminalCoordinator(
             hostConfig: config, mode: mode, makeTransport: makeTransport
         ))
@@ -474,7 +480,7 @@ struct TerminalSurface: View {
     #endif
 
     private var hitTarget: TerminalHitTarget {
-        TerminalHitTarget.resolve(isFrontmost: isFrontmost, isDisconnected: isDisconnected)
+        TerminalHitTarget.resolve(isFrontmost: shown, isDisconnected: isDisconnected)
     }
 
     private var surface: some View {
@@ -513,7 +519,7 @@ struct TerminalSurface: View {
         .animation(.easeInOut(duration: 0.2), value: coordinator.photoUploads.status)
         #endif
         .onAppear {
-            coordinator.setShown(isFrontmost)
+            coordinator.setShown(shown)
             coordinator.onStateChange = { state in
                 connectionState = state
                 handle?.connectionChanged(to: state)
@@ -537,7 +543,7 @@ struct TerminalSurface: View {
             handle?.coordinator = coordinator
             handle?.reconnectAction = { Task { await reconnect() } }
         }
-        .onChange(of: isFrontmost) { _, shown in
+        .onChange(of: shown) { _, shown in
             coordinator.setShown(shown)
             if shown {
                 // Not on first appear: connect already tells tmux the size, and a second

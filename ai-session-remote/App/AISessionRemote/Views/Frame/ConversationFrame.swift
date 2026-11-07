@@ -35,6 +35,8 @@ struct ConversationFrame: View {
     /// The detail column keeps other conversations mounted. Only the one on screen names
     /// itself in the window and takes the keyboard.
     private let isFrontmost: Bool
+    /// See `TerminalSurface.isOnScreen`: a side-by-side pane.
+    private let isOnScreen: Bool?
     /// A side-by-side pane: this frame acts on that conversation, not the todo's selected one.
     private let pinnedConversationKey: String?
     /// Several frames share the detail column, so the column owns the window title and the
@@ -100,6 +102,7 @@ struct ConversationFrame: View {
         sharesColumn: Bool = false,
         toolbarRequest: Binding<ConversationToolbarRequest?> = .constant(nil),
         pinnedConversationKey: String? = nil,
+        isOnScreen: Bool? = nil,
         onDeleted: @escaping () -> Void,
         makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
             SSHTerminalSession(config: $0, mode: $1)
@@ -114,6 +117,7 @@ struct ConversationFrame: View {
         self.sharesColumn = sharesColumn
         self._toolbarRequest = toolbarRequest
         self.pinnedConversationKey = pinnedConversationKey
+        self.isOnScreen = isOnScreen
         self.onDeleted = onDeleted
         self.makeTransport = makeTransport
     }
@@ -454,6 +458,7 @@ struct ConversationFrame: View {
                 tool: conversation.tool,
                 approveEnabled: approveGate.isEnabled(tool: conversation.tool),
                 isFrontmost: isFrontmost,
+                isOnScreen: isOnScreen,
                 makeTransport: makeTransport
             )
     }

@@ -268,7 +268,7 @@ private struct ConversationGrid: View {
                             paneKey: conversation.listKey, toolbarKey: toolbarKey
                         )
                         ConversationPane(todo: todo, store: store, conversation: conversation, hostList: hostList,
-                                         isFrontmost: frontmost,
+                                         isFrontmost: frontmost, isOnScreen: screenFrontmost,
                                          toolbarRequest: frontmost ? toolbarRequest : .constant(nil),
                                          onContinue: { onContinue(conversation) })
                             .frame(height: height)
@@ -286,16 +286,19 @@ private struct ConversationPane: View {
     let store: TodoHubStore
     let conversation: Conversation
     let isFrontmost: Bool
+    /// Every pane of the grid draws while the todo is on screen, not only the frontmost one.
+    let isOnScreen: Bool
     let toolbarRequest: Binding<ConversationToolbarRequest?>
     let onContinue: () -> Void
     @State private var loader: ConversationLoader
 
     init(todo: Todo, store: TodoHubStore, conversation: Conversation, hostList: HostList, isFrontmost: Bool,
-         toolbarRequest: Binding<ConversationToolbarRequest?>, onContinue: @escaping () -> Void) {
+         isOnScreen: Bool, toolbarRequest: Binding<ConversationToolbarRequest?>, onContinue: @escaping () -> Void) {
         self.todo = todo
         self.store = store
         self.conversation = conversation
         self.isFrontmost = isFrontmost
+        self.isOnScreen = isOnScreen
         self.toolbarRequest = toolbarRequest
         self.onContinue = onContinue
         _loader = State(initialValue: ConversationLoader(
@@ -311,7 +314,7 @@ private struct ConversationPane: View {
                 .padding(.horizontal, 6)
             ConversationFrame(todo: todo, loader: loader, store: store, placeholder: nil, onPopOut: nil,
                               isFrontmost: isFrontmost, sharesColumn: true, toolbarRequest: toolbarRequest,
-                              pinnedConversationKey: conversation.listKey, onDeleted: {})
+                              pinnedConversationKey: conversation.listKey, isOnScreen: isOnScreen, onDeleted: {})
         }
         .background(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
         // Attach once the tool has started (a Codex or Cursor id arrives a moment later).
