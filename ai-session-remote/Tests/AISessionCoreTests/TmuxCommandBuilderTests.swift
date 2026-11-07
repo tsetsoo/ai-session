@@ -342,6 +342,12 @@ final class TranscriptCommandTests: XCTestCase {
     private let transcript = TmuxCommandBuilder.conversationTranscript(tool: "cursor", sessionId: "abc")
     private let summary = TmuxCommandBuilder.summarizeConversation(tool: "cursor", sessionId: "abc")
 
+    /// The user's choice (2026-11-07): summaries always use Sonnet at medium effort, which is
+    /// quicker than the account's default model.
+    func testTheSummaryUsesSonnetAtMediumEffort() {
+        XCTAssertTrue(summary.contains("--model sonnet --effort medium"), summary)
+    }
+
     func testMissingHelperIsScriptMissing() throws {
         try python3()
         try claude()

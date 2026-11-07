@@ -118,7 +118,7 @@ public enum TmuxCommandBuilder {
         conversationTranscript(tool: tool, sessionId: parentId + "/" + workerId, json: true, activity: true, after: after)
     }
 
-    /// A new `claude -p` over that transcript. It is not the source session. The transcript is
+    /// A new `claude -p` (Sonnet, medium effort: quicker) over that transcript. It is not the source session. The transcript is
     /// read first, so a missing or empty one stops here with its own exit code instead of
     /// `claude` summarizing only the instruction. Exit 90 when `claude` isn't installed.
     public static func summarizeConversation(tool: String, sessionId: String) -> String {
@@ -131,7 +131,7 @@ public enum TmuxCommandBuilder {
                 + "transcript=$(\"$helper\" \(shellQuote(tool)) \(shellQuote(sessionId))) || exit $?\n"
                 + "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT\n"
                 + "printf '%s\\n\\n%s\\n' \(instruction) \"$transcript\" | "
-                + "claude -p --no-session-persistence --tools \"\" --strict-mcp-config --setting-sources \"\""
+                + "claude -p --model sonnet --effort medium --no-session-persistence --tools \"\" --strict-mcp-config --setting-sources \"\""
         )
     }
 
