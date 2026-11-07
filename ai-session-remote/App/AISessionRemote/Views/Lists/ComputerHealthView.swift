@@ -8,7 +8,8 @@ import SwiftUI
 /// when the computer can't be reached the hub's report stays, with its time.
 ///
 /// Installing an update doesn't change what a running conversation uses. A conversation on an
-/// older version can be restarted from its row, one at a time and only when the user asks.
+/// older version can be restarted from its row, or all the idle ones with Restart Idle…,
+/// only when the user asks.
 struct ComputerHealthView: View {
     let computer: Computer
 
@@ -25,6 +26,9 @@ struct ComputerHealthView: View {
     @State private var forceRestart: HealthRestart?
     @State private var restarting: Set<String> = []
     @State private var restartNote: String?
+    /// Restart Idle…: asked for (confirm), then its progress ("2 of 5").
+    @State private var confirmRestartIdle = false
+    @State private var idleProgress: (done: Int, total: Int)?
 
     private var store: TodoHubStore { model.store }
     private var report: HostHealth? { live ?? snapshot?.report }
@@ -75,6 +79,17 @@ struct ComputerHealthView: View {
             Button("Cancel", role: .cancel) {}
         } message: { request in
             Text((request.refusal ?? "") + " Restarting stops it where it is.")
+        }
+        .confirmationDialog(
+            "Restart idle conversations?",
+            isPresented: $confirmRestartIdle,
+            titleVisibility: .visible
+        ) {
+            let count = restartable(report).count
+            Button("Restart \(count)") { runRestartIdle() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Restarts each conversation on an older version, one at a time, on the installed version. One that's working, waiting for you or running background tasks is left as it is. Each resumes in the same conversation and folder; text typed but not sent is lost.")
         }
         .task(id: computer.id) {
             await loadHub()
@@ -237,6 +252,16 @@ struct ComputerHealthView: View {
                         }
                     }
                 }
+                if let idleProgress {
+                    HStack(spacing: DS.spacing.s) {
+                        ProgressView().controlSize(.small)
+                        Text("Restarting \(min(idleProgress.done + 1, idleProgress.total)) of \(idleProgress.total)…")
+                            .foregroundStyle(.secondary)
+                    }
+                } else if restartable(report).count > 1 {
+                    Button("Restart Idle…") { confirmRestartIdle = true }
+                        .disabled(!restarting.isEmpty)
+                }
                 if let restartNote {
                     Text(restartNote)
                         .font(.caption)
@@ -246,9 +271,55 @@ struct ComputerHealthView: View {
                 Text("Running an Older Version").textCase(nil)
             } footer: {
                 if !outdated.isEmpty {
-                    Text("\(outdated.count) of \(running.count) running conversations. A conversation keeps the version it started with until it's restarted; installing an update doesn't change it. Restart one when it's not working on something.")
+                    let others = outdated.count - outdated.filter { conversation(for: $0) != nil }.count
+                    Text("\(outdated.count) of \(running.count) running conversations. A conversation keeps the version it started with until it's restarted; installing an update doesn't change it. Restart one when it's not working on something."
+                        + (others > 0 ? " \(others) of them \(others == 1 ? "isn't a todo's conversation, so it" : "aren't a todo's conversations, so they") can't be restarted here." : ""))
                 }
             }
+        }
+    }
+
+    /// The outdated conversations Restart Idle… goes through: a todo's, on a computer this
+    /// device reaches. Whether each is idle is the computer's call when it gets there.
+    private func restartable(_ report: HostHealth?) -> [(entry: HostHealth.Running, conversation: Conversation)] {
+        guard let report, HostLookup.host(for: computer, in: hosts) != nil else { return [] }
+        return report.outdatedRunning.compactMap { entry in conversation(for: entry).map { (entry, $0) } }
+    }
+
+    /// Restarts them one after another (never forced) and sums it up in one note.
+    private func runRestartIdle() {
+        let targets = restartable(report).map { (conversation: $0.conversation, title: title(for: $0.entry)) }
+        guard !targets.isEmpty else { return }
+        restartNote = nil
+        idleProgress = (0, targets.count)
+        Task {
+            var batch = RestartBatch()
+            defer { idleProgress = nil }
+            let config: HostConnectionConfig
+            do {
+                config = try HostLookup.config(for: computer, in: hosts)
+            } catch {
+                restartNote = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                return
+            }
+            for (index, target) in targets.enumerated() {
+                idleProgress = (index, targets.count)
+                let tmux = target.conversation.tmuxName
+                restarting.insert(tmux)
+                do {
+                    let result = try await RemoteRestart.restart(target.conversation, config: config, force: false, reopen: true)
+                    batch.add(result, title: target.title)
+                } catch is RemoteRestart.OldScripts {
+                    restarting.remove(tmux)
+                    restartNote = RemoteRestart.OldScripts(computer: computer.name).errorDescription
+                    return
+                } catch {
+                    batch.addFailure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription, title: target.title)
+                }
+                restarting.remove(tmux)
+            }
+            restartNote = batch.summary
+            await checkLive()
         }
     }
 

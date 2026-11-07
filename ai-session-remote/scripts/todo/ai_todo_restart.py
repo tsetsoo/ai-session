@@ -3,7 +3,7 @@ installed version, with new MCP servers or tooling (Claude in Chrome), the same 
 in the same folder. Only ever run for one conversation the user picked.
 
     restart <tmux name> <session id> <tool> [--force] [--chrome on|off|default]
-            [--reopen <cwd> [--mcp <names>]]
+            [--reopen <cwd> [--mcp <names>] [--worktree <folder> <branch>]]
 
 1. It refuses (exit 75) while the conversation is working, waiting for an answer or an
    approval, has Claude background tasks, or its state can't be read. --force restarts
@@ -14,7 +14,8 @@ in the same folder. Only ever run for one conversation the user picked.
    replaced when it next opens if it is idle and older (terminal()).
 4. With --reopen it starts it again detached through ai-todo-open (the same session id and
    tmux name, so never a second copy), then reports the version it now runs. Without it the
-   app reattaches, which resumes it the same way.
+   app reattaches, which resumes it the same way. --worktree (the conversation's own
+   worktree) goes to ai-todo-open, which makes the worktree again if it was deleted.
 
 A failure after the stop leaves a saved conversation: opening it again resumes it.
 Prints one JSON object; exit 0 done, 75 refused, 1 failed.
@@ -132,9 +133,10 @@ def installed_version(tool):
     return doctor.path_version(os.path.realpath(binary))
 
 
-def reopen(name, cwd, sid, tool, mcp):
+def reopen(name, cwd, sid, tool, mcp, worktree=None):
     open_bin = os.environ.get("AI_TODO_OPEN_BIN") or str(Path(__file__).with_name("ai-todo-open"))
-    argv = [open_bin, "--detached"] + (["--mcp", mcp] if mcp is not None and tool != "cursor" else []) + [name, cwd, sid, tool]
+    argv = [open_bin, "--detached"] + (["--mcp", mcp] if mcp is not None and tool != "cursor" else []) \
+        + (["--worktree", worktree[0], worktree[1]] if worktree else []) + [name, cwd, sid, tool]
     result = subprocess.run(argv, capture_output=True, text=True, timeout=OPEN_TIMEOUT_S, stdin=subprocess.DEVNULL)
     if result.returncode:
         error = RuntimeError((result.stderr or "").strip()[:300].rstrip(".") or "ai-todo-open exit %d" % result.returncode)
@@ -143,7 +145,7 @@ def reopen(name, cwd, sid, tool, mcp):
     return (result.stdout or "").strip()
 
 
-def restart(name, sid, tool, force=False, chrome="keep", cwd=None, mcp=None):
+def restart(name, sid, tool, force=False, chrome="keep", cwd=None, mcp=None, worktree=None):
     """The steps in the module's docstring; returns (exit code, result)."""
     if tool not in ("claude", "codex", "cursor") or not name.startswith("ai/%s/todo-" % tool):
         raise ValueError("invalid tmux name or tool")
@@ -171,7 +173,7 @@ def restart(name, sid, tool, force=False, chrome="keep", cwd=None, mcp=None):
     if cwd is None:
         return 0, dict(result, result="stopped")
     try:
-        result["mode"] = reopen(name, cwd, sid, tool, mcp)
+        result["mode"] = reopen(name, cwd, sid, tool, mcp, worktree)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         # 94: there is nothing to resume (a Codex conversation with no message yet); the
         # helper's own words say what to do. Anything else: the conversation is saved.
@@ -194,7 +196,7 @@ def main(args):
     if len(args) < 3:
         return 64, None
     name, sid, tool, rest = args[0], args[1], args[2], args[3:]
-    options = {"force": False, "chrome": "keep", "cwd": None, "mcp": None}
+    options = {"force": False, "chrome": "keep", "cwd": None, "mcp": None, "worktree": None}
     while rest:
         if rest[0] == "--force":
             options["force"], rest = True, rest[1:]
@@ -204,9 +206,11 @@ def main(args):
             options["cwd"], rest = rest[1], rest[2:]
         elif rest[0] == "--mcp" and len(rest) >= 2:
             options["mcp"], rest = rest[1], rest[2:]
+        elif rest[0] == "--worktree" and len(rest) >= 3 and rest[1] and rest[2]:
+            options["worktree"], rest = (rest[1], rest[2]), rest[3:]
         else:
             return 64, None
-    if options["mcp"] is not None and options["cwd"] is None:
-        return 64, None  # --mcp only means something when this reopens it
+    if (options["mcp"] is not None or options["worktree"]) and options["cwd"] is None:
+        return 64, None  # --mcp and --worktree only mean something when this reopens it
     code, result = restart(name, sid, tool, **options)
     return code, result

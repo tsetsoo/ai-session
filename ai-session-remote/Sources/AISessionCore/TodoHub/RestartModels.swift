@@ -60,3 +60,41 @@ public struct LaunchSettings: Decodable, Equatable, Sendable {
         try TodoHubClient.makeDecoder().decode(LaunchSettings.self, from: data)
     }
 }
+
+/// Restart Idle… on a computer's Health page: what restarting each outdated conversation in
+/// turn came to. A refused one (working, waiting, background tasks, unknown) is left as it is,
+/// never forced.
+public struct RestartBatch: Equatable, Sendable {
+    public private(set) var restarted = 0
+    public private(set) var left = 0
+    /// "<title>: <why>" for each that failed.
+    public private(set) var failures: [String] = []
+
+    public init() {}
+
+    public mutating func add(_ result: RestartResult, title: String) {
+        if result.isRefused {
+            left += 1
+        } else if result.result == "failed" {
+            failures.append("\(title): \(result.message ?? "The restart failed.")")
+        } else {
+            restarted += 1
+        }
+    }
+
+    public mutating func addFailure(_ message: String, title: String) {
+        failures.append("\(title): \(message)")
+    }
+
+    /// e.g. "Restarted 4. Left 1 that was busy. 1 failed: Fix login: …"
+    public var summary: String {
+        var parts = ["Restarted \(restarted)."]
+        if left > 0 {
+            parts.append("Left \(left) that \(left == 1 ? "was" : "were") working, waiting or running background tasks.")
+        }
+        if !failures.isEmpty {
+            parts.append("\(failures.count) failed: " + failures.joined(separator: "; "))
+        }
+        return parts.joined(separator: " ")
+    }
+}

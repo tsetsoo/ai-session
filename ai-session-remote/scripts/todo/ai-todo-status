@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor | report | launch save|resume-args|show … | restart NAME ID TOOL [--force] [--chrome on|off|default] [--reopen CWD [--mcp NAMES]] | writer NAME ID | reap | loaded NAME | resume TOOL ID.
+"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor | report | launch save|resume-args|show … | restart NAME ID TOOL [--force] [--chrome on|off|default] [--reopen CWD [--mcp NAMES] [--worktree FOLDER BRANCH]] | writer NAME ID | reap | loaded NAME | resume TOOL ID.
 
 resume TOOL ID  the app's one-tap Resume for a conversation paused by a usage limit: check it
                 (no question card, nothing typed, the limit has reset), take the hub's lease

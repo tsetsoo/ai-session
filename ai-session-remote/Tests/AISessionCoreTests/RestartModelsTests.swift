@@ -27,6 +27,16 @@ final class RestartModelsTests: XCTestCase {
         XCTAssertFalse(noReopen.contains("--mcp"))
     }
 
+    func testReopenRemakesItsWorktree() {
+        let command = TmuxCommandBuilder.restartConversation(
+            tmuxName: "ai/claude/todo-a", sessionId: sid, tool: "claude", reopenCwd: "~/.ai-remote/worktrees/p/c",
+            mcpServers: nil, worktree: (folder: "~/programming/app", branch: "ai/fix-c"))
+        XCTAssertTrue(command.hasSuffix(" --reopen '~/.ai-remote/worktrees/p/c' --worktree '~/programming/app' 'ai/fix-c'"), command)
+        let noReopen = TmuxCommandBuilder.restartConversation(
+            tmuxName: "ai/claude/todo-a", sessionId: sid, tool: "claude", worktree: (folder: "~/r", branch: "b"))
+        XCTAssertFalse(noReopen.contains("--worktree"))
+    }
+
     func testResultsDecode() throws {
         let refused = try RestartResult.decode(Data(#"{"tmux":"t","session_id":"s","tool":"claude","before":"2.1.310","state":"busy","result":"refused","reason":"busy","message":"It's working on a turn."}"#.utf8))
         XCTAssertTrue(refused.isRefused)
@@ -47,5 +57,21 @@ final class RestartModelsTests: XCTestCase {
         XCTAssertEqual(ChromeChoice(saved: false), .off)
         XCTAssertTrue(TmuxCommandBuilder.launchSettings(tool: "claude", sessionId: sid)
             .hasSuffix(#""$HOME/.ai-remote/bin/ai-todo-status" launch show 'claude' '\#(sid)'"#))
+    }
+
+    func testRestartBatchSummary() throws {
+        func result(_ json: String) throws -> RestartResult { try RestartResult.decode(Data(json.utf8)) }
+        var batch = RestartBatch()
+        XCTAssertEqual(batch.summary, "Restarted 0.")
+        try batch.add(result(#"{"result":"restarted","before":"2.1.310","after":"2.1.319"}"#), title: "A")
+        try batch.add(result(#"{"result":"restarted"}"#), title: "B")
+        try batch.add(result(#"{"result":"refused","reason":"busy","message":"It's working on a turn."}"#), title: "C")
+        XCTAssertEqual(batch.summary, "Restarted 2. Left 1 that was working, waiting or running background tasks.")
+        try batch.add(result(#"{"result":"refused","reason":"background"}"#), title: "D")
+        try batch.add(result(#"{"result":"failed","stage":"reopen","message":"Starting it again failed: x."}"#), title: "E")
+        batch.addFailure("No connection.", title: "F")
+        XCTAssertEqual([batch.restarted, batch.left, batch.failures.count], [2, 2, 2])
+        XCTAssertEqual(batch.summary, "Restarted 2. Left 2 that were working, waiting or running background tasks. "
+            + "2 failed: E: Starting it again failed: x.; F: No connection.")
     }
 }

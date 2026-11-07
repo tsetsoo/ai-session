@@ -151,6 +151,9 @@ class RestartTests(unittest.TestCase):
         self.assertEqual(restart.main([self.name, self.sid]), (64, None))
         self.assertEqual(restart.main([self.name, self.sid, "claude", "--mcp", "a"]), (64, None), "--mcp needs --reopen")
         self.assertEqual(restart.main([self.name, self.sid, "claude", "--chrome", "maybe"]), (64, None))
+        self.assertEqual(restart.main([self.name, self.sid, "claude", "--worktree", "~/r", "b"]), (64, None),
+                         "--worktree needs --reopen")
+        self.assertEqual(restart.main([self.name, self.sid, "claude", "--reopen", "/w", "--worktree", "~/r"]), (64, None))
 
     # Restarts
 
@@ -174,6 +177,17 @@ class RestartTests(unittest.TestCase):
                          ("restarted", "2.1.300", "2.1.319", "2.1.319"))
         self.assertEqual(log.read_text().split(), ["--detached", "--mcp", "github,sentry", self.name, "~/work", self.sid, "claude"])
         self.assertEqual(result["mode"], "resumed")
+
+    def test_reopen_remakes_its_worktree(self):
+        """--worktree goes to ai-todo-open, which makes the worktree again if it was deleted."""
+        self.start()
+        self.publish("idle")
+        log = self.fake_open()
+        code, result = restart.main([self.name, self.sid, "claude", "--reopen", "~/wt/a", "--worktree", "~/repo", "ai/branch",
+                                     "--mcp", ""])
+        self.assertEqual(code, 0, result)
+        self.assertEqual(log.read_text().splitlines()[-1],
+                         "--detached --mcp  --worktree ~/repo ai/branch %s ~/wt/a %s claude" % (self.name, self.sid))
 
     def test_not_running_just_starts_it(self):
         self.fake_open()
