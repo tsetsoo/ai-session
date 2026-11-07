@@ -93,6 +93,22 @@ enum DemoFixtures {
         ]
     }
 
+    /// What a demo worker did, for its sheet.
+    static var workerTranscript: [ConversationMessage] {
+        let start = Date().addingTimeInterval(-7 * 60)
+        func step(_ id: String, _ kind: ActivityKind, _ target: String) -> ConversationMessage {
+            ConversationMessage(id: id, role: .activity, text: "", time: start, kind: kind, target: target)
+        }
+        return [
+            ConversationMessage(id: "0.0", role: .user, text: "Review the change to src/auth/callback.ts for regressions.", time: start),
+            step("1.0", .run, "git diff HEAD~1 -- src/auth"),
+            step("2.0", .read, "src/auth/callback.ts"),
+            step("3.0", .search, "next="),
+            ConversationMessage(id: "4.0", role: .assistant, text: "The change keeps `next`. Checking how it's validated.", time: start),
+            step("5.0", .read, "src/auth/redirect.ts"),
+        ]
+    }
+
     /// Two workers started at the end of `chatTranscript`: one handed back, one still going.
     static var delegatedWorkers: [DelegatedWorker] {
         let started = Date().addingTimeInterval(-7.5 * 60)
@@ -105,7 +121,8 @@ enum DemoFixtures {
             ),
             DelegatedWorker(
                 id: "a2", callId: "11.1", title: "Check every route redirect", kind: "Explore", background: true,
-                state: .working, evidence: "no finish recorded; last write 4 s ago", startedAt: started, toolCount: 31,
+                state: .working, evidence: "no finish recorded; last write 4 s ago", startedAt: started,
+                lastSeenAt: Date().addingTimeInterval(-4), toolCount: 31,
                 task: "List every route that redirects after login and whether it keeps `next`."
             ),
         ]

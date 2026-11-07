@@ -92,6 +92,33 @@ public struct DelegatedWorker: Decodable, Identifiable, Equatable, Sendable {
         return "Agent"
     }
 
+    /// The card's line under the title, in plain words; nil for a done worker with a result.
+    /// `evidence` stays for the sheet's details.
+    public func statusText(now: Date = Date()) -> String? {
+        let ago = lastSeenAt.map { Self.elapsed(now.timeIntervalSince($0)) }
+        switch state {
+        case .working:
+            return ago.map { "Last update \($0) ago" } // the state label already says Working
+        case .stale:
+            return ago.map { "No update for \($0). It may still be running." } ?? "No update recorded."
+        case .failed:
+            guard let reason = evidence?.trimmingCharacters(in: .whitespacesAndNewlines), !reason.isEmpty else { return "Failed" }
+            return reason.prefix(1).uppercased() + reason.dropFirst()
+        case .done:
+            return result == nil ? "Finished" : nil
+        }
+    }
+
+    /// "just now", "40 s", "12 min", "3 h", "2 days".
+    static func elapsed(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds))
+        if s < 60 { return "\(s) s" }
+        if s < 3600 { return "\(s / 60) min" }
+        if s < 86400 { return "\(s / 3600) h" }
+        let days = s / 86400
+        return "\(days) \(days == 1 ? "day" : "days")"
+    }
+
     /// "4 min · 16 tools · 6k tokens", leaving out what isn't known.
     public var statsLine: String {
         var parts: [String] = []

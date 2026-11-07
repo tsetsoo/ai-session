@@ -20,6 +20,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
     /// Work this conversation delegated, shown as cards where it started.
     @State private var workers: [DelegatedWorker] = []
     @State private var workersFetchedAt: Date?
+    @State private var openWorker: DelegatedWorker?
     @State private var draft = ""
     @State private var loadError: String?
     @State private var sendError: String?
@@ -97,6 +98,12 @@ struct PhoneConversationView<TerminalContent: View>: View {
             guard DemoFixtures.isEnabled, ProcessInfo.processInfo.arguments.contains("-uiDemoCompose") else { return }
             try? await Task.sleep(for: .seconds(3))
             composing = true
+        }
+        .task {
+            // Screenshots: `-uiDemoWorker <id>` opens that worker's sheet (`-uiDemoWorkerActivity` unfolds what it did).
+            guard DemoFixtures.isEnabled, let id = DemoFixtures.value(after: "-uiDemoWorker") else { return }
+            try? await Task.sleep(for: .seconds(2))
+            openWorker = DemoFixtures.delegatedWorkers.first { $0.id == id }
         }
         #endif
         .task(id: pollID) {
@@ -185,6 +192,13 @@ struct PhoneConversationView<TerminalContent: View>: View {
             )
         }
         .background(Color(uiColor: .systemGroupedBackground))
+        .sheet(item: $openWorker) { opened in
+            // The list refreshes underneath, so show its newest copy of this worker.
+            WorkerSheet(
+                worker: workers.first { $0.id == opened.id } ?? opened,
+                conversation: conversation, config: config, store: store, toolName: RowText.toolName(conversation.tool)
+            )
+        }
         .onChange(of: terminal.prompt?.signature) { _, signature in
             if case let .answering(answering, _) = composerMode, answering.signature != signature { composerMode = .normal }
             if signature == nil { promptChanged = false }
@@ -234,7 +248,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
         case let .pending(send):
             ChatMessageView(message: ConversationMessage(id: send.id.uuidString, role: .user, text: send.text), toolName: tool, isPending: true)
         case let .delegation(worker):
-            ChatWorkerCard(worker: worker)
+            ChatWorkerCard(worker: worker) { openWorker = worker }
         case let .note(note):
             Text(note.text)
                 .font(.footnote)

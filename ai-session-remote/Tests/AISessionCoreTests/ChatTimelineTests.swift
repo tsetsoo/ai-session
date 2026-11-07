@@ -124,6 +124,20 @@ final class ChatTimelineTests: XCTestCase {
         XCTAssertEqual(workers[1].statsLine, "")
     }
 
+    func testWorkerStatusInPlainWords() {
+        let now = start.addingTimeInterval(3600)
+        func make(_ state: DelegatedWorker.State, seen: TimeInterval?, evidence: String? = nil, result: String? = nil) -> DelegatedWorker {
+            DelegatedWorker(id: "w", state: state, evidence: evidence, lastSeenAt: seen.map { now.addingTimeInterval(-$0) }, result: result)
+        }
+        XCTAssertEqual(make(.working, seen: 4, evidence: "no finish recorded; last write 4 s ago").statusText(now: now), "Last update 4 s ago")
+        XCTAssertEqual(make(.working, seen: 130).statusText(now: now), "Last update 2 min ago")
+        XCTAssertEqual(make(.working, seen: nil).statusText(now: now), nil)
+        XCTAssertEqual(make(.stale, seen: 720).statusText(now: now), "No update for 12 min. It may still be running.")
+        XCTAssertEqual(make(.failed, seen: 1, evidence: "stopped").statusText(now: now), "Stopped")
+        XCTAssertEqual(make(.done, seen: 1, result: "ok").statusText(now: now), nil)
+        XCTAssertEqual(make(.done, seen: 1).statusText(now: now), "Finished")
+    }
+
     func testPendingShowsUntilTranscriptHasALaterUserEntry() {
         let pending = PendingSend(id: UUID(), text: "fix it", afterCount: 2)
         let before = [user("0", "fix it"), assistant("1")]

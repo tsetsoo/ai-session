@@ -765,6 +765,25 @@ final class TodoHubStore {
         }
     }
 
+    /// One worker's own transcript with tool steps. With `previous`, only later entries are
+    /// fetched and appended. Throws OldHelper on helpers from before `--subagents`.
+    func workerMessages(
+        of conversation: Conversation, workerId: String, config: HostConnectionConfig, previous: [ConversationMessage] = []
+    ) async throws -> [ConversationMessage] {
+        #if DEBUG
+        if DemoFixtures.isEnabled { return DemoFixtures.workerTranscript }
+        #endif
+        let after = ConversationMessage.lastLine(of: previous)
+        let output = try await remoteStdout(
+            TmuxCommandBuilder.workerTranscript(
+                tool: conversation.tool, parentId: conversation.sessionId, workerId: workerId, after: after
+            ),
+            config: config, computerName: conversation.computer.name
+        )
+        let fetched = try ConversationMessage.decodeList(Data(output.utf8))
+        return after == nil ? fetched : previous + fetched
+    }
+
     /// A one-shot summary. The model is a new `claude -p`, not the conversation being duplicated.
     func summarizeConversation(_ conversation: Conversation, config: HostConnectionConfig) async throws -> String {
         try await remoteStdout(
