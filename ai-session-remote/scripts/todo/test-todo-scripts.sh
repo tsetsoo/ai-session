@@ -4654,7 +4654,7 @@ FP_ORIGIN="${SANDBOX}/review-fp-origin.git"
 FP_SEED="${SANDBOX}/review-fp-seed"
 FP_REPO="${SANDBOX}/review-fp-repo"
 fp_git() { git -C "$1" -c user.name=t -c user.email=t@t "${@:2}"; }
-git init -q --bare "$FP_ORIGIN"
+git init -q --bare -b main "$FP_ORIGIN"  # GIT_CONFIG_NOSYSTEM: git's own default may be master
 mkdir -p "$FP_SEED" && git -C "$FP_SEED" init -q -b main
 echo base >"${FP_SEED}/a.txt" && fp_git "$FP_SEED" add -A && fp_git "$FP_SEED" commit -qm base
 fp_git "$FP_SEED" checkout -qb feature
