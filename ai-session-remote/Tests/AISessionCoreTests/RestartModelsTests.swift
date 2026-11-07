@@ -27,6 +27,18 @@ final class RestartModelsTests: XCTestCase {
         XCTAssertFalse(noReopen.contains("--mcp"))
     }
 
+    func testCodexWebSearch() throws {
+        let on = TmuxCommandBuilder.restartConversation(tmuxName: "ai/codex/todo-a", sessionId: sid, tool: "codex", search: true)
+        XCTAssertTrue(on.hasSuffix(" 'codex' --search on"), on)
+        let off = TmuxCommandBuilder.restartConversation(tmuxName: "ai/codex/todo-a", sessionId: sid, tool: "codex", search: false)
+        XCTAssertTrue(off.hasSuffix(" --search off"), off)
+        let claude = TmuxCommandBuilder.restartConversation(tmuxName: "ai/claude/todo-a", sessionId: sid, tool: "claude", search: true)
+        XCTAssertFalse(claude.contains("--search"))
+        let settings = try LaunchSettings.decode(Data(#"{"chrome":null,"search":true,"model":null}"#.utf8))
+        XCTAssertEqual(settings.search, true)
+        XCTAssertNil(try LaunchSettings.decode(Data(#"{"chrome":null}"#.utf8)).search, "older scripts")
+    }
+
     func testReopenRemakesItsWorktree() {
         let command = TmuxCommandBuilder.restartConversation(
             tmuxName: "ai/claude/todo-a", sessionId: sid, tool: "claude", reopenCwd: "~/.ai-remote/worktrees/p/c",

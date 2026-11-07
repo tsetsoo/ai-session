@@ -52,6 +52,8 @@ public struct RestartResult: Decodable, Equatable, Sendable {
 /// A conversation's saved launch settings (`ai-todo-status launch show`).
 public struct LaunchSettings: Decodable, Equatable, Sendable {
     public var chrome: Bool?
+    /// Codex: live web search chosen for this conversation (`--search`). nil from older scripts.
+    public var search: Bool?
     public var model: String?
     public var permissionMode: String?
     public var network: Bool?

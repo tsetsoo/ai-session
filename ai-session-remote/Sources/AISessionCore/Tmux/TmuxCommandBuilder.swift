@@ -322,15 +322,17 @@ public enum TmuxCommandBuilder {
     /// Restarts one conversation (`RestartResult` JSON): refuses while it works or waits
     /// unless `force`, ends its CLI cleanly, and with `reopenCwd` starts it again detached
     /// (with `mcpServers` as `--mcp`, and `worktree` so a deleted worktree is made again).
-    /// Without it, attaching resumes it.
+    /// Without it, attaching resumes it. `search` (Codex only): turn live web search on or
+    /// off for this and later starts; nil leaves it.
     public static func restartConversation(
         tmuxName: String, sessionId: String, tool: String, force: Bool = false,
         chrome: ChromeChoice = .keep, reopenCwd: String? = nil, mcpServers: [String]? = nil,
-        worktree: (folder: String, branch: String)? = nil
+        worktree: (folder: String, branch: String)? = nil, search: Bool? = nil
     ) -> String {
         var command = "\"$HOME/.ai-remote/bin/ai-todo-status\" restart \(shellQuote(tmuxName)) \(shellQuote(sessionId)) \(shellQuote(tool))"
         if force { command += " --force" }
         if chrome != .keep, tool == "claude" { command += " --chrome \(chrome.rawValue)" }
+        if let search, tool == "codex" { command += " --search \(search ? "on" : "off")" }
         if let reopenCwd {
             command += " --reopen \(shellQuote(reopenCwd))"
             if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }

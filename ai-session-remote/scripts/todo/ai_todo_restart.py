@@ -3,7 +3,7 @@ installed version, with new MCP servers or tooling (Claude in Chrome), the same 
 in the same folder. Only ever run for one conversation the user picked.
 
     restart <tmux name> <session id> <tool> [--force] [--chrome on|off|default]
-            [--reopen <cwd> [--mcp <names>] [--worktree <folder> <branch>]]
+            [--search on|off] [--reopen <cwd> [--mcp <names>] [--worktree <folder> <branch>]]
 
 1. It refuses (exit 75) while the conversation is working, waiting for an answer or an
    approval, has Claude background tasks, or its state can't be read. --force restarts
@@ -19,6 +19,12 @@ in the same folder. Only ever run for one conversation the user picked.
 
 A failure after the stop leaves a saved conversation: opening it again resumes it.
 Prints one JSON object; exit 0 done, 75 refused, 1 failed.
+
+`ai-todo-status close-unused [--dry-run]` (the runner, every 10 minutes): ends the
+ai/<tool>/todo-* sessions whose todo is archived (done more than a day ago) or deleted,
+i.e. not among this computer's conversations on the hub. Only when the hub answered, only
+sessions with no tmux activity for UNUSED_IDLE_S and nobody attached, and only through the
+same refusals as a restart (never forced). Opening the todo again resumes the conversation.
 """
 import json
 import os
@@ -27,6 +33,9 @@ import shutil
 import signal
 import subprocess
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import ai_todo_doctor as doctor
 import ai_todo_launch as launch
@@ -147,7 +156,7 @@ def reopen(name, cwd, sid, tool, mcp, worktree=None):
     return (result.stdout or "").strip()
 
 
-def restart(name, sid, tool, force=False, chrome="keep", cwd=None, mcp=None, worktree=None):
+def restart(name, sid, tool, force=False, chrome="keep", cwd=None, mcp=None, worktree=None, search="keep"):
     """The steps in the module's docstring; returns (exit code, result)."""
     if tool not in ("claude", "codex", "cursor") or not name.startswith("ai/%s/todo-" % tool):
         raise ValueError("invalid tmux name or tool")
@@ -169,6 +178,8 @@ def restart(name, sid, tool, force=False, chrome="keep", cwd=None, mcp=None, wor
             return REFUSED, dict(result, result="refused", reason=state["state"], message=MESSAGES[state["state"]])
     if chrome != "keep" and tool == "claude":
         launch.update(tool, sid, chrome={"on": True, "off": False, "default": None}[chrome])
+    if search != "keep" and tool == "codex":
+        launch.update(tool, sid, search=search == "on")
     if running:
         stop(name, entry)
     result["stopped"] = running
@@ -198,16 +209,107 @@ def restart(name, sid, tool, force=False, chrome="keep", cwd=None, mcp=None, wor
     return 0, dict(result, result="restarted")
 
 
+UNUSED_IDLE_S = 6 * 3600
+SESSION_PREFIXES = ("ai/claude/todo-", "ai/codex/todo-", "ai/cursor/todo-")
+
+
+def hub_get(path, timeout=10):
+    """GET a hub path as JSON, or None when the hub can't be asked."""
+    try:
+        url, token = status.configuration()
+    except (OSError, ValueError):
+        return None
+    request = urllib.request.Request(url + path, headers={"Authorization": "Bearer " + token} if token else {})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode())
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+
+
+def linked_sessions():
+    """Tmux names of this computer's conversations on the hub (archived todos are left out
+    there), or None when that can't be known: then nothing may be closed."""
+    try:
+        computer = os.environ.get("TODO_COMPUTER_ID") or status.hub_values().get("TODO_COMPUTER_ID")
+    except (OSError, ValueError):
+        return None
+    if not computer:
+        return None
+    conversations = hub_get("/api/conversations")
+    if not isinstance(conversations, list):
+        return None
+    return {c.get("tmux_name") for c in conversations
+            if isinstance(c, dict) and c.get("tmux_name") and (c.get("computer") or {}).get("id") == computer}
+
+
+def session_info():
+    """{session name: {"activity": epoch s, "attached": bool}}, or None when tmux can't be asked."""
+    try:
+        listed = subprocess.run(tmux_args() + ["list-sessions", "-F", "#{session_name}\t#{session_activity}\t#{session_attached}"],
+                                capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if listed.returncode:
+        return {} if "no server running" in listed.stderr or "error connecting" in listed.stderr else None
+    result = {}
+    for line in listed.stdout.splitlines():
+        parts = line.rsplit("\t", 2)
+        if len(parts) == 3 and parts[1].isdigit():
+            result[parts[0]] = {"activity": int(parts[1]), "attached": parts[2] not in ("", "0")}
+    return result
+
+
+def close_unused(linked, now=None, dry_run=False, idle_s=None):
+    """End the unlinked, long-idle todo sessions (see the module docstring)."""
+    now = time.time() if now is None else now
+    idle_s = UNUSED_IDLE_S if idle_s is None else idle_s
+    sessions = session_info() or {}
+    closed, left = [], []
+    for name in sorted(sessions):
+        info = sessions[name]
+        if not name.startswith(SESSION_PREFIXES) or name in linked or info["attached"] or now - info["activity"] < idle_s:
+            continue
+        tool = name.split("/")[1]
+        entry = running_entry(name)
+        if not entry:
+            left.append({"tmux": name, "reason": "unknown"})  # no CLI found in it: leave it
+            continue
+        sid = entry.get("session_id")
+        if sid:
+            state = conversation_state(tool, sid)
+            reason = "background" if state["tasks"] else (None if state["state"] == "idle" else state["state"])
+            if reason:
+                left.append({"tmux": name, "reason": reason})
+                continue
+        # No id: a Codex or Cursor that never got a first message, so nothing to lose.
+        if not dry_run:
+            stop(name, entry)
+        closed.append(name)
+    return {"closed": closed, "left": left, "dry_run": dry_run}
+
+
+def close_unused_main(args):
+    if args not in ([], ["--dry-run"]):
+        return 64, None
+    linked = linked_sessions()
+    if linked is None:
+        return 1, {"closed": [], "left": [], "error": "the hub's conversations couldn't be read"}
+    return 0, close_unused(linked, dry_run=bool(args))
+
+
 def main(args):
     if len(args) < 3:
         return 64, None
     name, sid, tool, rest = args[0], args[1], args[2], args[3:]
-    options = {"force": False, "chrome": "keep", "cwd": None, "mcp": None, "worktree": None}
+    options = {"force": False, "chrome": "keep", "cwd": None, "mcp": None, "worktree": None, "search": "keep"}
     while rest:
         if rest[0] == "--force":
             options["force"], rest = True, rest[1:]
         elif rest[0] == "--chrome" and len(rest) >= 2 and rest[1] in ("on", "off", "default"):
             options["chrome"], rest = rest[1], rest[2:]
+        elif rest[0] == "--search" and len(rest) >= 2 and rest[1] in ("on", "off"):
+            options["search"], rest = rest[1], rest[2:]
         elif rest[0] == "--reopen" and len(rest) >= 2:
             options["cwd"], rest = rest[1], rest[2:]
         elif rest[0] == "--mcp" and len(rest) >= 2:

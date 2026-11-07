@@ -56,7 +56,7 @@ def save(tool, sid, model=None, auto_approve=False, now=None):
     now = now or time.time()
     status.atomic_json(path, {"tool": tool, "session_id": sid, "model": model,
                               "auto_approve": bool(auto_approve), "saved_at": int(now),
-                              "chrome": load(tool, sid).get("chrome")})
+                              "chrome": load(tool, sid).get("chrome"), "search": load(tool, sid).get("search")})
     for old in path.parent.glob("*.json"):
         try:
             if now - old.stat().st_mtime > KEEP_DAYS * 86400:
@@ -67,12 +67,13 @@ def save(tool, sid, model=None, auto_approve=False, now=None):
 
 def update(tool, sid, **fields):
     """Change saved settings and keep the rest (a conversation with no record gets one).
-    `chrome`: True / False for Claude in Chrome, None to leave it to Claude's own setting."""
+    `chrome`: True / False for Claude in Chrome, None to leave it to Claude's own setting.
+    `search`: True for Codex's live web search (--search); False / None leave it off."""
     path = record_path(tool, sid)
     record = load(tool, sid) or {"tool": tool, "session_id": sid, "model": None, "auto_approve": False}
     for key, value in fields.items():
-        if key == "chrome" and value not in (True, False, None):
-            raise ValueError("invalid chrome setting")
+        if key in ("chrome", "search") and value not in (True, False, None):
+            raise ValueError("invalid %s setting" % key)
         record[key] = value
     record["saved_at"] = int(time.time())
     status.atomic_json(path, record)
@@ -179,17 +180,21 @@ def resume_args(tool, sid):
             args += ["-m", model]
             if effort and EFFORT.fullmatch(effort):
                 args += ["-c", 'model_reasoning_effort="%s"' % effort]
+        # Live web search, when it was chosen for this conversation (a restart's choice).
+        if saved.get("search") is True:
+            args += ["--search"]
     return args
 
 
 def settings(tool, sid):
-    """What a restart would start with, for the app: {"chrome", "model", "permission_mode",
-    "network", "args"}. Values are None when not set (the CLI's own default)."""
+    """What a restart would start with, for the app: {"chrome", "search", "model",
+    "permission_mode", "network", "args"}. Values are None when not set (the CLI's own default)."""
     args = resume_args(tool, sid)
 
     def after(flag):
         return args[args.index(flag) + 1] if flag in args[:-1] else None
-    return {"chrome": load(tool, sid).get("chrome"), "model": after("--model") or after("-m"),
+    return {"chrome": load(tool, sid).get("chrome"), "search": load(tool, sid).get("search"),
+            "model": after("--model") or after("-m"),
             "permission_mode": after("--permission-mode"),
             "network": "sandbox_workspace_write.network_access=true" in args, "args": args}
 

@@ -154,6 +154,63 @@ class RestartTests(unittest.TestCase):
         self.assertEqual((code, result["result"]), (0, "stopped"))
         self.assertFalse(restart.session_exists(self.name))
 
+    # Closing sessions whose todo is archived or deleted
+
+    def test_close_unused_closes_only_old_idle_unlinked_sessions(self):
+        self.start()  # self.name: not linked, idle
+        self.publish("idle")
+        linked = "ai/claude/todo-linked01"
+        self.start(linked)
+        attached = "ai/claude/todo-attach01"
+        self.start(attached)
+        later = time.time() + restart.UNUSED_IDLE_S + 60
+        sessions = restart.session_info()
+        sessions[attached]["attached"] = True
+        with patch.object(restart, "session_info", return_value=sessions):
+            # Recently active: kept.
+            result = restart.close_unused({linked}, now=time.time())
+            self.assertEqual(result["closed"], [])
+            # Old enough: the unlinked idle one goes; linked and attached stay.
+            result = restart.close_unused({linked}, now=later, dry_run=True)
+            self.assertEqual(result["closed"], [self.name], result)
+            self.assertTrue(restart.session_exists(self.name), "a dry run stops nothing")
+            result = restart.close_unused({linked}, now=later)
+        self.assertEqual(result["closed"], [self.name], result)
+        self.assertFalse(restart.session_exists(self.name))
+        self.assertTrue(restart.session_exists(linked))
+        self.assertTrue(restart.session_exists(attached))
+
+    def test_close_unused_never_forces(self):
+        self.start()
+        self.publish("busy")
+        later = time.time() + restart.UNUSED_IDLE_S + 60
+        result = restart.close_unused(set(), now=later)
+        self.assertEqual(result["closed"], [])
+        self.assertEqual([(x["tmux"], x["reason"]) for x in result["left"]], [(self.name, "busy")])
+        self.assertTrue(restart.session_exists(self.name))
+
+    def test_close_unused_does_nothing_without_the_hub(self):
+        self.start()
+        self.publish("idle")
+        with patch.object(restart, "linked_sessions", return_value=None):
+            code, result = restart.close_unused_main([])
+        self.assertEqual(code, 1)
+        self.assertTrue(restart.session_exists(self.name))
+
+    def test_linked_sessions_reads_this_computers_conversations(self):
+        conversations = [{"tmux_name": "ai/claude/todo-a", "computer": {"id": "me"}},
+                         {"tmux_name": "ai/claude/todo-b", "computer": {"id": "other"}},
+                         {"tmux_name": None, "computer": {"id": "me"}}]
+        with patch.object(restart, "hub_get", return_value=conversations), \
+                patch.object(status, "hub_values", return_value={"TODO_COMPUTER_ID": "me"}):
+            self.assertEqual(restart.linked_sessions(), {"ai/claude/todo-a"})
+        with patch.object(restart, "hub_get", return_value=None), \
+                patch.object(status, "hub_values", return_value={"TODO_COMPUTER_ID": "me"}):
+            self.assertIsNone(restart.linked_sessions())
+        with patch.object(restart, "hub_get", return_value=conversations), \
+                patch.object(status, "hub_values", return_value={}):
+            self.assertIsNone(restart.linked_sessions(), "no computer id: can't tell which are ours")
+
     def test_bad_arguments(self):
         with self.assertRaises(ValueError):
             restart.restart("ai/codex/todo-x", self.sid, "claude")
@@ -162,6 +219,7 @@ class RestartTests(unittest.TestCase):
         self.assertEqual(restart.main([self.name, self.sid]), (64, None))
         self.assertEqual(restart.main([self.name, self.sid, "claude", "--mcp", "a"]), (64, None), "--mcp needs --reopen")
         self.assertEqual(restart.main([self.name, self.sid, "claude", "--chrome", "maybe"]), (64, None))
+        self.assertEqual(restart.main([self.name, self.sid, "codex", "--search", "maybe"]), (64, None))
         self.assertEqual(restart.main([self.name, self.sid, "claude", "--worktree", "~/r", "b"]), (64, None),
                          "--worktree needs --reopen")
         self.assertEqual(restart.main([self.name, self.sid, "claude", "--reopen", "/w", "--worktree", "~/r"]), (64, None))
@@ -188,6 +246,16 @@ class RestartTests(unittest.TestCase):
                          ("restarted", "2.1.300", "2.1.319", "2.1.319"))
         self.assertEqual(log.read_text().split(), ["--detached", "--mcp", "github,sentry", self.name, "~/work", self.sid, "claude"])
         self.assertEqual(result["mode"], "resumed")
+
+    def test_search_is_saved_for_codex_only(self):
+        restart.launch.update("claude", self.sid, chrome=None)
+        with patch.object(restart, "session_exists", return_value=False), \
+                patch.object(status, "writer_conflict", return_value=None):
+            code, result = restart.main(["ai/codex/todo-search1", self.sid, "codex", "--search", "on"])
+        self.assertEqual((code, result["result"]), (0, "stopped"), result)
+        self.assertIs(launch.load("codex", self.sid).get("search"), True)
+        restart.main([self.name, self.sid, "claude", "--search", "on"])
+        self.assertIsNone(launch.load("claude", self.sid).get("search"), "Claude has no web search choice")
 
     def test_reopen_remakes_its_worktree(self):
         """--worktree goes to ai-todo-open, which makes the worktree again if it was deleted."""

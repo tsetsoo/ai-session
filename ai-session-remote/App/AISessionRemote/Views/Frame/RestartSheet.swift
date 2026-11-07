@@ -2,23 +2,25 @@ import AISessionCore
 import SwiftUI
 
 /// "Restart…": start this conversation again, the same one in the same folder, on the
-/// installed CLI version, optionally with other MCP servers (Claude, Codex) or Claude in
-/// Chrome. The computer refuses while it works or waits for an answer; the frame asks then.
+/// installed CLI version, optionally with other MCP servers (Claude, Codex), Claude in
+/// Chrome or Codex's live web search. The computer refuses while it works or waits for an answer; the frame asks then.
 struct RestartSheet: View {
     let conversation: Conversation
     let store: TodoHubStore
     let hosts: [HostEntity]
-    let onConfirm: (_ servers: [String]?, _ chrome: ChromeChoice) -> Void
+    let onConfirm: (_ servers: [String]?, _ chrome: ChromeChoice, _ search: Bool?) -> Void
     let onCancel: () -> Void
 
     @State private var servers: [String]?
     @State private var list = MCPServerListState.loading
     @State private var chrome = ChromeChoice.keep
     @State private var savedChrome: ChromeChoice?
+    @State private var search = false
+    @State private var savedSearch: Bool?
     @State private var settingsUnavailable = false
 
     init(conversation: Conversation, store: TodoHubStore, hosts: [HostEntity],
-         onConfirm: @escaping ([String]?, ChromeChoice) -> Void, onCancel: @escaping () -> Void) {
+         onConfirm: @escaping ([String]?, ChromeChoice, Bool?) -> Void, onCancel: @escaping () -> Void) {
         self.conversation = conversation
         self.store = store
         self.hosts = hosts
@@ -42,6 +44,9 @@ struct RestartSheet: View {
                 if conversation.tool == "claude" {
                     chromeSection
                 }
+                if conversation.tool == "codex" {
+                    searchSection
+                }
                 if managesServers {
                     serversSection
                 }
@@ -58,7 +63,9 @@ struct RestartSheet: View {
                     Button("Cancel", action: onCancel)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Restart") { onConfirm(managesServers ? servers : conversation.mcpServers, chromeToSend) }
+                    Button("Restart") {
+                        onConfirm(managesServers ? servers : conversation.mcpServers, chromeToSend, searchToSend)
+                    }
                         .disabled(managesServers && list == .loading)
                 }
             }
@@ -71,10 +78,12 @@ struct RestartSheet: View {
             if managesServers {
                 list = await MCPServerListState.load(on: conversation.computer, store: store, config: config)
             }
-            if conversation.tool == "claude" {
+            if conversation.tool == "claude" || conversation.tool == "codex" {
                 if let settings = try? await RemoteRestart.settings(conversation, config: config()) {
                     savedChrome = ChromeChoice(saved: settings.chrome)
                     chrome = savedChrome ?? .keep
+                    savedSearch = settings.search ?? false
+                    search = savedSearch ?? false
                 } else {
                     settingsUnavailable = true
                 }
@@ -85,6 +94,24 @@ struct RestartSheet: View {
     /// Unchanged when it is what the conversation already has.
     private var chromeToSend: ChromeChoice {
         chrome == savedChrome ? .keep : chrome
+    }
+
+    /// nil (unchanged) when it is what the conversation already has, or unknown.
+    private var searchToSend: Bool? {
+        guard let savedSearch, search != savedSearch else { return nil }
+        return search
+    }
+
+    @ViewBuilder
+    private var searchSection: some View {
+        Section {
+            Toggle("Live web search", isOn: $search)
+                .disabled(settingsUnavailable || savedSearch == nil)
+        } footer: {
+            Text(settingsUnavailable
+                 ? "Update the todo scripts on \(conversation.computer.name) to choose this."
+                 : "Lets Codex search the web as it works. Kept for this conversation's later starts too.")
+        }
     }
 
     @ViewBuilder

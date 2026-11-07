@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor | report | launch save|resume-args|show … | restart NAME ID TOOL [--force] [--chrome on|off|default] [--reopen CWD [--mcp NAMES] [--worktree FOLDER BRANCH]] | writer NAME ID | reap | loaded NAME | resume TOOL ID.
+"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor | report | launch save|resume-args|show … | restart NAME ID TOOL [--force] [--chrome on|off|default] [--search on|off] [--reopen CWD [--mcp NAMES] [--worktree FOLDER BRANCH]] | close-unused [--dry-run] | writer NAME ID | reap | loaded NAME | resume TOOL ID.
 
 resume TOOL ID  the app's one-tap Resume for a conversation paused by a usage limit: check it
                 (no question card, nothing typed, the limit has reset), take the hub's lease
@@ -71,6 +71,15 @@ def main(args):
         # One conversation, on the user's request: end its CLI cleanly, optionally start it again.
         from ai_todo_restart import main as restart
         code, result = restart(args[1:])
+        if result is None:
+            print(__doc__, file=sys.stderr)
+            return code
+        print(json.dumps(result))
+        return code
+    elif args[:1] == ["close-unused"]:
+        # The runner, every 10 minutes: end the sessions whose todo is archived or deleted.
+        from ai_todo_restart import close_unused_main
+        code, result = close_unused_main(args[1:])
         if result is None:
             print(__doc__, file=sys.stderr)
             return code

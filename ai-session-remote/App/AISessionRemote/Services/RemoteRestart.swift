@@ -20,14 +20,16 @@ enum RemoteRestart {
     /// Refused and failed come back as results (with the computer's message), not errors.
     static func restart(
         _ conversation: Conversation, config: HostConnectionConfig, force: Bool = false,
-        chrome: ChromeChoice = .keep, reopen: Bool = false
+        chrome: ChromeChoice = .keep, reopen: Bool = false, search: Bool? = nil
     ) async throws -> RestartResult {
         // Reopening passes the conversation's own worktree, so one deleted since is made again.
         // Scripts from before that answer 64 for it: those retry without it.
         let worktree = reopen ? conversation.worktree : nil
-        var result = try await exec(conversation, config: config, force: force, chrome: chrome, reopen: reopen, worktree: worktree)
+        var result = try await exec(conversation, config: config, force: force, chrome: chrome, reopen: reopen,
+                                    worktree: worktree, search: search)
         if result.exitCode == 64, worktree != nil {
-            result = try await exec(conversation, config: config, force: force, chrome: chrome, reopen: reopen, worktree: nil)
+            result = try await exec(conversation, config: config, force: force, chrome: chrome, reopen: reopen,
+                                    worktree: nil, search: search)
         }
         if result.exitCode == TmuxCommandBuilder.scriptMissingExitCode || result.exitCode == 64 {
             throw OldScripts(computer: conversation.computer.name)
@@ -41,12 +43,12 @@ enum RemoteRestart {
 
     private static func exec(
         _ conversation: Conversation, config: HostConnectionConfig, force: Bool, chrome: ChromeChoice, reopen: Bool,
-        worktree: (folder: String, branch: String)?
+        worktree: (folder: String, branch: String)?, search: Bool?
     ) async throws -> SSHExecResult {
         let command = TmuxCommandBuilder.restartConversation(
             tmuxName: conversation.tmuxName, sessionId: conversation.sessionId, tool: conversation.tool,
             force: force, chrome: chrome, reopenCwd: reopen ? conversation.cwd : nil,
-            mcpServers: reopen ? conversation.mcpServers : nil, worktree: worktree
+            mcpServers: reopen ? conversation.mcpServers : nil, worktree: worktree, search: search
         )
         // Stop (10 s at most), the writer lock (10 s), and a reopen (90 s; 240 s when it may make
         // the worktree again).

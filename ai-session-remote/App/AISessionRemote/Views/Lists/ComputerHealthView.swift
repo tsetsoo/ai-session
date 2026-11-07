@@ -277,7 +277,7 @@ struct ComputerHealthView: View {
                 if !outdated.isEmpty {
                     let others = outdated.filter { conversation(for: $0) == nil }.count
                     Text("\(outdated.count) of \(running.count) running conversations. A conversation keeps the version it started with until it's restarted; installing an update doesn't change it. Restart one when it's not working on something."
-                        + (others > 0 ? " \(others) of them \(others == 1 ? "isn't a todo's conversation, so it" : "aren't a todo's conversations, so they") can't be restarted here." : ""))
+                        + (others > 0 ? " \(others) of them \(others == 1 ? "isn't a todo's conversation, so it" : "aren't a todo's conversations, so they") can't be restarted here. A todo that's deleted or done for over a day has its conversation closed after 6 hours with nothing happening; opening the todo again resumes it." : ""))
                 }
             }
         }

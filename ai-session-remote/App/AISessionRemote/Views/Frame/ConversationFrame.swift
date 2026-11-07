@@ -299,7 +299,7 @@ struct ConversationFrame: View {
             presenting: restartRequest
         ) { request in
             Button("Restart", role: .destructive) {
-                restart(request.conversation, chrome: request.chrome, force: true)
+                restart(request.conversation, chrome: request.chrome, search: request.search, force: true)
             }
             Button("Cancel", role: .cancel) {}
         } message: { request in
@@ -330,9 +330,9 @@ struct ConversationFrame: View {
             if let conversation = restartSheetTarget {
                 RestartSheet(
                     conversation: conversation, store: store, hosts: hosts,
-                    onConfirm: { servers, chrome in
+                    onConfirm: { servers, chrome, search in
                         restartSheetTarget = nil
-                        restartWithChanges(conversation, servers: servers, chrome: chrome)
+                        restartWithChanges(conversation, servers: servers, chrome: chrome, search: search)
                     },
                     onCancel: { restartSheetTarget = nil }
                 )
@@ -1068,7 +1068,7 @@ struct ConversationFrame: View {
     }
 
     /// Restart… confirmed: save other servers first (the hub passes them on the next start).
-    private func restartWithChanges(_ conversation: Conversation, servers: [String]?, chrome: ChromeChoice) {
+    private func restartWithChanges(_ conversation: Conversation, servers: [String]?, chrome: ChromeChoice, search: Bool?) {
         Task {
             var target = conversation
             if conversation.tool != "cursor", servers != conversation.mcpServers {
@@ -1083,7 +1083,7 @@ struct ConversationFrame: View {
                 }
                 target = store.conversations(forTodo: todo.id).first { $0.id == conversation.id } ?? conversation
             }
-            restart(target, chrome: chrome)
+            restart(target, chrome: chrome, search: search)
         }
     }
 
@@ -1092,7 +1092,7 @@ struct ConversationFrame: View {
     /// servers it now has and its saved settings. The computer refuses while the tool works or
     /// waits for an answer; the user is asked, then it is forced. A Codex conversation with no
     /// rollout yet can't be resumed, so it keeps running as it is.
-    private func restart(_ conversation: Conversation, chrome: ChromeChoice = .keep, force: Bool = false) {
+    private func restart(_ conversation: Conversation, chrome: ChromeChoice = .keep, search: Bool? = nil, force: Bool = false) {
         let tool = RowText.toolName(conversation.tool)
         perform("Couldn't Restart \(tool)") { _, config in
             let hasRollout = ServersRestart.checksRollout(conversation.tool)
@@ -1103,11 +1103,11 @@ struct ConversationFrame: View {
                 return
             }
             do {
-                let result = try await RemoteRestart.restart(conversation, config: config, force: force, chrome: chrome)
+                let result = try await RemoteRestart.restart(conversation, config: config, force: force, chrome: chrome, search: search)
                 if result.isRefused {
                     let message = result.message ?? "It's busy."
                     if result.canForce {
-                        restartRequest = RestartRequest(conversation: conversation, chrome: chrome, message: message)
+                        restartRequest = RestartRequest(conversation: conversation, chrome: chrome, search: search, message: message)
                     } else {
                         failure = ActionFailure(title: "Can't Restart \(tool) Now", message: message)
                     }
@@ -1117,11 +1117,11 @@ struct ConversationFrame: View {
                     failure = ActionFailure(title: "Couldn't Restart \(tool)", message: result.message ?? "The restart failed.")
                     return
                 }
-            } catch let error as RemoteRestart.OldScripts where chrome == .keep {
+            } catch let error as RemoteRestart.OldScripts where chrome == .keep && search == nil {
                 // Scripts from before restart: end tmux as before, asking first while it works.
                 _ = error
                 if conversation.status == .busy, !force {
-                    restartRequest = RestartRequest(conversation: conversation, chrome: chrome, message: "It's working on a turn.")
+                    restartRequest = RestartRequest(conversation: conversation, chrome: chrome, search: search, message: "It's working on a turn.")
                     return
                 }
                 try await store.endSession(conversation, config: config)
@@ -1398,6 +1398,7 @@ enum ServersRestart: Equatable {
 private struct RestartRequest {
     let conversation: Conversation
     let chrome: ChromeChoice
+    let search: Bool?
     let message: String
 }
 

@@ -4012,13 +4012,14 @@ pass "runner_starts_updates_at_most_every_5_minutes"
 rm -f "$R_HEALTH_LOG" "${R_STATE}/health-start.json"
 runs_reset
 wrunner tick || fail "tick failed"
-for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$R_HEALTH_LOG" ]] && break; sleep 0.2; done
-[[ "$(cat "$R_HEALTH_LOG" 2>/dev/null)" == "report" ]] || fail "runner didn't start ai-todo-status report: $(cat "$R_HEALTH_LOG" 2>/dev/null)"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ "$(wc -l <"$R_HEALTH_LOG" 2>/dev/null | tr -d ' ')" == 2 ]] && break; sleep 0.2; done
+[[ "$(sort "$R_HEALTH_LOG" 2>/dev/null | tr '\n' ' ')" == "close-unused report " ]] \
+  || fail "runner didn't start ai-todo-status report and close-unused: $(cat "$R_HEALTH_LOG" 2>/dev/null)"
 runs_reset
 wrunner tick || fail "tick failed"
 sleep 0.5
-[[ "$(wc -l <"$R_HEALTH_LOG" | tr -d ' ')" == 1 ]] || fail "the health report started again within 10 minutes"
-pass "runner_reports_health_at_most_every_10_minutes"
+[[ "$(wc -l <"$R_HEALTH_LOG" | tr -d ' ')" == 2 ]] || fail "the health report started again within 10 minutes"
+pass "runner_reports_health_and_closes_unused_at_most_every_10_minutes"
 rm -f "${W_DIR}/broken" "${W_DIR}/broken.json" "${W_DIR}/orphan.json"
 
 WATCH="${SCRIPT_DIR}/ai-todo-watch"

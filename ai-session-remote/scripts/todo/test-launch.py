@@ -118,7 +118,7 @@ class LaunchTests(unittest.TestCase):
         launch.update("claude", SID, chrome=False)
         self.assertEqual(launch.settings("claude", SID),
                          {"chrome": False, "model": None, "permission_mode": "auto", "network": False,
-                          "args": ["--permission-mode", "auto", "--no-chrome"]})
+                          "search": None, "args": ["--permission-mode", "auto", "--no-chrome"]})
         launch.update("claude", SID, chrome=None)
         self.assertEqual(launch.resume_args("claude", SID), ["--permission-mode", "auto"])
         with self.assertRaises(ValueError):
@@ -127,6 +127,20 @@ class LaunchTests(unittest.TestCase):
         launch.update("claude", SID, chrome=True)
         self.assertEqual(launch.create_args("claude", SID), ["--chrome"], "a start with no transcript keeps it too")
         self.assertEqual(launch.create_args("codex", SID), [])
+
+    def test_codex_web_search_is_kept_and_shown(self):
+        launch.update("codex", SID, search=True)
+        self.assertEqual(launch.resume_args("codex", SID), ["--search"])
+        self.assertTrue(launch.settings("codex", SID)["search"])
+        launch.save("codex", SID, model="gpt-6.1-mini")  # a later save keeps the choice
+        self.assertIn("--search", launch.resume_args("codex", SID))
+        launch.update("codex", SID, search=False)
+        self.assertNotIn("--search", launch.resume_args("codex", SID))
+        self.assertFalse(launch.settings("codex", SID)["search"])
+        with self.assertRaises(ValueError):
+            launch.update("codex", SID, search="yes")
+        launch.update("claude", SID, search=True)
+        self.assertNotIn("--search", launch.resume_args("claude", SID), "Claude has no --search")
 
     # Records and CLI
 
