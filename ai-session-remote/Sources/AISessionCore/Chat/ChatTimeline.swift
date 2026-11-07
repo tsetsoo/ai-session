@@ -36,6 +36,8 @@ public enum ChatItem: Identifiable, Equatable {
     case activity(id: String, steps: [ConversationMessage], summary: String)
     case pending(PendingSend)
     case note(AnsweredNote)
+    /// Work handed to another agent, where the parent started it (in place of its call step).
+    case delegation(DelegatedWorker)
 
     public var id: String {
         switch self {
@@ -44,6 +46,7 @@ public enum ChatItem: Identifiable, Equatable {
         case let .activity(id, _, _): return "activity-" + id
         case let .pending(pending): return "pending-" + pending.id.uuidString
         case let .note(note): return "note-" + note.id.uuidString
+        case let .delegation(worker): return "delegation-" + worker.id
         }
     }
 }
@@ -63,8 +66,23 @@ public enum ChatTimeline {
     /// A timestamp shows before the first timed entry and after a gap this long.
     public static let timeGap: TimeInterval = 30 * 60
 
-    public static func items(entries: [ConversationMessage], pending: [PendingSend], notes: [AnsweredNote]) -> [ChatItem] {
+    /// `workers` replace the call steps that started them (by `callId`). One whose call isn't in
+    /// `entries` goes before the first entry timed after it started, or at the end.
+    public static func items(
+        entries: [ConversationMessage], pending: [PendingSend], notes: [AnsweredNote], workers: [DelegatedWorker] = []
+    ) -> [ChatItem] {
         var items: [ChatItem] = []
+        let entryIds = Set(entries.map(\.id))
+        var byCall: [String: [DelegatedWorker]] = [:]
+        var unplaced: [DelegatedWorker] = []
+        for worker in workers {
+            if let call = worker.callId, entryIds.contains(call) {
+                byCall[call, default: []].append(worker)
+            } else {
+                unplaced.append(worker)
+            }
+        }
+        unplaced.sort { ($0.startedAt ?? .distantFuture) < ($1.startedAt ?? .distantFuture) }
         var steps: [ConversationMessage] = []
         var lastTime: Date?
         var local: [(afterCount: Int, item: ChatItem)] =
@@ -76,6 +94,15 @@ public enum ChatTimeline {
             items.append(.activity(id: first.id, steps: steps, summary: summary(steps)))
             steps = []
         }
+        func flushUnplaced(before time: Date?) {
+            // nil: the end, where the rest go (those without a start time last, as sorted).
+            while let next = unplaced.first {
+                if let time, (next.startedAt ?? .distantFuture) > time { return }
+                flushSteps()
+                items.append(.delegation(next))
+                unplaced.removeFirst()
+            }
+        }
         func flushLocal(upTo count: Int) {
             while let next = local.first, next.afterCount <= count {
                 flushSteps()
@@ -86,6 +113,7 @@ public enum ChatTimeline {
 
         for (index, entry) in entries.enumerated() {
             flushLocal(upTo: index)
+            if let time = entry.time { flushUnplaced(before: time) }
             if let time = entry.time {
                 if lastTime.map({ time.timeIntervalSince($0) >= timeGap }) ?? true {
                     flushSteps()
@@ -93,7 +121,10 @@ public enum ChatTimeline {
                 }
                 lastTime = time
             }
-            if entry.role == .activity {
+            if let started = byCall[entry.id] {
+                flushSteps()
+                items.append(contentsOf: started.map { .delegation($0) })
+            } else if entry.role == .activity {
                 steps.append(entry)
             } else {
                 flushSteps()
@@ -101,6 +132,7 @@ public enum ChatTimeline {
             }
         }
         flushSteps()
+        flushUnplaced(before: nil)
         flushLocal(upTo: .max)
         return items
     }

@@ -24,17 +24,20 @@ public struct ConversationMessage: Decodable, Identifiable, Equatable, Sendable 
     public let kind: ActivityKind?
     /// The file, command or query a step acted on; the tool's name when it had none.
     public let target: String?
+    /// The tool a step called ("Agent", "spawn_agent"); nil from helpers that predate it.
+    public let name: String?
 
-    public init(id: String, role: Role, text: String, time: Date? = nil, kind: ActivityKind? = nil, target: String? = nil) {
+    public init(id: String, role: Role, text: String, time: Date? = nil, kind: ActivityKind? = nil, target: String? = nil, name: String? = nil) {
         self.id = id
         self.role = role
         self.text = text
         self.time = time
         self.kind = kind
         self.target = target
+        self.name = name
     }
 
-    private enum CodingKeys: String, CodingKey { case id, role, text, time, kind, target }
+    private enum CodingKeys: String, CodingKey { case id, role, text, time, kind, target, name }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -44,6 +47,7 @@ public struct ConversationMessage: Decodable, Identifiable, Equatable, Sendable 
         time = (try container.decodeIfPresent(String.self, forKey: .time)).flatMap(Self.parseTime)
         kind = try container.decodeIfPresent(ActivityKind.self, forKey: .kind)
         target = try container.decodeIfPresent(String.self, forKey: .target)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
     }
 
     /// The transcript script's `--json` output, with or without `--activity`.

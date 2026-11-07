@@ -24,6 +24,7 @@ final class ChatTimelineTests: XCTestCase {
             case .activity: return "activity"
             case .pending: return "pending"
             case .note: return "note"
+            case let .delegation(worker): return "worker:" + worker.id
             }
         }
     }
@@ -58,6 +59,69 @@ final class ChatTimelineTests: XCTestCase {
     func testEntriesWithoutTimesAddNoTimestamps() {
         let items = ChatTimeline.items(entries: [user("0", "a"), assistant("1")], pending: [], notes: [])
         XCTAssertEqual(kinds(items), ["message", "message"])
+    }
+
+    private func worker(_ id: String, call: String?, startedAt minutes: Double? = nil, state: DelegatedWorker.State = .done) -> DelegatedWorker {
+        DelegatedWorker(id: id, callId: call, state: state, startedAt: minutes.map { start.addingTimeInterval($0 * 60) })
+    }
+
+    func testWorkerReplacesTheCallThatStartedItAndSplitsTheSteps() {
+        let entries = [
+            user("0.0", "review it", at: 0),
+            step("1.0", .read, "a"),
+            ConversationMessage(id: "1.1", role: .activity, text: "", kind: .other, target: "Agent", name: "Agent"),
+            step("2.0", .run, "ls"),
+            assistant("3.0"),
+        ]
+        let items = ChatTimeline.items(entries: entries, pending: [], notes: [], workers: [worker("a1", call: "1.1")])
+        XCTAssertEqual(kinds(items), ["time", "message", "activity", "worker:a1", "activity", "message"])
+        XCTAssertEqual(items[3].id, "delegation-a1")
+        guard case let .activity(_, before, _) = items[2], case let .activity(_, after, _) = items[4] else { return XCTFail("not activity") }
+        XCTAssertEqual(before.map(\.id), ["1.0"])
+        XCTAssertEqual(after.map(\.id), ["2.0"])
+    }
+
+    func testWithoutWorkersTheCallStaysAStep() {
+        let call = ConversationMessage(id: "1.0", role: .activity, text: "", kind: .other, target: "Agent", name: "Agent")
+        let items = ChatTimeline.items(entries: [user("0.0", "a"), call], pending: [], notes: [])
+        XCTAssertEqual(kinds(items), ["message", "activity"])
+    }
+
+    func testWorkerWithoutItsCallGoesWhereItStartedOrAtTheEnd() {
+        let entries = [user("0.0", "a", at: 0), assistant("1.0", at: 10), user("2.0", "b", at: 20)]
+        let workers = [worker("late", call: nil), worker("mid", call: "9.9", startedAt: 15), worker("first", call: nil, startedAt: 5)]
+        let items = ChatTimeline.items(entries: entries, pending: [], notes: [], workers: workers)
+        XCTAssertEqual(kinds(items), ["time", "message", "worker:first", "message", "worker:mid", "message", "worker:late"])
+    }
+
+    func testRefreshOnlyForAChatThatDelegatedAndWhileSomethingWorks() {
+        let call = ConversationMessage(id: "1.0", role: .activity, text: "", kind: .other, target: "spawn_agent", name: "spawn_agent")
+        let plain = [user("0.0", "a"), step("1.0", .run, "ls")]
+        XCTAssertFalse(Delegation.needsRefresh(entries: plain, workers: []))
+        XCTAssertTrue(Delegation.needsRefresh(entries: [user("0.0", "a"), call], workers: []))
+        XCTAssertFalse(Delegation.needsRefresh(entries: [user("0.0", "a"), call], workers: [worker("w", call: "1.0")]))
+        XCTAssertTrue(Delegation.needsRefresh(entries: [user("0.0", "a"), call], workers: [worker("w", call: "1.0", state: .working)]))
+        // A helper from before `name` reports the tool as the target.
+        let old = ConversationMessage(id: "1.0", role: .activity, text: "", kind: .other, target: "Agent")
+        XCTAssertTrue(Delegation.needsRefresh(entries: [old], workers: []))
+        // Not on every 1 s poll.
+        let working = [worker("w", call: "1.0", state: .working)]
+        XCTAssertFalse(Delegation.needsRefresh(entries: [call], workers: working, lastFetch: start, now: start.addingTimeInterval(5)))
+        XCTAssertTrue(Delegation.needsRefresh(entries: [call], workers: working, lastFetch: start, now: start.addingTimeInterval(10)))
+        XCTAssertFalse(Delegation.needsRefresh(entries: [call], workers: [], lastFetch: start, now: start.addingTimeInterval(1)))
+        XCTAssertTrue(Delegation.needsRefresh(entries: [call], workers: [], lastFetch: start, now: start.addingTimeInterval(3)))
+    }
+
+    func testWorkerListDecodesHelperOutput() throws {
+        let json = #"[{"id":"a1","callId":"12.1","title":"Review branch","kind":"general-purpose","model":"claude-opus-5-5","background":true,"state":"done","evidence":"handed back its report","startedAt":"2026-11-06T21:00:00.123Z","lastSeenAt":"2026-11-06T21:10:00Z","durationMs":600000,"tokens":6000,"toolCount":16,"task":"Do it","result":"Found 2 bugs."},{"id":"x","callId":null,"title":null,"kind":null,"model":null,"background":null,"state":"waiting","evidence":null,"startedAt":null,"lastSeenAt":null,"durationMs":null,"tokens":null,"toolCount":null,"task":null,"result":null}]"#
+        let workers = try DelegatedWorker.decodeList(Data(json.utf8))
+        XCTAssertEqual(workers.map(\.id), ["a1", "x"])
+        XCTAssertEqual(workers[0].callId, "12.1")
+        XCTAssertEqual(workers[0].startedAt, ConversationMessage.parseTime("2026-11-06T21:00:00.123Z"))
+        XCTAssertEqual(workers[0].statsLine, "10 min · 16 tools · 6k tokens")
+        XCTAssertEqual(workers[1].state, .stale)
+        XCTAssertEqual(workers[1].displayTitle, "Agent")
+        XCTAssertEqual(workers[1].statsLine, "")
     }
 
     func testPendingShowsUntilTranscriptHasALaterUserEntry() {

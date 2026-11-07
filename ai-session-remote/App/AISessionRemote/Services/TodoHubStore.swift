@@ -93,6 +93,7 @@ final class TodoHubStore {
     /// Computers whose `ai-todo-transcript` rejected `--activity`; their chat shows messages only
     /// until the flag is tried again (the helpers may have been updated meanwhile).
     private var transcriptActivityUnsupported = RetryAfter()
+    private var delegationUnsupported = RetryAfter()
 
     private let cache: TodoHubCache
     /// Where hub calls get their client (`TodoHubSettings.makeClient` outside tests); see `hubClient()`.
@@ -742,6 +743,26 @@ final class TodoHubStore {
             config: config, computerName: computer.name
         )
         return try ConversationMessage.decodeList(Data(output.utf8))
+    }
+
+    /// The work the conversation delegated (`--subagents`). [] for Cursor, and for a computer
+    /// whose helpers predate it (asked again after five minutes): the chat stays as it was.
+    func delegatedWorkers(of conversation: Conversation, config: HostConnectionConfig) async throws -> [DelegatedWorker] {
+        #if DEBUG
+        if DemoFixtures.isEnabled { return DemoFixtures.delegatedWorkers }
+        #endif
+        let computer = conversation.computer
+        guard ["claude", "codex"].contains(conversation.tool), !delegationUnsupported.isBlocked(computer.id) else { return [] }
+        do {
+            let output = try await remoteStdout(
+                TmuxCommandBuilder.delegatedWork(tool: conversation.tool, sessionId: conversation.sessionId),
+                config: config, computerName: computer.name
+            )
+            return try DelegatedWorker.decodeList(Data(output.utf8))
+        } catch is RemoteConversations.OldHelper {
+            delegationUnsupported.block(computer.id)
+            return []
+        }
     }
 
     /// A one-shot summary. The model is a new `claude -p`, not the conversation being duplicated.

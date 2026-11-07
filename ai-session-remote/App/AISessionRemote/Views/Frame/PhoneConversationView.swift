@@ -17,6 +17,9 @@ struct PhoneConversationView<TerminalContent: View>: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @State private var messages: [ConversationMessage] = []
+    /// Work this conversation delegated, shown as cards where it started.
+    @State private var workers: [DelegatedWorker] = []
+    @State private var workersFetchedAt: Date?
     @State private var draft = ""
     @State private var loadError: String?
     @State private var sendError: String?
@@ -52,7 +55,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
     }
     /// Faster while the agent works or waits, so steps and answers show up promptly.
     private var pollInterval: Duration { isBusy || needsApproval ? .seconds(1) : .seconds(3) }
-    private var items: [ChatItem] { ChatTimeline.items(entries: messages, pending: pending, notes: notes) }
+    private var items: [ChatItem] { ChatTimeline.items(entries: messages, pending: pending, notes: notes, workers: workers) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -214,7 +217,9 @@ struct PhoneConversationView<TerminalContent: View>: View {
     }
 
     /// Changes whenever something is added or a step arrives, for the iOS 17 follow.
-    private var contentVersion: Int { messages.count &* 31 &+ pending.count &* 7 &+ notes.count &+ (isBusy ? 1 : 0) }
+    private var contentVersion: Int {
+        messages.count &* 31 &+ pending.count &* 7 &+ notes.count &+ workers.count &* 131 &+ (isBusy ? 1 : 0)
+    }
 
     @ViewBuilder
     private func row(_ item: ChatItem, isLive: Bool) -> some View {
@@ -228,6 +233,8 @@ struct PhoneConversationView<TerminalContent: View>: View {
             ChatActivityRow(steps: steps, summary: summary, isLive: isLive)
         case let .pending(send):
             ChatMessageView(message: ConversationMessage(id: send.id.uuidString, role: .user, text: send.text), toolName: tool, isPending: true)
+        case let .delegation(worker):
+            ChatWorkerCard(worker: worker)
         case let .note(note):
             Text(note.text)
                 .font(.footnote)
@@ -241,6 +248,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
             let result = try await store.conversationMessages(of: conversation, config: config, previous: full ? [] : messages)
             guard !Task.isCancelled else { return }
             if messages != result { messages = result }
+            await refreshWorkers(entries: result, full: full)
             let stillPending = ChatTimeline.unconfirmed(pending, in: result)
             if stillPending != pending { pending = stillPending }
             loadError = nil
@@ -260,6 +268,17 @@ struct PhoneConversationView<TerminalContent: View>: View {
             }
         }
         isLoading = false
+    }
+
+    /// Only for a chat that delegated, and while a worker works. A failure keeps the last list:
+    /// the cards are extra, the chat is not.
+    private func refreshWorkers(entries: [ConversationMessage], full: Bool) async {
+        let due = (full && !workers.isEmpty)
+            || Delegation.needsRefresh(entries: entries, workers: workers, lastFetch: workersFetchedAt)
+        guard due else { return }
+        workersFetchedAt = Date()
+        guard let fetched = try? await store.delegatedWorkers(of: conversation, config: config), !Task.isCancelled else { return }
+        if fetched != workers { workers = fetched }
     }
 
     /// Copies the photo to the conversation's computer over SSH and puts its path in the draft

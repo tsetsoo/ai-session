@@ -106,6 +106,18 @@ public enum TmuxCommandBuilder {
             + (json ? " --json" : "") + (json && activity ? " --activity" : "") + afterFlag)
     }
 
+    /// The work a Claude or Codex conversation delegated, as JSON (`--subagents`). Helpers
+    /// older than that exit 64; 94 when the conversation has no transcript on the computer.
+    public static func delegatedWork(tool: String, sessionId: String) -> String {
+        wrap(transcriptHelperCheck + "exec \"$helper\" \(shellQuote(tool)) \(shellQuote(sessionId)) --subagents")
+    }
+
+    /// One worker's own transcript with tool steps, as the chat reads its parent's. 94 when that
+    /// worker isn't the parent's on this computer.
+    public static func workerTranscript(tool: String, parentId: String, workerId: String, after: Int? = nil) -> String {
+        conversationTranscript(tool: tool, sessionId: parentId + "/" + workerId, json: true, activity: true, after: after)
+    }
+
     /// A new `claude -p` over that transcript. It is not the source session. The transcript is
     /// read first, so a missing or empty one stops here with its own exit code instead of
     /// `claude` summarizing only the instruction. Exit 90 when `claude` isn't installed.

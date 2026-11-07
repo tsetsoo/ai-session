@@ -418,5 +418,21 @@ final class TranscriptCommandTests: XCTestCase {
         XCTAssertEqual(result.status, 0, result.stderr)
         XCTAssertEqual(result.stdout, "claude\ns\n--json\n--activity\n--after\n41\n")
     }
+
+    func testDelegatedWorkAsksForSubagents() throws {
+        try helper("printf '%s\\n' \"$@\"")
+        try python3()
+        let result = try run(TmuxCommandBuilder.delegatedWork(tool: "claude", sessionId: "s'x"))
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertEqual(result.stdout, "claude\ns'x\n--subagents\n")
+    }
+
+    func testWorkerTranscriptNamesParentAndWorker() throws {
+        try helper("printf '%s\\n' \"$@\"")
+        try python3()
+        let result = try run(TmuxCommandBuilder.workerTranscript(tool: "codex", parentId: "p", workerId: "w", after: 7))
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertEqual(result.stdout, "codex\np/w\n--json\n--activity\n--after\n7\n")
+    }
 }
 #endif

@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0058CC6E1A28F8AE88C4172B /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = B65AA1F0997AA790C79443EC /* NIOPosix */; };
 		00B684C59E7681CFF43EB203 /* AISessionRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */; };
+		00E9514ECE8B4CB5AEEFCD62 /* ChatWorkerCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50CDB15844E89FFEB1810D0B /* ChatWorkerCard.swift */; };
 		011E0983CD76CF63F6989F28 /* TextSizeShortcutsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB3E3B07720B67742A9A99D8 /* TextSizeShortcutsTests.swift */; };
 		022B57F04655E920FB73A18C /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 817B00374F94FAE43898BD11 /* NIOCore */; };
 		0299C3EF9137E36AF7C6A392 /* PhoneShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7904F574B3A5E7AE10B093F /* PhoneShell.swift */; };
@@ -120,6 +121,7 @@
 		5BEBD32F0776AB10C74CF0E5 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 069864B039E21288F0AD21AA /* ReviewView.swift */; };
 		5C8C1861A0B4A53B1F4E04A9 /* ChatTextViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DC8DE451518230695F83B05 /* ChatTextViews.swift */; };
 		5E1BA3A92F17441A72CB47CD /* ReviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F359B9E7301AF9D445728DC0 /* ReviewSession.swift */; };
+		5F9A88BE1E64572B469D5D00 /* ChatWorkerCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50CDB15844E89FFEB1810D0B /* ChatWorkerCard.swift */; };
 		6053A3AC11C84A1C10F6BEE5 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB4CDF06455FC47664EDCDE1 /* TerminalScreen.swift */; };
 		605E6B6F9F8F41A6885F4AF3 /* HostProvisioning.swift in Sources */ = {isa = PBXBuildFile; fileRef = B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */; };
 		6238587F6DCC413C18DCABAE /* AddAgentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5714682159E77F95240A7211 /* AddAgentSheet.swift */; };
@@ -394,6 +396,7 @@
 		45685B58CE2C40C0BCC9C856 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4667A4523A1AEC2B12BD5C2E /* ReadAloudTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadAloudTests.swift; sourceTree = "<group>"; };
 		4968C45BBA0F9D47DF734624 /* KeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBar.swift; sourceTree = "<group>"; };
+		50CDB15844E89FFEB1810D0B /* ChatWorkerCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWorkerCard.swift; sourceTree = "<group>"; };
 		53D5D88DD06CE9F165F49EF2 /* TerminalClipboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalClipboard.swift; sourceTree = "<group>"; };
 		5450C6574280A263EC927973 /* TerminalTouchScrollTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTouchScrollTests.swift; sourceTree = "<group>"; };
 		555A99A04217936E4F1645AD /* ConversationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListView.swift; sourceTree = "<group>"; };
@@ -658,6 +661,7 @@
 				2EEA147830218031EA1DDBEF /* ChatMessageView.swift */,
 				28722A0C4FEBE10DC336E84A /* ChatPromptCard.swift */,
 				3EE8C53F9D661BF68CA334B7 /* ChatStyledText.swift */,
+				50CDB15844E89FFEB1810D0B /* ChatWorkerCard.swift */,
 				E73B14EDD641FC1EDBABAAF8 /* SelectTextSheet.swift */,
 			);
 			path = Chat;
@@ -1159,6 +1163,7 @@
 				9EACDBA7F1C808B7A9EBA954 /* ChatPromptCard.swift in Sources */,
 				9C7B44037AC306AFF0894848 /* ChatStyledText.swift in Sources */,
 				A38FDDF29B0787819F678AAD /* ChatTextViews.swift in Sources */,
+				5F9A88BE1E64572B469D5D00 /* ChatWorkerCard.swift in Sources */,
 				1345E446A76E1ED2880000F2 /* Chip.swift in Sources */,
 				FAC15A82B72F481E60A70E81 /* CommandPalette.swift in Sources */,
 				1257CFF715CF5669E68422AC /* ComputerDetailView.swift in Sources */,
@@ -1296,6 +1301,7 @@
 				86FD5794327928EFA04D071A /* ChatPromptCard.swift in Sources */,
 				A0A7C2DC31C7BDFF2A0AEB43 /* ChatStyledText.swift in Sources */,
 				5C8C1861A0B4A53B1F4E04A9 /* ChatTextViews.swift in Sources */,
+				00E9514ECE8B4CB5AEEFCD62 /* ChatWorkerCard.swift in Sources */,
 				EDD94D170FCDD210BC4E16A8 /* Chip.swift in Sources */,
 				9FCEB6BCA32D59DAEC5BF7A7 /* CommandPalette.swift in Sources */,
 				168F160DFF449AD93446985A /* ComputerDetailView.swift in Sources */,

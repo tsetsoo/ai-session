@@ -88,6 +88,26 @@ enum DemoFixtures {
             ConversationMessage(id: "8.0", role: .assistant, text: "Done. Every route:\n\n" + long, time: at(2)),
             ConversationMessage(id: "9.0", role: .user, text: "great, now run the tests", time: at(42)),
             step("10.0", .run, "npm test -- auth/callback", 42.1),
+            ConversationMessage(id: "11.0", role: .activity, text: "", time: at(42.5), kind: .other, target: "Agent", name: "Agent"),
+            ConversationMessage(id: "11.1", role: .activity, text: "", time: at(42.5), kind: .other, target: "Agent", name: "Agent"),
+        ]
+    }
+
+    /// Two workers started at the end of `chatTranscript`: one handed back, one still going.
+    static var delegatedWorkers: [DelegatedWorker] {
+        let started = Date().addingTimeInterval(-7.5 * 60)
+        return [
+            DelegatedWorker(
+                id: "a1", callId: "11.0", title: "Review the callback fix", kind: "general-purpose", model: "claude-opus-5-5",
+                background: true, state: .done, evidence: "handed back its report", startedAt: started,
+                durationMs: 240_000, tokens: 18_400, toolCount: 12, task: "Review the change to src/auth/callback.ts for regressions.",
+                result: "No regressions. One nit: `next` isn't validated against open redirects — check it starts with `/`."
+            ),
+            DelegatedWorker(
+                id: "a2", callId: "11.1", title: "Check every route redirect", kind: "Explore", background: true,
+                state: .working, evidence: "no finish recorded; last write 4 s ago", startedAt: started, toolCount: 31,
+                task: "List every route that redirects after login and whether it keeps `next`."
+            ),
         ]
     }
 
