@@ -10,7 +10,8 @@ Exit 94 when that conversation has no transcript on this machine, or one with no
 
 ai-todo-transcript <claude|codex> <session_id> --subagents
   Lists the work this conversation delegated (Claude subagents and forked skills, Codex
-  spawned agents) as JSON: id, title, kind, model, background, state, evidence, startedAt,
+  spawned agents) as JSON: id, callId (the --activity id of the parent's call that started
+  it, or null), title, kind, model, background, state, evidence, startedAt,
   lastSeenAt, durationMs, tokens, toolCount, task, result. state is working, done, failed or
   stale. A transcript cannot show a pending approval, so it never says waiting. stale means
   no finish was recorded and nothing was written for a while: unknown, not failed.
@@ -343,7 +344,7 @@ def settle(worker, now):
 
 
 def blank_worker(ident):
-    return {"id": ident, "title": None, "kind": None, "model": None, "background": None,
+    return {"id": ident, "callId": None, "title": None, "kind": None, "model": None, "background": None,
             "state": None, "evidence": None, "startedAt": None, "lastSeenAt": None,
             "durationMs": None, "tokens": None, "toolCount": None, "task": None, "result": None}
 
@@ -355,6 +356,7 @@ def claude_workers(parent_path, now):
     notes = {}     # tool_use_id -> (status, result)
     handbacks = {}
     order = []
+    call_ids = {}  # tool_use_id -> "<line>.<index>", the id --activity gives that call
 
     def worker(ident):
         if ident not in workers:
@@ -362,14 +364,17 @@ def claude_workers(parent_path, now):
             order.append(ident)
         return workers[ident]
 
-    for _, entry in read_jsonl(parent_path):
+    for number, entry in read_jsonl(parent_path):
         if not isinstance(entry, dict) or entry.get("isSidechain"):
             continue
         content = (entry.get("message") or {}).get("content")
         if entry.get("type") == "assistant" and isinstance(content, list):
-            for part in content:
-                if (isinstance(part, dict) and part.get("type") == "tool_use"
-                        and part.get("name") in ("Agent", "Task") and isinstance(part.get("id"), str)):
+            for index, part in enumerate(content):
+                if not isinstance(part, dict) or part.get("type") != "tool_use" or not isinstance(part.get("id"), str):
+                    continue
+                # Any call can start a worker (a forked Skill too), so remember where each one is.
+                call_ids[part["id"]] = "%d.%d" % (number, index)
+                if part.get("name") in ("Agent", "Task"):
                     uses[part["id"]] = dict(part.get("input") or {}, _at=iso_seconds(entry.get("timestamp")))
         if entry.get("type") == "user" and isinstance(content, list):
             outcome = entry.get("toolUseResult")
@@ -466,6 +471,7 @@ def claude_workers(parent_path, now):
             by_use[use_id] = ident
             worker(ident)["_seen"] = call.get("_at")
         item = workers[ident]
+        item.setdefault("_use", use_id)
         item["title"] = item["title"] or call.get("description")
         item["kind"] = item["kind"] or call.get("subagent_type")
         item["model"] = item["model"] or call.get("model")
@@ -508,7 +514,7 @@ def claude_workers(parent_path, now):
             item.pop("finish", None)
             item.pop("failure", None)
             item["resumed"] = True
-        item.pop("_use", None)
+        item["callId"] = call_ids.get(item.pop("_use", None))
         settle(item, now)
     return [workers[ident] for ident in order]
 
@@ -539,6 +545,37 @@ def codex_own_rows(path):
     return [(number, row) for number, row in read_jsonl(path) if number > start and isinstance(row, dict)]
 
 
+def codex_spawn_calls(parent_path):
+    """({call_id: "<line>.0"}, {child thread id or agent path: call_id}) from a parent rollout."""
+    calls, spawned = {}, {}
+    for number, row in read_jsonl(parent_path):
+        payload = row.get("payload") if isinstance(row, dict) and isinstance(row.get("payload"), dict) else {}
+        kind = payload.get("type")
+        if kind in ("function_call", "custom_tool_call") and isinstance(payload.get("call_id"), str):
+            name = payload.get("name")
+            task = None
+            if name == "spawn_agent":
+                try:
+                    task = json.loads(payload.get("arguments") or "{}").get("task_name")
+                except (TypeError, ValueError, AttributeError):
+                    task = None
+            elif name == "exec" and isinstance(payload.get("input"), str) and "spawn_agent" in payload["input"]:
+                task = js_string(payload["input"], "task_name")
+            else:
+                continue
+            calls[payload["call_id"]] = "%d.0" % number
+            if isinstance(task, str) and task:
+                # A depth-1 child's agent_path is /root/<task_name>; the started event below is surer.
+                spawned.setdefault(task if task.startswith("/") else "/root/" + task, payload["call_id"])
+        elif kind == "item_completed":
+            item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+            if item.get("type") == "SubAgentActivity" and item.get("kind") == "started" and isinstance(item.get("id"), str):
+                for key in (item.get("agent_thread_id"), item.get("agent_path")):
+                    if isinstance(key, str):
+                        spawned[key] = item["id"]
+    return calls, spawned
+
+
 def codex_workers(parent_id, parent_path, now):
     # Children are written after the parent started: skip older rollouts without opening them.
     since = 0
@@ -557,6 +594,7 @@ def codex_workers(parent_id, parent_path, now):
         parent, spawn = codex_child_meta(path)
         if parent == parent_id:
             found.append((path, spawn))
+    calls, spawned = codex_spawn_calls(parent_path)
     workers = []
     for path, spawn in found:
         ident = None
@@ -572,6 +610,7 @@ def codex_workers(parent_id, parent_path, now):
         item["title"] = agent_path.rsplit("/", 1)[-1] or spawn.get("agent_nickname")
         item["kind"] = spawn.get("agent_role") or spawn.get("agent_nickname")
         item["background"] = True
+        item["callId"] = calls.get(spawned.get(ident) or spawned.get(agent_path))
         state = None
         started = finished = None
         turns = 0

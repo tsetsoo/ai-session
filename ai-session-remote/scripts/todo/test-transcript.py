@@ -380,6 +380,59 @@ class DelegationTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(transcript.main(["codex", "0000-other/" + child_id, "--json"]), 94)
 
+    def activity_ids(self, tool, sid):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(transcript.main([tool, sid, "--json", "--activity"]), 0)
+        return {entry["id"]: entry for entry in json.loads(out.getvalue())}
+
+    def test_claude_call_id_is_the_activity_id_of_the_starting_call(self):
+        call = agent_call("tu1", "Review branch", NOW - 900, run_in_background=True)
+        call["message"]["content"].insert(0, {"type": "text", "text": "Starting a reviewer."})
+        skill = {"type": "assistant", "timestamp": stamp(NOW - 800), "message": {"content": [
+            {"type": "tool_use", "id": "tu2", "name": "Skill", "input": {"skill": "simplify"}}]}}
+        write_jsonl(self.parent, [
+            {"type": "user", "timestamp": stamp(NOW - 950), "message": {"content": "review it"}},
+            call,
+            agent_result("tu1", {"status": "async_launched", "agentId": "a1", "description": "Review branch"}, NOW - 899),
+            skill,
+            agent_result("tu2", {"status": "forked", "agentId": "a2", "commandName": "simplify"}, NOW - 799),
+            agent_call("tu3", "Still running", NOW - 100),
+        ])
+        workers = self.workers()
+        self.assertEqual((workers["a1"]["callId"], workers["a2"]["callId"], workers["tu3"]["callId"]), ("1.1", "3.0", "5.0"))
+        steps = self.activity_ids("claude", "sid")
+        self.assertEqual((steps["1.1"]["name"], steps["3.0"]["name"], steps["5.0"]["name"]), ("Agent", "Skill", "Agent"))
+
+    def test_codex_call_id_is_the_activity_id_of_the_spawn_call(self):
+        parent_id = "0000-parent"
+        folder = os.path.join(self.sessions, "2026", "11", "06")
+        write_jsonl(os.path.join(folder, "rollout-x-%s.jsonl" % parent_id), [
+            {"timestamp": stamp(NOW - 5000), "type": "session_meta", "payload": {"id": parent_id, "source": "cli"}},
+            {"timestamp": stamp(NOW - 3001), "type": "response_item", "payload": {
+                "type": "function_call", "name": "spawn_agent", "call_id": "c1",
+                "arguments": json.dumps({"task_name": "probe", "message": "gAAAA-encrypted"})}},
+            self.codex_event("item_completed", NOW - 3000, item={
+                "type": "SubAgentActivity", "kind": "started", "id": "c1", "agent_thread_id": "0000-a", "agent_path": "/root/probe"}),
+            {"timestamp": stamp(NOW - 2001), "type": "response_item", "payload": {
+                "type": "custom_tool_call", "name": "exec", "call_id": "c2",
+                "input": 'await tools.spawn_agent({task_name:"helper", message:"x"})'}},
+            {"timestamp": stamp(NOW - 1001), "type": "response_item", "payload": {
+                "type": "function_call", "name": "exec_command", "call_id": "c3", "arguments": "{\"cmd\": \"ls\"}"}},
+        ], NOW - 1000)
+        for child, name, at in (("0000-a", "probe", 3000), ("0000-b", "helper", 2000), ("0000-c", "orphan", 1500)):
+            spawn = {"thread_spawn": {"parent_thread_id": parent_id, "depth": 1, "agent_path": "/root/" + name}}
+            write_jsonl(os.path.join(folder, "rollout-y-%s.jsonl" % child), [
+                {"timestamp": stamp(NOW - at), "type": "session_meta", "payload": {"id": child, "source": {"subagent": spawn}}},
+                self.codex_message("developer", "You are now a newly spawned child agent.", NOW - at),
+                self.codex_event("task_started", NOW - at)], NOW - at)
+        workers = self.workers("codex", parent_id)
+        self.assertEqual({ident: worker["callId"] for ident, worker in workers.items()},
+                         {"0000-a": "1.0", "0000-b": "3.0", "0000-c": None})
+        steps = self.activity_ids("codex", parent_id)
+        self.assertIn("1.0", steps)
+        self.assertIn("3.0", steps)
+
 
 if __name__ == "__main__":
     unittest.main()
