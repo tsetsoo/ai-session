@@ -36,6 +36,8 @@ When asked to rebuild, reinstall, or update the local Mac app, run this and do n
 ai-session-remote/scripts/rebuild-mac-app.sh
 ```
 
+It refuses to replace an app built from commits your tree doesn't have (another session's newer build): rebase onto `origin/main` first. `--force` overrides that.
+
 It builds Release with XcodeGen and `xcodebuild`, checks the signature is Apple Development team `233QTK6KCL`, quits AI Session Remote, waits until that process is gone, replaces `~/Applications/AI Session Remote.app`, and opens it.
 
 Keep that team id. An ad-hoc build or one signed "AI Session Remote Local" has no Team ID, so the login keychain stores a new cdhash every rebuild and asks again for the SSH keys and the hub token. Those settings are on the `AISessionRemoteMac` target in `ai-session-remote/project.yml`. After a change of signing identity, the user clicks Always Allow once. Later rebuilds with the same team must not prompt.
