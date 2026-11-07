@@ -359,7 +359,7 @@ struct ReviewView: View {
         if session.scope != .pullRequest, session.pullRequests?.prs.isEmpty == false {
             return "Pick one of your pull requests above to see exactly its changes."
         }
-        switch session.scope {
+        return switch session.scope {
         case .uncommitted: "Choose Conversation to see everything it changed, committed or not."
         case .branch: "This branch has nothing the default branch doesn't. Choose Conversation, or a commit in Compare With."
         default: ""
