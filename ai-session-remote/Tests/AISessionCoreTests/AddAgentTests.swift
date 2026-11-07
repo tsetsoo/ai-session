@@ -87,6 +87,19 @@ final class AddAgentTests: XCTestCase {
         XCTAssertNil(AddAgent.firstUserMessage([]))
     }
 
+    /// Claude Code records `/clear` and similar as user turns: a note, the command, its output.
+    /// They are not what the user asked, so Fresh skips them (seen 2026-11-07: Codex got the note).
+    func testFirstUserMessageSkipsCommandRecordsAndSystemNotes() {
+        let messages = [
+            ConversationMessage(id: "1", role: .user, text: "<local-command-caveat>The command below was run directly in Claude Code.</local-command-caveat>", time: nil),
+            ConversationMessage(id: "2", role: .user, text: "<command-name>/clear</command-name>\n  <command-message>clear</command-message>\n  <command-args></command-args>", time: nil),
+            ConversationMessage(id: "3", role: .user, text: "<local-command-stdout></local-command-stdout>", time: nil),
+            ConversationMessage(id: "4", role: .user, text: "<system-reminder>notes</system-reminder>\n\n# Handover: stage 2", time: nil),
+        ]
+        XCTAssertEqual(AddAgent.firstUserMessage(messages), "# Handover: stage 2")
+        XCTAssertNil(AddAgent.firstUserMessage(Array(messages.prefix(3))))
+    }
+
     func testThePlanMapsOntoTheDuplicateStart() {
         XCTAssertEqual(plan(.summary).duplicatePlan, .start(text: "the summary", label: "Codex"))
         XCTAssertEqual(plan(.full, tool: "claude", projectWorktrees: false).duplicatePlan, .fork(sourceSessionId: "s1", label: "Codex"))
