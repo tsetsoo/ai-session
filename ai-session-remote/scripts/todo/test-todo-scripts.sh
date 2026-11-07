@@ -4887,6 +4887,37 @@ OUR_NOTIFY="notify = [\"${HOME}/.ai-remote/bin/ai-todo-codex-notify\"]"
   || fail "codex notify not added exactly once: $(cat "${HOME}/.codex/config.toml")"
 pass "install adds our notify to a codex config without one, once"
 
+[[ "$(grep -c '^hide_rate_limit_model_nudge = true$' "${HOME}/.codex/config.toml")" -eq 1 ]] \
+  || fail "codex rate limit nudge not hidden exactly once: $(cat "${HOME}/.codex/config.toml")"
+CX="${SANDBOX}/codex-nudge"
+mkdir -p "$CX"
+printf 'model = "gpt-5"\n\n[notice.model_migrations]\n"gpt-5.2" = "gpt-5.2-codex"\n\n[tui]\nx = 1' >"${CX}/config.toml"
+CODEX_HOME="$CX" "$INSTALL" >/dev/null
+CODEX_HOME="$CX" "$INSTALL" >/dev/null
+python3 - "${CX}/config.toml" <<'PY2' || fail "nudge not added as [notice] next to [notice.model_migrations]: $(cat "${CX}/config.toml")"
+import sys, re
+text = open(sys.argv[1]).read()
+assert text.count("hide_rate_limit_model_nudge") == 1 and text.count("[notice]") == 1, text
+assert '"gpt-5.2" = "gpt-5.2-codex"' in text and "x = 1\n" in text, text
+try:
+    import tomllib
+except ImportError:
+    sys.exit(0)
+c = tomllib.loads(text)
+assert c["notice"]["hide_rate_limit_model_nudge"] is True and c["notice"]["model_migrations"] and c["tui"]["x"] == 1, c
+PY2
+printf '[notice]\nhide_full_access_warning = true\n\n[tui]\n' >"${CX}/config.toml"
+CODEX_HOME="$CX" "$INSTALL" >/dev/null
+[[ "$(sed -n '/^\[notice\]/,$p' "${CX}/config.toml")" == $'[notice]\nhide_rate_limit_model_nudge = true\nhide_full_access_warning = true\n\n[tui]' ]] \
+  || fail "nudge not put in the existing [notice]: $(cat "${CX}/config.toml")"
+printf 'notice = { hide_full_access_warning = true }\n' >"${CX}/config.toml"
+CODEX_HOME="$CX" "$INSTALL" --status-only >/dev/null
+grep -qx 'notice = { hide_full_access_warning = true }' "${CX}/config.toml" && ! grep -q 'hide_rate_limit_model_nudge\|^\[notice\]' "${CX}/config.toml" \
+  || fail "inline notice table was edited: $(cat "${CX}/config.toml")"
+CODEX_HOME="$CX" "$INSTALL" --uninstall >/dev/null
+"$INSTALL" >/dev/null
+pass "install hides Codex's rate limit model card once: next to [notice.model_migrations], in an existing [notice], never in an inline notice or over an explicit false"
+
 CX="${SANDBOX}/codex-hooks"
 mkdir -p "$CX"
 cat >"${CX}/hooks.json" <<'EOF'
@@ -4938,6 +4969,9 @@ notify = ["/Applications/Other.app/notify", "turn-ended"]
 
 [projects."/x"]
 trust_level = "trusted"
+
+[notice]
+hide_rate_limit_model_nudge = false
 EOF
 cp "${CX}/config.toml" "${SANDBOX}/codex2.orig"
 out="$(CODEX_HOME="$CX" "$INSTALL")"

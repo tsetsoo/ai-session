@@ -18,6 +18,7 @@
 #   ~/.ai-remote/tmux.conf           tmux settings, sourced from ~/.tmux.conf
 #   ~/.claude/settings.json          hooks merged in; other settings untouched
 #   ~/.codex/config.toml             `notify` added only if none is set (see below)
+#                                    and [notice] hide_rate_limit_model_nudge = true (kept on uninstall)
 #   ~/.codex/hooks.json              hooks merged in (Codex 0.163+), then trusted through
 #                                    `codex app-server`, which writes hooks.state in config.toml
 #   ~/Library/LaunchAgents/com.ai-remote.todo-memory.plist  `ai-todo-memory nightly` at 03:30 (macOS)
@@ -471,6 +472,74 @@ if not dry_run and os.path.exists(saved):
 PY
 }
 
+# Turn off Codex's "Approaching rate limits · Switch to <model>?" card: it is a question, and
+# the resume after a limit never answers one, so it would wait behind the card for 12 hours.
+# This is the same line Codex writes for "Keep current model (never show again)". Added only
+# when the key isn't set at all (an explicit false stays); kept on uninstall, like that choice.
+hide_codex_model_nudge() {
+  if [[ ! -d "$CODEX_DIR" ]] && ! command -v codex >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found: add to ${CODEX_CONFIG} by hand:" >&2
+    echo "  [notice]" >&2
+    echo "  hide_rate_limit_model_nudge = true" >&2
+    return 0
+  fi
+  python3 - "$CODEX_CONFIG" "$dry_run" <<'PY'
+import os, re, shutil, sys, time
+
+path, dry_run = sys.argv[1], sys.argv[2] == "1"
+key = "hide_rate_limit_model_nudge"
+text = ""
+if os.path.exists(path):
+    with open(path) as f:
+        text = f.read()
+lines = text.splitlines(keepends=True)
+
+if re.search(rf"^\s*(notice\s*\.\s*)?{key}\s*=", text, re.M):
+    print("config.toml: rate limit model nudge already set; left unchanged")
+    sys.exit(0)
+if re.search(r"^\s*notice\s*(=|\.)", text, re.M):
+    # notice as an inline table or dotted keys: a [notice] header would be a duplicate.
+    print(f"config.toml: notice is set inline; add {key} = true to it by hand")
+    sys.exit(0)
+
+line = f"{key} = true\n"
+header = next((i for i, l in enumerate(lines) if re.match(r"\s*\[\s*notice\s*\]\s*(#.*)?$", l)), None)
+if header is not None:
+    lines.insert(header + 1, line)
+else:
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    if lines and lines[-1].strip():
+        lines.append("\n")
+    lines += ["[notice]\n", line]
+new = "".join(lines)
+try:
+    import tomllib
+    tomllib.loads(new)
+except ImportError:
+    pass
+except Exception as e:
+    print(f"config.toml: not changed, the edit would not parse ({e}); add {key} = true under [notice] by hand")
+    sys.exit(0)
+if dry_run:
+    print(f"would update {path} (rate limit model nudge hidden)")
+    sys.exit(0)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+if os.path.exists(path):
+    backup = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copy2(path, backup)
+    print(f"config.toml: backed up to {backup}")
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    f.write(new)
+os.replace(tmp, path)
+print("config.toml: rate limit model nudge hidden (it blocks the resume after a limit)")
+PY
+}
+
 # Set KEY='VALUE' in todo-hub.conf: replaces the KEY line, or appends one. Other lines stay.
 set_conf_value() {
   local tmp="${HUB_CONF}.tmp.$$"
@@ -734,6 +803,7 @@ do_install_status() {
   for file in ai_todo_status.py ai_todo_doctor.py ai_todo_launch.py ai_todo_restart.py ai_todo_resume.py; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   resolve_codex_for_hooks
   merge_codex_notify install
+  hide_codex_model_nudge
   merge_codex_hooks install
   install_status_agent
   write_helpers_stamp status-only
@@ -840,6 +910,7 @@ do_install() {
 
   merge_settings install
   merge_codex_notify install
+  hide_codex_model_nudge
   merge_codex_hooks install
   install_launch_agent
   install_status_agent
