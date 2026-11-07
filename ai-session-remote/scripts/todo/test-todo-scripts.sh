@@ -4630,8 +4630,10 @@ GIT_COMMITTER_DATE="2026-01-01T00:00:00Z" git -C "$WT_REPO" -c user.name=t -c us
 git -C "$WT_REPO" worktree add -q -b old "${SANDBOX}/review-wt-old"
 git -C "$WT_REPO" worktree add -q -b agent "${SANDBOX}/review-wt-agent"
 git -C "${SANDBOX}/review-wt-agent" -c user.name=t -c user.email=t@t commit -q --allow-empty -m work
-# The old worktree's index hasn't changed since long ago.
-touch -t 202601010000 "$(git -C "${SANDBOX}/review-wt-old" rev-parse --path-format=absolute --git-path index)" "$(git -C "$WT_REPO" rev-parse --path-format=absolute --git-path index)"
+# The old worktrees' HEAD hasn't moved since long ago; a `git status` there (index rewrite)
+# doesn't make them active.
+touch -t 202601010000 "$(git -C "${SANDBOX}/review-wt-old" rev-parse --path-format=absolute --git-path logs/HEAD)" "$(git -C "$WT_REPO" rev-parse --path-format=absolute --git-path logs/HEAD)"
+git -C "${SANDBOX}/review-wt-old" status >/dev/null
 wt_out="$("$REVIEW" worktrees "$WT_REPO" --since 2026-06-01T00:00:00Z)" || fail "worktrees failed"
 python3 - "$wt_out" "$SANDBOX" <<'PY' || fail "worktrees: $wt_out"
 import json, os, sys

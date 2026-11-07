@@ -80,7 +80,8 @@ publish posts a review on the PR/MR, as the computer's gh/glab account: {event C
 merge   merges it through the API (nothing changes in the worktree) only while its head is
         --head, deleting the branch on the forge when asked. GitLab must answer merged: queued
         for a pipeline is a failure. Branch protection and checks are the forge's to enforce.
-worktrees  the repository's worktrees, most recently active first, marking those active since
+worktrees  the repository's worktrees (not a bare one), most recently active first (last commit or
+        HEAD move), marking those active since
         --since: for an agent that made its own worktree outside the conversation's folder.
 cancel  stops a running reviewer (its whole process group). Prints what `result` does: a run
         that finished first stays done, with its findings.
@@ -1025,8 +1026,8 @@ def cmd_merge(args):
 def cmd_worktrees(args):
     """worktrees <cwd> [--since ISO]: every worktree of the repository, most recently active
     first: {root, worktrees: [{path, branch, head, detached, current, active_at, changed_since}]}.
-    active_at is the later of its last commit and its index's last change (staging,
-    committing, checking out). changed_since: active at or after --since (when the
+    active_at is the later of its last commit and its HEAD log's last change (commits,
+    checkouts, resets). Not the index: any `git status` rewrites that. changed_since: active at or after --since (when the
     conversation began), so the agent's own worktree is easy to find without reading
     transcripts."""
     args, since = take_option(args, "--since")
@@ -1058,19 +1059,21 @@ def cmd_worktrees(args):
             entry["detached"] = True
         elif key == "prunable":
             entry["prunable"] = True
+        elif key == "bare":
+            entry["bare"] = True
     real_root = os.path.realpath(root)
     worktrees = []
     for entry in entries:
         path = entry["path"]
-        if entry.get("prunable") or not os.path.isdir(path):
+        if entry.get("prunable") or entry.get("bare") or not os.path.isdir(path):
             continue
         active = 0.0
         committed = line(path, "log", "-1", "--format=%ct", "HEAD")
         if committed and committed.isdigit():
             active = float(committed)
-        index = line(path, "rev-parse", "--path-format=absolute", "--git-path", "index")
+        head_log = line(path, "rev-parse", "--path-format=absolute", "--git-path", "logs/HEAD")
         try:
-            active = max(active, os.stat(index).st_mtime) if index else active
+            active = max(active, os.stat(head_log).st_mtime) if head_log else active
         except OSError:
             pass
         worktrees.append({

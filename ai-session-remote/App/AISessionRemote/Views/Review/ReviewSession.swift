@@ -55,7 +55,7 @@ final class ReviewSession {
         self.conversation = conversation
         self.store = store
         self.exec = exec
-        chosenFolder = UserDefaults.standard.string(forKey: "review.folder.\(conversation.listKey)")
+        chosenFolder = UserDefaults.standard.string(forKey: Self.folderDefaultsKey(conversation.listKey))
     }
 
     var key: String { conversation.listKey }
@@ -192,13 +192,15 @@ final class ReviewSession {
                 keptBranch = nil
                 return status
             } catch is NotARepository {
-                // That worktree is gone: back to the conversation's own folder.
-                choose(folder: nil)
+                // Kept: it may be back. The menu has the conversation's folder and the others.
+                throw Failure(errorDescription: "The worktree \(chosenFolder) isn't on \(conversation.computer.name) any more. "
+                    + "Choose another under Reviewing, or this conversation's folder.")
             }
         }
         do {
             let status: ReviewStatus = try await run(TmuxCommandBuilder.reviewStatus(cwd: conversation.cwd), config: config)
             keptBranch = nil
+            conversationRoot = status.root
             return status
         } catch is NotARepository {
             guard let worktree = conversation.worktree else {
@@ -450,7 +452,21 @@ final class ReviewSession {
     /// The repository's worktrees, most recently active first; from the last load.
     private(set) var worktrees: [ReviewWorktrees.Worktree] = []
 
-    private var folderDefaultsKey: String { "review.folder.\(key)" }
+    private static func folderDefaultsKey(_ key: String) -> String { "review.folder.\(key)" }
+
+    /// The conversation's own repository root, from a load of its folder.
+    private var conversationRoot: String?
+
+    /// Other conversations' folders on this computer (the window keeps it current): their
+    /// worktrees aren't this agent's, so they aren't suggested.
+    var otherConversationFolders: [String] = []
+
+    /// `path` is one of `folders`, written as given or with `~` for the home folder.
+    static func matches(_ path: String, _ folders: [String]) -> Bool {
+        folders.contains { folder in
+            folder == path || (folder.hasPrefix("~/") && path.hasSuffix(String(folder.dropFirst(1))))
+        }
+    }
 
     /// The folder on screen: the chosen worktree, the kept branch's project folder, or the
     /// conversation's own.
@@ -459,10 +475,10 @@ final class ReviewSession {
     /// Reviews `folder` (a worktree of the same repository) from now on; nil: the
     /// conversation's own folder again. The window's reload follows.
     func choose(folder: String?) {
-        let folder = folder.flatMap { $0 == conversation.cwd ? nil : $0 }
+        let folder = folder.flatMap { $0 == conversationRoot || Self.matches($0, [conversation.cwd]) ? nil : $0 }
         guard folder != chosenFolder else { return }
         chosenFolder = folder
-        UserDefaults.standard.set(folder, forKey: folderDefaultsKey)
+        UserDefaults.standard.set(folder, forKey: Self.folderDefaultsKey(key))
         // Another tree: nothing on screen belongs to it.
         status = nil
         result = nil
@@ -478,7 +494,9 @@ final class ReviewSession {
     /// Lists the repository's worktrees, marking those active since the conversation began.
     func loadWorktrees(config: HostConnectionConfig) async {
         let since = Self.gitTime(conversation.createdAt)
-        guard let found: ReviewWorktrees = try? await run(TmuxCommandBuilder.reviewWorktrees(cwd: folder, since: since), config: config)
+        let asked = folder
+        guard let found: ReviewWorktrees = try? await run(TmuxCommandBuilder.reviewWorktrees(cwd: asked, since: since), config: config),
+              asked == folder  // another folder was chosen meanwhile: its own load follows
         else { return }
         worktrees = found.worktrees
     }
@@ -489,7 +507,9 @@ final class ReviewSession {
     var suggestedWorktrees: [ReviewWorktrees.Worktree] {
         guard chosenFolder == nil else { return [] }
         let here = status?.root ?? conversation.cwd
-        return Array(worktrees.filter { $0.changedSince && !$0.current && $0.path != here }.prefix(3))
+        return Array(worktrees.filter {
+            $0.changedSince && !$0.current && $0.path != here && !Self.matches($0.path, otherConversationFolders)
+        }.prefix(3))
     }
 
     // MARK: Pull / merge request
@@ -500,19 +520,20 @@ final class ReviewSession {
     /// Reads the PR/MR and its review threads (read-only) and adds the open threads on lines
     /// as items. Quiet on failure: local review doesn't depend on it. One at a time.
     func loadPullRequest(config: HostConnectionConfig) async {
-        guard !isLoadingPullRequest else { return }
-        isLoadingPullRequest = true
-        defer { isLoadingPullRequest = false }
         let (cwd, ref) = source
+        // One read per folder at a time; one for a newly chosen folder starts at once.
+        guard pullRequestFolder != cwd else { return }
+        pullRequestFolder = cwd
+        defer { if pullRequestFolder == cwd { pullRequestFolder = nil } }
         guard let info: ReviewPullRequestInfo = try? await run(TmuxCommandBuilder.reviewPullRequest(cwd: cwd, ref: ref), config: config),
-              !Task.isCancelled
+              !Task.isCancelled, cwd == folder
         else { return }
         pullRequest = info
         guard info.access, let pr = info.pr else { return }
         guard let threads: ReviewThreadsResult = try? await run(
             TmuxCommandBuilder.reviewThreads(cwd: cwd, ref: ref, number: pr.number, url: pr.url, projectID: pr.projectID),
             config: config
-        ), threads.access, !threads.threads.isEmpty, !Task.isCancelled, !hubOffline else { return }
+        ), threads.access, !threads.threads.isEmpty, !Task.isCancelled, !hubOffline, cwd == folder else { return }
         let fallback = pr.headSHA ?? result?.to ?? ""
         // On the record as it is now: it may have changed during the lookups.
         store.update(key) { record in
@@ -531,7 +552,7 @@ final class ReviewSession {
         if older { placeUnplaced() }
     }
 
-    @ObservationIgnored private var isLoadingPullRequest = false
+    @ObservationIgnored private var pullRequestFolder: String?
 
     // MARK: Publishing to the PR/MR (each confirmed in the window)
 

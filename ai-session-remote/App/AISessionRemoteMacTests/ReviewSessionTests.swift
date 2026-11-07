@@ -614,6 +614,13 @@ final class ReviewSessionTests: XCTestCase {
         await session.load(config: config)
         await session.loadWorktrees(config: config)
         XCTAssertEqual(session.suggestedWorktrees.map(\.path), ["/tmp/agent-tree"])
+        // Another conversation's worktree isn't this agent's.
+        session.otherConversationFolders = ["/tmp/agent-tree"]
+        XCTAssertTrue(session.suggestedWorktrees.isEmpty)
+        session.otherConversationFolders = []
+        // The conversation's own repository, under its absolute root, is no choice of another tree.
+        session.choose(folder: "/w")
+        XCTAssertEqual(session.folder, session.conversation.cwd)
         session.choose(folder: "/tmp/agent-tree")
         XCTAssertNil(session.result, "nothing of the other tree stays on screen")
         XCTAssertTrue(session.suggestedWorktrees.isEmpty)

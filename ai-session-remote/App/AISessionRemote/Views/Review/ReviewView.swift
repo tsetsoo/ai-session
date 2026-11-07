@@ -114,8 +114,9 @@ struct ReviewView: View {
         // The PR/MR and its threads, beside the diff: never holds it up; stops with the window.
         .task(id: "\(pullRequestReads)|\(session.folder)") {
             await withConfig { config in
-                await session.loadWorktrees(config: config)
-                await session.loadPullRequest(config: config)
+                async let worktrees: Void = session.loadWorktrees(config: config)
+                async let pullRequest: Void = session.loadPullRequest(config: config)
+                _ = await (worktrees, pullRequest)
             }
         }
         // A run started here or by an earlier window: followed while the window is open.
@@ -126,6 +127,12 @@ struct ReviewView: View {
         // Another device changed this review (the phone sent or dismissed an item).
         .onChange(of: model.store.reviewSummaries[conversation.listKey]) { _, _ in
             Task { await session.refreshFromHub() }
+        }
+        // Other conversations' folders on this computer: their worktrees aren't suggested.
+        .onChange(of: model.store.revision, initial: true) { _, _ in
+            session.otherConversationFolders = model.store.conversations.values
+                .filter { $0.listKey != conversation.listKey && $0.computer.id == conversation.computer.id }
+                .map(\.cwd)
         }
         .onChange(of: model.store.isOffline, initial: true) { _, offline in
             session.hubOffline = offline
@@ -503,9 +510,20 @@ struct ReviewView: View {
         return (session.folder as NSString).lastPathComponent
     }
 
+    private func isOtherConversations(_ worktree: ReviewWorktrees.Worktree) -> Bool {
+        ReviewSession.matches(worktree.path, session.otherConversationFolders)
+    }
+
     /// `/private/tmp/ein13514… · active 2 h ago`
     private func worktreeDetail(_ worktree: ReviewWorktrees.Worktree) -> String {
-        var parts = [worktree.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")]
+        // The computer's home, at the start only (its paths, not this Mac's).
+        let user = conversation.computer.username
+        var path = worktree.path
+        for home in ["/Users/\(user)", "/home/\(user)"] where path == home || path.hasPrefix(home + "/") {
+            path = "~" + path.dropFirst(home.count)
+        }
+        var parts = [path]
+        if isOtherConversations(worktree) { parts.append("another conversation's") }
         if let active = worktree.activeAt.flatMap(ReviewSync.date(from:)) {
             parts.append("active " + active.formatted(.relative(presentation: .named)))
         }
