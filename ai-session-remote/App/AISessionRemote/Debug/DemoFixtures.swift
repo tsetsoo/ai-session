@@ -182,9 +182,6 @@ enum DemoFixtures {
         conversation("t1", .sp, macStudio, tool: "claude", .waiting,
                      message: "Claude needs your permission to use Bash"),
         conversation("t2", .sp, macStudio, tool: "claude", .busy),
-        // A second agent on the same todo: the switcher shows (`-uiDemoOpen t2`).
-        Conversation(id: "c-t2-codex", todoId: "t2", computer: macStudio, cwd: cwd(for: .sp), tool: "codex",
-                     tmuxName: "todo-t2-codex", sessionId: "demo-t2-codex", status: .idle, createdAt: now),
         conversation("t3", .i, linuxBox, tool: "claude", .waiting,
                      message: "Claude needs your permission to use Edit"),
         conversation("t4", .si, linuxBox, tool: "codex", .busy),
