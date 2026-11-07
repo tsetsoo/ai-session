@@ -4670,7 +4670,10 @@ cat >"$FP_GH" <<FAKE
 #!/bin/sh
 case "\$1 \$2" in
   "pr list") echo '[{"number":9,"title":"Mine","url":"https://github.com/o/r/pull/9","state":"OPEN","isDraft":false,"headRefName":"feature","baseRefName":"main","headRefOid":"${fp_head}","updatedAt":"2026-11-06T20:00:00Z"},{"number":3,"title":"Old","url":"https://github.com/o/r/pull/3","state":"MERGED","isDraft":false,"headRefName":"x","baseRefName":"main","headRefOid":"abc","updatedAt":"2026-10-01T00:00:00Z"}]' ;;
-  "pr view") echo '{"baseRefName":"main","headRefOid":"${fp_head}"}' ;;
+  "pr view") case "\$*" in
+      *commits*) echo '{"commits":[{"oid":"${fp_head}"}]}' ;;
+      *) echo '{"baseRefName":"main","headRefOid":"${fp_head}"}' ;;
+    esac ;;
   "api user") echo '{"login":"me"}' ;;
   *) echo "unexpected: \$*" >&2; exit 1 ;;
 esac
@@ -4689,6 +4692,15 @@ fp_base="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["hea
 fp_files="$("$REVIEW" diff "$FP_REPO" --scope since --from "$fp_base" --to "$fp_head" | python3 -c 'import json,sys,re; print(" ".join(sorted(set(re.findall(r"^diff --git a/(\S+)", json.load(sys.stdin)["patch"], re.M)))))')"
 [[ "$fp_files" == "a.txt b.txt" ]] || fail "PR diff files: $fp_files"
 [[ "$(git -C "$FP_REPO" status --porcelain)" == "" && "$(git -C "$FP_REPO" symbolic-ref --short HEAD)" == main ]] || fail "fetch-pr touched the checkout"
+# With --base and --head from `prs` and the head already here: no forge call, no fetch.
+fp_again="$(AI_TODO_GH_BIN="${SANDBOX}/missing-gh" "$REVIEW" fetch-pr "$FP_REPO" --number 9 --base main --head "$fp_head")" || fail "fetch-pr with known head"
+[[ "$fp_again" == *"\"base\": \"${fp_base}\""* ]] || fail "fetch-pr known head: $fp_again"
+# Merged with a merge commit: the base branch has it all, yet the PR still shows its own change.
+fp_git "$FP_SEED" merge -q --no-ff -m "Merge PR 9" "$fp_head"
+git -C "$FP_SEED" push -q "$FP_ORIGIN" main
+fp_merged="$(AI_TODO_GH_BIN="$FP_GH" "$REVIEW" fetch-pr "$FP_REPO" --number 9)" || fail "fetch-pr merged"
+fp_mbase="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["base"])' "$fp_merged")"
+[[ "$fp_mbase" == "$(git -C "$FP_SEED" rev-parse "${fp_head}^")" ]] || fail "merged PR base: $fp_merged"
 status=0; AI_TODO_GH_BIN="$FP_GH" "$REVIEW" fetch-pr "$FP_REPO" --number 404 >/dev/null 2>&1 || status=$?
 [[ $status -eq 70 ]] || fail "fetch of a missing PR exit $status"
 pass "review_prs_and_fetch_pr_show_exactly_the_pr"

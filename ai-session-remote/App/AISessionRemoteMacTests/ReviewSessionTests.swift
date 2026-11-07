@@ -134,7 +134,7 @@ final class ReviewSessionTests: XCTestCase {
         }
         if command.contains(" worktrees ") {
             let rows: [[String: Any]] = [
-                ["path": "/tmp/agent-tree", "branch": "codex/fix", "detached": false, "current": false, "active_at": "2026-11-06T20:00:00Z", "changed_since": true],
+                ["path": "/tmp/agent-tree", "branch": "codex/fk", "detached": false, "current": false, "active_at": "2026-11-06T20:00:00Z", "changed_since": true],
                 ["path": "/w", "branch": "main", "detached": false, "current": true, "active_at": "2026-11-01T00:00:00Z", "changed_since": false],
             ]
             return json(["root": "/w", "worktrees": rows])
@@ -651,7 +651,10 @@ final class ReviewSessionTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "review.folder.\(session.key)")
         await session.load(config: config)
         await session.loadPullRequests(config: config)
-        // The only PR updated since the conversation began: opened for the user.
+        // Updated lately but on no branch the agent is on: may be another conversation's.
+        XCTAssertEqual(session.scope, .uncommitted)
+        // Its branch is checked out in a worktree active since the conversation began: the agent's.
+        await session.loadWorktrees(config: config)
         XCTAssertEqual(session.scope, .pullRequest)
         XCTAssertEqual(session.selectedPullRequest, 1859)
         await session.load(config: config)

@@ -161,8 +161,10 @@ final class ReviewSession {
             var to = status.revision
             if scope == .pullRequest, let number = selectedPullRequest {
                 // Exactly the PR's changes, from origin: wherever the agent worked on it.
+                let item = pullRequests?.prs.first { $0.number == number }
                 let fetched: ReviewPullRequestFetch = try await run(
-                    TmuxCommandBuilder.reviewFetchPullRequest(cwd: cwd, number: number), config: config
+                    TmuxCommandBuilder.reviewFetchPullRequest(cwd: cwd, number: number, base: item?.baseRef, head: item?.headSHA),
+                    config: config
                 )
                 guard generation == loadGeneration else { return }
                 from = fetched.base
@@ -479,6 +481,8 @@ final class ReviewSession {
     /// A scope picked in the window (not a PR).
     func pick(scope: ReviewScope) {
         userChose = true
+        // Off the PR: its header mustn't stay for Publish or Merge on the branch.
+        if self.scope == .pullRequest, scope != .pullRequest { pullRequest = nil }
         self.scope = scope
     }
 
@@ -490,8 +494,17 @@ final class ReviewSession {
             TmuxCommandBuilder.reviewPullRequests(cwd: asked, since: Self.gitTime(conversation.createdAt)), config: config
         ), asked == folder else { return }
         pullRequests = list
-        if !userChose, selectedPullRequest == nil, let likely = list.likely(linkedURL: conversation.pullRequest?.url) {
-            open(pullRequest: likely.number, byUser: false)
+        openLikelyPullRequest()
+    }
+
+    /// Opens the conversation's PR when it's clear which that is (see `likely`), once the
+    /// list and the worktrees are in, unless the user chose what to look at.
+    private func openLikelyPullRequest() {
+        guard !userChose, selectedPullRequest == nil, let list = pullRequests else { return }
+        var branches = Set(worktrees.filter(\.changedSince).compactMap(\.branch))
+        if chosenFolder == nil, let branch = status?.branch { branches.insert(branch) }
+        if let number = list.likely(linkedURL: conversation.pullRequest?.url, agentBranches: branches) {
+            open(pullRequest: number, byUser: false)
         }
     }
 
@@ -552,6 +565,7 @@ final class ReviewSession {
               asked == folder  // another folder was chosen meanwhile: its own load follows
         else { return }
         worktrees = found.worktrees
+        openLikelyPullRequest()
     }
 
     /// Worktrees other than the one on screen that changed since the conversation began:
@@ -574,22 +588,21 @@ final class ReviewSession {
     /// as items. Quiet on failure: local review doesn't depend on it. One at a time.
     func loadPullRequest(config: HostConnectionConfig) async {
         let (cwd, ref) = source
-        // One read per folder at a time; one for a newly chosen folder starts at once.
-        guard pullRequestFolder != cwd else { return }
-        pullRequestFolder = cwd
-        defer { if pullRequestFolder == cwd { pullRequestFolder = nil } }
+        // The newest read wins: one for another PR or folder replaces any still running.
+        pullRequestGeneration += 1
+        let generation = pullRequestGeneration
         let number = scope == .pullRequest ? selectedPullRequest : nil
         guard let info: ReviewPullRequestInfo = try? await run(
             TmuxCommandBuilder.reviewPullRequest(cwd: cwd, ref: number == nil ? ref : nil, number: number), config: config
         ),
-              !Task.isCancelled, cwd == folder
+              generation == pullRequestGeneration, cwd == folder
         else { return }
         pullRequest = info
         guard info.access, let pr = info.pr else { return }
         guard let threads: ReviewThreadsResult = try? await run(
             TmuxCommandBuilder.reviewThreads(cwd: cwd, ref: ref, number: pr.number, url: pr.url, projectID: pr.projectID),
             config: config
-        ), threads.access, !threads.threads.isEmpty, !Task.isCancelled, !hubOffline, cwd == folder else { return }
+        ), threads.access, !threads.threads.isEmpty, generation == pullRequestGeneration, !hubOffline, cwd == folder else { return }
         let fallback = pr.headSHA ?? result?.to ?? ""
         // On the record as it is now: it may have changed during the lookups.
         store.update(key) { record in
@@ -608,7 +621,7 @@ final class ReviewSession {
         if older { placeUnplaced() }
     }
 
-    @ObservationIgnored private var pullRequestFolder: String?
+    @ObservationIgnored private var pullRequestGeneration = 0
 
     // MARK: Publishing to the PR/MR (each confirmed in the window)
 

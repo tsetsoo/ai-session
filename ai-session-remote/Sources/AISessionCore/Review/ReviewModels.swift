@@ -381,12 +381,17 @@ public struct ReviewPullRequestList: Codable, Equatable, Sendable {
         self.prs = prs
     }
 
-    /// The PR to open the window on: the only one updated since the conversation began, or
-    /// the one the runner linked to it. Nil when that's not clear.
-    public func likely(linkedURL: String?) -> Item? {
-        if let linkedURL, let linked = prs.first(where: { $0.url == linkedURL }) { return linked }
-        let recent = prs.filter(\.since)
-        return recent.count == 1 ? recent[0] : nil
+    /// The PR to open the window on, by number: the one the runner linked to the conversation
+    /// (listed or not), else the only open one whose branch is checked out where the agent
+    /// works (`agentBranches`: the folder's branch, worktrees active since it began). Nil when
+    /// that's not clear: a PR that merely changed lately may be another conversation's.
+    public func likely(linkedURL: String?, agentBranches: Set<String>) -> Int? {
+        if let linkedURL {
+            if let linked = prs.first(where: { $0.url == linkedURL }) { return linked.number }
+            if let number = linkedURL.split(separator: "/").last.flatMap({ Int($0) }) { return number }
+        }
+        let candidates = prs.filter { $0.state == "open" && $0.headRef.map(agentBranches.contains) == true }
+        return candidates.count == 1 ? candidates[0].number : nil
     }
 }
 

@@ -1029,6 +1029,21 @@ def cmd_merge(args):
 
 # --- the user's PRs/MRs, and a PR's exact changes ----------------------------------------
 
+def iso_ts(text):
+    """Seconds since the epoch of an ISO 8601 time (Z or an offset), or None."""
+    import datetime
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.timestamp()
+
+
 def cmd_prs(args):
     """prs <cwd> [--since ISO]: the PRs/MRs in origin that the computer's gh/glab account
     opened, newest update first: {provider, access, error, viewer, prs: [{number, title, url,
@@ -1037,6 +1052,9 @@ def cmd_prs(args):
     args, since = take_option(args, "--since")
     if len(args) != 1:
         die("usage: ai-todo-review prs <cwd> [--since <ISO time>]", 64)
+    since_ts = iso_ts(since) if since else None
+    if since and since_ts is None:
+        die("--since needs an ISO time", 64)
     root = repo_root(args[0])
     kind = forge_kind(root)
     out = {"provider": kind, "access": False, "error": None, "viewer": None, "prs": []}
@@ -1046,14 +1064,17 @@ def cmd_prs(args):
         return
     try:
         if kind == "github":
+            # The 30 most recently updated, not created: an old PR the agent just pushed to counts.
             rows = forge_json(kind, root, "pr", "list", "--author", "@me", "--state", "all", "--limit", "30",
+                              "--search", "sort:updated-desc",
                               "--json", "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,updatedAt")
             prs = [{"number": r.get("number"), "title": r.get("title") or "", "url": r.get("url"),
                     "state": str(r.get("state") or "").lower(), "draft": bool(r.get("isDraft")),
                     "head_ref": r.get("headRefName"), "base_ref": r.get("baseRefName"),
                     "head_sha": r.get("headRefOid"), "updated_at": r.get("updatedAt")} for r in rows or [] if isinstance(r, dict)]
         else:
-            rows = forge_json(kind, root, "mr", "list", "--author=@me", "--all", "-F", "json", "--per-page", "30")
+            rows = forge_json(kind, root, "mr", "list", "--author=@me", "--all", "-F", "json", "--per-page", "30",
+                              "--order", "updated_at", "--sort", "desc")
             states = {"opened": "open", "locked": "open"}
             prs = [{"number": r.get("iid"), "title": r.get("title") or "", "url": r.get("web_url"),
                     "state": states.get(r.get("state"), r.get("state") or ""), "draft": bool(r.get("draft")),
@@ -1065,18 +1086,8 @@ def cmd_prs(args):
         out["error"] = str(error)
         print(json.dumps(out))
         return
-    since_ts = None
-    if since:
-        try:
-            since_ts = calendar.timegm(time.strptime(since[:19], "%Y-%m-%dT%H:%M:%S"))
-        except ValueError:
-            die("--since needs an ISO time", 64)
-
     def stamp(pr):
-        try:
-            return calendar.timegm(time.strptime((pr.get("updated_at") or "")[:19], "%Y-%m-%dT%H:%M:%S"))
-        except ValueError:
-            return 0
+        return iso_ts(pr.get("updated_at")) or 0
 
     prs = [p for p in prs if isinstance(p.get("number"), int)]
     for pr in prs:
@@ -1087,45 +1098,74 @@ def cmd_prs(args):
 
 
 def cmd_fetch_pr(args):
-    """fetch-pr <cwd> --number N: the PR/MR's head (refs/ai-review/pr/N, from GitHub's
-    pull/N/head or GitLab's merge-requests/N/head) and its base branch, fetched from origin;
-    {number, head, base, base_ref}. base is the merge base: diff base..head is exactly the PR's
-    changes, wherever the agent worked. Only refs/ai-review/ and origin's base branch change."""
+    """fetch-pr <cwd> --number N [--base REF] [--head SHA]: the PR/MR's head
+    (refs/ai-review/pr/N, from GitHub's pull/N/head or GitLab's merge-requests/N/head) and its
+    base branch from origin; {number, head, base, base_ref}. base..head is exactly the PR's
+    changes, wherever the agent worked: the merge base with the base branch, or for a merged
+    PR (already in it) where it began. --base and --head (from `prs`) skip asking the forge,
+    and the fetch when the head is already here. Only refs/ai-review/ and origin's base branch
+    change."""
     args, number = take_number(args)
+    args, base_ref = take_option(args, "--base")
+    args, want = take_option(args, "--head")
     if number is None or len(args) != 1:
-        die("usage: ai-todo-review fetch-pr <cwd> --number N", 64)
+        die("usage: ai-todo-review fetch-pr <cwd> --number N [--base <branch>] [--head <sha>]", 64)
     root = repo_root(args[0])
     kind = forge_kind(root)
     if kind is None:
         die("origin is neither GitHub nor GitLab", 64)
-    try:
-        if kind == "github":
-            view = forge_json(kind, root, "pr", "view", str(number), "--json", "baseRefName,headRefOid")
-            base_ref, want = (view or {}).get("baseRefName"), (view or {}).get("headRefOid")
-            remote_ref = "pull/%d/head" % number
-        else:
-            view = forge_json(kind, root, "mr", "view", str(number), "-F", "json")
-            base_ref, want = (view or {}).get("target_branch"), (view or {}).get("sha")
-            remote_ref = "merge-requests/%d/head" % number
-    except NoAccess as error:
-        die(str(error), 77)
+    if not base_ref:
+        try:
+            if kind == "github":
+                view = forge_json(kind, root, "pr", "view", str(number), "--json", "baseRefName,headRefOid") or {}
+                base_ref, want = view.get("baseRefName"), want or view.get("headRefOid")
+            else:
+                view = forge_json(kind, root, "mr", "view", str(number), "-F", "json") or {}
+                base_ref, want = view.get("target_branch"), want or view.get("sha")
+        except NoAccess as error:
+            die(str(error), 77)
     if not base_ref:
         die("couldn't tell the base branch of %d" % number, 77)
     local = "refs/ai-review/pr/%d" % number
-    env = {"GIT_TERMINAL_PROMPT": "0"}
-    try:
-        git(root, "fetch", "--quiet", "--no-tags", "origin",
-            "+%s:%s" % (remote_ref, local), "+refs/heads/%s:refs/remotes/origin/%s" % (base_ref, base_ref), env=env)
-    except GitError as error:
-        die("couldn't fetch it from origin: %s" % str(error)[:200], 70)
+    remote_ref = ("pull/%d/head" if kind == "github" else "merge-requests/%d/head") % number
+    have = line(root, "rev-parse", "--verify", "-q", local + "^{commit}")
+    base_tracking = "refs/remotes/origin/%s" % base_ref
+    if not (want and have == want and line(root, "rev-parse", "--verify", "-q", base_tracking)):
+        try:
+            git(root, "fetch", "--quiet", "--no-tags", "origin",
+                "+%s:%s" % (remote_ref, local), "+refs/heads/%s:%s" % (base_ref, base_tracking),
+                env={"GIT_TERMINAL_PROMPT": "0"})
+        except GitError as error:
+            die("couldn't fetch it from origin: %s" % str(error)[:200], 70)
     head = line(root, "rev-parse", "--verify", "-q", local + "^{commit}")
     if not head:
         die("no head for %d after fetching" % number, 70)
-    base = line(root, "merge-base", "refs/remotes/origin/%s" % base_ref, head)
+    base = line(root, "merge-base", base_tracking, head)
+    if base == head:
+        # Merged (with a merge commit): the base branch has it all. Where it began instead.
+        base = merged_base(kind, root, number, head)
     if not base:
         die("%d has no common commit with %s" % (number, base_ref), 70)
-    print(json.dumps({"number": number, "head": head, "base": base, "base_ref": base_ref,
-                      "matches_forge": want in (None, head)}))
+    print(json.dumps({"number": number, "head": head, "base": base, "base_ref": base_ref}))
+
+
+def merged_base(kind, root, number, head):
+    """Where a merged PR began: GitLab's diff base, or the parent of its first commit."""
+    try:
+        if kind == "gitlab":
+            view = forge_json(kind, root, "mr", "view", str(number), "-F", "json") or {}
+            project = view.get("project_id")
+            if project:
+                detail = forge_json(kind, root, "api", "projects/%s/merge_requests/%s" % (project, number)) or {}
+                base = (detail.get("diff_refs") or {}).get("base_sha")
+                if base and line(root, "rev-parse", "--verify", "-q", base + "^{commit}"):
+                    return base
+            return None
+        commits = (forge_json(kind, root, "pr", "view", str(number), "--json", "commits") or {}).get("commits") or []
+    except NoAccess:
+        return None
+    first = next((c.get("oid") for c in commits if isinstance(c, dict) and c.get("oid")), None)
+    return line(root, "rev-parse", "--verify", "-q", first + "^") if first else None
 
 
 # --- worktrees of the repository --------------------------------------------------------
@@ -1142,12 +1182,9 @@ def cmd_worktrees(args):
         die("usage: ai-todo-review worktrees <cwd> [--since <ISO time>]", 64)
     root = repo_root(args[0])
     out, _ = git(root, "worktree", "list", "--porcelain")
-    since_ts = None
-    if since:
-        try:
-            since_ts = calendar.timegm(time.strptime(since[:19], "%Y-%m-%dT%H:%M:%S"))
-        except ValueError:
-            die("--since needs an ISO time", 64)
+    since_ts = iso_ts(since) if since else None
+    if since and since_ts is None:
+        die("--since needs an ISO time", 64)
     entries, entry = [], {}
     for row in out.splitlines() + [""]:
         if not row:

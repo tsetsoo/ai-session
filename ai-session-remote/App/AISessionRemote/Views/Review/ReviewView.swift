@@ -262,7 +262,7 @@ struct ReviewView: View {
             if session.agentAnswered, session.scope != .since {
                 Section {
                     Button {
-                        session.scope = .since
+                        session.pick(scope: .since)
                     } label: {
                         Label("The agent answered. Show changes since feedback", systemImage: "arrow.uturn.backward.circle")
                     }
