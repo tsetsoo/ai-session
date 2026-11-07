@@ -75,6 +75,11 @@ struct ReviewView: View {
     @State private var selectedPath: String?
     @State private var showingSend = false
     @State private var showingFindings = false
+    @State private var showingPublish = false
+    @State private var showingApprove = false
+    @State private var showingMerge = false
+    /// Option was held on Merge…: pending or failing checks don't stop it.
+    @State private var mergeOverride = false
     /// Bumped by Refresh: the PR/MR is read when the window opens and on Refresh, not on
     /// every scope change.
     @State private var pullRequestReads = 0
@@ -96,7 +101,10 @@ struct ReviewView: View {
         .inspector(isPresented: $showingFindings) {
             // A hidden inspector still lays its content out: build it only while shown.
             if showingFindings {
-                FindingsPane(session: session) { comment in pick(comment) }
+                FindingsPane(session: session, onPick: { pick($0) },
+                             actions: .init(publish: { showingPublish = true },
+                                            approve: { showingApprove = true },
+                                            merge: { mergeOverride = $0; showingMerge = true }))
                     .inspectorColumnWidth(min: 280, ideal: 360, max: 560)
             }
         }
@@ -140,7 +148,31 @@ struct ReviewView: View {
                 showingSend = false
             }
         }
-        .alert("Review", isPresented: Binding(get: { session.failure != nil && !showingSend },
+        .sheet(isPresented: $showingPublish) {
+            PublishSheet(session: session) { event, summary, ids in
+                var done = false
+                await withConfig { done = await session.publish(event: event, summary: summary, ids: ids, config: $0) }
+                return done
+            }
+        }
+        .sheet(isPresented: $showingMerge) {
+            MergeSheet(session: session, overrideChecks: mergeOverride, agentWorking: conversation.status == .busy) { method, deleteBranch in
+                var done = false
+                await withConfig {
+                    done = await session.merge(method: method, deleteBranch: deleteBranch, overrideChecks: mergeOverride, config: $0)
+                }
+                return done
+            }
+        }
+        .confirmationDialog(approveTitle, isPresented: $showingApprove, titleVisibility: .visible) {
+            Button("Approve") {
+                Task { await withConfig { await session.publish(event: .approve, summary: "", ids: [], config: $0) } }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Posted on \(session.pullRequest?.provider == "gitlab" ? "GitLab" : "GitHub") as \(session.pullRequest?.viewer ?? "the computer's account"), from \(conversation.computer.name). Nothing is typed into the conversation.")
+        }
+        .alert("Review", isPresented: Binding(get: { session.failure != nil && !showingSend && !showingPublish && !showingMerge },
                                               set: { if !$0 { session.failure = nil } })) {
             Button("OK", role: .cancel) { session.failure = nil }
         } message: {
@@ -398,6 +430,11 @@ struct ReviewView: View {
     private var findingsTitle: String {
         let count = session.findings(.new).count
         return count == 0 ? "Findings" : "Findings (\(count))"
+    }
+
+    private var approveTitle: String {
+        guard let info = session.pullRequest, let pr = info.pr else { return "Approve?" }
+        return "Approve \(pr.name(provider: info.provider))?"
     }
 
     static func elapsed(from start: Date, to now: Date) -> String {
@@ -955,15 +992,24 @@ private struct FindingActions: View {
 }
 
 /// The reviewers' findings beside the diff: the last run, a filter, findings by file.
+/// What the PR/MR buttons do; the window shows the confirmations.
+struct PullRequestActions {
+    var publish: () -> Void
+    var approve: () -> Void
+    /// Whether Option was held.
+    var merge: (Bool) -> Void
+}
+
 private struct FindingsPane: View {
     let session: ReviewSession
     let onPick: (ReviewComment) -> Void
+    let actions: PullRequestActions
 
     @State private var filter: ReviewSession.FindingFilter = .new
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            PullRequestSection(session: session)
+            PullRequestSection(session: session, actions: actions)
             runHeader
                 .padding(DS.spacing.m)
             Picker("Show", selection: $filter) {
@@ -1080,6 +1126,7 @@ private struct FindingsPane: View {
 /// as, and its description as evidence for the review. Read-only.
 private struct PullRequestSection: View {
     let session: ReviewSession
+    let actions: PullRequestActions
 
     @State private var showsDescription = false
 
@@ -1114,6 +1161,9 @@ private struct PullRequestSection: View {
                     }
                 }
                 .font(.caption)
+                if pr.state == "open" {
+                    writeButtons(info: info)
+                }
                 if !pr.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     DisclosureGroup("Description", isExpanded: $showsDescription) {
                         if showsDescription {
@@ -1131,6 +1181,29 @@ private struct PullRequestSection: View {
             }
             .padding([.horizontal, .top], DS.spacing.m)
         }
+    }
+
+    /// Publish, Approve and Merge: on GitHub/GitLab, apart from Send to Agent.
+    private func writeButtons(info: ReviewPullRequestInfo) -> some View {
+        HStack(spacing: DS.spacing.s) {
+            Button("Publish Review…", action: actions.publish)
+                .disabled(session.publishBlocker != nil || session.isWriting)
+                .help(session.publishBlocker ?? "Post comments on the pull request as \(info.viewer ?? "the computer's account"). Separate from Send to Agent.")
+            if session.canApprove {
+                Button("Approve", action: actions.approve)
+                    .disabled(session.approveBlocker != nil || session.isWriting)
+                    .help(session.approveBlocker ?? "Approve as \(info.viewer ?? "the computer's account").")
+            }
+            Button("Merge…") {
+                actions.merge(NSEvent.modifierFlags.contains(.option))
+            }
+            // Pending or failing checks keep it off unless Option is held: it stays clickable then.
+            .disabled(session.mergeBlocker(overrideChecks: true) != nil || session.isWriting)
+            .help(session.mergeBlocker(overrideChecks: false) ?? "Merge, pinned to the head shown here.")
+            if session.isWriting { ProgressView().controlSize(.small) }
+        }
+        .controlSize(.small)
+        .padding(.top, DS.spacing.xs)
     }
 
     private func statusLine(_ pr: ReviewPullRequestInfo.PullRequest) -> String {
@@ -1169,6 +1242,170 @@ private struct PullRequestSection: View {
     static func markdown(_ text: String) -> AttributedString {
         (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
+    }
+}
+/// Publish Review…: the review that will be posted, as whom, with which comments.
+private struct PublishSheet: View {
+    let session: ReviewSession
+    let onPublish: (ReviewPublishRequest.Event, String, Set<UUID>) async -> Bool
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var event: ReviewPublishRequest.Event = .comment
+    @State private var summary = ""
+    @State private var chosen: Set<UUID> = []
+    @State private var candidates: [ReviewSession.PublishCandidate] = []
+
+    var body: some View {
+        let info = session.pullRequest
+        let provider = info?.provider == "gitlab" ? "GitLab" : "GitHub"
+        VStack(alignment: .leading, spacing: DS.spacing.m) {
+            Text("Publish a Review on \(info?.pr.map { $0.name(provider: info?.provider) } ?? "the Pull Request")")
+                .font(.headline)
+            Text("Posted on \(provider) as \(info?.viewer ?? "the computer's account"), from \(session.conversation.computer.name). Nothing is typed into the conversation.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Picker("Review", selection: $event) {
+                ForEach(ReviewPublishRequest.Event.allCases.filter { info?.provider != "gitlab" || $0 != .requestChanges }, id: \.self) {
+                    Text($0.title).tag($0)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(!session.canApprove)
+            TextEditor(text: $summary)
+                .frame(minHeight: 60, maxHeight: 120)
+                .overlay(alignment: .topLeading) {
+                    if summary.isEmpty {
+                        Text("Summary (optional)").foregroundStyle(.tertiary).padding(6).allowsHitTesting(false)
+                    }
+                }
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
+            List(candidates) { candidate in
+                Toggle(isOn: Binding(get: { chosen.contains(candidate.id) },
+                                     set: { if $0 { chosen.insert(candidate.id) } else { chosen.remove(candidate.id) } })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(candidate.line.map { "\(candidate.comment.path):\($0.start == $0.end ? "\($0.start)" : "\($0.start)-\($0.end)")" }
+                             ?? candidate.comment.path)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        Text(candidate.comment.title ?? candidate.comment.body)
+                            .lineLimit(2)
+                        if let reason = candidate.reason {
+                            Text(reason).font(.caption).foregroundStyle(DS.warning)
+                        }
+                    }
+                }
+                .disabled(candidate.line == nil && candidate.comment.startLine != nil)
+            }
+            .frame(minHeight: 160)
+            if let error = session.failure?.errorDescription {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(DS.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    session.failure = nil
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button {
+                    Task {
+                        session.failure = nil
+                        if await onPublish(event, summary, chosen) { dismiss() }
+                    }
+                } label: {
+                    if session.isWriting { ProgressView().controlSize(.small) } else { Text(publishTitle) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(session.isWriting || (event == .comment && chosen.isEmpty && summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+            }
+        }
+        .padding(DS.spacing.l)
+        .frame(minWidth: 560, idealWidth: 640, minHeight: 480)
+        .onAppear {
+            candidates = session.publishCandidates()
+            // Not yet published, on lines of the PR: picked to start with.
+            chosen = Set(candidates.filter { ($0.line != nil || $0.comment.startLine == nil) && !session.publishedIDs.contains($0.id)
+                && $0.comment.state != .sent }.map(\.id))
+        }
+    }
+
+    private var publishTitle: String {
+        let count = chosen.count
+        let comments = count == 0 ? "" : " with \(count) Comment\(count == 1 ? "" : "s")"
+        switch event {
+        case .comment: return "Publish\(comments)"
+        case .approve: return "Approve\(comments)"
+        case .requestChanges: return "Request Changes\(comments)"
+        }
+    }
+}
+
+/// Merge…: method, branch, warnings, and who merges.
+private struct MergeSheet: View {
+    let session: ReviewSession
+    let overrideChecks: Bool
+    let agentWorking: Bool
+    let onMerge: (String, Bool) async -> Bool
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var method = "merge"
+    @State private var deleteBranch = true
+
+    var body: some View {
+        let info = session.pullRequest
+        let pr = info?.pr
+        VStack(alignment: .leading, spacing: DS.spacing.m) {
+            Text("Merge \(pr.map { $0.name(provider: info?.provider) } ?? "the Pull Request")?")
+                .font(.headline)
+            Text("As \(info?.viewer ?? "the computer's account") on \(info?.provider == "gitlab" ? "GitLab" : "GitHub"), only while its head is \(String((pr?.headSHA ?? "").prefix(7))): if anyone pushed since, nothing is merged. Branch protection is the forge's.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if agentWorking {
+                Label("The agent is working in this conversation right now.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(DS.warning)
+            }
+            if overrideChecks, let blocker = session.mergeBlocker(overrideChecks: false) {
+                Label(blocker.replacingOccurrences(of: " Hold Option to merge anyway.", with: " Merging anyway."),
+                      systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(DS.warning)
+            }
+            Picker("Method", selection: $method) {
+                Text("Merge commit").tag("merge")
+                Text("Squash").tag("squash")
+                Text("Rebase").tag("rebase")
+            }
+            .pickerStyle(.segmented)
+            Toggle("Delete the branch \(pr?.headRef ?? "") afterwards", isOn: $deleteBranch)
+            if let error = session.failure?.errorDescription {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(DS.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    session.failure = nil
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button {
+                    Task {
+                        session.failure = nil
+                        if await onMerge(method, deleteBranch) { dismiss() }
+                    }
+                } label: {
+                    if session.isWriting { ProgressView().controlSize(.small) } else { Text("Merge") }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(session.isWriting || session.mergeBlocker(overrideChecks: overrideChecks) != nil)
+            }
+        }
+        .padding(DS.spacing.l)
+        .frame(minWidth: 480, idealWidth: 520)
     }
 }
 #endif

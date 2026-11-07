@@ -14,6 +14,8 @@ Usage:
   ai-todo-review cancel <id>
   ai-todo-review pr <cwd> [--ref <branch>] [--number N]
   ai-todo-review threads <cwd> [--ref <branch>] [--number N]
+  ai-todo-review publish <cwd> --number N --head <sha>   (the review, base64 JSON, on stdin)
+  ai-todo-review merge <cwd> --number N --head <sha> --method merge|squash|rebase [--delete-branch]
 
 Every command but send prints JSON.
 
@@ -69,10 +71,18 @@ threads its review threads on lines: {provider, access, error, pr, threads: [{id
         are in `commit`: the head (base for removed lines), or for an outdated GitHub thread
         the commit it was written on. --number with --url (GitHub) or --project (GitLab), as
         `pr` printed them, skips looking the PR up again.
+publish posts a review on the PR/MR, as the computer's gh/glab account: {event COMMENT|APPROVE|
+        REQUEST_CHANGES, body, comments [{path, side, line_start, line_end, body}]}, lines of
+        --head. GitHub: one review against commit_id = --head. GitLab: draft notes positioned
+        on the MR's diff refs, then bulk_publish (and approve with sha). Exit 67 when the PR/MR's
+        head isn't --head any more.
+merge   merges it only while its head is --head (gh --match-head-commit, glab --sha). Branch
+        protection and required checks are the forge's to enforce.
 cancel  stops a running reviewer (its whole process group). Prints what `result` does: a run
         that finished first stays done, with its findings.
 
-Exit codes: 64 bad arguments, 65 unknown revision or empty message, 66 no such tmux
+Exit codes: 64 bad arguments, 65 unknown revision or empty message (or nothing to publish),
+67 the PR/MR moved on from --head, 77 gh/glab failed (their words on stderr), 66 no such tmux
 session, 69 not a git repository (or cwd missing), 70 git failed (its message on stderr),
 75 the pane isn't ready for a paste, 90 git, tmux, claude or codex missing.
 """
@@ -820,6 +830,148 @@ def cmd_threads(args):
     print(json.dumps(out))
 
 
+# --- pull / merge requests: writes (each one confirmed in the app) --------------------
+
+class HeadMoved(Exception):
+    pass
+
+
+def forge_call(kind, root, *args, stdin=None):
+    """Runs a write; its JSON answer (or None). Exit 77 with the CLI's words when it fails."""
+    binary = forge_cli(kind)
+    try:
+        p = subprocess.run([binary] + list(args), cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           input=stdin, timeout=FORGE_TIMEOUT * 2)
+    except FileNotFoundError:
+        die("%s isn't installed" % os.path.basename(binary), 77)
+    except subprocess.TimeoutExpired:
+        die("%s didn't answer" % os.path.basename(binary), 77)
+    if p.returncode != 0:
+        err = p.stderr.decode("utf-8", "replace").strip() or p.stdout.decode("utf-8", "replace").strip()
+        die("%s failed: %s" % (os.path.basename(binary), " ".join(err.split())[:300]), 77)
+    try:
+        return json.loads(p.stdout.decode("utf-8", "replace") or "null")
+    except ValueError:
+        return None
+
+
+def write_context(args, usage):
+    """(root, kind, number, head) for a write: --number and --head are required."""
+    args, number = take_number(args)
+    args, head = take_option(args, "--head")
+    if number is None or not head or len(args) != 1 or args[0].startswith("-"):
+        die(usage, 64)
+    root = repo_root(args[0])
+    kind = forge_kind(root)
+    if kind is None:
+        die("origin is neither GitHub nor GitLab", 64)
+    return root, kind, number, head
+
+
+def github_repo(kind, root, number):
+    view = forge_call(kind, root, "pr", "view", str(number), "--json", "url,headRefOid,state")
+    m = re.match(r"https://[^/]+/([^/]+)/([^/]+)/pull/\d+", (view or {}).get("url") or "")
+    if not m:
+        die("couldn't tell the repository of PR %s" % number, 77)
+    return m.group(1), m.group(2), view
+
+
+def gitlab_mr(root, number):
+    view = forge_call("gitlab", root, "mr", "view", str(number), "-F", "json") or {}
+    if not view.get("project_id"):
+        die("couldn't tell the project of MR %s" % number, 77)
+    detail = forge_call("gitlab", root, "api", "projects/%s/merge_requests/%s" % (view["project_id"], number)) or {}
+    view["diff_refs"] = detail.get("diff_refs") or {}
+    return view
+
+
+def cmd_publish(args):
+    """publish <cwd> --number N --head SHA: the review JSON, base64, on stdin:
+    {event: COMMENT|APPROVE|REQUEST_CHANGES, body, comments: [{path, side, line_start, line_end, body}]}.
+    Refused (67) when the PR's head isn't SHA any more: the comments' lines are lines of SHA."""
+    root, kind, number, head = write_context(args, "usage: ai-todo-review publish <cwd> --number N --head <sha> < review")
+    try:
+        review = json.loads(base64.b64decode(sys.stdin.buffer.read().strip(), validate=True))
+    except (binascii.Error, ValueError):
+        die("the review isn't base64 JSON", 64)
+    event = review.get("event") or "COMMENT"
+    if event not in ("COMMENT", "APPROVE", "REQUEST_CHANGES"):
+        die("bad event %s" % event, 64)
+    comments = [c for c in review.get("comments") or [] if isinstance(c, dict) and c.get("path") and c.get("body")]
+    body = (review.get("body") or "").strip()
+    if kind == "github":
+        owner, name, view = github_repo(kind, root, number)
+        if view.get("headRefOid") != head:
+            die("PR %s moved on to %s" % (number, (view.get("headRefOid") or "")[:8]), 67)
+        payload = {"commit_id": head, "event": event, "body": body, "comments": []}
+        for c in comments:
+            item = {"path": c["path"], "body": c["body"], "line": c.get("line_end") or c.get("line_start"),
+                    "side": "LEFT" if c.get("side") == "old" else "RIGHT"}
+            if c.get("line_start") and c.get("line_end") and c["line_end"] != c["line_start"]:
+                item["start_line"] = c["line_start"]
+                item["start_side"] = item["side"]
+            payload["comments"].append(item)
+        if event == "COMMENT" and not body and not payload["comments"]:
+            die("nothing to publish", 65)
+        answer = forge_call(kind, root, "api", "-X", "POST", "repos/%s/%s/pulls/%s/reviews" % (owner, name, number),
+                            "--input", "-", stdin=json.dumps(payload).encode("utf-8"))
+        print(json.dumps({"published": len(payload["comments"]), "event": event, "url": (answer or {}).get("html_url")}))
+        return
+    view = gitlab_mr(root, number)
+    refs = view["diff_refs"]
+    if view.get("sha") != head or refs.get("head_sha") not in (None, head):
+        die("MR %s moved on to %s" % (number, (view.get("sha") or "")[:8]), 67)
+    if event == "REQUEST_CHANGES":
+        die("GitLab has no request-changes review; publish comments instead", 64)
+    project = view["project_id"]
+    base = "projects/%s/merge_requests/%s" % (project, number)
+    for c in comments:
+        line_key = "old_line" if c.get("side") == "old" else "new_line"
+        fields = ["-f", "note=" + c["body"], "-f", "position[position_type]=text",
+                  "-f", "position[base_sha]=" + (refs.get("base_sha") or ""),
+                  "-f", "position[start_sha]=" + (refs.get("start_sha") or ""),
+                  "-f", "position[head_sha]=" + head,
+                  "-f", "position[new_path]=" + c["path"], "-f", "position[old_path]=" + c.get("old_path", c["path"]),
+                  "-F", "position[%s]=%d" % (line_key, c.get("line_end") or c.get("line_start"))]
+        forge_call("gitlab", root, "api", "-X", "POST", base + "/draft_notes", *fields)
+    if body:
+        forge_call("gitlab", root, "api", "-X", "POST", base + "/draft_notes", "-f", "note=" + body)
+    if comments or body:
+        forge_call("gitlab", root, "api", "-X", "POST", base + "/draft_notes/bulk_publish")
+    if event == "APPROVE":
+        forge_call("gitlab", root, "api", "-X", "POST", base + "/approve", "-f", "sha=" + head)
+    if not comments and not body and event != "APPROVE":
+        die("nothing to publish", 65)
+    print(json.dumps({"published": len(comments), "event": event, "url": view.get("web_url")}))
+
+
+def cmd_merge(args):
+    """merge <cwd> --number N --head SHA --method merge|squash|rebase [--delete-branch]: only
+    while the PR's head is SHA (the forge checks it too)."""
+    args, method = take_option(args, "--method")
+    delete_branch = "--delete-branch" in args
+    args = [a for a in args if a != "--delete-branch"]
+    root, kind, number, head = write_context(
+        args, "usage: ai-todo-review merge <cwd> --number N --head <sha> --method merge|squash|rebase [--delete-branch]")
+    if method not in ("merge", "squash", "rebase"):
+        die("--method must be merge, squash or rebase", 64)
+    if kind == "github":
+        argv = ["pr", "merge", str(number), "--match-head-commit", head, "--" + method]
+        if delete_branch:
+            argv.append("--delete-branch")
+        forge_call(kind, root, *argv)
+    else:
+        argv = ["mr", "merge", str(number), "--sha", head, "--yes"]
+        if method == "squash":
+            argv.append("--squash")
+        elif method == "rebase":
+            argv.append("--rebase")
+        if delete_branch:
+            argv.append("--remove-source-branch")
+        forge_call(kind, root, *argv)
+    print(json.dumps({"merged": number, "method": method, "deleted_branch": delete_branch}))
+
+
 # --- reviewer runs ---------------------------------------------------------------------------
 
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
@@ -1370,9 +1522,10 @@ def main(argv):
         worker(argv[1])
         return
     commands = {"status": cmd_status, "diff": cmd_diff, "keep": cmd_keep, "log": cmd_log, "send": cmd_send,
-                "run": cmd_run, "result": cmd_result, "cancel": cmd_cancel, "pr": cmd_pr, "threads": cmd_threads}
+                "run": cmd_run, "result": cmd_result, "cancel": cmd_cancel, "pr": cmd_pr, "threads": cmd_threads,
+                "publish": cmd_publish, "merge": cmd_merge}
     if not argv or argv[0] not in commands:
-        die("usage: ai-todo-review status|diff|keep|log|send|run|result|cancel|pr|threads ... (see the header of this script)", 64)
+        die("usage: ai-todo-review status|diff|keep|log|send|run|result|cancel|pr|threads|publish|merge ... (see the header of this script)", 64)
     try:
         commands[argv[0]](argv[1:])
     except GitError as error:

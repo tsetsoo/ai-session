@@ -471,6 +471,181 @@ final class ReviewSession {
 
     @ObservationIgnored private var isLoadingPullRequest = false
 
+    // MARK: Publishing to the PR/MR (each confirmed in the window)
+
+    /// Comments published from this window, so the next Publish doesn't pick them again.
+    private(set) var publishedIDs: Set<UUID> = []
+    private(set) var isWriting = false
+
+    private var openPullRequest: ReviewPullRequestInfo.PullRequest? {
+        guard let info = pullRequest, info.access, let pr = info.pr, pr.state == "open" else { return nil }
+        return pr
+    }
+
+    /// The PR/MR's head is what the worktree has, committed and pushed.
+    private var headBlocker: String? {
+        guard let pr = openPullRequest else { return "There's no open pull/merge request for this branch." }
+        guard let status else { return "Load the changes first." }
+        if keptBranch == nil, !status.clean { return "There are uncommitted changes. Only committed, pushed lines can be published." }
+        if let ahead = status.ahead, ahead > 0 { return "\(ahead) commit\(ahead == 1 ? " isn't" : "s aren't") pushed yet." }
+        if let head = pr.headSHA, head != status.head {
+            return "The pull request is at \(head.prefix(7)) and the worktree at \((status.head ?? "").prefix(7)). Push or pull first."
+        }
+        return nil
+    }
+
+    /// Why Publish is off, or nil. Its comments are on the PR's own lines: Branch scope at its head.
+    var publishBlocker: String? {
+        if hubOffline { return Self.offlineMessage }
+        if let headBlocker { return headBlocker }
+        if scope != .branch { return "Choose Branch: a review comments on the pull request's own changes." }
+        return nil
+    }
+
+    /// Why Approve is off (nil: on); hidden altogether on the user's own PR (`canApprove`).
+    var approveBlocker: String? { headBlocker }
+
+    var canApprove: Bool {
+        guard let info = pullRequest, let pr = info.pr else { return false }
+        return pr.author == nil || pr.author != info.viewer
+    }
+
+    /// Why Merge is off, or nil. Pending or failing checks block it unless `overrideChecks`.
+    func mergeBlocker(overrideChecks: Bool) -> String? {
+        if let headBlocker { return headBlocker }
+        guard let pr = openPullRequest else { return nil }
+        if pr.draft { return "It's a draft." }
+        if !overrideChecks {
+            switch pr.checks.state {
+            case "failing": return "Checks are failing. Hold Option to merge anyway."
+            case "pending": return "Checks are still running. Hold Option to merge anyway."
+            default: break
+            }
+        }
+        return nil
+    }
+
+    /// A comment that can go on a line of the PR's diff, or why not.
+    struct PublishCandidate: Identifiable {
+        let comment: ReviewComment
+        let line: (start: Int, end: Int)?
+        let reason: String?
+        var id: UUID { comment.id }
+    }
+
+    /// The user's comments and the reviewers' findings that aren't dismissed (PR threads are
+    /// already there), each with the lines it would be published on.
+    func publishCandidates() -> [PublishCandidate] {
+        record.comments.filter { $0.state != .dismissed && $0.prAuthor == nil }.map { comment in
+            guard let start = comment.startLine else {
+                return PublishCandidate(comment: comment, line: nil, reason: "On the whole file: goes in the summary.")
+            }
+            if comment.side == .old {
+                guard comment.revision == result?.from,
+                      let file = diff.files.first(where: { ($0.oldPath ?? $0.path) == comment.path }),
+                      Self.shown(file, side: .old, start...(comment.endLine ?? start))
+                else { return PublishCandidate(comment: comment, line: nil, reason: "Those removed lines aren't in this diff.") }
+                return PublishCandidate(comment: comment, line: (start, comment.endLine ?? start), reason: nil)
+            }
+            guard case let .moved(path, movedStart?, movedEnd)? = anchors[comment.id] else {
+                return PublishCandidate(comment: comment, line: nil, reason: "Its lines changed since.")
+            }
+            let end = movedEnd ?? movedStart
+            guard let file = diff.files.first(where: { $0.path == path }),
+                  Self.shown(file, side: .new, movedStart...end)
+            else { return PublishCandidate(comment: comment, line: nil, reason: "Its lines aren't in the pull request's changes.") }
+            return PublishCandidate(comment: comment, line: (movedStart, end), reason: nil)
+        }
+    }
+
+    /// Every line of the range is in the file's hunks (GitHub and GitLab take only those).
+    private static func shown(_ file: DiffFile, side: DiffSide, _ lines: ClosedRange<Int>) -> Bool {
+        let numbers = Set(file.hunks.flatMap(\.lines).compactMap { line in
+            side == .old ? (line.kind == .removed || line.kind == .context ? line.oldLine : nil) : (line.kind == .removed ? nil : line.newLine)
+        })
+        return lines.allSatisfy(numbers.contains)
+    }
+
+    /// Posts a review as the computer's gh/glab account. Whole-file comments go in the summary.
+    @discardableResult
+    func publish(event: ReviewPublishRequest.Event, summary: String, ids: Set<UUID>, config: HostConnectionConfig) async -> Bool {
+        guard !isWriting, let pr = openPullRequest, let head = pr.headSHA else { return false }
+        if event != .approve, let publishBlocker {
+            failure = Failure(errorDescription: publishBlocker)
+            return false
+        }
+        if event == .approve, let approveBlocker {
+            failure = Failure(errorDescription: approveBlocker)
+            return false
+        }
+        let chosen = publishCandidates().filter { ids.contains($0.id) }
+        var comments: [ReviewPublishRequest.Comment] = []
+        var fileNotes: [String] = []
+        for candidate in chosen {
+            let body = [candidate.comment.title, candidate.comment.body].compactMap { $0 }.joined(separator: "\n\n")
+            if let line = candidate.line {
+                let path = candidate.comment.side == .new ? place(of: candidate.comment).path : candidate.comment.path
+                comments.append(.init(path: path, side: candidate.comment.side, lineStart: line.start, lineEnd: line.end, body: body))
+            } else if candidate.comment.startLine == nil {
+                fileNotes.append("**\(candidate.comment.path)**: \(body)")
+            }
+        }
+        let text = ([summary.trimmingCharacters(in: .whitespacesAndNewlines)] + fileNotes).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        isWriting = true
+        defer { isWriting = false }
+        let (cwd, _) = source
+        let review = ReviewPublishRequest(event: event, body: text, comments: comments)
+        do {
+            let output = try await exec(config, TmuxCommandBuilder.reviewPublish(cwd: cwd, number: pr.number, head: head, review: review))
+            try writeOutcome(output)
+        } catch {
+            failure = Failure(errorDescription: message(for: error))
+            return false
+        }
+        publishedIDs.formUnion(chosen.filter { $0.line != nil || $0.comment.startLine == nil }.map(\.id))
+        let account = pullRequest?.viewer.map { " as \($0)" } ?? ""
+        notice = event == .approve && comments.isEmpty ? "Approved\(account)."
+            : "Published a review with \(comments.count) comment\(comments.count == 1 ? "" : "s")\(account)."
+        await loadPullRequest(config: config)
+        return true
+    }
+
+    /// Merges the PR/MR, pinned to the head the window shows.
+    @discardableResult
+    func merge(method: String, deleteBranch: Bool, overrideChecks: Bool, config: HostConnectionConfig) async -> Bool {
+        guard !isWriting, let pr = openPullRequest, let head = pr.headSHA else { return false }
+        if let blocker = mergeBlocker(overrideChecks: overrideChecks) {
+            failure = Failure(errorDescription: blocker)
+            return false
+        }
+        isWriting = true
+        defer { isWriting = false }
+        do {
+            let output = try await exec(config, TmuxCommandBuilder.reviewMerge(cwd: source.cwd, number: pr.number, head: head,
+                                                                              method: method, deleteBranch: deleteBranch))
+            try writeOutcome(output)
+        } catch {
+            failure = Failure(errorDescription: message(for: error))
+            return false
+        }
+        notice = "Merged \(pr.name(provider: pullRequest?.provider))\(pullRequest?.viewer.map { " as \($0)" } ?? "")."
+        await loadPullRequest(config: config)
+        return true
+    }
+
+    private func writeOutcome(_ output: SSHExecResult) throws {
+        let detail = output.stderr.split(separator: "\n").last.map { $0.replacingOccurrences(of: "ai-todo-review: ", with: "") }
+        switch output.exitCode {
+        case 0: return
+        case TmuxCommandBuilder.reviewHeadMovedExitCode:
+            throw Failure(errorDescription: "The pull request moved on since this review was loaded (\(detail ?? "new commits")). Refresh and look again.")
+        case TmuxCommandBuilder.reviewForgeFailedExitCode, TmuxCommandBuilder.reviewUnknownRevisionExitCode, 64:
+            throw Failure(errorDescription: detail.map { String($0.prefix(300)) } ?? "GitHub or GitLab refused it.")
+        default:
+            try RemoteConversations.check(output, computerName: conversation.computer.name)
+        }
+    }
+
     /// "No PR access on <computer>: gh isn't logged in", or nil.
     var pullRequestProblem: String? {
         guard let info = pullRequest, !info.access, info.provider != nil, let error = info.error else { return nil }

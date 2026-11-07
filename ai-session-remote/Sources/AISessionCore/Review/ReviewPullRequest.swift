@@ -255,3 +255,74 @@ extension TmuxCommandBuilder {
         return wrap(command)
     }
 }
+
+/// What `ai-todo-review publish` posts: one review on the PR/MR, its comments on lines of the
+/// PR's head (removed lines: of its base).
+public struct ReviewPublishRequest: Codable, Equatable, Sendable {
+    public enum Event: String, Codable, CaseIterable, Sendable {
+        case comment = "COMMENT"
+        case approve = "APPROVE"
+        case requestChanges = "REQUEST_CHANGES"
+
+        public var title: String {
+            switch self {
+            case .comment: "Comment"
+            case .approve: "Approve"
+            case .requestChanges: "Request Changes"
+            }
+        }
+    }
+
+    public struct Comment: Codable, Equatable, Sendable {
+        public var path: String
+        public var side: DiffSide
+        public var lineStart: Int
+        public var lineEnd: Int
+        public var body: String
+
+        private enum CodingKeys: String, CodingKey {
+            case path, side, body
+            case lineStart = "line_start", lineEnd = "line_end"
+        }
+
+        public init(path: String, side: DiffSide, lineStart: Int, lineEnd: Int, body: String) {
+            self.path = path
+            self.side = side
+            self.lineStart = lineStart
+            self.lineEnd = lineEnd
+            self.body = body
+        }
+    }
+
+    public var event: Event
+    public var body: String
+    public var comments: [Comment]
+
+    public init(event: Event, body: String, comments: [Comment]) {
+        self.event = event
+        self.body = body
+        self.comments = comments
+    }
+}
+
+extension TmuxCommandBuilder {
+    private static let writeHelper = "\"$HOME/.ai-remote/bin/ai-todo-review\""
+
+    /// The PR/MR moved on from the head the review was made against.
+    public static let reviewHeadMovedExitCode: Int32 = 67
+    /// gh/glab refused or failed; their words are on stderr.
+    public static let reviewForgeFailedExitCode: Int32 = 77
+
+    /// Posts a review as the computer's gh/glab account. The review travels base64-encoded.
+    public static func reviewPublish(cwd: String, number: Int, head: String, review: ReviewPublishRequest) -> String {
+        let data = (try? JSONEncoder().encode(review)) ?? Data("{}".utf8)
+        return wrap("printf '%s' \(shellQuote(data.base64EncodedString())) | \(writeHelper) publish \(shellQuotePath(cwd))"
+            + " --number \(number) --head \(shellQuote(head))")
+    }
+
+    /// `method`: merge, squash or rebase.
+    public static func reviewMerge(cwd: String, number: Int, head: String, method: String, deleteBranch: Bool) -> String {
+        wrap("exec \(writeHelper) merge \(shellQuotePath(cwd)) --number \(number) --head \(shellQuote(head))"
+            + " --method \(shellQuote(method))" + (deleteBranch ? " --delete-branch" : ""))
+    }
+}

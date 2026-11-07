@@ -32,6 +32,10 @@ final class ReviewSessionTests: XCTestCase {
     private var runningPolls = 0
     private var resultPolls = 0
     private var reviewerMissing = false
+    /// The worktree is clean, pushed and at the PR's head (rev2).
+    private var atPullRequestHead = false
+    private var checksState = "passing"
+    private var writeExit: Int32 = 0
     /// `pr` answers no access (gh logged out).
     private var prAccess = true
     /// The run finished just before Cancel reached it.
@@ -68,6 +72,9 @@ final class ReviewSessionTests: XCTestCase {
                              "ref": "ai/x-1"])
             }
             if folderGone { return SSHExecResult(exitCode: 69, stdout: "", stderr: "no folder") }
+            if atPullRequestHead {
+                return json(["root": "/w", "branch": "feat", "head": revision, "revision": revision, "clean": true, "ahead": 0, "behind": 0])
+            }
             return json(["root": "/w", "branch": "feat", "head": "head1", "revision": revision, "clean": false,
                          "worktree_base": worktreeBase as Any? ?? NSNull()])
         }
@@ -107,8 +114,11 @@ final class ReviewSessionTests: XCTestCase {
             if prAccess == false { return json(["provider": "github", "access": false, "error": "gh isn't logged in", "pr": NSNull()]) }
             let pr: [String: Any] = ["number": 9, "url": "https://github.com/o/r/pull/9", "title": "T", "body": "**B**", "state": "open",
                                      "draft": false, "author": "alice", "approvals": [String](), "head_sha": "rev2",
-                                     "checks": ["state": "passing", "passed": 1, "failed": 0, "pending": 0, "total": 1]]
+                                     "checks": ["state": checksState, "passed": 1, "failed": 0, "pending": 0, "total": 1]]
             return json(["provider": "github", "access": true, "viewer": "me", "branch": "feat", "pr": pr])
+        }
+        if command.contains(" publish ") || command.contains(" merge ") {
+            return SSHExecResult(exitCode: writeExit, stdout: "{}", stderr: writeExit == 0 ? "" : "ai-todo-review: PR 9 moved on to abc12345")
         }
         if command.contains(" threads ") {
             let thread: [String: Any] = ["id": "T1", "path": "f.txt", "side": "new", "line_start": 2, "line_end": 2, "commit": "rev2",
@@ -526,5 +536,63 @@ final class ReviewSessionTests: XCTestCase {
         prAccess = false
         await session.loadPullRequest(config: config)
         XCTAssertEqual(session.pullRequestProblem, "No PR access on \(session.conversation.computer.name): gh isn't logged in.")
+    }
+
+    func testPublishGoesOnThePullRequestsOwnLinesOnly() async throws {
+        let (session, _) = makeSession()
+        await session.load(config: config)
+        await session.loadPullRequest(config: config)
+        XCTAssertEqual(session.publishBlocker, "There are uncommitted changes. Only committed, pushed lines can be published.")
+        atPullRequestHead = true
+        await session.load(config: config)
+        XCTAssertEqual(session.publishBlocker, "Choose Branch: a review comments on the pull request's own changes.")
+        session.scope = .branch
+        await session.load(config: config)
+        XCTAssertNil(session.publishBlocker)
+        session.addComment(path: "f.txt", side: .new, lines: 2...2, quote: ["inserted"], body: "Why this?")
+        session.addComment(path: "f.txt", side: .new, lines: nil, quote: [], body: "About the file")
+        let candidates = session.publishCandidates()
+        let line = try XCTUnwrap(candidates.first { $0.comment.body == "Why this?" })
+        XCTAssertEqual(line.line?.start, 2)
+        let file = try XCTUnwrap(candidates.first { $0.comment.body == "About the file" })
+        XCTAssertNil(file.line)
+
+        let published = await session.publish(event: .requestChanges, summary: "Please look.", ids: [line.id, file.id], config: config)
+        XCTAssertTrue(published)
+        let command = try XCTUnwrap(commands.last { $0.contains(" publish ") })
+        XCTAssertTrue(command.contains("--number 9 --head 'rev2'"), command)
+        let encoded = try XCTUnwrap(command.split(separator: "'").first { Data(base64Encoded: String($0)) != nil && $0.count > 20 })
+        let review = try JSONDecoder().decode(ReviewPublishRequest.self, from: Data(base64Encoded: String(encoded))!)
+        XCTAssertEqual(review.event, .requestChanges)
+        XCTAssertEqual(review.comments, [.init(path: "f.txt", side: .new, lineStart: 2, lineEnd: 2, body: "Why this?")])
+        XCTAssertEqual(review.body, "Please look.\n\n**f.txt**: About the file")
+        XCTAssertEqual(session.notice, "Published a review with 1 comment as me.")
+        XCTAssertTrue(session.publishedIDs.contains(line.id))
+
+        // The PR moved on meanwhile: said, nothing marked.
+        writeExit = 67
+        let again = await session.publish(event: .comment, summary: "x", ids: [], config: config)
+        XCTAssertFalse(again)
+        XCTAssertTrue(session.failure?.errorDescription?.contains("moved on") == true)
+    }
+
+    func testMergeIsPinnedAndWaitsForChecksUnlessOverridden() async throws {
+        let (session, _) = makeSession()
+        atPullRequestHead = true
+        checksState = "pending"
+        await session.load(config: config)
+        await session.loadPullRequest(config: config)
+        XCTAssertEqual(session.mergeBlocker(overrideChecks: false), "Checks are still running. Hold Option to merge anyway.")
+        XCTAssertNil(session.mergeBlocker(overrideChecks: true))
+        let refused = await session.merge(method: "squash", deleteBranch: true, overrideChecks: false, config: config)
+        XCTAssertFalse(refused)
+        XCTAssertFalse(commands.contains { $0.contains(" merge ") })
+        let merged = await session.merge(method: "squash", deleteBranch: true, overrideChecks: true, config: config)
+        XCTAssertTrue(merged)
+        let command = try XCTUnwrap(commands.last { $0.contains(" merge ") })
+        XCTAssertTrue(command.hasSuffix("merge '/tmp' --number 9 --head 'rev2' --method 'squash' --delete-branch")
+                      || command.contains("--number 9 --head 'rev2' --method 'squash' --delete-branch"), command)
+        // Approve stays hidden on one's own PR (author alice, viewer me: shown here).
+        XCTAssertTrue(session.canApprove)
     }
 }

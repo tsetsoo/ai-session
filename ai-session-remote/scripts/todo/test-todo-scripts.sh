@@ -4520,6 +4520,89 @@ git -C "$PR_REPO" remote set-url origin https://example.com/r.git
 unset PR_LOG
 pass "review_pr_and_threads_read_github_and_gitlab"
 
+# ai-todo-review publish / merge, with fake gh and glab that record what they're asked.
+WR_REPO="${SANDBOX}/review-write-repo"
+mkdir -p "$WR_REPO"
+git -C "$WR_REPO" init -q -b feat
+git -C "$WR_REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$WR_REPO" remote add origin git@github.com:o/r.git
+export WR_LOG="${SANDBOX}/review-write.log"
+WR_GH="${SANDBOX}/bin/fake-write-gh"
+cat >"$WR_GH" <<'FAKE'
+#!/bin/sh
+echo "ARGS $*" >>"$WR_LOG"
+case "$1 $2" in
+  "pr view") echo '{"url":"https://github.com/o/r/pull/9","headRefOid":"head1","state":"OPEN"}' ;;
+  "api -X") cat >>"$WR_LOG"; echo; echo '{"html_url":"https://github.com/o/r/pull/9#pullrequestreview-1"}' ;;
+  "pr merge") echo "" ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+FAKE
+chmod +x "$WR_GH"
+review_b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
+WR_REVIEW='{"event":"REQUEST_CHANGES","body":"Two things.","comments":[{"path":"a.rs","side":"new","line_start":3,"line_end":5,"body":"Range"},{"path":"b.rs","side":"old","line_start":7,"line_end":7,"body":"Removed"}]}'
+out="$(review_b64 "$WR_REVIEW" | AI_TODO_GH_BIN="$WR_GH" "$REVIEW" publish "$WR_REPO" --number 9 --head head1)" || fail "publish failed"
+[[ "$out" == '{"published": 2, "event": "REQUEST_CHANGES", "url": "https://github.com/o/r/pull/9#pullrequestreview-1"}' ]] || fail "publish output: $out"
+python3 - "$WR_LOG" <<'PY' || fail "publish payload: $(cat "$WR_LOG")"
+import json, sys
+log = open(sys.argv[1]).read().splitlines()
+assert "ARGS api -X POST repos/o/r/pulls/9/reviews --input -" in log, log
+payload = json.loads(next(l for l in log if l.startswith("{")))
+assert (payload["commit_id"], payload["event"], payload["body"]) == ("head1", "REQUEST_CHANGES", "Two things."), payload
+assert payload["comments"] == [
+    {"path": "a.rs", "body": "Range", "line": 5, "side": "RIGHT", "start_line": 3, "start_side": "RIGHT"},
+    {"path": "b.rs", "body": "Removed", "line": 7, "side": "LEFT"}], payload["comments"]
+PY
+# The PR moved on: refused, nothing posted.
+: >"$WR_LOG"
+status=0; review_b64 "$WR_REVIEW" | AI_TODO_GH_BIN="$WR_GH" "$REVIEW" publish "$WR_REPO" --number 9 --head old0 >/dev/null 2>&1 || status=$?
+[[ $status -eq 67 ]] && ! grep -q "ARGS api" "$WR_LOG" || fail "publish on a moved head: $status $(cat "$WR_LOG")"
+# Merge: pinned to the head, method and branch deletion as asked.
+: >"$WR_LOG"
+AI_TODO_GH_BIN="$WR_GH" "$REVIEW" merge "$WR_REPO" --number 9 --head head1 --method squash --delete-branch >/dev/null || fail "merge failed"
+grep -qx "ARGS pr merge 9 --match-head-commit head1 --squash --delete-branch" "$WR_LOG" || fail "merge argv: $(cat "$WR_LOG")"
+status=0; AI_TODO_GH_BIN="$WR_GH" "$REVIEW" merge "$WR_REPO" --number 9 --head head1 --method fast >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "bad merge method exit $status"
+# A refusal from the forge is exit 77 with its words.
+printf '#!/bin/sh\necho "Pull request is not mergeable: required checks failing" >&2\nexit 1\n' >"${SANDBOX}/bin/fake-gh-refuse" && chmod +x "${SANDBOX}/bin/fake-gh-refuse"
+status=0; AI_TODO_GH_BIN="${SANDBOX}/bin/fake-gh-refuse" "$REVIEW" merge "$WR_REPO" --number 9 --head head1 --method merge >/dev/null 2>"${SANDBOX}/wr.err" || status=$?
+[[ $status -eq 77 && "$(cat "${SANDBOX}/wr.err")" == *"required checks failing"* ]] || fail "merge refused: $status $(cat "${SANDBOX}/wr.err")"
+# GitLab: draft notes on the diff refs, then one bulk publish, then the approval with the sha.
+git -C "$WR_REPO" remote set-url origin git@gitlab.com:g/r.git
+WR_GLAB="${SANDBOX}/bin/fake-write-glab"
+cat >"$WR_GLAB" <<'FAKE'
+#!/bin/sh
+echo "ARGS $*" >>"$WR_LOG"
+case "$1 $2" in
+  "mr view") echo '{"iid":4,"project_id":77,"sha":"head1","web_url":"https://gitlab.com/g/r/-/merge_requests/4"}' ;;
+  "api projects/77/merge_requests/4") echo '{"diff_refs":{"base_sha":"b0","start_sha":"s0","head_sha":"head1"}}' ;;
+  "api -X") echo '{}' ;;
+  "mr merge") echo "" ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+FAKE
+chmod +x "$WR_GLAB"
+: >"$WR_LOG"
+out="$(review_b64 '{"event":"APPROVE","body":"LGTM","comments":[{"path":"x.py","side":"new","line_start":8,"line_end":8,"body":"Nit"}]}' \
+  | AI_TODO_GLAB_BIN="$WR_GLAB" "$REVIEW" publish "$WR_REPO" --number 4 --head head1)" || fail "gitlab publish failed"
+python3 - "$WR_LOG" <<'PY' || fail "gitlab publish calls: $(cat "$WR_LOG")"
+import sys
+calls = [l[5:] for l in open(sys.argv[1]).read().splitlines() if l.startswith("ARGS api -X")]
+assert len(calls) == 4, calls
+note, summary, publish, approve = calls
+for part in ("POST projects/77/merge_requests/4/draft_notes", "note=Nit", "position[base_sha]=b0", "position[start_sha]=s0",
+             "position[head_sha]=head1", "position[new_path]=x.py", "position[new_line]=8"):
+    assert part in note, (part, note)
+assert "note=LGTM" in summary and publish.endswith("draft_notes/bulk_publish") and approve.endswith("/approve -f sha=head1"), calls
+PY
+status=0; review_b64 '{"event":"REQUEST_CHANGES","comments":[]}' | AI_TODO_GLAB_BIN="$WR_GLAB" "$REVIEW" publish "$WR_REPO" --number 4 --head head1 >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "gitlab request changes exit $status"
+: >"$WR_LOG"
+AI_TODO_GLAB_BIN="$WR_GLAB" "$REVIEW" merge "$WR_REPO" --number 4 --head head1 --method merge >/dev/null || fail "gitlab merge"
+grep -qx "ARGS mr merge 4 --sha head1 --yes" "$WR_LOG" || fail "gitlab merge argv: $(cat "$WR_LOG")"
+unset WR_LOG
+pass "review_publish_and_merge_pin_the_head"
+
 # --- tmux.conf ----------------------------------------------------------------
 
 tmux -L "${SOCK}-conf" -f /dev/null new-session -d -s conftest
