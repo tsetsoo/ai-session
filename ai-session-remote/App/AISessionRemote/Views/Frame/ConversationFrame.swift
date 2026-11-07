@@ -1202,12 +1202,14 @@ struct ConversationFrame: View {
 
     /// The added agent gets a worktree of its own when this one has one and its project wants it.
     private func ownWorktree(for source: Conversation) -> Bool {
-        projectWorktrees(for: source) && source.worktreeSource != nil
+        projectWorktrees(for: source)
     }
 
+    /// A git project with worktrees on: each agent gets a worktree of its own (the hub's rule).
     private func projectWorktrees(for source: Conversation) -> Bool {
         let projectId = source.projectId ?? todo.projectId
-        return store.projects.first { $0.id == projectId }?.worktrees ?? false
+        guard let project = store.projects.first(where: { $0.id == projectId }) else { return false }
+        return project.worktrees && !(project.repoUrl ?? "").trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private func summaryLoader(for source: Conversation) -> () async throws -> String {
@@ -1235,7 +1237,7 @@ struct ConversationFrame: View {
                 case .summary:
                     break
                 case .full:
-                    let forks = !(worktrees && source.worktreeSource != nil) && source.tool == choice.tool
+                    let forks = !worktrees && source.tool == choice.tool
                         && ForkCommand.arguments(tool: choice.tool, sessionId: source.sessionId) != nil
                     if !forks {
                         transcript = try await store.captureTranscript(of: source, config: config)

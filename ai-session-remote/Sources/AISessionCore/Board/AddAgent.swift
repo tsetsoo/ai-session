@@ -45,7 +45,7 @@ public enum AddAgent {
     ) -> AddAgentPlan {
         let model = model?.trimmingCharacters(in: .whitespacesAndNewlines)
         let summary = confirmedSummary.flatMap { nonEmpty($0) }
-        let ownWorktree = projectWorktrees && source.worktreeSource != nil
+        let ownWorktree = projectWorktrees
         let start: AddAgentPlan.Start
         switch handoff {
         case .summary:

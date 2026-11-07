@@ -467,23 +467,37 @@ fn duplicate_in(
     else {
         return Err(OpenError::NoTmuxName);
     };
-    match (&source.worktree_source, options.own_worktree) {
+    // A source from before worktrees per conversation has none: its project's folder is the
+    // source then, when the project is a git project with worktrees on.
+    let own_folder = match (&source.worktree_source, options.own_worktree) {
+        (Some(folder), true) => Some(folder.clone()),
+        (None, true) => conn
+            .query_row(
+                "SELECT p.folder FROM todos t JOIN projects p ON p.id = t.project_id
+                 WHERE t.id = ?1 AND p.worktrees = 1 AND COALESCE(TRIM(p.repo_url), '') <> ''",
+                params![todo_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?,
+        (_, false) => None,
+    };
+    match (&source.worktree_source, own_folder) {
         // Add agent: a worktree of its own, from the given commit (the computer makes it).
-        (Some(folder), true) => {
+        (_, Some(folder)) => {
             let (project_id, title): (Option<String>, String) =
                 conn.query_row("SELECT project_id, title FROM todos WHERE id = ?1", params![todo_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
             let project_id = project_id.ok_or(OpenError::NoProject)?;
-            plan_worktree(conn, &id, &project_id, folder, &title)?;
+            plan_worktree(conn, &id, &project_id, &folder, &title)?;
             conn.execute("UPDATE conversations SET worktree_base = ?2 WHERE id = ?1", params![id, base_sha])?;
         }
         // A duplicate works in the same folder, so it shares the source's worktree.
-        (Some(_), false) => {
+        (Some(_), None) => {
             conn.execute(
                 "UPDATE conversations SET worktree_source = ?2, branch = ?3 WHERE id = ?1",
                 params![id, source.worktree_source, source.branch],
             )?;
         }
-        (None, _) => {}
+        (None, None) => {}
     }
     if model.is_some() {
         conn.execute("UPDATE conversations SET model = ?2 WHERE id = ?1", params![id, model])?;
@@ -1957,6 +1971,52 @@ mod tests {
         assert_eq!(created["worktree_source"], "~/app");
         assert_eq!(created["worktree_base"], "abc1234");
         assert_eq!(created["model"], "gpt-6.1-terra");
+    }
+
+    /// A source from before worktrees per conversation records none. In a git project with
+    /// worktrees on, the new agent still gets its own, made from the project's folder.
+    #[actix_web::test]
+    async fn add_agent_from_a_source_without_a_worktree_gets_one_from_the_project_folder() {
+        let (_db, pool) = crate::test_support::pool("add-legacy");
+        {
+            let conn = pool.get().unwrap();
+            crate::test_support::seed_computers(&conn);
+            conn.execute(
+                "INSERT INTO projects (id, name, section, folder, repo_url) VALUES ('p1', 'app', 'P', '~/app', 'git@x:a.git')",
+                [],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'P', 'Do it', 'p1')", []).unwrap();
+        }
+        let (_, source) =
+            crate::test_support::post(&pool, "/api/todos/t1/conversation", serde_json::json!({"tool": "claude"})).await;
+        assert!(source["worktree_source"].is_null(), "{source}");
+        let (status, created) =
+            add_agent(&pool, &source, serde_json::json!({"tool": "codex", "label": "Codex", "own_worktree": true})).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{created}");
+        let id = created["id"].as_str().unwrap();
+        assert_eq!(created["cwd"], format!("~/.ai-remote/worktrees/p1/{id}"));
+        assert_eq!(created["worktree_source"], "~/app");
+        assert_eq!(created["branch"], format!("ai/do-it-{}", &id[..8]));
+    }
+
+    /// Not a git project (no repo): nothing to make a worktree of, so it shares the folder.
+    #[actix_web::test]
+    async fn add_agent_outside_a_git_project_shares_the_folder() {
+        let (_db, pool) = crate::test_support::pool("add-nogit");
+        {
+            let conn = pool.get().unwrap();
+            crate::test_support::seed_computers(&conn);
+            conn.execute("INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'notes', 'P', '~/notes')", []).unwrap();
+            conn.execute("INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'P', 'Do it', 'p1')", []).unwrap();
+        }
+        let (_, source) =
+            crate::test_support::post(&pool, "/api/todos/t1/conversation", serde_json::json!({"tool": "claude"})).await;
+        let (status, created) =
+            add_agent(&pool, &source, serde_json::json!({"tool": "codex", "label": "Codex", "own_worktree": true})).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{created}");
+        assert_eq!(created["cwd"], source["cwd"]);
+        assert!(created["worktree_source"].is_null(), "{created}");
     }
 
     #[actix_web::test]

@@ -62,8 +62,10 @@ final class AddAgentTests: XCTestCase {
         XCTAssertEqual(plan(.fresh, firstUserMessage: nil).start, .cancelled(reason: "No first message found"))
     }
 
-    func testOwnWorktreeOnlyWhenTheSourceHasOneAndTheProjectWantsIt() {
-        XCTAssertFalse(plan(.summary, source: conversation(worktree: false)).ownWorktree)
+    /// Spec: in a git project with worktrees on, the new agent never shares the source's folder,
+    /// also when the source is from before worktrees per conversation (it has none of its own).
+    func testOwnWorktreeWheneverTheProjectWantsIt() {
+        XCTAssertTrue(plan(.summary, source: conversation(worktree: false)).ownWorktree)
         XCTAssertFalse(plan(.summary, projectWorktrees: false).ownWorktree)
         XCTAssertTrue(plan(.summary).sharesFolderWarning == false)
         XCTAssertTrue(plan(.summary, projectWorktrees: false).sharesFolderWarning)
