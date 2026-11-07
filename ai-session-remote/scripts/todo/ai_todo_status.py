@@ -1230,11 +1230,63 @@ def claude_status(row):
     return None  # Missing or new status values are not proof that work completed.
 
 
+def reconcile_claude_sessions(rows):
+    """Follow /clear and other session changes in the same live todo terminal.
+
+    Match the local process registry to the runtime and the hub's exact tmux name
+    and computer. A cwd or todo prefix alone cannot identify a conversation.
+    """
+    computer_id = hub_values().get("TODO_COMPUTER_ID")
+    if not computer_id:
+        return
+    terminals = {}
+    for row in rows:
+        pid, sid = row.get("pid"), row.get("sessionId")
+        if row.get("kind") != "interactive" or not isinstance(pid, int) or isinstance(pid, bool):
+            continue
+        local = read_json(Path.home() / ".claude" / "sessions" / f"{pid}.json", {})
+        if (local.get("sessionId") != sid or local.get("pid") != pid
+                or local.get("startedAt") != row.get("startedAt")):
+            continue
+        tmux = local.get("tmux")
+        if not isinstance(tmux, str):
+            continue
+        name = tmux.split(":", 1)[0]
+        if not name.startswith("ai/claude/todo-"):
+            continue
+        # Multiple processes in one terminal are ambiguous; never guess which owns it.
+        terminals.setdefault(name, []).append(sid)
+    if not terminals:
+        return
+    url, token = configuration()
+    headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+    with urllib.request.urlopen(urllib.request.Request(url + "/api/conversations", headers=headers), timeout=2) as response:
+        conversations = json.load(response)
+    if not isinstance(conversations, list):
+        return
+    for conversation in conversations:
+        if (conversation.get("tool") != "claude" or conversation.get("status") == "closed"
+                or conversation.get("computer", {}).get("id") != computer_id):
+            continue
+        candidates = terminals.get(conversation.get("tmux_name"), [])
+        if len(candidates) != 1 or candidates[0] == conversation.get("session_id"):
+            continue
+        identifier = conversation.get("id", "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", identifier):
+            continue
+        request = urllib.request.Request(url + "/api/conversations/" + identifier + "/session",
+                                         headers=headers, method="PUT",
+                                         data=json.dumps({"session_id": candidates[0]}).encode())
+        with urllib.request.urlopen(request, timeout=2):
+            pass
+
+
 class ClaudeRuntime:
     def __init__(self):
         self.cli = find_claude()
         self.listed = set()
         self.instances = {}
+        self.reconciled_at = float("-inf")
 
     def states(self):
         env = dict(os.environ, PATH=str(Path(self.cli).parent) + os.pathsep + os.environ.get("PATH", ""))
@@ -1263,6 +1315,13 @@ class ClaudeRuntime:
         self.listed = set(newest)
         self.instances = {sid: {key: row.get(key) for key in ("kind", "startedAt", "pid")}
                           for sid, (_, row) in newest.items()}
+        if time.monotonic() - self.reconciled_at >= 30:
+            try:
+                reconcile_claude_sessions([row for _, row in newest.values()])
+                self.reconciled_at = time.monotonic()
+            except (OSError, ValueError):
+                # Hub connectivity must not prevent local status collection.
+                self.reconciled_at = time.monotonic() - 25
         result = {}
         for sid, (_, row) in newest.items():
             state = claude_status(row)
