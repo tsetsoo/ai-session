@@ -118,11 +118,14 @@ final class ReviewSession {
                 return
             }
             from = baseCommit.sha
+        case .pullRequest where selectedPullRequest == nil:
+            self.scope = .uncommitted
+            return
         case .uncommitted where keptBranch != nil:
             // A kept branch has nothing uncommitted; what it has is on the branch.
             self.scope = .branch
             return
-        case .uncommitted, .branch, .conversation:
+        case .uncommitted, .branch, .conversation, .pullRequest:
             break
         }
         isLoading = true
@@ -155,8 +158,18 @@ final class ReviewSession {
                 }
                 from = start
             }
+            var to = status.revision
+            if scope == .pullRequest, let number = selectedPullRequest {
+                // Exactly the PR's changes, from origin: wherever the agent worked on it.
+                let fetched: ReviewPullRequestFetch = try await run(
+                    TmuxCommandBuilder.reviewFetchPullRequest(cwd: cwd, number: number), config: config
+                )
+                guard generation == loadGeneration else { return }
+                from = fetched.base
+                to = fetched.head
+            }
             let result: ReviewDiffResult = try await run(
-                TmuxCommandBuilder.reviewDiff(cwd: cwd, scope: scope, from: from, to: status.revision, ref: ref),
+                TmuxCommandBuilder.reviewDiff(cwd: cwd, scope: scope, from: from, to: to, ref: ref),
                 config: config
             )
             guard generation == loadGeneration else { return }
@@ -226,6 +239,7 @@ final class ReviewSession {
 
     /// Compare With: everything since `commit`. The window's scope change starts the load.
     func compare(from commit: ReviewLog.Commit) {
+        userChose = true
         baseCommit = commit
         scope = .commit
     }
@@ -444,6 +458,43 @@ final class ReviewSession {
         return marks
     }
 
+    // MARK: The user's pull requests
+
+    /// The PRs/MRs the computer's gh/glab account opened in this repository, newest first.
+    private(set) var pullRequests: ReviewPullRequestList?
+    /// The PR/MR shown in the Pull Request scope.
+    private(set) var selectedPullRequest: Int?
+    /// The user picked something themselves: the window doesn't pick a PR for them any more.
+    @ObservationIgnored private var userChose = false
+
+    /// Shows exactly this PR's changes.
+    func open(pullRequest number: Int, byUser: Bool = true) {
+        if byUser { userChose = true }
+        guard selectedPullRequest != number || scope != .pullRequest else { return }
+        selectedPullRequest = number
+        pullRequest = nil
+        scope = .pullRequest
+    }
+
+    /// A scope picked in the window (not a PR).
+    func pick(scope: ReviewScope) {
+        userChose = true
+        self.scope = scope
+    }
+
+    /// Lists the user's PRs/MRs; opens the likely one (linked by the runner, or the only one
+    /// updated since the conversation began) unless the user already chose what to look at.
+    func loadPullRequests(config: HostConnectionConfig) async {
+        let asked = folder
+        guard let list: ReviewPullRequestList = try? await run(
+            TmuxCommandBuilder.reviewPullRequests(cwd: asked, since: Self.gitTime(conversation.createdAt)), config: config
+        ), asked == folder else { return }
+        pullRequests = list
+        if !userChose, selectedPullRequest == nil, let likely = list.likely(linkedURL: conversation.pullRequest?.url) {
+            open(pullRequest: likely.number, byUser: false)
+        }
+    }
+
     // MARK: Which worktree
 
     /// A worktree of the repository picked in the window instead of the conversation's folder
@@ -485,9 +536,11 @@ final class ReviewSession {
         diff = UnifiedDiff(files: [])
         anchors = [:]
         pullRequest = nil
+        pullRequests = nil
+        selectedPullRequest = nil
         commits = []
         mappingCache = [:]
-        if scope == .since || scope == .commit { scope = .uncommitted }
+        if scope == .since || scope == .commit || scope == .pullRequest { scope = .uncommitted }
         baseCommit = nil
     }
 
@@ -525,7 +578,10 @@ final class ReviewSession {
         guard pullRequestFolder != cwd else { return }
         pullRequestFolder = cwd
         defer { if pullRequestFolder == cwd { pullRequestFolder = nil } }
-        guard let info: ReviewPullRequestInfo = try? await run(TmuxCommandBuilder.reviewPullRequest(cwd: cwd, ref: ref), config: config),
+        let number = scope == .pullRequest ? selectedPullRequest : nil
+        guard let info: ReviewPullRequestInfo = try? await run(
+            TmuxCommandBuilder.reviewPullRequest(cwd: cwd, ref: number == nil ? ref : nil, number: number), config: config
+        ),
               !Task.isCancelled, cwd == folder
         else { return }
         pullRequest = info
@@ -568,6 +624,10 @@ final class ReviewSession {
         guard let pr = openPullRequest else { return "There's no open pull/merge request for this branch." }
         guard let status else { return "Load the changes first." }
         guard pr.headSHA != nil else { return "GitHub or GitLab didn't say which commit the pull request is at. Refresh." }
+        if scope == .pullRequest {
+            // The PR's own head, fetched: nothing local has to match.
+            return result?.to == pr.headSHA ? nil : "The pull request moved on since this was loaded. Refresh."
+        }
         if keptBranch == nil, !status.clean { return "There are uncommitted changes. Only committed, pushed lines can be published." }
         if let ahead = status.ahead, ahead > 0 { return "\(ahead) commit\(ahead == 1 ? " isn't" : "s aren't") pushed yet." }
         if let head = pr.headSHA, head != status.head {
@@ -580,7 +640,9 @@ final class ReviewSession {
     var publishBlocker: String? {
         if hubOffline { return Self.offlineMessage }
         if let headBlocker { return headBlocker }
-        if scope != .branch { return "Choose Branch: a review comments on the pull request's own changes." }
+        if scope != .branch, scope != .pullRequest {
+            return "Pick the pull request (or Branch): a review comments on its own changes."
+        }
         return nil
     }
 
@@ -968,9 +1030,18 @@ final class ReviewSession {
         Set(drafts.filter { $0.side == .new && $0.revision != result?.to && anchors[$0.id] == nil }.map(\.id))
     }
 
+    /// The branch named in the message: the PR's own in the Pull Request scope.
+    private var messageBranch: String? {
+        if scope == .pullRequest, let number = selectedPullRequest {
+            return pullRequests?.prs.first { $0.number == number }?.headRef ?? pullRequest?.pr?.headRef
+        }
+        return status?.branch
+    }
+
     func message() -> String {
-        ReviewMessage.render(outgoing(), branch: status?.branch, revision: result?.to ?? status?.revision ?? "",
-                             includesUncommitted: status.map { !$0.clean } ?? false, unchecked: unchecked())
+        ReviewMessage.render(outgoing(), branch: messageBranch, revision: result?.to ?? status?.revision ?? "",
+                             includesUncommitted: scope == .pullRequest ? false : status.map { !$0.clean } ?? false,
+                             unchecked: unchecked())
     }
 
     /// Keeps the revision on the computer, types the message into the conversation, and marks

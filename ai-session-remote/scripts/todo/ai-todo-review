@@ -16,6 +16,8 @@ Usage:
   ai-todo-review threads <cwd> [--ref <branch>] [--number N]
   ai-todo-review publish <cwd> --number N --head <sha>   (the review, base64 JSON, on stdin)
   ai-todo-review worktrees <cwd> [--since <ISO time>]
+  ai-todo-review prs <cwd> [--since <ISO time>]
+  ai-todo-review fetch-pr <cwd> --number N
   ai-todo-review merge <cwd> --number N --head <sha> --method merge|squash|rebase [--delete-branch]
 
 Every command but send prints JSON.
@@ -80,6 +82,10 @@ publish posts a review on the PR/MR, as the computer's gh/glab account: {event C
 merge   merges it through the API (nothing changes in the worktree) only while its head is
         --head, deleting the branch on the forge when asked. GitLab must answer merged: queued
         for a pipeline is a failure. Branch protection and checks are the forge's to enforce.
+prs     the PRs/MRs the computer's gh/glab account opened in origin, newest first, marking those
+        updated since --since. fetch-pr: one's head into refs/ai-review/pr/N and its base
+        branch; prints head and the merge base, so `diff --scope since --from base --to head`
+        is exactly its changes.
 worktrees  the repository's worktrees (not a bare one), most recently active first (last commit or
         HEAD move), marking those active since
         --since: for an agent that made its own worktree outside the conversation's folder.
@@ -1021,6 +1027,107 @@ def cmd_merge(args):
     print(json.dumps({"merged": number, "method": method, "deleted_branch": delete_branch}))
 
 
+# --- the user's PRs/MRs, and a PR's exact changes ----------------------------------------
+
+def cmd_prs(args):
+    """prs <cwd> [--since ISO]: the PRs/MRs in origin that the computer's gh/glab account
+    opened, newest update first: {provider, access, error, viewer, prs: [{number, title, url,
+    state, draft, head_ref, base_ref, head_sha, updated_at, since}]}. since: updated at or after
+    --since (when the conversation began). Read-only."""
+    args, since = take_option(args, "--since")
+    if len(args) != 1:
+        die("usage: ai-todo-review prs <cwd> [--since <ISO time>]", 64)
+    root = repo_root(args[0])
+    kind = forge_kind(root)
+    out = {"provider": kind, "access": False, "error": None, "viewer": None, "prs": []}
+    if kind is None:
+        out["error"] = "origin is neither GitHub nor GitLab"
+        print(json.dumps(out))
+        return
+    try:
+        if kind == "github":
+            rows = forge_json(kind, root, "pr", "list", "--author", "@me", "--state", "all", "--limit", "30",
+                              "--json", "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,updatedAt")
+            prs = [{"number": r.get("number"), "title": r.get("title") or "", "url": r.get("url"),
+                    "state": str(r.get("state") or "").lower(), "draft": bool(r.get("isDraft")),
+                    "head_ref": r.get("headRefName"), "base_ref": r.get("baseRefName"),
+                    "head_sha": r.get("headRefOid"), "updated_at": r.get("updatedAt")} for r in rows or [] if isinstance(r, dict)]
+        else:
+            rows = forge_json(kind, root, "mr", "list", "--author=@me", "--all", "-F", "json", "--per-page", "30")
+            states = {"opened": "open", "locked": "open"}
+            prs = [{"number": r.get("iid"), "title": r.get("title") or "", "url": r.get("web_url"),
+                    "state": states.get(r.get("state"), r.get("state") or ""), "draft": bool(r.get("draft")),
+                    "head_ref": r.get("source_branch"), "base_ref": r.get("target_branch"),
+                    "head_sha": r.get("sha"), "updated_at": r.get("updated_at")} for r in rows or [] if isinstance(r, dict)]
+        out["access"] = True
+        out["viewer"] = viewer(kind, root)
+    except NoAccess as error:
+        out["error"] = str(error)
+        print(json.dumps(out))
+        return
+    since_ts = None
+    if since:
+        try:
+            since_ts = calendar.timegm(time.strptime(since[:19], "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            die("--since needs an ISO time", 64)
+
+    def stamp(pr):
+        try:
+            return calendar.timegm(time.strptime((pr.get("updated_at") or "")[:19], "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            return 0
+
+    prs = [p for p in prs if isinstance(p.get("number"), int)]
+    for pr in prs:
+        pr["since"] = bool(since_ts is not None and stamp(pr) >= since_ts)
+    prs.sort(key=stamp, reverse=True)
+    out["prs"] = prs
+    print(json.dumps(out))
+
+
+def cmd_fetch_pr(args):
+    """fetch-pr <cwd> --number N: the PR/MR's head (refs/ai-review/pr/N, from GitHub's
+    pull/N/head or GitLab's merge-requests/N/head) and its base branch, fetched from origin;
+    {number, head, base, base_ref}. base is the merge base: diff base..head is exactly the PR's
+    changes, wherever the agent worked. Only refs/ai-review/ and origin's base branch change."""
+    args, number = take_number(args)
+    if number is None or len(args) != 1:
+        die("usage: ai-todo-review fetch-pr <cwd> --number N", 64)
+    root = repo_root(args[0])
+    kind = forge_kind(root)
+    if kind is None:
+        die("origin is neither GitHub nor GitLab", 64)
+    try:
+        if kind == "github":
+            view = forge_json(kind, root, "pr", "view", str(number), "--json", "baseRefName,headRefOid")
+            base_ref, want = (view or {}).get("baseRefName"), (view or {}).get("headRefOid")
+            remote_ref = "pull/%d/head" % number
+        else:
+            view = forge_json(kind, root, "mr", "view", str(number), "-F", "json")
+            base_ref, want = (view or {}).get("target_branch"), (view or {}).get("sha")
+            remote_ref = "merge-requests/%d/head" % number
+    except NoAccess as error:
+        die(str(error), 77)
+    if not base_ref:
+        die("couldn't tell the base branch of %d" % number, 77)
+    local = "refs/ai-review/pr/%d" % number
+    env = {"GIT_TERMINAL_PROMPT": "0"}
+    try:
+        git(root, "fetch", "--quiet", "--no-tags", "origin",
+            "+%s:%s" % (remote_ref, local), "+refs/heads/%s:refs/remotes/origin/%s" % (base_ref, base_ref), env=env)
+    except GitError as error:
+        die("couldn't fetch it from origin: %s" % str(error)[:200], 70)
+    head = line(root, "rev-parse", "--verify", "-q", local + "^{commit}")
+    if not head:
+        die("no head for %d after fetching" % number, 70)
+    base = line(root, "merge-base", "refs/remotes/origin/%s" % base_ref, head)
+    if not base:
+        die("%d has no common commit with %s" % (number, base_ref), 70)
+    print(json.dumps({"number": number, "head": head, "base": base, "base_ref": base_ref,
+                      "matches_forge": want in (None, head)}))
+
+
 # --- worktrees of the repository --------------------------------------------------------
 
 def cmd_worktrees(args):
@@ -1640,9 +1747,10 @@ def main(argv):
         return
     commands = {"status": cmd_status, "diff": cmd_diff, "keep": cmd_keep, "log": cmd_log, "send": cmd_send,
                 "run": cmd_run, "result": cmd_result, "cancel": cmd_cancel, "pr": cmd_pr, "threads": cmd_threads,
-                "publish": cmd_publish, "merge": cmd_merge, "worktrees": cmd_worktrees}
+                "publish": cmd_publish, "merge": cmd_merge, "worktrees": cmd_worktrees,
+                "prs": cmd_prs, "fetch-pr": cmd_fetch_pr}
     if not argv or argv[0] not in commands:
-        die("usage: ai-todo-review status|diff|keep|log|send|run|result|cancel|pr|threads|publish|merge|worktrees ... (see the header of this script)", 64)
+        die("usage: ai-todo-review status|diff|keep|log|send|run|result|cancel|pr|threads|publish|merge|worktrees|prs|fetch-pr ... (see the header of this script)", 64)
     try:
         commands[argv[0]](argv[1:])
     except GitError as error:

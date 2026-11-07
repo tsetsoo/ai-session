@@ -81,4 +81,14 @@ extension TmuxCommandBuilder {
     public static func reviewWorktrees(cwd: String, since: String?) -> String {
         wrap("exec \(reviewHelper) worktrees \(shellQuotePath(cwd))" + (since.map { " --since \(shellQuote($0))" } ?? ""))
     }
+
+    /// The PRs/MRs the computer's gh/glab account opened; `since` marks those updated after it.
+    public static func reviewPullRequests(cwd: String, since: String?) -> String {
+        wrap("exec \(reviewHelper) prs \(shellQuotePath(cwd))" + (since.map { " --since \(shellQuote($0))" } ?? ""))
+    }
+
+    /// Fetches a PR's head and base from origin; prints both.
+    public static func reviewFetchPullRequest(cwd: String, number: Int) -> String {
+        wrap("exec \(reviewHelper) fetch-pr \(shellQuotePath(cwd)) --number \(number)")
+    }
 }

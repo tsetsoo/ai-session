@@ -75,6 +75,7 @@ struct ReviewView: View {
     @State private var selectedPath: String?
     @State private var showingSend = false
     @State private var showingFindings = false
+    @State private var showsAllPullRequests = false
     @State private var showingPublish = false
     @State private var showingApprove = false
     @State private var showingMerge = false
@@ -110,14 +111,21 @@ struct ReviewView: View {
         }
         .toolbar { toolbar }
         // Another commit in Compare With is a new load too, though the scope stays `.commit`.
-        .task(id: "\(session.scope.rawValue)|\(session.baseCommit?.sha ?? "")|\(session.folder)") { await reload() }
+        .task(id: "\(session.scope.rawValue)|\(session.baseCommit?.sha ?? "")|\(session.folder)|\(session.selectedPullRequest ?? 0)") {
+            await reload()
+        }
         // The PR/MR and its threads, beside the diff: never holds it up; stops with the window.
+        // The user's PRs and the worktrees: once per folder and on Refresh.
         .task(id: "\(pullRequestReads)|\(session.folder)") {
             await withConfig { config in
                 async let worktrees: Void = session.loadWorktrees(config: config)
-                async let pullRequest: Void = session.loadPullRequest(config: config)
-                _ = await (worktrees, pullRequest)
+                async let pullRequests: Void = session.loadPullRequests(config: config)
+                _ = await (worktrees, pullRequests)
             }
+        }
+        // The PR on screen (the picked one, or the branch's), with its threads.
+        .task(id: "\(pullRequestReads)|\(session.folder)|\(session.selectedPullRequest ?? 0)|\(session.scope == .pullRequest)") {
+            await withConfig { await session.loadPullRequest(config: $0) }
         }
         // A run started here or by an earlier window: followed while the window is open.
         .task(id: session.activeRun?.id) {
@@ -218,6 +226,7 @@ struct ReviewView: View {
 
     private var sidebar: some View {
         List(selection: $selectedPath) {
+            pullRequestsSection
             if let problem = session.store.problem {
                 Section {
                     Label(problem, systemImage: "exclamationmark.triangle")
@@ -302,6 +311,33 @@ struct ReviewView: View {
         }
     }
 
+    /// The user's PRs/MRs in this repository: one click shows exactly that PR's changes.
+    @ViewBuilder
+    private var pullRequestsSection: some View {
+        if let list = session.pullRequests {
+            if !list.access, let error = list.error, list.provider != nil {
+                Section("Pull Requests") {
+                    Label("No PR access on \(conversation.computer.name): \(error).", systemImage: "person.crop.circle.badge.exclamationmark")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if !list.prs.isEmpty {
+                Section(list.viewer.map { "Pull Requests by \($0)" } ?? "Your Pull Requests") {
+                    ForEach(list.prs.prefix(showsAllPullRequests ? 30 : 6)) { pr in
+                        PullRequestRow(item: pr, provider: list.provider,
+                                       selected: session.scope == .pullRequest && session.selectedPullRequest == pr.number)
+                            .contentShape(Rectangle())
+                            .onTapGesture { session.open(pullRequest: pr.number) }
+                    }
+                    if list.prs.count > 6 {
+                        Button(showsAllPullRequests ? "Fewer" : "\(list.prs.count - 6) More") { showsAllPullRequests.toggle() }
+                            .buttonStyle(.link)
+                    }
+                }
+            }
+        }
+    }
+
     private var filesHeader: String {
         let count = session.diff.files.count
         return count == 1 ? "1 File" : "\(count) Files"
@@ -314,6 +350,7 @@ struct ReviewView: View {
         case .branch: "No Changes on This Branch"
         case .since: "No Changes Since Feedback"
         case .commit: "No Changes Since That Commit"
+        case .pullRequest: "No Changes in This Pull Request"
         }
     }
 
@@ -373,11 +410,18 @@ struct ReviewView: View {
             .help("Which worktree to review. ● changed since this conversation started: an agent may have made a worktree of its own.")
         }
         ToolbarItem(placement: .navigation) {
-            Picker("Changes", selection: $session.scope) {
+            Picker("Changes", selection: Binding(get: { session.scope }, set: { session.pick(scope: $0) })) {
+                if let number = session.selectedPullRequest {
+                    Text(pullRequestName(number)).tag(ReviewScope.pullRequest)
+                    Divider()
+                }
                 ForEach(ReviewScope.segments) { scope in
                     Text(scope.title).tag(scope)
                         .disabled((scope == .since && session.record.lastBatch == nil)
                                   || (scope == .uncommitted && session.keptBranch != nil))
+                }
+                if session.scope == .commit {
+                    Text(ReviewScope.commit.title).tag(ReviewScope.commit)
                 }
             }
             .pickerStyle(.menu)
@@ -503,6 +547,10 @@ struct ReviewView: View {
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
+    private func pullRequestName(_ number: Int) -> String {
+        session.pullRequests?.provider == "gitlab" ? "MR !\(number)" : "PR #\(number)"
+    }
+
     /// The branch on screen, or the worktree's folder name.
     private var reviewingTitle: String {
         if let branch = session.status?.branch { return branch }
@@ -550,6 +598,12 @@ struct ReviewView: View {
     private var statusLine: String {
         guard let status = session.status else { return session.isLoading ? "Loading…" : "" }
         var parts: [String] = []
+        if session.scope == .pullRequest, let number = session.selectedPullRequest, let result = session.result {
+            let ref = session.pullRequests?.prs.first { $0.number == number }?.headRef
+            parts.append("\(pullRequestName(number))\(ref.map { " · \($0)" } ?? "")")
+            parts.append("\(result.from.prefix(7))..\(result.to.prefix(7)), as on \(session.pullRequests?.provider == "gitlab" ? "GitLab" : "GitHub")")
+            return parts.joined(separator: " · ")
+        }
         if status.branch == nil { parts.append("detached HEAD") }
         if session.chosenFolder != nil { parts.append((session.folder as NSString).lastPathComponent) }
         if session.keptBranch != nil { parts.append("worktree removed, branch kept") }
@@ -1503,6 +1557,56 @@ private struct MergeSheet: View {
         }
         .padding(DS.spacing.l)
         .frame(minWidth: 480, idealWidth: 520)
+    }
+}
+/// `#1859 Title` with its state and when it was last updated.
+private struct PullRequestRow: View {
+    let item: ReviewPullRequestList.Item
+    let provider: String?
+    let selected: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: DS.spacing.s) {
+            Image(systemName: symbol)
+                .foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(provider == "gitlab" ? "!" : "#")\(item.number) \(item.title)")
+                    .fontWeight(selected ? .semibold : .regular)
+                    .lineLimit(2)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 1)
+        .listRowBackground(selected ? DS.accent.opacity(0.18) : Color.clear)
+        .help(item.headRef ?? "")
+    }
+
+    private var detail: String {
+        var parts = [item.draft ? "\(item.state) · draft" : item.state]
+        if let updated = item.updatedAt.flatMap(ReviewSync.date(from:)) {
+            parts.append("updated " + updated.formatted(.relative(presentation: .named)))
+        }
+        if item.since { parts.append("since this conversation began") }
+        return parts.joined(separator: " · ")
+    }
+
+    private var symbol: String {
+        switch item.state {
+        case "merged": "arrow.triangle.merge"
+        case "closed": "xmark.circle"
+        default: "arrow.triangle.pull"
+        }
+    }
+
+    private var color: Color {
+        switch item.state {
+        case "merged": .purple
+        case "closed": .secondary
+        default: .green
+        }
     }
 }
 #endif

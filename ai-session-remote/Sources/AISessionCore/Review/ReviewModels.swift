@@ -64,6 +64,8 @@ public enum ReviewScope: String, Codable, CaseIterable, Sendable, Identifiable {
     case since
     /// A commit picked from the history → worktree.
     case commit
+    /// A pull/merge request's own changes: its merge base → its head, fetched from origin.
+    case pullRequest
 
     public var id: String { rawValue }
 
@@ -77,6 +79,7 @@ public enum ReviewScope: String, Codable, CaseIterable, Sendable, Identifiable {
         case .branch: "Branch"
         case .since: "Since Feedback"
         case .commit: "From Commit"
+        case .pullRequest: "Pull Request"
         }
     }
 
@@ -85,7 +88,7 @@ public enum ReviewScope: String, Codable, CaseIterable, Sendable, Identifiable {
         switch self {
         case .uncommitted: "uncommitted"
         case .branch: "branch"
-        case .conversation, .since, .commit: "since"
+        case .conversation, .since, .commit, .pullRequest: "since"
         }
     }
 }
@@ -322,5 +325,87 @@ public struct ReviewWorktrees: Codable, Equatable, Sendable {
     public init(root: String, worktrees: [Worktree]) {
         self.root = root
         self.worktrees = worktrees
+    }
+}
+
+/// `ai-todo-review prs`: the PRs/MRs the computer's gh/glab account opened, newest first.
+public struct ReviewPullRequestList: Codable, Equatable, Sendable {
+    public struct Item: Codable, Equatable, Sendable, Identifiable {
+        public var number: Int
+        public var title: String
+        public var url: String?
+        /// `open`, `merged` or `closed`.
+        public var state: String
+        public var draft: Bool
+        public var headRef: String?
+        public var baseRef: String?
+        public var headSHA: String?
+        public var updatedAt: String?
+        /// Updated since the conversation began.
+        public var since: Bool
+
+        public var id: Int { number }
+
+        private enum CodingKeys: String, CodingKey {
+            case number, title, url, state, draft, since
+            case headRef = "head_ref", baseRef = "base_ref", headSHA = "head_sha", updatedAt = "updated_at"
+        }
+
+        public init(number: Int, title: String, url: String? = nil, state: String = "open", draft: Bool = false,
+                    headRef: String? = nil, baseRef: String? = nil, headSHA: String? = nil, updatedAt: String? = nil,
+                    since: Bool = false) {
+            self.number = number
+            self.title = title
+            self.url = url
+            self.state = state
+            self.draft = draft
+            self.headRef = headRef
+            self.baseRef = baseRef
+            self.headSHA = headSHA
+            self.updatedAt = updatedAt
+            self.since = since
+        }
+    }
+
+    public var provider: String?
+    public var access: Bool
+    public var error: String?
+    public var viewer: String?
+    public var prs: [Item]
+
+    public init(provider: String?, access: Bool, error: String? = nil, viewer: String? = nil, prs: [Item]) {
+        self.provider = provider
+        self.access = access
+        self.error = error
+        self.viewer = viewer
+        self.prs = prs
+    }
+
+    /// The PR to open the window on: the only one updated since the conversation began, or
+    /// the one the runner linked to it. Nil when that's not clear.
+    public func likely(linkedURL: String?) -> Item? {
+        if let linkedURL, let linked = prs.first(where: { $0.url == linkedURL }) { return linked }
+        let recent = prs.filter(\.since)
+        return recent.count == 1 ? recent[0] : nil
+    }
+}
+
+/// `ai-todo-review fetch-pr`: a PR's head and the merge base with its base branch.
+public struct ReviewPullRequestFetch: Codable, Equatable, Sendable {
+    public var number: Int
+    public var head: String
+    public var base: String
+    public var baseRef: String
+
+    private enum CodingKeys: String, CodingKey {
+        case number, head, base
+        case baseRef = "base_ref"
+    }
+
+    public init(number: Int, head: String, base: String, baseRef: String) {
+        self.number = number
+        self.head = head
+        self.base = base
+        self.baseRef = baseRef
     }
 }

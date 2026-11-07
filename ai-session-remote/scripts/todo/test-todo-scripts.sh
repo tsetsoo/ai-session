@@ -4648,6 +4648,51 @@ status=0; "$REVIEW" worktrees "$WT_REPO" --since yesterday >/dev/null 2>&1 || st
 [[ $status -eq 64 ]] || fail "worktrees bad --since exit $status"
 pass "review_worktrees_latest_first"
 
+# ai-todo-review prs / fetch-pr: the user's PRs, and exactly one PR's changes from origin.
+FP_ORIGIN="${SANDBOX}/review-fp-origin.git"
+FP_SEED="${SANDBOX}/review-fp-seed"
+FP_REPO="${SANDBOX}/review-fp-repo"
+fp_git() { git -C "$1" -c user.name=t -c user.email=t@t "${@:2}"; }
+git init -q --bare "$FP_ORIGIN"
+mkdir -p "$FP_SEED" && git -C "$FP_SEED" init -q -b main
+echo base >"${FP_SEED}/a.txt" && fp_git "$FP_SEED" add -A && fp_git "$FP_SEED" commit -qm base
+fp_git "$FP_SEED" checkout -qb feature
+echo change >>"${FP_SEED}/a.txt" && echo new >"${FP_SEED}/b.txt" && fp_git "$FP_SEED" add -A && fp_git "$FP_SEED" commit -qm pr
+fp_head="$(git -C "$FP_SEED" rev-parse HEAD)"
+fp_git "$FP_SEED" checkout -q main
+echo later >"${FP_SEED}/c.txt" && fp_git "$FP_SEED" add -A && fp_git "$FP_SEED" commit -qm "main moved on"
+git -C "$FP_SEED" push -q "$FP_ORIGIN" main "${fp_head}:refs/pull/9/head"
+git clone -q "$FP_ORIGIN" "$FP_REPO"
+git -C "$FP_REPO" remote set-url origin "$FP_ORIGIN"
+git -C "$FP_REPO" config ai-remote.forge github
+FP_GH="${SANDBOX}/bin/fake-fp-gh"
+cat >"$FP_GH" <<FAKE
+#!/bin/sh
+case "\$1 \$2" in
+  "pr list") echo '[{"number":9,"title":"Mine","url":"https://github.com/o/r/pull/9","state":"OPEN","isDraft":false,"headRefName":"feature","baseRefName":"main","headRefOid":"${fp_head}","updatedAt":"2026-11-06T20:00:00Z"},{"number":3,"title":"Old","url":"https://github.com/o/r/pull/3","state":"MERGED","isDraft":false,"headRefName":"x","baseRefName":"main","headRefOid":"abc","updatedAt":"2026-10-01T00:00:00Z"}]' ;;
+  "pr view") echo '{"baseRefName":"main","headRefOid":"${fp_head}"}' ;;
+  "api user") echo '{"login":"me"}' ;;
+  *) echo "unexpected: \$*" >&2; exit 1 ;;
+esac
+FAKE
+chmod +x "$FP_GH"
+fp_list="$(AI_TODO_GH_BIN="$FP_GH" "$REVIEW" prs "$FP_REPO" --since 2026-11-06T00:00:00Z)" || fail "prs failed"
+python3 - "$fp_list" <<'PY' || fail "prs: $fp_list"
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["access"] and d["viewer"] == "me", d
+assert [(p["number"], p["state"], p["since"]) for p in d["prs"]] == [(9, "open", True), (3, "merged", False)], d["prs"]
+PY
+fp_out="$(AI_TODO_GH_BIN="$FP_GH" "$REVIEW" fetch-pr "$FP_REPO" --number 9)" || fail "fetch-pr failed"
+fp_base="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["head"] == sys.argv[2], d; print(d["base"])' "$fp_out" "$fp_head")" || fail "fetch-pr head: $fp_out"
+# The merge base, not origin/main's tip: main moving on (c.txt) isn't part of the PR.
+fp_files="$("$REVIEW" diff "$FP_REPO" --scope since --from "$fp_base" --to "$fp_head" | python3 -c 'import json,sys,re; print(" ".join(sorted(set(re.findall(r"^diff --git a/(\S+)", json.load(sys.stdin)["patch"], re.M)))))')"
+[[ "$fp_files" == "a.txt b.txt" ]] || fail "PR diff files: $fp_files"
+[[ "$(git -C "$FP_REPO" status --porcelain)" == "" && "$(git -C "$FP_REPO" symbolic-ref --short HEAD)" == main ]] || fail "fetch-pr touched the checkout"
+status=0; AI_TODO_GH_BIN="$FP_GH" "$REVIEW" fetch-pr "$FP_REPO" --number 404 >/dev/null 2>&1 || status=$?
+[[ $status -eq 70 ]] || fail "fetch of a missing PR exit $status"
+pass "review_prs_and_fetch_pr_show_exactly_the_pr"
+
 # --- tmux.conf ----------------------------------------------------------------
 
 tmux -L "${SOCK}-conf" -f /dev/null new-session -d -s conftest

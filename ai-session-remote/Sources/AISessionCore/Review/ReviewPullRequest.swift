@@ -244,8 +244,9 @@ extension ReviewComment {
 extension TmuxCommandBuilder {
     private static let prHelper = "\"$HOME/.ai-remote/bin/ai-todo-review\""
 
-    public static func reviewPullRequest(cwd: String, ref: String? = nil) -> String {
-        wrap("exec \(prHelper) pr \(shellQuotePath(cwd))" + (ref.map { " --ref \(shellQuote($0))" } ?? ""))
+    public static func reviewPullRequest(cwd: String, ref: String? = nil, number: Int? = nil) -> String {
+        wrap("exec \(prHelper) pr \(shellQuotePath(cwd))" + (ref.map { " --ref \(shellQuote($0))" } ?? "")
+            + (number.map { " --number \($0)" } ?? ""))
     }
 
     /// With `number` and the PR's `url` (GitHub) or `projectID` (GitLab) from `pr`, the

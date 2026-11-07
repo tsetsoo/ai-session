@@ -120,6 +120,18 @@ final class ReviewSessionTests: XCTestCase {
         if command.contains(" publish ") || command.contains(" merge ") {
             return SSHExecResult(exitCode: writeExit, stdout: "{}", stderr: writeExit == 0 ? "" : "ai-todo-review: PR 9 moved on to abc12345")
         }
+        if command.contains(" prs ") {
+            let rows: [[String: Any]] = [
+                ["number": 1859, "title": "Scoped FK", "url": "https://github.com/o/r/pull/1859", "state": "open", "draft": false,
+                 "head_ref": "codex/fk", "base_ref": "main", "head_sha": "prhead", "updated_at": "2026-11-06T20:26:42Z", "since": true],
+                ["number": 1850, "title": "Older", "url": "https://github.com/o/r/pull/1850", "state": "merged", "draft": false,
+                 "head_ref": "old", "base_ref": "main", "head_sha": "x", "updated_at": "2026-11-01T00:00:00Z", "since": false],
+            ]
+            return json(["provider": "github", "access": true, "viewer": "me", "prs": rows])
+        }
+        if command.contains(" fetch-pr ") {
+            return json(["number": 1859, "head": "prhead", "base": "prbase", "base_ref": "main"])
+        }
         if command.contains(" worktrees ") {
             let rows: [[String: Any]] = [
                 ["path": "/tmp/agent-tree", "branch": "codex/fix", "detached": false, "current": false, "active_at": "2026-11-06T20:00:00Z", "changed_since": true],
@@ -552,7 +564,7 @@ final class ReviewSessionTests: XCTestCase {
         XCTAssertEqual(session.publishBlocker, "There are uncommitted changes. Only committed, pushed lines can be published.")
         atPullRequestHead = true
         await session.load(config: config)
-        XCTAssertEqual(session.publishBlocker, "Choose Branch: a review comments on the pull request's own changes.")
+        XCTAssertEqual(session.publishBlocker, "Pick the pull request (or Branch): a review comments on its own changes.")
         session.scope = .branch
         await session.load(config: config)
         XCTAssertNil(session.publishBlocker)
@@ -632,5 +644,27 @@ final class ReviewSessionTests: XCTestCase {
         XCTAssertEqual(again.folder, "/tmp/agent-tree")
         again.choose(folder: nil)
         XCTAssertEqual(again.folder, again.conversation.cwd)
+    }
+
+    func testTheConversationsPullRequestOpensWithExactlyItsChanges() async throws {
+        let (session, _) = makeSession()
+        UserDefaults.standard.removeObject(forKey: "review.folder.\(session.key)")
+        await session.load(config: config)
+        await session.loadPullRequests(config: config)
+        // The only PR updated since the conversation began: opened for the user.
+        XCTAssertEqual(session.scope, .pullRequest)
+        XCTAssertEqual(session.selectedPullRequest, 1859)
+        await session.load(config: config)
+        XCTAssertTrue(commands.contains { $0.contains("fetch-pr") && $0.contains("--number 1859") })
+        let diff = try XCTUnwrap(commands.last { $0.contains(" diff ") })
+        XCTAssertTrue(diff.contains("--from 'prbase' --to 'prhead'"), diff)
+        XCTAssertEqual(session.result?.to, "rev2", "the fake's diff answers its own to; the request is what matters")
+        // A scope the user picks sticks: the list loading again doesn't take them back to the PR.
+        session.pick(scope: .uncommitted)
+        await session.loadPullRequests(config: config)
+        XCTAssertEqual(session.scope, .uncommitted)
+        session.open(pullRequest: 1850)
+        XCTAssertEqual(session.selectedPullRequest, 1850)
+        XCTAssertEqual(session.scope, .pullRequest)
     }
 }
