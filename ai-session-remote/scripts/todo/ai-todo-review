@@ -15,6 +15,7 @@ Usage:
   ai-todo-review pr <cwd> [--ref <branch>] [--number N]
   ai-todo-review threads <cwd> [--ref <branch>] [--number N]
   ai-todo-review publish <cwd> --number N --head <sha>   (the review, base64 JSON, on stdin)
+  ai-todo-review worktrees <cwd> [--since <ISO time>]
   ai-todo-review merge <cwd> --number N --head <sha> --method merge|squash|rebase [--delete-branch]
 
 Every command but send prints JSON.
@@ -79,6 +80,8 @@ publish posts a review on the PR/MR, as the computer's gh/glab account: {event C
 merge   merges it through the API (nothing changes in the worktree) only while its head is
         --head, deleting the branch on the forge when asked. GitLab must answer merged: queued
         for a pipeline is a failure. Branch protection and checks are the forge's to enforce.
+worktrees  the repository's worktrees, most recently active first, marking those active since
+        --since: for an agent that made its own worktree outside the conversation's folder.
 cancel  stops a running reviewer (its whole process group). Prints what `result` does: a run
         that finished first stays done, with its findings.
 
@@ -90,6 +93,7 @@ session, 69 not a git repository (or cwd missing), 70 git failed (its message on
 """
 import base64
 import binascii
+import calendar
 import hashlib
 import json
 import os
@@ -1016,6 +1020,72 @@ def cmd_merge(args):
     print(json.dumps({"merged": number, "method": method, "deleted_branch": delete_branch}))
 
 
+# --- worktrees of the repository --------------------------------------------------------
+
+def cmd_worktrees(args):
+    """worktrees <cwd> [--since ISO]: every worktree of the repository, most recently active
+    first: {root, worktrees: [{path, branch, head, detached, current, active_at, changed_since}]}.
+    active_at is the later of its last commit and its index's last change (staging,
+    committing, checking out). changed_since: active at or after --since (when the
+    conversation began), so the agent's own worktree is easy to find without reading
+    transcripts."""
+    args, since = take_option(args, "--since")
+    if len(args) != 1:
+        die("usage: ai-todo-review worktrees <cwd> [--since <ISO time>]", 64)
+    root = repo_root(args[0])
+    out, _ = git(root, "worktree", "list", "--porcelain")
+    since_ts = None
+    if since:
+        try:
+            since_ts = calendar.timegm(time.strptime(since[:19], "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            die("--since needs an ISO time", 64)
+    entries, entry = [], {}
+    for row in out.splitlines() + [""]:
+        if not row:
+            if entry.get("path"):
+                entries.append(entry)
+            entry = {}
+            continue
+        key, _, value = row.partition(" ")
+        if key == "worktree":
+            entry["path"] = value
+        elif key == "HEAD":
+            entry["head"] = value
+        elif key == "branch":
+            entry["branch"] = value[len("refs/heads/"):] if value.startswith("refs/heads/") else value
+        elif key == "detached":
+            entry["detached"] = True
+        elif key == "prunable":
+            entry["prunable"] = True
+    real_root = os.path.realpath(root)
+    worktrees = []
+    for entry in entries:
+        path = entry["path"]
+        if entry.get("prunable") or not os.path.isdir(path):
+            continue
+        active = 0.0
+        committed = line(path, "log", "-1", "--format=%ct", "HEAD")
+        if committed and committed.isdigit():
+            active = float(committed)
+        index = line(path, "rev-parse", "--path-format=absolute", "--git-path", "index")
+        try:
+            active = max(active, os.stat(index).st_mtime) if index else active
+        except OSError:
+            pass
+        worktrees.append({
+            "path": path, "branch": entry.get("branch"), "head": entry.get("head"),
+            "detached": bool(entry.get("detached")), "current": os.path.realpath(path) == real_root,
+            "active_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(active)) if active else None,
+            "changed_since": bool(since_ts is not None and active >= since_ts),
+            "_active": active,
+        })
+    worktrees.sort(key=lambda w: w["_active"], reverse=True)
+    for w in worktrees:
+        w.pop("_active")
+    print(json.dumps({"root": root, "worktrees": worktrees}))
+
+
 # --- reviewer runs ---------------------------------------------------------------------------
 
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
@@ -1567,9 +1637,9 @@ def main(argv):
         return
     commands = {"status": cmd_status, "diff": cmd_diff, "keep": cmd_keep, "log": cmd_log, "send": cmd_send,
                 "run": cmd_run, "result": cmd_result, "cancel": cmd_cancel, "pr": cmd_pr, "threads": cmd_threads,
-                "publish": cmd_publish, "merge": cmd_merge}
+                "publish": cmd_publish, "merge": cmd_merge, "worktrees": cmd_worktrees}
     if not argv or argv[0] not in commands:
-        die("usage: ai-todo-review status|diff|keep|log|send|run|result|cancel|pr|threads|publish|merge ... (see the header of this script)", 64)
+        die("usage: ai-todo-review status|diff|keep|log|send|run|result|cancel|pr|threads|publish|merge|worktrees ... (see the header of this script)", 64)
     try:
         commands[argv[0]](argv[1:])
     except GitError as error:

@@ -76,4 +76,9 @@ extension TmuxCommandBuilder {
     public static func reviewCancel(id: String) -> String {
         wrap("exec \(reviewHelper) cancel \(shellQuote(id))")
     }
+
+    /// The repository's worktrees; `since` (ISO 8601) marks those active after it.
+    public static func reviewWorktrees(cwd: String, since: String?) -> String {
+        wrap("exec \(reviewHelper) worktrees \(shellQuotePath(cwd))" + (since.map { " --since \(shellQuote($0))" } ?? ""))
+    }
 }

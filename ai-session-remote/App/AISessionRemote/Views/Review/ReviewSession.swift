@@ -31,7 +31,8 @@ final class ReviewSession {
 
     /// Where the reads run: the conversation's folder, or the project folder with `--ref`.
     private var source: (cwd: String, ref: String?) {
-        keptBranch.map { ($0.folder, $0.branch) } ?? (conversation.cwd, nil)
+        if let chosenFolder { return (chosenFolder, nil) }
+        return keptBranch.map { ($0.folder, $0.branch) } ?? (conversation.cwd, nil)
     }
 
     /// The folder isn't in a git repository (exit 69), as opposed to any other failure.
@@ -54,6 +55,7 @@ final class ReviewSession {
         self.conversation = conversation
         self.store = store
         self.exec = exec
+        chosenFolder = UserDefaults.standard.string(forKey: "review.folder.\(conversation.listKey)")
     }
 
     var key: String { conversation.listKey }
@@ -184,6 +186,16 @@ final class ReviewSession {
     /// The conversation's folder when it is in git. When it isn't: the kept branch of its
     /// worktree in the project folder, or a failure that says why there's nothing to review.
     private func locate(config: HostConnectionConfig) async throws -> ReviewStatus {
+        if let chosenFolder {
+            do {
+                let status: ReviewStatus = try await run(TmuxCommandBuilder.reviewStatus(cwd: chosenFolder), config: config)
+                keptBranch = nil
+                return status
+            } catch is NotARepository {
+                // That worktree is gone: back to the conversation's own folder.
+                choose(folder: nil)
+            }
+        }
         do {
             let status: ReviewStatus = try await run(TmuxCommandBuilder.reviewStatus(cwd: conversation.cwd), config: config)
             keptBranch = nil
@@ -428,6 +440,56 @@ final class ReviewSession {
             }
         }
         return marks
+    }
+
+    // MARK: Which worktree
+
+    /// A worktree of the repository picked in the window instead of the conversation's folder
+    /// (an agent that made its own), remembered per conversation on this device.
+    private(set) var chosenFolder: String?
+    /// The repository's worktrees, most recently active first; from the last load.
+    private(set) var worktrees: [ReviewWorktrees.Worktree] = []
+
+    private var folderDefaultsKey: String { "review.folder.\(key)" }
+
+    /// The folder on screen: the chosen worktree, the kept branch's project folder, or the
+    /// conversation's own.
+    var folder: String { source.cwd }
+
+    /// Reviews `folder` (a worktree of the same repository) from now on; nil: the
+    /// conversation's own folder again. The window's reload follows.
+    func choose(folder: String?) {
+        let folder = folder.flatMap { $0 == conversation.cwd ? nil : $0 }
+        guard folder != chosenFolder else { return }
+        chosenFolder = folder
+        UserDefaults.standard.set(folder, forKey: folderDefaultsKey)
+        // Another tree: nothing on screen belongs to it.
+        status = nil
+        result = nil
+        diff = UnifiedDiff(files: [])
+        anchors = [:]
+        pullRequest = nil
+        commits = []
+        mappingCache = [:]
+        if scope == .since || scope == .commit { scope = .uncommitted }
+        baseCommit = nil
+    }
+
+    /// Lists the repository's worktrees, marking those active since the conversation began.
+    func loadWorktrees(config: HostConnectionConfig) async {
+        let since = Self.gitTime(conversation.createdAt)
+        guard let found: ReviewWorktrees = try? await run(TmuxCommandBuilder.reviewWorktrees(cwd: folder, since: since), config: config)
+        else { return }
+        worktrees = found.worktrees
+    }
+
+    /// Worktrees other than the one on screen that changed since the conversation began:
+    /// where its agent may really be working. Offered while the window shows the
+    /// conversation's own folder.
+    var suggestedWorktrees: [ReviewWorktrees.Worktree] {
+        guard chosenFolder == nil else { return [] }
+        let here = status?.root ?? conversation.cwd
+        return Array(worktrees.filter { $0.changedSince && !$0.current && $0.path != here }.prefix(3))
     }
 
     // MARK: Pull / merge request
@@ -953,7 +1015,7 @@ final class ReviewSession {
         case TmuxCommandBuilder.reviewGitFailedExitCode:
             // git's own words: they name the file or lock that is the problem.
             let detail = output.stderr.split(separator: "\n").first.map { $0.replacingOccurrences(of: "ai-todo-review: ", with: "") }
-            throw Failure(errorDescription: "git failed in \(conversation.cwd) on \(conversation.computer.name)"
+            throw Failure(errorDescription: "git failed in \(folder) on \(conversation.computer.name)"
                 + (detail.map { ": \(String($0.prefix(200)))" } ?? "."))
         default:
             break

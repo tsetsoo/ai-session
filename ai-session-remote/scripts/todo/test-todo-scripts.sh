@@ -4622,6 +4622,30 @@ status=0; WR_QUEUED=1 AI_TODO_GLAB_BIN="$WR_GLAB" "$REVIEW" merge "$WR_REPO" --n
 unset WR_LOG
 pass "review_publish_and_merge_pin_the_head"
 
+# ai-todo-review worktrees: latest first, marking those active since the conversation began.
+WT_REPO="${SANDBOX}/review-wt-repo"
+mkdir -p "$WT_REPO"
+git -C "$WT_REPO" init -q -b main
+GIT_COMMITTER_DATE="2026-01-01T00:00:00Z" git -C "$WT_REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$WT_REPO" worktree add -q -b old "${SANDBOX}/review-wt-old"
+git -C "$WT_REPO" worktree add -q -b agent "${SANDBOX}/review-wt-agent"
+git -C "${SANDBOX}/review-wt-agent" -c user.name=t -c user.email=t@t commit -q --allow-empty -m work
+# The old worktree's index hasn't changed since long ago.
+touch -t 202601010000 "$(git -C "${SANDBOX}/review-wt-old" rev-parse --path-format=absolute --git-path index)" "$(git -C "$WT_REPO" rev-parse --path-format=absolute --git-path index)"
+wt_out="$("$REVIEW" worktrees "$WT_REPO" --since 2026-06-01T00:00:00Z)" || fail "worktrees failed"
+python3 - "$wt_out" "$SANDBOX" <<'PY' || fail "worktrees: $wt_out"
+import json, os, sys
+d = json.loads(sys.argv[1])
+w = d["worktrees"]
+assert [x["branch"] for x in w][0] == "agent", w
+assert [x["changed_since"] for x in w] == [True, False, False], w
+current = [x for x in w if x["current"]]
+assert len(current) == 1 and current[0]["branch"] == "main", w
+PY
+status=0; "$REVIEW" worktrees "$WT_REPO" --since yesterday >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "worktrees bad --since exit $status"
+pass "review_worktrees_latest_first"
+
 # --- tmux.conf ----------------------------------------------------------------
 
 tmux -L "${SOCK}-conf" -f /dev/null new-session -d -s conftest

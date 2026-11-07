@@ -278,3 +278,49 @@ public struct ReviewRecord: Codable, Equatable, Sendable {
     public var lastBatch: ReviewBatch? { batches.max { $0.sentAt < $1.sentAt } }
     public var lastRun: ReviewRun? { runs.max { $0.startedAt < $1.startedAt } }
 }
+
+/// `ai-todo-review worktrees`: the repository's worktrees, most recently active first. For a
+/// conversation whose agent made a worktree of its own outside the conversation's folder.
+public struct ReviewWorktrees: Codable, Equatable, Sendable {
+    public struct Worktree: Codable, Equatable, Sendable, Identifiable {
+        public var path: String
+        public var branch: String?
+        public var head: String?
+        public var detached: Bool
+        /// The folder the command was run in.
+        public var current: Bool
+        /// The later of its last commit and its index's last change, ISO 8601.
+        public var activeAt: String?
+        /// Active since the conversation began.
+        public var changedSince: Bool
+
+        public var id: String { path }
+
+        private enum CodingKeys: String, CodingKey {
+            case path, branch, head, detached, current
+            case activeAt = "active_at", changedSince = "changed_since"
+        }
+
+        public init(path: String, branch: String?, head: String? = nil, detached: Bool = false, current: Bool = false,
+                    activeAt: String? = nil, changedSince: Bool = false) {
+            self.path = path
+            self.branch = branch
+            self.head = head
+            self.detached = detached
+            self.current = current
+            self.activeAt = activeAt
+            self.changedSince = changedSince
+        }
+
+        /// `codex/ein-13514-local-create-fk`, or the folder's name when detached.
+        public var name: String { branch ?? (path as NSString).lastPathComponent }
+    }
+
+    public var root: String
+    public var worktrees: [Worktree]
+
+    public init(root: String, worktrees: [Worktree]) {
+        self.root = root
+        self.worktrees = worktrees
+    }
+}

@@ -110,10 +110,13 @@ struct ReviewView: View {
         }
         .toolbar { toolbar }
         // Another commit in Compare With is a new load too, though the scope stays `.commit`.
-        .task(id: "\(session.scope.rawValue)|\(session.baseCommit?.sha ?? "")") { await reload() }
+        .task(id: "\(session.scope.rawValue)|\(session.baseCommit?.sha ?? "")|\(session.folder)") { await reload() }
         // The PR/MR and its threads, beside the diff: never holds it up; stops with the window.
-        .task(id: pullRequestReads) {
-            await withConfig { await session.loadPullRequest(config: $0) }
+        .task(id: "\(pullRequestReads)|\(session.folder)") {
+            await withConfig { config in
+                await session.loadWorktrees(config: config)
+                await session.loadPullRequest(config: config)
+            }
         }
         // A run started here or by an earlier window: followed while the window is open.
         .task(id: session.activeRun?.id) {
@@ -220,6 +223,26 @@ struct ReviewView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            if !session.suggestedWorktrees.isEmpty {
+                Section("The Agent May Be Working Elsewhere") {
+                    ForEach(session.suggestedWorktrees) { worktree in
+                        Button {
+                            session.choose(folder: worktree.path)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Label("Review \(worktree.name)", systemImage: "arrow.triangle.branch")
+                                Text(worktreeDetail(worktree))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                        .buttonStyle(.link)
+                        .help("A worktree of this repository that changed since this conversation started: \(worktree.path)")
+                    }
+                }
+            }
             if session.agentAnswered, session.scope != .since {
                 Section {
                     Button {
@@ -317,6 +340,32 @@ struct ReviewView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
+            Menu {
+                Button {
+                    session.choose(folder: nil)
+                } label: {
+                    Text("This Conversation's Folder")
+                    Text(session.conversation.cwd)
+                }
+                if !session.worktrees.isEmpty {
+                    Section("Worktrees of This Repository, Latest First") {
+                        ForEach(session.worktrees.prefix(30)) { worktree in
+                            Button {
+                                session.choose(folder: worktree.path)
+                            } label: {
+                                Text((worktree.changedSince ? "● " : "") + worktree.name)
+                                Text(worktreeDetail(worktree))
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label(reviewingTitle, systemImage: "arrow.triangle.branch")
+                    .labelStyle(.titleAndIcon)
+            }
+            .help("Which worktree to review. ● changed since this conversation started: an agent may have made a worktree of its own.")
+        }
+        ToolbarItem(placement: .navigation) {
             Picker("Changes", selection: $session.scope) {
                 ForEach(ReviewScope.segments) { scope in
                     Text(scope.title).tag(scope)
@@ -324,7 +373,8 @@ struct ReviewView: View {
                                   || (scope == .uncommitted && session.keptBranch != nil))
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
+            .fixedSize()
             .help("Uncommitted: what isn't committed yet. Conversation: everything since the conversation started, committed or not (in a shared folder, others' commits since then too). Branch: what this branch has that the default branch doesn't. Since Feedback: what changed after the last comments were sent.")
         }
         ToolbarItem(placement: .navigation) {
@@ -350,6 +400,10 @@ struct ReviewView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .truncationMode(.middle)
+                // Room for the menus and buttons around it: a long line mustn't push them out.
+                .frame(maxWidth: 300)
+                .help(statusLine)
         }
         if let pullRequest = conversation.pullRequest {
             ToolbarItem(placement: .status) {
@@ -442,6 +496,23 @@ struct ReviewView: View {
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
+    /// The branch on screen, or the worktree's folder name.
+    private var reviewingTitle: String {
+        if let branch = session.status?.branch { return branch }
+        if let worktree = session.worktrees.first(where: { $0.path == session.folder }) { return worktree.name }
+        return (session.folder as NSString).lastPathComponent
+    }
+
+    /// `/private/tmp/ein13514… · active 2 h ago`
+    private func worktreeDetail(_ worktree: ReviewWorktrees.Worktree) -> String {
+        var parts = [worktree.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")]
+        if let active = worktree.activeAt.flatMap(ReviewSync.date(from:)) {
+            parts.append("active " + active.formatted(.relative(presentation: .named)))
+        }
+        if worktree.current { parts.append("on screen") }
+        return parts.joined(separator: " · ")
+    }
+
     private var sendTitle: String {
         let count = session.drafts.count
         return count == 0 ? "Send to Agent" : "Send \(count) to Agent"
@@ -460,7 +531,9 @@ struct ReviewView: View {
 
     private var statusLine: String {
         guard let status = session.status else { return session.isLoading ? "Loading…" : "" }
-        var parts = [status.branch ?? "detached HEAD"]
+        var parts: [String] = []
+        if status.branch == nil { parts.append("detached HEAD") }
+        if session.chosenFolder != nil { parts.append((session.folder as NSString).lastPathComponent) }
         if session.keptBranch != nil { parts.append("worktree removed, branch kept") }
         if let base = status.base, session.scope == .branch { parts.append("vs \(base.ref)") }
         if let from = session.result?.from, session.scope == .conversation || session.scope == .commit {
@@ -468,7 +541,6 @@ struct ReviewView: View {
         }
         if let ahead = status.ahead, ahead > 0 { parts.append("\(ahead) unpushed") }
         parts.append(status.clean ? "nothing uncommitted" : "uncommitted changes")
-        parts.append(conversation.computer.name)
         return parts.joined(separator: " · ")
     }
 }

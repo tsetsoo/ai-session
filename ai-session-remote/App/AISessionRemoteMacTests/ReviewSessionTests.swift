@@ -120,6 +120,13 @@ final class ReviewSessionTests: XCTestCase {
         if command.contains(" publish ") || command.contains(" merge ") {
             return SSHExecResult(exitCode: writeExit, stdout: "{}", stderr: writeExit == 0 ? "" : "ai-todo-review: PR 9 moved on to abc12345")
         }
+        if command.contains(" worktrees ") {
+            let rows: [[String: Any]] = [
+                ["path": "/tmp/agent-tree", "branch": "codex/fix", "detached": false, "current": false, "active_at": "2026-11-06T20:00:00Z", "changed_since": true],
+                ["path": "/w", "branch": "main", "detached": false, "current": true, "active_at": "2026-11-01T00:00:00Z", "changed_since": false],
+            ]
+            return json(["root": "/w", "worktrees": rows])
+        }
         if command.contains(" threads ") {
             let thread: [String: Any] = ["id": "T1", "path": "f.txt", "side": "new", "line_start": 2, "line_end": 2, "commit": "rev2",
                                          "resolved": false, "outdated": false, "comments": [["author": "bob", "body": "Why inserted?"]]]
@@ -598,5 +605,25 @@ final class ReviewSessionTests: XCTestCase {
                       || command.contains("--number 9 --head 'rev2' --method 'squash' --delete-branch"), command)
         // Approve stays hidden on one's own PR (author alice, viewer me: shown here).
         XCTAssertTrue(session.canApprove)
+    }
+
+    func testAnAgentsOwnWorktreeIsSuggestedAndCanBeChosen() async throws {
+        let (session, _) = makeSession()
+        UserDefaults.standard.removeObject(forKey: "review.folder.\(session.key)")
+        addTeardownBlock { UserDefaults.standard.removeObject(forKey: "review.folder.\(session.key)") }
+        await session.load(config: config)
+        await session.loadWorktrees(config: config)
+        XCTAssertEqual(session.suggestedWorktrees.map(\.path), ["/tmp/agent-tree"])
+        session.choose(folder: "/tmp/agent-tree")
+        XCTAssertNil(session.result, "nothing of the other tree stays on screen")
+        XCTAssertTrue(session.suggestedWorktrees.isEmpty)
+        await session.load(config: config)
+        XCTAssertTrue(commands.last { $0.contains(" status ") }?.contains("status '/tmp/agent-tree'") == true)
+        XCTAssertTrue(commands.last { $0.contains(" diff ") }?.contains("diff '/tmp/agent-tree'") == true)
+        // Remembered for the next window of this conversation.
+        let (again, _) = makeSession()
+        XCTAssertEqual(again.folder, "/tmp/agent-tree")
+        again.choose(folder: nil)
+        XCTAssertEqual(again.folder, again.conversation.cwd)
     }
 }
