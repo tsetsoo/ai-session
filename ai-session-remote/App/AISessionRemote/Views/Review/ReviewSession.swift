@@ -473,8 +473,6 @@ final class ReviewSession {
 
     // MARK: Publishing to the PR/MR (each confirmed in the window)
 
-    /// Comments published from this window, so the next Publish doesn't pick them again.
-    private(set) var publishedIDs: Set<UUID> = []
     private(set) var isWriting = false
 
     private var openPullRequest: ReviewPullRequestInfo.PullRequest? {
@@ -486,6 +484,7 @@ final class ReviewSession {
     private var headBlocker: String? {
         guard let pr = openPullRequest else { return "There's no open pull/merge request for this branch." }
         guard let status else { return "Load the changes first." }
+        guard pr.headSHA != nil else { return "GitHub or GitLab didn't say which commit the pull request is at. Refresh." }
         if keptBranch == nil, !status.clean { return "There are uncommitted changes. Only committed, pushed lines can be published." }
         if let ahead = status.ahead, ahead > 0 { return "\(ahead) commit\(ahead == 1 ? " isn't" : "s aren't") pushed yet." }
         if let head = pr.headSHA, head != status.head {
@@ -582,12 +581,24 @@ final class ReviewSession {
         var comments: [ReviewPublishRequest.Comment] = []
         var fileNotes: [String] = []
         for candidate in chosen {
-            let body = [candidate.comment.title, candidate.comment.body].compactMap { $0 }.joined(separator: "\n\n")
+            let comment = candidate.comment
+            let body = [comment.title, comment.body].compactMap { $0 }.joined(separator: "\n\n")
             if let line = candidate.line {
-                let path = candidate.comment.side == .new ? place(of: candidate.comment).path : candidate.comment.path
-                comments.append(.init(path: path, side: candidate.comment.side, lineStart: line.start, lineEnd: line.end, body: body))
-            } else if candidate.comment.startLine == nil {
-                fileNotes.append("**\(candidate.comment.path)**: \(body)")
+                if comment.side == .old {
+                    // Removed lines: the file as the PR names it now, and its name at the base.
+                    let file = diff.files.first { ($0.oldPath ?? $0.path) == comment.path }
+                    comments.append(.init(path: file?.path ?? comment.path, oldPath: comment.path, side: .old,
+                                          lineStart: line.start, lineEnd: line.end, body: body))
+                } else {
+                    let path = place(of: comment).path
+                    let file = diff.files.first { $0.path == path }
+                    let unchanged = file?.hunks.flatMap(\.lines).first { $0.kind == .context && $0.newLine == line.end }
+                    let renamedFrom = file?.oldPath.flatMap { $0 == path ? nil : $0 }
+                    comments.append(.init(path: path, oldPath: renamedFrom, side: .new, lineStart: line.start,
+                                          lineEnd: line.end, oldLine: unchanged?.oldLine, body: body))
+                }
+            } else if comment.startLine == nil {
+                fileNotes.append("**\(comment.path)**: \(body)")
             }
         }
         let text = ([summary.trimmingCharacters(in: .whitespacesAndNewlines)] + fileNotes).filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -595,14 +606,27 @@ final class ReviewSession {
         defer { isWriting = false }
         let (cwd, _) = source
         let review = ReviewPublishRequest(event: event, body: text, comments: comments)
+        if event == .requestChanges, text.isEmpty {
+            failure = Failure(errorDescription: "Request Changes needs a summary.")
+            return false
+        }
+        if ((try? JSONEncoder().encode(review))?.count ?? 0) * 4 / 3 > TmuxCommandBuilder.reviewPublishMaxBytes {
+            failure = Failure(errorDescription: "That review is too long to send in one go. Publish fewer comments at a time.")
+            return false
+        }
+        let posted = Set(chosen.filter { $0.line != nil || $0.comment.startLine == nil }.map(\.id))
         do {
             let output = try await exec(config, TmuxCommandBuilder.reviewPublish(cwd: cwd, number: pr.number, head: head, review: review))
+            if output.exitCode == TmuxCommandBuilder.reviewPartlyPublishedExitCode {
+                // GitLab took the comments but a later step failed: they're up, don't post them twice.
+                markPublished(posted)
+            }
             try writeOutcome(output)
         } catch {
             failure = Failure(errorDescription: message(for: error))
             return false
         }
-        publishedIDs.formUnion(chosen.filter { $0.line != nil || $0.comment.startLine == nil }.map(\.id))
+        markPublished(posted)
         let account = pullRequest?.viewer.map { " as \($0)" } ?? ""
         notice = event == .approve && comments.isEmpty ? "Approved\(account)."
             : "Published a review with \(comments.count) comment\(comments.count == 1 ? "" : "s")\(account)."
@@ -633,13 +657,26 @@ final class ReviewSession {
         return true
     }
 
+    /// Posted on the PR/MR: kept on the hub, so no device offers them again.
+    private func markPublished(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        let now = Date.now
+        store.update(key) { record in
+            for index in record.comments.indices where ids.contains(record.comments[index].id)
+                && record.comments[index].publishedAt == nil {
+                record.comments[index].publishedAt = now
+            }
+        }
+    }
+
     private func writeOutcome(_ output: SSHExecResult) throws {
         let detail = output.stderr.split(separator: "\n").last.map { $0.replacingOccurrences(of: "ai-todo-review: ", with: "") }
         switch output.exitCode {
         case 0: return
         case TmuxCommandBuilder.reviewHeadMovedExitCode:
             throw Failure(errorDescription: "The pull request moved on since this review was loaded (\(detail ?? "new commits")). Refresh and look again.")
-        case TmuxCommandBuilder.reviewForgeFailedExitCode, TmuxCommandBuilder.reviewUnknownRevisionExitCode, 64:
+        case TmuxCommandBuilder.reviewForgeFailedExitCode, TmuxCommandBuilder.reviewPartlyPublishedExitCode,
+             TmuxCommandBuilder.reviewUnknownRevisionExitCode, 64:
             throw Failure(errorDescription: detail.map { String($0.prefix(300)) } ?? "GitHub or GitLab refused it.")
         default:
             try RemoteConversations.check(output, computerName: conversation.computer.name)

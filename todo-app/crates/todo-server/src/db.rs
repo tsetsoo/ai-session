@@ -143,6 +143,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v29_objects(&conn).expect("Failed to add the pull request columns");
     conn.execute_batch(crate::reviews::V30_OBJECTS).expect("Failed to create the review tables");
     create_v31_objects(&conn).expect("Failed to add the competing-agents columns");
+    crate::reviews::create_v32_objects(&conn).expect("Failed to add the published column");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -929,9 +930,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v29: `conversations.pr_url`, `conversations.pr_state` (additive)
 /// - v30: `reviews`, `review_items`: reviewer runs and review comments per conversation (additive)
 /// - v31: `conversations.model`, `conversations.worktree_base`, `todos.main_conversation_id` (additive)
+/// - v32: `review_items.published_at` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 31;
+pub const SCHEMA_VERSION: i64 = 32;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -956,6 +958,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
                                     if column_exists(conn, "conversations", "pr_url")? {
                                         if table_sql(conn, "review_items")?.is_some() {
                                             if column_exists(conn, "conversations", "worktree_base")? {
+                                                if column_exists(conn, "review_items", "published_at")? {
+                                                    return Ok(32);
+                                                }
                                                 return Ok(31);
                                             }
                                             return Ok(30);
@@ -3022,6 +3027,8 @@ mod tests {
         drop(db.pool());
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 32);
+        conn.execute_batch("ALTER TABLE review_items DROP COLUMN published_at;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 31);
         conn.execute_batch("ALTER TABLE conversations DROP COLUMN worktree_base;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 30);
@@ -3058,6 +3065,7 @@ mod tests {
         let pool = db.pool();
         let conn = pool.get().unwrap();
         assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert!(column_exists(&conn, "review_items", "published_at").unwrap());
         assert!(table_sql(&conn, "reviews").unwrap().is_some());
         assert!(table_sql(&conn, "review_items").unwrap().is_some());
     }
@@ -3164,12 +3172,12 @@ mod tests {
         drop(conn);
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 31);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         for (table, column) in [("conversations", "model"), ("conversations", "worktree_base"), ("todos", "main_conversation_id")] {
             assert!(column_exists(&conn, table, column).unwrap(), "{table}.{column}");
         }
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 31);
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

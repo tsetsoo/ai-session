@@ -43,7 +43,7 @@ public enum ReviewSync {
             quote: Array(comment.quote.prefix(maxQuoteLines)),
             body: String(comment.body.prefix(maxBody)), state: comment.state.rawValue, sentAt: comment.sentAt.map(string(from:)),
             sentInTurn: batch?.statusRevision, batchId: comment.batchID?.uuidString, sentRevision: batch?.revision,
-            createdAt: string(from: comment.createdAt)
+            publishedAt: comment.publishedAt.map(string(from:)), createdAt: string(from: comment.createdAt)
         )
     }
 
@@ -52,7 +52,7 @@ public enum ReviewSync {
         guard let id = UUID(uuidString: item.id) else { return nil }
         // A state of a newer hub: open if it wasn't sent, as far as this version can tell.
         let state = ReviewComment.State(rawValue: item.state) ?? (item.sentAt == nil ? .new : .sent)
-        return ReviewComment(
+        var comment = ReviewComment(
             id: id, author: item.author, path: item.path, side: DiffSide(rawValue: item.side) ?? .new,
             startLine: item.lineStart, endLine: item.lineEnd, revision: item.revision, quote: item.quote,
             body: item.body, state: state, createdAt: date(from: item.createdAt) ?? .distantPast,
@@ -60,6 +60,8 @@ public enum ReviewSync {
             severity: item.severity, category: item.category, title: item.title, fingerprint: item.fingerprint,
             runID: item.reviewId.flatMap(UUID.init(uuidString:))
         )
+        comment.publishedAt = item.publishedAt.flatMap(date(from:))
+        return comment
     }
 
     public static func review(_ run: ReviewRun, conversationID: String) -> HubReview {

@@ -460,4 +460,18 @@ struct ReviewTests {
         #expect(edited[0].body == "Do what bob says, but keep the old name in the API.")
         #expect(TmuxCommandBuilder.reviewPullRequest(cwd: "/w").hasSuffix("pr '/w'"))
     }
+
+    @Test func aThreadThisWindowPostedIsntImportedBack() {
+        var mine = ReviewComment(path: "a.rs", startLine: 3, endLine: nil, revision: "h", quote: [], body: "Use <= here.")
+        mine.publishedAt = .now
+        var comments = [mine]
+        let echoed = ReviewThreadsResult.Thread(id: "T9", path: "a.rs", lineStart: 3, lineEnd: 3, commit: "h",
+                                                comments: [.init(author: "me", body: "Off by one\n\nUse <= here.")])
+        let added = ReviewThreadItems.apply(.init(provider: "github", access: true, pr: 1, threads: [echoed]),
+                                            provider: "github", fallbackRevision: "h", conversationKey: "c", to: &comments)
+        #expect(added == 0 && comments.count == 1)
+        // Round trip of the marker through the hub row.
+        let back = ReviewSync.comment(ReviewSync.item(mine, conversationID: "c", batch: nil))
+        #expect(back?.publishedAt != nil)
+    }
 }

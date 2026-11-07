@@ -2121,6 +2121,9 @@ pub struct ReviewItem {
     pub batch_id: Option<String>,
     #[serde(default)]
     pub sent_revision: Option<String>,
+    /// When it was posted on the PR/MR from the review window (ISO 8601), so it isn't again.
+    #[serde(default)]
+    pub published_at: Option<String>,
     pub created_at: String,
     /// Set by the hub.
     #[serde(default)]

@@ -191,6 +191,8 @@ public struct ReviewComment: Codable, Equatable, Identifiable, Sendable {
     public var fingerprint: String?
     /// The review run it came from.
     public var runID: UUID?
+    /// When it was posted on the PR/MR from the review window.
+    public var publishedAt: Date?
 
     public init(id: UUID = UUID(), author: String = "user", path: String, side: DiffSide = .new,
                 startLine: Int?, endLine: Int?, revision: String, quote: [String], body: String,

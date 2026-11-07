@@ -4532,9 +4532,8 @@ cat >"$WR_GH" <<'FAKE'
 #!/bin/sh
 echo "ARGS $*" >>"$WR_LOG"
 case "$1 $2" in
-  "pr view") echo '{"url":"https://github.com/o/r/pull/9","headRefOid":"head1","state":"OPEN"}' ;;
-  "api -X") cat >>"$WR_LOG"; echo; echo '{"html_url":"https://github.com/o/r/pull/9#pullrequestreview-1"}' ;;
-  "pr merge") echo "" ;;
+  "pr view") echo '{"url":"https://github.com/o/r/pull/9","headRefOid":"head1","state":"OPEN","headRefName":"feat"}' ;;
+  "api -X") [ "$3" = POST ] && { cat >>"$WR_LOG"; echo; }; echo '{"html_url":"https://github.com/o/r/pull/9#pullrequestreview-1","merged":true}' ;;
   *) echo "unexpected: $*" >&2; exit 1 ;;
 esac
 FAKE
@@ -4560,7 +4559,12 @@ status=0; review_b64 "$WR_REVIEW" | AI_TODO_GH_BIN="$WR_GH" "$REVIEW" publish "$
 # Merge: pinned to the head, method and branch deletion as asked.
 : >"$WR_LOG"
 AI_TODO_GH_BIN="$WR_GH" "$REVIEW" merge "$WR_REPO" --number 9 --head head1 --method squash --delete-branch >/dev/null || fail "merge failed"
-grep -qx "ARGS pr merge 9 --match-head-commit head1 --squash --delete-branch" "$WR_LOG" || fail "merge argv: $(cat "$WR_LOG")"
+grep -qx "ARGS api -X PUT repos/o/r/pulls/9/merge -f sha=head1 -f merge_method=squash" "$WR_LOG" \
+  && grep -qx "ARGS api -X DELETE repos/o/r/git/refs/heads/feat" "$WR_LOG" && ! grep -q "pr merge" "$WR_LOG" || fail "merge calls: $(cat "$WR_LOG")"
+# Request Changes without a summary is refused before anything is asked.
+status=0; review_b64 '{"event":"REQUEST_CHANGES","comments":[{"path":"a.rs","side":"new","line_start":1,"line_end":1,"body":"x"}]}' \
+  | AI_TODO_GH_BIN="$WR_GH" "$REVIEW" publish "$WR_REPO" --number 9 --head head1 >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "request changes without summary exit $status"
 status=0; AI_TODO_GH_BIN="$WR_GH" "$REVIEW" merge "$WR_REPO" --number 9 --head head1 --method fast >/dev/null 2>&1 || status=$?
 [[ $status -eq 64 ]] || fail "bad merge method exit $status"
 # A refusal from the forge is exit 77 with its words.
@@ -4576,30 +4580,45 @@ echo "ARGS $*" >>"$WR_LOG"
 case "$1 $2" in
   "mr view") echo '{"iid":4,"project_id":77,"sha":"head1","web_url":"https://gitlab.com/g/r/-/merge_requests/4"}' ;;
   "api projects/77/merge_requests/4") echo '{"diff_refs":{"base_sha":"b0","start_sha":"s0","head_sha":"head1"}}' ;;
-  "api -X") echo '{}' ;;
-  "mr merge") echo "" ;;
+  "api -X")
+    case "$*" in
+      *approve*) [ -n "${WR_APPROVE_FAILS:-}" ] && { echo "403 Forbidden" >&2; exit 1; } ;;
+      *"/merge "*) [ -n "${WR_QUEUED:-}" ] && { echo '{"state":"opened","detailed_merge_status":"ci_still_running"}'; exit 0; }
+                   echo '{"state":"merged"}'; exit 0 ;;
+    esac
+    echo '{}' ;;
   *) echo "unexpected: $*" >&2; exit 1 ;;
 esac
 FAKE
 chmod +x "$WR_GLAB"
 : >"$WR_LOG"
-out="$(review_b64 '{"event":"APPROVE","body":"LGTM","comments":[{"path":"x.py","side":"new","line_start":8,"line_end":8,"body":"Nit"}]}' \
+out="$(review_b64 '{"event":"APPROVE","body":"LGTM","comments":[{"path":"x.py","old_path":"w.py","side":"new","line_start":8,"line_end":8,"old_line":7,"body":"Nit"}]}' \
   | AI_TODO_GLAB_BIN="$WR_GLAB" "$REVIEW" publish "$WR_REPO" --number 4 --head head1)" || fail "gitlab publish failed"
 python3 - "$WR_LOG" <<'PY' || fail "gitlab publish calls: $(cat "$WR_LOG")"
 import sys
 calls = [l[5:] for l in open(sys.argv[1]).read().splitlines() if l.startswith("ARGS api -X")]
-assert len(calls) == 4, calls
-note, summary, publish, approve = calls
-for part in ("POST projects/77/merge_requests/4/draft_notes", "note=Nit", "position[base_sha]=b0", "position[start_sha]=s0",
-             "position[head_sha]=head1", "position[new_path]=x.py", "position[new_line]=8"):
+assert len(calls) == 3, calls
+note, summary, approve = calls
+for part in ("POST projects/77/merge_requests/4/discussions", "body=Nit", "position[base_sha]=b0", "position[start_sha]=s0",
+             "position[head_sha]=head1", "position[new_path]=x.py", "position[old_path]=w.py", "position[new_line]=8",
+             "position[old_line]=7"):
     assert part in note, (part, note)
-assert "note=LGTM" in summary and publish.endswith("draft_notes/bulk_publish") and approve.endswith("/approve -f sha=head1"), calls
+assert "draft_notes" not in " ".join(calls), calls
+assert "/notes -f body=LGTM" in summary and approve.endswith("/approve -f sha=head1"), calls
 PY
+# The approval failing after the comments went: said, with how many are up.
+status=0; review_b64 '{"event":"APPROVE","comments":[{"path":"x.py","side":"new","line_start":8,"line_end":8,"body":"Nit"}]}' \
+  | WR_APPROVE_FAILS=1 AI_TODO_GLAB_BIN="$WR_GLAB" "$REVIEW" publish "$WR_REPO" --number 4 --head head1 >/dev/null 2>"${SANDBOX}/wr.err" || status=$?
+[[ $status -eq 78 && "$(cat "${SANDBOX}/wr.err")" == *"1 of 1 comments are posted on GitLab; the approval failed"* ]] || fail "partial: $status $(cat "${SANDBOX}/wr.err")"
 status=0; review_b64 '{"event":"REQUEST_CHANGES","comments":[]}' | AI_TODO_GLAB_BIN="$WR_GLAB" "$REVIEW" publish "$WR_REPO" --number 4 --head head1 >/dev/null 2>&1 || status=$?
 [[ $status -eq 64 ]] || fail "gitlab request changes exit $status"
 : >"$WR_LOG"
 AI_TODO_GLAB_BIN="$WR_GLAB" "$REVIEW" merge "$WR_REPO" --number 4 --head head1 --method merge >/dev/null || fail "gitlab merge"
-grep -qx "ARGS mr merge 4 --sha head1 --yes" "$WR_LOG" || fail "gitlab merge argv: $(cat "$WR_LOG")"
+grep -q "ARGS api -X PUT projects/77/merge_requests/4/merge -f sha=head1 -F squash=false -F should_remove_source_branch=false -F merge_when_pipeline_succeeds=false" "$WR_LOG" \
+  || fail "gitlab merge call: $(cat "$WR_LOG")"
+# Queued behind a pipeline isn't merged.
+status=0; WR_QUEUED=1 AI_TODO_GLAB_BIN="$WR_GLAB" "$REVIEW" merge "$WR_REPO" --number 4 --head head1 --method squash >/dev/null 2>"${SANDBOX}/wr.err" || status=$?
+[[ $status -eq 77 && "$(cat "${SANDBOX}/wr.err")" == *"didn't merge it (ci_still_running)"* ]] || fail "queued merge: $status $(cat "${SANDBOX}/wr.err")"
 unset WR_LOG
 pass "review_publish_and_merge_pin_the_head"
 

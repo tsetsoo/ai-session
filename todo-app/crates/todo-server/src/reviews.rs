@@ -69,6 +69,19 @@ pub(crate) const V30_OBJECTS: &str = "
     CREATE INDEX IF NOT EXISTS review_items_conversation ON review_items(conversation_id);
 ";
 
+/// v32: `review_items.published_at` (additive).
+pub(crate) fn create_v32_objects(conn: &Connection) -> rusqlite::Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('review_items') WHERE name = 'published_at'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        conn.execute_batch("ALTER TABLE review_items ADD COLUMN published_at TEXT;")?;
+    }
+    Ok(())
+}
+
 const STATES: [&str; 6] = ["new", "draft", "sent", "addressed", "stale", "dismissed"];
 const RUN_STATES: [&str; 4] = ["running", "done", "failed", "cancelled"];
 const MAX_TEXT: usize = 20_000;
@@ -81,7 +94,8 @@ const REVIEWING_MINUTES: i64 = 45;
 const REVIEW_COLS: &str = "id, conversation_id, tool, model, scope, base_sha, reviewed_sha, state, started_at, \
     finished_at, summary, error, usage, finding_count, added_count, created_at, updated_at";
 const ITEM_COLS: &str = "id, review_id, conversation_id, author, fingerprint, severity, category, title, path, side, \
-    line_start, line_end, revision, quote, body, state, sent_at, sent_in_turn, batch_id, sent_revision, created_at, updated_at";
+    line_start, line_end, revision, quote, body, state, sent_at, sent_in_turn, batch_id, sent_revision, created_at, updated_at, \
+    published_at";
 
 fn row_to_review(row: &Row) -> rusqlite::Result<Review> {
     let usage: Option<String> = row.get(12)?;
@@ -131,6 +145,7 @@ fn row_to_item(row: &Row) -> rusqlite::Result<ReviewItem> {
         sent_revision: row.get(19)?,
         created_at: row.get(20)?,
         updated_at: row.get(21)?,
+        published_at: row.get(22)?,
     })
 }
 
@@ -264,20 +279,21 @@ fn upsert_item(conn: &Connection, item: &ReviewItem) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO review_items (id, review_id, conversation_id, author, fingerprint, severity, category, title,
              path, side, line_start, line_end, revision, quote, body, state, sent_at, sent_in_turn, batch_id,
-             sent_revision, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+             sent_revision, created_at, published_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
          ON CONFLICT(id) DO UPDATE SET review_id = excluded.review_id, conversation_id = excluded.conversation_id,
              author = excluded.author, fingerprint = excluded.fingerprint, severity = excluded.severity,
              category = excluded.category, title = excluded.title, path = excluded.path, side = excluded.side,
              line_start = excluded.line_start, line_end = excluded.line_end, revision = excluded.revision,
              quote = excluded.quote, body = excluded.body, state = excluded.state, sent_at = excluded.sent_at,
              sent_in_turn = excluded.sent_in_turn, batch_id = excluded.batch_id,
-             sent_revision = excluded.sent_revision, updated_at = datetime('now')",
+             sent_revision = excluded.sent_revision, published_at = excluded.published_at,
+             updated_at = datetime('now')",
         params![
             item.id, item.review_id, item.conversation_id, item.author, item.fingerprint, item.severity,
             item.category, item.title, item.path, item.side, item.line_start, item.line_end, item.revision, quote,
             item.body, item.state, item.sent_at, item.sent_in_turn, item.batch_id, item.sent_revision,
-            item.created_at
+            item.created_at, item.published_at
         ],
     )?;
     Ok(())
@@ -547,6 +563,7 @@ mod tests {
         done["finished_at"] = json!("2026-11-06T20:05:00Z");
         let mut sent = item("i2", "sent");
         sent["batch_id"] = json!("b1");
+        sent["published_at"] = json!("2026-11-07T10:00:00Z");
         sent["sent_in_turn"] = json!(7);
         let (status, _) = post(&pool, "/api/reviews/batch",
             json!({"reviews": [done], "items": [sent], "delete_items": ["i1"]})).await;
@@ -556,6 +573,7 @@ mod tests {
         assert_eq!(v["items"].as_array().unwrap().len(), 1);
         assert_eq!(v["items"][0]["state"], "sent");
         assert_eq!(v["items"][0]["sent_in_turn"], 7);
+        assert_eq!(v["items"][0]["published_at"], "2026-11-07T10:00:00Z");
         let (_, v) = get(&pool, "/api/reviews?conversation_id=other").await;
         assert_eq!(v, json!({"reviews": [], "items": []}));
         let (status, _) = get(&pool, "/api/reviews").await;

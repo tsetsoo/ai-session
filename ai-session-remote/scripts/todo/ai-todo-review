@@ -73,16 +73,18 @@ threads its review threads on lines: {provider, access, error, pr, threads: [{id
         `pr` printed them, skips looking the PR up again.
 publish posts a review on the PR/MR, as the computer's gh/glab account: {event COMMENT|APPROVE|
         REQUEST_CHANGES, body, comments [{path, side, line_start, line_end, body}]}, lines of
-        --head. GitHub: one review against commit_id = --head. GitLab: draft notes positioned
-        on the MR's diff refs, then bulk_publish (and approve with sha). Exit 67 when the PR/MR's
-        head isn't --head any more.
-merge   merges it only while its head is --head (gh --match-head-commit, glab --sha). Branch
-        protection and required checks are the forge's to enforce.
+        --head. GitHub: one review against commit_id = --head, all or nothing. GitLab: one
+        discussion per comment on the MR's diff refs (the user's own drafts stay drafts), the
+        summary as a note, then approve with sha. Exit 67 when the head isn't --head any more.
+merge   merges it through the API (nothing changes in the worktree) only while its head is
+        --head, deleting the branch on the forge when asked. GitLab must answer merged: queued
+        for a pipeline is a failure. Branch protection and checks are the forge's to enforce.
 cancel  stops a running reviewer (its whole process group). Prints what `result` does: a run
         that finished first stays done, with its findings.
 
 Exit codes: 64 bad arguments, 65 unknown revision or empty message (or nothing to publish),
-67 the PR/MR moved on from --head, 77 gh/glab failed (their words on stderr), 66 no such tmux
+67 the PR/MR moved on from --head, 77 gh/glab failed (their words on stderr), 78 some
+GitLab comments were posted before a later step failed, 66 no such tmux
 session, 69 not a git repository (or cwd missing), 70 git failed (its message on stderr),
 75 the pane isn't ready for a paste, 90 git, tmux, claude or codex missing.
 """
@@ -887,8 +889,9 @@ def gitlab_mr(root, number):
 
 def cmd_publish(args):
     """publish <cwd> --number N --head SHA: the review JSON, base64, on stdin:
-    {event: COMMENT|APPROVE|REQUEST_CHANGES, body, comments: [{path, side, line_start, line_end, body}]}.
-    Refused (67) when the PR's head isn't SHA any more: the comments' lines are lines of SHA."""
+    {event: COMMENT|APPROVE|REQUEST_CHANGES, body, comments: [{path, old_path, side, line_start,
+    line_end, old_line, body}]}. Refused (67) when the PR's head isn't SHA any more: the
+    comments' lines are lines of SHA."""
     root, kind, number, head = write_context(args, "usage: ai-todo-review publish <cwd> --number N --head <sha> < review")
     try:
         review = json.loads(base64.b64decode(sys.stdin.buffer.read().strip(), validate=True))
@@ -899,10 +902,15 @@ def cmd_publish(args):
         die("bad event %s" % event, 64)
     comments = [c for c in review.get("comments") or [] if isinstance(c, dict) and c.get("path") and c.get("body")]
     body = (review.get("body") or "").strip()
+    if event == "REQUEST_CHANGES" and not body:
+        die("Request Changes needs a summary", 64)
+    if event == "COMMENT" and not body and not comments:
+        die("nothing to publish", 65)
     if kind == "github":
         owner, name, view = github_repo(kind, root, number)
         if view.get("headRefOid") != head:
             die("PR %s moved on to %s" % (number, (view.get("headRefOid") or "")[:8]), 67)
+        # One review, posted at once: all of it or none of it.
         payload = {"commit_id": head, "event": event, "body": body, "comments": []}
         for c in comments:
             item = {"path": c["path"], "body": c["body"], "line": c.get("line_end") or c.get("line_start"),
@@ -911,8 +919,6 @@ def cmd_publish(args):
                 item["start_line"] = c["line_start"]
                 item["start_side"] = item["side"]
             payload["comments"].append(item)
-        if event == "COMMENT" and not body and not payload["comments"]:
-            die("nothing to publish", 65)
         answer = forge_call(kind, root, "api", "-X", "POST", "repos/%s/%s/pulls/%s/reviews" % (owner, name, number),
                             "--input", "-", stdin=json.dumps(payload).encode("utf-8"))
         print(json.dumps({"published": len(payload["comments"]), "event": event, "url": (answer or {}).get("html_url")}))
@@ -923,31 +929,57 @@ def cmd_publish(args):
         die("MR %s moved on to %s" % (number, (view.get("sha") or "")[:8]), 67)
     if event == "REQUEST_CHANGES":
         die("GitLab has no request-changes review; publish comments instead", 64)
-    project = view["project_id"]
-    base = "projects/%s/merge_requests/%s" % (project, number)
+    base = "projects/%s/merge_requests/%s" % (view["project_id"], number)
+    # Each comment is its own discussion, posted at once: the user's own pending drafts on
+    # GitLab stay drafts. A failure part way says how many went.
+    posted = 0
     for c in comments:
-        line_key = "old_line" if c.get("side") == "old" else "new_line"
-        fields = ["-f", "note=" + c["body"], "-f", "position[position_type]=text",
+        text = c["body"]
+        if c.get("line_start") and c.get("line_end") and c["line_end"] != c["line_start"]:
+            text = "(lines %d-%d) %s" % (c["line_start"], c["line_end"], text)
+        line_no = c.get("line_end") or c.get("line_start")
+        fields = ["-f", "body=" + text, "-f", "position[position_type]=text",
                   "-f", "position[base_sha]=" + (refs.get("base_sha") or ""),
                   "-f", "position[start_sha]=" + (refs.get("start_sha") or ""),
                   "-f", "position[head_sha]=" + head,
-                  "-f", "position[new_path]=" + c["path"], "-f", "position[old_path]=" + c.get("old_path", c["path"]),
-                  "-F", "position[%s]=%d" % (line_key, c.get("line_end") or c.get("line_start"))]
-        forge_call("gitlab", root, "api", "-X", "POST", base + "/draft_notes", *fields)
+                  "-f", "position[new_path]=" + c["path"], "-f", "position[old_path]=" + (c.get("old_path") or c["path"])]
+        if c.get("side") == "old":
+            fields += ["-F", "position[old_line]=%d" % line_no]
+        else:
+            fields += ["-F", "position[new_line]=%d" % line_no]
+            # An unchanged line is on both sides: GitLab wants both numbers.
+            if c.get("old_line"):
+                fields += ["-F", "position[old_line]=%d" % c["old_line"]]
+        partial_call(root, posted, len(comments), "api", "-X", "POST", base + "/discussions", *fields)
+        posted += 1
     if body:
-        forge_call("gitlab", root, "api", "-X", "POST", base + "/draft_notes", "-f", "note=" + body)
-    if comments or body:
-        forge_call("gitlab", root, "api", "-X", "POST", base + "/draft_notes/bulk_publish")
+        partial_call(root, posted, len(comments), "api", "-X", "POST", base + "/notes", "-f", "body=" + body)
     if event == "APPROVE":
-        forge_call("gitlab", root, "api", "-X", "POST", base + "/approve", "-f", "sha=" + head)
-    if not comments and not body and event != "APPROVE":
-        die("nothing to publish", 65)
-    print(json.dumps({"published": len(comments), "event": event, "url": view.get("web_url")}))
+        partial_call(root, posted, len(comments), "api", "-X", "POST", base + "/approve", "-f", "sha=" + head,
+                     what="the approval")
+    print(json.dumps({"published": posted, "event": event, "url": view.get("web_url")}))
+
+
+def partial_call(root, posted, total, *args, what="it"):
+    """A GitLab write after `posted` of `total` comments went: a failure says so (exit 78)."""
+    binary = forge_cli("gitlab")
+    try:
+        p = subprocess.run([binary] + list(args), cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           stdin=subprocess.DEVNULL, timeout=FORGE_TIMEOUT * 2)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        p, err = None, type(error).__name__
+    else:
+        err = " ".join((p.stderr.decode("utf-8", "replace") or p.stdout.decode("utf-8", "replace")).split())[:300]
+    if p is not None and p.returncode == 0:
+        return
+    if posted == 0:
+        die("glab failed: %s" % err, 77)
+    die("%d of %d comments are posted on GitLab; %s failed: %s" % (posted, total, what, err), 78)
 
 
 def cmd_merge(args):
-    """merge <cwd> --number N --head SHA --method merge|squash|rebase [--delete-branch]: only
-    while the PR's head is SHA (the forge checks it too)."""
+    """merge <cwd> --number N --head SHA --method merge|squash|rebase [--delete-branch]: through
+    the forge's API, only while the PR's head is SHA; nothing changes in the worktree."""
     args, method = take_option(args, "--method")
     delete_branch = "--delete-branch" in args
     args = [a for a in args if a != "--delete-branch"]
@@ -956,19 +988,31 @@ def cmd_merge(args):
     if method not in ("merge", "squash", "rebase"):
         die("--method must be merge, squash or rebase", 64)
     if kind == "github":
-        argv = ["pr", "merge", str(number), "--match-head-commit", head, "--" + method]
+        owner, name, view = github_repo(kind, root, number)
+        answer = forge_call(kind, root, "api", "-X", "PUT", "repos/%s/%s/pulls/%s/merge" % (owner, name, number),
+                            "-f", "sha=" + head, "-f", "merge_method=" + method) or {}
+        if answer.get("merged") is not True:
+            die("GitHub didn't merge it (%s)" % (answer.get("message") or "no answer"), 77)
+        deleted = False
         if delete_branch:
-            argv.append("--delete-branch")
-        forge_call(kind, root, *argv)
-    else:
-        argv = ["mr", "merge", str(number), "--sha", head, "--yes"]
-        if method == "squash":
-            argv.append("--squash")
-        elif method == "rebase":
-            argv.append("--rebase")
-        if delete_branch:
-            argv.append("--remove-source-branch")
-        forge_call(kind, root, *argv)
+            branch = forge_call(kind, root, "pr", "view", str(number), "--json", "headRefName") or {}
+            if branch.get("headRefName"):
+                forge_call(kind, root, "api", "-X", "DELETE",
+                           "repos/%s/%s/git/refs/heads/%s" % (owner, name, branch["headRefName"]))
+                deleted = True
+        print(json.dumps({"merged": number, "method": method, "deleted_branch": deleted}))
+        return
+    if method == "rebase":
+        die("GitLab merges with a merge commit or a squash here", 64)
+    view = gitlab_mr(root, number)
+    answer = forge_call("gitlab", root, "api", "-X", "PUT",
+                        "projects/%s/merge_requests/%s/merge" % (view["project_id"], number),
+                        "-f", "sha=" + head, "-F", "squash=%s" % ("true" if method == "squash" else "false"),
+                        "-F", "should_remove_source_branch=%s" % ("true" if delete_branch else "false"),
+                        "-F", "merge_when_pipeline_succeeds=false") or {}
+    if answer.get("state") != "merged":
+        # Queued, or refused without an error: not merged, and said so.
+        die("GitLab didn't merge it (%s)" % (answer.get("detailed_merge_status") or answer.get("state") or "no answer"), 77)
     print(json.dumps({"merged": number, "method": method, "deleted_branch": delete_branch}))
 
 

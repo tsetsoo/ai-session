@@ -210,6 +210,11 @@ public enum ReviewThreadItems {
                 continue
             }
             guard !thread.resolved else { continue }
+            // One this window posted: it's here already, as the comment it came from.
+            if let first = thread.comments.first?.body, comments.contains(where: { comment in
+                comment.publishedAt != nil && comment.path == thread.path
+                    && first.contains(comment.body.trimmingCharacters(in: .whitespacesAndNewlines))
+            }) { continue }
             let start = thread.lineStart ?? thread.lineEnd
             comments.append(ReviewComment(
                 id: itemID(conversationKey: conversationKey, thread: thread),
@@ -274,22 +279,30 @@ public struct ReviewPublishRequest: Codable, Equatable, Sendable {
     }
 
     public struct Comment: Codable, Equatable, Sendable {
+        /// The file's path at the PR's head (also for removed lines).
         public var path: String
+        /// Its path at the base, when it was renamed.
+        public var oldPath: String?
         public var side: DiffSide
         public var lineStart: Int
         public var lineEnd: Int
+        /// An unchanged line's number at the base (GitLab wants both numbers for it).
+        public var oldLine: Int?
         public var body: String
 
         private enum CodingKeys: String, CodingKey {
             case path, side, body
-            case lineStart = "line_start", lineEnd = "line_end"
+            case oldPath = "old_path", lineStart = "line_start", lineEnd = "line_end", oldLine = "old_line"
         }
 
-        public init(path: String, side: DiffSide, lineStart: Int, lineEnd: Int, body: String) {
+        public init(path: String, oldPath: String? = nil, side: DiffSide, lineStart: Int, lineEnd: Int, oldLine: Int? = nil,
+                    body: String) {
             self.path = path
+            self.oldPath = oldPath
             self.side = side
             self.lineStart = lineStart
             self.lineEnd = lineEnd
+            self.oldLine = oldLine
             self.body = body
         }
     }
@@ -307,6 +320,11 @@ public struct ReviewPublishRequest: Codable, Equatable, Sendable {
 
 extension TmuxCommandBuilder {
     private static let writeHelper = "\"$HOME/.ai-remote/bin/ai-todo-review\""
+
+    /// Some GitLab comments were posted before a later step failed.
+    public static let reviewPartlyPublishedExitCode: Int32 = 78
+    /// The base64 review on the command line: past this, publish fewer comments at a time.
+    public static let reviewPublishMaxBytes = 100_000
 
     /// The PR/MR moved on from the head the review was made against.
     public static let reviewHeadMovedExitCode: Int32 = 67

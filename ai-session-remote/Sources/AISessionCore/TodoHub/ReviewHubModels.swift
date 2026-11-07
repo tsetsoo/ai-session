@@ -88,6 +88,8 @@ public struct HubReviewItem: Codable, Equatable, Sendable {
     public var sentInTurn: Int?
     public var batchId: String?
     public var sentRevision: String?
+    /// When it was posted on the PR/MR.
+    public var publishedAt: String?
     public var createdAt: String
     /// Set by the hub.
     public var updatedAt: String?
@@ -95,7 +97,8 @@ public struct HubReviewItem: Codable, Equatable, Sendable {
     public init(id: String, reviewId: String?, conversationId: String, author: String, fingerprint: String?,
                 severity: String?, category: String?, title: String?, path: String, side: String, lineStart: Int?,
                 lineEnd: Int?, revision: String, quote: [String], body: String, state: String, sentAt: String?,
-                sentInTurn: Int?, batchId: String?, sentRevision: String?, createdAt: String, updatedAt: String? = nil) {
+                sentInTurn: Int?, batchId: String?, sentRevision: String?, publishedAt: String? = nil, createdAt: String,
+                updatedAt: String? = nil) {
         self.id = id
         self.reviewId = reviewId
         self.conversationId = conversationId
@@ -116,6 +119,7 @@ public struct HubReviewItem: Codable, Equatable, Sendable {
         self.sentInTurn = sentInTurn
         self.batchId = batchId
         self.sentRevision = sentRevision
+        self.publishedAt = publishedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

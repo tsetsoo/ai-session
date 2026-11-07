@@ -1292,6 +1292,9 @@ private struct PublishSheet: View {
                         if let reason = candidate.reason {
                             Text(reason).font(.caption).foregroundStyle(DS.warning)
                         }
+                        if let published = candidate.comment.publishedAt {
+                            Text("Published \(published, style: .relative) ago").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
                 .disabled(candidate.line == nil && candidate.comment.startLine != nil)
@@ -1319,7 +1322,9 @@ private struct PublishSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(session.isWriting || (event == .comment && chosen.isEmpty && summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                .disabled(session.isWriting || (event == .comment && chosen.isEmpty && summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                          || (event == .requestChanges && summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                .help(event == .requestChanges ? "Request Changes needs a summary." : "")
             }
         }
         .padding(DS.spacing.l)
@@ -1327,7 +1332,7 @@ private struct PublishSheet: View {
         .onAppear {
             candidates = session.publishCandidates()
             // Not yet published, on lines of the PR: picked to start with.
-            chosen = Set(candidates.filter { ($0.line != nil || $0.comment.startLine == nil) && !session.publishedIDs.contains($0.id)
+            chosen = Set(candidates.filter { ($0.line != nil || $0.comment.startLine == nil) && $0.comment.publishedAt == nil
                 && $0.comment.state != .sent }.map(\.id))
         }
     }
@@ -1368,15 +1373,17 @@ private struct MergeSheet: View {
                 Label("The agent is working in this conversation right now.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(DS.warning)
             }
-            if overrideChecks, let blocker = session.mergeBlocker(overrideChecks: false) {
-                Label(blocker.replacingOccurrences(of: " Hold Option to merge anyway.", with: " Merging anyway."),
+            if let blocker = session.mergeBlocker(overrideChecks: false) {
+                Label(overrideChecks ? blocker.replacingOccurrences(of: " Hold Option to merge anyway.", with: " Merging anyway.")
+                      : blocker.replacingOccurrences(of: " Hold Option to merge anyway.", with: " Close this and hold Option while clicking Merge… to merge anyway."),
                       systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(DS.warning)
+                    .foregroundStyle(overrideChecks ? DS.warning : DS.error)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Picker("Method", selection: $method) {
                 Text("Merge commit").tag("merge")
                 Text("Squash").tag("squash")
-                Text("Rebase").tag("rebase")
+                if info?.provider != "gitlab" { Text("Rebase").tag("rebase") }
             }
             .pickerStyle(.segmented)
             Toggle("Delete the branch \(pr?.headRef ?? "") afterwards", isOn: $deleteBranch)

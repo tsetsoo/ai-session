@@ -539,7 +539,7 @@ final class ReviewSessionTests: XCTestCase {
     }
 
     func testPublishGoesOnThePullRequestsOwnLinesOnly() async throws {
-        let (session, _) = makeSession()
+        let (session, store) = makeSession()
         await session.load(config: config)
         await session.loadPullRequest(config: config)
         XCTAssertEqual(session.publishBlocker, "There are uncommitted changes. Only committed, pushed lines can be published.")
@@ -565,9 +565,13 @@ final class ReviewSessionTests: XCTestCase {
         let review = try JSONDecoder().decode(ReviewPublishRequest.self, from: Data(base64Encoded: String(encoded))!)
         XCTAssertEqual(review.event, .requestChanges)
         XCTAssertEqual(review.comments, [.init(path: "f.txt", side: .new, lineStart: 2, lineEnd: 2, body: "Why this?")])
+        // Request Changes without a summary is refused here.
+        let noSummary = await session.publish(event: .requestChanges, summary: " ", ids: [], config: config)
+        XCTAssertFalse(noSummary)
         XCTAssertEqual(review.body, "Please look.\n\n**f.txt**: About the file")
         XCTAssertEqual(session.notice, "Published a review with 1 comment as me.")
-        XCTAssertTrue(session.publishedIDs.contains(line.id))
+        XCTAssertNotNil(store.record(session.key).comments.first { $0.id == line.id }?.publishedAt)
+        XCTAssertNil(store.record(session.key).comments.first { $0.body == "Why this?" && $0.id != line.id })
 
         // The PR moved on meanwhile: said, nothing marked.
         writeExit = 67
