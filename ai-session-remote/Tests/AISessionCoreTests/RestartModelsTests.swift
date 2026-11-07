@@ -36,7 +36,12 @@ final class RestartModelsTests: XCTestCase {
         XCTAssertFalse(claude.contains("--search"))
         let settings = try LaunchSettings.decode(Data(#"{"chrome":null,"search":true,"model":null}"#.utf8))
         XCTAssertEqual(settings.search, true)
-        XCTAssertNil(try LaunchSettings.decode(Data(#"{"chrome":null}"#.utf8)).search, "older scripts")
+        XCTAssertTrue(settings.hasSearch)
+        let notChosen = try LaunchSettings.decode(Data(#"{"chrome":null,"search":null,"permission_mode":"auto"}"#.utf8))
+        XCTAssertTrue(notChosen.hasSearch)
+        XCTAssertNil(notChosen.search)
+        XCTAssertEqual(notChosen.permissionMode, "auto")
+        XCTAssertFalse(try LaunchSettings.decode(Data(#"{"chrome":null}"#.utf8)).hasSearch, "older scripts")
     }
 
     func testReopenRemakesItsWorktree() {

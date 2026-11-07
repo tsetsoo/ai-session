@@ -156,60 +156,119 @@ class RestartTests(unittest.TestCase):
 
     # Closing sessions whose todo is archived or deleted
 
+    def hub(self, linked=("ai/claude/todo-elsewhere",), open_todos=()):
+        return {"linked": set(linked), "open": set(open_todos)}
+
+    def transcript(self, at):
+        """The conversation's Claude transcript, last written at `at`."""
+        path = self.home / ".claude/projects/-work" / (self.sid + ".jsonl")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n")
+        os.utime(path, (at, at))
+
     def test_close_unused_closes_only_old_idle_unlinked_sessions(self):
         self.start()  # self.name: not linked, idle
         self.publish("idle")
+        self.transcript(time.time())
         linked = "ai/claude/todo-linked01"
         self.start(linked)
         attached = "ai/claude/todo-attach01"
         self.start(attached)
         later = time.time() + restart.UNUSED_IDLE_S + 60
         sessions = restart.session_info()
+        self.assertTrue(sessions[self.name]["activity"] > time.time() - 60, "a new session's activity is now")
         sessions[attached]["attached"] = True
         with patch.object(restart, "session_info", return_value=sessions):
             # Recently active: kept.
-            result = restart.close_unused({linked}, now=time.time())
+            result = restart.close_unused(self.hub([linked]), now=time.time())
             self.assertEqual(result["closed"], [])
             # Old enough: the unlinked idle one goes; linked and attached stay.
-            result = restart.close_unused({linked}, now=later, dry_run=True)
+            result = restart.close_unused(self.hub([linked]), now=later, dry_run=True)
             self.assertEqual(result["closed"], [self.name], result)
             self.assertTrue(restart.session_exists(self.name), "a dry run stops nothing")
-            result = restart.close_unused({linked}, now=later)
+            result = restart.close_unused(self.hub([linked]), now=later)
         self.assertEqual(result["closed"], [self.name], result)
         self.assertFalse(restart.session_exists(self.name))
         self.assertTrue(restart.session_exists(linked))
         self.assertTrue(restart.session_exists(attached))
 
+    def test_close_unused_keeps_one_where_a_turn_ran_lately(self):
+        """Turns sent from the app don't move tmux's activity; the transcript shows them."""
+        self.start()
+        self.publish("idle")
+        later = time.time() + restart.UNUSED_IDLE_S + 60
+        self.transcript(later - 60)
+        result = restart.close_unused(self.hub(), now=later)
+        self.assertEqual((result["closed"], result["left"]), ([], []))
+        self.assertTrue(restart.session_exists(self.name))
+
     def test_close_unused_never_forces(self):
         self.start()
         self.publish("busy")
+        self.transcript(time.time())
         later = time.time() + restart.UNUSED_IDLE_S + 60
-        result = restart.close_unused(set(), now=later)
+        result = restart.close_unused(self.hub(), now=later)
         self.assertEqual(result["closed"], [])
         self.assertEqual([(x["tmux"], x["reason"]) for x in result["left"]], [(self.name, "busy")])
+        self.assertTrue(restart.session_exists(self.name))
+
+    def test_close_unused_leaves_what_it_cannot_check(self):
+        """A CLI started fresh has no id on its command line: its state can't be read."""
+        name = "ai/claude/todo-fresh001"
+        subprocess.run(["tmux", "-L", self.socket, "new-session", "-d", "-s", name, "--", str(self.bin / "claude")],
+                       check=True)
+        for _ in range(50):
+            if restart.running_entry(name):
+                break
+            time.sleep(0.1)
+        later = time.time() + restart.UNUSED_IDLE_S + 60
+        result = restart.close_unused(self.hub(), now=later)
+        self.assertEqual((result["closed"], result["left"]), ([], [{"tmux": name, "reason": "unknown"}]))
+        self.assertTrue(restart.session_exists(name))
+
+    def test_close_unused_keeps_an_open_todos_session(self):
+        """A todo still listed whose conversation was replaced: its old session stays."""
+        self.start()
+        self.publish("idle")
+        self.transcript(time.time())
+        slug = self.name.split("todo-", 1)[1][:8]
+        later = time.time() + restart.UNUSED_IDLE_S + 60
+        result = restart.close_unused(self.hub(open_todos=[slug + "-0000-4000-8000-000000000000"]), now=later)
+        self.assertEqual(result["left"], [{"tmux": self.name, "reason": "open todo"}])
         self.assertTrue(restart.session_exists(self.name))
 
     def test_close_unused_does_nothing_without_the_hub(self):
         self.start()
         self.publish("idle")
-        with patch.object(restart, "linked_sessions", return_value=None):
+        with patch.object(restart, "hub_view", return_value=None):
             code, result = restart.close_unused_main([])
         self.assertEqual(code, 1)
         self.assertTrue(restart.session_exists(self.name))
 
-    def test_linked_sessions_reads_this_computers_conversations(self):
+    def test_hub_view_needs_this_computers_conversations(self):
         conversations = [{"tmux_name": "ai/claude/todo-a", "computer": {"id": "me"}},
                          {"tmux_name": "ai/claude/todo-b", "computer": {"id": "other"}},
                          {"tmux_name": None, "computer": {"id": "me"}}]
-        with patch.object(restart, "hub_get", return_value=conversations), \
-                patch.object(status, "hub_values", return_value={"TODO_COMPUTER_ID": "me"}):
-            self.assertEqual(restart.linked_sessions(), {"ai/claude/todo-a"})
-        with patch.object(restart, "hub_get", return_value=None), \
-                patch.object(status, "hub_values", return_value={"TODO_COMPUTER_ID": "me"}):
-            self.assertIsNone(restart.linked_sessions())
-        with patch.object(restart, "hub_get", return_value=conversations), \
+        todos = [{"id": "t1"}, {"id": "t2"}]
+
+        def answers(conversations, todos):
+            return lambda path, **_: {"/api/conversations": conversations, "/api/todos": todos}[path]
+        me = {"TODO_COMPUTER_ID": "me"}
+        with patch.object(restart, "hub_get", side_effect=answers(conversations, todos)), \
+                patch.object(status, "hub_values", return_value=me):
+            self.assertEqual(restart.hub_view(), {"linked": {"ai/claude/todo-a"}, "open": {"t1", "t2"}})
+        with patch.object(restart, "hub_get", side_effect=answers(None, todos)), \
+                patch.object(status, "hub_values", return_value=me):
+            self.assertIsNone(restart.hub_view())
+        with patch.object(restart, "hub_get", side_effect=answers(conversations, None)), \
+                patch.object(status, "hub_values", return_value=me):
+            self.assertIsNone(restart.hub_view(), "no todo list: an open todo couldn't be told apart")
+        with patch.object(restart, "hub_get", side_effect=answers(conversations[1:], todos)), \
+                patch.object(status, "hub_values", return_value=me):
+            self.assertIsNone(restart.hub_view(), "none of ours listed: a reset hub or a wrong id")
+        with patch.object(restart, "hub_get", side_effect=answers(conversations, todos)), \
                 patch.object(status, "hub_values", return_value={}):
-            self.assertIsNone(restart.linked_sessions(), "no computer id: can't tell which are ours")
+            self.assertIsNone(restart.hub_view(), "no computer id: can't tell which are ours")
 
     def test_bad_arguments(self):
         with self.assertRaises(ValueError):

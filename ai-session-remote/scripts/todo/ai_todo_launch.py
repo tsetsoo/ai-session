@@ -54,9 +54,10 @@ def save(tool, sid, model=None, auto_approve=False, now=None):
         raise ValueError("invalid model")
     path = record_path(tool, sid)
     now = now or time.time()
+    kept = load(tool, sid)  # a restart's choices stay
     status.atomic_json(path, {"tool": tool, "session_id": sid, "model": model,
                               "auto_approve": bool(auto_approve), "saved_at": int(now),
-                              "chrome": load(tool, sid).get("chrome"), "search": load(tool, sid).get("search")})
+                              "chrome": kept.get("chrome"), "search": kept.get("search")})
     for old in path.parent.glob("*.json"):
         try:
             if now - old.stat().st_mtime > KEEP_DAYS * 86400:
@@ -193,7 +194,8 @@ def settings(tool, sid):
 
     def after(flag):
         return args[args.index(flag) + 1] if flag in args[:-1] else None
-    return {"chrome": load(tool, sid).get("chrome"), "search": load(tool, sid).get("search"),
+    saved = load(tool, sid)
+    return {"chrome": saved.get("chrome"), "search": saved.get("search"),
             "model": after("--model") or after("-m"),
             "permission_mode": after("--permission-mode"),
             "network": "sandbox_workspace_write.network_access=true" in args, "args": args}

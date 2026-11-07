@@ -52,11 +52,27 @@ public struct RestartResult: Decodable, Equatable, Sendable {
 /// A conversation's saved launch settings (`ai-todo-status launch show`).
 public struct LaunchSettings: Decodable, Equatable, Sendable {
     public var chrome: Bool?
-    /// Codex: live web search chosen for this conversation (`--search`). nil from older scripts.
+    /// Codex: live web search chosen for this conversation (`--search`); nil when not chosen.
     public var search: Bool?
+    /// The scripts report web search at all (older ones leave the key out).
+    public var hasSearch: Bool
     public var model: String?
     public var permissionMode: String?
     public var network: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case chrome, search, model, permissionMode, network
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        chrome = try container.decodeIfPresent(Bool.self, forKey: .chrome)
+        search = try container.decodeIfPresent(Bool.self, forKey: .search)
+        hasSearch = container.contains(.search)
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        permissionMode = try container.decodeIfPresent(String.self, forKey: .permissionMode)
+        network = try container.decodeIfPresent(Bool.self, forKey: .network)
+    }
 
     public static func decode(_ data: Data) throws -> LaunchSettings {
         try TodoHubClient.makeDecoder().decode(LaunchSettings.self, from: data)

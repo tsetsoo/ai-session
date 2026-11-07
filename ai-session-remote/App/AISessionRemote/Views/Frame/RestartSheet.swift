@@ -82,7 +82,8 @@ struct RestartSheet: View {
                 if let settings = try? await RemoteRestart.settings(conversation, config: config()) {
                     savedChrome = ChromeChoice(saved: settings.chrome)
                     chrome = savedChrome ?? .keep
-                    savedSearch = settings.search ?? false
+                    // nil: scripts from before web search; the toggle says to update them.
+                    savedSearch = settings.search ?? (settings.hasSearch ? false : nil)
                     search = savedSearch ?? false
                 } else {
                     settingsUnavailable = true
@@ -108,7 +109,7 @@ struct RestartSheet: View {
             Toggle("Live web search", isOn: $search)
                 .disabled(settingsUnavailable || savedSearch == nil)
         } footer: {
-            Text(settingsUnavailable
+            Text(settingsUnavailable || savedSearch == nil
                  ? "Update the todo scripts on \(conversation.computer.name) to choose this."
                  : "Lets Codex search the web as it works. Kept for this conversation's later starts too.")
         }

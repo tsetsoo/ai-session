@@ -23,9 +23,11 @@ Prints one JSON object; exit 0 done, 75 refused, 1 failed.
 `ai-todo-status close-unused [--dry-run]` (the runner, every 10 minutes): ends the
 ai/<tool>/todo-* sessions whose todo is archived (done more than a day ago) or deleted,
 i.e. not among this computer's conversations on the hub. Only when the hub answered, only
-sessions with no tmux activity for UNUSED_IDLE_S and nobody attached, and only through the
-same refusals as a restart (never forced). Opening the todo again resumes the conversation.
+sessions nobody typed into, attached to or ran a turn in for UNUSED_IDLE_S, and only through the
+same refusals as a restart (never forced); sessions it can't check are left. Opening the
+todo again resumes the conversation.
 """
+import http.client
 import json
 import os
 from pathlib import Path
@@ -223,13 +225,15 @@ def hub_get(path, timeout=10):
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode())
-    except (OSError, ValueError, urllib.error.URLError):
+    except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException):
         return None
 
 
-def linked_sessions():
-    """Tmux names of this computer's conversations on the hub (archived todos are left out
-    there), or None when that can't be known: then nothing may be closed."""
+def hub_view():
+    """{"linked": tmux names of this computer's listed conversations, "open": ids of the
+    todos the hub still lists}, or None when that can't be known for sure: the hub didn't
+    answer, there's no TODO_COMPUTER_ID, or the hub lists no conversation of this computer
+    (a reset hub or a wrong id would otherwise make every session look unused)."""
     try:
         computer = os.environ.get("TODO_COMPUTER_ID") or status.hub_values().get("TODO_COMPUTER_ID")
     except (OSError, ValueError):
@@ -237,14 +241,20 @@ def linked_sessions():
     if not computer:
         return None
     conversations = hub_get("/api/conversations")
-    if not isinstance(conversations, list):
+    todos = hub_get("/api/todos")
+    if not isinstance(conversations, list) or not isinstance(todos, list):
         return None
-    return {c.get("tmux_name") for c in conversations
-            if isinstance(c, dict) and c.get("tmux_name") and (c.get("computer") or {}).get("id") == computer}
+    linked = {c.get("tmux_name") for c in conversations
+              if isinstance(c, dict) and c.get("tmux_name") and (c.get("computer") or {}).get("id") == computer}
+    if not linked:
+        return None
+    return {"linked": linked, "open": {t.get("id") for t in todos if isinstance(t, dict) and t.get("id")}}
 
 
 def session_info():
-    """{session name: {"activity": epoch s, "attached": bool}}, or None when tmux can't be asked."""
+    """{session name: {"activity": epoch s, "attached": bool}}, or None when tmux can't be
+    asked. tmux moves a session's activity when someone types into it or attaches; the
+    screen's own output can't be used, since an idle Claude redraws now and then."""
     try:
         listed = subprocess.run(tmux_args() + ["list-sessions", "-F", "#{session_name}\t#{session_activity}\t#{session_attached}"],
                                 capture_output=True, text=True, timeout=5)
@@ -260,29 +270,52 @@ def session_info():
     return result
 
 
-def close_unused(linked, now=None, dry_run=False, idle_s=None):
-    """End the unlinked, long-idle todo sessions (see the module docstring)."""
+def transcript_time(tool, sid):
+    """When the conversation's transcript last changed (a turn ran), or None when it can't
+    be found: every turn, typed or sent from the app, writes it."""
+    path = launch.claude_transcript(sid) if tool == "claude" else status.codex_rollout(sid) if tool == "codex" else None
+    try:
+        return os.stat(path).st_mtime if path else None
+    except OSError:
+        return None
+
+
+def close_unused(hub, now=None, dry_run=False, idle_s=None):
+    """End the long-idle sessions of archived or deleted todos (see the module docstring).
+    Idle means nobody typed or attached and no turn ran for `idle_s`. Kept: a listed
+    conversation's, an open todo's (one whose conversation was replaced), attached ones, and
+    any it can't check: no conversation id or transcript, working, waiting, background tasks
+    or an unreadable state. Never forced."""
     now = time.time() if now is None else now
     idle_s = UNUSED_IDLE_S if idle_s is None else idle_s
     sessions = session_info() or {}
+    candidates = [name for name in sorted(sessions)
+                  if name.startswith(SESSION_PREFIXES) and name not in hub["linked"]
+                  and not sessions[name]["attached"] and now - sessions[name]["activity"] >= idle_s]
+    panes = doctor.panes() or {}
+    entries = {e.get("tmux"): e for e in doctor.running_report({}, sessions={n: panes[n] for n in candidates if n in panes})}
     closed, left = [], []
-    for name in sorted(sessions):
-        info = sessions[name]
-        if not name.startswith(SESSION_PREFIXES) or name in linked or info["attached"] or now - info["activity"] < idle_s:
-            continue
+    for name in candidates:
         tool = name.split("/")[1]
-        entry = running_entry(name)
-        if not entry:
-            left.append({"tmux": name, "reason": "unknown"})  # no CLI found in it: leave it
+        slug = name.split("todo-", 1)[1][:8]
+        if any(todo.startswith(slug) for todo in hub["open"]):
+            left.append({"tmux": name, "reason": "open todo"})
             continue
-        sid = entry.get("session_id")
-        if sid:
-            state = conversation_state(tool, sid)
-            reason = "background" if state["tasks"] else (None if state["state"] == "idle" else state["state"])
-            if reason:
-                left.append({"tmux": name, "reason": reason})
-                continue
-        # No id: a Codex or Cursor that never got a first message, so nothing to lose.
+        entry = entries.get(name)
+        sid = entry.get("session_id") if entry else None
+        written = transcript_time(tool, sid) if sid else None
+        if written is None:
+            # No CLI found, one started fresh (its id isn't on its command line) or no
+            # transcript: when it last worked can't be told, so it may be working.
+            left.append({"tmux": name, "reason": "unknown"})
+            continue
+        if now - written < idle_s:
+            continue  # a turn ran lately
+        state = conversation_state(tool, sid)
+        reason = "background" if state["tasks"] else (None if state["state"] == "idle" else state["state"])
+        if reason:
+            left.append({"tmux": name, "reason": reason})
+            continue
         if not dry_run:
             stop(name, entry)
         closed.append(name)
@@ -292,10 +325,10 @@ def close_unused(linked, now=None, dry_run=False, idle_s=None):
 def close_unused_main(args):
     if args not in ([], ["--dry-run"]):
         return 64, None
-    linked = linked_sessions()
-    if linked is None:
-        return 1, {"closed": [], "left": [], "error": "the hub's conversations couldn't be read"}
-    return 0, close_unused(linked, dry_run=bool(args))
+    hub = hub_view()
+    if hub is None:
+        return 1, {"closed": [], "left": [], "error": "the hub's conversations couldn't be read for this computer"}
+    return 0, close_unused(hub, dry_run=bool(args))
 
 
 def main(args):
