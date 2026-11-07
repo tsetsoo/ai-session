@@ -65,7 +65,7 @@ def update_plan(tool, binary, resolved, method):
     own, for the installs it owns); for the rest `command` is what the user can run there."""
     home = str(Path.home())
     # As typed in a shell there: ~ stays unquoted so it still expands.
-    shown = "~" + shlex.quote(binary[len(home):]) if binary.startswith(home + "/") else shlex.quote(binary)
+    shown = "~/" + shlex.quote(binary[len(home) + 1:]) if binary.startswith(home + "/") else shlex.quote(binary)
     if method == "native" and tool in ("claude", "cursor"):
         argv = [binary, "update"]
     elif method == "managed" and tool == "codex":

@@ -35,9 +35,10 @@ struct ComputerHealthView: View {
     @State private var idleTargets: [IdleTarget]?
     @State private var idleProgress: (done: Int, total: Int)?
     /// Update asked for (confirm), the CLI being updated (one at a time), and each one's result.
+    /// Keyed "<computer id>/<tool>": on the Mac this view stays when another computer is picked.
     @State private var confirmUpgrade: HealthUpgrade?
     @State private var upgrading: String?
-    @State private var upgradeNotes: [String: String] = [:]
+    @State private var upgradeNotes: [String: (text: String, failed: Bool)] = [:]
 
     private var store: TodoHubStore { model.store }
     private var report: HostHealth? { live ?? snapshot?.report }
@@ -219,7 +220,7 @@ struct ComputerHealthView: View {
                 Text(tool.installed == true ? (tool.version ?? "version unknown") : "Not installed")
                     .monospacedDigit()
                     .foregroundStyle(tool.installed == true ? .primary : .secondary)
-                if upgrading == name {
+                if upgrading == upgradeKey(name) {
                     ProgressView().controlSize(.small)
                 } else if live != nil, tool.installed == true, tool.update?.runs == true {
                     Button("Update") {
@@ -238,7 +239,7 @@ struct ComputerHealthView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                if upgrading == name {
+                if upgrading == upgradeKey(name) {
                     Text("Updating… this can take a minute or two.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -249,10 +250,10 @@ struct ComputerHealthView: View {
                         .textSelection(.enabled)
                 }
             }
-            if let note = upgradeNotes[name] {
-                Text(note)
+            if let note = upgradeNotes[upgradeKey(name)] {
+                Text(note.text)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(note.failed ? DS.warning : .secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
@@ -432,19 +433,25 @@ struct ComputerHealthView: View {
 
     /// Updates the CLI on the computer, then checks it again so the row and the outdated
     /// conversations show the new version.
+    private func upgradeKey(_ tool: String) -> String { "\(computer.id)/\(tool)" }
+
     private func runUpgrade(_ request: HealthUpgrade) {
         guard upgrading == nil else { return }
-        upgrading = request.tool
-        upgradeNotes[request.tool] = nil
+        let target = computer
+        let key = upgradeKey(request.tool)
+        upgrading = key
+        upgradeNotes[key] = nil
         Task {
             do {
-                let config = try HostLookup.config(for: computer, in: hosts)
-                let result = try await RemoteUpgrade.upgrade(request.tool, config: config, computerName: computer.name)
-                upgradeNotes[request.tool] = result.summary
+                let config = try HostLookup.config(for: target, in: hosts)
+                let result = try await RemoteUpgrade.upgrade(request.tool, config: config, computerName: target.name)
+                upgradeNotes[key] = (result.summary, result.isFailed)
             } catch {
-                upgradeNotes[request.tool] = "\(request.title) wasn't updated: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
+                upgradeNotes[key] = ("\(request.title) wasn't updated: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)", true)
             }
             upgrading = nil
+            // Only the page of the computer that was updated: another may be shown by now.
+            guard computer.id == target.id else { return }
             // A check already running may have read it before the update: wait it out, then check.
             while isChecking { try? await Task.sleep(for: .milliseconds(300)) }
             await checkLive()

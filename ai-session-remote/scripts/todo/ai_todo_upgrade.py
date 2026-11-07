@@ -13,7 +13,8 @@ Nothing running changes: a conversation keeps the version it started with until 
 restarted. No login is needed or touched.
 
 Prints one JSON object: {"tool", "method", "before", "after", "result", "message",
-"command"}, result one of updated | current | unsupported | failed. Exit 0, or 1 failed.
+"command"}, plus "daemon" (the shared server's version) for managed Codex; result one of
+updated | current | unsupported | failed. Exit 0, or 1 failed.
 """
 import fcntl
 import os
@@ -44,10 +45,11 @@ def run_updater(argv, env, timeout):
     """(exit code or None on a timeout, combined output). No terminal and no stdin: an
     updater that asks a question gets end of input. Output goes to a file, not a pipe: Codex's
     updater may start the shared server, which would hold a pipe open after the updater ends.
-    Only the updater is waited for; on a timeout its process group is killed."""
-    with tempfile.TemporaryFile(mode="w+") as output:
+    Only the updater is waited for; on a timeout (300 s) its process group is killed, which
+    would include a shared server it started itself (Codex's writes its own daemon log)."""
+    with tempfile.TemporaryFile() as output:
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
-                                   text=True, env=env, start_new_session=True)
+                                   env=env, start_new_session=True)
         try:
             code = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -58,7 +60,8 @@ def run_updater(argv, env, timeout):
             process.wait()
             code = None
         output.seek(0)
-        return code, output.read()
+        # Bytes: a progress bar cut off mid-character mustn't stop the JSON answer.
+        return code, output.read().decode("utf-8", "replace")
 
 
 def last_lines(text, limit=300):
@@ -79,9 +82,9 @@ def upgrade(tool, timeout=None):
     result = {"tool": tool, "method": None, "before": None, "after": None, "command": None}
     if found is None:
         return 1, dict(result, result="failed", message="It isn't installed on this computer.")
-    binary, resolved, before, method = found
+    binary, resolved, version, method = found
     plan = doctor.update_plan(tool, binary, resolved, method)
-    result.update(method=method, before=before, after=before, command=plan["command"])
+    result.update(method=method, before=version, after=version, command=plan["command"])
     if not plan["runs"]:
         message = ("Update it there with: %s" % plan["command"]) if plan["command"] else \
             "It comes with an app; update that app."
@@ -95,6 +98,9 @@ def upgrade(tool, timeout=None):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return 1, dict(result, result="failed", message="An update of it is already running.")
+            # Read under the lock: an update that just finished has already moved it.
+            before = doctor.binary_version(binary, os.path.realpath(binary))
+            result.update(before=before, after=before)
             # The installers warn, and Claude's may not finish, when their bin folder isn't on PATH.
             code, output = run_updater(plan["argv"], doctor.tool_env(binary), limit)
     except OSError as error:
@@ -108,14 +114,16 @@ def upgrade(tool, timeout=None):
         if daemon and daemon.get("version"):
             result["daemon"] = daemon["version"]
     detail = last_lines(output)
+    if code is None or code != 0:
+        # Failed even when it switched versions part way: the install may be incomplete.
+        why = ("The update didn't finish in %d s." % limit) if code is None else ("The updater exited with %d." % code)
+        if after and after != before:
+            why += " It now starts %s; check that it works." % after
+        return 1, dict(result, result="failed", message=" ".join(filter(None, [why, detail])))
     if after and before and after != before:
         return 0, dict(result, result="updated", message=detail or "Updated.")
-    if code is None:
-        return 1, dict(result, result="failed", message=("The update didn't finish in %d s. %s" % (limit, detail)).strip())
-    if code != 0:
-        return 1, dict(result, result="failed", message=detail or "The updater exited with %d." % code)
     if after is None:
-        return 1, dict(result, result="failed", message="Its version can't be read after the update. " + detail)
+        return 1, dict(result, result="failed", message=" ".join(filter(None, ["Its version can't be read after the update.", detail])))
     if before is None:
         # It was unreadable before, so whether this changed it can't be told: it ran fine.
         return 0, dict(result, result="updated", message=detail or "Updated.")

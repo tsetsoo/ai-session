@@ -17,6 +17,11 @@ final class UpgradeModelsTests: XCTestCase {
         XCTAssertEqual(result.summary, "Cursor updated to 2026.10.19-bbb (was 2026.10.14-aaa). Running conversations keep the old version until they're restarted.")
     }
 
+    func testCodexUpdatedNamesItsServer() throws {
+        let result = try UpgradeResult.decode(Data(#"{"tool":"codex","result":"updated","before":"0.166.0","after":"0.167.0","daemon":"0.167.0"}"#.utf8))
+        XCTAssertEqual(result.summary, "Codex updated to 0.167.0 (was 0.166.0). Its shared server runs 0.167.0. Running conversations keep the old version until they're restarted.")
+    }
+
     func testCodexServerVersionAndCurrent() throws {
         let result = try UpgradeResult.decode(Data(#"{"tool":"codex","result":"current","before":"0.167.0","after":"0.167.0","daemon":"0.167.0","method":"managed","message":null,"command":null}"#.utf8))
         XCTAssertEqual(result.daemon, "0.167.0")

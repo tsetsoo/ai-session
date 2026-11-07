@@ -92,7 +92,28 @@ class UpgradeTests(unittest.TestCase):
         os.environ["FAKE_MODE"] = "fail"
         code, result = upgrade.upgrade("claude")
         self.assertEqual((code, result["result"], result["after"]), (1, "failed", "2.1.300"))
-        self.assertEqual(result["message"], "network unreachable")
+        self.assertEqual(result["message"], "The updater exited with 3. network unreachable")
+
+    def test_failed_updater_that_switched_versions_is_still_failed(self):
+        self.claude_native()
+        os.environ["FAKE_MODE"] = "update"
+        real = upgrade.run_updater
+        with patch.object(upgrade, "run_updater", lambda *a: (real(*a)[0] + 2, "broke halfway")):
+            code, result = upgrade.upgrade("claude")
+        self.assertEqual((code, result["result"], result["after"]), (1, "failed", "2.1.319"))
+        self.assertEqual(result["message"], "The updater exited with 2. It now starts 2.1.319; check that it works. broke halfway")
+
+    def test_odd_bytes_in_output(self):
+        script = self.home / "bytes"
+        script.write_text("#!/bin/sh\nprintf 'Done \\342\\226'\n")
+        script.chmod(0o755)
+        code, output = upgrade.run_updater([str(script)], dict(os.environ), 5)
+        self.assertEqual(code, 0)
+        self.assertTrue(output.startswith("Done "), output)
+
+    def test_shown_command_keeps_tilde_working_with_spaces(self):
+        plan = doctor.update_plan("claude", str(self.home / "My Tools/claude"), "/x", "other")
+        self.assertEqual(plan["command"], "~/'My Tools/claude' update")
 
     def test_hung_updater_is_ended(self):
         self.claude_native()
@@ -134,7 +155,7 @@ class UpgradeTests(unittest.TestCase):
         calls = []
         def version(binary, resolved):
             calls.append(resolved)
-            return None if len(calls) == 1 else real(binary, resolved)
+            return None if len(calls) <= 2 else real(binary, resolved)  # found, then under the lock
         with patch.object(doctor, "binary_version", version):
             code, result = upgrade.upgrade("claude")
         self.assertEqual((code, result["result"], result["before"], result["after"]), (0, "updated", None, "2.1.319"))

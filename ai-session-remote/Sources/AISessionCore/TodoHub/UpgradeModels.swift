@@ -31,7 +31,9 @@ public struct UpgradeResult: Decodable, Equatable, Sendable {
             var text = "\(name) updated"
             if let after { text += " to \(after)" }
             if let before, before != after { text += " (was \(before))" }
-            return text + ". Running conversations keep the old version until they're restarted."
+            text += "."
+            if let daemon, tool == "codex" { text += " Its shared server runs \(daemon)." }
+            return text + " Running conversations keep the old version until they're restarted."
         case "current":
             return "\(name) is already the latest version" + (after.map { " (\($0))" } ?? "") + "."
         case "unsupported":

@@ -16,7 +16,8 @@ enum RemoteUpgrade {
         if let decoded = try? UpgradeResult.decode(Data(result.stdout.utf8)) {
             return decoded
         }
+        // The end: a Python traceback says what went wrong on its last line.
         let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-        throw RemoteRestart.Failed(message: detail.isEmpty ? "The update failed (exit \(result.exitCode))." : String(detail.prefix(300)))
+        throw RemoteRestart.Failed(message: detail.isEmpty ? "The update failed (exit \(result.exitCode))." : String(detail.suffix(300)))
     }
 }
