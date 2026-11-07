@@ -5472,6 +5472,8 @@ python3 "${SCRIPT_DIR}/test-launch.py" || fail "launch settings regressions"
 pass "launch settings: saved at start, latest model and mode reapplied on resume"
 python3 "${SCRIPT_DIR}/test-restart.py" || fail "restart regressions"
 pass "restart: refuses working/waiting/background, stops cleanly, reopens on the installed version"
+python3 "${SCRIPT_DIR}/test-upgrade.py" || fail "upgrade regressions"
+pass "upgrade: runs the CLI's own updater, reports versions, shows the command for npm/Homebrew"
 python3 "${SCRIPT_DIR}/test-updates.py" || fail "daily updates regressions"
 pass "daily updates: windows, model choice, Jira keys, redaction, retries, commits, writing"
 

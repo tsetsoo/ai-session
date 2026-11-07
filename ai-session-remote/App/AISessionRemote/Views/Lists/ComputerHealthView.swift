@@ -7,6 +7,8 @@ import SwiftUI
 /// helper scripts. It shows the hub's last report at once, then asks the computer itself;
 /// when the computer can't be reached the hub's report stays, with its time.
 ///
+/// Each CLI the app can update has an Update button (`ai-todo-status upgrade`, after a confirm);
+/// others show the command to run on the computer. Nothing updates on its own.
 /// Installing an update doesn't change what a running conversation uses. A conversation on an
 /// older version can be restarted from its row, or all the idle ones with Restart Idle…,
 /// only when the user asks.
@@ -32,11 +34,30 @@ struct ComputerHealthView: View {
     /// is exactly the list that runs.
     @State private var idleTargets: [IdleTarget]?
     @State private var idleProgress: (done: Int, total: Int)?
+    /// Update asked for (confirm), the CLI being updated (one at a time), and each one's result.
+    @State private var confirmUpgrade: HealthUpgrade?
+    @State private var upgrading: String?
+    @State private var upgradeNotes: [String: String] = [:]
 
     private var store: TodoHubStore { model.store }
     private var report: HostHealth? { live ?? snapshot?.report }
 
     var body: some View {
+        // Its own expression: one more dialog in `page` is more than the type checker manages.
+        page.confirmationDialog(
+            confirmUpgrade.map { "Update \($0.title) on \(computer.name)?" } ?? "",
+            isPresented: Binding(get: { confirmUpgrade != nil }, set: { if !$0 { confirmUpgrade = nil } }),
+            titleVisibility: .visible,
+            presenting: confirmUpgrade
+        ) { request in
+            Button("Update") { runUpgrade(request) }
+            Button("Cancel", role: .cancel) {}
+        } message: { request in
+            Text(request.message)
+        }
+    }
+
+    private var page: some View {
         List {
             Section {
                 sourceRow
@@ -185,7 +206,7 @@ struct ComputerHealthView: View {
             } header: {
                 Text("Agent CLIs").textCase(nil)
             } footer: {
-                Text("The version a new conversation starts with, and what installed it.")
+                Text("The version a new conversation starts with, and what installed it. Update installs the latest the same way; nothing updates on its own.")
             }
         }
     }
@@ -198,6 +219,15 @@ struct ComputerHealthView: View {
                 Text(tool.installed == true ? (tool.version ?? "version unknown") : "Not installed")
                     .monospacedDigit()
                     .foregroundStyle(tool.installed == true ? .primary : .secondary)
+                if upgrading == name {
+                    ProgressView().controlSize(.small)
+                } else if tool.installed == true, tool.update?.runs == true, HostLookup.host(for: computer, in: hosts) != nil {
+                    Button("Update") {
+                        confirmUpgrade = HealthUpgrade(tool: name, info: tool, computer: computer.name)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(upgrading != nil || idleProgress != nil || !restarting.isEmpty)
+                }
             }
             if tool.installed == true {
                 Text(toolDetail(tool))
@@ -208,6 +238,23 @@ struct ComputerHealthView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if upgrading == name {
+                    Text("Updating… this can take a minute or two.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if tool.update?.runs == false, let command = tool.update?.command {
+                    (Text("Update it on the computer: ") + Text(command).monospaced())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            if let note = upgradeNotes[name] {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
         }
         .padding(.vertical, 2)
@@ -383,6 +430,25 @@ struct ComputerHealthView: View {
         }
     }
 
+    /// Updates the CLI on the computer, then checks it again so the row and the outdated
+    /// conversations show the new version.
+    private func runUpgrade(_ request: HealthUpgrade) {
+        guard upgrading == nil else { return }
+        upgrading = request.tool
+        upgradeNotes[request.tool] = nil
+        Task {
+            do {
+                let config = try HostLookup.config(for: computer, in: hosts)
+                let result = try await RemoteUpgrade.upgrade(request.tool, config: config, computerName: computer.name)
+                upgradeNotes[request.tool] = result.summary
+            } catch {
+                upgradeNotes[request.tool] = "\(request.title) wasn't updated: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
+            }
+            upgrading = nil
+            await checkLive()
+        }
+    }
+
     private func versionDetail(_ entry: HostHealth.Running, installed: String?) -> String {
         let tool = HostHealth.toolName(entry.tool)
         var text = "\(tool) \(entry.version ?? "unknown")"
@@ -498,4 +564,25 @@ private struct HealthRestart {
     let title: String
     let detail: String
     var refusal: String?
+}
+
+/// One CLI the Health page offers to update, with what the confirm says.
+private struct HealthUpgrade {
+    let tool: String
+    let title: String
+    let message: String
+
+    init(tool: String, info: HostHealth.Tool, computer: String) {
+        self.tool = tool
+        title = HostHealth.toolName(tool)
+        var parts = ["Installs the latest \(title) on \(computer)" + (info.update?.command.map { " with: \($0)." } ?? ".")]
+        if info.method == "managed", tool == "codex" {
+            parts.append("Codex's shared server restarts on the new version, which can interrupt a plain codex window using it; todo conversations have their own.")
+        }
+        parts.append("Conversations already running keep \(info.version ?? "their version") until they're restarted; Restart Idle… moves them over.")
+        if info.auth?.loggedIn == false {
+            parts.append("It isn't logged in there; updating doesn't need it, but conversations do.")
+        }
+        self.message = parts.joined(separator: " ")
+    }
 }

@@ -3,7 +3,8 @@
 The app shows it on a computer's Health page (over SSH), and `ai-todo-status report` sends
 the same JSON to the hub so the app has a last-known copy when the computer is offline.
 
-Nothing here starts, stops, logs in or updates anything. Accounts are reported as logged
+Nothing here starts, stops, logs in or updates anything (`update` only says how it would be
+updated; ai_todo_upgrade.py runs it when the user asks). Accounts are reported as logged
 in or not and how; e-mail addresses and organisations are left out on purpose.
 
 Installed vs. running: a conversation keeps the binary it started with. `ps` shows the
@@ -26,7 +27,7 @@ import urllib.request
 
 import ai_todo_status as status
 
-DOCTOR_VERSION = 3
+DOCTOR_VERSION = 4
 VERSION = re.compile(r"\d+(?:\.\d+)+(?:-[0-9A-Za-z][0-9A-Za-z.]*)?")
 # Version folders the installers keep side by side; the first group is the version.
 PATH_VERSIONS = [
@@ -56,6 +57,36 @@ def install_method(path):
     if ".app/Contents/" in path:
         return "app"
     return "other"
+
+
+def update_plan(tool, binary, resolved, method):
+    """How `tool` at `binary` (resolved to `resolved`) is updated: {"runs": bool, "argv": [...],
+    "command": "..."}. `runs` is True only for the updaters this app runs itself (the CLI's
+    own, for the installs it owns); for the rest `command` is what the user can run there."""
+    home = str(Path.home())
+    # As typed in a shell there: ~ stays unquoted so it still expands.
+    shown = "~" + shlex.quote(binary[len(home):]) if binary.startswith(home + "/") else shlex.quote(binary)
+    if method == "native" and tool in ("claude", "cursor"):
+        argv = [binary, "update"]
+    elif method == "managed" and tool == "codex":
+        # The managed package's own updater. It restarts Codex's shared server when that's
+        # running; todo conversations have their own backends (terminal()).
+        argv = [binary, "app-server", "daemon", "update", "--yes"]
+    else:
+        argv = None
+    if argv:
+        return {"runs": True, "argv": argv, "command": " ".join([shown] + [shlex.quote(a) for a in argv[1:]])}
+    brew = re.search(r"/(Caskroom|Cellar)/([^/]+)/", resolved or "")
+    if brew:
+        command = "brew upgrade " + ("--cask " if brew.group(1) == "Caskroom" else "") + brew.group(2)
+    elif method == "npm":
+        package = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}.get(tool)
+        command = "npm install -g %s@latest" % package if package else shown + " update"
+    elif method == "app":
+        command = None  # updated with its app
+    else:
+        command = shown + " update"
+    return {"runs": False, "argv": None, "command": command}
 
 
 def package_version(path):
@@ -139,6 +170,16 @@ def auth(tool, binary):
     return {"logged_in": None}
 
 
+def binary_version(binary, resolved):
+    """Its version from where it lives, else from `--version`; None when neither says."""
+    version = path_version(resolved)
+    if version is None:
+        code, text = run_text([binary, "--version"], env=tool_env(binary))
+        match = VERSION.search(text) if code == 0 else None
+        version = match.group(0) if match else None
+    return version
+
+
 def tool_report(tool, finder):
     """One CLI as this computer would start it: where, which version, who updates it, auth."""
     try:
@@ -146,13 +187,12 @@ def tool_report(tool, finder):
     except FileNotFoundError as error:
         return {"installed": False, "error": str(error)}
     resolved = os.path.realpath(binary)
-    version = path_version(resolved)
-    if version is None:
-        code, text = run_text([binary, "--version"], env=tool_env(binary))
-        match = VERSION.search(text) if code == 0 else None
-        version = match.group(0) if match else None
+    version = binary_version(binary, resolved)
+    method = install_method(resolved)
+    plan = update_plan(tool, binary, resolved, method)
     result = {"installed": True, "path": binary, "resolved": resolved, "version": version,
-              "method": install_method(resolved), "auth": auth(tool, binary)}
+              "method": method, "auth": auth(tool, binary),
+              "update": {"runs": plan["runs"], "command": plan["command"]}}
     if tool == "codex" and result["method"] == "managed":
         code, text = run_text([binary, "app-server", "daemon", "version"], env=tool_env(binary))
         try:

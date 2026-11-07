@@ -341,6 +341,12 @@ public enum TmuxCommandBuilder {
         return wrap(command)
     }
 
+    /// Installs the latest version of one agent CLI (claude, codex or cursor) the way it was
+    /// installed (`UpgradeResult` JSON). Only on the user's request; it can take minutes.
+    public static func upgradeTool(_ tool: String) -> String {
+        wrap("\"$HOME/.ai-remote/bin/ai-todo-status\" upgrade \(shellQuote(tool))")
+    }
+
     /// The conversation's saved launch settings as JSON (`LaunchSettings`).
     public static func launchSettings(tool: String, sessionId: String) -> String {
         wrap("\"$HOME/.ai-remote/bin/ai-todo-status\" launch show \(shellQuote(tool)) \(shellQuote(sessionId))")

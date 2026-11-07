@@ -46,6 +46,15 @@ public struct HostHealth: Decodable, Equatable, Sendable {
         public var auth: Auth?
         /// Codex's shared app-server.
         public var daemon: Daemon?
+        /// How it's updated; nil from scripts older than updates from the app.
+        public var update: Update?
+    }
+
+    /// `runs`: the app can update it (`ai-todo-status upgrade`). Otherwise `command` is what
+    /// to run on the computer (npm, Homebrew…); nil for one that comes with an app.
+    public struct Update: Decodable, Equatable, Sendable {
+        public var runs: Bool?
+        public var command: String?
     }
 
     public struct Auth: Decodable, Equatable, Sendable {

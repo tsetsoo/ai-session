@@ -219,6 +219,7 @@
 		A362AAB9591870863050E332 /* DemoFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8A54758D4FED49A531F0BDC /* DemoFrame.swift */; };
 		A38FDDF29B0787819F678AAD /* ChatTextViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DC8DE451518230695F83B05 /* ChatTextViews.swift */; };
 		A40B1EF3D0BBF3ABB90EB674 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = DF8A8366FDB40F6D3DAAB67F /* NIOCore */; };
+		A41E9EBB5F02EED9196ACAC5 /* RemoteUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = B04D268F7E1BD8358A6FBD15 /* RemoteUpgrade.swift */; };
 		A42A10F59D0F513381FF64CC /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 069864B039E21288F0AD21AA /* ReviewView.swift */; };
 		A4969E70C98FC8113339AE7A /* MacCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 244B79FA4458DBBC91C4A9BA /* MacCompatibility.swift */; };
 		A698ABD1647F3AEBF7A07835 /* TodoConversationScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D950090C7A69096F9F3FF813 /* TodoConversationScreen.swift */; };
@@ -279,6 +280,7 @@
 		D82D4390F574464A6DDD30B3 /* AISessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 77160CCBC36C696C9AE77B08 /* AISessionCore */; };
 		D83BED1012CFC26D4F60CFEE /* TodoHoldDropTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0318083FCE727F91B9342F3 /* TodoHoldDropTests.swift */; };
 		D9729BE332BD4630C48AA9D0 /* ReviewItemsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB8A7C64530E46D436A3D3A8 /* ReviewItemsSheet.swift */; };
+		D9D235AA7898276A14473AE8 /* RemoteUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = B04D268F7E1BD8358A6FBD15 /* RemoteUpgrade.swift */; };
 		DA408A318D222D81ABFD2D5E /* ChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C647D4B8CFECA8B98E376D /* ChatComposer.swift */; };
 		DBD5AB2AE05C2F74A1DDE28C /* HostRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3B756FF0192985AADAFF36 /* HostRepository.swift */; };
 		DC59755DB0F6EA0F7566C0A9 /* AISessionRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */; };
@@ -468,6 +470,7 @@
 		AE1413C37D001C7F1155CEB0 /* MacShellTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacShellTests.swift; sourceTree = "<group>"; };
 		AF89B193750522EEAD51834C /* DuplicateInMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateInMenu.swift; sourceTree = "<group>"; };
 		B0318083FCE727F91B9342F3 /* TodoHoldDropTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHoldDropTests.swift; sourceTree = "<group>"; };
+		B04D268F7E1BD8358A6FBD15 /* RemoteUpgrade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteUpgrade.swift; sourceTree = "<group>"; };
 		B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostProvisioning.swift; sourceTree = "<group>"; };
 		B1793D57706890A26C94F6B6 /* ReadAloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadAloud.swift; sourceTree = "<group>"; };
 		B24103E63B65EE5783B9E334 /* RemoteConversations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteConversations.swift; sourceTree = "<group>"; };
@@ -760,6 +763,7 @@
 				71DA4230B0CF584EA75D9B33 /* RemoteHealth.swift */,
 				CAA172C22AAE74D2E6E00975 /* RemoteLimits.swift */,
 				BDC0C15755494AAA0C43292F /* RemoteRestart.swift */,
+				B04D268F7E1BD8358A6FBD15 /* RemoteUpgrade.swift */,
 				A438AC37F1B7B36405D468FC /* ReviewStore.swift */,
 				20CA60F5B23C77847B5A9639 /* SessionServiceFactory.swift */,
 				723A156714397550BA2826C4 /* ShellWorkspace.swift */,
@@ -1242,6 +1246,7 @@
 				470414DC5B734CD684E3B61B /* RemoteHealth.swift in Sources */,
 				278C9FE2E986245E02258F0F /* RemoteLimits.swift in Sources */,
 				3D7A44B4B3D6A2068F76FFD3 /* RemoteRestart.swift in Sources */,
+				D9D235AA7898276A14473AE8 /* RemoteUpgrade.swift in Sources */,
 				381174EAEAAB226799F0A307 /* RestartSheet.swift in Sources */,
 				D9729BE332BD4630C48AA9D0 /* ReviewItemsSheet.swift in Sources */,
 				5E1BA3A92F17441A72CB47CD /* ReviewSession.swift in Sources */,
@@ -1384,6 +1389,7 @@
 				2BFD296F82D2CDCC861BDD8E /* RemoteHealth.swift in Sources */,
 				8FDFD567428FABBFBA8F8EE2 /* RemoteLimits.swift in Sources */,
 				7D6E28D51FE6B8D16066DE09 /* RemoteRestart.swift in Sources */,
+				A41E9EBB5F02EED9196ACAC5 /* RemoteUpgrade.swift in Sources */,
 				FB41F9C0595CD3909C87CD33 /* RestartSheet.swift in Sources */,
 				1AD71FC41F617407C8585AEA /* ReviewItemsSheet.swift in Sources */,
 				82B52C7E9AD31D5C7F5F4E70 /* ReviewSession.swift in Sources */,

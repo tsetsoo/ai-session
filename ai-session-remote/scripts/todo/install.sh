@@ -55,7 +55,7 @@ HUB_CONF="${AI_DIR}/todo-hub.conf"
 TMUX_SNIPPET="${AI_DIR}/tmux.conf"
 # Every helper copied to BIN_DIR, for install and uninstall alike. Programs are 755, modules 644.
 HELPERS=(ai-todo-open ai-todo-review ai-todo-hook ai-todo-sessions ai-todo-limits ai-todo-codex-notify ai-todo-memory ai-todo-transcript ai-todo-mcp ai-todo-status ai-todo-runner ai-todo-idea ai-todo-watch ai-todo-remind ai-todo-updates ai-todo-workspace)
-MODULES=(ai_todo_redact.py ai_todo_resume.py ai_todo_status.py ai_todo_doctor.py ai_todo_launch.py ai_todo_restart.py ai_todo_updates.py ai_todo_workspace.py)
+MODULES=(ai_todo_redact.py ai_todo_resume.py ai_todo_status.py ai_todo_doctor.py ai_todo_launch.py ai_todo_restart.py ai_todo_upgrade.py ai_todo_updates.py ai_todo_workspace.py)
 TMUX_CONF="${HOME}/.tmux.conf"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
 SETTINGS="${CLAUDE_DIR}/settings.json"
@@ -800,7 +800,7 @@ do_install_status() {
   for file in ai-todo-open ai-todo-hook ai-todo-codex-notify ai-todo-status; do
     run install -m 755 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"
   done
-  for file in ai_todo_status.py ai_todo_doctor.py ai_todo_launch.py ai_todo_restart.py ai_todo_resume.py; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
+  for file in ai_todo_status.py ai_todo_doctor.py ai_todo_launch.py ai_todo_restart.py ai_todo_upgrade.py ai_todo_resume.py; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   resolve_codex_for_hooks
   merge_codex_notify install
   hide_codex_model_nudge
@@ -816,7 +816,7 @@ do_install_claude_status() {
   for file in ai-todo-hook ai-todo-status; do
     run install -m 755 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"
   done
-  for file in ai_todo_status.py ai_todo_doctor.py ai_todo_launch.py ai_todo_restart.py ai_todo_resume.py; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
+  for file in ai_todo_status.py ai_todo_doctor.py ai_todo_launch.py ai_todo_restart.py ai_todo_upgrade.py ai_todo_resume.py; do run install -m 644 "${SRC_DIR}/${file}" "${BIN_DIR}/${file}"; done
   merge_settings install
   install_status_agent
   write_helpers_stamp claude-status-only
