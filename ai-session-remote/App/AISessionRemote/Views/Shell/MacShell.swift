@@ -645,6 +645,15 @@ private struct ShellDetail: View {
     }
 
     var body: some View {
+        // The shell row is a row above the column, not an inset: the conversation's switcher
+        // was laid out under an inset row and hidden (seen 2026-11-07).
+        VStack(spacing: 0) {
+            if !model.shells.shells.isEmpty { shellSwitcher }
+            detailStack
+        }
+    }
+
+    private var detailStack: some View {
         ZStack {
             ConversationColumn(request: $frameRequest, showsConversation: destination.showsConversation)
             switch destination {
@@ -672,9 +681,6 @@ private struct ShellDetail: View {
             case .conversation:
                 EmptyView()
             }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if !model.shells.shells.isEmpty { shellSwitcher }
         }
     }
 
