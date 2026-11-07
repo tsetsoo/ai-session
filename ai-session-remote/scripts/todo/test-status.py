@@ -24,9 +24,21 @@ class StatusTests(unittest.TestCase):
         self.environment.start()
         self.requests = []
         self.http_status = 204
+        self.conversations = []
+        self.links = []
         owner = self
 
         class Hub(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps(owner.conversations).encode())
+
+            def do_PUT(self):
+                owner.links.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+                self.send_response(200)
+                self.end_headers()
+
             def do_POST(self):
                 owner.requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
                 self.send_response(owner.http_status)
@@ -429,6 +441,52 @@ class StatusTests(unittest.TestCase):
             command.return_value = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
             self.assertEqual(status.ClaudeRuntime().states(), {"full-id": ("idle", None)})
             self.assertEqual(command.call_args.args[0], ["/claude", "agents", "--json", "--all"])
+
+    def claude_identity_fixture(self):
+        conf = Path(os.environ["AI_TODO_HUB_CONF"])
+        conf.write_text(conf.read_text() + "TODO_COMPUTER_ID=computer-1\n")
+        row = {"sessionId": "current-id", "pid": 42, "kind": "interactive", "startedAt": 100}
+        local = dict(row, tmux="ai/claude/todo-example:@1.%1")
+        status.atomic_json(self.home / ".claude/sessions/42.json", local)
+        self.conversations = [{"id": "conversation-1", "session_id": "previous-id", "tool": "claude",
+                               "status": "idle", "computer": {"id": "computer-1"},
+                               "tmux_name": "ai/claude/todo-example"}]
+        return row, local
+
+    def test_claude_session_change_relinks_the_exact_terminal_before_reporting(self):
+        row, _ = self.claude_identity_fixture()
+        with patch.object(status, "find_claude", return_value="/claude"), patch.object(status, "run_group") as command:
+            command.return_value = subprocess.CompletedProcess([], 0, json.dumps([dict(row, status="busy")]), "")
+            runtime = status.ClaudeRuntime()
+            self.assertEqual(runtime.states(), {"current-id": ("busy", None)})
+            self.assertEqual(self.links, [("/api/conversations/conversation-1/session", {"session_id": "current-id"})])
+            runtime.states()
+            self.assertEqual(len(self.links), 1, "reconciliation is throttled")
+
+    def test_claude_session_relink_requires_same_host_terminal_and_live_instance(self):
+        for change in ("host", "terminal", "closed", "already-linked", "background", "stale-registry", "ambiguous"):
+            with self.subTest(change=change):
+                row, local = self.claude_identity_fixture()
+                rows = [row]
+                if change == "host": self.conversations[0]["computer"]["id"] = "other-computer"
+                if change == "terminal": self.conversations[0]["tmux_name"] += "-other"
+                if change == "closed": self.conversations[0]["status"] = "closed"
+                if change == "already-linked": self.conversations[0]["session_id"] = "current-id"
+                if change == "background": row["kind"] = "background"
+                if change == "stale-registry":
+                    status.atomic_json(self.home / ".claude/sessions/42.json", dict(local, startedAt=99))
+                if change == "ambiguous":
+                    rows.append(dict(row, pid=43, sessionId="another-id"))
+                    status.atomic_json(self.home / ".claude/sessions/43.json", dict(local, pid=43, sessionId="another-id"))
+                status.reconcile_claude_sessions(rows)
+                self.assertEqual(self.links, [])
+
+    def test_claude_hub_failure_does_not_interrupt_status_collection(self):
+        row, _ = self.claude_identity_fixture()
+        with patch.object(status, "find_claude", return_value="/claude"), patch.object(status, "run_group") as command, \
+                patch.object(status, "reconcile_claude_sessions", side_effect=OSError("offline")):
+            command.return_value = subprocess.CompletedProcess([], 0, json.dumps([dict(row, status="busy")]), "")
+            self.assertEqual(status.ClaudeRuntime().states(), {"current-id": ("busy", None)})
 
     def test_timed_out_command_takes_its_children_with_it(self):
         # `claude agents` starts keychain lookups; killing only claude left them running.
