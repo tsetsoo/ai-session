@@ -794,6 +794,7 @@ private struct ConversationColumn: View {
     /// One Memories inspector for the column. It follows the conversation in front, so a
     /// switch swaps its contents instead of closing it and opening another frame's.
     @State private var sidePanel: ConversationSidePanel?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var frontmostID: String? {
         // In Automation the conversation pane is hidden: nothing in it is frontmost, so its
@@ -814,6 +815,7 @@ private struct ConversationColumn: View {
                         shown.removeAll { $0 == id }
                         if model.selectedTodoID == id { model.selectedTodoID = nil }
                     }
+                    .environment(\.toggleWorkersPanel, { send(.workers, for: id) })
                     .opacity(frontmostID == id ? 1 : 0)
                     .allowsHitTesting(frontmostID == id)
                     .accessibilityHidden(frontmostID != id)
@@ -1023,7 +1025,11 @@ private struct ConversationColumn: View {
     private func send(_ command: ConversationToolbarCommand, for todoID: String) {
         switch command {
         case .memories: sidePanel = .memories; return
-        case .workers: sidePanel = .workers; return
+        case .workers:
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) {
+                sidePanel = sidePanel == .workers ? nil : .workers
+            }
+            return
         default: break
         }
         toolbarRequest = ConversationToolbarRequest(command: command, todoID: todoID)

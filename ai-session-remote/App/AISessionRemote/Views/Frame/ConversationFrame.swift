@@ -17,6 +17,7 @@ extension EnvironmentValues {
     /// The frame fills its own window (the Mac pop-out), so the window's native title and
     /// subtitle name the todo and the frame doesn't repeat them in its toolbar.
     @Entry var frameOwnsWindow = false
+    @Entry var toggleWorkersPanel: (() -> Void)? = nil
 }
 
 /// A todo's conversation: a native header (title, section · computer · folder, live
@@ -47,6 +48,8 @@ struct ConversationFrame: View {
 
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
     @Environment(\.frameOwnsWindow) private var ownsWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.toggleWorkersPanel) private var toggleWorkersPanel
     /// Absent in previews.
     @Environment(AppModel.self) private var appModel: AppModel?
     #if os(macOS)
@@ -187,7 +190,7 @@ struct ConversationFrame: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 if let tool = chromeTool {
-                    ToolBand(tool: tool)
+                    ToolBand(tool: tool, onWorkers: toolBandWorkersAction)
                 }
                 limitsBar
             }
@@ -467,8 +470,15 @@ struct ConversationFrame: View {
             Divider()
             HStack {
                 Button {
-                    shellOpened = true
-                    withAnimation(.easeInOut(duration: 0.2)) { shellVisible.toggle() }
+                    if !shellOpened {
+                        shellOpened = true
+                        // Mount the fixed-size terminal at zero height before expanding it.
+                        DispatchQueue.main.async {
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) { shellVisible = true }
+                        }
+                    } else {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) { shellVisible.toggle() }
+                    }
                 } label: {
                     Label("Terminal", systemImage: "terminal")
                 }
@@ -823,9 +833,20 @@ struct ConversationFrame: View {
     /// Workers (Mac): the phone shows them as cards in its chat.
     private var workersAction: (() -> Void)? {
         #if os(macOS)
-        { sidePanel = .workers }
+        { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) {
+            sidePanel = sidePanel == .workers ? nil : .workers
+        } }
         #else
         nil
+        #endif
+    }
+
+    private var toolBandWorkersAction: (() -> Void)? {
+        #if os(macOS)
+        guard conversation != nil else { return nil }
+        return toggleWorkersPanel ?? workersAction
+        #else
+        return nil
         #endif
     }
 
@@ -1433,6 +1454,7 @@ private struct TerminalColorScheme: ViewModifier {
 /// Icon and name across the top of the terminal, in the terminal's own light or dark scheme.
 private struct ToolBand: View {
     let tool: String
+    var onWorkers: (() -> Void)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("terminal.theme") private var themeRaw = TerminalTheme.system.rawValue
@@ -1447,7 +1469,14 @@ private struct ToolBand: View {
             Text(RowText.toolName(tool))
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(AppTheme.color(for: AITool(rawValue: tool)))
+                .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
+            if let onWorkers {
+                Button(action: onWorkers) { Image(systemName: "person.2") }
+                    .buttonStyle(.borderless)
+                    .help("Show or Hide Subagents")
+                    .accessibilityLabel("Show or Hide Subagents")
+            }
         }
         .padding(.horizontal, DS.spacing.m)
         .padding(.vertical, DS.spacing.s)
@@ -1459,8 +1488,6 @@ private struct ToolBand: View {
             }
         }
         .modifier(TerminalColorScheme())
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
     }
 }
 

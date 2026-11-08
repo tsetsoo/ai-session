@@ -12,6 +12,7 @@ struct WorkersPanel: View {
     let store: TodoHubStore
 
     @Query private var hosts: [HostEntity]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var workers: [DelegatedWorker] = []
     @State private var loaded = false
     @State private var problem: String?
@@ -24,8 +25,10 @@ struct WorkersPanel: View {
         Group {
             if let selected, let config {
                 detail(selected, config: config)
+                    .transition(.opacity)
             } else {
                 list
+                    .transition(.opacity)
             }
         }
         .task { await poll() }
@@ -57,7 +60,9 @@ struct WorkersPanel: View {
                     Text(summary).font(.caption).foregroundStyle(.secondary)
                     // Newest first: the one just started is the one to watch.
                     ForEach(shown.reversed()) { worker in
-                        ChatWorkerCard(worker: worker) { selectedID = worker.id }
+                        ChatWorkerCard(worker: worker) {
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { selectedID = worker.id }
+                        }
                     }
                 }
                 .padding(12)
@@ -81,7 +86,7 @@ struct WorkersPanel: View {
     private func detail(_ worker: DelegatedWorker, config: HostConnectionConfig) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                selectedID = nil
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { selectedID = nil }
             } label: {
                 Label("All Workers", systemImage: "chevron.left")
             }
