@@ -14,6 +14,8 @@ struct StartAgentsSection: View {
     let loadBase: () async throws -> StartBase
 
     @State private var baseError: String?
+    /// Bumped by Retry, so the lookup runs again.
+    @State private var lookup = 0
 
     private var several: Bool { rows.count > 1 }
 
@@ -30,6 +32,8 @@ struct StartAgentsSection: View {
                     note(StartAgents.baseLine(base))
                 } else if let baseError {
                     note(baseError, warning: true)
+                    Button("Try Again") { lookup += 1 }
+                        .buttonStyle(.borderless)
                 } else {
                     note("Finding the latest main…")
                 }
@@ -56,16 +60,21 @@ struct StartAgentsSection: View {
         }
         .onChange(of: rows.count) { _, count in
             // Back to one agent: today's tool picker, with that agent's tool.
+            // The base is looked up again next time: it should be the latest main then.
             if count == 1 {
                 toolChoice = rows[0].tool
                 rows = []
+                base = nil
+                baseError = nil
             }
         }
-        .task(id: several && refusal == nil) {
+        .task(id: "\(several && refusal == nil)|\(lookup)") {
             guard several, refusal == nil, base == nil else { return }
             baseError = nil
             do {
-                base = try await loadBase()
+                let found = try await loadBase()
+                guard !Task.isCancelled else { return }
+                base = found
             } catch {
                 guard !Task.isCancelled else { return }
                 baseError = TodoHubStore.message(for: error)

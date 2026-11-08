@@ -499,12 +499,13 @@ final class TodoHubStore {
             throw TodoHubError.invalidBaseURL
         }
         let isNew = todo.conversationStatus == nil
+        let knownIds = Set(conversations(forTodo: todo.id).map(\.id))
         var conversation = try await client.openConversation(
             todoId: todo.id, tool: tool, mcpServers: mcpServers, model: model, baseSha: baseSha, agents: agents
         )
         if StartAgents.hubIgnored(asked: (model: model, baseSha: baseSha), got: conversation) {
-            try? await forgetOnHub(client, conversation)
-            forget(conversation)
+            // Nothing has started. The row stays: an older hub may have returned a conversation
+            // another device started, and a fresh unstarted one only shows Start again.
             throw TodoHubError.conflict("Update the hub to start several agents.")
         }
         if conversation.sessionId.isEmpty {
@@ -557,7 +558,7 @@ final class TodoHubStore {
                 forget(conversation)
                 throw error
             }
-        } else if isNew, let firstMessage, let config {
+        } else if let firstMessage, let config, StartAgents.createdByThisOpen(conversation, knownIds: knownIds) {
             // Claude's id is already on the hub: start it now with the message, then attach.
             do {
                 let path = try await writeHandoff(firstMessage, on: conversation, config: config)

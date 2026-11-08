@@ -127,6 +127,33 @@ final class StartAgentsTests: XCTestCase {
         XCTAssertEqual(labels, ["Claude · opus"])
     }
 
+    /// Added agents copy the first one's MCP selection, and Cursor has none: a Claude or Codex
+    /// row opens first so the selection reaches them.
+    func testOpeningOrderPutsAToolWithServersFirst() {
+        XCTAssertEqual(StartAgents.openingOrder([row("cursor"), row("claude"), row("codex")]).map(\.tool), ["claude", "cursor", "codex"])
+        XCTAssertEqual(StartAgents.openingOrder([row("codex"), row("cursor")]).map(\.tool), ["codex", "cursor"])
+        XCTAssertEqual(StartAgents.openingOrder([row("cursor"), row("cursor", "x")]).map(\.model), ["", "x"])
+    }
+
+    func testStartAgentsOpensAToolWithServersFirst() async throws {
+        let opened = Recorder()
+        _ = try await StartAgents.run(
+            rows: [row("cursor"), row("claude")],
+            openFirst: { row in await opened.append(row.tool); return self.conversation("first") },
+            add: { _, row, _ in await opened.append(row.tool) },
+            message: { _ in "" }
+        )
+        let tools = await opened.items
+        XCTAssertEqual(tools, ["claude", "cursor"])
+    }
+
+    /// Only a row this device didn't know before the open is its own to start with a message
+    /// or to remove when that start fails; another device's conversation is left alone.
+    func testCreatedByThisOpen() {
+        XCTAssertTrue(StartAgents.createdByThisOpen(conversation("new"), knownIds: ["old"]))
+        XCTAssertFalse(StartAgents.createdByThisOpen(conversation("old"), knownIds: ["old"]))
+    }
+
     func testStartAgentsStopsWhenTheFirstFails() async {
         let added = Recorder()
         do {

@@ -97,11 +97,26 @@ public enum StartAgents {
         return false
     }
 
+    /// The open made this row: its id wasn't among the todo's conversations this device knew
+    /// just before. Anything else is an existing conversation, never removed or re-prompted.
+    public static func createdByThisOpen(_ conversation: Conversation, knownIds: Set<String>) -> Bool {
+        !knownIds.contains(conversation.id)
+    }
+
     /// `2 of 3 agents started. Codex didn't start: …`; nil when all started.
     public static func startedNote(total: Int, failures: [(label: String, message: String)]) -> String? {
         guard !failures.isEmpty else { return nil }
         let started = "\(total - failures.count) of \(total) agents started."
         return ([started] + failures.map { "\($0.label) didn't start: \($0.message)" }).joined(separator: " ")
+    }
+
+    /// The rows in the order they open: the first Claude or Codex row moves to the front,
+    /// because added agents copy the first one's MCP selection and Cursor has none.
+    public static func openingOrder(_ rows: [ResearchAgentRow]) -> [ResearchAgentRow] {
+        guard let index = rows.firstIndex(where: { $0.tool != "cursor" }), index > 0 else { return rows }
+        var ordered = rows
+        ordered.insert(ordered.remove(at: index), at: 0)
+        return ordered
     }
 
     public struct Outcome: Sendable {
@@ -118,6 +133,7 @@ public enum StartAgents {
         add: @escaping @Sendable (Conversation, ResearchAgentRow, String) async throws -> Void,
         message: @escaping @Sendable (Error) -> String
     ) async throws -> Outcome {
+        let rows = openingOrder(rows)
         guard let firstRow = rows.first else { throw CancellationError() }
         let first = try await openFirst(firstRow)
         let others = Array(zip(rows.dropFirst(), labels(rows)).enumerated())
