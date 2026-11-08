@@ -1524,10 +1524,12 @@ final class TodoHubStore {
 
     func updateMemory(_ memory: Memory, _ request: UpdateMemoryRequest) async throws {
         try await perform { client in _ = try await client.updateMemory(id: memory.id, request) }
+        revision += 1
     }
 
     func deleteMemory(_ memory: Memory) async throws {
         try await perform { client in try await client.deleteMemory(id: memory.id) }
+        revision += 1
     }
 
     /// Overrides the session's project; `nil` = no project.

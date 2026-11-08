@@ -12,7 +12,7 @@ enum ProjectsDemo {
 }
 #endif
 
-/// Suggested folders on top, then projects grouped by computer, with + New Project. In a
+/// Projects grouped by computer, with + New Project. In a
 /// navigation stack rows link to the host's `Route` for a project; with a `selection` (the
 /// Mac's list column) they select instead.
 struct ProjectsList<Route: Hashable>: View {
@@ -23,6 +23,8 @@ struct ProjectsList<Route: Hashable>: View {
     /// A project was just created: show it.
     let onCreated: (String) -> Void
     @State private var editor: ProjectEditorSheet.Mode?
+    @State private var pendingMemories: [Memory] = []
+    @State private var pendingError: String?
 
     init(store: TodoHubStore, route: @escaping (String) -> Route, onCreated: @escaping (String) -> Void) {
         self.store = store
@@ -44,6 +46,7 @@ struct ProjectsList<Route: Hashable>: View {
                 }
             }
             .refreshable { await store.refresh() }
+            .task(id: "\(store.isConfigured)|\(store.revision)") { await loadPending() }
             .sheet(item: $editor) { mode in
                 ProjectEditorSheet(mode: mode, store: store) { created in
                     onCreated(created.id)
@@ -73,14 +76,14 @@ struct ProjectsList<Route: Hashable>: View {
     private var rows: some View {
         // Offline (with Retry) or a rejected token, like the other lists.
         ListStatusBanner(store: store)
-        if !store.suggestions.isEmpty && !store.isOffline {
-            suggestionsSection
+        PendingMemoriesSection(memories: pendingMemories, store: store)
+        if let pendingError {
+            Label(pendingError, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(DS.warning)
         }
         if store.projects.isEmpty {
             Section {
-                Text(store.suggestions.isEmpty
-                    ? "No projects yet. A project is a folder on one of your computers; conversations in it are grouped automatically."
-                    : "No projects yet. Pick a suggested folder above, or add one with +.")
+                Text("No projects yet. A project is a folder on one of your computers; conversations in it are grouped automatically.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -102,45 +105,20 @@ struct ProjectsList<Route: Hashable>: View {
         }
     }
 
-    private var suggestionsSection: some View {
-        Section {
-            ForEach(store.suggestions) { suggestion in
-                Button {
-                    editor = .create(suggestion)
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "folder.badge.plus")
-                            .foregroundStyle(.tint)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(suggestion.name)
-                                .foregroundStyle(.primary)
-                            Text(suggestion.folder)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.head)
-                            HStack(spacing: 4) {
-                                Text(suggestion.computer.name)
-                                Text("· \(suggestion.sessions) conversation\(suggestion.sessions == 1 ? "" : "s")")
-                                if let ago = AppTheme.relativeTime(from: suggestion.lastActivityDate) {
-                                    Text("· \(ago)")
-                                }
-                            }
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        } header: {
-            Text("Suggested")
-        } footer: {
-            Text("Folders with conversations that aren't in a project yet. Tap one to create it.")
+
+    private func loadPending() async {
+        guard store.isConfigured else { return }
+        do {
+            let rows = try await store.pendingMemories()
+            guard !Task.isCancelled else { return }
+            pendingMemories = rows
+            pendingError = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            pendingError = TodoHubStore.message(for: error)
         }
     }
+
 }
 
 extension ProjectsList where Route == String {

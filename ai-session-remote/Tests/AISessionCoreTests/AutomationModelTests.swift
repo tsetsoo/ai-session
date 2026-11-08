@@ -25,14 +25,14 @@ final class AutomationModelTests: XCTestCase {
             try idea("c", project: "p1", pending: true), try idea("d", project: "p1", status: "dropped"),
             try idea("e", project: "gone"),
         ]
-        XCTAssertEqual(ideas.filter(IdeaFilter.all.matches).map(\.id), ["a", "b", "e"], "All hides dropped and waiting")
+        XCTAssertEqual(ideas.filter(IdeaFilter.all.matches).map(\.id), ["a", "b", "c", "e"], "All includes waiting and hides dropped")
         XCTAssertEqual(ideas.filter(IdeaFilter.waiting.matches).map(\.id), ["c"])
         XCTAssertEqual(ideas.filter(IdeaFilter.dropped.matches).map(\.id), ["d"])
         XCTAssertEqual(ideas.filter(IdeaFilter.researched.matches).map(\.id), ["b"])
         let groups = IdeaGrouping.byProject(ideas.filter(IdeaFilter.all.matches),
                                             projects: [try project("p1", name: "zeta"), try project("p2", name: "alpha")])
         XCTAssertEqual(groups.map { $0.project?.name }, ["alpha", "zeta", nil], "by name, unknown last")
-        XCTAssertEqual(groups.map { $0.ideas.map(\.id) }, [["a"], ["b"], ["e"]])
+        XCTAssertEqual(groups.map { $0.ideas.map(\.id) }, [["a"], ["b", "c"], ["e"]])
         XCTAssertEqual(IdeaFilter.waiting.label, "Waiting for OK")
     }
 

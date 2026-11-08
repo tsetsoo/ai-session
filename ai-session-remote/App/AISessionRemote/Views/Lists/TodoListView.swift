@@ -9,6 +9,7 @@ import SwiftUI
 struct TodoListView: View {
     let sections: [TodoSection]
     let onOpen: (Todo) -> Void
+    private let onRestart: ((Todo) -> Void)?
     private let query: String
     private let selection: Binding<String?>?
     /// The section whose add field takes the phone Home-screen focus.
@@ -26,12 +27,13 @@ struct TodoListView: View {
 
     init(sections: [TodoSection], query: String = "", selection: Binding<String?>? = nil,
          quickAddSection: TodoSection? = nil, grouping: Binding<TodoGrouping>? = nil,
-         onOpen: @escaping (Todo) -> Void) {
+         onRestart: ((Todo) -> Void)? = nil, onOpen: @escaping (Todo) -> Void) {
         self.sections = sections
         self.query = query
         self.selection = selection
         self.quickAddSection = quickAddSection
         self.grouping = grouping
+        self.onRestart = onRestart
         self.onOpen = onOpen
     }
 
@@ -245,24 +247,21 @@ struct TodoListView: View {
             }
         }
         .contextMenu {
-            Button {
-                onOpen(todo)
-            } label: {
-                Label("Open", systemImage: "arrow.up.forward.app")
-            }
             MuteNotificationsButton(todoID: todo.id, actions: actions)
             RenameTodoButton(todo: todo, store: store) { actions.renameTarget = $0 }
-            // Project ▸ (disabled offline or without projects).
-            TodoProjectMenu(todo: todo, store: store)
-            // Offline, the changing items are left out, like the swipes.
             if canChange {
                 TodoHoldButton(todo: todo, store: store)
-                Button {
-                    toggle(todo)
-                } label: {
-                    Label(todo.completed ? "Mark as Not Done" : "Mark as Done",
-                          systemImage: todo.completed ? "arrow.uturn.backward" : "checkmark")
+                if conversation != nil, let onRestart {
+                    Button { onRestart(todo) } label: {
+                        Label("Restart…", systemImage: "arrow.triangle.2.circlepath")
+                    }
                 }
+                if conversation == nil {
+                    Button { linkTarget = todo } label: {
+                        Label("Link Conversation…", systemImage: "link")
+                    }
+                }
+                Divider()
                 if let conversation {
                     Button {
                         actions.requestClose(conversation, store: store, hosts: hosts)
@@ -275,20 +274,15 @@ struct TodoListView: View {
                     } label: {
                         Label("Delete Conversation…", systemImage: "trash.slash")
                     }
-                } else {
-                    Button {
-                        linkTarget = todo
-                    } label: {
-                        Label("Link Conversation…", systemImage: "link")
-                    }
                 }
-                Divider()
                 Button(role: .destructive) {
                     deleteTarget = todo
                 } label: {
                     Label("Delete Todo…", systemImage: "trash")
                 }
+                Divider()
             }
+            TodoProjectMenu(todo: todo, store: store)
         }
         .todoDragSource(todo, store: store)
         .todoHoldDropTarget(store: store, enabled: todo.onHold)

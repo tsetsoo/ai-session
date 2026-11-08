@@ -26,7 +26,7 @@ struct TodoProjectMenu: View {
                 }
             }
         } label: {
-            Label("Project", systemImage: "folder")
+            Label("Move to Project", systemImage: "folder")
         }
         .disabled(store.isOffline || store.projects.isEmpty)
     }

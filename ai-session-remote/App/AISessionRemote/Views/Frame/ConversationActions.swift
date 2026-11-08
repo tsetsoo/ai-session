@@ -184,7 +184,7 @@ struct ConversationMenu: View {
             .disabled(!canRename)
             if let onCopyResume {
                 Button(action: onCopyResume) {
-                    Label("Copy Resume Command", systemImage: "doc.on.doc")
+                    Label("Copy Command to Resume in a Terminal", systemImage: "doc.on.doc")
                 }
                 .disabled(!hasConversation)
             }
@@ -362,16 +362,16 @@ struct ConversationToolbarActions: View {
             if showsResumeNow {
                 ResumeAfterLimitButton(action: onResumeNow)
             }
-            if showsCopy {
-                Button(action: onCopy) {
-                    Image(systemName: "doc.on.doc")
-                }
-                #if os(macOS)
-                .help("Copy Resume Command")
-                #endif
-                .accessibilityLabel("Copy Resume Command")
-                .disabled(!canCopy)
+            if let onReview {
+                Button(action: onReview) { Image(systemName: "text.badge.checkmark") }
+                    .help("Review Changes…")
+                    .accessibilityLabel("Review Changes")
+                    .disabled(!hasConversation)
             }
+            Button(action: onRestart) { Image(systemName: "arrow.triangle.2.circlepath") }
+                .help("Restart…")
+                .accessibilityLabel("Restart")
+                .disabled(!canRestart)
             if showsPopOut {
                 Button(action: onPopOut) {
                     Image(systemName: ConversationFrame.popOutSymbol)
@@ -402,7 +402,7 @@ struct ConversationToolbarActions: View {
                 onRestart: onRestart,
                 isReady: isReady,
                 isConnected: isConnected,
-                onCopyResume: copyInMenu ? onCopy : nil,
+                onCopyResume: onCopy,
                 onMemories: onMemories,
                 onWorkers: onWorkers,
                 onClose: onClose,

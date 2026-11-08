@@ -74,6 +74,7 @@ struct MacShell: View {
     @State private var initialPaletteQuery = ""
     /// ⏎, a double-click or Open for the selected todo's frame.
     @State private var frameRequest: FrameRequest?
+    @State private var toolbarRequest: ConversationToolbarRequest?
     /// A computer's Other Sessions, On This Computer or Open Shell, shown in the detail column.
     @State private var computerPage: ComputerPage?
     /// The sidebar row picked for the user at launch, until they pick one or it moves to Needs you.
@@ -128,7 +129,7 @@ struct MacShell: View {
             // Its own view, so choosing a conversation does not rebuild the list column. It
             // stays mounted under Automation, so live terminals aren't torn down.
             ZStack {
-                ShellDetail(frameRequest: $frameRequest, computerPage: computerPage, onOpen: { open($0) })
+                ShellDetail(frameRequest: $frameRequest, toolbarRequest: $toolbarRequest, computerPage: computerPage, onOpen: { open($0) })
                     .opacity(model.appMode == .sessions ? 1 : 0)
                     .allowsHitTesting(model.appMode == .sessions)
                     .accessibilityHidden(model.appMode != .sessions)
@@ -252,7 +253,6 @@ struct MacShell: View {
             store.sectionComputers[$0]?.computer.name
         })
         #endif
-        .searchable(text: $query, prompt: "Search")
         .toolbar {
             // Projects has its own + (New Project) instead.
             if sidebarItem != .projects {
@@ -290,7 +290,13 @@ struct MacShell: View {
                                  showsShortcuts: Self.showsShortcuts, query: query, selection: selection,
                                  onOpen: { open($0) })
         case let .section(section):
-            TodoListView(sections: [section], query: query, selection: selection, onOpen: { open($0) })
+            TodoListView(sections: [section], query: query, selection: selection, onRestart: { todo in
+                model.shells.selectedID = nil
+                computerPage = nil
+                model.selectedConversationID = store.mostUrgent(forTodo: todo.id)?.listKey
+                model.selectedTodoID = todo.id
+                toolbarRequest = ConversationToolbarRequest(command: .restart, todoID: todo.id)
+            }, onOpen: { open($0) })
         case .projects:
             ProjectsList(store: store, selection: Binding(
                 get: { model.selectedProjectID },
@@ -631,6 +637,7 @@ struct MacShell: View {
 /// computer page, so coming back shows the terminal that is still attached.
 private struct ShellDetail: View {
     @Binding var frameRequest: FrameRequest?
+    @Binding var toolbarRequest: ConversationToolbarRequest?
     let computerPage: ComputerPage?
     let onOpen: (Todo) -> Void
 
@@ -655,7 +662,7 @@ private struct ShellDetail: View {
 
     private var detailStack: some View {
         ZStack {
-            ConversationColumn(request: $frameRequest, showsConversation: destination.showsConversation)
+            ConversationColumn(request: $frameRequest, toolbarRequest: $toolbarRequest, showsConversation: destination.showsConversation)
             switch destination {
             case let .shell(id):
                 if let shell = model.shells.shells.first(where: { $0.id == id }) {
@@ -767,6 +774,7 @@ private struct ShellDetail: View {
 /// mounted, so arrowing through the list does not attach every row.
 private struct ConversationColumn: View {
     @Binding var request: FrameRequest?
+    @Binding var toolbarRequest: ConversationToolbarRequest?
     let showsConversation: Bool
 
     @Environment(AppModel.self) private var model
@@ -781,7 +789,6 @@ private struct ConversationColumn: View {
     /// A running conversation selected, not mounted yet: the settle window.
     @State private var pendingID: String?
     /// Commands from this column's single toolbar to the frontmost frame.
-    @State private var toolbarRequest: ConversationToolbarRequest?
     /// The frontmost frame's terminal, for enabling Reconnect / Copy / Paste.
     @State private var terminalState: ConversationTerminalState?
     /// One Memories inspector for the column. It follows the conversation in front, so a

@@ -110,7 +110,7 @@ public enum IdeaFilter: String, CaseIterable, Hashable, Sendable {
     public func matches(_ idea: Idea) -> Bool {
         switch self {
         case .waiting: idea.pending
-        case .all: !idea.pending && idea.status != .dropped
+        case .all: idea.pending || idea.status != .dropped
         case .new: !idea.pending && idea.status == .new
         case .researching: !idea.pending && idea.status == .researching
         case .researched: !idea.pending && idea.status == .researched
