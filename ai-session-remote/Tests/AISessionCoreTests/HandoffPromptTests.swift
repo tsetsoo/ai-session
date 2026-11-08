@@ -36,18 +36,19 @@ final class HandoffPromptTests: XCTestCase {
         XCTAssertTrue(command.contains("--worktree '~/w' 'ai/b' --prompt-file '/h/p' 'ai/codex/todo-1'"), command)
     }
 
-    /// Cursor's `ai-todo-open` path has no first prompt: its hand-off is still pasted.
-    func testOnlyClaudeAndCodexTakeAFirstPrompt() {
+    /// Cursor takes `--prompt-file` too (checked by hand 2026-11-08): agents started in the
+    /// background can't be typed into.
+    func testEveryToolTakesAFirstPrompt() {
         XCTAssertTrue(TmuxCommandBuilder.takesFirstPrompt(tool: "claude"))
         XCTAssertTrue(TmuxCommandBuilder.takesFirstPrompt(tool: "codex"))
-        XCTAssertFalse(TmuxCommandBuilder.takesFirstPrompt(tool: "cursor"))
+        XCTAssertTrue(TmuxCommandBuilder.takesFirstPrompt(tool: "cursor"))
     }
 
     func testStartPlansGoInAsTheFirstPromptForClaudeAndCodex() {
         let start = DuplicateHandoff.Plan.start(text: "Summary", label: "copy")
         XCTAssertEqual(DuplicateHandoff.firstPrompt(start, tool: "claude"), "Summary")
         XCTAssertEqual(DuplicateHandoff.firstPrompt(start, tool: "codex"), "Summary")
-        XCTAssertNil(DuplicateHandoff.firstPrompt(start, tool: "cursor"), "cursor's hand-off is still pasted")
+        XCTAssertEqual(DuplicateHandoff.firstPrompt(start, tool: "cursor"), "Summary")
         XCTAssertNil(DuplicateHandoff.firstPrompt(.fork(sourceSessionId: "s", label: "copy"), tool: "claude"))
         XCTAssertNil(DuplicateHandoff.firstPrompt(.start(text: "  \n", label: "copy"), tool: "claude"))
         XCTAssertNil(DuplicateHandoff.firstPrompt(.cancelled, tool: "claude"))

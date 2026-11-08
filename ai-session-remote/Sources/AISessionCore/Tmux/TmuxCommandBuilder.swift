@@ -240,10 +240,15 @@ public enum TmuxCommandBuilder {
         return " --prompt-file \(shellQuote(path))"
     }
 
-    /// Whether `ai-todo-open` gives this tool a first message (`--prompt-file`). Cursor's start
-    /// has none, so its hand-off is still typed into the terminal.
+    /// Whether `ai-todo-open` gives this tool a first message (`--prompt-file`). Cursor takes it
+    /// too (`ResearchAgents.cursorTakesPrompt`), so agents started in the background get theirs.
     public static func takesFirstPrompt(tool: String) -> Bool {
-        tool == "claude" || tool == "codex"
+        tool == "claude" || tool == "codex" || (tool == "cursor" && ResearchAgents.cursorTakesPrompt)
+    }
+
+    /// The commit new worktrees of `folder`'s repo start from (`<sha> <ref>`, after a fetch).
+    public static func workspaceBase(folder: String) -> String {
+        "\"$HOME/.ai-remote/bin/ai-todo-workspace\" base \(shellQuotePath(folder))"
     }
 
     /// Writes `text` to a new private file under `~/.ai-remote/prompts` and prints its path, for

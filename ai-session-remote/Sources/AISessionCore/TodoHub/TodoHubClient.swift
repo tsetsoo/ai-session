@@ -180,10 +180,15 @@ public struct TodoHubClient: Sendable {
 
     /// Get-or-create for the chosen tool. Throws `.conflict` when the todo's section has no computer.
     /// `mcpServers` is the selection the conversation starts with (`nil` = not managed).
-    public func openConversation(todoId: String, tool: String, mcpServers: [String]? = nil) async throws -> Conversation {
+    public func openConversation(
+        todoId: String, tool: String, mcpServers: [String]? = nil,
+        model: String? = nil, baseSha: String? = nil, agents: Int? = nil
+    ) async throws -> Conversation {
         try await decode(
             Conversation.self,
-            send("POST", "/api/todos/\(escape(todoId))/conversation", body: OpenConversationRequest(tool: tool, mcpServers: mcpServers))
+            send("POST", "/api/todos/\(escape(todoId))/conversation", body: OpenConversationRequest(
+                tool: tool, mcpServers: mcpServers, model: model, baseSha: baseSha, agents: agents
+            ))
         )
     }
 

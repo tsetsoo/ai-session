@@ -1,0 +1,103 @@
+import XCTest
+@testable import AISessionCore
+
+/// Starting a todo with several agents: one base, one first message, each in its own worktree.
+final class StartAgentsTests: XCTestCase {
+    private func row(_ tool: String, _ model: String = "") -> ResearchAgentRow { ResearchAgentRow(tool: tool, model: model) }
+    private let base = StartBase(sha: "8f5a29c0123", ref: "origin/main")
+
+    func testParseBase() {
+        XCTAssertEqual(StartAgents.parseBase("8f5a29c0123 origin/main\n"), base)
+        XCTAssertNil(StartAgents.parseBase(""))
+        XCTAssertNil(StartAgents.parseBase("nothex origin/main"))
+    }
+
+    func testBaseLine() {
+        XCTAssertEqual(StartAgents.baseLine(base), "from origin/main @ 8f5a29c")
+        XCTAssertEqual(StartAgents.baseLine(StartBase(sha: "8f5a29c0123", ref: "HEAD")), "from this computer's current commit @ 8f5a29c")
+    }
+
+    func testBaseFailureMessages() {
+        XCTAssertEqual(StartAgents.baseFailure(exitCode: 66, stderr: "", computer: "Mac"),
+                       "This folder isn't a git repository, so several agents can't each get their own copy.")
+        XCTAssertEqual(StartAgents.baseFailure(exitCode: 64, stderr: "usage: …", computer: "Mac"),
+                       "Update the scripts on Mac to start several agents.")
+        XCTAssertEqual(StartAgents.baseFailure(exitCode: 127, stderr: "", computer: "Mac"),
+                       "Update the scripts on Mac to start several agents.")
+        XCTAssertEqual(StartAgents.baseFailure(exitCode: 1, stderr: "fatal: x\n", computer: "Mac"),
+                       "Couldn't find the latest main on Mac. fatal: x")
+    }
+
+    func testRefusal() {
+        let mac = Computer(id: "m", name: "Mac", hostname: "h", port: 22, username: "u")
+        let ok = Project(id: "p", name: "app", computer: mac, folder: "~/app", repoUrl: "git@x:a.git")
+        XCTAssertEqual(StartAgents.refusal(project: nil), "This todo has no project, so several agents can't each get their own copy.")
+        var off = ok; off.worktrees = false
+        XCTAssertEqual(StartAgents.refusal(project: off),
+                       "This project has worktrees turned off. Several agents can't share one folder. Start with one agent, or turn worktrees on in the project's settings.")
+        var noRepo = ok; noRepo.repoUrl = " "
+        XCTAssertEqual(StartAgents.refusal(project: noRepo),
+                       "This project has no repository, so several agents can't each get their own copy. Start with one agent.")
+        XCTAssertNil(StartAgents.refusal(project: ok))
+    }
+
+    func testAddedRow() {
+        XCTAssertEqual(StartAgents.addedRow(to: [row("claude")], offered: ["claude", "codex"]).tool, "codex")
+        XCTAssertEqual(StartAgents.addedRow(to: [row("claude"), row("codex")], offered: ["claude", "codex"]).tool, "codex")
+    }
+
+    func testCanStart() {
+        let offered = ["claude", "codex"]
+        XCTAssertTrue(StartAgents.canStart(rows: [row("claude")], text: "", offered: offered, base: nil, refusal: nil))
+        let two = [row("claude"), row("codex")]
+        XCTAssertFalse(StartAgents.canStart(rows: two, text: " ", offered: offered, base: base, refusal: nil))
+        XCTAssertFalse(StartAgents.canStart(rows: two, text: "Fix it", offered: offered, base: nil, refusal: nil))
+        XCTAssertFalse(StartAgents.canStart(rows: two, text: "Fix it", offered: offered, base: base, refusal: "no"))
+        XCTAssertFalse(StartAgents.canStart(rows: [row("claude"), row("codex", "a b")], text: "Fix it", offered: offered, base: base, refusal: nil))
+        XCTAssertFalse(StartAgents.canStart(rows: [row("claude"), row("cursor")], text: "Fix it", offered: offered, base: base, refusal: nil))
+        XCTAssertTrue(StartAgents.canStart(rows: two, text: "Fix it", offered: offered, base: base, refusal: nil))
+    }
+
+    func testLabels() {
+        XCTAssertEqual(StartAgents.labels([row("claude"), row("codex"), row("claude", "opus"), row("codex")]),
+                       ["Codex", "Claude · opus", "Codex 2"])
+        XCTAssertEqual(StartAgents.labels([row("claude"), row("claude")]), ["Claude 2"])
+    }
+
+    func testHubIgnoredTheBase() {
+        let mac = Computer(id: "m", name: "Mac", hostname: "h", port: 22, username: "u")
+        func got(model: String? = nil, base: String? = nil) -> Conversation {
+            Conversation(id: "c", todoId: "t", computer: mac, cwd: "~/w", tool: "claude", tmuxName: "ai/claude/todo-1",
+                         sessionId: "s", status: .unknown, model: model, worktreeBase: base)
+        }
+        XCTAssertTrue(StartAgents.hubIgnored(asked: (model: nil, baseSha: "8f5a29c"), got: got()))
+        XCTAssertTrue(StartAgents.hubIgnored(asked: (model: "o3", baseSha: nil), got: got()))
+        XCTAssertFalse(StartAgents.hubIgnored(asked: (model: "o3", baseSha: "8f5a29c"), got: got(model: "o3", base: "8f5a29c")))
+        XCTAssertFalse(StartAgents.hubIgnored(asked: (model: nil, baseSha: nil), got: got()))
+    }
+
+    func testStartedNoteNamesEachFailure() {
+        XCTAssertEqual(StartAgents.startedNote(total: 3, failures: [(label: "Codex", message: "No new codex conversation appeared")]),
+                       "2 of 3 agents started. Codex didn't start: No new codex conversation appeared")
+        XCTAssertNil(StartAgents.startedNote(total: 3, failures: []))
+    }
+
+    func testFirstMessage() {
+        XCTAssertEqual(StartAgents.firstMessage("  Fix it \n"), "Fix it")
+        XCTAssertNil(StartAgents.firstMessage(" \n"))
+    }
+
+    func testWorkspaceBaseCommand() {
+        XCTAssertEqual(TmuxCommandBuilder.workspaceBase(folder: "~/my app"),
+                       "\"$HOME/.ai-remote/bin/ai-todo-workspace\" base \(TmuxCommandBuilder.shellQuotePath("~/my app"))")
+    }
+
+    func testOpenRequestCarriesModelBaseAndAgents() throws {
+        let encoder = TodoHubClient.makeEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let full = String(decoding: try encoder.encode(OpenConversationRequest(tool: "codex", model: "o3", baseSha: "8f5a29c", agents: 2)), as: UTF8.self)
+        XCTAssertEqual(full, #"{"agents":2,"base_sha":"8f5a29c","model":"o3","tool":"codex","worktrees":true}"#)
+        let plain = String(decoding: try encoder.encode(OpenConversationRequest(tool: "codex")), as: UTF8.self)
+        XCTAssertEqual(plain, #"{"tool":"codex","worktrees":true}"#)
+    }
+}

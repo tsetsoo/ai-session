@@ -643,10 +643,19 @@ public struct OpenConversationRequest: Encodable, Sendable {
     /// This app passes `--worktree` to `ai-todo-open`, so the hub may give a new conversation
     /// its own worktree.
     public var worktrees = true
+    /// The first agent's model. Omitted when `nil`.
+    public var model: String?
+    /// The commit its own worktree starts from (one base for all of a start's agents).
+    public var baseSha: String?
+    /// How many agents this start opens; the hub refuses several without worktrees.
+    public var agents: Int?
 
-    public init(tool: String, mcpServers: [String]? = nil) {
+    public init(tool: String, mcpServers: [String]? = nil, model: String? = nil, baseSha: String? = nil, agents: Int? = nil) {
         self.tool = tool
         self.mcpServers = mcpServers
+        self.model = model
+        self.baseSha = baseSha
+        self.agents = agents
     }
 }
 
