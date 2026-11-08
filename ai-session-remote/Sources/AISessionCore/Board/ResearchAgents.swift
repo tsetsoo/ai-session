@@ -74,6 +74,18 @@ public enum ResearchAgents {
         "\(toolName(attempt.tool)) · \(attempt.model ?? "default")"
     }
 
+    /// A failed attempt, or one its computer never picked up, can be tried again.
+    public static func canRetry(_ attempt: IdeaAttempt) -> Bool {
+        ["failed", "missed"].contains(attempt.state)
+    }
+
+    /// Findings saved on the idea that no attempt shows (an older `ai-todo-idea` names no
+    /// attempt), so they aren't hidden behind the per-attempt sections.
+    public static func unattributedFindings(_ findings: String?, attempts: [IdeaAttempt]) -> String? {
+        guard let findings, !findings.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return attempts.contains { $0.findings == findings } ? nil : findings
+    }
+
     /// Where an attempt without findings is; nil once it saved findings.
     public static func stateText(_ attempt: IdeaAttempt) -> String? {
         if let findings = attempt.findings, !findings.isEmpty { return nil }
@@ -81,6 +93,7 @@ public enum ResearchAgents {
         case "due", "waiting": return "Waiting to start"
         case "running": return "Starting…"
         case "failed": return "Failed: \(attempt.result ?? "it did not start")"
+        case "missed", "skipped": return "Didn't start: its computer didn't pick it up in time"
         default: return "Working…"
         }
     }

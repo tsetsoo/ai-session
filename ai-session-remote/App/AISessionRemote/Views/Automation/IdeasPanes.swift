@@ -214,6 +214,11 @@ struct IdeaDetailPane: View {
                 ForEach(idea.attempts) { attempt in
                     attemptSection(attempt)
                 }
+                if let findings = ResearchAgents.unattributedFindings(idea.findings, attempts: idea.attempts) {
+                    Section("Findings") {
+                        Text(Self.markdown(findings)).textSelection(.enabled)
+                    }
+                }
             } else if let findings = idea.findings, !findings.isEmpty {
                 Section("Findings") {
                     Text(Self.markdown(findings)).textSelection(.enabled)
@@ -258,10 +263,10 @@ struct IdeaDetailPane: View {
         Section {
             if let state = ResearchAgents.stateText(attempt) {
                 HStack {
-                    Label(state, systemImage: attempt.state == "failed" ? "exclamationmark.triangle" : "hourglass")
-                        .foregroundStyle(attempt.state == "failed" ? DS.warning : .secondary)
+                    Label(state, systemImage: ResearchAgents.canRetry(attempt) ? "exclamationmark.triangle" : "hourglass")
+                        .foregroundStyle(ResearchAgents.canRetry(attempt) ? DS.warning : .secondary)
                     Spacer()
-                    if attempt.state == "failed" {
+                    if ResearchAgents.canRetry(attempt) {
                         Button("Retry", systemImage: "arrow.clockwise") { act { try await store.retryAttempt(attempt) } }
                             .disabled(store.isOffline)
                     }

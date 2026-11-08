@@ -49,7 +49,7 @@ struct ConversationSwitcherBar: View {
                         Text(ResearchAgents.stateText(attempt) ?? "Failed")
                         Button("Retry", systemImage: "arrow.clockwise") { onRetry(attempt) }
                     } label: {
-                        Label("\(ResearchAgents.label(attempt)) · failed", systemImage: "exclamationmark.triangle")
+                        Label("\(ResearchAgents.label(attempt)) · didn't start", systemImage: "exclamationmark.triangle")
                     }
                     .fixedSize()
                     .foregroundStyle(DS.warning)

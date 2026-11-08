@@ -69,4 +69,20 @@ final class ResearchAgentsTests: XCTestCase {
         XCTAssertEqual(ResearchAgents.stateText(IdeaAttempt(runId: "r", tool: "claude", state: "failed", result: "no folder")), "Failed: no folder")
         XCTAssertNil(ResearchAgents.stateText(IdeaAttempt(runId: "r", tool: "claude", state: "done", findings: "x")))
     }
+
+    func testMissedAttemptCanBeRetried() {
+        let missed = IdeaAttempt(runId: "r", tool: "codex", state: "missed")
+        XCTAssertEqual(ResearchAgents.stateText(missed), "Didn't start: its computer didn't pick it up in time")
+        XCTAssertTrue(ResearchAgents.canRetry(missed))
+        XCTAssertTrue(ResearchAgents.canRetry(IdeaAttempt(runId: "r", tool: "codex", state: "failed")))
+        XCTAssertFalse(ResearchAgents.canRetry(IdeaAttempt(runId: "r", tool: "codex", state: "done")))
+    }
+
+    func testFindingsSavedOnTheIdeaOnlyAreShown() {
+        let attempts = [IdeaAttempt(runId: "r1", tool: "claude", state: "done", findings: "A"), IdeaAttempt(runId: "r2", tool: "codex", state: "done")]
+        XCTAssertNil(ResearchAgents.unattributedFindings("A", attempts: attempts), "already shown under its attempt")
+        XCTAssertEqual(ResearchAgents.unattributedFindings("From an older helper", attempts: attempts), "From an older helper")
+        XCTAssertNil(ResearchAgents.unattributedFindings("  ", attempts: attempts))
+        XCTAssertNil(ResearchAgents.unattributedFindings(String?.none, attempts: attempts))
+    }
 }

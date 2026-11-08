@@ -32,6 +32,9 @@ pub struct DueGroup {
     pub id: String,
     /// The commit every worktree of the group starts from; `None` until the first claim sets it.
     pub base_sha: Option<String>,
+    /// How many agents the group has: with more than one, a folder outside git is refused
+    /// (they would all work in it).
+    pub attempts: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,9 +167,13 @@ fn apply_attempt(job: &mut Job, run: &JobRun) {
 /// A group run's group, and the computer it is pinned to (`None`: the project's usual one).
 fn run_group(conn: &Connection, run: &JobRun) -> rusqlite::Result<Option<(DueGroup, Option<String>)>> {
     let Some(group_id) = run.group_id.as_deref() else { return Ok(None) };
-    conn.query_row("SELECT id, base_sha, computer_id FROM run_groups WHERE id = ?1", params![group_id], |r| {
-        Ok((DueGroup { id: r.get(0)? , base_sha: r.get(1)? }, r.get(2)?))
-    })
+    conn.query_row(
+        "SELECT g.id, g.base_sha, g.computer_id,
+                (SELECT COUNT(*) FROM job_runs r WHERE r.group_id = g.id AND NOT EXISTS (SELECT 1 FROM job_runs x WHERE x.retry_of = r.id))
+         FROM run_groups g WHERE g.id = ?1",
+        params![group_id],
+        |r| Ok((DueGroup { id: r.get(0)?, base_sha: r.get(1)?, attempts: r.get(3)? }, r.get(2)?)),
+    )
     .optional()
 }
 
@@ -333,7 +340,8 @@ fn respond(e: RunError) -> HttpResponse {
 
 fn claim_db(conn: &Connection, run_id: &str, computer_id: &str, no_reading: bool, base_sha: Option<&str>) -> Result<DueRun, RunError> {
     let base_sha = base_sha.map(str::trim).filter(|b| !b.is_empty());
-    if base_sha.is_some_and(|b| !(7..=40).contains(&b.len()) || !b.chars().all(|c| c.is_ascii_hexdigit())) {
+    // SHA-1 (40) or SHA-256 (64) object ids, or an abbreviation.
+    if base_sha.is_some_and(|b| !(7..=64).contains(&b.len()) || !b.chars().all(|c| c.is_ascii_hexdigit())) {
         return Err(RunError::BadRequest("base_sha must be a commit sha"));
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
@@ -661,7 +669,7 @@ fn finish_db(conn: &Connection, run_id: &str, req: &FinishRequest) -> Result<(),
 /// A research attempt that failed: its conversation (if it got one) is closed, so it isn't a
 /// dead tab. Once no attempt of the group is left (due, waiting, running or started) and none
 /// saved findings, the idea goes back to new and an empty group todo is removed.
-fn fail_attempt(conn: &Connection, run_id: &str) -> rusqlite::Result<()> {
+pub(crate) fn fail_attempt(conn: &Connection, run_id: &str) -> rusqlite::Result<()> {
     let row: Option<(Option<String>, Option<String>)> = conn
         .query_row("SELECT group_id, conversation_id FROM job_runs WHERE id = ?1", params![run_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;
@@ -689,6 +697,12 @@ fn fail_attempt(conn: &Connection, run_id: &str) -> rusqlite::Result<()> {
     )?;
     if let Some(todo) = todo {
         conn.execute("DELETE FROM todos WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM conversations WHERE todo_id = ?1)", params![todo])?;
+        // Only closed attempts left: the todo is done (they can still be read there).
+        conn.execute(
+            "UPDATE todos SET completed = 1, completed_at = datetime('now'), updated_at = datetime('now')
+             WHERE id = ?1 AND completed = 0 AND NOT EXISTS (SELECT 1 FROM conversations WHERE todo_id = ?1 AND status != 'closed')",
+            params![todo],
+        )?;
     }
     Ok(())
 }
@@ -698,7 +712,7 @@ fn fail_attempt(conn: &Connection, run_id: &str) -> rusqlite::Result<()> {
 fn retry_run_db(conn: &Connection, run_id: &str) -> Result<JobRun, RunError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let run = load_run(&tx, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
-    let Some(group_id) = run.group_id.as_deref().filter(|_| run.state == "failed") else {
+    let Some(group_id) = run.group_id.as_deref().filter(|_| matches!(run.state.as_str(), "failed" | "missed")) else {
         return Err(RunError::Conflict("Only a failed attempt can be retried"));
     };
     let retried: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM job_runs WHERE retry_of = ?1)", params![run_id], |r| r.get(0))?;
@@ -1625,6 +1639,7 @@ mod group_runner_tests {
         assert_eq!(due.iter().map(|d| d["run"]["id"].as_str().unwrap()).collect::<Vec<_>>(), runs.iter().map(String::as_str).collect::<Vec<_>>());
         assert_eq!(due[1]["job"]["action"]["tool"], "codex", "the attempt's tool, for the usage guard");
         assert_eq!(due[0]["group"]["id"].as_str().is_some(), true);
+        assert_eq!(due[0]["group"]["attempts"], 3, "the runner refuses several agents in one folder");
         assert!(due[0]["group"]["base_sha"].is_null());
         let (_, v) = get(&pool, "/api/runner/due?computer_id=mac").await;
         assert!(due_runs(&v).is_empty(), "pinned to the chosen computer, not the section's");
@@ -1789,6 +1804,75 @@ mod group_runner_tests {
         assert_eq!(chosen, vec![false, true]);
         let (status, _) = post(&pool, &format!("/api/conversations/{}/continue", conversations[0]), json!({})).await;
         assert_eq!(status, StatusCode::CONFLICT, "a closed conversation is reopened first");
+    }
+
+    #[actix_web::test]
+    async fn missed_attempts_reset_idea() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (_, todo) = research(&pool, "spread", two()).await;
+        conn.execute("UPDATE job_runs SET due_at = datetime('now', '-2 days')", []).unwrap();
+        crate::scheduler::tick_db(&conn, chrono::Utc::now()).unwrap();
+        let (status, group): (String, Option<String>) =
+            conn.query_row("SELECT status, group_id FROM ideas WHERE id = 'idea'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((status.as_str(), group), ("new", None), "Research Now works again");
+        let todos: i64 = conn.query_row("SELECT COUNT(*) FROM todos WHERE id = ?1", [&todo], |r| r.get(0)).unwrap();
+        assert_eq!(todos, 0);
+    }
+
+    #[actix_web::test]
+    async fn stuck_attempt_counts_as_failed() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (runs, _) = research(&pool, "mac", two()).await;
+        claim(&pool, &runs[0], "mac", Some("abcdef1")).await;
+        claim(&pool, &runs[1], "mac", None).await;
+        finish(&pool, &runs[1], "failed").await;
+        conn.execute("UPDATE job_runs SET updated_at = datetime('now', '-1 hour') WHERE id = ?1", [&runs[0]]).unwrap();
+        crate::scheduler::tick_db(&conn, chrono::Utc::now()).unwrap();
+        let status: String = conn.query_row("SELECT status FROM ideas WHERE id = 'idea'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "new");
+    }
+
+    #[actix_web::test]
+    async fn retry_accepts_missed_attempt() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (runs, _) = research(&pool, "mac", two()).await;
+        claim(&pool, &runs[0], "mac", Some("abcdef1")).await;
+        start(&pool, &runs[0]).await;
+        conn.execute("UPDATE job_runs SET due_at = datetime('now', '-2 days') WHERE id = ?1", [&runs[1]]).unwrap();
+        crate::scheduler::tick_db(&conn, chrono::Utc::now()).unwrap();
+        let (status, v) = post(&pool, &format!("/api/runs/{}/retry", runs[1]), json!({})).await;
+        assert_eq!(status, StatusCode::CREATED, "{v}");
+    }
+
+    #[actix_web::test]
+    async fn all_failed_after_start_completes_the_todo() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (runs, todo) = research(&pool, "mac", json!([{"tool": "claude"}])).await;
+        claim(&pool, &runs[0], "mac", Some("abcdef1")).await;
+        start(&pool, &runs[0]).await;
+        finish(&pool, &runs[0], "failed").await;
+        let status: String = conn.query_row("SELECT status FROM ideas WHERE id = 'idea'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "new");
+        let completed: i64 = conn.query_row("SELECT completed FROM todos WHERE id = ?1", [&todo], |r| r.get(0)).unwrap();
+        assert_eq!(completed, 1, "a todo left with only closed attempts is done, not left open");
+    }
+
+    #[actix_web::test]
+    async fn claim_accepts_sha256_base() {
+        let (_db, pool) = pool("runner");
+        seed(&pool.get().unwrap());
+        let (runs, _) = research(&pool, "mac", two()).await;
+        let (status, v) = claim(&pool, &runs[0], "mac", Some(&"a".repeat(64))).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(claim(&pool, &runs[1], "mac", Some(&"a".repeat(65))).await.0, StatusCode::BAD_REQUEST);
     }
 
     #[actix_web::test]

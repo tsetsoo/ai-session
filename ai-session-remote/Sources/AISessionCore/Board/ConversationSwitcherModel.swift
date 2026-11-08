@@ -22,11 +22,11 @@ public enum ConversationSwitcherModel {
         tabs(conversations).count + failed >= 2
     }
 
-    /// A research todo's failed attempts that get a tab of their own (with Retry): those with
-    /// no conversation, or whose conversation was closed when they failed.
+    /// A research todo's attempts that failed or never started and get a place of their own
+    /// (with Retry): those with no conversation, or whose conversation was closed when they failed.
     public static func failedAttempts(_ attempts: [IdeaAttempt], conversations: [Conversation]) -> [IdeaAttempt] {
         let open = Set(tabs(conversations).map(\.id))
-        return attempts.filter { $0.state == "failed" && !($0.conversationId.map(open.contains) ?? false) }
+        return attempts.filter { ResearchAgents.canRetry($0) && !($0.conversationId.map(open.contains) ?? false) }
     }
 
     /// `Codex · gpt-6.1`, or just `Claude` with its default model.

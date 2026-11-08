@@ -3815,6 +3815,19 @@ assert rows["r-grpb0002"].get("base_sha") == sys.argv[1], rows
 pass "runner_group_run_proposes_base_and_uses_it"
 
 runs_reset
+due_run r-plaina01 proj-plain '{"mode":"always"}'
+hub_edit "s['due_runs'][0]['group'] = dict(id='g-plain', base_sha=None, attempts=2)"
+runner tick || fail "tick failed"
+posts_to finish | grep '"id": "r-plaina01"' | grep '"state": "failed"' | grep -q "needs a git repo" || fail "several agents in a plain folder were not refused: $(posts_to finish)"
+[[ ! -s "$R_OPEN_LOG" ]] || fail "a refused group run opened a conversation"
+runs_reset
+due_run r-plainb01 proj-plain '{"mode":"always"}'
+hub_edit "s['due_runs'][0]['group'] = dict(id='g-plain1', base_sha=None, attempts=1)"
+runner tick || fail "tick failed"
+posts_to finish | grep '"id": "r-plainb01"' | grep -q '"state": "done"' || fail "one agent in a plain folder did not start: $(posts_to finish)"
+pass "runner_refuses_several_agents_outside_git"
+
+runs_reset
 due_run r-grpc0003 proj-app '{"mode":"always"}' 0 codex
 hub_edit "s['due_runs'][0]['group'] = dict(id='g-three', base_sha='$OLD_SHA'); s['start_response'] = dict(todo_id='t-grp', tmux_name='ai/codex/todo-grp', session_id='', tool='codex', prompt='x', conversation_id='c-grp3', base_sha='$OLD_SHA')"
 FAKE_OPEN_ID=codex-thread-1 runner tick || fail "tick failed"

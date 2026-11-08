@@ -39,9 +39,10 @@ final class ConversationSwitcherTests: XCTestCase {
             IdeaAttempt(runId: "r2", tool: "codex", state: "failed", result: "boom", conversationId: "b"),
             IdeaAttempt(runId: "r3", tool: "cursor", state: "failed"),
             IdeaAttempt(runId: "r4", tool: "codex", state: "failed", conversationId: "d"),
+            IdeaAttempt(runId: "r5", tool: "claude", state: "missed"),
         ]
         let conversations = [c("a", "claude", .idle), c("b", "codex", .closed), c("d", "codex", .busy)]
-        XCTAssertEqual(ConversationSwitcherModel.failedAttempts(attempts, conversations: conversations).map(\.runId), ["r2", "r3"],
+        XCTAssertEqual(ConversationSwitcherModel.failedAttempts(attempts, conversations: conversations).map(\.runId), ["r2", "r3", "r5"],
                        "a failed attempt whose conversation still runs shows as that conversation")
         XCTAssertEqual(ConversationSwitcherModel.failedAttempts([], conversations: conversations), [])
         XCTAssertTrue(ConversationSwitcherModel.showsSwitcher([c("a", "claude", .idle)], failed: 1))

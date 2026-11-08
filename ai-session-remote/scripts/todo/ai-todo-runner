@@ -664,6 +664,9 @@ def start_run(hub, computer_id, due, folders):
     # A research group's runs all start from the group's base commit.
     base = (due.get("group") or {}).get("base_sha") or None
     root, path, is_git, branch = make_worktree(folder, action["project_id"], run["id"], job.get("name") or "job", base)
+    # Several research agents never share one folder: outside git there is no worktree each.
+    if not is_git and int((due.get("group") or {}).get("attempts") or 1) > 1:
+        raise RuntimeError("research with several agents needs a git repo; %s is not one" % tilde(folder))
     # A debugging run reports its issues with ai-todo-watch, which only works in a worktree.
     if (run.get("note") or "").startswith("watch:") and not is_git:
         raise RuntimeError("a debugging run needs a git repo; %s is not one (map the issue to a repo folder)" % tilde(folder))

@@ -155,11 +155,18 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
     }
     // A run claimed but never started (runner killed, hub unreachable mid-start) fails after
     // 15 minutes instead of staying `running` forever.
-    tx.execute(
-        "UPDATE job_runs SET state = 'failed', result = 'the runner never started it', updated_at = ?1
-         WHERE state = 'running' AND todo_id IS NULL AND updated_at < ?2",
-        params![stamp, sql_time(now - Duration::minutes(STUCK_RUNNING_MINUTES))],
-    )?;
+    let stuck: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "UPDATE job_runs SET state = 'failed', result = 'the runner never started it', updated_at = ?1
+             WHERE state = 'running' AND todo_id IS NULL AND updated_at < ?2 RETURNING id",
+        )?;
+        let rows = stmt.query_map(params![stamp, sql_time(now - Duration::minutes(STUCK_RUNNING_MINUTES))], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    // Research attempts among them: a group with none left gives its idea back.
+    for id in out.missed.iter().chain(&stuck) {
+        crate::runner_api::fail_attempt(&tx, id)?;
+    }
     // An idea reserved by a run that will never start (missed, skipped, failed before its
     // conversation existed, or deleted with its job) goes back to the queue.
     tx.execute(
