@@ -100,4 +100,50 @@ final class StartAgentsTests: XCTestCase {
         let plain = String(decoding: try encoder.encode(OpenConversationRequest(tool: "codex")), as: UTF8.self)
         XCTAssertEqual(plain, #"{"tool":"codex","worktrees":true}"#)
     }
+
+    private struct Boom: Error {}
+
+    private func conversation(_ id: String) -> Conversation {
+        Conversation(id: id, todoId: "t", computer: Computer(id: "m", name: "Mac", hostname: "h", port: 22, username: "u"),
+                     cwd: "~/w", tool: "claude", tmuxName: "ai/claude/todo-\(id)", sessionId: "s", status: .unknown)
+    }
+
+    func testStartAgentsKeepsGoingWhenOneFails() async throws {
+        let added = Recorder()
+        let outcome = try await StartAgents.run(
+            rows: [row("claude"), row("codex"), row("claude", "opus")],
+            openFirst: { _ in self.conversation("first") },
+            add: { first, row, label in
+                XCTAssertEqual(first.id, "first")
+                if row.tool == "codex" { throw Boom() }
+                await added.append(label)
+            },
+            message: { _ in "No new codex conversation appeared" }
+        )
+        XCTAssertEqual(outcome.first.id, "first")
+        XCTAssertEqual(outcome.failures.map(\.label), ["Codex"])
+        XCTAssertEqual(outcome.failures.map(\.message), ["No new codex conversation appeared"])
+        let labels = await added.items
+        XCTAssertEqual(labels, ["Claude · opus"])
+    }
+
+    func testStartAgentsStopsWhenTheFirstFails() async {
+        let added = Recorder()
+        do {
+            _ = try await StartAgents.run(
+                rows: [row("claude"), row("codex")],
+                openFirst: { _ in throw Boom() },
+                add: { _, _, label in await added.append(label) },
+                message: { _ in "" }
+            )
+            XCTFail("the first failing should throw")
+        } catch {}
+        let labels = await added.items
+        XCTAssertEqual(labels, [])
+    }
+}
+
+private actor Recorder {
+    var items: [String] = []
+    func append(_ item: String) { items.append(item) }
 }

@@ -103,4 +103,39 @@ public enum StartAgents {
         let started = "\(total - failures.count) of \(total) agents started."
         return ([started] + failures.map { "\($0.label) didn't start: \($0.message)" }).joined(separator: " ")
     }
+
+    public struct Outcome: Sendable {
+        public let first: Conversation
+        public let failures: [(label: String, message: String)]
+    }
+
+    /// Opens the first agent (the todo's main conversation); a failure there throws and nothing
+    /// else starts. Then adds the others at once: one that fails is reported, the rest keep
+    /// going. Failures come back in row order.
+    public static func run(
+        rows: [ResearchAgentRow],
+        openFirst: @escaping @Sendable (ResearchAgentRow) async throws -> Conversation,
+        add: @escaping @Sendable (Conversation, ResearchAgentRow, String) async throws -> Void,
+        message: @escaping @Sendable (Error) -> String
+    ) async throws -> Outcome {
+        guard let firstRow = rows.first else { throw CancellationError() }
+        let first = try await openFirst(firstRow)
+        let others = Array(zip(rows.dropFirst(), labels(rows)).enumerated())
+        let failures = await withTaskGroup(of: (Int, String, String)?.self) { group in
+            for (index, (row, label)) in others {
+                group.addTask {
+                    do {
+                        try await add(first, row, label)
+                        return nil
+                    } catch {
+                        return (index, label, message(error))
+                    }
+                }
+            }
+            var found: [(Int, String, String)] = []
+            for await failure in group { if let failure { found.append(failure) } }
+            return found.sorted { $0.0 < $1.0 }.map { (label: $0.1, message: $0.2) }
+        }
+        return Outcome(first: first, failures: failures)
+    }
 }
