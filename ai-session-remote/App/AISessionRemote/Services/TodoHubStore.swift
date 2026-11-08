@@ -490,23 +490,40 @@ final class TodoHubStore {
     ///
     /// A start with several agents passes `agents`, the first agent's `model` and the shared
     /// `baseSha`. `firstMessage` is the tool's first message (`--prompt-file`); the session is
-    /// then started detached before the terminal attaches.
+    /// then started detached before the terminal attaches. It only goes to a conversation this
+    /// open created. `promptFile` makes its file (several agents share one upload); without it
+    /// the text is uploaded here.
     func openConversation(
         for todo: Todo, tool: String, config: HostConnectionConfig?, mcpServers: [String]? = nil,
-        model: String? = nil, baseSha: String? = nil, agents: Int? = nil, firstMessage: String? = nil
+        model: String? = nil, baseSha: String? = nil, agents: Int? = nil, firstMessage: String? = nil,
+        promptFile: PromptFileMaker? = nil
     ) async throws -> Conversation {
         guard let client = hubClient() else {
             throw TodoHubError.invalidBaseURL
         }
         let isNew = todo.conversationStatus == nil
         let knownIds = Set(conversations(forTodo: todo.id).map(\.id))
-        var conversation = try await client.openConversation(
+        let opened = try await client.openedConversation(
             todoId: todo.id, tool: tool, mcpServers: mcpServers, model: model, baseSha: baseSha, agents: agents
         )
+        var conversation = opened.conversation
+        let createdHere = StartAgents.createdByThisOpen(conversation, created: opened.created, knownIds: knownIds)
         if StartAgents.hubIgnored(asked: (model: model, baseSha: baseSha), got: conversation) {
-            // Nothing has started. The row stays: an older hub may have returned a conversation
-            // another device started, and a fresh unstarted one only shows Start again.
+            // Nothing has started. A row this open made goes, so the todo can be started again
+            // once the hub is updated; another device's conversation stays.
+            if createdHere {
+                try? await forgetOnHub(client, conversation)
+                forget(conversation)
+            }
             throw TodoHubError.conflict("Update the hub to start several agents.")
+        }
+        let message = createdHere ? firstMessage : nil
+        let computerName = conversation.computer.name
+        let makePromptFile: PromptFileMaker? = message.map { text in
+            promptFile ?? {
+                guard let config else { throw TodoHubError.conflict("No computer to start \(tool) on") }
+                return try await self.writeHandoff(text, computerName: computerName, config: config)
+            }
         }
         if conversation.sessionId.isEmpty {
             // An empty id is a start that has not finished. Keep it out of the store, and drop
@@ -518,8 +535,7 @@ final class TodoHubStore {
             }
             do {
                 let servers = conversation.mcpServers
-                var promptFile: String?
-                if let firstMessage { promptFile = try await writeHandoff(firstMessage, on: conversation, config: config) }
+                let promptFile = try await makePromptFile?()
                 var result = try await NIOSSHClient().exec(
                     config,
                     command: TmuxCommandBuilder.freshTodoConversation(
@@ -558,15 +574,22 @@ final class TodoHubStore {
                 forget(conversation)
                 throw error
             }
-        } else if let firstMessage, let config, StartAgents.createdByThisOpen(conversation, knownIds: knownIds) {
+        } else if let makePromptFile, let config {
             // Claude's id is already on the hub: start it now with the message, then attach.
             do {
-                let path = try await writeHandoff(firstMessage, on: conversation, config: config)
-                let result = try await NIOSSHClient().exec(config, command: TmuxCommandBuilder.openTodoConversation(
-                    tmuxName: conversation.tmuxName, cwd: conversation.cwd, sessionId: conversation.sessionId,
-                    tool: conversation.tool, mcpServers: conversation.mcpServers, worktree: conversation.worktree,
-                    promptFile: path, detached: true, model: conversation.model, worktreeBase: conversation.worktreeBase
-                ))
+                let started = conversation
+                func start(servers: [String]?) async throws -> SSHExecResult {
+                    try await NIOSSHClient().exec(config, command: TmuxCommandBuilder.openTodoConversation(
+                        tmuxName: started.tmuxName, cwd: started.cwd, sessionId: started.sessionId,
+                        tool: started.tool, mcpServers: servers, worktree: started.worktree,
+                        promptFile: try await makePromptFile(), detached: true, model: started.model,
+                        worktreeBase: started.worktreeBase
+                    ))
+                }
+                var result = try await start(servers: started.mcpServers)
+                if Self.shouldRetryWithoutServers(result, servers: started.mcpServers, tool: started.tool) {
+                    result = try await start(servers: nil)
+                }
                 try RemoteConversations.check(result, computerName: conversation.computer.name)
             } catch {
                 await discardStart(conversation, config: config)
@@ -591,34 +614,42 @@ final class TodoHubStore {
         return base
     }
 
+    /// Makes a prompt file on the computer and returns its path; `--prompt-file` deletes it.
+    typealias PromptFileMaker = () async throws -> String
+
     /// Starts a todo with several agents: the first opens as the todo's conversation, the
     /// others are added in worktrees of their own, all from `base` and with `firstMessage`.
+    /// The text goes up once; each agent gets its own copy of that file.
     func startAgents(
         todo: Todo, rows: [ResearchAgentRow], firstMessage: String, base: StartBase,
-        mcpServers: [String]?, config: HostConnectionConfig
+        mcpServers: [String]?, config: HostConnectionConfig, computerName: String
     ) async throws -> StartAgents.Outcome {
         let count = rows.count
+        let upload = try await writeHandoff(firstMessage, computerName: computerName, config: config)
+        defer {
+            Task { _ = try? await NIOSSHClient().exec(config, command: TmuxCommandBuilder.removePromptFile(path: upload)) }
+        }
+        let copy: PromptFileMaker = {
+            try await self.remoteStdout(TmuxCommandBuilder.copyPromptFile(path: upload), config: config, computerName: computerName)
+        }
         return try await StartAgents.run(
             rows: rows,
             openFirst: { row in
                 try await self.openConversation(
                     for: todo, tool: row.tool, config: config, mcpServers: row.tool == "cursor" ? nil : mcpServers,
-                    model: Self.model(of: row), baseSha: base.sha, agents: count, firstMessage: firstMessage
+                    model: row.trimmedModel, baseSha: base.sha, agents: count, firstMessage: firstMessage, promptFile: copy
                 )
             },
             add: { first, row, label in
                 let created = try await self.duplicateConversation(
-                    source: first, tool: row.tool, label: label, ownWorktree: true, model: Self.model(of: row), baseSha: base.sha
+                    source: first, tool: row.tool, label: label, ownWorktree: true, model: row.trimmedModel, baseSha: base.sha
                 )
-                _ = try await self.prepareDuplicate(created, plan: .start(text: firstMessage, label: label), config: config)
+                _ = try await self.prepareDuplicate(
+                    created, plan: .start(text: firstMessage, label: label), config: config, promptFile: copy
+                )
             },
             message: { TodoHubStore.message(for: $0) }
         )
-    }
-
-    private nonisolated static func model(of row: ResearchAgentRow) -> String? {
-        let model = row.model.trimmingCharacters(in: .whitespaces)
-        return model.isEmpty ? nil : model
     }
 
     /// A second conversation on the same computer and folder. The caller has already decided
@@ -644,14 +675,20 @@ final class TodoHubStore {
     /// message: written to a file on the computer and started with `--prompt-file`, so it never
     /// depends on typing into a tool that may not be ready yet.
     func prepareDuplicate(
-        _ created: Conversation, plan: DuplicateHandoff.Plan, config: HostConnectionConfig
+        _ created: Conversation, plan: DuplicateHandoff.Plan, config: HostConnectionConfig,
+        promptFile: PromptFileMaker? = nil
     ) async throws -> Conversation {
         let firstPrompt = DuplicateHandoff.firstPrompt(plan, tool: created.tool)
         switch DuplicateIn.followUp(plan: plan, created: created) {
         case .resume:
             guard let firstPrompt else { return created }
             do {
-                let path = try await writeHandoff(firstPrompt, on: created, config: config)
+                let path: String
+                if let promptFile {
+                    path = try await promptFile()
+                } else {
+                    path = try await writeHandoff(firstPrompt, on: created, config: config)
+                }
                 let result = try await NIOSSHClient().exec(config, command: TmuxCommandBuilder.openTodoConversation(
                     tmuxName: created.tmuxName, cwd: created.cwd, sessionId: created.sessionId, tool: created.tool,
                     mcpServers: created.mcpServers, worktree: created.worktree, promptFile: path, detached: true,
@@ -667,7 +704,11 @@ final class TodoHubStore {
             var path: String?
             if let firstPrompt {
                 do {
-                    path = try await writeHandoff(firstPrompt, on: created, config: config)
+                    if let promptFile {
+                        path = try await promptFile()
+                    } else {
+                        path = try await writeHandoff(firstPrompt, on: created, config: config)
+                    }
                 } catch {
                     await discardStart(created, config: config)
                     throw error
@@ -732,14 +773,18 @@ final class TodoHubStore {
     /// The hand-off text in a private file on the conversation's computer; its path.
     /// A long text goes up in pieces, so no command passes the computer's argument limit.
     private func writeHandoff(_ text: String, on conversation: Conversation, config: HostConnectionConfig) async throws -> String {
+        try await writeHandoff(text, computerName: conversation.computer.name, config: config)
+    }
+
+    private func writeHandoff(_ text: String, computerName: String, config: HostConnectionConfig) async throws -> String {
         let pieces = TmuxCommandBuilder.promptPieces(text)
         let path = try await remoteStdout(
-            TmuxCommandBuilder.writePromptFile(text: pieces[0]), config: config, computerName: conversation.computer.name
+            TmuxCommandBuilder.writePromptFile(text: pieces[0]), config: config, computerName: computerName
         )
         for piece in pieces.dropFirst() {
             _ = try await remoteStdout(
                 TmuxCommandBuilder.appendPromptFile(path: path, text: piece), config: config,
-                computerName: conversation.computer.name
+                computerName: computerName
             )
         }
         return path

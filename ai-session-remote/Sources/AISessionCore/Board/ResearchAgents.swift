@@ -50,10 +50,7 @@ public enum ResearchAgents {
     }
 
     public static func request(rows: [ResearchAgentRow], computerId: String) -> ResearchRequest {
-        ResearchRequest(computerId: computerId, attempts: rows.map { row in
-            let model = row.model.trimmingCharacters(in: .whitespaces)
-            return AttemptSpec(tool: row.tool, model: model.isEmpty ? nil : model)
-        })
+        ResearchRequest(computerId: computerId, attempts: rows.map { AttemptSpec(tool: $0.tool, model: $0.trimmedModel) })
     }
 
     /// An older hub ignores the agents and starts one Claude run with its default model: say

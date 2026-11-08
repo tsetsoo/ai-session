@@ -44,8 +44,8 @@ public enum DuplicateHandoff {
     }
 
     /// The text the new conversation gets as its first message (`ai-todo-open --prompt-file`),
-    /// or nil: a fork sends nothing, and Cursor's start takes no first message (its text is still
-    /// typed into the terminal).
+    /// or nil: a fork sends nothing, and a tool without `takesFirstPrompt` has its text typed
+    /// into the terminal instead.
     public static func firstPrompt(_ plan: Plan, tool: String) -> String? {
         guard case let .start(text, _) = plan, TmuxCommandBuilder.takesFirstPrompt(tool: tool),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }

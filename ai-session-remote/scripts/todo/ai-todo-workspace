@@ -13,7 +13,8 @@ Usage:
                                     missing, else its local files synced. Progress on stderr.
   ai-todo-workspace base <folder>   the commit new worktrees of the folder's repo start from,
                                     after a fetch: "<sha> origin/main" (origin/HEAD), else
-                                    "<sha> HEAD". Several agents of one start share it.
+                                    "<sha> HEAD"; " stale" is added when the fetch failed.
+                                    Several agents of one start share it.
 
 Exit codes: 0 ok, 64 bad arguments, 65 <path> is not a registered worktree, 66 the project
 folder is not in a git repository, 1 git could not make the worktree, 3 sync left files that
@@ -116,11 +117,12 @@ def cmd_base(args):
     if len(args) != 1 or not args[0].strip():
         return usage()
     folder = expand(args[0])
-    found = workspace.resolve_base_ref(folder) if os.path.isdir(folder) else None
+    found = workspace.resolve_base_checked(folder) if os.path.isdir(folder) else None
     if not found:
         print("ai-todo-workspace: %s is not in a git repository" % tilde(folder), file=sys.stderr)
         return 66
-    print("%s %s" % found)
+    sha, ref, fresh = found
+    print("%s %s%s" % (sha, ref, "" if fresh else " stale"))
     return 0
 
 

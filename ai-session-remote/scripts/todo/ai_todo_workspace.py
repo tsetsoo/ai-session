@@ -125,8 +125,18 @@ def resolve_base_ref(folder):
     or `HEAD` without one. None outside git."""
     if git(folder, "rev-parse", "--show-toplevel")[0] != 0:
         return None
+    found = resolve_base_checked(folder)
+    return found[:2] if found else None
+
+
+def resolve_base_checked(folder):
+    """(sha, ref, fresh) of `resolve_base_ref`: fresh is False when origin couldn't be
+    fetched, so origin/HEAD is as this repo last saw it. None outside git."""
+    if git(folder, "rev-parse", "--show-toplevel")[0] != 0:
+        return None
+    fresh = True
     if git(folder, "remote", "get-url", "origin")[0] == 0:
-        git(folder, "fetch", "--quiet", "origin", timeout=30)
+        fresh = git(folder, "fetch", "--quiet", "origin", timeout=30)[0] == 0
     ref = "origin/HEAD" if git(folder, "rev-parse", "--verify", "--quiet", "origin/HEAD")[0] == 0 else "HEAD"
     code, sha, _ = git(folder, "rev-parse", "--verify", "--quiet", ref + "^{commit}")
     if code != 0 or not sha:
@@ -134,7 +144,7 @@ def resolve_base_ref(folder):
     if ref == "origin/HEAD":
         code, name, _ = git(folder, "rev-parse", "--abbrev-ref", "origin/HEAD")
         ref = name if code == 0 and name else ref
-    return sha, ref
+    return sha, ref, fresh
 
 
 def create(folder, path, branch, base=None):
@@ -148,7 +158,10 @@ def create(folder, path, branch, base=None):
         raise NotARepo(folder)
     code, prefix, _ = git(folder, "rev-parse", "--show-prefix")
     prefix = prefix.strip().strip("/") if code == 0 else ""
-    if git(folder, "remote", "get-url", "origin")[0] == 0:
+    # A given base this repo already has needs no fetch: several agents' worktrees are made
+    # at once from one base the start just fetched.
+    has_base = base is not None and git(folder, "rev-parse", "--verify", "--quiet", base + "^{commit}")[0] == 0
+    if not has_base and git(folder, "remote", "get-url", "origin")[0] == 0:
         git(folder, "fetch", "--quiet", "origin", timeout=30)
     if base is None:
         base = "origin/HEAD" if git(folder, "rev-parse", "--verify", "--quiet", "origin/HEAD")[0] == 0 else "HEAD"

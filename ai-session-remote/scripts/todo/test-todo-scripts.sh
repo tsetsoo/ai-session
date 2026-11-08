@@ -3693,7 +3693,9 @@ echo "uncommitted" >"${B_SRC}/draft.txt"
 snap=$("${SCRIPT_DIR}/ai-todo-review" status "$B_SRC" | python3 -c 'import json,sys; print(json.load(sys.stdin)["revision"])') || fail "snapshot failed"
 "${SCRIPT_DIR}/ai-todo-review" keep "$B_SRC" "$snap" >/dev/null || fail "keep failed"
 B_NEW="${R_TREES}/proj-merged/b-added"
-AI_TODO_RUNNER_STATE_DIR="$R_STATE" "$WSP" ensure "$B_NEW" "${HOME}/work/merged" ai/added-b0000002 --base "$snap" 2>/dev/null || fail "ensure --base failed"
+# A base this repo already has needs no fetch (several agents' adds run at once).
+GIT_TRACE="${SANDBOX}/ensure-base.trace" AI_TODO_RUNNER_STATE_DIR="$R_STATE" "$WSP" ensure "$B_NEW" "${HOME}/work/merged" ai/added-b0000002 --base "$snap" 2>/dev/null || fail "ensure --base failed"
+! grep -q "git fetch\|'fetch'" "${SANDBOX}/ensure-base.trace" || fail "ensure --base with a known commit fetched"
 [[ "$(git -C "$B_NEW" rev-parse HEAD)" == "$snap" ]] || fail "the added worktree did not start at the snapshot"
 [[ "$(cat "${B_NEW}/draft.txt")" == uncommitted ]] || fail "the source's uncommitted file is missing"
 [[ -z "$(git -C "$B_NEW" status --porcelain)" ]] || fail "the added worktree is not clean"
@@ -3711,6 +3713,12 @@ echo ahead >"${R_MERGED}/ahead.txt"; git_q -C "$R_MERGED" add ahead.txt; git_q -
 out="$("$WSP" base "${HOME}/work/merged")" || fail "base failed"
 [[ "$out" == "$(git -C "$R_MERGED" rev-parse origin/HEAD) origin/main" ]] || fail "base should print origin/HEAD and its name, got: $out"
 git_q -C "$R_MERGED" reset -q --hard HEAD~1
+# Origin unreachable: origin as last seen, marked stale.
+origin_url=$(git -C "$R_MERGED" remote get-url origin)
+git_q -C "$R_MERGED" remote set-url origin "${SANDBOX}/no-such-origin"
+out="$("$WSP" base "${HOME}/work/merged")" || fail "base with origin unreachable failed"
+[[ "$out" == "$(git -C "$R_MERGED" rev-parse origin/HEAD) origin/main stale" ]] || fail "an unreachable origin should be marked stale, got: $out"
+git_q -C "$R_MERGED" remote set-url origin "$origin_url"
 NO_REMOTE="${SANDBOX}/no-remote"; mkdir -p "$NO_REMOTE" && git_q -C "$NO_REMOTE" init -q && git_q -C "$NO_REMOTE" commit -q --allow-empty -m init
 out="$("$WSP" base "$NO_REMOTE")" || fail "base without a remote failed"
 [[ "$out" == "$(git -C "$NO_REMOTE" rev-parse HEAD) HEAD" ]] || fail "base without a remote should print HEAD, got: $out"

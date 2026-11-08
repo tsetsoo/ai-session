@@ -721,7 +721,7 @@ struct ConversationFrame: View {
         guard let base = startBase, let message = StartAgents.firstMessage(firstMessageText) else { return }
         let rows = agentRows
         let servers = serverSelection.wrappedValue
-        lastStartedTool = rows[0].tool
+        lastStartedTool = StartAgents.rememberedTool(rows) ?? rows[0].tool
         isStarting = true
         toolError = nil
         Task {
@@ -729,7 +729,7 @@ struct ConversationFrame: View {
             do {
                 let outcome = try await store.startAgents(
                     todo: todo, rows: rows, firstMessage: message, base: base, mcpServers: servers,
-                    config: newConversationConfig()
+                    config: newConversationConfig(), computerName: newConversationComputer?.name ?? "the computer"
                 )
                 agentRows = []
                 firstMessageText = ""

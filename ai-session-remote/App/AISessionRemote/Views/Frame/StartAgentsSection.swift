@@ -50,8 +50,7 @@ struct StartAgentsSection: View {
                 note("Every agent gets this as its first message.")
             } else {
                 Button("Add Agent", systemImage: "plus") {
-                    rows = [ResearchAgentRow(tool: toolChoice)]
-                    rows.append(StartAgents.addedRow(to: rows, offered: offered))
+                    rows = StartAgents.initialRows(toolChoice: toolChoice, offered: offered)
                 }
                 .buttonStyle(.borderless)
                 .disabled(offered.isEmpty)

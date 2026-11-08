@@ -636,6 +636,20 @@ public struct SetSectionComputerRequest: Encodable, Sendable {
     }
 }
 
+/// The answer to `POST /api/todos/{id}/conversation`: the conversation, and whether this
+/// open created it (nil from an older hub).
+public struct OpenedConversation: Decodable, Sendable {
+    public var conversation: Conversation
+    public var created: Bool?
+
+    private enum CodingKeys: String, CodingKey { case created }
+
+    public init(from decoder: Decoder) throws {
+        conversation = try Conversation(from: decoder)
+        created = try decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(Bool.self, forKey: .created)
+    }
+}
+
 public struct OpenConversationRequest: Encodable, Sendable {
     public var tool: String
     /// Omitted when `nil` (not managed).

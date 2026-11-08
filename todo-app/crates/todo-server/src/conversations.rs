@@ -353,10 +353,21 @@ pub(crate) fn open_conversation_with(
     mcp_servers: Option<&[String]>,
     options: &OpenOptions,
 ) -> Result<Conversation, OpenError> {
+    open_or_create(conn, todo_id, tool, mcp_servers, options).map(|(conversation, _)| conversation)
+}
+
+/// The todo's conversation, and whether this call created it (else it already existed).
+pub(crate) fn open_or_create(
+    conn: &Connection,
+    todo_id: &str,
+    tool: &str,
+    mcp_servers: Option<&[String]>,
+    options: &OpenOptions,
+) -> Result<(Conversation, bool), OpenError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let conversation = open_conversation_in(&tx, todo_id, tool, mcp_servers, options)?;
+    let opened = open_conversation_in(&tx, todo_id, tool, mcp_servers, options)?;
     tx.commit()?;
-    Ok(conversation)
+    Ok(opened)
 }
 
 /// A commit sha as git prints it, short or full.
@@ -370,7 +381,7 @@ fn open_conversation_in(
     tool: &str,
     mcp_servers: Option<&[String]>,
     options: &OpenOptions,
-) -> Result<Conversation, OpenError> {
+) -> Result<(Conversation, bool), OpenError> {
     let tool = tool.trim();
     if !SUPPORTED_TOOLS.contains(&tool) {
         return Err(OpenError::UnsupportedTool);
@@ -402,9 +413,10 @@ fn open_conversation_in(
                  WHERE id = ?1",
                 params![existing.id],
             )?;
-            return load_conversation(conn, todo_id)?.ok_or(OpenError::Db(rusqlite::Error::QueryReturnedNoRows));
+            let reopened = load_conversation(conn, todo_id)?.ok_or(OpenError::Db(rusqlite::Error::QueryReturnedNoRows))?;
+            return Ok((reopened, false));
         }
-        return Ok(existing);
+        return Ok((existing, false));
     }
     // A Research Now todo gets its conversations from its agents' runs; one started here
     // would be no attempt (and would share the project folder).
@@ -453,7 +465,7 @@ fn open_conversation_in(
     if model.is_some() {
         conn.execute("UPDATE conversations SET model = ?2 WHERE id = ?1", params![id, model])?;
     }
-    load_conversation(conn, todo_id)?.ok_or(OpenError::TodoNotFound)
+    Ok((load_conversation(conn, todo_id)?.ok_or(OpenError::TodoNotFound)?, true))
 }
 
 /// Where a conversation's own worktree lives on its computer.
@@ -1338,10 +1350,17 @@ pub async fn open_conversation(
         base_sha: body.base_sha.as_deref(),
         agents: body.agents.unwrap_or(1),
     };
-    match open_conversation_with(&conn, &path.into_inner(), &body.tool, mcp_servers.as_deref(), &options) {
-        Ok(c) => {
+    match open_or_create(&conn, &path.into_inner(), &body.tool, mcp_servers.as_deref(), &options) {
+        Ok((c, created)) => {
             broadcaster.send();
-            HttpResponse::Ok().json(c)
+            // `created`: the app may start this conversation with a first message, or remove
+            // it when that start fails; one that already existed is never touched.
+            let mut body = match serde_json::to_value(&c) {
+                Ok(v) => v,
+                Err(e) => return server_error(e),
+            };
+            body["created"] = serde_json::Value::Bool(created);
+            HttpResponse::Ok().json(body)
         }
         Err(OpenError::TodoNotFound) => not_found("Todo not found"),
         Err(OpenError::NoComputer(section)) => conflict(format!("Section {section} has no computer assigned")),
@@ -2534,6 +2553,12 @@ mod tests {
         .await;
         assert_eq!(status, actix_web::http::StatusCode::OK, "{body}");
         assert_eq!((body["model"].as_str(), body["worktree_base"].as_str()), (Some("o3"), Some("8f5a29c")));
+        assert_eq!(body["created"], true);
+        // Opening again returns the same conversation, not one this call made.
+        let (status, again) =
+            crate::test_support::post(&pool, &format!("/api/todos/{TODO}/conversation"), serde_json::json!({"tool": "codex"})).await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{again}");
+        assert_eq!((again["id"].clone(), again["created"].clone()), (body["id"].clone(), serde_json::json!(false)));
     }
 
     #[test]

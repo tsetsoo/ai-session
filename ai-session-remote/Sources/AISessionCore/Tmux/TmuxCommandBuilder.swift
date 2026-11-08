@@ -248,7 +248,17 @@ public enum TmuxCommandBuilder {
 
     /// The commit new worktrees of `folder`'s repo start from (`<sha> <ref>`, after a fetch).
     public static func workspaceBase(folder: String) -> String {
-        "\"$HOME/.ai-remote/bin/ai-todo-workspace\" base \(shellQuotePath(folder))"
+        wrap("\"$HOME/.ai-remote/bin/ai-todo-workspace\" base \(shellQuotePath(folder))")
+    }
+
+    /// A private copy of a written prompt file; prints its path. Several agents get one
+    /// upload, each its own copy (`--prompt-file` deletes the file it is given).
+    public static func copyPromptFile(path: String) -> String {
+        wrap("umask 077 && f=$(mktemp \"$HOME/.ai-remote/prompts/handoff.XXXXXX\") && cp \(shellQuote(path)) \"$f\" && printf '%s\\n' \"$f\"")
+    }
+
+    public static func removePromptFile(path: String) -> String {
+        wrap("rm -f \(shellQuote(path))")
     }
 
     /// Writes `text` to a new private file under `~/.ai-remote/prompts` and prints its path, for

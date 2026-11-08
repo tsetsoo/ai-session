@@ -87,9 +87,54 @@ final class StartAgentsTests: XCTestCase {
         XCTAssertNil(StartAgents.firstMessage(" \n"))
     }
 
+    /// Like every helper: with the PATH (Homebrew, linuxbrew) and UTF-8 locale set up.
     func testWorkspaceBaseCommand() {
         XCTAssertEqual(TmuxCommandBuilder.workspaceBase(folder: "~/my app"),
-                       "\"$HOME/.ai-remote/bin/ai-todo-workspace\" base \(TmuxCommandBuilder.shellQuotePath("~/my app"))")
+                       TmuxCommandBuilder.wrap("\"$HOME/.ai-remote/bin/ai-todo-workspace\" base \(TmuxCommandBuilder.shellQuotePath("~/my app"))"))
+    }
+
+    /// A fetch that failed: the commit is origin's as last seen, and the line says so.
+    func testStaleBase() {
+        let stale = StartBase(sha: "8f5a29c0123", ref: "origin/main", fresh: false)
+        XCTAssertEqual(StartAgents.parseBase("8f5a29c0123 origin/main stale\n"), stale)
+        XCTAssertEqual(StartAgents.parseBase("8f5a29c0123 origin/main")?.fresh, true)
+        XCTAssertNil(StartAgents.parseBase("8f5a29c0123 origin/main other"))
+        XCTAssertEqual(StartAgents.baseLine(stale),
+                       "from origin/main @ 8f5a29c. Couldn't reach origin, so this may not be the latest.")
+    }
+
+    func testTrimmedModel() {
+        XCTAssertNil(row("claude", "  ").trimmedModel)
+        XCTAssertEqual(row("claude", " opus ").trimmedModel, "opus")
+    }
+
+    /// Add Agent from one agent: that agent's tool when the computer has it, else one it has.
+    func testInitialRows() {
+        XCTAssertEqual(StartAgents.initialRows(toolChoice: "cursor", offered: ["claude", "codex"]).map(\.tool), ["claude", "codex"])
+        XCTAssertEqual(StartAgents.initialRows(toolChoice: "codex", offered: ["claude", "codex"]).map(\.tool), ["codex", "claude"])
+    }
+
+    /// The tool the next todo's Start preselects: the one that opened as the main conversation.
+    func testRememberedTool() {
+        XCTAssertEqual(StartAgents.rememberedTool([row("cursor"), row("claude")]), "claude")
+        XCTAssertEqual(StartAgents.rememberedTool([row("cursor")]), "cursor")
+    }
+
+    func testCopyAndRemovePromptFile() {
+        XCTAssertEqual(TmuxCommandBuilder.copyPromptFile(path: "/h/p/handoff.a"), TmuxCommandBuilder.wrap(
+            "umask 077 && f=$(mktemp \"$HOME/.ai-remote/prompts/handoff.XXXXXX\") && cp '/h/p/handoff.a' \"$f\" && printf '%s\\n' \"$f\""
+        ))
+        XCTAssertEqual(TmuxCommandBuilder.removePromptFile(path: "/h/p/handoff.a"), TmuxCommandBuilder.wrap("rm -f '/h/p/handoff.a'"))
+    }
+
+    func testOpenedConversationReadsCreated() throws {
+        let decoder = TodoHubClient.makeDecoder()
+        let body = #"{"id":"c","todo_id":"t","computer":{"id":"m","name":"Mac","hostname":"h","port":22,"username":"u","created_at":"","updated_at":""},"cwd":"~/w","tool":"claude","tmux_name":"ai/claude/todo-1","session_id":"s","status":"unknown","created":true}"#
+        let opened = try decoder.decode(OpenedConversation.self, from: Data(body.utf8))
+        XCTAssertEqual(opened.conversation.id, "c")
+        XCTAssertEqual(opened.created, true)
+        let old = try decoder.decode(OpenedConversation.self, from: Data(body.replacingOccurrences(of: #","created":true"#, with: "").utf8))
+        XCTAssertNil(old.created)
     }
 
     func testOpenRequestCarriesModelBaseAndAgents() throws {
@@ -149,9 +194,15 @@ final class StartAgentsTests: XCTestCase {
 
     /// Only a row this device didn't know before the open is its own to start with a message
     /// or to remove when that start fails; another device's conversation is left alone.
+    /// The hub says whether its open made the row. An older hub doesn't: then only an unseen
+    /// row that never reported a status counts (best effort; install order avoids it).
     func testCreatedByThisOpen() {
-        XCTAssertTrue(StartAgents.createdByThisOpen(conversation("new"), knownIds: ["old"]))
-        XCTAssertFalse(StartAgents.createdByThisOpen(conversation("old"), knownIds: ["old"]))
+        XCTAssertTrue(StartAgents.createdByThisOpen(conversation("old"), created: true, knownIds: ["old"]))
+        XCTAssertFalse(StartAgents.createdByThisOpen(conversation("new"), created: false, knownIds: []))
+        XCTAssertTrue(StartAgents.createdByThisOpen(conversation("new"), created: nil, knownIds: ["old"]))
+        XCTAssertFalse(StartAgents.createdByThisOpen(conversation("old"), created: nil, knownIds: ["old"]))
+        var busy = conversation("new"); busy.status = .busy
+        XCTAssertFalse(StartAgents.createdByThisOpen(busy, created: nil, knownIds: []))
     }
 
     func testStartAgentsStopsWhenTheFirstFails() async {

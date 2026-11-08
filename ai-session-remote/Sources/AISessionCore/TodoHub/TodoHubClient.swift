@@ -184,8 +184,18 @@ public struct TodoHubClient: Sendable {
         todoId: String, tool: String, mcpServers: [String]? = nil,
         model: String? = nil, baseSha: String? = nil, agents: Int? = nil
     ) async throws -> Conversation {
+        try await openedConversation(
+            todoId: todoId, tool: tool, mcpServers: mcpServers, model: model, baseSha: baseSha, agents: agents
+        ).conversation
+    }
+
+    /// The open with the hub's word on whether it created the conversation.
+    public func openedConversation(
+        todoId: String, tool: String, mcpServers: [String]? = nil,
+        model: String? = nil, baseSha: String? = nil, agents: Int? = nil
+    ) async throws -> OpenedConversation {
         try await decode(
-            Conversation.self,
+            OpenedConversation.self,
             send("POST", "/api/todos/\(escape(todoId))/conversation", body: OpenConversationRequest(
                 tool: tool, mcpServers: mcpServers, model: model, baseSha: baseSha, agents: agents
             ))

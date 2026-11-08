@@ -5,28 +5,42 @@ import Foundation
 public struct StartBase: Equatable, Sendable {
     public let sha: String
     public let ref: String
+    /// The fetch worked. When it didn't, `sha` is origin as this computer last saw it.
+    public let fresh: Bool
 
-    public init(sha: String, ref: String) {
+    public init(sha: String, ref: String, fresh: Bool = true) {
         self.sha = sha
         self.ref = ref
+        self.fresh = fresh
+    }
+}
+
+extension ResearchAgentRow {
+    /// The model as the tools take it; nil for the tool's default.
+    public var trimmedModel: String? {
+        let trimmed = model.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
 /// Starting a todo with several agents: rows of tool + model (the Research Now rules), one
 /// first message for all of them, and one base commit, each agent in its own worktree.
 public enum StartAgents {
-    /// `<sha> <ref>` from `ai-todo-workspace base`; nil for anything else.
+    /// `<sha> <ref>` from `ai-todo-workspace base`, with ` stale` when its fetch failed; nil
+    /// for anything else.
     public static func parseBase(_ stdout: String) -> StartBase? {
         guard let line = stdout.split(whereSeparator: \.isNewline).first else { return nil }
         let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-        guard parts.count == 2, (7...40).contains(parts[0].count), parts[0].allSatisfy(\.isHexDigit) else { return nil }
-        return StartBase(sha: String(parts[0]), ref: String(parts[1]))
+        guard parts.count == 2 || (parts.count == 3 && parts[2] == "stale"),
+              (7...40).contains(parts[0].count), parts[0].allSatisfy(\.isHexDigit) else { return nil }
+        return StartBase(sha: String(parts[0]), ref: String(parts[1]), fresh: parts.count == 2)
     }
 
-    /// `from origin/main @ 8f5a29c`.
+    /// `from origin/main @ 8f5a29c`, and a warning when origin couldn't be reached.
     public static func baseLine(_ base: StartBase) -> String {
         let short = base.sha.prefix(7)
-        return base.ref == "HEAD" ? "from this computer's current commit @ \(short)" : "from \(base.ref) @ \(short)"
+        let line = base.ref == "HEAD" ? "from this computer's current commit @ \(short)" : "from \(base.ref) @ \(short)"
+        return base.fresh ? line : line + ". Couldn't reach origin, so this may not be the latest."
     }
 
     /// Why the base couldn't be found, from `ai-todo-workspace base`'s exit.
@@ -50,6 +64,18 @@ public enum StartAgents {
             return "This project has no repository, so several agents can't each get their own copy. Start with one agent."
         }
         return nil
+    }
+
+    /// Add Agent from one agent: that agent (the tool picker's choice, or a tool the computer
+    /// has when it lacks that one) and a second row.
+    public static func initialRows(toolChoice: String, offered: [String]) -> [ResearchAgentRow] {
+        let first = ResearchAgentRow(tool: offered.isEmpty || offered.contains(toolChoice) ? toolChoice : offered[0])
+        return [first, addedRow(to: [first], offered: offered)]
+    }
+
+    /// The tool the next todo's Start preselects: the one that opens as the main conversation.
+    public static func rememberedTool(_ rows: [ResearchAgentRow]) -> String? {
+        openingOrder(rows).first?.tool
     }
 
     /// The row Add Agent adds: a tool not picked yet, else the last row's.
@@ -76,8 +102,7 @@ public enum StartAgents {
     /// `Codex`, `Claude · opus`, and ` 2`, ` 3` on repeats.
     public static func labels(_ rows: [ResearchAgentRow]) -> [String] {
         func name(_ row: ResearchAgentRow) -> String {
-            let model = row.model.trimmingCharacters(in: .whitespaces)
-            return ResearchAgents.toolName(row.tool) + (model.isEmpty ? "" : " · \(model)")
+            ResearchAgents.toolName(row.tool) + (row.trimmedModel.map { " · \($0)" } ?? "")
         }
         var counts: [String: Int] = [:]
         return rows.enumerated().compactMap { index, row in
@@ -97,10 +122,13 @@ public enum StartAgents {
         return false
     }
 
-    /// The open made this row: its id wasn't among the todo's conversations this device knew
-    /// just before. Anything else is an existing conversation, never removed or re-prompted.
-    public static func createdByThisOpen(_ conversation: Conversation, knownIds: Set<String>) -> Bool {
-        !knownIds.contains(conversation.id)
+    /// The open made this row, so it may get the first message, or be removed when its start
+    /// fails. The hub says so (`created`). An older hub doesn't: then only a row this device
+    /// didn't know and that never reported a status counts. Anything else is an existing
+    /// conversation, never removed or re-prompted.
+    public static func createdByThisOpen(_ conversation: Conversation, created: Bool?, knownIds: Set<String>) -> Bool {
+        if let created { return created }
+        return !knownIds.contains(conversation.id) && conversation.status == .unknown
     }
 
     /// `2 of 3 agents started. Codex didn't start: …`; nil when all started.
