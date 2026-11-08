@@ -54,11 +54,11 @@ struct WorkerDetail: View {
             }
             header
             result
-            DisclosureGroup(isExpanded: $showsActivity) { activityList } label: {
+            DisclosureGroup(isExpanded: animated($showsActivity)) { activityList } label: {
                 Text("What it did").font(.headline)
             }
             if let task = worker.task {
-                DisclosureGroup(isExpanded: $showsTask) {
+                DisclosureGroup(isExpanded: animated($showsTask)) {
                     Text(task)
                         .font(.callout)
                         .textSelection(.enabled)
@@ -76,10 +76,14 @@ struct WorkerDetail: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.easeInOut(duration: 0.22), value: showsActivity)
-        .animation(.easeInOut(duration: 0.22), value: showsTask)
         .onAppear { if activityOpen { showsActivity = true } }
         .task(id: ActivityPoll(open: showsActivity, working: worker.state == .working)) { await pollActivity() }
+    }
+
+    private func animated(_ binding: Binding<Bool>) -> Binding<Bool> {
+        Binding(get: { binding.wrappedValue }, set: { value in
+            withAnimation(.easeInOut(duration: 0.25)) { binding.wrappedValue = value }
+        })
     }
 
     private var header: some View {

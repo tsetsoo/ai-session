@@ -494,7 +494,8 @@ struct ConversationFrame: View {
                     isOnScreen: (isOnScreen ?? isFrontmost) && shellVisible,
                     makeTransport: makeTransport
                 )
-                .frame(height: shellVisible ? 240 : 0)
+                .frame(height: 240)
+                .frame(height: shellVisible ? 240 : 0, alignment: .top)
                 .clipped()
                 .opacity(shellVisible ? 1 : 0)
                 .allowsHitTesting(shellVisible)

@@ -88,6 +88,24 @@ enum RemoteConversations {
         try checkRename(result, computerName: conversation.computer.name)
     }
 
+    /// New tools can create their transcript only after the terminal starts or receives a prompt.
+    /// Retry missing transcripts without holding up the terminal; stop on any other error.
+    static func nameWhenReady(_ conversation: Conversation, title: String, config: HostConnectionConfig) {
+        guard ["claude", "codex"].contains(conversation.tool) else { return }
+        Task {
+            for _ in 0..<60 {
+                guard !Task.isCancelled else { return }
+                do {
+                    let result = try await NIOSSHClient().exec(config, command: TmuxCommandBuilder.renameRemoteConversation(
+                        tool: conversation.tool, sessionId: conversation.sessionId, name: title
+                    ))
+                    if result.exitCode != 66 { return }
+                } catch { return }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
     static func checkRename(_ result: SSHExecResult, computerName: String) throws {
         switch result.exitCode {
         case 66: return

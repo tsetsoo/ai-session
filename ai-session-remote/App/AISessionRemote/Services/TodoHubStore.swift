@@ -493,6 +493,7 @@ final class TodoHubStore {
         guard let client = hubClient() else {
             throw TodoHubError.invalidBaseURL
         }
+        let isNew = todo.conversationStatus == nil
         var conversation = try await client.openConversation(todoId: todo.id, tool: tool, mcpServers: mcpServers)
         if conversation.sessionId.isEmpty {
             // An empty id is a start that has not finished. Keep it out of the store, and drop
@@ -528,8 +529,7 @@ final class TodoHubStore {
                     )
                 }
                 conversation = try await storeSession(client, conversation, created)
-                // Naming is best effort: a newly started tool may not have written its transcript yet.
-                try? await RemoteConversations.rename(conversation, to: todo.title, config: config)
+
             } catch {
                 // The script may already have created the tmux session. Leaving it makes the
                 // next fresh open attach to a session that never printed an id.
@@ -543,6 +543,9 @@ final class TodoHubStore {
             }
         }
         remember(conversation)
+        if isNew, let config, ["claude", "codex"].contains(conversation.tool) {
+            RemoteConversations.nameWhenReady(conversation, title: todo.title, config: config)
+        }
         return conversation
     }
 
@@ -699,6 +702,9 @@ final class TodoHubStore {
             }
             let stored = try await storeSession(client, conversation, createdId)
             remember(stored)
+            if let title = todos.first(where: { $0.id == stored.todoId })?.title {
+                RemoteConversations.nameWhenReady(stored, title: title, config: config)
+            }
             return stored
         } catch {
             _ = try? await NIOSSHClient().exec(
