@@ -8,6 +8,7 @@ struct WorkspaceShell: Codable, Identifiable, Equatable {
     let hostID: UUID
     let computerName: String
     let title: String
+    var todoID: String? = nil
 
     var tmuxName: String { "remote-shell-\(id.uuidString.lowercased())" }
     var label: String { "\(title) · \(computerName)" }
@@ -66,6 +67,12 @@ final class ShellWorkspace {
         shells.removeAll { $0.id == shell.id }
         if selectedID == shell.id { selectedID = nil }
         if rememberedSelection[shell.hostID] == shell.id { rememberedSelection[shell.hostID] = nil }
+        save()
+    }
+
+    func link(_ shell: WorkspaceShell, to todoID: String?) {
+        guard let index = shells.firstIndex(where: { $0.id == shell.id }) else { return }
+        shells[index].todoID = todoID
         save()
     }
 

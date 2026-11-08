@@ -19,6 +19,7 @@ struct ShellCommands {
     var popOutConversation: (() -> Void)? = nil
     /// Review Changes… (⌥⌘R) for the conversation visible in this scene.
     var reviewConversation: (() -> Void)? = nil
+    var toggleTerminal: (() -> Void)? = nil
 }
 
 /// ⌘⏎ and ⌘⌫ for the todo selected in the list column. Published with `focusedValue` from
@@ -53,6 +54,9 @@ struct ShellCommandItems: View {
         Button("New Todo") { shell?.newTodo?() }
             .keyboardShortcut("n", modifiers: .command)
             .disabled(shell?.newTodo == nil)
+        Button("Toggle Terminal") { shell?.toggleTerminal?() }
+            .keyboardShortcut("`", modifiers: .control)
+            .disabled(shell?.toggleTerminal == nil)
         Divider()
         Button(selectedTodo?.isDone == true ? "Mark as Not Done" : "Mark as Done") { selectedTodo?.toggleDone() }
             .keyboardShortcut(.return, modifiers: .command)

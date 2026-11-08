@@ -357,7 +357,8 @@ struct MacShell: View {
                 showingAdd = true
             } : nil,
             popOutConversation: popOutConversation,
-            reviewConversation: reviewConversation
+            reviewConversation: reviewConversation,
+            toggleTerminal: visibleTodoID.map { id in { toolbarRequest = ConversationToolbarRequest(command: .toggleTerminal, todoID: id) } }
         )
     }
 
@@ -432,6 +433,8 @@ struct MacShell: View {
             #else
             settings = SettingsRequest(initial: nil)
             #endif
+        case .action(.toggleTerminal):
+            if let id = visibleTodoID { toolbarRequest = ConversationToolbarRequest(command: .toggleTerminal, todoID: id) }
         }
     }
 
@@ -499,14 +502,7 @@ struct MacShell: View {
         Binding(get: { destination.listTag }, set: { tag in
             if let page = ComputerPage(tag: tag) {
                 model.shells.selectedID = nil
-                if page == .shell, case let .computer(id) = sidebarItem,
-                   let computer = store.computers.first(where: { $0.id == id }),
-                   let host = HostLookup.host(for: computer, in: hosts) {
-                    model.shells.create(hostID: host.id, computerName: computer.name)
-                    computerPage = nil
-                } else {
-                    computerPage = page
-                }
+                computerPage = page
                 if page != .shell { model.selectedTodoID = nil }
             } else if let conversation = store.conversations.values.first(where: { $0.listKey == tag }) {
                 model.shells.selectedID = nil
@@ -654,10 +650,7 @@ private struct ShellDetail: View {
     var body: some View {
         // The shell row is a row above the column, not an inset: the conversation's switcher
         // was laid out under an inset row and hidden (seen 2026-11-07).
-        VStack(spacing: 0) {
-            if !model.shells.shells.isEmpty { shellSwitcher }
-            detailStack
-        }
+        detailStack
     }
 
     private var detailStack: some View {

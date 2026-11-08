@@ -232,6 +232,12 @@ final class PaletteModelTests: XCTestCase {
         XCTAssertEqual(ids(groups("", selected: "t7", canEdit: false), .actions), ["a:openSettings"])
     }
 
+    func testTerminalActionForSelectedConversation() {
+        XCTAssertTrue(ids(groups("terminal", selected: "t1"), .actions).contains("a:toggleTerminal"))
+        XCTAssertTrue(ids(groups("terminal", selected: "t1", canEdit: false), .actions).contains("a:toggleTerminal"))
+        XCTAssertFalse(ids(groups("terminal", selected: "t7"), .actions).contains("a:toggleTerminal"))
+    }
+
     // MARK: ⌘1–⌘9
 
     func testShortcutTargetFollowsRunningNow() {

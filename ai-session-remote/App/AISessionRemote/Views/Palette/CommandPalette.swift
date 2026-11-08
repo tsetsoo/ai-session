@@ -399,6 +399,7 @@ private extension PaletteAction {
         case .linkConversation: return "link"
         case .newTodoFromConversation: return "text.bubble"
         case .openSettings: return "gearshape"
+        case .toggleTerminal: return "terminal"
         }
     }
 
@@ -406,6 +407,7 @@ private extension PaletteAction {
     var shortcutHint: String? {
         switch self {
         case .newTodo: return "⌘N"
+        case .toggleTerminal: return "⌃`"
         #if os(macOS)
         case .openSettings: return "⌘,"
         #endif

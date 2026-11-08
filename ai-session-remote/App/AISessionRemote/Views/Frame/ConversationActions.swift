@@ -101,6 +101,7 @@ enum ConversationToolbarCommand: Equatable {
     case memories
     /// The Mac's Workers panel.
     case workers
+    case toggleTerminal
     case close
     case delete
     case reconnect

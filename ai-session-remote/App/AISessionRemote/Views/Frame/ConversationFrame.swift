@@ -59,6 +59,7 @@ struct ConversationFrame: View {
     #if os(macOS)
     @State private var shellVisible = false
     @State private var shellOpened = false
+    @State private var linkedShellID: UUID?
     #endif
     @State private var clipboardSessionID: String?
     /// This todo's usage (own + sub-agents), shown at the right of the limits strip.
@@ -470,20 +471,36 @@ struct ConversationFrame: View {
             Divider()
             HStack {
                 Button {
-                    if !shellOpened {
-                        shellOpened = true
-                        // Mount the fixed-size terminal at zero height before expanding it.
-                        DispatchQueue.main.async {
-                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) { shellVisible = true }
-                        }
-                    } else {
-                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) { shellVisible.toggle() }
-                    }
+                    toggleShell()
                 } label: {
                     Label("Terminal", systemImage: "terminal")
                 }
                 .buttonStyle(.borderless)
                 .help(shellVisible ? "Hide terminal" : "Show terminal")
+                if let workspace = appModel?.shells,
+                   let host = HostLookup.host(for: open.conversation.computer, in: hosts) {
+                    Menu {
+                        let available = workspace.shells.filter { $0.hostID == host.id && ($0.todoID == nil || $0.todoID == todo.id) }
+                        ForEach(available) { shell in
+                            Button(shell.todoID == todo.id ? "\(shell.title) ✓" : "Link \(shell.title)") {
+                                workspace.link(shell, to: todo.id)
+                                linkedShellID = shell.id
+                                shellOpened = true
+                                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) { shellVisible = true }
+                            }
+                        }
+                        if let linked = linkedShell {
+                            Divider()
+                            Button("Unlink \(linked.title)") {
+                                workspace.link(linked, to: nil)
+                                linkedShellID = nil
+                            }
+                        }
+                    } label: { Image(systemName: "link") }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Link an existing shell to this todo")
+                }
                 Spacer()
                 if shellVisible {
                     Text(open.conversation.computer.name).foregroundStyle(.secondary)
@@ -496,7 +513,7 @@ struct ConversationFrame: View {
                 TerminalSurface(
                     config: open.config,
                     mode: .attach(TmuxCommandBuilder.persistentShell(
-                        tmuxName: "todo-shell-\(todo.id)", cwd: open.conversation.cwd
+                        tmuxName: linkedShell?.tmuxName ?? "todo-shell-\(todo.id)", cwd: open.conversation.cwd
                     )),
                     hostName: open.conversation.computer.name,
                     focusOnConnect: false,
@@ -504,12 +521,30 @@ struct ConversationFrame: View {
                     isOnScreen: (isOnScreen ?? isFrontmost) && shellVisible,
                     makeTransport: makeTransport
                 )
+                .id(linkedShell?.id)
                 .frame(height: 240)
                 .frame(height: shellVisible ? 240 : 0, alignment: .top)
                 .clipped()
                 .opacity(shellVisible ? 1 : 0)
                 .allowsHitTesting(shellVisible)
             }
+        }
+    }
+
+    private var linkedShell: WorkspaceShell? {
+        guard let conversation, let host = HostLookup.host(for: conversation.computer, in: hosts) else { return nil }
+        let shells = appModel?.shells.shells.filter { $0.todoID == todo.id && $0.hostID == host.id } ?? []
+        return shells.first { $0.id == linkedShellID } ?? shells.first
+    }
+
+    private func toggleShell() {
+        if !shellOpened {
+            shellOpened = true
+            DispatchQueue.main.async {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) { shellVisible = true }
+            }
+        } else {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) { shellVisible.toggle() }
         }
     }
     #endif
@@ -869,6 +904,10 @@ struct ConversationFrame: View {
         case .copyResume: copyResumeCommand()
         case .memories: sidePanel = .memories
         case .workers: sidePanel = .workers
+        case .toggleTerminal:
+            #if os(macOS)
+            if readyConversation != nil { toggleShell() }
+            #endif
         case .close: closeConversation()
         case .delete: showingDeleteConfirmation = true
         case .reconnect: terminal.reconnect()

@@ -7,6 +7,7 @@ public enum PaletteAction: Equatable, Sendable {
     case linkConversation(todoID: String, title: String)
     case newTodoFromConversation
     case openSettings
+    case toggleTerminal
 
     public var title: String {
         switch self {
@@ -14,6 +15,7 @@ public enum PaletteAction: Equatable, Sendable {
         case let .linkConversation(_, title): return "Link a conversation to “\(title)”…"
         case .newTodoFromConversation: return "New todo from a conversation…"
         case .openSettings: return "Open Settings"
+        case .toggleTerminal: return "Toggle Terminal"
         }
     }
 }
@@ -37,6 +39,7 @@ public enum PaletteItem: Equatable, Sendable, Identifiable {
         case let .action(.linkConversation(todoID, _)): return "a:link:\(todoID)"
         case .action(.newTodoFromConversation): return "a:newTodoFromConversation"
         case .action(.openSettings): return "a:openSettings"
+        case .action(.toggleTerminal): return "a:toggleTerminal"
         }
     }
 
@@ -186,8 +189,10 @@ public enum PaletteModel {
     }
 
     private static func actions(selected: Todo?, board: ConversationBoard, canEdit: Bool) -> [PaletteItem] {
-        guard canEdit else { return [.action(.openSettings)] }
+        let hasConversation = selected.map { board.status(forTodo: $0.id) != nil } ?? false
+        guard canEdit else { return (hasConversation ? [.action(.toggleTerminal)] : []) + [.action(.openSettings)] }
         var actions: [PaletteAction] = [.newTodo]
+        if hasConversation { actions.append(.toggleTerminal) }
         if let selected, board.status(forTodo: selected.id) == nil {
             actions.append(.linkConversation(todoID: selected.id, title: selected.title))
         }
