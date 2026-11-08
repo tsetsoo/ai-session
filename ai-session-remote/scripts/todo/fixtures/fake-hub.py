@@ -21,7 +21,8 @@ answers {recorded, unknown, archived: []}. POST /api/memories/import upserts on
 
 Scheduler runner: GET /api/runner/due answers {"settings": state["scheduler_settings"] (or the
 defaults), "runs": state["due_runs"]}. POST /api/runs/<id>/claim answers 409 when the id is in
-state["claimed"] (else adds it and answers the due run). /wait, /finish answer {"ok": true};
+state["claimed"] (else adds it and answers the due run; a group run's base_sha is the group's
+first proposed one, or state["group_bases"][group id]). /wait, /finish answer {"ok": true};
 /start answers state["start_response"] or a default (todo t-sched, tmux ai/claude/todo-sched1).
 Watchers: the due answer carries state["resolves"]; /report and POST /api/watch/... answer
 {"ok": true} (the latter with state["watch_status"], default 200).
@@ -159,6 +160,10 @@ class Hub(BaseHTTPRequestHandler):
             return self.reply(200, row)
         if method == "PUT" and path.endswith("/conversation/session"):
             return self.reply(200, {"ok": True})
+        if method == "PUT" and path.startswith("/api/conversations/") and path.endswith("/session"):
+            return self.reply(200, {"ok": True})
+        if method == "PUT" and path.startswith("/api/computers/") and path.endswith("/tools"):
+            return self.reply(state.get("tools_status", 200), {"ok": True})
         if method == "POST" and path.startswith("/api/runs/"):
             return self.runs(state, path.split("/")[3], path.split("/")[4], body)
         if method == "PATCH" and path.startswith("/api/memories/"):
@@ -317,8 +322,16 @@ class Hub(BaseHTTPRequestHandler):
             if rid in claimed or due is None:
                 return self.reply(409, {"error": "Run is not due"})
             claimed.append(rid)
+            answer = dict(due, run=dict(due["run"], state="running"))
+            if due.get("group"):
+                # The group's base is the first claim's (state["group_bases"] can preset it).
+                bases = state.setdefault("group_bases", {})
+                gid = due["group"]["id"]
+                if bases.get(gid) is None and (body or {}).get("base_sha"):
+                    bases[gid] = body["base_sha"]
+                answer["group"] = dict(due["group"], base_sha=bases.get(gid))
             save(state)
-            return self.reply(200, dict(due, run=dict(due["run"], state="running")))
+            return self.reply(200, answer)
         if verb == "start":
             tool = (due or {}).get("job", {}).get("action", {}).get("tool", "claude")
             if "start_response" in state:

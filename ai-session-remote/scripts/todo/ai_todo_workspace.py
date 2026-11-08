@@ -113,6 +113,18 @@ def sha256(path):
     return h.hexdigest()
 
 
+def resolve_base(folder):
+    """The commit a new worktree of `folder`'s repo starts from: origin/HEAD after a best-effort
+    fetch, else HEAD, as a full sha. None outside git."""
+    if git(folder, "rev-parse", "--show-toplevel")[0] != 0:
+        return None
+    if git(folder, "remote", "get-url", "origin")[0] == 0:
+        git(folder, "fetch", "--quiet", "origin", timeout=30)
+    ref = "origin/HEAD" if git(folder, "rev-parse", "--verify", "--quiet", "origin/HEAD")[0] == 0 else "HEAD"
+    code, sha, _ = git(folder, "rev-parse", "--verify", "--quiet", ref + "^{commit}")
+    return sha if code == 0 and sha else None
+
+
 def create(folder, path, branch, base=None):
     """Make a worktree of `folder`'s repo at `path` on a new `branch` from `base` (a commit;
     default origin/HEAD, else HEAD), with the repo's local files brought in. Returns (cwd, entry): cwd is `folder`'s place

@@ -865,6 +865,25 @@ grep -q "AGENT_CLI_CREDENTIAL_STORE=file agent login" "${SANDBOX}/loggedout-resu
 tmux -L "$SOCK" has-session -t "=ai/cursor/todo-loggedout2" 2>/dev/null && fail "logged-out cursor resume left a tmux session"
 pass "ai-todo-open refuses a new Cursor conversation when agent is not logged in"
 
+# A research attempt on Cursor: the first message and the model reach `agent`.
+PROMPT_AGENT="${SANDBOX}/bin/agent-prompt"
+cat >"$PROMPT_AGENT" <<EOF
+#!/bin/sh
+if [ "\$1" = status ]; then echo "Logged in as test"; exit 0; fi
+for a in "\$@"; do printf '%s\n' "\$a"; done >"${SANDBOX}/agent-prompt.args"
+mkdir -p "\$HOME/.cursor/chats/abc/\$2"
+exec sleep 300
+EOF
+chmod +x "$PROMPT_AGENT"
+printf 'Cursor, research this.' >"${SANDBOX}/cursor-prompt.txt"
+out="$(AI_TODO_AGENT_BIN="$PROMPT_AGENT" "$OPEN" --detached --model 'sonnet[1m]' --prompt-file "${SANDBOX}/cursor-prompt.txt" "ai/cursor/todo-prompt3" '~/programming' - cursor)" \
+  || fail "cursor with a prompt failed"
+[[ "$(sed -n '1p;3,$p' "${SANDBOX}/agent-prompt.args")" == "--new-session-id"$'\n'"--trust"$'\n'"--model"$'\n'"sonnet[1m]"$'\n'"Cursor, research this." ]] \
+  || fail "cursor prompt argv: $(cat "${SANDBOX}/agent-prompt.args")"
+[[ ! -e "${SANDBOX}/cursor-prompt.txt" ]] || fail "the cursor prompt file was left behind"
+tmux -L "$SOCK" kill-session -t "=ai/cursor/todo-prompt3" 2>/dev/null || true
+pass "open_cursor_takes_prompt_file_and_model"
+
 QUIET="${SANDBOX}/bin/quiet-tool"
 printf '#!/bin/sh\nexec sleep 300\n' >"$QUIET"
 chmod +x "$QUIET"
@@ -3752,6 +3771,17 @@ printf 'The key is LocalTok3n_Value9.\n' | MY_SERVICE_TOKEN=LocalTok3n_Value9 id
 ! last_body PATCH /api/ideas/idea-00000001-aaaa | grep -q "LocalTok3n_Value9" || fail "a secret in findings left the Mac"
 pass "idea_findings_redacts_secret"
 
+IDEA_WT="${HOME}/.ai-remote/worktrees/proj-app/run-123/sub"
+mkdir -p "$IDEA_WT"
+(cd "$IDEA_WT" && idea findings idea-00000001-aaaa "From the Codex attempt.") >/dev/null || fail "findings from a worktree failed"
+[[ "$(last_body PATCH /api/ideas/idea-00000001-aaaa)" == '{"findings": "From the Codex attempt.", "attempt": "run-123"}' ]] \
+  || fail "findings did not name the attempt: $(last_body PATCH /api/ideas/idea-00000001-aaaa)"
+(cd "$M_APP" && idea findings idea-00000001-aaaa "From the project.") >/dev/null || fail "findings from the project failed"
+[[ "$(last_body PATCH /api/ideas/idea-00000001-aaaa)" == '{"findings": "From the project."}' ]] \
+  || fail "findings outside a worktree named an attempt: $(last_body PATCH /api/ideas/idea-00000001-aaaa)"
+rm -rf "${HOME}/.ai-remote/worktrees/proj-app/run-123"
+pass "idea_findings_sends_attempt_from_worktree"
+
 idea list --cwd "$M_APP" >"${SANDBOX}/idea-list.out" || fail "idea list failed"
 grep -qx "idea-000 \[researching\] Try Hermes" "${SANDBOX}/idea-list.out" || fail "idea list printed: $(cat "${SANDBOX}/idea-list.out")"
 pass "idea_list_prints_ids"
@@ -3763,6 +3793,59 @@ runner tick || fail "tick failed"
 posts_to finish | grep '"id": "r-resrch01"' | grep -q '"state": "done"' || fail "a research run did not start: $(posts_to finish)"
 pass "runner_starts_research_run"
 runs_reset
+
+# Research Now with agents: a group's runs share one base commit. The runner proposes this
+# computer's origin/HEAD (else HEAD) on the claim; the hub answers the group's base, which the
+# first claim set, and every worktree starts there.
+OLD_SHA=$(git -C "$R_REPO" rev-parse HEAD)
+git -C "$R_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "group base"
+NEW_SHA=$(git -C "$R_REPO" rev-parse HEAD)
+due_run r-grpa0001 proj-app '{"mode":"always"}' 0 claude
+due_run r-grpb0002 proj-app '{"mode":"always"}' 0 codex
+hub_edit "s['due_runs'][0]['group'] = dict(id='g-one', base_sha=None); s['due_runs'][1]['group'] = dict(id='g-two', base_sha=None); s['group_bases'] = {'g-two': '$OLD_SHA'}"
+runner tick || fail "tick failed"
+posts_to claim | python3 -c '
+import json, sys
+rows = {r["id"]: r["body"] for r in map(json.loads, sys.stdin)}
+assert rows["r-grpa0001"].get("base_sha") == sys.argv[1], rows
+assert rows["r-grpb0002"].get("base_sha") == sys.argv[1], rows
+' "$NEW_SHA" || fail "claims did not propose the base: $(posts_to claim)"
+[[ "$(git -C "${R_TREES}/proj-app/r-grpa0001" rev-parse HEAD)" == "$NEW_SHA" ]] || fail "first group worktree not at the proposed base"
+[[ "$(git -C "${R_TREES}/proj-app/r-grpb0002" rev-parse HEAD)" == "$OLD_SHA" ]] || fail "group worktree not at the group's base from the claim"
+pass "runner_group_run_proposes_base_and_uses_it"
+
+runs_reset
+due_run r-grpc0003 proj-app '{"mode":"always"}' 0 codex
+hub_edit "s['due_runs'][0]['group'] = dict(id='g-three', base_sha='$OLD_SHA'); s['start_response'] = dict(todo_id='t-grp', tmux_name='ai/codex/todo-grp', session_id='', tool='codex', prompt='x', conversation_id='c-grp3', base_sha='$OLD_SHA')"
+FAKE_OPEN_ID=codex-thread-1 runner tick || fail "tick failed"
+[[ $(requests PUT /api/conversations/c-grp3/session) -eq 1 ]] || fail "the session was not reported by conversation"
+[[ "$(last_body PUT /api/conversations/c-grp3/session)" == '{"session_id": "codex-thread-1"}' ]] || fail "session body: $(last_body PUT /api/conversations/c-grp3/session)"
+[[ $(requests PUT /api/todos/t-grp/conversation/session) -eq 0 ]] || fail "the session went to the todo route"
+pass "runner_group_session_reported_by_conversation"
+
+runs_reset
+due_run r-brackt01 proj-app '{"mode":"always"}'
+hub_edit "s['start_response'] = dict(todo_id='t-m', tmux_name='ai/claude/todo-m', session_id='5e55a0de-0000-4000-8000-000000000009', tool='claude', prompt='x', model='opus[1m]', conversation_id='c-m')"
+runner tick || fail "tick failed"
+grep -qx -- "--model" "$R_OPEN_LOG" && grep -qxF "opus[1m]" "$R_OPEN_LOG" || fail "model with brackets not passed: $(cat "$R_OPEN_LOG")"
+pass "runner_model_with_brackets_passed"
+runs_reset
+
+# Installed tools, for the Research Now sheet: reported when they change or a day passed.
+rm -f "${R_STATE}/tools.json"
+TOOLS_BEFORE=$(requests PUT /api/computers/comp-1/tools)
+AI_TODO_CLAUDE_BIN="$R_OPEN" AI_TODO_CODEX_BIN="$R_OPEN" AI_TODO_AGENT_BIN="${SANDBOX}/no-agent" runner tick || fail "tick failed"
+[[ $(requests PUT /api/computers/comp-1/tools) -eq $((TOOLS_BEFORE + 1)) ]] || fail "tools not reported"
+[[ "$(last_body PUT /api/computers/comp-1/tools)" == '["claude", "codex"]' ]] || fail "tools body: $(last_body PUT /api/computers/comp-1/tools)"
+AI_TODO_CLAUDE_BIN="$R_OPEN" AI_TODO_CODEX_BIN="$R_OPEN" AI_TODO_AGENT_BIN="${SANDBOX}/no-agent" runner tick || fail "tick failed"
+[[ $(requests PUT /api/computers/comp-1/tools) -eq $((TOOLS_BEFORE + 1)) ]] || fail "unchanged tools were sent again"
+rm -f "${R_STATE}/tools.json"
+hub_edit "s['tools_status'] = 404"
+AI_TODO_CLAUDE_BIN="$R_OPEN" runner tick || fail "tick failed"
+AI_TODO_CLAUDE_BIN="$R_OPEN" AI_TODO_CODEX_BIN="$R_OPEN" runner tick || fail "tick failed"
+[[ $(requests PUT /api/computers/comp-1/tools) -eq $((TOOLS_BEFORE + 2)) ]] || fail "an old hub (404) was asked again within the day"
+hub_edit "s.pop('tools_status', None)"
+pass "runner_reports_installed_tools"
 
 auto_run() { # <run id>: an assistant run whose tool is auto
   due_run "$1" proj-app '{"mode":"always"}' 0 auto

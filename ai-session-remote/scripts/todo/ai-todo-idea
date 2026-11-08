@@ -6,6 +6,8 @@
 #   ai-todo-idea list [--status new|researching|researched|dropped] [--cwd PATH]
 #   ai-todo-idea findings <idea id> <text|->       # - reads the findings from stdin
 #
+# Findings saved from a research run's worktree name that run (its folder) as their attempt,
+# so each agent of a Research Now keeps its own findings.
 # The project is this computer's deepest project whose folder holds the cwd (a scheduled
 # worktree, ~/.ai-remote/worktrees/<project id>/..., is its project). Title, notes and findings
 # are redacted (ai_todo_redact.py) before they leave this computer. `add` saves directly when
@@ -196,6 +198,19 @@ def cmd_list(args):
         print("%s [%s] %s" % (idea["id"][:8], idea.get("status"), idea.get("title")))
 
 
+def attempt_for(cwd):
+    """The research attempt saving findings: in a run's worktree,
+    ~/.ai-remote/worktrees/<project>/<run id>/..., that run id. None elsewhere; the hub saves
+    findings that name no attempt of the idea on the idea itself."""
+    cwd, trees = os.path.realpath(cwd), os.path.realpath(TREES)
+    if not within(cwd, trees) or cwd == trees:
+        return None
+    parts = os.path.relpath(cwd, trees).split(os.sep)
+    if len(parts) >= 2 and re.fullmatch(r"[A-Za-z0-9-]{1,64}", parts[1]):
+        return parts[1]
+    return None
+
+
 def cmd_findings(args):
     if len(args) != 2:
         die("usage: ai-todo-idea findings <idea id> <text|->", 64)
@@ -206,7 +221,11 @@ def cmd_findings(args):
     if not text or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", idea_id):
         die("usage: ai-todo-idea findings <idea id> <text|->", 64)
     conf = config()
-    request(conf, "PATCH", "/api/ideas/%s" % idea_id, body={"findings": redactor(conf)(text)[:MAX_FINDINGS].strip()})
+    body = {"findings": redactor(conf)(text)[:MAX_FINDINGS].strip()}
+    attempt = attempt_for(os.getcwd())
+    if attempt:
+        body["attempt"] = attempt
+    request(conf, "PATCH", "/api/ideas/%s" % idea_id, body=body)
     print("Findings saved.")
 
 

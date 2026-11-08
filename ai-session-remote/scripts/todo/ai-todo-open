@@ -25,9 +25,10 @@
 #                   never write a chat.
 #
 # --detached        Start (or find) the tmux session and return; never attach.
-# --prompt-file F   On a new conversation, F's text is the tool's first message (claude
-#                   and codex take it as an argument); ignored on a resume. F is deleted.
-# --model ID        On a new conversation, the tool's model (claude --model ID, codex -m ID).
+# --prompt-file F   On a new conversation, F's text is the tool's first message (claude,
+#                   codex and cursor take it as an argument); ignored on a resume. F is deleted.
+# --model ID        On a new conversation, the tool's model (claude --model ID, codex -m ID,
+#                   cursor --model ID).
 # --auto-approve    Codex gets network access in its sandbox (scheduled runs call the hub).
 #                   Claude starts in auto mode (--permission-mode auto: a safety check
 #                   approves routine actions and blocks risky ones), for scheduled
@@ -135,7 +136,7 @@ while [ "$#" -gt 0 ]; do
     --model)
       [ "$#" -ge 2 ] || usage
       case "$2" in
-        ''|*[!A-Za-z0-9._-]*) usage ;;
+        ''|*[!]A-Za-z0-9._[-]*) usage ;;
       esac
       model=$2
       shift 2
@@ -533,6 +534,8 @@ elif [ "$tool" = cursor ]; then
     fi
     mode=created
     set -- "$agent_bin" --new-session-id "$cursor_id" --trust
+    [ -n "$model" ] && set -- "$@" --model "$model"
+    [ -n "$first_prompt" ] && with_first_prompt=1
   elif [ -z "$(find "$HOME/.cursor/chats" -mindepth 2 -maxdepth 2 -type d -name "$sid" -print 2>/dev/null | head -n 1)" ]; then
     echo "no Cursor conversation $sid on this computer" >&2
     exit 94

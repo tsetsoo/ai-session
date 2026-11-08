@@ -67,6 +67,7 @@ exec python3 - "$@" <<'PY'
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -299,14 +300,15 @@ def slug(name):
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "job"
 
 
-def make_worktree(folder, project_id, run_id, job_name):
+def make_worktree(folder, project_id, run_id, job_name, base=None):
     """(worktree root, cwd, is_git, branch or None). The cwd is the folder's place inside the
     worktree: a folder that is a subfolder of its repo (a monorepo component) opens there, not at
-    the repo root. Raises RuntimeError when a git worktree can't be made."""
+    the repo root. `base`: the commit to start from (a research group's), else origin/HEAD.
+    Raises RuntimeError when a git worktree can't be made."""
     branch = "scheduled/%s-%s-%s" % (slug(job_name), time.strftime("%Y%m%d"), run_id[:8])
     path = os.path.join(TREES, project_id, run_id)
     try:
-        cwd, entry = workspace.create(folder, path, branch)
+        cwd, entry = workspace.create(folder, path, branch, base)
         entry.pop("reused_branch", None)
     except workspace.NotARepo:
         return folder, folder, False, None
@@ -536,6 +538,55 @@ def report_job_templates(hub, computer_id):
         log("job_templates_state_failed", error=type(e).__name__)
 
 
+# The agent tools this computer has, and how ai-todo-open finds each one.
+TOOL_BINS = (("claude", "AI_TODO_CLAUDE_BIN", "claude"), ("codex", "AI_TODO_CODEX_BIN", "codex"),
+             ("cursor", "AI_TODO_AGENT_BIN", "agent"))
+
+
+def tools_report():
+    """The installed agent tools, as ai-todo-open would find them (its *_BIN overrides first)."""
+    out = []
+    for tool, env, name in TOOL_BINS:
+        override = os.environ.get(env)
+        found = (os.path.isfile(override) and os.access(override, os.X_OK)) if override else bool(shutil.which(name))
+        if found:
+            out.append(tool)
+    return out
+
+
+def report_tools(hub, computer_id):
+    """PUT the installed tools when they changed or a day passed; an old hub (404) hourly."""
+    path = os.path.join(STATE_DIR, "tools.json")
+    report = tools_report()
+    digest = json.dumps(report)
+    state = load_json(path, {}) or {}
+    if now() - float(state.get("unsupported_at") or 0) < WATCHERS_RETRY_UNSUPPORTED:
+        return
+    if state.get("digest") == digest and now() - float(state.get("at") or 0) < WATCHERS_REPORT_EVERY:
+        return
+    try:
+        hub.request("PUT", "/api/computers/%s/tools" % urllib.parse.quote(computer_id, safe=""), body=report)
+        state = {"digest": digest, "at": now()}
+    except HubError as e:
+        if e.status != 404:
+            log("tools_report_failed", error=e)
+            return
+        state = {"unsupported_at": now()}
+    try:
+        save_json(path, state)
+    except OSError as e:
+        log("tools_state_failed", error=type(e).__name__)
+
+
+def propose_base(action, folders):
+    """The commit this computer would start a research group from, or None."""
+    try:
+        return workspace.resolve_base(run_folder(action, folders))
+    except Exception as e:  # start_run reports a missing folder; no base is no proposal
+        log("base_failed", error=type(e).__name__)
+        return None
+
+
 def maybe_start_updates():
     """Daily updates: start `ai-todo-updates run` in the background at most every 5 minutes.
     It takes its own lock and may call a model for minutes; the tick never waits for it."""
@@ -593,9 +644,8 @@ def do_resolves(hub, resolves):
 
 # --- Tick ---------------------------------------------------------------------------
 
-def start_run(hub, computer_id, due, folders):
-    run, job = due["run"], due["job"]
-    action = job["action"]
+def run_folder(action, folders):
+    """The folder a run's conversation works in (its project's, or a folder inside it)."""
     project_folder = expand(folders.get(action.get("project_id")))
     folder = expand(action.get("folder")) if action.get("folder") else project_folder
     if not project_folder or not folder or not os.path.isdir(folder):
@@ -604,7 +654,16 @@ def start_run(hub, computer_id, due, folders):
     # conversation at an arbitrary place.
     if folder != project_folder and not folder.startswith(project_folder.rstrip("/") + "/"):
         raise RuntimeError("folder is outside the project")
-    root, path, is_git, branch = make_worktree(folder, action["project_id"], run["id"], job.get("name") or "job")
+    return folder
+
+
+def start_run(hub, computer_id, due, folders):
+    run, job = due["run"], due["job"]
+    action = job["action"]
+    folder = run_folder(action, folders)
+    # A research group's runs all start from the group's base commit.
+    base = (due.get("group") or {}).get("base_sha") or None
+    root, path, is_git, branch = make_worktree(folder, action["project_id"], run["id"], job.get("name") or "job", base)
     # A debugging run reports its issues with ai-todo-watch, which only works in a worktree.
     if (run.get("note") or "").startswith("watch:") and not is_git:
         raise RuntimeError("a debugging run needs a git repo; %s is not one (map the issue to a repo folder)" % tilde(folder))
@@ -625,7 +684,7 @@ def start_run(hub, computer_id, due, folders):
         # Auto-approve only inside a scheduled git worktree, never in a folder used in place.
         model = started.get("model") if isinstance(started.get("model"), str) else None
         argv = [OPEN_BIN, "--detached"] + (["--auto-approve"] if is_git else []) + (
-            ["--model", model] if model and re.fullmatch(r"[A-Za-z0-9._-]+", model) else []) + [
+            ["--model", model] if model and re.fullmatch(r"[A-Za-z0-9._\[\]-]+", model) else []) + [
             "--prompt-file", prompt_file, started["tmux_name"], tilde(path), sid,
             started.get("tool") or body.get("tool") or action.get("tool") or "claude"]
         try:
@@ -642,9 +701,11 @@ def start_run(hub, computer_id, due, folders):
         # prints "created <id>". The hub needs it to match the conversation's status.
         words = (p.stdout or "").strip().split()
         if sid == "-" and len(words) == 2 and words[0] == "created" and started.get("todo_id"):
+            # By conversation when the hub names it (a research group's todo has several).
+            route = ("/api/conversations/%s/session" % urllib.parse.quote(started["conversation_id"], safe="")
+                     if started.get("conversation_id") else "/api/todos/%s/conversation/session" % started["todo_id"])
             try:
-                hub.request("PUT", "/api/todos/%s/conversation/session" % started["todo_id"],
-                            body={"session_id": words[1]})
+                hub.request("PUT", route, body={"session_id": words[1]})
             except HubError as e:
                 log("session_report_failed", run=run["id"], error=e)
     except Exception as e:
@@ -669,6 +730,7 @@ def cmd_tick(args):
     status["last_tick"] = now()
     started = 0
     no_reading_started = {}
+    group_bases = {}
     due = None
     try:
         due = hub.request("GET", "/api/runner/due", query={"computer_id": computer_id}) or {}
@@ -705,16 +767,27 @@ def cmd_tick(args):
                 hub.request("POST", "/api/runs/%s/wait" % rid, body={"reason": reason})
                 log("wait", run=rid)
                 continue
+            group = item.get("group") or {}
             try:
                 claim = {"computer_id": computer_id}
                 if no_reading:
                     claim["no_reading"] = True
-                hub.request("POST", "/api/runs/%s/claim" % rid, body=claim)
+                # A research group's first claim sets the base every attempt starts from.
+                if group.get("id") and not group.get("base_sha"):
+                    base = group_bases.get(group["id"]) or propose_base(item["job"]["action"], folders)
+                    if base:
+                        claim["base_sha"] = base
+                claimed = hub.request("POST", "/api/runs/%s/claim" % rid, body=claim)
             except HubError as e:
                 if e.status == 409:
                     log("claim_lost", run=rid)
                     continue
                 raise
+            if group.get("id"):
+                answered = (claimed or {}).get("group") if isinstance(claimed, dict) else None
+                item = dict(item, group=answered or group)
+                if item["group"].get("base_sha"):
+                    group_bases[group["id"]] = item["group"]["base_sha"]
             try:
                 result = start_run(hub, computer_id, item, folders)
                 hub.request("POST", "/api/runs/%s/finish" % rid, body={"state": "done", "result": result})
@@ -739,6 +812,7 @@ def cmd_tick(args):
         do_resolves(hub, due.get("resolves"))
         report_watchers(hub, computer_id)
         report_job_templates(hub, computer_id)
+        report_tools(hub, computer_id)
         maybe_start_updates()
         maybe_report_health()
         # Only with the hub's answer: without its keep list, a closed conversation's worktree
