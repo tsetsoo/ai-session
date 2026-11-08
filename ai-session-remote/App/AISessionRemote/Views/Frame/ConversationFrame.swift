@@ -53,6 +53,10 @@ struct ConversationFrame: View {
     @Environment(\.openWindow) private var openWindow
     #endif
     @State private var terminal = TerminalHandle()
+    #if os(macOS)
+    @State private var shellVisible = false
+    @State private var shellOpened = false
+    #endif
     @State private var clipboardSessionID: String?
     /// This todo's usage (own + sub-agents), shown at the right of the limits strip.
     @State private var todoUsage: UsageSummary?
@@ -161,8 +165,25 @@ struct ConversationFrame: View {
         serversPresentation(frameContent)
     }
 
-    private var frameContent: some View {
+    @ViewBuilder
+    private var frameTerminalContent: some View {
+        #if os(macOS)
+        VStack(spacing: 0) {
+            terminalArea
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+            if case let .ready(open) = loader.phase {
+                todoShell(open)
+                    .layoutPriority(1)
+            }
+        }
+        #else
         terminalArea
+        #endif
+    }
+
+    private var frameContent: some View {
+        frameTerminalContent
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 if let tool = chromeTool {
@@ -440,6 +461,48 @@ struct ConversationFrame: View {
         }
     }
 
+    #if os(macOS)
+    private func todoShell(_ open: OpenTodoConversation) -> some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack {
+                Button {
+                    shellOpened = true
+                    withAnimation(.easeInOut(duration: 0.2)) { shellVisible.toggle() }
+                } label: {
+                    Label("Terminal", systemImage: "terminal")
+                }
+                .buttonStyle(.borderless)
+                .help(shellVisible ? "Hide terminal" : "Show terminal")
+                Spacer()
+                if shellVisible {
+                    Text(open.conversation.computer.name).foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            if shellOpened {
+                TerminalSurface(
+                    config: open.config,
+                    mode: .attach(TmuxCommandBuilder.persistentShell(
+                        tmuxName: "todo-shell-\(todo.id)", cwd: open.conversation.cwd
+                    )),
+                    hostName: open.conversation.computer.name,
+                    focusOnConnect: false,
+                    isFrontmost: isFrontmost && shellVisible,
+                    isOnScreen: (isOnScreen ?? isFrontmost) && shellVisible,
+                    makeTransport: makeTransport
+                )
+                .frame(height: shellVisible ? 240 : 0)
+                .clipped()
+                .opacity(shellVisible ? 1 : 0)
+                .allowsHitTesting(shellVisible)
+            }
+        }
+    }
+    #endif
+
     private func liveTerminal(_ open: OpenTodoConversation) -> some View {
         let conversation = open.conversation
         return TerminalSurface(
@@ -553,8 +616,26 @@ struct ConversationFrame: View {
             do {
                 let conversation = try await startConversation(tool: tool, mcpServers: servers)
                 loader.attachOpened(conversation)
+                nameNewConversation(conversation)
             } catch {
                 toolError = TodoHubStore.message(for: error)
+            }
+        }
+    }
+
+    private func nameNewConversation(_ conversation: Conversation) {
+        guard ["claude", "codex"].contains(conversation.tool),
+              let config = try? HostLookup.config(for: conversation.computer, in: hosts) else { return }
+        let name = todo.title
+        Task {
+            // Some tools create the transcript only after the first prompt.
+            for _ in 0..<120 {
+                guard !Task.isCancelled else { return }
+                let result = try? await NIOSSHClient().exec(config, command: TmuxCommandBuilder.renameRemoteConversation(
+                    tool: conversation.tool, sessionId: conversation.sessionId, name: name
+                ))
+                if let result, result.exitCode != 66 { return }
+                try? await Task.sleep(for: .seconds(5))
             }
         }
     }

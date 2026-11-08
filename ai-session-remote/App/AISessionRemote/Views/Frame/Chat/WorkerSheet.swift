@@ -76,6 +76,8 @@ struct WorkerDetail: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeInOut(duration: 0.22), value: showsActivity)
+        .animation(.easeInOut(duration: 0.22), value: showsTask)
         .onAppear { if activityOpen { showsActivity = true } }
         .task(id: ActivityPoll(open: showsActivity, working: worker.state == .working)) { await pollActivity() }
     }

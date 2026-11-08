@@ -528,6 +528,8 @@ final class TodoHubStore {
                     )
                 }
                 conversation = try await storeSession(client, conversation, created)
+                // Naming is best effort: a newly started tool may not have written its transcript yet.
+                try? await RemoteConversations.rename(conversation, to: todo.title, config: config)
             } catch {
                 // The script may already have created the tmux session. Leaving it makes the
                 // next fresh open attach to a session that never printed an id.
