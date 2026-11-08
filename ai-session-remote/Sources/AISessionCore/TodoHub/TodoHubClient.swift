@@ -518,11 +518,6 @@ public struct TodoHubClient: Sendable {
         try await decode(IdeaTodoResponse.self, send("POST", "/api/ideas/\(escape(id))/todo")).todoId
     }
 
-    /// Research this idea now (it becomes researching at once); returns the queued run.
-    public func researchIdea(id: String) async throws -> JobRun {
-        try await decode(JobRun.self, send("POST", "/api/ideas/\(escape(id))/research"))
-    }
-
     /// Research this idea now with these agents. An older hub ignores them and answers one run.
     public func researchIdea(id: String, request: ResearchRequest) async throws -> ResearchOutcome {
         let data = try await send("POST", "/api/ideas/\(escape(id))/research", body: request)

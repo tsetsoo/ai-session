@@ -1269,10 +1269,33 @@ final class TodoHubStore {
         if let p { pendingIdeaCount = p.filter(\.pending).count }
     }
 
-    func researchIdea(_ idea: Idea) async throws {
-        try await perform { client in _ = try await client.researchIdea(id: idea.id) }
+    /// Research Now with these agents on this computer. Returns a note when an older hub
+    /// started only Claude instead.
+    func researchIdea(_ idea: Idea, rows: [ResearchAgentRow], computerId: String) async throws -> String? {
+        var outcome: ResearchOutcome?
+        try await perform { client in
+            outcome = try await client.researchIdea(id: idea.id, request: ResearchAgents.request(rows: rows, computerId: computerId))
+        }
         await loadAllIdeas()
         await loadRecentRuns()
+        return outcome.flatMap { ResearchAgents.legacyWarning($0, rows: rows) }
+    }
+
+    /// Retry a research attempt that failed to start.
+    func retryAttempt(_ attempt: IdeaAttempt) async throws {
+        try await perform { client in _ = try await client.retryRun(id: attempt.runId) }
+        await loadAllIdeas()
+    }
+
+    /// The computer a project's conversations usually run on: its section's, else its own.
+    func usualComputer(for project: Project) -> Computer {
+        let id = sectionComputers[project.section]?.computer.id ?? project.computer.id
+        return computers.first { $0.id == id } ?? sectionComputers[project.section]?.computer ?? project.computer
+    }
+
+    /// The research idea whose todo this is (its attempts are the todo's conversations).
+    func researchIdea(forTodo todoId: String) -> Idea? {
+        allIdeas.first { $0.todoId == todoId && !$0.attempts.isEmpty }
     }
 
     /// Reloads open and recently cleared watcher issues.

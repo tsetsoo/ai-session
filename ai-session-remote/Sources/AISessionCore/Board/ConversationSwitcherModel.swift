@@ -16,6 +16,19 @@ public enum ConversationSwitcherModel {
         tabs(conversations).count >= 2
     }
 
+    /// With research attempts that failed to start (they have no open conversation), the
+    /// switcher shows while there are two or more tabs in all.
+    public static func showsSwitcher(_ conversations: [Conversation], failed: Int) -> Bool {
+        tabs(conversations).count + failed >= 2
+    }
+
+    /// A research todo's failed attempts that get a tab of their own (with Retry): those with
+    /// no conversation, or whose conversation was closed when they failed.
+    public static func failedAttempts(_ attempts: [IdeaAttempt], conversations: [Conversation]) -> [IdeaAttempt] {
+        let open = Set(tabs(conversations).map(\.id))
+        return attempts.filter { $0.state == "failed" && !($0.conversationId.map(open.contains) ?? false) }
+    }
+
     /// `Codex · gpt-6.1`, or just `Claude` with its default model.
     public static func label(_ conversation: Conversation) -> String {
         let tool = conversation.tool.prefix(1).uppercased() + conversation.tool.dropFirst()

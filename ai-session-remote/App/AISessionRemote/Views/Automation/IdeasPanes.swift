@@ -139,6 +139,8 @@ struct IdeaDetailPane: View {
     @State private var notes = ""
     @State private var confirmingDelete = false
     @State private var errorMessage: String?
+    @State private var choosingAgents = false
+    @State private var note: String?
 
     var body: some View {
         Form {
@@ -168,10 +170,10 @@ struct IdeaDetailPane: View {
                     } label: {
                         Label(idea.starred ? "Starred" : "Star", systemImage: idea.starred ? "star.fill" : "star")
                     }
-                    Button("Research Now", systemImage: "magnifyingglass") { act { try await store.researchIdea(idea) } }
+                    Button("Research Now", systemImage: "magnifyingglass") { choosingAgents = true }
                         .buttonStyle(.borderedProminent)
                         .disabled(idea.status != .new || idea.pending)
-                        .help(idea.status == .new ? "Starts a research conversation on this idea now" : "Only new ideas can be researched")
+                        .help(idea.status == .new ? "Choose agents to research this idea now" : "Only new ideas can be researched")
                     Menu {
                         Button("Turn into Todo", systemImage: "checklist") {
                             act { onOpenTodo(try await store.ideaToTodo(idea)) }
@@ -196,6 +198,9 @@ struct IdeaDetailPane: View {
                 if let errorMessage {
                     Label(errorMessage, systemImage: "exclamationmark.triangle").foregroundStyle(DS.warning)
                 }
+                if let note {
+                    Label(note, systemImage: "info.circle").foregroundStyle(.secondary)
+                }
             }
             Section("Idea") {
                 TextField("Title", text: $title)
@@ -205,7 +210,11 @@ struct IdeaDetailPane: View {
                         .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
-            if let findings = idea.findings, !findings.isEmpty {
+            if !idea.attempts.isEmpty {
+                ForEach(idea.attempts) { attempt in
+                    attemptSection(attempt)
+                }
+            } else if let findings = idea.findings, !findings.isEmpty {
                 Section("Findings") {
                     Text(Self.markdown(findings)).textSelection(.enabled)
                 }
@@ -227,11 +236,47 @@ struct IdeaDetailPane: View {
             title = idea.title
             notes = idea.notes
         }
+        .sheet(isPresented: $choosingAgents) {
+            ResearchAgentsSheet(idea: idea, store: store, onStarted: { started in
+                note = started
+                errorMessage = nil
+                choosingAgents = false
+            }, onCancel: { choosingAgents = false })
+        }
         .confirmationDialog("Delete this idea?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {
                 act {
                     try await store.deleteIdea(idea)
                     onDeleted()
+                }
+            }
+        }
+    }
+
+    /// One agent's findings, or where it is: waiting, working, or failed with Retry.
+    private func attemptSection(_ attempt: IdeaAttempt) -> some View {
+        Section {
+            if let state = ResearchAgents.stateText(attempt) {
+                HStack {
+                    Label(state, systemImage: attempt.state == "failed" ? "exclamationmark.triangle" : "hourglass")
+                        .foregroundStyle(attempt.state == "failed" ? DS.warning : .secondary)
+                    Spacer()
+                    if attempt.state == "failed" {
+                        Button("Retry", systemImage: "arrow.clockwise") { act { try await store.retryAttempt(attempt) } }
+                            .disabled(store.isOffline)
+                    }
+                }
+            }
+            if let findings = attempt.findings, !findings.isEmpty {
+                Text(Self.markdown(findings)).textSelection(.enabled)
+            }
+        } header: {
+            HStack {
+                Text(ResearchAgents.label(attempt))
+                if attempt.chosen {
+                    Text("Chosen").font(.caption.weight(.medium))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.15), in: Capsule())
                 }
             }
         }

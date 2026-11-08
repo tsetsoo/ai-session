@@ -87,7 +87,11 @@ struct TodoConversationScreen: View {
                     sideBySide: $sideBySide,
                     onSelect: { appModel?.selectedConversationID = $0.listKey },
                     onContinue: askToContinue,
-                    onReopenClosed: reopenClosed
+                    onReopenClosed: reopenClosed,
+                    failed: ConversationSwitcherModel.failedAttempts(
+                        store.researchIdea(forTodo: todo.id)?.attempts ?? [], conversations: todoConversations
+                    ),
+                    onRetry: retryAttempt
                 )
             }
             #if os(macOS)
@@ -128,6 +132,10 @@ struct TodoConversationScreen: View {
                 if !shows { sideBySide = false }
             }
             .onChange(of: hosts) { _, hosts in hostList.hosts = hosts }
+            .task(id: store.revision) {
+                // A research todo's attempts (failed ones get Retry in the switcher).
+                if todo.scheduledJobId != nil, !isSuspended { await store.loadAllIdeas() }
+            }
             .onChange(of: request, initial: true) { _, request in handle(request) }
             .onChange(of: shown?.listKey) { _, _ in
                 // Switching conversations of the todo already on screen. An idle frame waits
@@ -193,6 +201,16 @@ struct TodoConversationScreen: View {
             do {
                 try await store.continueWith(chosen) { try HostLookup.config(for: $0.computer, in: hosts) }
                 if case .ready = loader.phase { loader.show(chosen) } else { loader.attachIfRunning(chosen) }
+            } catch {
+                switcherError = TodoHubStore.message(for: error)
+            }
+        }
+    }
+
+    private func retryAttempt(_ attempt: IdeaAttempt) {
+        Task {
+            do {
+                try await store.retryAttempt(attempt)
             } catch {
                 switcherError = TodoHubStore.message(for: error)
             }

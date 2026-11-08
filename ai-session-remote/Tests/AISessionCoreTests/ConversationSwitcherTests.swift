@@ -33,6 +33,21 @@ final class ConversationSwitcherTests: XCTestCase {
         XCTAssertEqual(ConversationSwitcherModel.statusGlyph(.unknown), "")
     }
 
+    func testFailedAttemptsWithoutOpenConversation() {
+        let attempts = [
+            IdeaAttempt(runId: "r1", tool: "claude", state: "done", conversationId: "a"),
+            IdeaAttempt(runId: "r2", tool: "codex", state: "failed", result: "boom", conversationId: "b"),
+            IdeaAttempt(runId: "r3", tool: "cursor", state: "failed"),
+            IdeaAttempt(runId: "r4", tool: "codex", state: "failed", conversationId: "d"),
+        ]
+        let conversations = [c("a", "claude", .idle), c("b", "codex", .closed), c("d", "codex", .busy)]
+        XCTAssertEqual(ConversationSwitcherModel.failedAttempts(attempts, conversations: conversations).map(\.runId), ["r2", "r3"],
+                       "a failed attempt whose conversation still runs shows as that conversation")
+        XCTAssertEqual(ConversationSwitcherModel.failedAttempts([], conversations: conversations), [])
+        XCTAssertTrue(ConversationSwitcherModel.showsSwitcher([c("a", "claude", .idle)], failed: 1))
+        XCTAssertFalse(ConversationSwitcherModel.showsSwitcher([c("a", "claude", .idle)], failed: 0))
+    }
+
     func testClosedNote() {
         XCTAssertNil(ConversationSwitcherModel.closedNote([c("a", "claude", .idle)]))
         XCTAssertEqual(ConversationSwitcherModel.closedNote([c("a", "claude", .idle), c("b", "codex", .closed)]), "Codex attempt · closed")

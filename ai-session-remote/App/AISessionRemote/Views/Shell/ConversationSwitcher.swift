@@ -11,6 +11,9 @@ struct ConversationSwitcherBar: View {
     var onSelect: (Conversation) -> Void
     var onContinue: (Conversation) -> Void
     var onReopenClosed: () -> Void
+    /// A research todo's attempts that failed to start: shown beside the tabs, with Retry.
+    var failed: [IdeaAttempt] = []
+    var onRetry: (IdeaAttempt) -> Void = { _ in }
 
     private var tabs: [Conversation] { ConversationSwitcherModel.tabs(conversations) }
     private var selected: Conversation? {
@@ -18,7 +21,7 @@ struct ConversationSwitcherBar: View {
     }
 
     var body: some View {
-        if ConversationSwitcherModel.showsSwitcher(conversations) {
+        if ConversationSwitcherModel.showsSwitcher(conversations, failed: failed.count) {
             HStack(spacing: 8) {
                 Picker("Conversation", selection: Binding(
                     get: { sideBySide ? Self.sideBySideTag : (selected?.listKey ?? "") },
@@ -41,6 +44,17 @@ struct ConversationSwitcherBar: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
+                ForEach(failed) { attempt in
+                    Menu {
+                        Text(ResearchAgents.stateText(attempt) ?? "Failed")
+                        Button("Retry", systemImage: "arrow.clockwise") { onRetry(attempt) }
+                    } label: {
+                        Label("\(ResearchAgents.label(attempt)) · failed", systemImage: "exclamationmark.triangle")
+                    }
+                    .fixedSize()
+                    .foregroundStyle(DS.warning)
+                    .help("This agent didn't start")
+                }
                 Spacer(minLength: 0)
                 if !sideBySide, let selected {
                     ConversationPaneHeader(conversation: selected, showsName: false) { onContinue(selected) }

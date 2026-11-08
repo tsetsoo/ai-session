@@ -28,6 +28,7 @@
 		0FC884486FF53C6BD991F5C4 /* UsageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2968A6B93F6B7D9AFCADC8BA /* UsageViews.swift */; };
 		0FE1099683E149F3C6E0F861 /* AccentButtonStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 953A88DC4DA95609F6AA1F02 /* AccentButtonStyle.swift */; };
 		10BE5487C7B5DE001354E7ED /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B5CF5ADABEA184DD911533 /* SessionsListView.swift */; };
+		10C6C7A99A15CF1D8CDD7162 /* ResearchAgentsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5438FFCF88CA25018D7CAED /* ResearchAgentsSheet.swift */; };
 		1257CFF715CF5669E68422AC /* ComputerDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0593DCB097C923A73341EB68 /* ComputerDetailView.swift */; };
 		1345E446A76E1ED2880000F2 /* Chip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F72C8DE6C182CAB33EB9D17 /* Chip.swift */; };
 		144009C4000AC3F95367C3EF /* JobsPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EE350274D8FBBAD33BC7718 /* JobsPanes.swift */; };
@@ -252,6 +253,7 @@
 		BAD1AA4C48CFFEC5E3D2B641 /* TerminalAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F1EA970D847587BCE04E555 /* TerminalAppearance.swift */; };
 		BC64832FF85ABCAF0A96EABD /* ProjectMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */; };
 		BDB5778417C362323812D238 /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
+		BDF878195029383137C383AD /* ResearchAgentsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5438FFCF88CA25018D7CAED /* ResearchAgentsSheet.swift */; };
 		BE942C01C1F0F332E6A6F86C /* TodoRename.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12D5F34B1CF5313030CABD54 /* TodoRename.swift */; };
 		BF9A18AF476748AE63B0CF5E /* OnThisComputerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24947A77BA8C57130367110F /* OnThisComputerView.swift */; };
 		C0151AA649300EAE1F217F82 /* TerminalTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D417529F6E6B990D79BF81 /* TerminalTransport.swift */; };
@@ -474,6 +476,7 @@
 		B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostProvisioning.swift; sourceTree = "<group>"; };
 		B1793D57706890A26C94F6B6 /* ReadAloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadAloud.swift; sourceTree = "<group>"; };
 		B24103E63B65EE5783B9E334 /* RemoteConversations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteConversations.swift; sourceTree = "<group>"; };
+		B5438FFCF88CA25018D7CAED /* ResearchAgentsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResearchAgentsSheet.swift; sourceTree = "<group>"; };
 		B7904F574B3A5E7AE10B093F /* PhoneShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneShell.swift; sourceTree = "<group>"; };
 		B8109AAC4A1B7917319AEF41 /* TerminalTouchScroll.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTouchScroll.swift; sourceTree = "<group>"; };
 		BA54D98ADC3ACCD267883621 /* DemoFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoFixtures.swift; sourceTree = "<group>"; };
@@ -718,6 +721,7 @@
 				137F28FB6F0222F70DE53BCF /* IdeasPanes.swift */,
 				1EE350274D8FBBAD33BC7718 /* JobsPanes.swift */,
 				FC6FD9E3610549559A6206B4 /* PhoneAutomation.swift */,
+				B5438FFCF88CA25018D7CAED /* ResearchAgentsSheet.swift */,
 				FCE24CED81E2D0F51FE59940 /* WatchersPanes.swift */,
 			);
 			path = Automation;
@@ -1247,6 +1251,7 @@
 				278C9FE2E986245E02258F0F /* RemoteLimits.swift in Sources */,
 				3D7A44B4B3D6A2068F76FFD3 /* RemoteRestart.swift in Sources */,
 				D9D235AA7898276A14473AE8 /* RemoteUpgrade.swift in Sources */,
+				BDF878195029383137C383AD /* ResearchAgentsSheet.swift in Sources */,
 				381174EAEAAB226799F0A307 /* RestartSheet.swift in Sources */,
 				D9729BE332BD4630C48AA9D0 /* ReviewItemsSheet.swift in Sources */,
 				5E1BA3A92F17441A72CB47CD /* ReviewSession.swift in Sources */,
@@ -1390,6 +1395,7 @@
 				8FDFD567428FABBFBA8F8EE2 /* RemoteLimits.swift in Sources */,
 				7D6E28D51FE6B8D16066DE09 /* RemoteRestart.swift in Sources */,
 				A41E9EBB5F02EED9196ACAC5 /* RemoteUpgrade.swift in Sources */,
+				10C6C7A99A15CF1D8CDD7162 /* ResearchAgentsSheet.swift in Sources */,
 				FB41F9C0595CD3909C87CD33 /* RestartSheet.swift in Sources */,
 				1AD71FC41F617407C8585AEA /* ReviewItemsSheet.swift in Sources */,
 				82B52C7E9AD31D5C7F5F4E70 /* ReviewSession.swift in Sources */,
