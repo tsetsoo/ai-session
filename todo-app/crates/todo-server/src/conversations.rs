@@ -321,6 +321,7 @@ pub(crate) fn is_constraint_violation(e: &rusqlite::Error) -> bool {
 /// `worktrees`: the client can create worktrees. A conversation this call creates in a git
 /// project (one with a `repo_url`) whose `worktrees` setting is on then gets its own worktree:
 /// see `plan_worktree`.
+#[cfg(test)]
 pub(crate) fn open_conversation_db(
     conn: &Connection,
     todo_id: &str,
@@ -346,6 +347,7 @@ impl Default for OpenOptions<'_> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn open_conversation_with(
     conn: &Connection,
     todo_id: &str,
