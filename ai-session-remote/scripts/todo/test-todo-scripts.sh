@@ -3176,6 +3176,7 @@ R_HEALTH_LOG="${SANDBOX}/runner-health.log"
 R_STATUS="${SANDBOX}/bin/fake-status"
 cat >"$R_STATUS" <<FAKE
 #!/bin/sh
+if [ "\$1" = codex-path ]; then [ -n "\${FAKE_CODEX_PATH:-}" ] && { echo "\$FAKE_CODEX_PATH"; exit 0; }; exit 90; fi
 echo "\$*" >>"$R_HEALTH_LOG"
 FAKE
 chmod +x "$R_STATUS"
@@ -3858,6 +3859,12 @@ AI_TODO_CLAUDE_BIN="$R_OPEN" runner tick || fail "tick failed"
 AI_TODO_CLAUDE_BIN="$R_OPEN" AI_TODO_CODEX_BIN="$R_OPEN" runner tick || fail "tick failed"
 [[ $(requests PUT /api/computers/comp-1/tools) -eq $((TOOLS_BEFORE + 2)) ]] || fail "an old hub (404) was asked again within the day"
 hub_edit "s.pop('tools_status', None)"
+# Codex as ai-todo-open finds it: `ai-todo-status codex-path` (the managed install, not on PATH).
+rm -f "${R_STATE}/tools.json"
+env -u AI_TODO_CODEX_BIN FAKE_CODEX_PATH="$R_OPEN" AI_TODO_CLAUDE_BIN="$R_OPEN" AI_TODO_AGENT_BIN="${SANDBOX}/no-agent" PATH="/usr/bin:/bin" \
+  AI_TODO_HUB_CONF="$M_CONF" AI_TODO_OPEN_BIN="$R_OPEN" AI_TODO_LIMITS_BIN="$R_LIMITS" AI_TODO_LIMITS_TIMEOUT=2 AI_TODO_STATUS_BIN="$R_STATUS" \
+  "$RUNNER" tick || fail "tick failed"
+[[ "$(last_body PUT /api/computers/comp-1/tools)" == '["claude", "codex"]' ]] || fail "managed codex not reported: $(last_body PUT /api/computers/comp-1/tools)"
 pass "runner_reports_installed_tools"
 
 auto_run() { # <run id>: an assistant run whose tool is auto

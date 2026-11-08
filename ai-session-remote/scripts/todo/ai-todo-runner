@@ -548,10 +548,24 @@ def tools_report():
     out = []
     for tool, env, name in TOOL_BINS:
         override = os.environ.get(env)
-        found = (os.path.isfile(override) and os.access(override, os.X_OK)) if override else bool(shutil.which(name))
+        if override:
+            found = os.path.isfile(override) and os.access(override, os.X_OK)
+        else:
+            found = bool(shutil.which(name)) or (tool == "codex" and managed_codex())
         if found:
             out.append(tool)
     return out
+
+
+def managed_codex():
+    """Codex as ai-todo-open finds it first: `ai-todo-status codex-path` (its own install,
+    often not on PATH)."""
+    try:
+        p = subprocess.run([STATUS_BIN, "codex-path"], capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    path = (p.stdout or "").strip()
+    return p.returncode == 0 and bool(path) and os.access(path, os.X_OK)
 
 
 def report_tools(hub, computer_id):
