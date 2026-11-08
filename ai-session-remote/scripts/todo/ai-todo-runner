@@ -707,7 +707,12 @@ def start_run(hub, computer_id, due, folders):
         try:
             p = subprocess.run(argv, capture_output=True, text=True, timeout=OPEN_TIMEOUT, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
-            # The conversation may be running in the worktree already: keep it.
+            # The conversation may be running in the worktree already: keep it. A research
+            # attempt counts as started: failing it would close a conversation that may be
+            # working and offer a Retry that starts a second one.
+            if due.get("group"):
+                return "started %s in %s (ai-todo-open timed out; it may still be starting)" % (
+                    started.get("tool") or action.get("tool"), tilde(path))
             raise RuntimeError("ai-todo-open timed out; the worktree is kept")
         finally:
             if os.path.exists(prompt_file):

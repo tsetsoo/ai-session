@@ -3381,6 +3381,16 @@ posts_to finish | grep '"id": "r-slowopen"' | grep -q '"state": "failed"' || fai
 [[ -d "${R_TREES}/proj-app/r-slowopen" ]] || fail "a timed-out start removed a worktree a conversation may be using"
 pass "runner_open_timeout_keeps_worktree"
 
+# A research attempt whose ai-todo-open timed out may be running: it is not marked failed
+# (that would close its conversation and offer a Retry that starts a second one).
+runs_reset
+due_run r-slowgrp1 proj-app '{"mode":"always"}'
+hub_edit "s['due_runs'][0]['group'] = dict(id='g-slow', base_sha=None, attempts=2)"
+FAKE_OPEN_SLEEP=4 AI_TODO_OPEN_TIMEOUT=1 runner tick || fail "tick failed"
+posts_to finish | grep '"id": "r-slowgrp1"' | grep '"state": "done"' | grep -q "timed out" || fail "a timed-out research attempt was not left running: $(posts_to finish)"
+[[ -d "${R_TREES}/proj-app/r-slowgrp1" ]] || fail "a timed-out attempt lost its worktree"
+pass "runner_group_open_timeout_is_not_a_failure"
+
 runs_reset
 due_run r-outside1 proj-app '{"mode":"always"}' 0 claude '~/work/elsewhere'
 runner tick || fail "tick failed"

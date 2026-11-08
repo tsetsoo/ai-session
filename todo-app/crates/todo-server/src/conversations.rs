@@ -361,6 +361,17 @@ fn open_conversation_in(
         }
         return Ok(existing);
     }
+    // A Research Now todo gets its conversations from its agents' runs; one started here
+    // would be no attempt (and would share the project folder).
+    let starting: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM run_groups g JOIN job_runs r ON r.group_id = g.id
+             WHERE g.todo_id = ?1 AND r.state IN ('due', 'waiting', 'running'))",
+        params![todo_id],
+        |r| r.get(0),
+    )?;
+    if starting {
+        return Err(OpenError::Conflict("The research agents are starting; their conversations appear here in a minute"));
+    }
 
     let computer_id: Option<String> = conn
         .query_row("SELECT computer_id FROM section_computers WHERE section = ?1", params![section], |r| r.get(0))

@@ -1876,6 +1876,21 @@ mod group_runner_tests {
     }
 
     #[actix_web::test]
+    async fn research_todo_refuses_a_hand_started_conversation_while_agents_start() {
+        let (_db, pool) = pool("runner");
+        seed(&pool.get().unwrap());
+        let (runs, todo) = research(&pool, "mac", two()).await;
+        let (status, v) = post(&pool, &format!("/api/todos/{todo}/conversation"), json!({"tool": "claude"})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{v}");
+        assert!(v.to_string().contains("research agents are starting"), "{v}");
+        claim(&pool, &runs[0], "mac", Some("abcdef1")).await;
+        let (_, a) = start(&pool, &runs[0]).await;
+        let (status, v) = post(&pool, &format!("/api/todos/{todo}/conversation"), json!({"tool": "claude"})).await;
+        assert!(status.is_success(), "{v}");
+        assert_eq!(v["id"], a["conversation_id"], "opening it shows the attempt, not a new conversation");
+    }
+
+    #[actix_web::test]
     async fn put_tools_round_trip() {
         let (_db, pool) = pool("runner");
         seed(&pool.get().unwrap());
