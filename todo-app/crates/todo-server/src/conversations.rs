@@ -328,10 +328,40 @@ pub(crate) fn open_conversation_db(
     mcp_servers: Option<&[String]>,
     worktrees: bool,
 ) -> Result<Conversation, OpenError> {
+    open_conversation_with(conn, todo_id, tool, mcp_servers, &OpenOptions { worktrees, ..Default::default() })
+}
+
+/// What a todo's first open may ask for beyond the tool: several agents start with the first
+/// one's `model` and `base_sha`, and `agents` (1–10) says how many will start.
+pub(crate) struct OpenOptions<'a> {
+    pub worktrees: bool,
+    pub model: Option<&'a str>,
+    pub base_sha: Option<&'a str>,
+    pub agents: u32,
+}
+
+impl Default for OpenOptions<'_> {
+    fn default() -> Self {
+        OpenOptions { worktrees: false, model: None, base_sha: None, agents: 1 }
+    }
+}
+
+pub(crate) fn open_conversation_with(
+    conn: &Connection,
+    todo_id: &str,
+    tool: &str,
+    mcp_servers: Option<&[String]>,
+    options: &OpenOptions,
+) -> Result<Conversation, OpenError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let conversation = open_conversation_in(&tx, todo_id, tool, mcp_servers, worktrees)?;
+    let conversation = open_conversation_in(&tx, todo_id, tool, mcp_servers, options)?;
     tx.commit()?;
     Ok(conversation)
+}
+
+/// A commit sha as git prints it, short or full.
+pub(crate) fn valid_base_sha(sha: &str) -> bool {
+    (7..=40).contains(&sha.len()) && sha.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn open_conversation_in(
@@ -339,18 +369,33 @@ fn open_conversation_in(
     todo_id: &str,
     tool: &str,
     mcp_servers: Option<&[String]>,
-    worktrees: bool,
+    options: &OpenOptions,
 ) -> Result<Conversation, OpenError> {
     let tool = tool.trim();
     if !SUPPORTED_TOOLS.contains(&tool) {
         return Err(OpenError::UnsupportedTool);
     }
+    if !(1..=MAX_AGENTS as u32).contains(&options.agents) {
+        return Err(OpenError::BadRequest("agents must be 1 to 10"));
+    }
+    let model = options.model.map(str::trim).filter(|m| !m.is_empty());
+    if model.is_some_and(|m| !valid_model(m)) {
+        return Err(OpenError::BadRequest(MODEL_RULE));
+    }
+    let base_sha = options.base_sha.map(str::trim).filter(|b| !b.is_empty());
+    if base_sha.is_some_and(|b| !valid_base_sha(b)) {
+        return Err(OpenError::BadRequest("base_sha must be a commit sha"));
+    }
+    let several = options.agents > 1;
     let section: String = conn
         .query_row("SELECT section FROM todos WHERE id = ?1", params![todo_id], |r| r.get(0))
         .optional()?
         .ok_or(OpenError::TodoNotFound)?;
 
     if let Some(existing) = load_conversation(conn, todo_id)? {
+        if several {
+            return Err(OpenError::Conflict("This todo already has a conversation. Use Add Agent to start another."));
+        }
         if existing.status == ConversationStatus::Closed {
             conn.execute(
                 "UPDATE conversations SET status = 'unknown', status_message = NULL, status_updated_at = datetime('now')
@@ -388,13 +433,25 @@ fn open_conversation_in(
         )
         .optional()?
         .ok_or(OpenError::NoProject)?;
+    let own_worktree = options.worktrees && own_worktree;
+    if several && !own_worktree {
+        return Err(OpenError::Conflict(
+            "Several agents need their own copy of the project. This project doesn't use worktrees or has no repository. Start with one agent, or turn worktrees on in the project's settings.",
+        ));
+    }
     let session_id = (tool == "claude").then(|| Uuid::new_v4().to_string());
     let Some(id) = insert_conversation(conn, todo_id, &computer_id, &cwd, tool, session_id.as_deref(), false, None, mcp_servers)?
     else {
         return Err(OpenError::NoTmuxName);
     };
-    if worktrees && own_worktree {
+    if own_worktree {
         plan_worktree(conn, &id, &project_id, &cwd, &title)?;
+        if base_sha.is_some() {
+            conn.execute("UPDATE conversations SET worktree_base = ?2 WHERE id = ?1", params![id, base_sha])?;
+        }
+    }
+    if model.is_some() {
+        conn.execute("UPDATE conversations SET model = ?2 WHERE id = ?1", params![id, model])?;
     }
     load_conversation(conn, todo_id)?.ok_or(OpenError::TodoNotFound)
 }
@@ -484,7 +541,7 @@ fn duplicate_in(
         return Err(OpenError::BadRequest(MODEL_RULE));
     }
     let base_sha = options.base_sha.map(str::trim).filter(|b| !b.is_empty());
-    if base_sha.is_some_and(|b| b.len() < 7 || b.len() > 40 || !b.chars().all(|c| c.is_ascii_hexdigit())) {
+    if base_sha.is_some_and(|b| !valid_base_sha(b)) {
         return Err(OpenError::BadRequest("base_sha must be a commit sha"));
     }
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM conversations WHERE todo_id = ?1", params![todo_id], |r| r.get(0))?;
@@ -1275,7 +1332,13 @@ pub async fn open_conversation(
         Ok(names) => names,
         Err(msg) => return bad_request(&msg),
     };
-    match open_conversation_db(&conn, &path.into_inner(), &body.tool, mcp_servers.as_deref(), body.worktrees) {
+    let options = OpenOptions {
+        worktrees: body.worktrees,
+        model: body.model.as_deref(),
+        base_sha: body.base_sha.as_deref(),
+        agents: body.agents.unwrap_or(1),
+    };
+    match open_conversation_with(&conn, &path.into_inner(), &body.tool, mcp_servers.as_deref(), &options) {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)
@@ -2388,6 +2451,89 @@ mod tests {
         let again = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         assert_eq!(again.claude_session_id, first.claude_session_id);
         assert_eq!(again.cwd, "~/programming");
+    }
+
+    fn several(agents: u32) -> OpenOptions<'static> {
+        OpenOptions { worktrees: true, agents, ..Default::default() }
+    }
+
+    #[test]
+    fn open_with_agents_stores_model_and_base() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET repo_url = 'git@example.com:me/p.git' WHERE id = 'p1'", []).unwrap();
+        let options = OpenOptions { model: Some("opus[1m]"), base_sha: Some("8f5a29c0"), ..several(3) };
+        let conv = open_conversation_with(&conn, TODO, "claude", None, &options).unwrap();
+        assert_eq!(conv.model.as_deref(), Some("opus[1m]"));
+        assert_eq!(conv.worktree_base.as_deref(), Some("8f5a29c0"));
+        assert_eq!(conv.worktree_source.as_deref(), Some("~/programming"));
+    }
+
+    #[test]
+    fn open_with_agents_refused_without_worktrees() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET repo_url = 'git@example.com:me/p.git' WHERE id = 'p1'", []).unwrap();
+        let cases = [
+            ("UPDATE projects SET worktrees = 0", several(2)),
+            ("UPDATE projects SET worktrees = 1, repo_url = '  '", several(2)),
+            ("UPDATE projects SET worktrees = 1, repo_url = 'git@x:a.git'", OpenOptions { worktrees: false, ..several(2) }),
+        ];
+        for (setup, options) in cases {
+            conn.execute(setup, []).unwrap();
+            let result = open_conversation_with(&conn, TODO, "claude", None, &options);
+            assert!(matches!(result, Err(OpenError::Conflict(_))), "{setup}");
+            let n: i64 = conn.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0)).unwrap();
+            assert_eq!(n, 0, "{setup}");
+        }
+    }
+
+    #[test]
+    fn open_with_agents_refused_when_a_conversation_exists() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE projects SET repo_url = 'git@example.com:me/p.git' WHERE id = 'p1'", []).unwrap();
+        open_conversation_db(&conn, TODO, "claude", None, true).unwrap();
+        let result = open_conversation_with(&conn, TODO, "claude", None, &several(2));
+        assert!(matches!(result, Err(OpenError::Conflict(_))));
+    }
+
+    #[test]
+    fn open_rejects_bad_agents_model_and_sha() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        for agents in [0, 11] {
+            let result = open_conversation_with(&conn, TODO, "claude", None, &several(agents));
+            assert!(matches!(result, Err(OpenError::BadRequest("agents must be 1 to 10"))), "{agents}");
+        }
+        let bad_model = OpenOptions { model: Some("a b"), ..several(1) };
+        assert!(matches!(open_conversation_with(&conn, TODO, "claude", None, &bad_model), Err(OpenError::BadRequest(MODEL_RULE))));
+        let bad_sha = OpenOptions { base_sha: Some("xyz"), ..several(1) };
+        assert!(matches!(
+            open_conversation_with(&conn, TODO, "claude", None, &bad_sha),
+            Err(OpenError::BadRequest("base_sha must be a commit sha"))
+        ));
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[actix_web::test]
+    async fn open_route_takes_agents_model_and_base() {
+        let (_db, pool) = pool();
+        seed(&pool.get().unwrap());
+        pool.get().unwrap().execute("UPDATE projects SET repo_url = 'git@x:a.git'", []).unwrap();
+        let (status, body) = crate::test_support::post(
+            &pool,
+            &format!("/api/todos/{TODO}/conversation"),
+            serde_json::json!({"tool": "codex", "worktrees": true, "agents": 2, "model": "o3", "base_sha": "8f5a29c"}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{body}");
+        assert_eq!((body["model"].as_str(), body["worktree_base"].as_str()), (Some("o3"), Some("8f5a29c")));
     }
 
     #[test]

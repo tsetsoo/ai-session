@@ -321,6 +321,16 @@ pub struct OpenConversationRequest {
     /// new conversation shares the project folder, as before.
     #[serde(default)]
     pub worktrees: bool,
+    /// The first agent's model (several agents: each row's own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The commit its own worktree starts from: one base for all of a start's agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_sha: Option<String>,
+    /// How many agents this start opens (1–10). Several are refused unless this conversation
+    /// gets its own worktree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<u32>,
 }
 
 /// Replace a conversation's MCP selection. `null` means no selection was made.
