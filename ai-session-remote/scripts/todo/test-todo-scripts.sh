@@ -3706,6 +3706,20 @@ AI_TODO_RUNNER_STATE_DIR="$R_STATE" "$WSP" ensure "${R_TREES}/proj-merged/b-bad"
 code=$?
 set -e
 [[ $code -eq 64 ]] || fail "a malformed --base should exit 64, got $code"
+# Several agents start from one base: `base` prints origin/HEAD (not the local branch tip).
+echo ahead >"${R_MERGED}/ahead.txt"; git_q -C "$R_MERGED" add ahead.txt; git_q -C "$R_MERGED" commit -q -m "local only"
+out="$("$WSP" base "${HOME}/work/merged")" || fail "base failed"
+[[ "$out" == "$(git -C "$R_MERGED" rev-parse origin/HEAD) origin/main" ]] || fail "base should print origin/HEAD and its name, got: $out"
+git_q -C "$R_MERGED" reset -q --hard HEAD~1
+NO_REMOTE="${SANDBOX}/no-remote"; mkdir -p "$NO_REMOTE" && git_q -C "$NO_REMOTE" init -q && git_q -C "$NO_REMOTE" commit -q --allow-empty -m init
+out="$("$WSP" base "$NO_REMOTE")" || fail "base without a remote failed"
+[[ "$out" == "$(git -C "$NO_REMOTE" rev-parse HEAD) HEAD" ]] || fail "base without a remote should print HEAD, got: $out"
+set +e
+"$WSP" base "${HOME}/work/plain" >/dev/null 2>&1; code_plain=$?
+"$WSP" base >/dev/null 2>&1; code_none=$?
+set -e
+[[ $code_plain -eq 66 && $code_none -eq 64 ]] || fail "base: non-git folder should exit 66 ($code_plain), no folder 64 ($code_none)"
+pass "workspace_base_prints_origin_head (origin/HEAD and its name; HEAD without a remote; 66 outside git; 64 without a folder)"
 # ai-todo-open passes it on.
 printf '#!/bin/sh\necho "$*" >"%s/ws-base.log"\nexit 0\n' "$SANDBOX" >"${SANDBOX}/ws-base-stub"
 chmod +x "${SANDBOX}/ws-base-stub"

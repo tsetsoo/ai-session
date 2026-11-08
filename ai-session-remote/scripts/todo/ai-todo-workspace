@@ -11,6 +11,9 @@ Usage:
                                     a conversation's own worktree: made at <path> from the
                                     folder's repo (origin/HEAD, else HEAD) on <branch> when
                                     missing, else its local files synced. Progress on stderr.
+  ai-todo-workspace base <folder>   the commit new worktrees of the folder's repo start from,
+                                    after a fetch: "<sha> origin/main" (origin/HEAD), else
+                                    "<sha> HEAD". Several agents of one start share it.
 
 Exit codes: 0 ok, 64 bad arguments, 65 <path> is not a registered worktree, 66 the project
 folder is not in a git repository, 1 git could not make the worktree, 3 sync left files that
@@ -109,17 +112,29 @@ def cmd_ensure(args):
     return 0
 
 
+def cmd_base(args):
+    if len(args) != 1 or not args[0].strip():
+        return usage()
+    folder = expand(args[0])
+    found = workspace.resolve_base_ref(folder) if os.path.isdir(folder) else None
+    if not found:
+        print("ai-todo-workspace: %s is not in a git repository" % tilde(folder), file=sys.stderr)
+        return 66
+    print("%s %s" % found)
+    return 0
+
+
 def git_check_branch(branch):
     return subprocess.run(["git", "check-ref-format", "--branch", branch], capture_output=True).returncode
 
 
 def usage():
-    print("usage: ai-todo-workspace list [--json] | sync <path> | ensure <path> <folder> <branch> [--base <sha>]", file=sys.stderr)
+    print("usage: ai-todo-workspace list [--json] | sync <path> | ensure <path> <folder> <branch> [--base <sha>] | base <folder>", file=sys.stderr)
     return 64
 
 
 def main(argv):
-    commands = {"list": cmd_list, "sync": cmd_sync, "ensure": cmd_ensure}
+    commands = {"list": cmd_list, "sync": cmd_sync, "ensure": cmd_ensure, "base": cmd_base}
     if not argv or argv[0] not in commands:
         return usage()
     return commands[argv[0]](argv[1:])
