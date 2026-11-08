@@ -1,13 +1,15 @@
 //! Ideas per project: added in the app, by an agent (`ai-todo-idea`), or proposed by an agent
 //! for approval. A research job (runner_api.rs) picks the next one and its findings come back here.
 
+use std::collections::HashMap;
+
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 use serde::Deserialize;
 use todo_shared::{
-    CreateIdeaRequest, CreateJobRequest, DeleteResponse, Idea, JobAction, JobTrigger, LimitSetting, Priority,
-    UpdateIdeaRequest,
+    AttemptSpec, CreateIdeaRequest, CreateJobRequest, DeleteResponse, Idea, IdeaAttempt, JobAction, JobTrigger, LimitSetting,
+    Priority, ResearchRequest, ResearchStart, UpdateIdeaRequest,
 };
 use uuid::Uuid;
 
@@ -61,11 +63,49 @@ pub(crate) fn row_to_idea(row: &Row) -> rusqlite::Result<Idea> {
         source: row.get(10)?,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
+        attempts: Vec::new(),
     })
 }
 
+/// The research attempts of the ideas whose id passes `?1` (NULL: every idea), by idea id:
+/// the runs of each idea's current group, oldest first, without those a retry replaced.
+fn attempts_by_idea(conn: &Connection, idea_id: Option<&str>) -> rusqlite::Result<HashMap<String, Vec<IdeaAttempt>>> {
+    let mut stmt = conn.prepare(
+        "SELECT i.id, r.id, COALESCE(r.attempt_tool, 'claude'), r.attempt_model, r.state, r.result, r.conversation_id,
+                f.findings, COALESCE(g.chosen_run_id = r.id, 0)
+         FROM ideas i JOIN run_groups g ON g.id = i.group_id JOIN job_runs r ON r.group_id = g.id
+         LEFT JOIN idea_findings f ON f.run_id = r.id
+         WHERE (?1 IS NULL OR i.id = ?1) AND NOT EXISTS (SELECT 1 FROM job_runs x WHERE x.retry_of = r.id)
+         ORDER BY r.created_at, r.rowid",
+    )?;
+    let rows = stmt.query_map(params![idea_id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            IdeaAttempt {
+                run_id: r.get(1)?,
+                tool: r.get(2)?,
+                model: r.get(3)?,
+                state: r.get(4)?,
+                result: r.get(5)?,
+                conversation_id: r.get(6)?,
+                findings: r.get(7)?,
+                chosen: r.get::<_, i64>(8)? != 0,
+            },
+        ))
+    })?;
+    let mut out: HashMap<String, Vec<IdeaAttempt>> = HashMap::new();
+    for row in rows {
+        let (idea, attempt) = row?;
+        out.entry(idea).or_default().push(attempt);
+    }
+    Ok(out)
+}
+
 pub(crate) fn load_idea(conn: &Connection, id: &str) -> rusqlite::Result<Option<Idea>> {
-    conn.query_row(&format!("SELECT {IDEA_COLS} FROM ideas WHERE id = ?1"), params![id], row_to_idea).optional()
+    let idea = conn.query_row(&format!("SELECT {IDEA_COLS} FROM ideas WHERE id = ?1"), params![id], row_to_idea).optional()?;
+    let Some(mut idea) = idea else { return Ok(None) };
+    idea.attempts = attempts_by_idea(conn, Some(id))?.remove(id).unwrap_or_default();
+    Ok(Some(idea))
 }
 
 fn checked(text: &str, max: usize, what: &str, required: bool) -> Result<String, IdeaError> {
@@ -87,7 +127,12 @@ pub(crate) fn list_ideas_db(conn: &Connection, project_id: Option<&str>, status:
          LIMIT {MAX_LIST}"
     ))?;
     let rows = stmt.query_map(params![project_id, status, pending], row_to_idea)?;
-    rows.collect()
+    let mut ideas: Vec<Idea> = rows.collect::<rusqlite::Result<_>>()?;
+    let mut attempts = attempts_by_idea(conn, None)?;
+    for idea in &mut ideas {
+        idea.attempts = attempts.remove(&idea.id).unwrap_or_default();
+    }
+    Ok(ideas)
 }
 
 pub(crate) fn create_idea_db(conn: &Connection, req: &CreateIdeaRequest) -> Result<Idea, IdeaError> {
@@ -120,13 +165,40 @@ pub(crate) fn update_idea_db(conn: &Connection, id: &str, req: &UpdateIdeaReques
     }
     // Findings mean the research is done, unless the same request says otherwise.
     let status = req.status.clone().or_else(|| findings.as_ref().filter(|f| !f.is_empty()).map(|_| "researched".to_string()));
-    conn.execute(
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    // An attempt of this idea's research group saves its own findings. The idea's own copy is
+    // the chosen attempt's, else the first saved.
+    let attempt = match (req.attempt.as_deref().map(str::trim), &findings) {
+        (Some(run_id), Some(_)) if !run_id.is_empty() => tx
+            .query_row(
+                "SELECT r.id, g.chosen_run_id FROM job_runs r JOIN ideas i ON i.group_id = r.group_id
+                 JOIN run_groups g ON g.id = r.group_id WHERE r.id = ?1 AND i.id = ?2",
+                params![run_id, idea.id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?,
+        _ => None,
+    };
+    let findings = match (attempt, findings) {
+        (Some((run_id, chosen)), Some(text)) => {
+            tx.execute(
+                "INSERT INTO idea_findings (run_id, idea_id, findings) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(run_id) DO UPDATE SET findings = excluded.findings, updated_at = datetime('now')",
+                params![run_id, idea.id, text],
+            )?;
+            let first = idea.findings.as_deref().is_none_or(str::is_empty);
+            (chosen.as_deref() == Some(run_id.as_str()) || first).then_some(text)
+        }
+        (_, findings) => findings,
+    };
+    tx.execute(
         "UPDATE ideas SET title = COALESCE(?2, title), notes = COALESCE(?3, notes), status = COALESCE(?4, status),
              starred = COALESCE(?5, starred), pending = COALESCE(?6, pending), findings = COALESCE(?7, findings),
              updated_at = datetime('now')
          WHERE id = ?1",
         params![idea.id, title, notes, status, req.starred, req.pending, findings],
     )?;
+    tx.commit()?;
     load_idea(conn, id)?.ok_or(IdeaError::NotFound("Idea not found"))
 }
 
@@ -198,15 +270,54 @@ fn ensure_project_job(conn: &Connection, project_id: &str, job_name: &str, actio
     }
 }
 
-/// Research this idea now: a run of the project's "Research now" job (always run, no pushes)
-/// that carries the idea, which is reserved as researching at once.
-pub(crate) fn research_now_db(conn: &Connection, id: &str) -> Result<todo_shared::JobRun, IdeaError> {
+/// The most agents one Research Now starts.
+pub(crate) const MAX_ATTEMPTS: usize = 10;
+
+fn tool_name(tool: &str) -> String {
+    tool.chars().take(1).flat_map(char::to_uppercase).chain(tool.chars().skip(1)).collect()
+}
+
+/// Research this idea now with one or more agents: one run of the project's "Research now"
+/// job (always run, no pushes) per agent, all in one group with one todo. The idea is reserved
+/// as researching at once. No `attempts`: one Claude attempt, as older apps asked for.
+pub(crate) fn research_now_db(conn: &Connection, id: &str, req: &ResearchRequest) -> Result<ResearchStart, IdeaError> {
+    let default = [AttemptSpec { tool: "claude".into(), model: None }];
+    let attempts: &[AttemptSpec] = req.attempts.as_deref().unwrap_or(&default);
+    if attempts.is_empty() || attempts.len() > MAX_ATTEMPTS {
+        return Err(IdeaError::BadRequest(format!("Choose 1 to {MAX_ATTEMPTS} agents")));
+    }
+    let mut specs: Vec<(String, Option<String>)> = Vec::new();
+    for a in attempts {
+        let tool = a.tool.trim();
+        if !matches!(tool, "claude" | "codex" | "cursor") {
+            return Err(IdeaError::BadRequest("tool must be claude, codex or cursor".into()));
+        }
+        let model = a.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+        if model.is_some_and(|m| !crate::conversations::valid_model(m)) {
+            return Err(IdeaError::BadRequest(crate::conversations::MODEL_RULE.into()));
+        }
+        specs.push((tool.to_string(), model.map(str::to_string)));
+    }
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let computer_id = req.computer_id.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    if let Some(computer_id) = computer_id {
+        let (name, tools): (String, Option<String>) = tx
+            .query_row("SELECT name, tools FROM computers WHERE id = ?1", params![computer_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?
+            .ok_or(IdeaError::NotFound("Computer not found"))?;
+        // A runner that reported its tools: only those. One that didn't: any.
+        if let Some(installed) = tools.and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()) {
+            if let Some((tool, _)) = specs.iter().find(|(t, _)| !installed.contains(t)) {
+                return Err(IdeaError::BadRequest(format!("{} isn't installed on {name}", tool_name(tool))));
+            }
+        }
+    }
     let idea = load_idea(&tx, id)?.ok_or(IdeaError::NotFound("Idea not found"))?;
     if idea.status != "new" || idea.pending {
         return Err(IdeaError::Conflict("Only a new, approved idea can be researched now"));
     }
-    let name: String = tx.query_row("SELECT name FROM projects WHERE id = ?1", params![idea.project_id], |r| r.get(0))?;
+    let (name, section): (String, String) =
+        tx.query_row("SELECT name, section FROM projects WHERE id = ?1", params![idea.project_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     let job_id = ensure_project_job(
         &tx,
         &idea.project_id,
@@ -221,18 +332,39 @@ pub(crate) fn research_now_db(conn: &Connection, id: &str) -> Result<todo_shared
             limit: LimitSetting::Always,
         },
     )?;
-    let run_id = Uuid::new_v4().to_string();
+    let group_id = Uuid::new_v4().to_string();
+    let run_ids: Vec<String> = specs.iter().map(|_| Uuid::new_v4().to_string()).collect();
+    for ((tool, model), run_id) in specs.iter().zip(&run_ids) {
+        tx.execute(
+            "INSERT INTO job_runs (id, job_id, due_at, state, note, group_id, attempt_tool, attempt_model)
+             VALUES (?1, ?2, datetime('now'), 'due', ?3, ?4, ?5, ?6)",
+            params![run_id, job_id, format!("idea:{id}"), group_id, tool, model],
+        )?;
+    }
+    let todo_id = crate::scheduler::insert_scheduled_todo(
+        &tx,
+        &section,
+        &format!("Research: {}", idea.title),
+        Some(&idea.project_id),
+        &job_id,
+        &run_ids[0],
+    )?;
+    // Research Now is a background job: its todo doesn't push.
+    tx.execute("INSERT OR IGNORE INTO push_muted_todos (todo_id) VALUES (?1)", params![todo_id])?;
     tx.execute(
-        "INSERT INTO job_runs (id, job_id, due_at, state, note) VALUES (?1, ?2, datetime('now'), 'due', ?3)",
-        params![run_id, job_id, format!("idea:{id}")],
+        "INSERT INTO run_groups (id, idea_id, todo_id, computer_id) VALUES (?1, ?2, ?3, ?4)",
+        params![group_id, id, todo_id, computer_id],
     )?;
     tx.execute(
-        "UPDATE ideas SET status = 'researching', run_id = ?2, updated_at = datetime('now') WHERE id = ?1",
-        params![id, run_id],
+        "UPDATE ideas SET status = 'researching', run_id = ?2, todo_id = ?3, group_id = ?4, updated_at = datetime('now') WHERE id = ?1",
+        params![id, run_ids[0], todo_id, group_id],
     )?;
-    let run = crate::jobs::load_run(&tx, &run_id)?.ok_or(IdeaError::NotFound("Run not found"))?;
+    let runs = run_ids
+        .iter()
+        .map(|r| crate::jobs::load_run(&tx, r)?.ok_or(IdeaError::NotFound("Run not found")))
+        .collect::<Result<Vec<_>, _>>()?;
     tx.commit()?;
-    Ok(run)
+    Ok(ResearchStart { group_id, todo_id, runs })
 }
 
 #[derive(Debug, Serialize)]
@@ -328,12 +460,30 @@ pub async fn shape_idea(pool: web::Data<DbPool>, body: web::Json<ShapeRequest>, 
     }
 }
 
-pub async fn research_idea(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
+pub async fn research_idea(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Bytes,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let req: ResearchRequest = if body.iter().all(u8::is_ascii_whitespace) {
+        ResearchRequest::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => return bad_request(&format!("bad research request: {e}")),
+        }
+    };
     let conn = conn!(pool);
-    match research_now_db(&conn, &path) {
-        Ok(run) => {
+    match research_now_db(&conn, &path, &req) {
+        Ok(start) => {
             broadcaster.send();
-            HttpResponse::Created().json(run)
+            // Older apps (no `attempts`) read the answer as one run.
+            if req.attempts.is_none() {
+                HttpResponse::Created().json(&start.runs[0])
+            } else {
+                HttpResponse::Created().json(start)
+            }
         }
         Err(e) => respond(e),
     }
@@ -557,6 +707,136 @@ mod tests {
         }
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    async fn research_with(pool: &crate::db::DbPool, id: &str, body: Value) -> (StatusCode, Value) {
+        post(pool, &format!("/api/ideas/{id}/research"), body).await
+    }
+
+    fn ideas_list(v: &Value, id: &str) -> Value {
+        v.as_array().unwrap().iter().find(|i| i["id"] == id).cloned().unwrap()
+    }
+
+    #[actix_web::test]
+    async fn research_with_agents_makes_one_group_and_todo() {
+        let (_db, pool) = pool("ideas");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let i = idea(&pool, "Compare").await;
+        let id = i["id"].as_str().unwrap();
+        let todos_before: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+        let (status, v) = research_with(
+            &pool,
+            id,
+            json!({"computer_id": "mac", "attempts": [{"tool": "claude"}, {"tool": "codex", "model": "gpt-6.1-terra"}]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{v}");
+        let runs = v["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 2);
+        assert!(runs.iter().all(|r| r["group_id"] == v["group_id"] && r["state"] == "due"));
+        assert_eq!(runs.iter().map(|r| r["attempt_tool"].clone()).collect::<Vec<_>>(), vec![json!("claude"), json!("codex")]);
+        assert_eq!(runs[1]["attempt_model"], "gpt-6.1-terra");
+        let todos_after: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+        assert_eq!(todos_after, todos_before + 1);
+        let (todo_id, group_id, status): (String, String, String) =
+            conn.query_row("SELECT todo_id, group_id, status FROM ideas WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((todo_id.as_str(), group_id.as_str(), status.as_str()), (v["todo_id"].as_str().unwrap(), v["group_id"].as_str().unwrap(), "researching"));
+        let computer: Option<String> = conn.query_row("SELECT computer_id FROM run_groups WHERE id = ?1", [&group_id], |r| r.get(0)).unwrap();
+        assert_eq!(computer.as_deref(), Some("mac"));
+        let title: String = conn.query_row("SELECT title FROM todos WHERE id = ?1", [&todo_id], |r| r.get(0)).unwrap();
+        assert_eq!(title, "Research: Compare");
+        let (_, list) = get(&pool, "/api/ideas").await;
+        let attempts = ideas_list(&list, id)["attempts"].clone();
+        assert_eq!(attempts.as_array().unwrap().len(), 2, "{attempts}");
+        assert_eq!((&attempts[0]["tool"], &attempts[0]["state"], &attempts[1]["model"]), (&json!("claude"), &json!("due"), &json!("gpt-6.1-terra")));
+    }
+
+    #[actix_web::test]
+    async fn research_without_body_is_one_claude_attempt() {
+        let (_db, pool) = pool("ideas");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let i = idea(&pool, "Old app").await;
+        let id = i["id"].as_str().unwrap();
+        let (status, run) = research_now(&pool, id).await;
+        assert_eq!(status, StatusCode::CREATED, "{run}");
+        assert_eq!((&run["attempt_tool"], &run["state"]), (&json!("claude"), &json!("due")));
+        let computer: Option<String> =
+            conn.query_row("SELECT g.computer_id FROM run_groups g JOIN ideas i ON i.group_id = g.id WHERE i.id = ?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(computer, None);
+    }
+
+    #[actix_web::test]
+    async fn research_agent_count_and_model_validation() {
+        let (_db, pool) = pool("ideas");
+        seed(&pool.get().unwrap());
+        let i = idea(&pool, "Checked").await;
+        let id = i["id"].as_str().unwrap();
+        let claude = json!({"tool": "claude"});
+        for (body, want) in [
+            (json!({"attempts": []}), StatusCode::BAD_REQUEST),
+            (json!({"attempts": vec![claude.clone(); 11]}), StatusCode::BAD_REQUEST),
+            (json!({"attempts": [{"tool": "claude", "model": "a b"}]}), StatusCode::BAD_REQUEST),
+            (json!({"attempts": [{"tool": "auto"}]}), StatusCode::BAD_REQUEST),
+            (json!({"computer_id": "nope", "attempts": [claude.clone()]}), StatusCode::NOT_FOUND),
+        ] {
+            let (status, v) = research_with(&pool, id, body.clone()).await;
+            assert_eq!(status, want, "{body} → {v}");
+        }
+        let (status, v) = research_with(&pool, id, json!({"attempts": [{"tool": "claude", "model": "opus[1m]"}]})).await;
+        assert_eq!(status, StatusCode::CREATED, "{v}");
+        assert_eq!(v["runs"][0]["attempt_model"], "opus[1m]");
+    }
+
+    #[actix_web::test]
+    async fn research_rejects_tool_not_installed() {
+        let (_db, pool) = pool("ideas");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        conn.execute("UPDATE computers SET tools = '[\"claude\"]' WHERE id = 'mac'", []).unwrap();
+        let i = idea(&pool, "Installed").await;
+        let id = i["id"].as_str().unwrap();
+        let (status, v) = research_with(&pool, id, json!({"computer_id": "mac", "attempts": [{"tool": "codex"}]})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(v.to_string().contains("Codex isn't installed on tsvetelins-macbook-pro"), "{v}");
+        let (status, _) = research_with(&pool, id, json!({"computer_id": "spread", "attempts": [{"tool": "codex"}]})).await;
+        assert_eq!(status, StatusCode::CREATED, "a computer that reported no tools takes any");
+    }
+
+    #[actix_web::test]
+    async fn findings_per_attempt() {
+        let (_db, pool) = pool("ideas");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let i = idea(&pool, "Two views").await;
+        let id = i["id"].as_str().unwrap();
+        let (_, v) = research_with(&pool, id, json!({"attempts": [{"tool": "claude"}, {"tool": "codex"}]})).await;
+        let (r1, r2) = (v["runs"][0]["id"].as_str().unwrap(), v["runs"][1]["id"].as_str().unwrap());
+        let (status, after) = patch(&pool, &format!("/api/ideas/{id}"), json!({"findings": "A", "attempt": r1})).await;
+        assert_eq!(status, StatusCode::OK, "{after}");
+        assert_eq!((&after["status"], &after["findings"]), (&json!("researched"), &json!("A")));
+        let (_, after) = patch(&pool, &format!("/api/ideas/{id}"), json!({"findings": "B", "attempt": r2})).await;
+        assert_eq!(after["findings"], "A", "the first saved findings stay the idea's until one is chosen");
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM idea_findings WHERE idea_id = ?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        let attempts = after["attempts"].as_array().unwrap();
+        assert_eq!((&attempts[0]["findings"], &attempts[1]["findings"]), (&json!("A"), &json!("B")));
+        assert!(attempts.iter().all(|a| a["chosen"] == false));
+    }
+
+    #[actix_web::test]
+    async fn findings_with_unknown_attempt_saves_on_idea() {
+        let (_db, pool) = pool("ideas");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let i = idea(&pool, "Scheduled").await;
+        let id = i["id"].as_str().unwrap();
+        let (status, after) = patch(&pool, &format!("/api/ideas/{id}"), json!({"findings": "Plain", "attempt": "conversation-folder"})).await;
+        assert_eq!(status, StatusCode::OK, "{after}");
+        assert_eq!((&after["status"], &after["findings"]), (&json!("researched"), &json!("Plain")));
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM idea_findings", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
     }
 
     #[actix_web::test]

@@ -123,7 +123,15 @@ pub(crate) fn computer_at(row: &Row, start: usize) -> rusqlite::Result<Computer>
         created_at: row.get(start + 5)?,
         updated_at: row.get(start + 6)?,
         mcp_default: mcp_from_sql(row, start + 7)?,
+        tools: None,
     })
+}
+
+/// A computer from `SELECT {COMPUTER_COLS}, tools`: with the tools its runner reported.
+pub(crate) fn computer_with_tools(row: &Row) -> rusqlite::Result<Computer> {
+    let mut computer = computer_at(row, 0)?;
+    computer.tools = mcp_from_sql(row, 8)?;
+    Ok(computer)
 }
 
 /// A conversation row and whether its session is known (`project_id` is then the session's).
@@ -239,7 +247,7 @@ fn row_to_section_computer(row: &Row) -> rusqlite::Result<SectionComputer> {
 }
 
 pub(crate) fn get_computer(conn: &Connection, id: &str) -> rusqlite::Result<Option<Computer>> {
-    conn.query_row(&format!("SELECT {COMPUTER_COLS} FROM computers WHERE id = ?1"), params![id], |r| computer_at(r, 0))
+    conn.query_row(&format!("SELECT {COMPUTER_COLS}, tools FROM computers WHERE id = ?1"), params![id], computer_with_tools)
         .optional()
 }
 
@@ -444,6 +452,14 @@ pub(crate) fn add_agent_db(
     Ok(created)
 }
 
+/// What a model name may contain (`opus[1m]` included).
+pub(crate) const MODEL_RULE: &str = "model may only use letters, digits, '.', '_', '-', '[' and ']'";
+
+/// A tool's model name as the tools take it: 1–80 of letters, digits and `._-[]`.
+pub(crate) fn valid_model(model: &str) -> bool {
+    (1..=80).contains(&model.len()) && model.chars().all(|c| c.is_ascii_alphanumeric() || "._-[]".contains(c))
+}
+
 fn duplicate_in(
     conn: &Connection,
     todo_id: &str,
@@ -453,8 +469,8 @@ fn duplicate_in(
     options: &AddAgentOptions,
 ) -> Result<Conversation, OpenError> {
     let model = options.model.map(str::trim).filter(|m| !m.is_empty());
-    if model.is_some_and(|m| !m.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))) {
-        return Err(OpenError::BadRequest("model may only use letters, digits, '.', '_' and '-'"));
+    if model.is_some_and(|m| !valid_model(m)) {
+        return Err(OpenError::BadRequest(MODEL_RULE));
     }
     let base_sha = options.base_sha.map(str::trim).filter(|b| !b.is_empty());
     if base_sha.is_some_and(|b| b.len() < 7 || b.len() > 40 || !b.chars().all(|c| c.is_ascii_hexdigit())) {
@@ -938,11 +954,11 @@ pub async fn list_computers(pool: web::Data<DbPool>) -> HttpResponse {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    let mut stmt = match conn.prepare(&format!("SELECT {COMPUTER_COLS} FROM computers ORDER BY name")) {
+    let mut stmt = match conn.prepare(&format!("SELECT {COMPUTER_COLS}, tools FROM computers ORDER BY name")) {
         Ok(s) => s,
         Err(e) => return server_error(e),
     };
-    let computers: Vec<Computer> = match stmt.query_map([], |r| computer_at(r, 0)) {
+    let computers: Vec<Computer> = match stmt.query_map([], computer_with_tools) {
         Ok(rows) => match rows.collect::<rusqlite::Result<_>>() {
             Ok(v) => v,
             Err(e) => return server_error(e),
@@ -1779,6 +1795,7 @@ mod tests {
                 created_at: String::new(),
                 updated_at: String::new(),
                 mcp_default: None,
+                tools: None,
             },
             cwd: "~/programming".into(),
             tool: "claude".into(),

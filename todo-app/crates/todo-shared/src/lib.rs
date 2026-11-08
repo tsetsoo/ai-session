@@ -271,6 +271,9 @@ pub struct Computer {
     /// MCP server names ticked by default for new conversations on this computer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_default: Option<Vec<String>>,
+    /// The agent tools (claude, codex, cursor) its runner reported installed; `None`: not reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1866,6 +1869,50 @@ pub struct Idea {
     pub source: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Research Now with agents: one per agent, oldest first (a retried one is replaced).
+    #[serde(default)]
+    pub attempts: Vec<IdeaAttempt>,
+}
+
+/// One agent's research of an idea: a run of its research group.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdeaAttempt {
+    pub run_id: String,
+    pub tool: String,
+    /// `None`: the tool's default model.
+    pub model: Option<String>,
+    /// The run's state: `due`, `waiting`, `running`, `done` (started), `failed`, ...
+    pub state: String,
+    pub result: Option<String>,
+    pub conversation_id: Option<String>,
+    pub findings: Option<String>,
+    /// The attempt the user continued with.
+    pub chosen: bool,
+}
+
+/// One agent of a Research Now: a tool and, optionally, a model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptSpec {
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// `POST /api/ideas/{id}/research`. No body, or no `attempts`: one Claude attempt (older apps).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ResearchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computer_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempts: Option<Vec<AttemptSpec>>,
+}
+
+/// The answer to a Research Now with agents: its group, its todo and one run per agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchStart {
+    pub group_id: String,
+    pub todo_id: String,
+    pub runs: Vec<JobRun>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1894,6 +1941,10 @@ pub struct UpdateIdeaRequest {
     pub pending: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub findings: Option<String>,
+    /// The research attempt (run id) saving these findings; `ai-todo-idea` takes it from its
+    /// worktree folder. Unknown ids save on the idea as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1913,6 +1964,14 @@ pub struct JobRun {
     /// Extra text for this run's prompt (`{note}`), e.g. the hint of "shape an idea".
     #[serde(default)]
     pub note: Option<String>,
+    /// Research Now with agents: the group this run is one attempt of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    /// The attempt's tool and model (they override the job's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -15,7 +15,7 @@ use crate::cron;
 use crate::db::DbPool;
 use crate::projects::project_exists;
 
-const RUN_COLS: &str = "id, job_id, due_at, state, computer_id, todo_id, waiting_reason, result, started_at, created_at, updated_at, note";
+const RUN_COLS: &str = "id, job_id, due_at, state, computer_id, todo_id, waiting_reason, result, started_at, created_at, updated_at, note, group_id, attempt_tool, attempt_model";
 const DEFAULT_RUNS: usize = 20;
 const MAX_RUNS: usize = 200;
 const TOOLS: [&str; 2] = ["claude", "codex"];
@@ -56,6 +56,9 @@ pub(crate) fn row_to_run(row: &Row) -> rusqlite::Result<JobRun> {
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
         note: row.get(11)?,
+        group_id: row.get(12)?,
+        attempt_tool: row.get(13)?,
+        attempt_model: row.get(14)?,
     })
 }
 
@@ -318,7 +321,7 @@ pub(crate) fn recent_runs_db(conn: &Connection, limit: usize) -> rusqlite::Resul
          ORDER BY r.due_at DESC, r.rowid DESC LIMIT ?1"
     ))?;
     let rows = stmt.query_map(params![limit.min(MAX_RUNS) as i64], |row| {
-        Ok(todo_shared::RecentRun { run: row_to_run(row)?, job_name: row.get(12)? })
+        Ok(todo_shared::RecentRun { run: row_to_run(row)?, job_name: row.get(15)? })
     })?;
     rows.collect()
 }

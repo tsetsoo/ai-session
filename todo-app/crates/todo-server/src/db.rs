@@ -145,6 +145,7 @@ pub fn init_pool(db_path: &str) -> DbPool {
     create_v31_objects(&conn).expect("Failed to add the competing-agents columns");
     crate::reviews::create_v32_objects(&conn).expect("Failed to add the published column");
     create_v33_objects(&conn).expect("Failed to add the workers column");
+    create_v34_objects(&conn).expect("Failed to create the research group objects");
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -725,6 +726,50 @@ fn create_v33_objects(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v34: Research Now with several agents. `run_groups` ties an idea's attempts together (its
+/// todo, computer, shared base commit and the attempt the user continued with); each attempt
+/// is a run with its own tool and model; `idea_findings` holds each attempt's findings;
+/// `computers.tools` is the tools a runner reported installed (JSON; additive).
+fn create_v34_objects(conn: &Connection) -> rusqlite::Result<()> {
+    if table_sql(conn, "job_runs")?.is_none() || table_sql(conn, "ideas")?.is_none() {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS run_groups (
+             id TEXT PRIMARY KEY,
+             idea_id TEXT REFERENCES ideas(id) ON DELETE SET NULL,
+             todo_id TEXT,
+             computer_id TEXT,
+             base_sha TEXT,
+             chosen_run_id TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE TABLE IF NOT EXISTS idea_findings (
+             run_id TEXT PRIMARY KEY REFERENCES job_runs(id) ON DELETE CASCADE,
+             idea_id TEXT NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+             findings TEXT NOT NULL,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )?;
+    for (table, column) in [
+        ("job_runs", "group_id"),
+        ("job_runs", "attempt_tool"),
+        ("job_runs", "attempt_model"),
+        ("job_runs", "conversation_id"),
+        ("job_runs", "retry_of"),
+        ("ideas", "group_id"),
+        ("computers", "tools"),
+        ("computers", "tools_at"),
+    ] {
+        if table_sql(conn, table)?.is_some() && !column_exists(conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT;"))?;
+        }
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS job_runs_group ON job_runs (group_id) WHERE group_id IS NOT NULL;")?;
+    Ok(())
+}
+
 /// v31: several agents on one todo. `conversations.model` (the tool's model, when chosen),
 /// `conversations.worktree_base` (the commit an added agent's worktree starts from) and
 /// `todos.main_conversation_id` (the conversation the user continued with).
@@ -941,9 +986,11 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v31: `conversations.model`, `conversations.worktree_base`, `todos.main_conversation_id` (additive)
 /// - v32: `review_items.published_at` (additive)
 /// - v33: `conversations.workers` (additive)
+/// - v34: `run_groups`, `idea_findings`, `job_runs` attempt columns, `ideas.group_id`,
+///   `computers.tools` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 33;
+pub const SCHEMA_VERSION: i64 = 34;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -970,6 +1017,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
                                             if column_exists(conn, "conversations", "worktree_base")? {
                                                 if column_exists(conn, "review_items", "published_at")? {
                                                     if column_exists(conn, "conversations", "workers")? {
+                                                        if table_sql(conn, "run_groups")?.is_some() {
+                                                            return Ok(34);
+                                                        }
                                                         return Ok(33);
                                                     }
                                                     return Ok(32);
@@ -3206,6 +3256,44 @@ mod tests {
         let conn = pool.get().unwrap();
         assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(column_exists(&conn, "conversations", "workers").unwrap());
+    }
+
+    #[test]
+    fn migrates_v33_to_v34() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=OFF; INSERT INTO job_runs (id, job_id, due_at, state) VALUES ('old', 'j', datetime('now'), 'done');
+             DROP INDEX job_runs_group; DROP TABLE idea_findings; DROP TABLE run_groups;
+             ALTER TABLE job_runs DROP COLUMN group_id; ALTER TABLE job_runs DROP COLUMN attempt_tool;
+             ALTER TABLE job_runs DROP COLUMN attempt_model; ALTER TABLE job_runs DROP COLUMN conversation_id;
+             ALTER TABLE job_runs DROP COLUMN retry_of; ALTER TABLE ideas DROP COLUMN group_id;
+             ALTER TABLE computers DROP COLUMN tools; ALTER TABLE computers DROP COLUMN tools_at;
+             PRAGMA user_version = 0;",
+        )
+        .unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 33, "sniffed without the research groups");
+        conn.execute_batch("PRAGMA user_version = 33;").unwrap();
+        drop(conn);
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        for (table, column) in [
+            ("job_runs", "group_id"),
+            ("job_runs", "attempt_tool"),
+            ("job_runs", "attempt_model"),
+            ("job_runs", "conversation_id"),
+            ("job_runs", "retry_of"),
+            ("ideas", "group_id"),
+            ("computers", "tools"),
+            ("computers", "tools_at"),
+        ] {
+            assert!(column_exists(&conn, table, column).unwrap(), "{table}.{column}");
+        }
+        assert!(table_sql(&conn, "run_groups").unwrap().is_some() && table_sql(&conn, "idea_findings").unwrap().is_some());
+        let state: String = conn.query_row("SELECT state FROM job_runs WHERE id = 'old'", [], |r| r.get(0)).unwrap();
+        assert_eq!(state, "done");
     }
 
     #[test]
