@@ -1423,11 +1423,28 @@ fn close_conversation_id(conn: &Connection, id: &str) -> Result<Conversation, Op
 /// Returns the ones it closed, so the app can stop their tmux sessions.
 pub(crate) fn continue_with_db(conn: &Connection, id: &str) -> Result<Vec<Conversation>, OpenError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let todo_id: String = tx
-        .query_row("SELECT todo_id FROM conversations WHERE id = ?1", params![id], |r| r.get(0))
+    let (todo_id, status): (String, String) = tx
+        .query_row("SELECT todo_id, status FROM conversations WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?
         .ok_or(OpenError::TodoNotFound)?;
+    if status == "closed" {
+        return Err(OpenError::Conflict("This conversation is closed; reopen it first"));
+    }
     tx.execute("UPDATE todos SET main_conversation_id = ?2 WHERE id = ?1", params![todo_id, id])?;
+    // A research attempt: its findings become the idea's chosen findings.
+    let attempt: Option<(String, String)> = tx
+        .query_row("SELECT id, group_id FROM job_runs WHERE conversation_id = ?1 AND group_id IS NOT NULL", params![id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .optional()?;
+    if let Some((run_id, group_id)) = attempt {
+        tx.execute("UPDATE run_groups SET chosen_run_id = ?2 WHERE id = ?1", params![group_id, run_id])?;
+        tx.execute(
+            "UPDATE ideas SET findings = f.findings, updated_at = datetime('now')
+             FROM idea_findings f WHERE f.run_id = ?2 AND ideas.group_id = ?1",
+            params![group_id, run_id],
+        )?;
+    }
     let others: Vec<String> = {
         let mut stmt = tx.prepare("SELECT id FROM conversations WHERE todo_id = ?1 AND id != ?2 AND status != 'closed' ORDER BY created_at, id")?;
         let rows = stmt.query_map(params![todo_id, id], |r| r.get(0))?;

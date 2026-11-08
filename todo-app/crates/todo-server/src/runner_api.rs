@@ -10,7 +10,7 @@ use todo_shared::{Job, JobAction, JobRun, LimitSetting, Priority, SchedulerSetti
 use uuid::Uuid;
 
 use crate::broadcast::Broadcaster;
-use crate::conversations::{bad_request, conflict, insert_conversation, load_conversation, not_found, server_error};
+use crate::conversations::{bad_request, conflict, insert_conversation, not_found, server_error};
 use crate::db::DbPool;
 use crate::jobs::{list_jobs_db, load_job, load_run, settings_db};
 use crate::scheduler::{insert_scheduled_todo, local_date, render, sql_time};
@@ -22,6 +22,16 @@ pub struct DueRun {
     pub job: Job,
     /// "Wait for headroom" runs of this job's tool started in the last 24 hours.
     pub wait_runs_24h: u32,
+    /// Research Now with agents: the run's group, whose runs share one base commit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<DueGroup>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DueGroup {
+    pub id: String,
+    /// The commit every worktree of the group starts from; `None` until the first claim sets it.
+    pub base_sha: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,6 +58,9 @@ pub struct ClaimRequest {
     /// of the tool started in the last 24 hours (checked here, so every Mac shares the cap).
     #[serde(default)]
     pub no_reading: bool,
+    /// A group run: the base commit this runner resolved. The group's first claim sets it.
+    #[serde(default)]
+    pub base_sha: Option<String>,
 }
 
 /// "Wait for headroom" runs without a usage reading allowed per tool per 24 hours.
@@ -81,6 +94,11 @@ pub struct StartResponse {
     pub prompt: String,
     /// The model to start the tool with; `None`: its default.
     pub model: Option<String>,
+    /// The conversation it starts (several share a research group's todo).
+    pub conversation_id: String,
+    /// A group run: the commit its worktree should start from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_sha: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +153,32 @@ fn resolved_computer(conn: &Connection, action: &JobAction) -> rusqlite::Result<
 }
 
 /// The job's previous started run still has a conversation at work (busy or waiting on the user).
+/// A research attempt runs its own tool, not the job's.
+fn apply_attempt(job: &mut Job, run: &JobRun) {
+    let Some(attempt) = run.attempt_tool.as_deref() else { return };
+    if let JobAction::Research { tool, .. } | JobAction::Conversation { tool, .. } = &mut job.action {
+        *tool = attempt.to_string();
+    }
+}
+
+/// A group run's group, and the computer it is pinned to (`None`: the project's usual one).
+fn run_group(conn: &Connection, run: &JobRun) -> rusqlite::Result<Option<(DueGroup, Option<String>)>> {
+    let Some(group_id) = run.group_id.as_deref() else { return Ok(None) };
+    conn.query_row("SELECT id, base_sha, computer_id FROM run_groups WHERE id = ?1", params![group_id], |r| {
+        Ok((DueGroup { id: r.get(0)? , base_sha: r.get(1)? }, r.get(2)?))
+    })
+    .optional()
+}
+
+fn wait_runs_24h(conn: &Connection, tool: &str) -> rusqlite::Result<u32> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM job_runs WHERE limit_mode = 'wait' AND tool = ?1 AND started_at >= datetime('now', '-24 hours')",
+        params![tool],
+        |r| r.get(0),
+    )?;
+    Ok(n.max(0) as u32)
+}
+
 fn previous_still_working(conn: &Connection, job_id: &str, run_id: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM job_runs r JOIN conversations c ON c.todo_id = r.todo_id
@@ -165,6 +209,23 @@ pub(crate) fn due_db(conn: &Connection, computer_id: &str) -> rusqlite::Result<D
     for id in ids {
         let Some(run) = load_run(conn, &id)? else { continue };
         let Some(job) = jobs.iter().find(|j| j.id == run.job_id) else { continue };
+        // A research attempt: every run of its group starts, on the group's computer.
+        if let Some((group, pinned)) = run_group(conn, &run)? {
+            let computer = match pinned {
+                Some(c) => Some(c),
+                None => resolved_computer(conn, &job.action)?,
+            };
+            if computer.as_deref() != Some(computer_id) {
+                continue;
+            }
+            let mut job = job.clone();
+            job.last_run = None;
+            apply_attempt(&mut job, &run);
+            let tool = job.action.conversation_parts().map(|p| p.tool.to_string()).unwrap_or_default();
+            let wait_runs_24h = wait_runs_24h(conn, &tool)?;
+            runs.push(DueRun { run, job, wait_runs_24h, group: Some(group) });
+            continue;
+        }
         // A debugging run: up to 2 of the job's runs at work at once, in the issue's repo.
         if let Some(folder) = run.note.as_deref().and_then(|n| n.strip_prefix("watch:")) {
             if resolved_computer(conn, &job.action)?.as_deref() != Some(computer_id)
@@ -181,7 +242,7 @@ pub(crate) fn due_db(conn: &Connection, computer_id: &str) -> rusqlite::Result<D
                     *action_folder = Some(format!("{}/{folder}", base.trim_end_matches('/')));
                 }
             }
-            runs.push(DueRun { run, job, wait_runs_24h: 0 });
+            runs.push(DueRun { run, job, wait_runs_24h: 0, group: None });
             continue;
         }
         // One run per job at a time, and none while another of its runs is being started.
@@ -193,7 +254,7 @@ pub(crate) fn due_db(conn: &Connection, computer_id: &str) -> rusqlite::Result<D
             if watch.computer_id == computer_id {
                 let mut job = job.clone();
                 job.last_run = None;
-                runs.push(DueRun { run, job, wait_runs_24h: 0 });
+                runs.push(DueRun { run, job, wait_runs_24h: 0, group: None });
             }
             continue;
         }
@@ -209,14 +270,10 @@ pub(crate) fn due_db(conn: &Connection, computer_id: &str) -> rusqlite::Result<D
         if previous_still_working(conn, &job.id, &run.id)? {
             continue;
         }
-        let wait_runs_24h: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM job_runs WHERE limit_mode = 'wait' AND tool = ?1 AND started_at >= datetime('now', '-24 hours')",
-            params![tool],
-            |r| r.get(0),
-        )?;
+        let wait_runs_24h = wait_runs_24h(conn, tool)?;
         let mut job = job.clone();
         job.last_run = None;
-        runs.push(DueRun { run, job, wait_runs_24h: wait_runs_24h.max(0) as u32 });
+        runs.push(DueRun { run, job, wait_runs_24h, group: None });
     }
     let resolves = {
         let mut stmt = conn.prepare(
@@ -274,11 +331,19 @@ fn respond(e: RunError) -> HttpResponse {
     }
 }
 
-fn claim_db(conn: &Connection, run_id: &str, computer_id: &str, no_reading: bool) -> Result<DueRun, RunError> {
+fn claim_db(conn: &Connection, run_id: &str, computer_id: &str, no_reading: bool, base_sha: Option<&str>) -> Result<DueRun, RunError> {
+    let base_sha = base_sha.map(str::trim).filter(|b| !b.is_empty());
+    if base_sha.is_some_and(|b| !(7..=40).contains(&b.len()) || !b.chars().all(|c| c.is_ascii_hexdigit())) {
+        return Err(RunError::BadRequest("base_sha must be a commit sha"));
+    }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     if no_reading {
         let run = load_run(&tx, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
-        if let Some(tool) = load_job(&tx, &run.job_id)?.and_then(|j| j.action.conversation_parts().map(|p| p.tool.to_string())) {
+        let tool = match &run.attempt_tool {
+            Some(t) => Some(t.clone()),
+            None => load_job(&tx, &run.job_id)?.and_then(|j| j.action.conversation_parts().map(|p| p.tool.to_string())),
+        };
+        if let Some(tool) = tool {
             let started: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM job_runs WHERE limit_mode = 'wait' AND tool = ?1 AND started_at >= datetime('now', '-24 hours')",
                 params![tool],
@@ -289,12 +354,12 @@ fn claim_db(conn: &Connection, run_id: &str, computer_id: &str, no_reading: bool
             }
         }
     }
-    let result = claim_in(&tx, run_id, computer_id)?;
+    let result = claim_in(&tx, run_id, computer_id, base_sha)?;
     tx.commit()?;
     Ok(result)
 }
 
-fn claim_in(conn: &Connection, run_id: &str, computer_id: &str) -> Result<DueRun, RunError> {
+fn claim_in(conn: &Connection, run_id: &str, computer_id: &str, base_sha: Option<&str>) -> Result<DueRun, RunError> {
     let changed = conn.execute(
         "UPDATE job_runs SET state = 'running', computer_id = ?2, updated_at = datetime('now')
          WHERE id = ?1 AND state IN ('due','waiting')",
@@ -309,7 +374,13 @@ fn claim_in(conn: &Connection, run_id: &str, computer_id: &str) -> Result<DueRun
     let run = load_run(conn, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
     let mut job = load_job(conn, &run.job_id)?.ok_or(RunError::NotFound("Job not found"))?;
     job.last_run = None;
-    Ok(DueRun { run, job, wait_runs_24h: 0 })
+    apply_attempt(&mut job, &run);
+    // The group's first claim decides its base commit; later claims are told it.
+    if let (Some(group_id), Some(base)) = (run.group_id.as_deref(), base_sha) {
+        conn.execute("UPDATE run_groups SET base_sha = COALESCE(base_sha, ?2) WHERE id = ?1", params![group_id, base])?;
+    }
+    let group = run_group(conn, &run)?.map(|(g, _)| g);
+    Ok(DueRun { run, job, wait_runs_24h: 0, group })
 }
 
 fn wait_db(conn: &Connection, run_id: &str, reason: &str) -> Result<(), RunError> {
@@ -338,7 +409,14 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         return Err(RunError::Conflict("Run is not claimed, or already started"));
     }
     let computer_id = run.computer_id.clone().ok_or(RunError::Conflict("Run is not claimed"))?;
-    let job = load_job(&tx, &run.job_id)?.ok_or(RunError::NotFound("Job not found"))?;
+    let mut job = load_job(&tx, &run.job_id)?.ok_or(RunError::NotFound("Job not found"))?;
+    apply_attempt(&mut job, &run);
+    let group: Option<(String, Option<String>, Option<String>)> = match run.group_id.as_deref() {
+        Some(g) => tx
+            .query_row("SELECT id, todo_id, base_sha FROM run_groups WHERE id = ?1", params![g], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?,
+        None => None,
+    };
     let Some(parts) = job.action.conversation_parts() else {
         return Err(RunError::BadRequest("Not a conversation job"));
     };
@@ -353,7 +431,7 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         parts.tool
     };
     let assistant = run.note.as_deref().and_then(|n| n.strip_prefix("assistant:")).map(str::to_string);
-    let model: Option<String> = match (parts.model, &assistant) {
+    let model: Option<String> = match (run.attempt_model.as_deref().or(parts.model), &assistant) {
         (Some(m), _) => Some(m.to_string()),
         (None, Some(_)) => {
             let s = crate::today::settings_db(&tx)?;
@@ -393,7 +471,20 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
     };
     // A research run takes the project's next idea: starred first, then the oldest.
     let chosen = run.note.as_deref().and_then(|n| n.strip_prefix("idea:")).map(str::to_string);
-    let idea: Option<(String, String, String)> = if let (true, Some(idea_id)) = (job.action.is_research(), chosen) {
+    let idea: Option<(String, String, String)> = if let Some((group_id, _, _)) = &group {
+        // A research attempt: its group's idea, still being researched (or already, by another).
+        let reserved = tx
+            .query_row(
+                "SELECT id, title, notes FROM ideas WHERE group_id = ?1 AND status IN ('researching', 'researched')",
+                params![group_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if reserved.is_none() {
+            return Err(RunError::Conflict("Idea no longer available"));
+        }
+        reserved
+    } else if let (true, Some(idea_id)) = (job.action.is_research(), chosen) {
         // Research now: this run carries its idea, reserved for it when it was queued.
         let reserved = tx
             .query_row(
@@ -435,27 +526,47 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         }
         (None, None) => format!("{} · {date}", job.name),
     };
-    let todo_id = insert_scheduled_todo(&tx, &section, &title, Some(project_id), &job.id, &run.id)?;
-    if let Some((idea_id, _, _)) = &idea {
-        tx.execute(
-            "UPDATE ideas SET status = 'researching', run_id = ?2, todo_id = ?3, updated_at = datetime('now') WHERE id = ?1",
-            params![idea_id, run.id, todo_id],
-        )?;
-    }
-    if *priority == Priority::Background {
-        tx.execute("INSERT OR IGNORE INTO push_muted_todos (todo_id) VALUES (?1)", params![todo_id])?;
-    }
     let session_id = (tool == "claude").then(|| Uuid::new_v4().to_string());
-    if insert_conversation(&tx, &todo_id, &computer_id, cwd, tool, session_id.as_deref(), false, None, None)?.is_none() {
-        return Err(RunError::Conflict("No free tmux session name"));
-    }
-    let conversation = load_conversation(&tx, &todo_id)?.ok_or(RunError::NotFound("Conversation not found"))?;
+    let (todo_id, conversation_id) = if let Some((_, group_todo, base)) = &group {
+        // A research attempt joins its group's todo, labelled with its tool and model.
+        let todo_id = group_todo
+            .clone()
+            .filter(|t| tx.query_row("SELECT 1 FROM todos WHERE id = ?1", params![t], |_| Ok(())).optional().ok().flatten().is_some())
+            .ok_or(RunError::Conflict("The research todo is gone"))?;
+        let label = match &model {
+            Some(m) => format!("{} · {m}", crate::ideas::tool_name(tool)),
+            None => crate::ideas::tool_name(tool),
+        };
+        let Some(id) = insert_conversation(&tx, &todo_id, &computer_id, cwd, tool, session_id.as_deref(), false, Some(&label), None)? else {
+            return Err(RunError::Conflict("No free tmux session name"));
+        };
+        tx.execute("UPDATE conversations SET model = ?2, worktree_base = ?3 WHERE id = ?1", params![id, model, base])?;
+        (todo_id, id)
+    } else {
+        let todo_id = insert_scheduled_todo(&tx, &section, &title, Some(project_id), &job.id, &run.id)?;
+        if let Some((idea_id, _, _)) = &idea {
+            tx.execute(
+                "UPDATE ideas SET status = 'researching', run_id = ?2, todo_id = ?3, updated_at = datetime('now') WHERE id = ?1",
+                params![idea_id, run.id, todo_id],
+            )?;
+        }
+        if *priority == Priority::Background {
+            tx.execute("INSERT OR IGNORE INTO push_muted_todos (todo_id) VALUES (?1)", params![todo_id])?;
+        }
+        let Some(id) = insert_conversation(&tx, &todo_id, &computer_id, cwd, tool, session_id.as_deref(), false, None, None)? else {
+            return Err(RunError::Conflict("No free tmux session name"));
+        };
+        (todo_id, id)
+    };
+    let conversation =
+        crate::conversations::load_conversation_by_id(&tx, &conversation_id)?.ok_or(RunError::NotFound("Conversation not found"))?;
     let limit_mode = match limit {
         LimitSetting::Always => "always",
         LimitSetting::Wait { .. } => "wait",
     };
     tx.execute(
-        "UPDATE job_runs SET todo_id = ?2, tool = ?3, limit_mode = ?4, started_at = ?5, updated_at = ?5, branch = ?6, chosen_tool = ?7 WHERE id = ?1",
+        "UPDATE job_runs SET todo_id = ?2, tool = ?3, limit_mode = ?4, started_at = ?5, updated_at = ?5, branch = ?6, chosen_tool = ?7,
+             conversation_id = ?8 WHERE id = ?1",
         params![
             run.id,
             todo_id,
@@ -463,7 +574,8 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
             limit_mode,
             sql_time(Utc::now()),
             req.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()).map(|b| b.chars().take(200).collect::<String>()),
-            (parts.tool == "auto").then_some(tool)
+            (parts.tool == "auto").then_some(tool),
+            conversation_id
         ],
     )?;
     let note = run.note.clone().unwrap_or_default();
@@ -515,6 +627,8 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
         tool: tool.to_string(),
         prompt,
         model,
+        conversation_id,
+        base_sha: group.and_then(|(_, _, base)| base),
     })
 }
 
@@ -536,11 +650,74 @@ fn finish_db(conn: &Connection, run_id: &str, req: &FinishRequest) -> Result<(),
     if req.state == "failed" {
         conn.execute(
             "UPDATE ideas SET status = 'new', run_id = NULL, todo_id = NULL, updated_at = datetime('now')
-             WHERE run_id = ?1 AND status = 'researching'",
+             WHERE run_id = ?1 AND status = 'researching' AND group_id IS NULL",
             params![run_id],
         )?;
+        fail_attempt(conn, run_id)?;
     }
     Ok(())
+}
+
+/// A research attempt that failed: its conversation (if it got one) is closed, so it isn't a
+/// dead tab. Once no attempt of the group is left (due, waiting, running or started) and none
+/// saved findings, the idea goes back to new and an empty group todo is removed.
+fn fail_attempt(conn: &Connection, run_id: &str) -> rusqlite::Result<()> {
+    let row: Option<(Option<String>, Option<String>)> = conn
+        .query_row("SELECT group_id, conversation_id FROM job_runs WHERE id = ?1", params![run_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+    let Some((Some(group_id), conversation)) = row else { return Ok(()) };
+    if let Some(conversation) = conversation {
+        conn.execute(
+            "UPDATE conversations SET status = 'closed', status_message = NULL, status_updated_at = datetime('now') WHERE id = ?1",
+            params![conversation],
+        )?;
+    }
+    let alive: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM job_runs r WHERE r.group_id = ?1
+             AND (r.state IN ('due', 'waiting', 'running', 'done') OR EXISTS (SELECT 1 FROM idea_findings f WHERE f.run_id = r.id)))",
+        params![group_id],
+        |r| r.get(0),
+    )?;
+    if alive {
+        return Ok(());
+    }
+    let todo: Option<String> = conn.query_row("SELECT todo_id FROM run_groups WHERE id = ?1", params![group_id], |r| r.get(0)).optional()?.flatten();
+    conn.execute(
+        "UPDATE ideas SET status = 'new', run_id = NULL, todo_id = NULL, group_id = NULL, updated_at = datetime('now')
+         WHERE group_id = ?1 AND status = 'researching'",
+        params![group_id],
+    )?;
+    if let Some(todo) = todo {
+        conn.execute("DELETE FROM todos WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM conversations WHERE todo_id = ?1)", params![todo])?;
+    }
+    Ok(())
+}
+
+/// Retry a failed research attempt: a new run in its group, with the same tool and model.
+/// The failed one stays in the run history; the idea lists the new one in its place.
+fn retry_run_db(conn: &Connection, run_id: &str) -> Result<JobRun, RunError> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let run = load_run(&tx, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
+    let Some(group_id) = run.group_id.as_deref().filter(|_| run.state == "failed") else {
+        return Err(RunError::Conflict("Only a failed attempt can be retried"));
+    };
+    let retried: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM job_runs WHERE retry_of = ?1)", params![run_id], |r| r.get(0))?;
+    if retried {
+        return Err(RunError::Conflict("This attempt was already retried"));
+    }
+    let live: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM ideas WHERE group_id = ?1)", params![group_id], |r| r.get(0))?;
+    if !live {
+        return Err(RunError::Conflict("This research is over; start it again from the idea"));
+    }
+    let id = Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO job_runs (id, job_id, due_at, state, note, group_id, attempt_tool, attempt_model, retry_of)
+         VALUES (?1, ?2, datetime('now'), 'due', ?3, ?4, ?5, ?6, ?7)",
+        params![id, run.job_id, run.note, group_id, run.attempt_tool, run.attempt_model, run_id],
+    )?;
+    let new = load_run(&tx, &id)?.ok_or(RunError::NotFound("Run not found"))?;
+    tx.commit()?;
+    Ok(new)
 }
 
 // --- Handlers ---------------------------------------------------------------------
@@ -643,7 +820,7 @@ pub async fn claim(
     body: web::Json<ClaimRequest>,
     broadcaster: web::Data<Broadcaster>,
 ) -> HttpResponse {
-    with_conn!(pool, broadcaster, |c: &Connection| claim_db(c, &path, body.computer_id.trim(), body.no_reading), |v| HttpResponse::Ok().json(v))
+    with_conn!(pool, broadcaster, |c: &Connection| claim_db(c, &path, body.computer_id.trim(), body.no_reading, body.base_sha.as_deref()), |v| HttpResponse::Ok().json(v))
 }
 
 pub async fn wait(
@@ -663,6 +840,10 @@ pub async fn start(
     broadcaster: web::Data<Broadcaster>,
 ) -> HttpResponse {
     with_conn!(pool, broadcaster, |c: &Connection| start_db(c, &path, &body), |v| HttpResponse::Ok().json(v))
+}
+
+pub async fn retry(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
+    with_conn!(pool, broadcaster, |c: &Connection| retry_run_db(c, &path), |v| HttpResponse::Created().json(v))
 }
 
 pub async fn finish(
@@ -1381,5 +1562,245 @@ mod watch_runner_tests {
             conn.query_row("SELECT state, resolve_error FROM watch_issues WHERE id = 'i2'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((state.as_str(), error.as_deref()), ("open", Some("HTTP 403")));
         assert_eq!(post(&pool, "/api/watch/issues/i1/resolve-result", json!({"ok": true, "message": ""})).await.0, StatusCode::CONFLICT);
+    }
+}
+
+#[cfg(test)]
+mod group_runner_tests {
+    use actix_web::http::StatusCode;
+    use rusqlite::Connection;
+    use serde_json::{json, Value};
+
+    use crate::test_support::{get, pool, post, seed_computers};
+
+    fn seed(conn: &Connection) {
+        seed_computers(conn);
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, section, folder) VALUES ('pa', 'app', 'Si', '~/a');
+             INSERT INTO ideas (id, project_id, title) VALUES ('idea', 'pa', 'Compare tools');",
+        )
+        .unwrap();
+    }
+
+    /// Research Now on `idea` with these attempts on `computer`: the run ids and the todo id.
+    async fn research(pool: &crate::db::DbPool, computer: &str, attempts: Value) -> (Vec<String>, String) {
+        let (status, v) = post(pool, "/api/ideas/idea/research", json!({"computer_id": computer, "attempts": attempts})).await;
+        assert_eq!(status, StatusCode::CREATED, "{v}");
+        let runs = v["runs"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_string()).collect();
+        (runs, v["todo_id"].as_str().unwrap().to_string())
+    }
+
+    fn two() -> Value {
+        json!([{"tool": "claude"}, {"tool": "codex", "model": "gpt-6.1-terra"}])
+    }
+
+    async fn claim(pool: &crate::db::DbPool, run: &str, computer: &str, base: Option<&str>) -> (StatusCode, Value) {
+        let mut body = json!({"computer_id": computer});
+        if let Some(base) = base {
+            body["base_sha"] = json!(base);
+        }
+        post(pool, &format!("/api/runs/{run}/claim"), body).await
+    }
+
+    async fn start(pool: &crate::db::DbPool, run: &str) -> (StatusCode, Value) {
+        post(pool, &format!("/api/runs/{run}/start"), json!({"cwd": format!("~/.ai-remote/worktrees/pa/{run}"), "is_git": true})).await
+    }
+
+    async fn finish(pool: &crate::db::DbPool, run: &str, state: &str) {
+        let (status, v) = post(pool, &format!("/api/runs/{run}/finish"), json!({"state": state, "result": "x"})).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+    }
+
+    fn due_runs(v: &Value) -> Vec<Value> {
+        v["runs"].as_array().unwrap().clone()
+    }
+
+    #[actix_web::test]
+    async fn due_lists_all_group_runs_on_group_computer() {
+        let (_db, pool) = pool("runner");
+        seed(&pool.get().unwrap());
+        let (runs, _) = research(&pool, "spread", json!([{"tool": "claude"}, {"tool": "codex"}, {"tool": "claude", "model": "opus"}])).await;
+        let (_, v) = get(&pool, "/api/runner/due?computer_id=spread").await;
+        let due = due_runs(&v);
+        assert_eq!(due.iter().map(|d| d["run"]["id"].as_str().unwrap()).collect::<Vec<_>>(), runs.iter().map(String::as_str).collect::<Vec<_>>());
+        assert_eq!(due[1]["job"]["action"]["tool"], "codex", "the attempt's tool, for the usage guard");
+        assert_eq!(due[0]["group"]["id"].as_str().is_some(), true);
+        assert!(due[0]["group"]["base_sha"].is_null());
+        let (_, v) = get(&pool, "/api/runner/due?computer_id=mac").await;
+        assert!(due_runs(&v).is_empty(), "pinned to the chosen computer, not the section's");
+    }
+
+    #[actix_web::test]
+    async fn first_claim_sets_group_base() {
+        let (_db, pool) = pool("runner");
+        seed(&pool.get().unwrap());
+        let (runs, _) = research(&pool, "mac", two()).await;
+        let (status, v) = claim(&pool, &runs[0], "mac", Some("aaaaaaa")).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["group"]["base_sha"], "aaaaaaa");
+        let (_, v) = claim(&pool, &runs[1], "mac", Some("bbbbbbb")).await;
+        assert_eq!(v["group"]["base_sha"], "aaaaaaa", "the first claim's base wins");
+        assert_eq!(v["job"]["action"]["tool"], "codex");
+        let (_, v) = get(&pool, "/api/runner/due?computer_id=mac").await;
+        assert!(due_runs(&v).is_empty());
+    }
+
+    #[actix_web::test]
+    async fn claim_rejects_bad_base() {
+        let (_db, pool) = pool("runner");
+        seed(&pool.get().unwrap());
+        let (runs, _) = research(&pool, "mac", two()).await;
+        assert_eq!(claim(&pool, &runs[0], "mac", Some("not-a-sha")).await.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn group_run_start_joins_group_todo() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (runs, todo) = research(&pool, "mac", two()).await;
+        claim(&pool, &runs[0], "mac", Some("abcdef1")).await;
+        claim(&pool, &runs[1], "mac", None).await;
+        let (s1, a) = start(&pool, &runs[0]).await;
+        let (s2, b) = start(&pool, &runs[1]).await;
+        assert_eq!((s1, s2), (StatusCode::OK, StatusCode::OK), "{a} {b}");
+        assert_eq!((a["todo_id"].as_str(), b["todo_id"].as_str()), (Some(todo.as_str()), Some(todo.as_str())));
+        assert_eq!((&a["tool"], &b["tool"], &b["model"]), (&json!("claude"), &json!("codex"), &json!("gpt-6.1-terra")));
+        assert_eq!(a["base_sha"], "abcdef1");
+        let todos: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+        assert_eq!(todos, 1, "no second todo");
+        let mut stmt = conn.prepare("SELECT id, label, model, worktree_base FROM conversations WHERE todo_id = ?1 ORDER BY created_at, rowid").unwrap();
+        let rows: Vec<(String, Option<String>, Option<String>, Option<String>)> =
+            stmt.query_map([&todo], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].1.as_deref(), rows[1].1.as_deref()), (Some("Claude"), Some("Codex · gpt-6.1-terra")));
+        assert_eq!((rows[1].2.as_deref(), rows[1].3.as_deref()), (Some("gpt-6.1-terra"), Some("abcdef1")));
+        assert_eq!((a["conversation_id"].as_str(), b["conversation_id"].as_str()), (Some(rows[0].0.as_str()), Some(rows[1].0.as_str())));
+        let linked: (Option<String>, Option<String>) = conn
+            .query_row("SELECT conversation_id, todo_id FROM job_runs WHERE id = ?1", [&runs[1]], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(linked, (Some(rows[1].0.clone()), Some(todo.clone())));
+        let research_text = |v: &Value| v["prompt"].as_str().unwrap().split_once("\n\n").unwrap().1.to_string();
+        assert_eq!(research_text(&a), research_text(&b), "every attempt gets the same research text");
+        assert!(!research_text(&a).contains(&runs[0]));
+        let (_, ideas) = get(&pool, "/api/ideas").await;
+        assert_eq!(ideas[0]["attempts"][1]["conversation_id"], json!(rows[1].0));
+    }
+
+    #[actix_web::test]
+    async fn group_runs_started_after_findings_still_start() {
+        let (_db, pool) = pool("runner");
+        seed(&pool.get().unwrap());
+        let (runs, _) = research(&pool, "mac", json!([{"tool": "claude"}, {"tool": "codex"}, {"tool": "claude"}])).await;
+        claim(&pool, &runs[0], "mac", Some("abcdef1")).await;
+        start(&pool, &runs[0]).await;
+        crate::test_support::patch(&pool, "/api/ideas/idea", json!({"findings": "first", "attempt": runs[0]})).await;
+        claim(&pool, &runs[2], "mac", None).await;
+        let (status, v) = start(&pool, &runs[2]).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+    }
+
+    #[actix_web::test]
+    async fn failed_group_run_closes_its_conversation() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (runs, _) = research(&pool, "mac", two()).await;
+        for r in &runs {
+            claim(&pool, r, "mac", Some("abcdef1")).await;
+        }
+        start(&pool, &runs[0]).await;
+        let (_, b) = start(&pool, &runs[1]).await;
+        finish(&pool, &runs[1], "failed").await;
+        let status: String =
+            conn.query_row("SELECT status FROM conversations WHERE id = ?1", [b["conversation_id"].as_str().unwrap()], |r| r.get(0)).unwrap();
+        assert_eq!(status, "closed");
+        let idea: String = conn.query_row("SELECT status FROM ideas WHERE id = 'idea'", [], |r| r.get(0)).unwrap();
+        assert_eq!(idea, "researching");
+    }
+
+    #[actix_web::test]
+    async fn all_failed_group_resets_idea_and_drops_empty_todo() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (runs, todo) = research(&pool, "mac", two()).await;
+        claim(&pool, &runs[0], "mac", Some("abcdef1")).await;
+        finish(&pool, &runs[0], "failed").await;
+        let idea: String = conn.query_row("SELECT status FROM ideas WHERE id = 'idea'", [], |r| r.get(0)).unwrap();
+        assert_eq!(idea, "researching", "one attempt is still due");
+        claim(&pool, &runs[1], "mac", None).await;
+        finish(&pool, &runs[1], "failed").await;
+        let (status, group, todo_id): (String, Option<String>, Option<String>) =
+            conn.query_row("SELECT status, group_id, todo_id FROM ideas WHERE id = 'idea'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((status.as_str(), group, todo_id), ("new", None, None));
+        let todos: i64 = conn.query_row("SELECT COUNT(*) FROM todos WHERE id = ?1", [&todo], |r| r.get(0)).unwrap();
+        assert_eq!(todos, 0);
+        assert_eq!(post(&pool, "/api/ideas/idea/research", json!({"attempts": [{"tool": "claude"}]})).await.0, StatusCode::CREATED);
+    }
+
+    #[actix_web::test]
+    async fn retry_makes_a_new_run_in_group() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (runs, _) = research(&pool, "mac", two()).await;
+        claim(&pool, &runs[0], "mac", Some("abcdef1")).await;
+        start(&pool, &runs[0]).await;
+        claim(&pool, &runs[1], "mac", None).await;
+        finish(&pool, &runs[1], "failed").await;
+        assert_eq!(post(&pool, &format!("/api/runs/{}/retry", runs[0]), json!({})).await.0, StatusCode::CONFLICT, "not failed");
+        let (status, retry) = post(&pool, &format!("/api/runs/{}/retry", runs[1]), json!({})).await;
+        assert_eq!(status, StatusCode::CREATED, "{retry}");
+        assert_eq!((&retry["state"], &retry["attempt_tool"], &retry["attempt_model"]), (&json!("due"), &json!("codex"), &json!("gpt-6.1-terra")));
+        let (group, note, retry_of): (String, String, String) = conn
+            .query_row("SELECT group_id, note, retry_of FROM job_runs WHERE id = ?1", [retry["id"].as_str().unwrap()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!((note.as_str(), retry_of.as_str()), ("idea:idea", runs[1].as_str()));
+        assert_eq!(Some(group.as_str()), retry["group_id"].as_str());
+        assert_eq!(post(&pool, &format!("/api/runs/{}/retry", runs[1]), json!({})).await.0, StatusCode::CONFLICT, "retried once");
+        let (_, ideas) = get(&pool, "/api/ideas").await;
+        let ids: Vec<&str> = ideas[0]["attempts"].as_array().unwrap().iter().map(|a| a["run_id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec![runs[0].as_str(), retry["id"].as_str().unwrap()]);
+        let (_, v) = get(&pool, "/api/runner/due?computer_id=mac").await;
+        assert_eq!(v["runs"][0]["group"]["base_sha"], "abcdef1", "the retry keeps the group's base");
+    }
+
+    #[actix_web::test]
+    async fn continue_marks_chosen_findings() {
+        let (_db, pool) = pool("runner");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (runs, _) = research(&pool, "mac", two()).await;
+        let mut conversations = Vec::new();
+        for r in &runs {
+            claim(&pool, r, "mac", Some("abcdef1")).await;
+            conversations.push(start(&pool, r).await.1["conversation_id"].as_str().unwrap().to_string());
+        }
+        crate::test_support::patch(&pool, "/api/ideas/idea", json!({"findings": "A", "attempt": runs[0]})).await;
+        crate::test_support::patch(&pool, "/api/ideas/idea", json!({"findings": "B", "attempt": runs[1]})).await;
+        let (status, v) = post(&pool, &format!("/api/conversations/{}/continue", conversations[1]), json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let (_, idea) = crate::test_support::get(&pool, "/api/ideas").await;
+        assert_eq!(idea[0]["findings"], "B");
+        let chosen: Vec<bool> = idea[0]["attempts"].as_array().unwrap().iter().map(|a| a["chosen"].as_bool().unwrap()).collect();
+        assert_eq!(chosen, vec![false, true]);
+        let (status, _) = post(&pool, &format!("/api/conversations/{}/continue", conversations[0]), json!({})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "a closed conversation is reopened first");
+    }
+
+    #[actix_web::test]
+    async fn put_tools_round_trip() {
+        let (_db, pool) = pool("runner");
+        seed(&pool.get().unwrap());
+        let (status, _) = crate::test_support::put(&pool, "/api/computers/mac/tools", json!(["claude", "codex"])).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, computers) = get(&pool, "/api/computers").await;
+        let mac = computers.as_array().unwrap().iter().find(|c| c["id"] == "mac").unwrap();
+        assert_eq!(mac["tools"], json!(["claude", "codex"]));
+        assert_eq!(crate::test_support::put(&pool, "/api/computers/mac/tools", json!(["vim"])).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(crate::test_support::put(&pool, "/api/computers/nope/tools", json!(["claude"])).await.0, StatusCode::NOT_FOUND);
     }
 }

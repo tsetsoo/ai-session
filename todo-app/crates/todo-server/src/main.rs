@@ -74,6 +74,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/computers/{id}/job-templates", web::put().to(watch::put_job_templates))
         .route("/api/job-templates", web::get().to(watch::list_job_templates))
         .route("/api/computers/{id}/watchers", web::put().to(watch::put_watchers))
+        .route("/api/computers/{id}/tools", web::put().to(watch::put_tools))
         .route("/api/computers/{id}/health", web::get().to(health::get_health))
         .route("/api/computers/{id}/health", web::put().to(health::put_health))
         .route("/api/computers/{id}", web::patch().to(conversations::update_computer))
@@ -183,6 +184,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/runs/{id}/wait", web::post().to(runner_api::wait))
         .route("/api/runs/{id}/start", web::post().to(runner_api::start))
         .route("/api/runs/{id}/finish", web::post().to(runner_api::finish))
+        .route("/api/runs/{id}/retry", web::post().to(runner_api::retry))
         // A check can list up to 1000 issues with 4000 characters of details each.
         .service(
             web::resource("/api/runs/{id}/report")

@@ -678,6 +678,21 @@ pub(crate) fn set_watchers_db(conn: &Connection, computer_id: &str, watchers: &[
     Ok(())
 }
 
+/// The agent tools a computer's runner found installed (claude, codex, cursor).
+pub(crate) fn set_tools_db(conn: &Connection, computer_id: &str, tools: &[String]) -> Result<(), WatchError> {
+    if tools.iter().any(|t| !matches!(t.as_str(), "claude" | "codex" | "cursor")) {
+        return Err(WatchError::BadRequest("tools may only be claude, codex and cursor"));
+    }
+    let changed = conn.execute(
+        "UPDATE computers SET tools = ?2, tools_at = datetime('now') WHERE id = ?1",
+        params![computer_id, serde_json::to_string(tools).unwrap_or_default()],
+    )?;
+    if changed == 0 {
+        return Err(WatchError::NotFound("Computer not found"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct ResolveResult {
     pub ok: bool,
@@ -909,6 +924,16 @@ pub async fn put_watchers(
 ) -> HttpResponse {
     let conn = conn!(pool);
     done(set_watchers_db(&conn, &path, &body).map(|_| serde_json::json!({"ok": true})), &broadcaster)
+}
+
+pub async fn put_tools(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<Vec<String>>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = conn!(pool);
+    done(set_tools_db(&conn, &path, &body).map(|_| serde_json::json!({"ok": true})), &broadcaster)
 }
 
 #[cfg(test)]

@@ -299,7 +299,7 @@ fn base_description() -> Value {
             },
             "Conversation": {
                 "todo_id": "string (UUID)",
-                "computer": "Computer {id, name, hostname, port, username, created_at, updated_at, mcp_default}",
+                "computer": "Computer {id, name, hostname, port, username, created_at, updated_at, mcp_default, tools}",
                 "cwd": "string - working directory snapshot (may start with ~)",
                 "tool": "string enum: claude | codex | cursor",
                 "tmux_name": "string - ai/<tool>/todo-<first 8 chars of todo id>",

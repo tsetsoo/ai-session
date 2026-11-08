@@ -273,7 +273,7 @@ fn ensure_project_job(conn: &Connection, project_id: &str, job_name: &str, actio
 /// The most agents one Research Now starts.
 pub(crate) const MAX_ATTEMPTS: usize = 10;
 
-fn tool_name(tool: &str) -> String {
+pub(crate) fn tool_name(tool: &str) -> String {
     tool.chars().take(1).flat_map(char::to_uppercase).chain(tool.chars().skip(1)).collect()
 }
 
