@@ -80,6 +80,11 @@ struct ConversationFrame: View {
     @State private var toolChoice = ""
     @State private var isStarting = false
     @State private var toolError: String?
+    /// Several agents on Start (empty: one, today's tool picker), their first message, and
+    /// the commit they all start from.
+    @State private var agentRows: [ResearchAgentRow] = []
+    @State private var firstMessageText = ""
+    @State private var startBase: StartBase?
     /// The start state's own pick of servers; until there is one, the defaults show.
     @State private var serverChoice: [String]?
     @State private var hasServerChoice = false
@@ -603,15 +608,25 @@ struct ConversationFrame: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            Picker("Tool", selection: $toolChoice) {
-                Text("Claude").tag("claude")
-                Text("Codex").tag("codex")
-                Text("Cursor").tag("cursor")
+            if agentRows.isEmpty {
+                Picker("Tool", selection: $toolChoice) {
+                    Text("Claude").tag("claude")
+                    Text("Codex").tag("codex")
+                    Text("Cursor").tag("cursor")
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 360)
+                .labelsHidden()
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 360)
-            .labelsHidden()
-            if let computer = newConversationComputer, toolChoice != "cursor" {
+            if computer != nil {
+                StartAgentsSection(
+                    rows: $agentRows, toolChoice: $toolChoice, text: $firstMessageText, base: $startBase,
+                    offered: offeredTools, refusal: StartAgents.refusal(project: store.project(id: todo.projectId)),
+                    loadBase: loadStartBase
+                )
+                .disabled(isStarting)
+            }
+            if let computer = newConversationComputer, usesServers {
                 MCPServersStartRow(
                     computer: computer, store: store, hosts: hosts,
                     selection: serverSelection,
@@ -637,7 +652,7 @@ struct ConversationFrame: View {
                     Button(isStarting ? "Starting…" : "Start") { confirmTool() }
                         .buttonStyle(.borderedProminent)
                         .tint(DS.accent)
-                        .disabled(isStarting)
+                        .disabled(isStarting || !canStartAgents)
                 }
             }
         }
@@ -652,17 +667,78 @@ struct ConversationFrame: View {
 
     private func confirmTool() {
         guard !isStarting else { return }
+        if agentRows.count > 1 {
+            startSeveralAgents()
+            return
+        }
         let tool = ConversationStart.selectedTool(remembered: toolChoice)
         let servers = tool == "cursor" ? nil : serverSelection.wrappedValue
+        let firstMessage = StartAgents.firstMessage(firstMessageText)
         lastStartedTool = tool
         isStarting = true
         toolError = nil
         Task {
             defer { isStarting = false }
             do {
-                let conversation = try await startConversation(tool: tool, mcpServers: servers)
+                let conversation = try await startConversation(tool: tool, mcpServers: servers, firstMessage: firstMessage)
+                firstMessageText = ""
                 loader.attachOpened(conversation)
                 nameNewConversation(conversation)
+            } catch {
+                toolError = TodoHubStore.message(for: error)
+            }
+        }
+    }
+
+    /// The tools the section's computer has (all of them when it hasn't said).
+    private var offeredTools: [String] {
+        ResearchAgents.offeredTools(installed: newConversationComputer?.tools)
+    }
+
+    /// Claude and Codex take an MCP selection; Cursor has none.
+    private var usesServers: Bool {
+        agentRows.isEmpty ? toolChoice != "cursor" : agentRows.contains { $0.tool != "cursor" }
+    }
+
+    private var canStartAgents: Bool {
+        agentRows.isEmpty || StartAgents.canStart(
+            rows: agentRows, text: firstMessageText, offered: offeredTools, base: startBase,
+            refusal: StartAgents.refusal(project: store.project(id: todo.projectId))
+        )
+    }
+
+    /// `origin/HEAD` on the section's computer, after a fetch: where every agent starts.
+    private func loadStartBase() async throws -> StartBase {
+        guard let computer = newConversationComputer, let folder = store.project(id: todo.projectId)?.folder else {
+            throw TodoHubError.conflict("This todo has no project folder on a computer yet.")
+        }
+        return try await store.startBase(folder: folder, computer: computer, config: newConversationConfig())
+    }
+
+    /// Several agents: the first becomes the todo's conversation on screen, the others join
+    /// it in the switcher. One that didn't start is named; the rest keep going.
+    private func startSeveralAgents() {
+        guard let base = startBase, let message = StartAgents.firstMessage(firstMessageText) else { return }
+        let rows = agentRows
+        let servers = serverSelection.wrappedValue
+        lastStartedTool = rows[0].tool
+        isStarting = true
+        toolError = nil
+        Task {
+            defer { isStarting = false }
+            do {
+                let outcome = try await store.startAgents(
+                    todo: todo, rows: rows, firstMessage: message, base: base, mcpServers: servers,
+                    config: newConversationConfig()
+                )
+                agentRows = []
+                firstMessageText = ""
+                startBase = nil
+                loader.attachOpened(outcome.first)
+                nameNewConversation(outcome.first)
+                if let note = StartAgents.startedNote(total: rows.count, failures: outcome.failures) {
+                    failure = ActionFailure(title: "Some Agents Didn't Start", message: note)
+                }
             } catch {
                 toolError = TodoHubStore.message(for: error)
             }
@@ -686,27 +762,30 @@ struct ConversationFrame: View {
         }
     }
 
-    private func startConversation(tool: String, mcpServers: [String]?) async throws -> Conversation {
+    private func startConversation(tool: String, mcpServers: [String]?, firstMessage: String?) async throws -> Conversation {
         #if DEBUG
         if DemoFixtures.isEnabled {
             return try await DemoFixtures.loaderDependencies().openConversation(todo)
         }
         #endif
+        return try await store.openConversation(
+            for: todo, tool: tool, config: newConversationConfig(), mcpServers: mcpServers, firstMessage: firstMessage
+        )
+    }
+
+    /// How to reach the section's computer, where a new conversation starts.
+    private func newConversationConfig() throws -> HostConnectionConfig {
         guard let computer = store.sectionComputers[todo.section]?.computer else {
             throw TodoHubError.conflict("Section \(todo.section.rawValue) has no computer assigned")
         }
         guard let host = HostLookup.host(for: computer, in: hosts) else {
             throw HostLookup.Failure.noHost(computer)
         }
-        let connection: (service: SessionService, config: HostConnectionConfig)
         do {
-            connection = try SessionServiceFactory().make(for: host)
+            return try SessionServiceFactory().make(for: host).config
         } catch {
             throw HostLookup.Failure.keyUnavailable(host.displayName)
         }
-        return try await store.openConversation(
-            for: todo, tool: tool, config: connection.config, mcpServers: mcpServers
-        )
     }
 
     /// The servers a new conversation starts with, exactly as the start state's checklist shows
