@@ -111,6 +111,8 @@ If one attempt fails to start, the others continue; the failed one shows as fail
 
 ### Stage 3: start any todo with several agents
 
+*Built 2026-11-08 on branch `competing-agents-stage3`: plan docs/superpowers/plans/2026-11-08-competing-agents-stage3-start-with-agents.md. App-driven start, base from `ai-todo-workspace base`, no schema change.*
+
 - Wherever a todo's conversation is started (Mac and iPhone), the user can pick several agents with the same picker. The first message is typed **once**, in a text box, and sent as each agent's first message.
 - Each agent runs in its own worktree (stage 0) from the same base sha.
 - **The base is the latest `main` on origin**, as decided by the user: fetch, then use origin's default branch head (`origin/HEAD`), as the runner does. It is resolved once for the group. The user's local branch, unpushed commits and uncommitted changes are not included. The start sheet states the base, for example "from origin/main @ 8f5a29c".
