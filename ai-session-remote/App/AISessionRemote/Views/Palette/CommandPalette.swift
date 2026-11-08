@@ -59,12 +59,14 @@ struct CommandPalette: View {
         let current = items.first { $0.id == highlighted }?.id ?? items.first?.id
         ZStack(alignment: .top) {
             Color(white: 0.08).opacity(0.18)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
                 .onTapGesture(perform: dismiss)
                 .accessibilityHidden(true)
             panel(groups: groups, items: items, current: current)
                 .frame(maxWidth: Self.width)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 96)
                 .padding(.horizontal, DS.spacing.l)
         }
@@ -146,7 +148,7 @@ struct CommandPalette: View {
 
     /// Focus with the caret after the query, rather than the query selected.
     private func focusField() {
-        fieldFocused = true
+        DispatchQueue.main.async { fieldFocused = true }
         #if os(macOS)
         DispatchQueue.main.async {
             guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor else { return }

@@ -88,7 +88,7 @@ public struct PaletteGroup: Equatable, Sendable, Identifiable {
 public enum PaletteModel {
     public static let maxPerGroup = 5
 
-    /// Conversations (the open ones, Needs you first), Todos (open ones without a running
+    /// Conversations (the open ones, most recently updated first), Todos (open ones without a running
     /// conversation), Projects, then the Actions. A query ranks each group by the best
     /// `PaletteMatch` over title, section code and computer name (conversations: also the tool;
     /// projects: name and folder):
@@ -112,6 +112,7 @@ public enum PaletteModel {
         let needsYou = Set(board.needsYou.map(\.listKey))
 
         let conversationItems: [PaletteItem] = (board.needsYou + running.filter { !needsYou.contains($0.listKey) })
+            .sorted { ($0.statusUpdatedAt ?? $0.createdAt) > ($1.statusUpdatedAt ?? $1.createdAt) }
             .compactMap { conversation in
                 guard let todo = todosByID[conversation.todoId] else { return nil }
                 return .conversation(todo, conversation, status: board.status(of: conversation),
