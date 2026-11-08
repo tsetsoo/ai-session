@@ -33,6 +33,95 @@ public struct Idea: Codable, Equatable, Hashable, Identifiable, Sendable {
     public var source: String
     public var createdAt: String
     public var updatedAt: String
+    /// Research Now with agents: one per agent, oldest first. Empty on an older hub.
+    public var attempts: [IdeaAttempt]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, projectId, title, notes, status, starred, pending, findings, todoId, runId, source, createdAt, updatedAt, attempts
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        projectId = try c.decode(String.self, forKey: .projectId)
+        title = try c.decode(String.self, forKey: .title)
+        notes = try c.decode(String.self, forKey: .notes)
+        status = try c.decode(IdeaStatus.self, forKey: .status)
+        starred = try c.decode(Bool.self, forKey: .starred)
+        pending = try c.decode(Bool.self, forKey: .pending)
+        findings = try c.decodeIfPresent(String.self, forKey: .findings)
+        todoId = try c.decodeIfPresent(String.self, forKey: .todoId)
+        runId = try c.decodeIfPresent(String.self, forKey: .runId)
+        source = try c.decode(String.self, forKey: .source)
+        createdAt = try c.decode(String.self, forKey: .createdAt)
+        updatedAt = try c.decode(String.self, forKey: .updatedAt)
+        attempts = try c.decodeIfPresent([IdeaAttempt].self, forKey: .attempts) ?? []
+    }
+}
+
+/// One agent's research of an idea (a run of its research group).
+public struct IdeaAttempt: Codable, Equatable, Hashable, Identifiable, Sendable {
+    public var runId: String
+    public var tool: String
+    /// nil: the tool's default model.
+    public var model: String?
+    /// The run's state: `due`, `waiting`, `running`, `done` (started), `failed`, ...
+    public var state: String
+    public var result: String?
+    public var conversationId: String?
+    public var findings: String?
+    /// The attempt the user continued with.
+    public var chosen: Bool
+
+    public var id: String { runId }
+
+    public init(runId: String, tool: String, model: String? = nil, state: String, result: String? = nil,
+                conversationId: String? = nil, findings: String? = nil, chosen: Bool = false) {
+        self.runId = runId
+        self.tool = tool
+        self.model = model
+        self.state = state
+        self.result = result
+        self.conversationId = conversationId
+        self.findings = findings
+        self.chosen = chosen
+    }
+}
+
+/// One agent of a Research Now: a tool and, optionally, a model (nil: its default).
+public struct AttemptSpec: Codable, Equatable, Hashable, Sendable {
+    public var tool: String
+    public var model: String?
+
+    public init(tool: String, model: String? = nil) {
+        self.tool = tool
+        self.model = model
+    }
+}
+
+/// `POST /api/ideas/{id}/research`: the agents, on this computer (nil: the project's usual one).
+public struct ResearchRequest: Codable, Equatable, Sendable {
+    public var computerId: String?
+    public var attempts: [AttemptSpec]
+
+    public init(computerId: String?, attempts: [AttemptSpec]) {
+        self.computerId = computerId
+        self.attempts = attempts
+    }
+}
+
+/// A started Research Now: its group, its todo and one run per agent.
+public struct ResearchStart: Codable, Equatable, Sendable {
+    public var groupId: String
+    public var todoId: String
+    public var runs: [JobRun]
+}
+
+/// What the hub answered to a Research Now: a group, or (an older hub that ignores the agents)
+/// one Claude run.
+public enum ResearchOutcome: Equatable, Sendable {
+    case group(ResearchStart)
+    case legacy(JobRun)
 }
 
 public struct CreateIdeaRequest: Encodable, Sendable {

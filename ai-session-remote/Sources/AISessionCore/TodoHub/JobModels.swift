@@ -176,6 +176,10 @@ public struct JobRun: Codable, Equatable, Hashable, Identifiable, Sendable {
     public var updatedAt: String
     /// The hint of "shape an idea", or other run-specific text.
     public var note: String?
+    /// Research Now with agents: the group this run is one attempt of, and the attempt's tool and model.
+    public var groupId: String?
+    public var attemptTool: String?
+    public var attemptModel: String?
 }
 
 public struct SchedulerJob: Codable, Equatable, Hashable, Identifiable, Sendable {

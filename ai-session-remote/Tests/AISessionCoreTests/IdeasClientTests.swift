@@ -97,6 +97,57 @@ final class IdeasClientTests: XCTestCase {
         XCTAssertEqual(lastRequest.url?.path, "/api/ideas/i1/research")
     }
 
+    static let runJSON = #"{"id":"r1","job_id":"j","due_at":"x","state":"due","computer_id":null,"todo_id":null,"waiting_reason":null,"result":null,"started_at":null,"created_at":"x","updated_at":"x","note":"idea:i1","group_id":"g","attempt_tool":"claude"}"#
+
+    func testResearchSendsAttemptsAndDecodesGroup() async throws {
+        respond(#"{"group_id":"g","todo_id":"t","runs":[\#(Self.runJSON)]}"#, status: 201)
+        let request = ResearchRequest(computerId: "mac", attempts: [AttemptSpec(tool: "claude"), AttemptSpec(tool: "codex", model: "m")])
+        let outcome = try await client().researchIdea(id: "i1", request: request)
+        guard case let .group(start) = outcome else { return XCTFail("expected a group, got \(outcome)") }
+        XCTAssertEqual(start.todoId, "t")
+        XCTAssertEqual(start.runs.first?.groupId, "g")
+        XCTAssertEqual(lastRequest.url?.path, "/api/ideas/i1/research")
+        let body = try lastBody()
+        XCTAssertEqual(body["computer_id"] as? String, "mac")
+        let attempts = try XCTUnwrap(body["attempts"] as? [[String: String]])
+        XCTAssertEqual(attempts, [["tool": "claude"], ["tool": "codex", "model": "m"]], "no model key when it is the default")
+    }
+
+    func testResearchDecodesLegacyRun() async throws {
+        respond(#"{"id":"r","job_id":"j","due_at":"x","state":"due","computer_id":null,"todo_id":null,"waiting_reason":null,"result":null,"started_at":null,"created_at":"x","updated_at":"x","note":"idea:i1"}"#, status: 201)
+        let outcome = try await client().researchIdea(id: "i1", request: ResearchRequest(computerId: nil, attempts: [AttemptSpec(tool: "claude")]))
+        guard case let .legacy(run) = outcome else { return XCTFail("expected an older hub's run, got \(outcome)") }
+        XCTAssertEqual(run.note, "idea:i1")
+    }
+
+    func testRetryRunPath() async throws {
+        respond(Self.runJSON, status: 201)
+        let run = try await client().retryRun(id: "r0")
+        XCTAssertEqual(run.id, "r1")
+        XCTAssertEqual(lastRequest.httpMethod, "POST")
+        XCTAssertEqual(lastRequest.url?.path, "/api/runs/r0/retry")
+    }
+
+    func testIdeaDecodesAttemptsAndOldIdea() throws {
+        let old = try TodoHubClient.makeDecoder().decode(Idea.self, from: Data(Self.ideaJSON.utf8))
+        XCTAssertEqual(old.attempts, [])
+        let json = Self.ideaJSON.replacingOccurrences(of: #""updated_at":"x"}"#, with: #""updated_at":"x","attempts":[{"run_id":"r1","tool":"codex","model":"gpt-6.1","state":"failed","result":"boom","conversation_id":null,"findings":null,"chosen":false},{"run_id":"r2","tool":"claude","model":null,"state":"done","result":null,"conversation_id":"c2","findings":"B","chosen":true}]}"#)
+        let idea = try TodoHubClient.makeDecoder().decode(Idea.self, from: Data(json.utf8))
+        XCTAssertEqual(idea.attempts.count, 2)
+        XCTAssertEqual(idea.attempts[0].model, "gpt-6.1")
+        XCTAssertEqual(idea.attempts[0].result, "boom")
+        XCTAssertEqual(idea.attempts[1].conversationId, "c2")
+        XCTAssertTrue(idea.attempts[1].chosen)
+    }
+
+    func testComputerToolsOptional() throws {
+        let base = #"{"id":"mac","name":"Mac","hostname":"mac","port":22,"username":"me","created_at":"x","updated_at":"x""#
+        let without = try TodoHubClient.makeDecoder().decode(Computer.self, from: Data((base + "}").utf8))
+        XCTAssertNil(without.tools)
+        let with = try TodoHubClient.makeDecoder().decode(Computer.self, from: Data((base + #","tools":["claude","codex"]}"#).utf8))
+        XCTAssertEqual(with.tools, ["claude", "codex"])
+    }
+
     func testListIdeasAllProjectsHasNoProjectQuery() async throws {
         respond("[]")
         _ = try await client().listIdeas(projectId: nil)

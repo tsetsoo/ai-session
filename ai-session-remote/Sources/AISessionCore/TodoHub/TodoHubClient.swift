@@ -523,6 +523,20 @@ public struct TodoHubClient: Sendable {
         try await decode(JobRun.self, send("POST", "/api/ideas/\(escape(id))/research"))
     }
 
+    /// Research this idea now with these agents. An older hub ignores them and answers one run.
+    public func researchIdea(id: String, request: ResearchRequest) async throws -> ResearchOutcome {
+        let data = try await send("POST", "/api/ideas/\(escape(id))/research", body: request)
+        if let start = try? Self.makeDecoder().decode(ResearchStart.self, from: data) {
+            return .group(start)
+        }
+        return .legacy(try decode(JobRun.self, data))
+    }
+
+    /// Retry a failed research attempt: a new run in its group.
+    public func retryRun(id: String) async throws -> JobRun {
+        try await decode(JobRun.self, send("POST", "/api/runs/\(escape(id))/retry"))
+    }
+
     /// Watcher issues: `open` (open or resolving) or `recent` (cleared in the last 7 days).
     public func listWatchIssues(state: String) async throws -> [WatchIssue] {
         try await decode([WatchIssue].self, send("GET", "/api/watch/issues", query: [URLQueryItem(name: "state", value: state)]))

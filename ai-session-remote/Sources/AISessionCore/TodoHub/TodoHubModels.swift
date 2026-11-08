@@ -113,9 +113,11 @@ public struct Computer: Codable, Hashable, Identifiable, Sendable {
     public var updatedAt: String
     /// MCP servers new conversations on this computer start with. `nil` = not managed, `[]` = none.
     public var mcpDefault: [String]?
+    /// The agent tools (claude, codex, cursor) its runner reported installed; nil: not reported.
+    public var tools: [String]?
 
     public init(id: String, name: String, hostname: String, port: Int = 22, username: String,
-                createdAt: String = "", updatedAt: String = "", mcpDefault: [String]? = nil) {
+                createdAt: String = "", updatedAt: String = "", mcpDefault: [String]? = nil, tools: [String]? = nil) {
         self.id = id
         self.name = name
         self.hostname = hostname
@@ -124,6 +126,7 @@ public struct Computer: Codable, Hashable, Identifiable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.mcpDefault = mcpDefault
+        self.tools = tools
     }
 }
 
