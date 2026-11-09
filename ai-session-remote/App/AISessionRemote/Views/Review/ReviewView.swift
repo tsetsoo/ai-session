@@ -75,7 +75,6 @@ struct ReviewView: View {
     @State private var selectedPath: String?
     @State private var showingSend = false
     @State private var showingFindings = false
-    @State private var showsAllPullRequests = false
     @State private var showingPublish = false
     @State private var showingApprove = false
     @State private var showingMerge = false
@@ -304,14 +303,10 @@ struct ReviewView: View {
                 }
             }
         }
-        .overlay {
-            if session.diff.files.isEmpty, !session.isLoading, session.failure == nil, session.result != nil {
-                ContentUnavailableView(emptyTitle, systemImage: "checkmark.circle", description: Text(emptyDetail))
-            }
-        }
     }
 
-    /// The user's PRs/MRs in this repository: one click shows exactly that PR's changes.
+    /// The PR on screen, with a menu to switch to another of the user's PRs/MRs. The whole
+    /// list is in the detail pane until one is picked; here it would push the files away.
     @ViewBuilder
     private var pullRequestsSection: some View {
         if let problem = session.helperProblem {
@@ -329,17 +324,21 @@ struct ReviewView: View {
                         .foregroundStyle(.secondary)
                 }
             } else if !list.prs.isEmpty {
-                Section(list.viewer.map { "Pull Requests by \($0)" } ?? "Your Pull Requests") {
-                    ForEach(list.prs.prefix(showsAllPullRequests ? 30 : 6)) { pr in
-                        PullRequestRow(item: pr, provider: list.provider,
-                                       selected: session.scope == .pullRequest && session.selectedPullRequest == pr.number)
-                            .contentShape(Rectangle())
-                            .onTapGesture { session.open(pullRequest: pr.number) }
+                Section(list.provider == "gitlab" ? "Merge Request" : "Pull Request") {
+                    if session.scope == .pullRequest, let number = session.selectedPullRequest,
+                       let pr = list.prs.first(where: { $0.number == number }) {
+                        PullRequestRow(item: pr, provider: list.provider, selected: true)
                     }
-                    if list.prs.count > 6 {
-                        Button(showsAllPullRequests ? "Fewer" : "\(list.prs.count - 6) More") { showsAllPullRequests.toggle() }
-                            .buttonStyle(.link)
+                    Menu {
+                        PullRequestMenuItems(list: list, selected: session.scope == .pullRequest ? session.selectedPullRequest : nil) {
+                            session.open(pullRequest: $0)
+                        }
+                    } label: {
+                        Label(session.scope == .pullRequest ? "Switch…" : "Review a Pull Request…",
+                              systemImage: "arrow.triangle.pull")
                     }
+                    .menuStyle(.borderlessButton)
+                    .help("Your pull requests in this repository, latest first. One shows exactly its changes, as on \(list.provider == "gitlab" ? "GitLab" : "GitHub").")
                 }
             }
         }
@@ -362,10 +361,6 @@ struct ReviewView: View {
     }
 
     private var emptyDetail: String {
-        // The pull requests are right above: that's where the agent's work is.
-        if session.scope != .pullRequest, session.pullRequests?.prs.isEmpty == false {
-            return "Pick one of your pull requests above to see exactly its changes."
-        }
         return switch session.scope {
         case .uncommitted: "Choose Conversation to see everything it changed, committed or not."
         case .branch: "This branch has nothing the default branch doesn't. Choose Conversation, or a commit in Compare With."
@@ -385,6 +380,14 @@ struct ReviewView: View {
             ProgressView()
         } else if session.result?.truncated == true {
             ContentUnavailableView("Diff Too Large", systemImage: "doc.text.magnifyingglass")
+        } else if session.scope != .pullRequest, session.diff.files.isEmpty, let list = session.pullRequests,
+                  list.access, !list.prs.isEmpty {
+            // Nothing in the folder, and the agent's work is in a PR: pick it right here.
+            PullRequestPicker(list: list, emptyTitle: session.result == nil ? nil : emptyTitle) {
+                session.open(pullRequest: $0)
+            }
+        } else if session.diff.files.isEmpty, session.failure == nil, session.result != nil {
+            ContentUnavailableView(emptyTitle, systemImage: "checkmark.circle", description: Text(emptyDetail))
         } else {
             Color.clear
         }
@@ -629,6 +632,77 @@ struct ReviewView: View {
 }
 
 // MARK: - Rows
+
+/// The user's PRs/MRs, open ones first, each latest first: a menu's items.
+private struct PullRequestMenuItems: View {
+    let list: ReviewPullRequestList
+    let selected: Int?
+    let open: (Int) -> Void
+
+    var body: some View {
+        let groups = PullRequestPicker.groups(list.prs)
+        ForEach(groups, id: \.title) { group in
+            Section(group.title) {
+                ForEach(group.items) { pr in
+                    Button {
+                        open(pr.number)
+                    } label: {
+                        Text((pr.number == selected ? "✓ " : "") + "\(list.provider == "gitlab" ? "!" : "#")\(pr.number) \(pr.title)")
+                        Text([pr.state, pr.headRef].compactMap { $0 }.joined(separator: " · "))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The detail pane while no PR is open: the user's PRs to pick from, in full.
+private struct PullRequestPicker: View {
+    let list: ReviewPullRequestList
+    /// Why there's nothing else to show (the folder's scope came back empty), if it did.
+    let emptyTitle: String?
+    let open: (Int) -> Void
+
+    struct Group {
+        var title: String
+        var items: [ReviewPullRequestList.Item]
+    }
+
+    static func groups(_ prs: [ReviewPullRequestList.Item]) -> [Group] {
+        let open = prs.filter { $0.state == "open" }
+        let done = prs.filter { $0.state != "open" }
+        return [Group(title: "Open", items: open), Group(title: "Merged or Closed", items: done)].filter { !$0.items.isEmpty }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.spacing.m) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Which pull request?")
+                    .font(.title2.weight(.semibold))
+                Text((emptyTitle.map { "\($0) in this folder. " } ?? "")
+                     + "Pick one of \(list.viewer.map { "\($0)'s" } ?? "your") pull requests to see exactly its changes, as on \(list.provider == "gitlab" ? "GitLab" : "GitHub").")
+                    .foregroundStyle(.secondary)
+            }
+            .padding([.horizontal, .top], DS.spacing.l)
+            List {
+                ForEach(Self.groups(list.prs), id: \.title) { group in
+                    Section(group.title) {
+                        ForEach(group.items) { pr in
+                            Button {
+                                open(pr.number)
+                            } label: {
+                                PullRequestRow(item: pr, provider: list.provider, selected: false)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .listStyle(.inset)
+        }
+    }
+}
 
 private struct FileRow: View {
     let file: DiffFile
@@ -1588,10 +1662,10 @@ private struct PullRequestRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
         .padding(.vertical, 1)
-        .listRowBackground(selected ? DS.accent.opacity(0.18) : Color.clear)
         .help(item.headRef ?? "")
     }
 
@@ -1600,7 +1674,7 @@ private struct PullRequestRow: View {
         if let updated = item.updatedAt.flatMap(ReviewSync.date(from:)) {
             parts.append("updated " + updated.formatted(.relative(presentation: .named)))
         }
-        if item.since { parts.append("since this conversation began") }
+        if let ref = item.headRef { parts.append(ref) }
         return parts.joined(separator: " · ")
     }
 
