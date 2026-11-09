@@ -202,10 +202,12 @@
 		98D19D66B517C337951A1B1C /* OpenSSHPrivateKeyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */; };
 		98E8F675B83628ACA76E96E2 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 933D60662FF1D5CFC33458A1 /* NIOSSH */; };
 		98ED5889E1560F4A0DE9E986 /* ChatMessageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EEA147830218031EA1DDBEF /* ChatMessageView.swift */; };
+		99224EC4DD63229FB202388D /* NativeCollapsibleSplit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86817F050F00E345F0352B00 /* NativeCollapsibleSplit.swift */; };
 		99D85BE4B3A86446B9E2C27A /* Dictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E67B76EDE9FE683169680363 /* Dictation.swift */; };
 		9A9A1C513848F018C43DDFBA /* LocalConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0E92D9DEB7C4816EBDB4B77 /* LocalConnection.swift */; };
 		9AC6F15718E4541263BB3B76 /* NewSessionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FD7158DD9EEFF2C436D5B5D /* NewSessionSheet.swift */; };
 		9AE82D1321CF7D400339DFD2 /* ReadAloudTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4667A4523A1AEC2B12BD5C2E /* ReadAloudTests.swift */; };
+		9B7F867800FBF7CAC09CF2B1 /* NativeCollapsibleSplit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86817F050F00E345F0352B00 /* NativeCollapsibleSplit.swift */; };
 		9C749B772CC6F3B0E4AB82EE /* WorkerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 015A3B796283D7CA833B172A /* WorkerSheet.swift */; };
 		9C7B44037AC306AFF0894848 /* ChatStyledText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EE8C53F9D661BF68CA334B7 /* ChatStyledText.swift */; };
 		9CD0C05A23D6CB68416A536A /* TodoConversationScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D950090C7A69096F9F3FF813 /* TodoConversationScreen.swift */; };
@@ -443,6 +445,7 @@
 		7CF2935CB55EEDD18EC96992 /* VisiblePresence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisiblePresence.swift; sourceTree = "<group>"; };
 		7E36AD351C0A22DEC339CAE5 /* ConversationRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationRow.swift; sourceTree = "<group>"; };
 		7F7CB06F31D5F427A4253C38 /* WorkersChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkersChip.swift; sourceTree = "<group>"; };
+		86817F050F00E345F0352B00 /* NativeCollapsibleSplit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCollapsibleSplit.swift; sourceTree = "<group>"; };
 		87495E95B7CCFE26E721047A /* ConversationFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationFrame.swift; sourceTree = "<group>"; };
 		8B1150B78937B45875C56973 /* TerminalSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSelectionTests.swift; sourceTree = "<group>"; };
 		8F1F0DD9B231FCCD07E427F8 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
@@ -626,6 +629,7 @@
 				4968C45BBA0F9D47DF734624 /* KeyBar.swift */,
 				1EF7DAFF1BD631F66BD246CA /* MCPServerChecklist.swift */,
 				2036F3717F8C775B947A95B7 /* MemoriesPresenter.swift */,
+				86817F050F00E345F0352B00 /* NativeCollapsibleSplit.swift */,
 				A19388DFC31D114300D5C298 /* PhoneConversationView.swift */,
 				D4CDA2E8FBBB71F1BB5048A8 /* RestartSheet.swift */,
 				9AD705B0AB36EC1272E162F4 /* StartAgentsSection.swift */,
@@ -1232,6 +1236,7 @@
 				C02C522D95113D7D02F16C02 /* MemoriesPresenter.swift in Sources */,
 				9EF27CDA60B698C2B14EE4C8 /* MemoryViews.swift in Sources */,
 				459745DF108E3518C8BB10E3 /* NIOSSHClient.swift in Sources */,
+				9B7F867800FBF7CAC09CF2B1 /* NativeCollapsibleSplit.swift in Sources */,
 				FBFCEA0140DEA878AC684447 /* NewSessionSheet.swift in Sources */,
 				CA6E7438940A64E9925E2DDE /* NotificationCenterCoordinator.swift in Sources */,
 				0EBEF766C754B360334DAFB5 /* NotificationSettingsView.swift in Sources */,
@@ -1378,6 +1383,7 @@
 				C61894B166CF872961980837 /* MemoriesPresenter.swift in Sources */,
 				B7CDAFEC634F6464A89F0CBA /* MemoryViews.swift in Sources */,
 				FACD0EDEEFFED735236090BD /* NIOSSHClient.swift in Sources */,
+				99224EC4DD63229FB202388D /* NativeCollapsibleSplit.swift in Sources */,
 				9AC6F15718E4541263BB3B76 /* NewSessionSheet.swift in Sources */,
 				AFF4FF50C69178BB03C5D2EF /* NotificationCenterCoordinator.swift in Sources */,
 				E7262818704634E6B9AEE94B /* NotificationSettingsView.swift in Sources */,
