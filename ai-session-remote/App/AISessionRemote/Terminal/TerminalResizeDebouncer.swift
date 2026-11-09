@@ -4,9 +4,9 @@ import Foundation
 /// `window-change` to the remote PTY, and tracks the size last actually sent.
 ///
 /// Keyboard show/hide and rotation fire `sizeChanged` several times across layout passes, and
-/// each `window-change` makes tmux repaint the entire screen. This collapses a burst of reports
-/// into a single trailing-edge send of the *settled* size, and skips entirely once that size
-/// already matches what was last sent.
+/// each `window-change` makes tmux repaint the entire screen. By default this sends only the
+/// settled size. Live updates instead send the latest size at a limited rate during a drag.
+/// Both modes skip sizes that already match what was last sent.
 ///
 /// Extracted out of `TerminalCoordinator` purely so this decision (and its debounce timing) can
 /// be pinned with unit tests, without any UIKit/SwiftTerm scaffolding.
@@ -22,11 +22,15 @@ final class TerminalResizeDebouncer {
     typealias Scheduler = (@escaping () -> Void) -> Void
 
     private let scheduler: Scheduler
+    private let liveUpdates: Bool
+    private var pending: (cols: Int, rows: Int, send: (Int, Int) -> Void)?
+    private var scheduled = false
     private(set) var lastSentSize: (cols: Int, rows: Int)?
     private var generation = 0
 
-    init(scheduler: @escaping Scheduler) {
+    init(scheduler: @escaping Scheduler, liveUpdates: Bool = false) {
         self.scheduler = scheduler
+        self.liveUpdates = liveUpdates
     }
 
     /// Records a size as already known-current for the remote PTY, without scheduling or
@@ -36,14 +40,29 @@ final class TerminalResizeDebouncer {
         lastSentSize = (cols, rows)
     }
 
-    /// Reports a candidate size. Skipped outright if it matches `lastSentSize`. Otherwise
-    /// schedules `send` to run once, trailing-edge, after the debounce window — a later call
-    /// before that window elapses supersedes this one (its size wins, and only it fires `send`).
+    /// Reports a candidate size. Later reports replace a pending size; matching the last sent
+    /// size cancels it. Live updates use a fixed window, while debounce restarts the window.
     func sizeChanged(cols: Int, rows: Int, send: @escaping (Int, Int) -> Void) {
         guard cols > 0, rows > 0 else { return }
+        if liveUpdates {
+            pending = lastSentSize == nil || lastSentSize! != (cols, rows) ? (cols, rows, send) : nil
+            guard !scheduled, pending != nil else { return }
+            scheduled = true
+            let thisGeneration = generation
+            scheduler { [weak self] in
+                guard let self, self.generation == thisGeneration else { return }
+                self.scheduled = false
+                guard let pending = self.pending else { return }
+                self.pending = nil
+                self.lastSentSize = (pending.cols, pending.rows)
+                pending.send(pending.cols, pending.rows)
+            }
+            return
+        }
+        // Even a return to the last sent size supersedes any pending different size.
+        generation += 1
         guard lastSentSize == nil || lastSentSize! != (cols, rows) else { return }
 
-        generation += 1
         let thisGeneration = generation
         scheduler { [weak self] in
             guard let self, self.generation == thisGeneration else { return }
@@ -57,5 +76,7 @@ final class TerminalResizeDebouncer {
     /// still land — at a now-stale size — on whatever new session replaces it.
     func cancelPending() {
         generation += 1
+        pending = nil
+        scheduled = false
     }
 }

@@ -149,9 +149,17 @@ final class TerminalCoordinator: TerminalViewDelegate {
             DispatchQueue.main.async(execute: drain)
         }
         let scheduler = resizeScheduler ?? { work in
+            #if os(macOS)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03, execute: work)
+            #else
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+            #endif
         }
+        #if os(macOS)
+        self.resizeDebouncer = TerminalResizeDebouncer(scheduler: scheduler, liveUpdates: true)
+        #else
         self.resizeDebouncer = TerminalResizeDebouncer(scheduler: scheduler)
+        #endif
         // Safe to capture `self` here: by this point every stored property has an initial
         // value, so `self` is fully initialized.
         self.coalescer.onFlush = { [weak self] token, bytes in

@@ -59,8 +59,6 @@ struct ConversationFrame: View {
     #if os(macOS)
     @State private var shellVisible = false
     @State private var shellOpened = false
-    @State private var shellHeight: CGFloat = 240
-    @GestureState private var shellDrag: CGFloat = 0
     #endif
     @State private var clipboardSessionID: String?
     /// This todo's usage (own + sub-agents), shown at the right of the limits strip.
@@ -178,16 +176,13 @@ struct ConversationFrame: View {
     @ViewBuilder
     private var frameTerminalContent: some View {
         #if os(macOS)
-        GeometryReader { geometry in
-            VStack(spacing: 0) {
-                terminalArea
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-                if case let .ready(open) = loader.phase {
-                    todoShell(open, maxHeight: max(100, geometry.size.height - 130))
-                        .layoutPriority(1)
-                }
-            }
+        if case let .ready(open) = loader.phase {
+            NativeCollapsibleSplit(isVisible: shellVisible, onVisibilityChange: { visible in
+                if visible { shellOpened = true }
+                shellVisible = visible
+            }, top: terminalArea, bottom: todoShell(open))
+        } else {
+            terminalArea
         }
         #else
         terminalArea
@@ -474,27 +469,8 @@ struct ConversationFrame: View {
     }
 
     #if os(macOS)
-    private func todoShell(_ open: OpenTodoConversation, maxHeight: CGFloat) -> some View {
-        let height = min(maxHeight, max(100, min(shellHeight, maxHeight) - shellDrag))
-        return VStack(spacing: 0) {
-            if shellVisible {
-                Capsule()
-                    .fill(.secondary.opacity(0.5))
-                    .frame(width: 36, height: 4)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 12)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .updating($shellDrag) { value, state, _ in state = value.translation.height }
-                            .onEnded { value in
-                                shellHeight = min(maxHeight, max(100, min(shellHeight, maxHeight) - value.translation.height))
-                            }
-                    )
-                    .help("Drag to resize terminal")
-            } else {
-                Divider()
-            }
+    private func todoShell(_ open: OpenTodoConversation) -> some View {
+        VStack(spacing: 0) {
             HStack {
                 Button {
                     toggleShell()
@@ -524,8 +500,7 @@ struct ConversationFrame: View {
                     makeTransport: makeTransport
                 )
                 .id(linkedShell?.id)
-                .frame(height: height)
-                .frame(height: shellVisible ? height : 0, alignment: .top)
+                .frame(maxWidth: .infinity, maxHeight: shellVisible ? .infinity : 0, alignment: .top)
                 .clipped()
                 .opacity(shellVisible ? 1 : 0)
                 .allowsHitTesting(shellVisible)
@@ -539,14 +514,8 @@ struct ConversationFrame: View {
     }
 
     private func toggleShell() {
-        if !shellOpened {
-            shellOpened = true
-            DispatchQueue.main.async {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) { shellVisible = true }
-            }
-        } else {
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) { shellVisible.toggle() }
-        }
+        shellOpened = true
+        shellVisible.toggle()
     }
     #endif
 

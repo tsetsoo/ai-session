@@ -1,8 +1,7 @@
 import AISessionCore
 import SwiftUI
 
-/// ⋯ ▸ Memories: the memories panel next to the conversation, an inspector on the Mac and a
-/// sheet on iOS. It needs a linked conversation. The Mac's conversation column presents one for
+/// ⋯ ▸ Memories: the memories panel next to the conversation on the Mac and a sheet on iOS. It needs a linked conversation. The Mac's conversation column presents one for
 /// whichever conversation is in front, so switching swaps the panel's contents instead of
 /// closing and reopening the inspector (which also resized the terminal).
 /// What the conversation's side column shows. One inspector serves both, so switching between
@@ -21,18 +20,15 @@ struct MemoriesPresenter: ViewModifier {
     let store: TodoHubStore
 
     func body(content: Content) -> some View {
+        #if os(macOS)
+        NativeCollapsibleSplit(isVisible: isPresented, onVisibilityChange: { isPresented = $0 },
+                               isVertical: true, collapsedSize: 0, minimumExpandedSize: 180,
+                               initialExpandedSize: 340, minimumLeadingSize: 200,
+                               top: content, bottom: Group {
+            if isPresented { panel } else { Color.clear }
+        })
+        #else
         content
-            #if os(macOS)
-            .inspector(isPresented: $isPresented) {
-                // AppKit keeps a collapsed inspector's content built and laid out. Unopened, the
-                // panel fetched and laid out every memory of the project in each kept-alive
-                // frame, which stalled every conversation switch.
-                Group {
-                    if isPresented { panel } else { Color.clear }
-                }
-                .inspectorColumnWidth(min: 260, ideal: 340, max: 520)
-            }
-            #else
             .sheet(isPresented: Binding(get: { isPresented && kind == .memories }, set: { isPresented = $0 })) {
                 NavigationStack {
                     panel

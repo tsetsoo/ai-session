@@ -67,6 +67,45 @@ final class TerminalResizeDebouncerTests: XCTestCase {
         XCTAssertFalse(sendCalled)
     }
 
+    func testLiveUpdatesSendLatestSizeDuringContinuousChanges() {
+        let scheduler = ManualScheduler()
+        let debouncer = TerminalResizeDebouncer(scheduler: scheduler.asScheduler, liveUpdates: true)
+        var rowsSent: [Int] = []
+        debouncer.noteSentSize(cols: 80, rows: 24)
+        debouncer.sizeChanged(cols: 80, rows: 25) { _, rows in rowsSent.append(rows) }
+        debouncer.sizeChanged(cols: 80, rows: 26) { _, rows in rowsSent.append(rows) }
+        XCTAssertEqual(scheduler.scheduled.count, 1)
+        scheduler.fireAll()
+        debouncer.sizeChanged(cols: 80, rows: 27) { _, rows in rowsSent.append(rows) }
+        scheduler.fireAll()
+        XCTAssertEqual(rowsSent, [26, 27])
+    }
+
+    func testLiveUpdateReturningToSentSizeCancelsPending() {
+        let scheduler = ManualScheduler()
+        let debouncer = TerminalResizeDebouncer(scheduler: scheduler.asScheduler, liveUpdates: true)
+        var sent = false
+        debouncer.noteSentSize(cols: 80, rows: 24)
+        debouncer.sizeChanged(cols: 80, rows: 30) { _, _ in sent = true }
+        debouncer.sizeChanged(cols: 80, rows: 24) { _, _ in sent = true }
+        scheduler.fireAll()
+        XCTAssertFalse(sent)
+    }
+
+    func testReturningToLastSentSizeCancelsPendingResize() {
+        let scheduler = ManualScheduler()
+        let debouncer = TerminalResizeDebouncer(scheduler: scheduler.asScheduler)
+        debouncer.noteSentSize(cols: 80, rows: 24)
+        var sent = false
+
+        debouncer.sizeChanged(cols: 80, rows: 30) { _, _ in sent = true }
+        debouncer.sizeChanged(cols: 80, rows: 24) { _, _ in sent = true }
+        scheduler.fireAll()
+
+        XCTAssertFalse(sent)
+        XCTAssertEqual(debouncer.lastSentSize?.rows, 24)
+    }
+
     func testSizeChangedAfterSettlingOnANewSizeIsNotSkipped() {
         let scheduler = ManualScheduler()
         let debouncer = TerminalResizeDebouncer(scheduler: scheduler.asScheduler)
