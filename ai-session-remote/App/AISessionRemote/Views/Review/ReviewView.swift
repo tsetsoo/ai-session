@@ -110,7 +110,7 @@ struct ReviewView: View {
         }
         .toolbar { toolbar }
         // Another commit in Compare With is a new load too, though the scope stays `.commit`.
-        .task(id: "\(session.scope.rawValue)|\(session.baseCommit?.sha ?? "")|\(session.folder)|\(session.selectedPullRequest ?? 0)") {
+        .task(id: loadKey) {
             await reload()
         }
         // The PR/MR and its threads, beside the diff: never holds it up; stops with the window.
@@ -123,7 +123,7 @@ struct ReviewView: View {
             }
         }
         // The PR on screen (the picked one, or the branch's), with its threads.
-        .task(id: "\(pullRequestReads)|\(session.folder)|\(session.selectedPullRequest ?? 0)|\(session.scope == .pullRequest)") {
+        .task(id: "\(pullRequestReads)|\(session.folder)|\(session.selectedPullRequest ?? 0)|\(session.scope == .pullRequest)|\(session.reviewedBranch?.branch.ref ?? "")") {
             await withConfig { await session.loadPullRequest(config: $0) }
         }
         // A run started here or by an earlier window: followed while the window is open.
@@ -195,6 +195,12 @@ struct ReviewView: View {
         } message: {
             Text(session.failure?.errorDescription ?? "")
         }
+    }
+
+    /// What's on screen: a change of any of it is a new load.
+    private var loadKey: String {
+        [session.scope.rawValue, session.baseCommit?.sha ?? "", session.folder,
+         String(session.selectedPullRequest ?? 0), session.reviewedBranch?.branch.ref ?? ""].joined(separator: "|")
     }
 
     private func reload() async {
@@ -323,18 +329,22 @@ struct ReviewView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            } else if !list.prs.isEmpty {
-                Section(list.provider == "gitlab" ? "Merge Request" : "Pull Request") {
-                    if session.scope == .pullRequest, let number = session.selectedPullRequest,
+            } else if !list.prs.isEmpty || !(list.branches ?? []).isEmpty {
+                Section(session.reviewedBranch != nil ? "Branch" : list.provider == "gitlab" ? "Merge Request" : "Pull Request") {
+                    if let branch = session.reviewedBranch?.branch {
+                        BranchRow(branch: branch)
+                    } else if session.scope == .pullRequest, let number = session.selectedPullRequest,
                        let pr = list.prs.first(where: { $0.number == number }) {
                         PullRequestRow(item: pr, provider: list.provider, selected: true)
                     }
                     Menu {
-                        PullRequestMenuItems(list: list, selected: session.scope == .pullRequest ? session.selectedPullRequest : nil) {
-                            session.open(pullRequest: $0)
-                        }
+                        PullRequestMenuItems(list: list,
+                                             selected: session.scope == .pullRequest ? session.selectedPullRequest : nil,
+                                             selectedBranch: session.reviewedBranch?.branch.name,
+                                             open: { session.open(pullRequest: $0) },
+                                             openBranch: { session.open(branch: $0) })
                     } label: {
-                        Label(session.scope == .pullRequest ? "Switch…" : "Review a Pull Request…",
+                        Label(session.scope == .pullRequest || session.reviewedBranch != nil ? "Switch…" : "Review a Pull Request…",
                               systemImage: "arrow.triangle.pull")
                     }
                     .menuStyle(.borderlessButton)
@@ -380,12 +390,11 @@ struct ReviewView: View {
             ProgressView()
         } else if session.result?.truncated == true {
             ContentUnavailableView("Diff Too Large", systemImage: "doc.text.magnifyingglass")
-        } else if session.scope != .pullRequest, session.diff.files.isEmpty, let list = session.pullRequests,
-                  list.access, !list.prs.isEmpty {
+        } else if session.scope != .pullRequest, session.reviewedBranch == nil, session.diff.files.isEmpty, let list = session.pullRequests,
+                  list.access, !list.prs.isEmpty || !(list.branches ?? []).isEmpty {
             // Nothing in the folder, and the agent's work is in a PR: pick it right here.
-            PullRequestPicker(list: list, emptyTitle: session.result == nil ? nil : emptyTitle) {
-                session.open(pullRequest: $0)
-            }
+            PullRequestPicker(list: list, emptyTitle: session.result == nil ? nil : emptyTitle,
+                              open: { session.open(pullRequest: $0) }, openBranch: { session.open(branch: $0) })
         } else if session.diff.files.isEmpty, session.failure == nil, session.result != nil {
             ContentUnavailableView(emptyTitle, systemImage: "checkmark.circle", description: Text(emptyDetail))
         } else {
@@ -432,7 +441,7 @@ struct ReviewView: View {
                 ForEach(ReviewScope.segments) { scope in
                     Text(scope.title).tag(scope)
                         .disabled((scope == .since && session.record.lastBatch == nil)
-                                  || (scope == .uncommitted && session.keptBranch != nil))
+                                  || (scope == .uncommitted && (session.keptBranch != nil || session.reviewedBranch != nil)))
                 }
                 if session.scope == .commit {
                     Text(ReviewScope.commit.title).tag(ReviewScope.commit)
@@ -618,6 +627,12 @@ struct ReviewView: View {
             parts.append("\(result.from.prefix(7))..\(result.to.prefix(7)), as on \(session.pullRequests?.provider == "gitlab" ? "GitLab" : "GitHub")")
             return parts.joined(separator: " · ")
         }
+        if let branch = session.reviewedBranch?.branch {
+            parts.append(branch.name)
+            if let base = status.base, session.scope == .branch { parts.append("vs \(base.ref)") }
+            parts.append(branch.pushed ? "pushed" : "not pushed")
+            return parts.joined(separator: " · ")
+        }
         if status.branch == nil { parts.append("detached HEAD") }
         if session.chosenFolder != nil { parts.append((session.folder as NSString).lastPathComponent) }
         if session.keptBranch != nil { parts.append("worktree removed, branch kept") }
@@ -633,22 +648,71 @@ struct ReviewView: View {
 
 // MARK: - Rows
 
-/// The user's PRs/MRs, open ones first, each latest first: a menu's items.
+/// The groups the user's PRs/MRs and the conversation's branches are shown in.
+private enum PullRequestGroups {
+    enum Entry: Identifiable {
+        case pullRequest(ReviewPullRequestList.Item)
+        case branch(ReviewPullRequestList.Branch)
+
+        var id: String {
+            switch self {
+            case .pullRequest(let pr): "pr-\(pr.number)"
+            case .branch(let branch): "branch-\(branch.name)"
+            }
+        }
+    }
+
+    struct Group {
+        var title: String
+        var entries: [Entry]
+    }
+
+    /// What the conversation made or changed (latest first), its branches without a PR, what
+    /// it read, then the account's other PRs: open, then merged or closed.
+    static func make(_ list: ReviewPullRequestList) -> [Group] {
+        let byMine: (ReviewPullRequestList.Item, ReviewPullRequestList.Item) -> Bool = { ($0.mineAt ?? "") > ($1.mineAt ?? "") }
+        let made = list.prs.filter(\.isMine).sorted(by: byMine)
+        let read = list.prs.filter { $0.mine == "read" }.sorted(by: byMine)
+        let others = list.prs.filter { $0.mine == nil }
+        let pr = list.provider == "gitlab" ? "Merge Requests" : "Pull Requests"
+        return [
+            Group(title: "Made by This Conversation", entries: made.map(Entry.pullRequest)),
+            Group(title: "Its Branches Without a Pull Request", entries: (list.branches ?? []).map(Entry.branch)),
+            Group(title: "Read by This Conversation", entries: read.map(Entry.pullRequest)),
+            Group(title: list.transcript == true ? "Your Other Open \(pr)" : "Open", entries: others.filter { $0.state == "open" }.map(Entry.pullRequest)),
+            Group(title: list.transcript == true ? "Your Other Merged or Closed \(pr)" : "Merged or Closed",
+                  entries: others.filter { $0.state != "open" }.map(Entry.pullRequest)),
+        ].filter { !$0.entries.isEmpty }
+    }
+}
+
+/// The PRs/MRs and branches as a menu's items.
 private struct PullRequestMenuItems: View {
     let list: ReviewPullRequestList
     let selected: Int?
+    let selectedBranch: String?
     let open: (Int) -> Void
+    let openBranch: (ReviewPullRequestList.Branch) -> Void
 
     var body: some View {
-        let groups = PullRequestPicker.groups(list.prs)
-        ForEach(groups, id: \.title) { group in
+        ForEach(PullRequestGroups.make(list), id: \.title) { group in
             Section(group.title) {
-                ForEach(group.items) { pr in
-                    Button {
-                        open(pr.number)
-                    } label: {
-                        Text((pr.number == selected ? "✓ " : "") + "\(list.provider == "gitlab" ? "!" : "#")\(pr.number) \(pr.title)")
-                        Text([pr.state, pr.headRef].compactMap { $0 }.joined(separator: " · "))
+                ForEach(group.entries) { entry in
+                    switch entry {
+                    case .pullRequest(let pr):
+                        Button {
+                            open(pr.number)
+                        } label: {
+                            Text((pr.number == selected ? "✓ " : "") + "\(list.provider == "gitlab" ? "!" : "#")\(pr.number) \(pr.title)")
+                            Text([pr.state, pr.headRef].compactMap { $0 }.joined(separator: " · "))
+                        }
+                    case .branch(let branch):
+                        Button {
+                            openBranch(branch)
+                        } label: {
+                            Text((branch.name == selectedBranch ? "✓ " : "") + branch.name)
+                            Text(branch.pushed ? "pushed" : "not pushed")
+                        }
                     }
                 }
             }
@@ -656,51 +720,89 @@ private struct PullRequestMenuItems: View {
     }
 }
 
-/// The detail pane while no PR is open: the user's PRs to pick from, in full.
+/// The detail pane while no PR or branch is open: everything to pick from, in full.
 private struct PullRequestPicker: View {
     let list: ReviewPullRequestList
     /// Why there's nothing else to show (the folder's scope came back empty), if it did.
     let emptyTitle: String?
     let open: (Int) -> Void
-
-    struct Group {
-        var title: String
-        var items: [ReviewPullRequestList.Item]
-    }
-
-    static func groups(_ prs: [ReviewPullRequestList.Item]) -> [Group] {
-        let open = prs.filter { $0.state == "open" }
-        let done = prs.filter { $0.state != "open" }
-        return [Group(title: "Open", items: open), Group(title: "Merged or Closed", items: done)].filter { !$0.items.isEmpty }
-    }
+    let openBranch: (ReviewPullRequestList.Branch) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.spacing.m) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Which pull request?")
+                Text("What to review?")
                     .font(.title2.weight(.semibold))
-                Text((emptyTitle.map { "\($0) in this folder. " } ?? "")
-                     + "Pick one of \(list.viewer.map { "\($0)'s" } ?? "your") pull requests to see exactly its changes, as on \(list.provider == "gitlab" ? "GitLab" : "GitHub").")
+                Text(subtitle)
                     .foregroundStyle(.secondary)
             }
             .padding([.horizontal, .top], DS.spacing.l)
             List {
-                ForEach(Self.groups(list.prs), id: \.title) { group in
+                ForEach(PullRequestGroups.make(list), id: \.title) { group in
                     Section(group.title) {
-                        ForEach(group.items) { pr in
-                            Button {
-                                open(pr.number)
-                            } label: {
-                                PullRequestRow(item: pr, provider: list.provider, selected: false)
-                                    .contentShape(Rectangle())
+                        ForEach(group.entries) { entry in
+                            switch entry {
+                            case .pullRequest(let pr):
+                                Button {
+                                    open(pr.number)
+                                } label: {
+                                    PullRequestRow(item: pr, provider: list.provider, selected: false)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            case .branch(let branch):
+                                Button {
+                                    openBranch(branch)
+                                } label: {
+                                    BranchRow(branch: branch)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
             }
             .listStyle(.inset)
         }
+    }
+
+    private var subtitle: String {
+        let site = list.provider == "gitlab" ? "GitLab" : "GitHub"
+        var text = emptyTitle.map { "\($0) in this folder. " } ?? ""
+        text += "Pick a pull request to see exactly its changes, as on \(site), or a branch to see what it adds."
+        if list.transcript == false { text += " This conversation's transcript isn't on the computer, so its own work can't be told apart." }
+        return text
+    }
+}
+
+/// A branch the conversation made or pushed.
+private struct BranchRow: View {
+    let branch: ReviewPullRequestList.Branch
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: DS.spacing.s) {
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(DS.accent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(branch.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 1)
+    }
+
+    private var detail: String {
+        var parts = [branch.pushed ? "pushed" : "not pushed"]
+        if let at = branch.at.flatMap(ReviewSync.date(from:)) {
+            parts.append("last " + at.formatted(.relative(presentation: .named)))
+        }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -1671,6 +1773,11 @@ private struct PullRequestRow: View {
 
     private var detail: String {
         var parts = [item.draft ? "\(item.state) · draft" : item.state]
+        switch item.mine {
+        case "created": parts.append("made here")
+        case "changed": parts.append("worked on here")
+        default: break
+        }
         if let updated = item.updatedAt.flatMap(ReviewSync.date(from:)) {
             parts.append("updated " + updated.formatted(.relative(presentation: .named)))
         }

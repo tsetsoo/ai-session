@@ -83,8 +83,15 @@ extension TmuxCommandBuilder {
     }
 
     /// The PRs/MRs the computer's gh/glab account opened; `since` marks those updated after it.
-    public static func reviewPullRequests(cwd: String, since: String?) -> String {
-        wrap("exec \(reviewHelper) prs \(shellQuotePath(cwd))" + (since.map { " --since \(shellQuote($0))" } ?? ""))
+    /// With the conversation's tool and session id, also what its transcript says it made,
+    /// changed or read, and its branches.
+    public static func reviewPullRequests(cwd: String, since: String?, tool: String? = nil, sessionID: String? = nil) -> String {
+        var command = "exec \(reviewHelper) prs \(shellQuotePath(cwd))" + (since.map { " --since \(shellQuote($0))" } ?? "")
+        if let tool, ["claude", "codex"].contains(tool), let sessionID,
+           !sessionID.isEmpty, sessionID.allSatisfy({ ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "-" || $0 == "_" }) {
+            command += " --session \(tool):\(sessionID)"
+        }
+        return wrap(command)
     }
 
     /// Fetches a PR's head and base from origin; prints both.

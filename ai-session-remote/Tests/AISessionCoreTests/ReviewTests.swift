@@ -475,3 +475,48 @@ struct ReviewTests {
         #expect(back?.publishedAt != nil)
     }
 }
+
+@Suite("Review: the conversation's PRs and branches")
+struct ReviewConversationWorkTests {
+    typealias Item = ReviewPullRequestList.Item
+    typealias Branch = ReviewPullRequestList.Branch
+
+    @Test func decodesWhatTheTranscriptSaid() throws {
+        let json = #"{"provider":"github","access":true,"viewer":"me","transcript":true,"prs":[{"number":5,"title":"T","state":"open","draft":false,"since":true,"mine":"created","mine_at":"2026-11-06T20:00:00.000Z","head_ref":"a"}],"branches":[{"name":"b","ref":"origin/b","pushed":true,"at":"2026-11-06T21:00:00.000Z"}]}"#
+        let list = try JSONDecoder().decode(ReviewPullRequestList.self, from: Data(json.utf8))
+        #expect(list.prs[0].isMine && list.prs[0].mineAt == "2026-11-06T20:00:00.000Z")
+        #expect(list.branches == [Branch(name: "b", ref: "origin/b", pushed: true, at: "2026-11-06T21:00:00.000Z")])
+        #expect(list.transcript == true)
+        // Older helpers: none of it.
+        let old = try JSONDecoder().decode(ReviewPullRequestList.self, from: Data(#"{"access":true,"prs":[{"number":1,"title":"x","state":"open","draft":false,"since":false}]}"#.utf8))
+        #expect(old.branches == nil && old.prs[0].mine == nil && old.transcript == nil)
+    }
+
+    @Test func opensWhatTheConversationWorkedOnLast() {
+        let made = Item(number: 7, title: "made", mine: "created", mineAt: "2026-11-06T10:00:00Z")
+        let later = Item(number: 8, title: "pushed to", state: "merged", mine: "changed", mineAt: "2026-11-06T12:00:00Z")
+        let read = Item(number: 9, title: "read", mine: "read", mineAt: "2026-11-07T00:00:00Z")
+        let other = Item(number: 10, title: "other", headRef: "agent")
+        var list = ReviewPullRequestList(provider: "github", access: true, prs: [other, read, made, later])
+        // Read only doesn't count; the latest made or changed does, merged or not.
+        #expect(list.target(linkedURL: nil, agentBranches: []) == .pullRequest(8))
+        // A branch pushed after that wins.
+        let branch = Branch(name: "next", pushed: true, at: "2026-11-06T13:00:00Z")
+        list.branches = [branch]
+        #expect(list.target(linkedURL: nil, agentBranches: []) == .branch(branch))
+        // The runner's link comes first.
+        #expect(list.target(linkedURL: "https://github.com/o/r/pull/7", agentBranches: []) == .pullRequest(7))
+        // Without a transcript: the old rule, by the agent's branch.
+        let plain = ReviewPullRequestList(provider: "github", access: true, prs: [other])
+        #expect(plain.target(linkedURL: nil, agentBranches: ["agent"]) == .pullRequest(10))
+        #expect(plain.target(linkedURL: nil, agentBranches: []) == nil)
+    }
+
+    @Test func asksForTheTranscriptOnlyWithASafeID() {
+        let with = TmuxCommandBuilder.reviewPullRequests(cwd: "~/r", since: nil, tool: "codex", sessionID: "01a1-b_2")
+        #expect(with.contains("--session codex:01a1-b_2"))
+        #expect(!TmuxCommandBuilder.reviewPullRequests(cwd: "~/r", since: nil, tool: "codex", sessionID: "x;rm").contains("--session"))
+        #expect(!TmuxCommandBuilder.reviewPullRequests(cwd: "~/r", since: nil, tool: "cursor", sessionID: "abc").contains("--session"))
+        #expect(!TmuxCommandBuilder.reviewPullRequests(cwd: "~/r", since: nil, tool: "claude", sessionID: "").contains("--session"))
+    }
+}

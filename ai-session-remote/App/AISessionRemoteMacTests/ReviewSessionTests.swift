@@ -42,6 +42,10 @@ final class ReviewSessionTests: XCTestCase {
     private var cancelFindsItDone = false
     /// The revision the fake reviewer read.
     private var reviewedRevision = "rev2"
+    /// `prs --session`: what the transcript said (mine on #1850, this branch), or an older
+    /// helper that doesn't take `--session` (exit 64).
+    private var transcriptBranch: String?
+    private var sessionUnsupported = false
 
     private let mapping = """
     diff --git a/f.txt b/f.txt
@@ -121,6 +125,17 @@ final class ReviewSessionTests: XCTestCase {
             return SSHExecResult(exitCode: writeExit, stdout: "{}", stderr: writeExit == 0 ? "" : "ai-todo-review: PR 9 moved on to abc12345")
         }
         if command.contains(" prs ") {
+            if sessionUnsupported, command.contains("--session") { return SSHExecResult(exitCode: 64, stdout: "", stderr: "usage") }
+            if let transcriptBranch, command.contains("--session") {
+                let rows: [[String: Any]] = [
+                    ["number": 1850, "title": "Older", "url": "https://github.com/o/r/pull/1850", "state": "merged", "draft": false,
+                     "head_ref": "old", "base_ref": "main", "head_sha": "x", "updated_at": "2026-11-01T00:00:00Z", "since": false,
+                     "mine": "created", "mine_at": "2026-11-06T10:00:00.000Z"],
+                ]
+                let branch: [String: Any] = ["name": transcriptBranch, "ref": "origin/" + transcriptBranch, "pushed": true,
+                                             "at": "2026-11-06T12:00:00.000Z"]
+                return json(["provider": "github", "access": true, "viewer": "me", "prs": rows, "branches": [branch], "transcript": true])
+            }
             let rows: [[String: Any]] = [
                 ["number": 1859, "title": "Scoped FK", "url": "https://github.com/o/r/pull/1859", "state": "open", "draft": false,
                  "head_ref": "codex/fk", "base_ref": "main", "head_sha": "prhead", "updated_at": "2026-11-06T20:26:42Z", "since": true],
@@ -669,5 +684,63 @@ final class ReviewSessionTests: XCTestCase {
         session.open(pullRequest: 1850)
         XCTAssertEqual(session.selectedPullRequest, 1850)
         XCTAssertEqual(session.scope, .pullRequest)
+    }
+
+    /// A session whose conversation names its tool and transcript.
+    private func makeCodexSession() -> ReviewSession {
+        let (session, _) = makeSession()
+        UserDefaults.standard.removeObject(forKey: "review.folder.\(session.key)")
+        addTeardownBlock { UserDefaults.standard.removeObject(forKey: "review.folder.\(session.key)") }
+        var conversation = session.conversation
+        conversation.tool = "codex"
+        conversation.sessionId = "sess-1"
+        session.refresh(conversation)
+        return session
+    }
+
+    func testTheConversationsLatestBranchOpensFromTheRepository() async throws {
+        transcriptBranch = "codex/side"
+        let session = makeCodexSession()
+        await session.load(config: config)
+        await session.loadPullRequests(config: config)
+        XCTAssertTrue(commands.contains { $0.contains(" prs ") && $0.contains("--session codex:sess-1") })
+        // Not before the worktrees are in: the branch may be checked out in one.
+        XCTAssertNil(session.reviewedBranch)
+        await session.loadWorktrees(config: config)
+        // Pushed after the PR it made: the branch is what it worked on last.
+        XCTAssertEqual(session.reviewedBranch?.branch.name, "codex/side")
+        XCTAssertEqual(session.scope, .branch)
+        await session.load(config: config)
+        XCTAssertTrue(commands.last { $0.contains(" status ") }?.contains("--ref 'origin/codex/side'") == true)
+        let diff = try XCTUnwrap(commands.last { $0.contains(" diff ") })
+        XCTAssertTrue(diff.contains("--scope branch") && diff.contains("--ref 'origin/codex/side'"), diff)
+        // The same branch again (a refresh) keeps what's on screen.
+        let shown = session.result
+        session.open(branch: .init(name: "codex/side", ref: "origin/codex/side", pushed: true, at: "2026-11-06T13:00:00.000Z"))
+        XCTAssertEqual(session.result, shown)
+        // A PR picked leaves the branch.
+        session.open(pullRequest: 1850)
+        XCTAssertNil(session.reviewedBranch)
+        XCTAssertEqual(session.scope, .pullRequest)
+    }
+
+    func testABranchCheckedOutInAWorktreeOpensThatWorktree() async throws {
+        transcriptBranch = "codex/fk"
+        let session = makeCodexSession()
+        await session.load(config: config)
+        await session.loadPullRequests(config: config)
+        await session.loadWorktrees(config: config)
+        // There, what isn't committed yet shows too.
+        XCTAssertNil(session.reviewedBranch)
+        XCTAssertEqual(session.folder, "/tmp/agent-tree")
+        XCTAssertEqual(session.scope, .branch)
+    }
+
+    func testAnOlderHelperStillListsThePullRequests() async throws {
+        sessionUnsupported = true
+        let session = makeCodexSession()
+        await session.loadPullRequests(config: config)
+        XCTAssertNil(session.helperProblem)
+        XCTAssertEqual(session.pullRequests?.prs.map(\.number), [1859, 1850])
     }
 }

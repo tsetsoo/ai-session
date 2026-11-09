@@ -343,17 +343,24 @@ public struct ReviewPullRequestList: Codable, Equatable, Sendable {
         public var updatedAt: String?
         /// Updated since the conversation began.
         public var since: Bool
+        /// What the conversation did with it, from its transcript: `created`, `changed` (pushed
+        /// to it, edited, commented, merged) or `read`. Nil: nothing, or no transcript.
+        public var mine: String?
+        /// When it last did (ISO 8601).
+        public var mineAt: String?
 
         public var id: Int { number }
+        /// The conversation made it or worked on it.
+        public var isMine: Bool { mine == "created" || mine == "changed" }
 
         private enum CodingKeys: String, CodingKey {
-            case number, title, url, state, draft, since
-            case headRef = "head_ref", baseRef = "base_ref", headSHA = "head_sha", updatedAt = "updated_at"
+            case number, title, url, state, draft, since, mine
+            case headRef = "head_ref", baseRef = "base_ref", headSHA = "head_sha", updatedAt = "updated_at", mineAt = "mine_at"
         }
 
         public init(number: Int, title: String, url: String? = nil, state: String = "open", draft: Bool = false,
                     headRef: String? = nil, baseRef: String? = nil, headSHA: String? = nil, updatedAt: String? = nil,
-                    since: Bool = false) {
+                    since: Bool = false, mine: String? = nil, mineAt: String? = nil) {
             self.number = number
             self.title = title
             self.url = url
@@ -364,6 +371,27 @@ public struct ReviewPullRequestList: Codable, Equatable, Sendable {
             self.headSHA = headSHA
             self.updatedAt = updatedAt
             self.since = since
+            self.mine = mine
+            self.mineAt = mineAt
+        }
+    }
+
+    /// A branch the conversation made or pushed in this repository that no listed PR is from.
+    public struct Branch: Codable, Equatable, Sendable, Identifiable, Hashable {
+        public var name: String
+        /// What `--ref` takes: the local branch, else `origin/<name>`.
+        public var ref: String
+        public var pushed: Bool
+        /// When the conversation last made or pushed it (ISO 8601).
+        public var at: String?
+
+        public var id: String { name }
+
+        public init(name: String, ref: String? = nil, pushed: Bool = false, at: String? = nil) {
+            self.name = name
+            self.ref = ref ?? name
+            self.pushed = pushed
+            self.at = at
         }
     }
 
@@ -372,13 +400,41 @@ public struct ReviewPullRequestList: Codable, Equatable, Sendable {
     public var error: String?
     public var viewer: String?
     public var prs: [Item]
+    /// Nil from helpers that don't read transcripts, or when none was asked for.
+    public var branches: [Branch]?
+    /// The conversation's transcript was found on the computer (nil: not asked, or an older helper).
+    public var transcript: Bool?
 
-    public init(provider: String?, access: Bool, error: String? = nil, viewer: String? = nil, prs: [Item]) {
+    public init(provider: String?, access: Bool, error: String? = nil, viewer: String? = nil, prs: [Item],
+                branches: [Branch]? = nil, transcript: Bool? = nil) {
         self.provider = provider
         self.access = access
         self.error = error
         self.viewer = viewer
         self.prs = prs
+        self.branches = branches
+        self.transcript = transcript
+    }
+
+    /// What the window opens on by itself.
+    public enum Target: Equatable, Sendable {
+        case pullRequest(Int)
+        case branch(Branch)
+    }
+
+    /// The runner's linked PR, else what the conversation worked on last (a PR it made or
+    /// changed, or a branch it made or pushed), else `likely`'s branch match.
+    public func target(linkedURL: String?, agentBranches: Set<String>) -> Target? {
+        if let linkedURL, let number = likely(linkedURL: linkedURL, agentBranches: []) { return .pullRequest(number) }
+        let pr = prs.filter(\.isMine).max { ($0.mineAt ?? "") < ($1.mineAt ?? "") }
+        let branch = (branches ?? []).max { ($0.at ?? "") < ($1.at ?? "") }
+        switch (pr, branch) {
+        case let (pr?, branch?):
+            return (branch.at ?? "") > (pr.mineAt ?? "") ? .branch(branch) : .pullRequest(pr.number)
+        case let (pr?, nil): return .pullRequest(pr.number)
+        case let (nil, branch?): return .branch(branch)
+        case (nil, nil): return likely(linkedURL: nil, agentBranches: agentBranches).map(Target.pullRequest)
+        }
     }
 
     /// The PR to open the window on, by number: the one the runner linked to the conversation

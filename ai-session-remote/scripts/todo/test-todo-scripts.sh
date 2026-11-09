@@ -4841,6 +4841,169 @@ status=0; AI_TODO_GH_BIN="$FP_GH" "$REVIEW" fetch-pr "$FP_REPO" --number 404 >/d
 [[ $status -eq 70 ]] || fail "fetch of a missing PR exit $status"
 pass "review_prs_and_fetch_pr_show_exactly_the_pr"
 
+# ai-todo-review prs --session: what the conversation's own transcript says it made, changed,
+# read and pushed (Codex commands and connector calls; Claude's Bash, gitOperation and MCP).
+CW_REPO="${SANDBOX}/review-cw-repo"
+mkdir -p "$CW_REPO" && git -C "$CW_REPO" init -q -b main
+fp_git "$CW_REPO" commit -q --allow-empty -m init
+git -C "$CW_REPO" remote add origin git@github.com:o/r.git
+for b in feat/made feat/pushed-only feat/local-new feat/other feat/old-codex; do
+  git -C "$CW_REPO" checkout -q -b "$b" main && fp_git "$CW_REPO" commit -q --allow-empty -m "$b"
+done
+git -C "$CW_REPO" checkout -q main
+# Made and never committed to: nothing to review there.
+git -C "$CW_REPO" branch feat/empty
+# Another repository, where the agent made a branch of the same name as one here.
+CW_OTHER="${SANDBOX}/review-cw-other"
+mkdir -p "$CW_OTHER" && git -C "$CW_OTHER" init -q -b main
+CW_CODEX="${SANDBOX}/cw-codex"
+mkdir -p "${CW_CODEX}/sessions/2026/11/06"
+CW_ROLLOUT="${CW_CODEX}/sessions/2026/11/06/rollout-2026-11-06T10-00-00-cw-codex-1.jsonl"
+python3 - "$CW_ROLLOUT" "$CW_REPO" "$CW_OTHER" <<'PY'
+import json, sys
+path, repo, other = sys.argv[1], sys.argv[2], sys.argv[3]
+def cmd(at, command, output, cwd=None):
+    return {"timestamp": at, "type": "event_msg", "payload": {"type": "item_completed", "item": {
+        "type": "CommandExecution", "command": ["/bin/zsh", "-lc", command], "cwd": "file://" + (cwd or repo),
+        "aggregated_output": output, "exit_code": 0}}}
+rows = [
+    cmd("2026-11-06T09:59:00.000Z", "git switch -c feat/other", "", cwd=other),
+    # Older Codex: the command, then its output on a line of its own that names nothing.
+    {"timestamp": "2026-11-06T09:59:10.000Z", "type": "response_item", "payload": {"type": "function_call", "name": "shell",
+        "call_id": "c1", "arguments": json.dumps({"command": ["bash", "-lc", "git push origin feat/old-codex"], "workdir": repo})}},
+    {"timestamp": "2026-11-06T09:59:11.000Z", "type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1",
+        "output": "To github.com:o/r.git\n * [new branch]      feat/old-codex -> feat/old-codex\n"}},
+    cmd("2026-11-06T10:00:00.000Z", "git switch -c feat/local-new", "Switched to a new branch"),
+    cmd("2026-11-06T10:00:30.000Z", "git worktree add ../x -b feat/empty", ""),
+    cmd("2026-11-06T10:01:00.000Z", "git push -u origin feat/pushed-only",
+        "remote:   https://github.com/o/r/pull/new/feat/pushed-only\nTo github.com:o/r.git\n * [new branch]      feat/pushed-only -> feat/pushed-only\n"),
+    {"timestamp": "2026-11-06T10:02:00.000Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {
+        "type": "McpToolCall", "server": "codex_apps", "tool": "github.create_pull_request", "readOnlyHint": False,
+        "status": "completed", "arguments": {"repository_full_name": "o/r", "head": "feat/made", "base": "main"},
+        "result": {"structuredContent": {"url": "https://github.com/o/r/pull/41", "number": 41}}}}},
+    {"timestamp": "2026-11-06T10:03:00.000Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {
+        "type": "McpToolCall", "server": "codex_apps", "tool": "github.get_pr_info", "readOnlyHint": True,
+        "status": "completed", "arguments": {"repo_full_name": "o/r", "pr_number": 12}, "result": {}}}},
+    # Not a PR at all: asked together with #12, it mustn't take #12 down with it.
+    cmd("2026-11-06T10:03:30.000Z", "gh pr view 3", "no pull requests found"),
+    # Another repository's PR: not this one's.
+    cmd("2026-11-06T10:04:00.000Z", "gh pr create --repo x/y --head z", "https://github.com/x/y/pull/3\n"),
+    {"timestamp": "2026-11-06T10:05:00.000Z", "type": "response_item", "payload": {"type": "reasoning", "summary": []}},
+]
+with open(path, "w") as f:
+    for r in rows:
+        f.write(json.dumps(r) + "\n")
+PY
+CW_GH="${SANDBOX}/bin/fake-cw-gh"
+cat >"$CW_GH" <<'FAKE'
+#!/bin/sh
+case "$1 $2" in
+  "pr list") echo '[{"number":41,"title":"Made","url":"https://github.com/o/r/pull/41","state":"OPEN","isDraft":false,"headRefName":"feat/made","baseRefName":"main","headRefOid":"a","updatedAt":"2026-11-06T09:00:00Z"},{"number":40,"title":"Other","url":"https://github.com/o/r/pull/40","state":"OPEN","isDraft":false,"headRefName":"x","baseRefName":"main","headRefOid":"b","updatedAt":"2026-11-07T00:00:00Z"}]' ;;
+  "api user") echo '{"login":"me"}' ;;
+  "api graphql") echo "GRAPHQL $*" >>"${CW_LOG}"
+    case "$*" in *p3:*) echo "Could not resolve to a PullRequest with the number of 3" >&2; exit 1 ;; esac
+    echo '{"data":{"repository":{"p12":{"number":12,"title":"Someone else","url":"https://github.com/o/r/pull/12","state":"MERGED","isDraft":false,"headRefName":"theirs","baseRefName":"main","headRefOid":"c","updatedAt":"2026-10-01T00:00:00Z"},"p44":{"number":44,"title":"Made, then a step failed","url":"https://github.com/o/r/pull/44","state":"OPEN","isDraft":false,"headRefName":"feat/x","baseRefName":"main","headRefOid":"d","updatedAt":"2026-11-06T00:00:00Z"}}}}' ;;
+  "pr view") case "$2 $3" in
+      "view 12") echo '{"number":12,"title":"Someone else","url":"https://github.com/o/r/pull/12","state":"MERGED","isDraft":false,"headRefName":"theirs","baseRefName":"main","headRefOid":"c","updatedAt":"2026-10-01T00:00:00Z"}' ;;
+      *) echo "no pull requests found" >&2; exit 1 ;;
+    esac ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+FAKE
+chmod +x "$CW_GH"
+export CW_LOG="${SANDBOX}/cw.log"
+# Not in ~/.ai-remote: the install tests check nothing made it.
+export AI_TODO_REVIEW_SCAN_DIR="${SANDBOX}/review-scan"
+: >"$CW_LOG"
+cw_out="$(CODEX_HOME="$CW_CODEX" AI_TODO_GH_BIN="$CW_GH" "$REVIEW" prs "$CW_REPO" --session codex:cw-codex-1)" || fail "prs --session failed"
+python3 - "$cw_out" <<'PY' || fail "prs --session: $cw_out"
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["transcript"] is True, d
+prs = {p["number"]: p for p in d["prs"]}
+assert [p["number"] for p in d["prs"]][0] == 41, d["prs"]
+assert prs[41]["mine"] == "created" and prs[41]["mine_at"] == "2026-11-06T10:02:00.000Z", prs[41]
+assert prs[40]["mine"] is None, prs[40]
+assert prs[12]["mine"] == "read" and prs[12]["title"] == "Someone else", prs.get(12)
+assert 3 not in prs, prs
+names = [b["name"] for b in d["branches"]]
+assert names == ["feat/pushed-only", "feat/local-new", "feat/old-codex"], d["branches"]
+assert [b["pushed"] for b in d["branches"]] == [True, False, True], d["branches"]
+PY
+grep -q "p12: pullRequest(number:12)" "$CW_LOG" || fail "missing PR not asked for: $(cat "$CW_LOG")"
+# Read once: the next run starts where this one stopped and keeps what it found.
+cw_cache="${AI_TODO_REVIEW_SCAN_DIR}/codex-cw-codex-1.json"
+[[ -f "$cw_cache" ]] || fail "no scan cache"
+python3 - "$CW_ROLLOUT" "$CW_REPO" <<'PY'
+import json, sys
+with open(sys.argv[1], "a") as f:
+    f.write(json.dumps({"timestamp": "2026-11-06T11:00:00.000Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {
+        "type": "CommandExecution", "command": ["/bin/zsh", "-lc", "git push"], "cwd": "file://" + sys.argv[2],
+        "aggregated_output": "To github.com:o/r.git\n   1234567..89abcde  feat/made -> feat/made\n", "exit_code": 0}}}) + "\n")
+    f.write('{"timestamp": "2026-11-06T12:00:00.000Z", "type": "event_msg", "payload": {"type": "item_comp')  # still being written
+PY
+cw_out="$(CODEX_HOME="$CW_CODEX" AI_TODO_GH_BIN="$CW_GH" "$REVIEW" prs "$CW_REPO" --session codex:cw-codex-1)" || fail "prs --session again"
+python3 - "$cw_out" <<'PY' || fail "prs --session again: $cw_out"
+import json, sys
+d = json.loads(sys.argv[1])
+p = [p for p in d["prs"] if p["number"] == 41][0]
+assert p["mine"] == "created" and p["mine_at"] == "2026-11-06T11:00:00.000Z", p
+assert [b["name"] for b in d["branches"]] == ["feat/pushed-only", "feat/local-new", "feat/old-codex"], d["branches"]
+PY
+# Claude: Bash with its output, gitOperation notes, an MCP call.
+CW_CLAUDE="${SANDBOX}/cw-claude"
+mkdir -p "${CW_CLAUDE}/projects/p"
+python3 - "${CW_CLAUDE}/projects/p/cw-claude-1.jsonl" "$CW_REPO" <<'PY'
+import json, sys
+path, repo = sys.argv[1], sys.argv[2]
+def use(at, i, name, inp):
+    return {"type": "assistant", "timestamp": at, "cwd": repo, "message": {"content": [{"type": "tool_use", "id": i, "name": name, "input": inp}]}}
+def res(at, i, text, extra=None):
+    d = {"type": "user", "timestamp": at, "cwd": repo, "message": {"content": [{"type": "tool_result", "tool_use_id": i, "content": text}]}}
+    if extra is not None:
+        d["toolUseResult"] = extra
+    return d
+rows = [
+    use("2026-11-06T10:00:00.000Z", "t1", "Bash", {"command": "git push -q -u origin HEAD && gh pr create --fill"}),
+    res("2026-11-06T10:00:05.000Z", "t1", "https://github.com/o/r/pull/41",
+        {"stdout": "https://github.com/o/r/pull/41", "stderr": "",
+         "gitOperation": {"push": {"branch": "feat/pushed-only"}, "pr": {"number": 41, "url": "https://github.com/o/r/pull/41", "action": "created"}}}),
+    use("2026-11-06T10:10:00.000Z", "t2", "mcp__github__get_pull_request", {"owner": "o", "repo": "r", "pull_number": 12}),
+    res("2026-11-06T10:10:01.000Z", "t2", "{}"),
+    use("2026-11-06T10:20:00.000Z", "t3", "Bash", {"command": "gh pr merge 40 --squash"}),
+    res("2026-11-06T10:20:01.000Z", "t3", "", {"stdout": "", "stderr": ""}),
+    # A number inside quotes isn't a PR.
+    use("2026-11-06T10:21:00.000Z", "t4", "Bash", {"command": 'gh pr comment 40 --body "fixed in 7 places"'}),
+    res("2026-11-06T10:21:01.000Z", "t4", "", {"stdout": "", "stderr": ""}),
+    # The command failed after the create: the result is a string; the URL is in the content.
+    use("2026-11-06T10:30:00.000Z", "t5", "Bash", {"command": "gh pr create --fill && make check"}),
+    res("2026-11-06T10:30:09.000Z", "t5", "https://github.com/o/r/pull/44\nmake: *** [check] Error 1", "Error: Exit code 2"),
+]
+with open(path, "w") as f:
+    for r in rows:
+        f.write(json.dumps(r) + "\n")
+PY
+cw_out="$(CLAUDE_CONFIG_DIR="$CW_CLAUDE" AI_TODO_GH_BIN="$CW_GH" "$REVIEW" prs "$CW_REPO" --session claude:cw-claude-1)" || fail "prs claude session"
+python3 - "$cw_out" <<'PY' || fail "prs claude session: $cw_out"
+import json, sys
+d = json.loads(sys.argv[1])
+prs = {p["number"]: p for p in d["prs"]}
+assert prs[41]["mine"] == "created", prs[41]
+assert prs[40]["mine"] == "changed" and prs[40]["mine_at"] == "2026-11-06T10:21:00.000Z", prs[40]
+assert prs[12]["mine"] == "read", prs.get(12)
+assert prs[44]["mine"] == "created", prs.get(44)
+assert 7 not in prs, prs
+assert [p["number"] for p in d["prs"]][:3] == [44, 40, 41], d["prs"]
+assert [b["name"] for b in d["branches"]] == ["feat/pushed-only"], d["branches"]
+PY
+# No transcript on this computer: said, and the list is as before.
+cw_out="$(AI_TODO_GH_BIN="$CW_GH" "$REVIEW" prs "$CW_REPO" --session codex:nope)" || fail "prs without transcript"
+[[ "$cw_out" == *'"transcript": false'* && "$cw_out" != *'"branches"'* ]] || fail "prs without transcript: $cw_out"
+status=0; "$REVIEW" prs "$CW_REPO" --session 'codex:a;b' >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 ]] || fail "prs bad --session exit $status"
+unset CW_LOG AI_TODO_REVIEW_SCAN_DIR
+pass "review_prs_from_the_conversations_transcript"
+
 # --- tmux.conf ----------------------------------------------------------------
 
 tmux -L "${SOCK}-conf" -f /dev/null new-session -d -s conftest

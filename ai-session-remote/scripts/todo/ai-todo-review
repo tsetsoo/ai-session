@@ -101,6 +101,7 @@ session, 69 not a git repository (or cwd missing), 70 git failed (its message on
 import base64
 import binascii
 import calendar
+import glob
 import hashlib
 import json
 import os
@@ -111,6 +112,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+HOME = os.path.expanduser("~")
 
 SNAPSHOT_IDENT = {
     "GIT_AUTHOR_NAME": "ai-review", "GIT_AUTHOR_EMAIL": "ai-review@localhost",
@@ -271,8 +274,11 @@ def worktree_base(root, head):
 
 
 def ref_sha(root, ref):
-    """The tip of branch `ref`, or exit 65 when the repository has no such branch."""
+    """The tip of branch `ref` (or `origin/<branch>`: a pushed branch with no local copy), or
+    exit 65 when the repository has no such branch."""
     sha = line(root, "rev-parse", "--verify", "-q", "refs/heads/%s^{commit}" % ref)
+    if not sha and ref.startswith("origin/"):
+        sha = line(root, "rev-parse", "--verify", "-q", "refs/remotes/%s^{commit}" % ref)
     if not sha:
         die("no branch %s" % ref, 65)
     return sha
@@ -1044,14 +1050,401 @@ def iso_ts(text):
     return parsed.timestamp()
 
 
+# --- What a conversation did with PRs/MRs and branches, from its own transcript ---------
+#
+# Plain text, no model: the commands the agent ran (gh/glab/git push/git switch -c) and their
+# output, its GitHub tool calls (Codex's connector, Claude's MCP servers), and Claude Code's own
+# `gitOperation` notes. Kept per transcript in WORK_CACHE with how far it was read, so a long
+# conversation is read once and then only its new lines.
+
+WORK_CACHE = os.environ.get("AI_TODO_REVIEW_SCAN_DIR") or os.path.join(HOME, ".ai-remote", "review-scan")
+WORK_VERSION = 1
+# A line that mentions none of these can't be about a PR or a branch: not parsed.
+WORK_WORDS = (b"git push", b"gh pr", b"glab mr", b"pull_request", b"merge_request", b"gitOperation",
+              b"switch -c", b"switch -C", b"checkout -b", b"checkout -B", b" -b ", b"get_pr", b"fetch_pr",
+              b"pullRequest")
+# The answer to a call parked in `pending` (Claude's tool_result, older Codex's output).
+WORK_ANSWERS = (b'"tool_result"', b'"function_call_output"')
+PR_URL = re.compile(r"https?://[^\s\"'<>)\]\\]+?/(?:pull|-/merge_requests)/(\d+)(?![\d/]|/?new)")
+PUSH_LINE = re.compile(r"^\s*[*+!= -]?\s*(?:\[new branch\]|[0-9a-f]{4,}\.\.\.?[0-9a-f]{4,})\s+(\S+)\s+->\s+(\S+)", re.M)
+NEW_BRANCH = re.compile(r"\bgit\s+(?:-C\s+\S+\s+)?(?:switch\s+-[cC]|checkout\s+-[bB]|worktree\s+add\s+(?:\S+\s+)*?-[bB])\s+([^\s;&|]+)")
+# gh pr / glab mr flags that take no value: any other flag's next word is its value, not the PR.
+PR_BOOL_FLAGS = {"-w", "--web", "-d", "--draft", "--fill", "-f", "--fill-first", "--fill-verbose", "-s", "--squash",
+                 "-m", "--merge", "-r", "--rebase", "--delete-branch", "--admin", "--auto", "--disable-auto",
+                 "--watch", "-a", "--approve", "--request-changes", "--no-maintainer-edit", "--undo", "--yes", "-y",
+                 "--remove-source-branch", "--squash-before-merge", "--when-pipeline-succeeds", "--fail-fast",
+                 "--required", "--patch", "--name-only", "--color", "--editor", "-e", "--comments", "-c"}
+
+
+def pr_commands(cmd):
+    """(gh|glab, verb, {target, repo, head}) for each `gh pr <verb>` / `glab mr <verb>` in a
+    shell command. target: the first positional word (a number or a URL), quotes and flag
+    values skipped; repo: -R/--repo; head: --head/-H/--source-branch."""
+    import shlex
+    try:
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()<>")
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        return []
+    found = []
+    i = 0
+    while i + 2 < len(words):
+        if (words[i], words[i + 1]) not in (("gh", "pr"), ("glab", "mr")):
+            i += 1
+            continue
+        forge, verb = words[i], words[i + 2]
+        args = {"target": None, "repo": None, "head": None}
+        j = i + 3
+        while j < len(words) and not set(words[j]) <= set(";&|()<>"):
+            word = words[j]
+            if word.startswith("-"):
+                name, _, inline = word.partition("=")
+                value = inline if inline else (words[j + 1] if name not in PR_BOOL_FLAGS and j + 1 < len(words) else None)
+                if not inline and name not in PR_BOOL_FLAGS:
+                    j += 1
+                if name in ("-R", "--repo"):
+                    args["repo"] = value
+                elif name in ("-H", "--head", "--source-branch"):
+                    args["head"] = value
+            elif args["target"] is None and (word.isdigit() or PR_URL.fullmatch(word)):
+                args["target"] = word
+            j += 1
+        if verb not in ("list", "status"):
+            found.append((forge, verb, args))
+        i = j
+    return found
+PR_WRITES = ("create", "edit", "ready", "merge", "close", "reopen", "comment", "review", "update", "approve", "note")
+PR_READS = ("view", "diff", "checkout", "checks")
+
+
+def transcript_path(tool, session_id):
+    """The conversation's transcript on this computer, or None."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", session_id or ""):
+        return None
+    if tool == "claude":
+        home = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+        found = glob.glob(os.path.join(home, "projects", "*", session_id + ".jsonl"))
+    elif tool == "codex":
+        home = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
+        found = glob.glob(os.path.join(home, "sessions", "*", "*", "*", "rollout-*-" + session_id + ".jsonl"))
+    else:
+        return None
+    found = [f for f in found if os.path.isfile(f)]
+    return max(found, key=os.path.getmtime) if found else None
+
+
+class Work:
+    """What one transcript says: {url or "#N@cwd": pr} and {branch: info}."""
+
+    RANK = {"read": 0, "changed": 1, "created": 2}
+
+    def __init__(self, state=None):
+        state = state or {}
+        self.prs = state.get("prs") or {}
+        self.branches = state.get("branches") or {}
+        self.pending = state.get("pending") or {}
+
+    def state(self):
+        return {"prs": self.prs, "branches": self.branches, "pending": self.pending}
+
+    def pr(self, role, at, url=None, number=None, cwd=None, head=None):
+        if url:
+            m = PR_URL.search(url)
+            if not m:
+                return
+            url, number = m.group(0), int(m.group(1))
+            key = url
+        elif isinstance(number, int):
+            key = "#%d@%s" % (number, cwd or "")
+        else:
+            return
+        pr = self.prs.setdefault(key, {"url": url, "number": number, "cwd": cwd, "role": role, "at": at, "head": None})
+        if self.RANK[role] > self.RANK.get(pr["role"], 0):
+            pr["role"] = role
+        if at and (not pr["at"] or at > pr["at"]):
+            pr["at"] = at
+        if head and head != "HEAD":
+            pr["head"] = head
+
+    def branch(self, name, at, pushed=False, cwd=None):
+        name = (name or "").strip("'\"")
+        if not name or name in ("HEAD", "main", "master") or name.startswith("-") or not re.fullmatch(r"[\w./@+-]+", name):
+            return
+        name = name.split(":")[-1]
+        name = name[len("refs/heads/"):] if name.startswith("refs/heads/") else name
+        b = self.branches.setdefault(name, {"pushed": False, "at": at, "cwd": cwd})
+        b["pushed"] = b["pushed"] or pushed
+        if at and (not b["at"] or at > b["at"]):
+            b["at"] = at
+        if cwd:
+            b["cwd"] = cwd
+
+    def command(self, cmd, output, cwd, at):
+        """A shell command the agent ran, with what it printed."""
+        if not isinstance(cmd, str):
+            return
+        output = output if isinstance(output, str) else ""
+        for forge, verb, args in pr_commands(cmd):
+            role = "created" if verb == "create" else "changed" if verb in PR_WRITES else "read" if verb in PR_READS else None
+            if role is None:
+                continue
+            urls = [u.group(0) for u in PR_URL.finditer(output)] if role != "read" else []
+            if role == "created":
+                # Only what it printed: a create that failed made nothing.
+                if urls:
+                    self.pr(role, at, url=urls[-1], head=args["head"])
+                continue
+            target = args["target"]
+            if target and target.startswith("http"):
+                self.pr(role, at, url=target)
+            elif target and args["repo"]:
+                # -R owner/repo: that repository's, whichever folder it ran in.
+                self.pr(role, at, url=(("https://github.com/%s/pull/%s" if forge == "gh"
+                                        else "https://gitlab.com/%s/-/merge_requests/%s") % (args["repo"], target)))
+            elif target:
+                self.pr(role, at, number=int(target), cwd=cwd)
+            elif urls:
+                self.pr(role, at, url=urls[-1])
+        if "git" in cmd and "push" in cmd:
+            for m in PUSH_LINE.finditer(output):
+                self.branch(m.group(2), at, pushed=True, cwd=cwd)
+        for m in NEW_BRANCH.finditer(cmd):
+            self.branch(m.group(1), at, cwd=cwd)
+
+    def tool_call(self, name, args, result, read_only, at, cwd=None):
+        """A GitHub/GitLab tool call (Codex's connector, an MCP server)."""
+        name = (name or "").lower()
+        if not isinstance(args, dict) or not ("pull" in name or "merge_request" in name or name.endswith("_pr")
+                                              or "pr_info" in name or "fetch_pr" in name):
+            return
+        nested = args.get("pullRequest") if isinstance(args.get("pullRequest"), dict) else {}
+        repo = (args.get("repository_full_name") or args.get("repo_full_name")
+                or ("%s/%s" % (args.get("owner") or nested.get("owner"), args.get("repo") or args.get("repo_name")
+                               or nested.get("repository"))
+                    if (args.get("owner") or nested.get("owner")) else None))
+        number = args.get("pr_number") or args.get("pull_number") or args.get("pullNumber") or nested.get("number")
+        if "list" in name or "search" in name:
+            return
+        role = ("created" if "create_pull" in name or "create_merge" in name
+                else "read" if read_only or any(w in name for w in ("get_", "fetch", "list_", "read")) else "changed")
+        url = None
+        text = json.dumps(result) if result is not None else ""
+        if role == "created":
+            found = PR_URL.search(text)
+            url = found.group(0) if found else None
+        if not url and repo and isinstance(number, int):
+            url = "https://github.com/%s/pull/%d" % (repo, number)
+        if url:
+            self.pr(role, at, url=url, head=args.get("head"))
+
+    def codex(self, d):
+        at = d.get("timestamp")
+        p = d.get("payload") or {}
+        item = p.get("item") or {}
+        kind = item.get("type")
+        if p.get("type") == "item_completed" and kind == "CommandExecution":
+            cmd = item.get("command")
+            cmd = cmd[-1] if isinstance(cmd, list) and cmd else cmd
+            cwd = item.get("cwd") or ""
+            self.command(cmd, item.get("aggregated_output"), cwd[7:] if cwd.startswith("file://") else cwd, at)
+        elif p.get("type") == "item_completed" and kind == "McpToolCall":
+            if item.get("status") == "failed":
+                return
+            self.tool_call(item.get("tool"), item.get("arguments"), item.get("result"), item.get("readOnlyHint"), at)
+        elif p.get("type") == "function_call" and p.get("name") in ("shell", "exec_command", "local_shell", "container.exec"):
+            # Older Codex: the command now, its output in a function_call_output later.
+            try:
+                a = json.loads(p.get("arguments") or "{}")
+            except ValueError:
+                return
+            cmd = a.get("cmd") or a.get("command")
+            cmd = cmd[-1] if isinstance(cmd, list) and cmd else cmd
+            if isinstance(cmd, str) and p.get("call_id"):
+                self.pending[p["call_id"]] = {"cmd": cmd, "cwd": a.get("workdir"), "at": at}
+        elif p.get("type") == "function_call_output" and p.get("call_id") in self.pending:
+            call = self.pending.pop(p["call_id"])
+            out = p.get("output")
+            self.command(call["cmd"], out if isinstance(out, str) else json.dumps(out), call["cwd"], call["at"])
+
+    def claude(self, d):
+        at = d.get("timestamp")
+        content = (d.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            return
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "tool_use" and part.get("id"):
+                name = part.get("name") or ""
+                if name == "Bash" or name.startswith("mcp__"):
+                    self.pending[part["id"]] = {"name": name, "input": part.get("input"), "cwd": d.get("cwd"), "at": at}
+            elif part.get("type") == "tool_result" and part.get("tool_use_id") in self.pending:
+                call = self.pending.pop(part["tool_use_id"])
+                done = d.get("toolUseResult") if isinstance(d.get("toolUseResult"), dict) else {}
+                text = part.get("content")
+                if isinstance(text, list):
+                    text = "\n".join(t.get("text", "") for t in text if isinstance(t, dict))
+                if not isinstance(text, str):
+                    text = ""
+                git_op = done.get("gitOperation") if isinstance(done.get("gitOperation"), dict) else {}
+                op = git_op.get("pr") if isinstance(git_op.get("pr"), dict) else None
+                if op:
+                    role = "created" if op.get("action") == "created" else "changed"
+                    if op.get("url"):
+                        self.pr(role, call["at"], url=op["url"])
+                    elif isinstance(op.get("number"), int):
+                        self.pr(role, call["at"], number=op["number"], cwd=call["cwd"])
+                push = git_op.get("push") if isinstance(git_op.get("push"), dict) else None
+                if push:
+                    self.branch(push.get("branch"), call["at"], pushed=True, cwd=call["cwd"])
+                inp = call["input"] if isinstance(call["input"], dict) else {}
+                if call["name"] == "Bash":
+                    printed = ((done.get("stdout") or "") + "\n" + (done.get("stderr") or "")) if done else text
+                    self.command(inp.get("command"), printed, call["cwd"], call["at"])
+                elif not part.get("is_error"):
+                    self.tool_call(call["name"].split("__")[-1], inp, text, None, call["at"], call["cwd"])
+
+    def line(self, tool, raw):
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            return
+        if isinstance(d, dict):
+            (self.claude if tool == "claude" else self.codex)(d)
+
+
+def conversation_work(tool, session_id):
+    """Work from the conversation's transcript, reading only what was added since last time.
+    None when the transcript isn't on this computer."""
+    path = transcript_path(tool, session_id)
+    if not path:
+        return None
+    cache_file = os.path.join(WORK_CACHE, "%s-%s.json" % (tool, session_id))
+    try:
+        with open(cache_file) as f:
+            cache = json.load(f)
+    except (OSError, ValueError):
+        cache = {}
+    st = os.stat(path)
+    if (cache.get("version") != WORK_VERSION or cache.get("path") != path or cache.get("inode") != st.st_ino
+            or not isinstance(cache.get("offset"), int) or cache["offset"] > st.st_size):
+        cache = {"offset": 0, "state": None}
+    work = Work(cache.get("state"))
+    offset = cache["offset"]
+    with open(path, "rb") as f:
+        f.seek(offset)
+        while True:
+            chunk = f.readline()
+            if not chunk.endswith(b"\n"):
+                break  # Half-written: next time.
+            offset += len(chunk)
+            if any(word in chunk for word in WORK_WORDS) or (
+                    work.pending and any(a in chunk for a in WORK_ANSWERS) and any(k.encode() in chunk for k in work.pending)):
+                work.line(tool, chunk)
+    # Calls whose answer never came stay a while, not forever.
+    if len(work.pending) > 500:
+        work.pending = dict(list(work.pending.items())[-200:])
+    try:
+        os.makedirs(WORK_CACHE, exist_ok=True)
+        tmp = cache_file + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"version": WORK_VERSION, "path": path, "inode": st.st_ino, "offset": offset,
+                       "state": work.state()}, f)
+        os.replace(tmp, cache_file)
+    except OSError:
+        pass
+    return work
+
+
+def origin_slug(root):
+    """owner/repo (GitLab: group/…/repo) of origin, lowercased, or None."""
+    url = line(root, "remote", "get-url", "origin") or ""
+    m = re.match(r"^(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]+@)?[^/:]+(?::\d+)?[:/](.+?)(?:\.git)?/?$", url, re.I)
+    return m.group(1).lower().lstrip("/") if m else None
+
+
+def url_slug(url):
+    m = re.match(r"^https?://[^/]+/(.+?)/(?:pull|-/merge_requests)/\d+", url or "")
+    return m.group(1).lower() if m else None
+
+
+def other_repo(root, folder, cache):
+    """`folder` is still there and in a different repository than `root`'s. A folder that's
+    gone (a removed worktree) or not in git can't say: not counted as another."""
+    if not folder or not os.path.isdir(folder):
+        return False
+    same_repo(root, folder, cache)
+    return cache[folder] is not None and cache[folder] != cache[":root"]
+
+
+def same_repo(root, folder, cache):
+    """`folder` is a worktree of `root`'s repository (its commands were about this repo)."""
+    if not folder:
+        return False
+    if folder not in cache:
+        common = line(folder, "rev-parse", "--path-format=absolute", "--git-common-dir") if os.path.isdir(folder) else None
+        cache[folder] = os.path.realpath(common) if common else None
+    if ":root" not in cache:
+        common = line(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        cache[":root"] = os.path.realpath(common) if common else None
+    return bool(cache[folder]) and cache[folder] == cache[":root"]
+
+
+def fetch_prs(kind, root, slug, numbers):
+    """The forge's rows for these PR/MR numbers (ones the account didn't open, or older than
+    the list): [{...as in `prs`}]. Missing or unreadable ones are left out."""
+    if not numbers:
+        return []
+    if kind == "github":
+        owner, _, name = slug.partition("/")
+        fields = "number title url state isDraft headRefName baseRefName headRefOid updatedAt"
+        query = "query($o:String!,$n:String!){repository(owner:$o,name:$n){%s}}" % " ".join(
+            "p%d: pullRequest(number:%d){%s}" % (n, n, fields) for n in numbers)
+        try:
+            data = forge_json(kind, root, "api", "graphql", "-f", "query=" + query, "-f", "o=" + owner, "-f", "n=" + name)
+            repo = ((data or {}).get("data") or {}).get("repository") or {}
+            rows = [r for r in repo.values() if isinstance(r, dict)]
+        except NoAccess:
+            # One number that isn't a PR fails the whole query: each on its own instead.
+            rows = []
+            for n in numbers:
+                try:
+                    r = forge_json(kind, root, "pr", "view", str(n), "--json", fields.replace(" ", ","))
+                except NoAccess:
+                    continue
+                if isinstance(r, dict):
+                    rows.append(r)
+        return [{"number": r.get("number"), "title": r.get("title") or "", "url": r.get("url"),
+                 "state": str(r.get("state") or "").lower(), "draft": bool(r.get("isDraft")),
+                 "head_ref": r.get("headRefName"), "base_ref": r.get("baseRefName"),
+                 "head_sha": r.get("headRefOid"), "updated_at": r.get("updatedAt")} for r in rows]
+    out = []
+    states = {"opened": "open", "locked": "open"}
+    for n in numbers:
+        try:
+            r = forge_json(kind, root, "mr", "view", str(n), "-F", "json") or {}
+        except NoAccess:
+            continue
+        out.append({"number": r.get("iid"), "title": r.get("title") or "", "url": r.get("web_url"),
+                    "state": states.get(r.get("state"), r.get("state") or ""), "draft": bool(r.get("draft")),
+                    "head_ref": r.get("source_branch"), "base_ref": r.get("target_branch"),
+                    "head_sha": r.get("sha"), "updated_at": r.get("updated_at")})
+    return out
+
+
+MAX_FETCHED_PRS = 15
+
+
 def cmd_prs(args):
     """prs <cwd> [--since ISO]: the PRs/MRs in origin that the computer's gh/glab account
     opened, newest update first: {provider, access, error, viewer, prs: [{number, title, url,
     state, draft, head_ref, base_ref, head_sha, updated_at, since}]}. since: updated at or after
     --since (when the conversation began). Read-only."""
     args, since = take_option(args, "--since")
-    if len(args) != 1:
-        die("usage: ai-todo-review prs <cwd> [--since <ISO time>]", 64)
+    args, session = take_option(args, "--session")
+    if len(args) != 1 or (session and not re.fullmatch(r"(claude|codex):[A-Za-z0-9_-]+", session)):
+        die("usage: ai-todo-review prs <cwd> [--since <ISO time>] [--session claude|codex:<id>]", 64)
     since_ts = iso_ts(since) if since else None
     if since and since_ts is None:
         die("--since needs an ISO time", 64)
@@ -1090,11 +1483,71 @@ def cmd_prs(args):
         return iso_ts(pr.get("updated_at")) or 0
 
     prs = [p for p in prs if isinstance(p.get("number"), int)]
+    if session:
+        tool, _, sid = session.partition(":")
+        work = conversation_work(tool, sid)
+        out["transcript"] = work is not None
+        if work is not None:
+            prs = add_work(kind, root, prs, work, out)
     for pr in prs:
         pr["since"] = bool(since_ts is not None and stamp(pr) >= since_ts)
+    # The conversation's own first, the latest it touched first; then the rest by update.
     prs.sort(key=stamp, reverse=True)
+    prs.sort(key=lambda p: iso_ts(p.get("mine_at")) or 0, reverse=True)
+    prs.sort(key=lambda p: Work.RANK.get(p.get("mine"), -1) >= 1, reverse=True)
     out["prs"] = prs
     print(json.dumps(out))
+
+
+def add_work(kind, root, prs, work, out):
+    """Marks the PRs/MRs the conversation made, changed (mine: created|changed) or read, adds
+    those the list lacks, and lists its branches that have no PR here. Only this repository's."""
+    slug = origin_slug(root)
+    repos = {}
+    touched = {}
+    for pr in work.prs.values():
+        if pr.get("url"):
+            if url_slug(pr["url"]) != slug:
+                continue
+        elif not pr.get("cwd") or other_repo(root, pr.get("cwd"), repos):
+            continue
+        t = touched.setdefault(pr["number"], {"role": pr["role"], "at": pr["at"]})
+        if Work.RANK[pr["role"]] > Work.RANK[t["role"]]:
+            t["role"] = pr["role"]
+        if (pr["at"] or "") > (t["at"] or ""):
+            t["at"] = pr["at"]
+    listed = {p["number"] for p in prs}
+    missing = sorted((n for n in touched if n not in listed), key=lambda n: touched[n]["at"] or "", reverse=True)
+    prs = prs + [p for p in fetch_prs(kind, root, slug or "", missing[:MAX_FETCHED_PRS]) if isinstance(p.get("number"), int)]
+    try:
+        refs = set(git(root, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")[0].split())
+    except GitError:
+        refs = set()
+    branches = {}
+    default = default_branch_ref(root)
+    for name, b in work.branches.items():
+        local, remote = "refs/heads/" + name, "refs/remotes/origin/" + name
+        if local not in refs and remote not in refs:
+            continue  # Another repository's, or gone.
+        if other_repo(root, b.get("cwd"), repos):
+            continue  # Made in another repository that has a branch of the same name.
+        tip = local if local in refs else remote
+        if default and line(root, "rev-list", "--count", tip, "--not", default) == "0":
+            continue  # Nothing on it the default branch lacks: made and never committed to, or merged.
+        branches[name] = {"name": name, "ref": name if local in refs else "origin/" + name,
+                          "pushed": bool(b.get("pushed")), "at": b.get("at")}
+    for pr in prs:
+        mine = touched.get(pr["number"])
+        on_branch = branches.get(pr.get("head_ref") or "")
+        if on_branch:
+            mine = {"role": "changed" if not mine or mine["role"] == "read" else mine["role"],
+                    "at": max((mine or {}).get("at") or "", on_branch["at"] or "") or None}
+        pr["mine"] = mine["role"] if mine else None
+        pr["mine_at"] = mine["at"] if mine else None
+    heads = {p.get("head_ref") for p in prs}
+    out["branches"] = sorted((b for b in branches.values() if b["name"] not in heads),
+                             key=lambda b: b["at"] or "", reverse=True)
+    return prs
 
 
 def cmd_fetch_pr(args):

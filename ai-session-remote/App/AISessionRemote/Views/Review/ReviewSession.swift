@@ -31,6 +31,7 @@ final class ReviewSession {
 
     /// Where the reads run: the conversation's folder, or the project folder with `--ref`.
     private var source: (cwd: String, ref: String?) {
+        if let reviewedBranch { return (reviewedBranch.folder, reviewedBranch.branch.ref) }
         if let chosenFolder { return (chosenFolder, nil) }
         return keptBranch.map { ($0.folder, $0.branch) } ?? (conversation.cwd, nil)
     }
@@ -121,8 +122,8 @@ final class ReviewSession {
         case .pullRequest where selectedPullRequest == nil:
             self.scope = .uncommitted
             return
-        case .uncommitted where keptBranch != nil:
-            // A kept branch has nothing uncommitted; what it has is on the branch.
+        case .uncommitted where keptBranch != nil || reviewedBranch != nil:
+            // A branch on its own has nothing uncommitted; what it has is on the branch.
             self.scope = .branch
             return
         case .uncommitted, .branch, .conversation, .pullRequest:
@@ -137,7 +138,7 @@ final class ReviewSession {
         do {
             let status = try await locate(config: config)
             guard generation == loadGeneration else { return }
-            if keptBranch != nil, scope == .uncommitted {
+            if keptBranch != nil || reviewedBranch != nil, scope == .uncommitted {
                 self.status = status
                 self.scope = .branch
                 return
@@ -201,6 +202,14 @@ final class ReviewSession {
     /// The conversation's folder when it is in git. When it isn't: the kept branch of its
     /// worktree in the project folder, or a failure that says why there's nothing to review.
     private func locate(config: HostConnectionConfig) async throws -> ReviewStatus {
+        if let reviewedBranch {
+            do {
+                return try await run(TmuxCommandBuilder.reviewStatus(cwd: reviewedBranch.folder, ref: reviewedBranch.branch.ref), config: config)
+            } catch let failure as Failure where failure.isUnknownRevision {
+                throw Failure(errorDescription: "The branch \(reviewedBranch.branch.name) isn't on \(conversation.computer.name) any more, "
+                    + "nor on its origin as last fetched.")
+            }
+        }
         if let chosenFolder {
             do {
                 let status: ReviewStatus = try await run(TmuxCommandBuilder.reviewStatus(cwd: chosenFolder), config: config)
@@ -474,10 +483,38 @@ final class ReviewSession {
     /// Shows exactly this PR's changes.
     func open(pullRequest number: Int, byUser: Bool = true) {
         if byUser { userChose = true }
-        guard selectedPullRequest != number || scope != .pullRequest else { return }
+        guard selectedPullRequest != number || scope != .pullRequest || reviewedBranch != nil else { return }
+        reviewedBranch = nil
         selectedPullRequest = number
         pullRequest = nil
         scope = .pullRequest
+    }
+
+    /// A branch the conversation made or pushed, with no PR: what it has that the default
+    /// branch doesn't, read from the repository (no checkout needed).
+    private(set) var reviewedBranch: (folder: String, branch: ReviewPullRequestList.Branch)?
+
+    func open(branch: ReviewPullRequestList.Branch, byUser: Bool = true) {
+        if byUser { userChose = true }
+        // Checked out somewhere: that worktree, so what isn't committed yet shows too.
+        if let worktree = worktrees.first(where: { $0.branch == branch.name }) {
+            show(folder: worktree.path)
+            if scope != .branch { scope = .branch }
+            return
+        }
+        if reviewedBranch?.branch.name == branch.name, scope == .branch {
+            reviewedBranch?.branch = branch  // newer `at`/`pushed`: same tree, nothing to reload
+            return
+        }
+        // In the folder on screen: any worktree of the repository can read any of its branches.
+        reviewedBranch = (folder, branch)
+        selectedPullRequest = nil
+        pullRequest = nil
+        status = nil
+        result = nil
+        diff = UnifiedDiff(files: [])
+        anchors = [:]
+        scope = .branch
     }
 
     /// A scope picked in the window (not a PR).
@@ -492,8 +529,16 @@ final class ReviewSession {
     /// updated since the conversation began) unless the user already chose what to look at.
     func loadPullRequests(config: HostConnectionConfig) async {
         let asked = folder
-        guard let output = try? await exec(config, TmuxCommandBuilder.reviewPullRequests(cwd: asked, since: Self.gitTime(conversation.createdAt))),
+        let since = Self.gitTime(conversation.createdAt)
+        guard var output = try? await exec(config, TmuxCommandBuilder.reviewPullRequests(
+            cwd: asked, since: since, tool: conversation.tool, sessionID: conversation.sessionId)),
               asked == folder else { return }
+        if output.exitCode == 64 {
+            // A helper from before `--session`: the account's PRs, without the conversation's own.
+            guard let plain = try? await exec(config, TmuxCommandBuilder.reviewPullRequests(cwd: asked, since: since)),
+                  asked == folder else { return }
+            output = plain
+        }
         // 64: a helper from before `prs`, or 127: none at all. Said, not silently empty.
         if output.exitCode == 64 || output.exitCode == 127 {
             helperProblem = "The review helper on \(conversation.computer.name) is older than this app, so it can't list pull requests. "
@@ -509,11 +554,13 @@ final class ReviewSession {
     /// Opens the conversation's PR when it's clear which that is (see `likely`), once the
     /// list and the worktrees are in, unless the user chose what to look at.
     private func openLikelyPullRequest() {
-        guard !userChose, selectedPullRequest == nil, let list = pullRequests else { return }
+        guard !userChose, selectedPullRequest == nil, reviewedBranch == nil, worktreesLoaded, let list = pullRequests else { return }
         var branches = Set(worktrees.filter(\.changedSince).compactMap(\.branch))
         if chosenFolder == nil, let branch = status?.branch { branches.insert(branch) }
-        if let number = list.likely(linkedURL: conversation.pullRequest?.url, agentBranches: branches) {
-            open(pullRequest: number, byUser: false)
+        switch list.target(linkedURL: conversation.pullRequest?.url, agentBranches: branches) {
+        case .pullRequest(let number)?: open(pullRequest: number, byUser: false)
+        case .branch(let branch)?: open(branch: branch, byUser: false)
+        case nil: break
         }
     }
 
@@ -524,6 +571,8 @@ final class ReviewSession {
     private(set) var chosenFolder: String?
     /// The repository's worktrees, most recently active first; from the last load.
     private(set) var worktrees: [ReviewWorktrees.Worktree] = []
+    /// The worktrees were read once (or failed to be): the window may open something by itself.
+    @ObservationIgnored private var worktreesLoaded = false
 
     private static func folderDefaultsKey(_ key: String) -> String { "review.folder.\(key)" }
 
@@ -548,8 +597,27 @@ final class ReviewSession {
     /// Reviews `folder` (a worktree of the same repository) from now on; nil: the
     /// conversation's own folder again. The window's reload follows.
     func choose(folder: String?) {
+        userChose = true
+        show(folder: folder)
+    }
+
+    /// Reviews `folder` (nil: the conversation's own); for the user's pick and for opening a
+    /// branch that's checked out there.
+    private func show(folder: String?) {
         let folder = folder.flatMap { $0 == conversationRoot || Self.matches($0, [conversation.cwd]) ? nil : $0 }
-        guard folder != chosenFolder else { return }
+        let leftBranch = reviewedBranch != nil
+        reviewedBranch = nil
+        guard folder != chosenFolder else {
+            if leftBranch {
+                pullRequest = nil
+                status = nil
+                result = nil
+                diff = UnifiedDiff(files: [])
+                anchors = [:]
+                if scope == .branch { scope = .uncommitted }
+            }
+            return
+        }
         chosenFolder = folder
         UserDefaults.standard.set(folder, forKey: Self.folderDefaultsKey(key))
         // Another tree: nothing on screen belongs to it.
@@ -570,10 +638,12 @@ final class ReviewSession {
     func loadWorktrees(config: HostConnectionConfig) async {
         let since = Self.gitTime(conversation.createdAt)
         let asked = folder
-        guard let found: ReviewWorktrees = try? await run(TmuxCommandBuilder.reviewWorktrees(cwd: asked, since: since), config: config),
-              asked == folder  // another folder was chosen meanwhile: its own load follows
-        else { return }
-        worktrees = found.worktrees
+        let found: ReviewWorktrees? = try? await run(TmuxCommandBuilder.reviewWorktrees(cwd: asked, since: since), config: config)
+        // Another folder was chosen meanwhile: its own load follows.
+        guard asked == folder else { return }
+        if let found { worktrees = found.worktrees }
+        // Failed too: the PR list alone still decides.
+        worktreesLoaded = true
         openLikelyPullRequest()
     }
 
@@ -604,14 +674,15 @@ final class ReviewSession {
         guard let info: ReviewPullRequestInfo = try? await run(
             TmuxCommandBuilder.reviewPullRequest(cwd: cwd, ref: number == nil ? ref : nil, number: number), config: config
         ),
-              generation == pullRequestGeneration, cwd == folder
+              generation == pullRequestGeneration, cwd == folder, ref == source.ref
         else { return }
         pullRequest = info
         guard info.access, let pr = info.pr else { return }
         guard let threads: ReviewThreadsResult = try? await run(
             TmuxCommandBuilder.reviewThreads(cwd: cwd, ref: ref, number: pr.number, url: pr.url, projectID: pr.projectID),
             config: config
-        ), threads.access, !threads.threads.isEmpty, generation == pullRequestGeneration, !hubOffline, cwd == folder else { return }
+        ), threads.access, !threads.threads.isEmpty, generation == pullRequestGeneration, !hubOffline, cwd == folder,
+              ref == source.ref else { return }
         let fallback = pr.headSHA ?? result?.to ?? ""
         // On the record as it is now: it may have changed during the lookups.
         store.update(key) { record in
@@ -650,7 +721,7 @@ final class ReviewSession {
             // The PR's own head, fetched: nothing local has to match.
             return result?.to == pr.headSHA ? nil : "The pull request moved on since this was loaded. Refresh."
         }
-        if keptBranch == nil, !status.clean { return "There are uncommitted changes. Only committed, pushed lines can be published." }
+        if keptBranch == nil, reviewedBranch == nil, !status.clean { return "There are uncommitted changes. Only committed, pushed lines can be published." }
         if let ahead = status.ahead, ahead > 0 { return "\(ahead) commit\(ahead == 1 ? " isn't" : "s aren't") pushed yet." }
         if let head = pr.headSHA, head != status.head {
             return "The pull request is at \(head.prefix(7)) and the worktree at \((status.head ?? "").prefix(7)). Push or pull first."
