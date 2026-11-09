@@ -59,7 +59,8 @@ struct ConversationFrame: View {
     #if os(macOS)
     @State private var shellVisible = false
     @State private var shellOpened = false
-    @State private var linkedShellID: UUID?
+    @State private var shellHeight: CGFloat = 240
+    @GestureState private var shellDrag: CGFloat = 0
     #endif
     @State private var clipboardSessionID: String?
     /// This todo's usage (own + sub-agents), shown at the right of the limits strip.
@@ -177,13 +178,15 @@ struct ConversationFrame: View {
     @ViewBuilder
     private var frameTerminalContent: some View {
         #if os(macOS)
-        VStack(spacing: 0) {
-            terminalArea
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-            if case let .ready(open) = loader.phase {
-                todoShell(open)
-                    .layoutPriority(1)
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                terminalArea
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                if case let .ready(open) = loader.phase {
+                    todoShell(open, maxHeight: max(100, geometry.size.height - 130))
+                        .layoutPriority(1)
+                }
             }
         }
         #else
@@ -471,9 +474,27 @@ struct ConversationFrame: View {
     }
 
     #if os(macOS)
-    private func todoShell(_ open: OpenTodoConversation) -> some View {
-        VStack(spacing: 0) {
-            Divider()
+    private func todoShell(_ open: OpenTodoConversation, maxHeight: CGFloat) -> some View {
+        let height = min(maxHeight, max(100, min(shellHeight, maxHeight) - shellDrag))
+        return VStack(spacing: 0) {
+            if shellVisible {
+                Capsule()
+                    .fill(.secondary.opacity(0.5))
+                    .frame(width: 36, height: 4)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 12)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .updating($shellDrag) { value, state, _ in state = value.translation.height }
+                            .onEnded { value in
+                                shellHeight = min(maxHeight, max(100, min(shellHeight, maxHeight) - value.translation.height))
+                            }
+                    )
+                    .help("Drag to resize terminal")
+            } else {
+                Divider()
+            }
             HStack {
                 Button {
                     toggleShell()
@@ -482,30 +503,6 @@ struct ConversationFrame: View {
                 }
                 .buttonStyle(.borderless)
                 .help(shellVisible ? "Hide terminal" : "Show terminal")
-                if let workspace = appModel?.shells,
-                   let host = HostLookup.host(for: open.conversation.computer, in: hosts) {
-                    Menu {
-                        let available = workspace.shells.filter { $0.hostID == host.id && ($0.todoID == nil || $0.todoID == todo.id) }
-                        ForEach(available) { shell in
-                            Button(shell.todoID == todo.id ? "\(shell.title) ✓" : "Link \(shell.title)") {
-                                workspace.link(shell, to: todo.id)
-                                linkedShellID = shell.id
-                                shellOpened = true
-                                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) { shellVisible = true }
-                            }
-                        }
-                        if let linked = linkedShell {
-                            Divider()
-                            Button("Unlink \(linked.title)") {
-                                workspace.link(linked, to: nil)
-                                linkedShellID = nil
-                            }
-                        }
-                    } label: { Image(systemName: "link") }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help("Link an existing shell to this todo")
-                }
                 Spacer()
                 if shellVisible {
                     Text(open.conversation.computer.name).foregroundStyle(.secondary)
@@ -527,8 +524,8 @@ struct ConversationFrame: View {
                     makeTransport: makeTransport
                 )
                 .id(linkedShell?.id)
-                .frame(height: 240)
-                .frame(height: shellVisible ? 240 : 0, alignment: .top)
+                .frame(height: height)
+                .frame(height: shellVisible ? height : 0, alignment: .top)
                 .clipped()
                 .opacity(shellVisible ? 1 : 0)
                 .allowsHitTesting(shellVisible)
@@ -538,8 +535,7 @@ struct ConversationFrame: View {
 
     private var linkedShell: WorkspaceShell? {
         guard let conversation, let host = HostLookup.host(for: conversation.computer, in: hosts) else { return nil }
-        let shells = appModel?.shells.shells.filter { $0.todoID == todo.id && $0.hostID == host.id } ?? []
-        return shells.first { $0.id == linkedShellID } ?? shells.first
+        return appModel?.shells.shells.first { $0.todoID == todo.id && $0.hostID == host.id }
     }
 
     private func toggleShell() {

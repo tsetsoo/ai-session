@@ -70,12 +70,6 @@ final class ShellWorkspace {
         save()
     }
 
-    func link(_ shell: WorkspaceShell, to todoID: String?) {
-        guard let index = shells.firstIndex(where: { $0.id == shell.id }) else { return }
-        shells[index].todoID = todoID
-        save()
-    }
-
     private func save() {
         if let data = try? JSONEncoder().encode(shells) { defaults.set(data, forKey: Self.key) }
         if let data = try? JSONEncoder().encode(rememberedSelection) {
