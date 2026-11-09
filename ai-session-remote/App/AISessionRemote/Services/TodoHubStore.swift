@@ -502,12 +502,12 @@ final class TodoHubStore {
             throw TodoHubError.invalidBaseURL
         }
         let isNew = todo.conversationStatus == nil
-        let knownIds = Set(conversations(forTodo: todo.id).map(\.id))
         let opened = try await client.openedConversation(
             todoId: todo.id, tool: tool, mcpServers: mcpServers, model: model, baseSha: baseSha, agents: agents
         )
         var conversation = opened.conversation
-        let createdHere = StartAgents.createdByThisOpen(conversation, created: opened.created, knownIds: knownIds)
+        // Only a row this open made gets the first message, or is removed when its start fails.
+        let createdHere = opened.created == true
         if StartAgents.hubIgnored(asked: (model: model, baseSha: baseSha), got: conversation) {
             // Nothing has started. A row this open made goes, so the todo can be started again
             // once the hub is updated; another device's conversation stays.
@@ -534,24 +534,14 @@ final class TodoHubStore {
                 throw TodoHubError.conflict("No \(tool) conversation appeared")
             }
             do {
-                let servers = conversation.mcpServers
-                let promptFile = try await makePromptFile?()
-                var result = try await NIOSSHClient().exec(
-                    config,
-                    command: TmuxCommandBuilder.freshTodoConversation(
-                        tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool, mcpServers: servers,
-                        worktree: conversation.worktree, promptFile: promptFile,
-                        model: conversation.model, worktreeBase: conversation.worktreeBase
-                    )
-                )
-                if Self.shouldRetryWithoutServers(result, servers: servers, tool: tool) {
-                    result = try await NIOSSHClient().exec(
-                        config,
-                        command: TmuxCommandBuilder.freshTodoConversation(
-                            tmuxName: conversation.tmuxName, cwd: conversation.cwd, tool: tool,
-                            worktree: conversation.worktree, promptFile: promptFile,
-                            model: conversation.model, worktreeBase: conversation.worktreeBase
-                        )
+                let started = conversation
+                let result = try await runStart(
+                    config: config, servers: started.mcpServers, tool: tool, makePromptFile: makePromptFile
+                ) { servers, promptFile in
+                    TmuxCommandBuilder.freshTodoConversation(
+                        tmuxName: started.tmuxName, cwd: started.cwd, tool: tool, mcpServers: servers,
+                        worktree: started.worktree, promptFile: promptFile,
+                        model: started.model, worktreeBase: started.worktreeBase
                     )
                 }
                 let created = ConversationStart.createdSessionId(from: result.stdout)
@@ -578,17 +568,15 @@ final class TodoHubStore {
             // Claude's id is already on the hub: start it now with the message, then attach.
             do {
                 let started = conversation
-                func start(servers: [String]?) async throws -> SSHExecResult {
-                    try await NIOSSHClient().exec(config, command: TmuxCommandBuilder.openTodoConversation(
+                let result = try await runStart(
+                    config: config, servers: started.mcpServers, tool: started.tool, makePromptFile: makePromptFile
+                ) { servers, promptFile in
+                    TmuxCommandBuilder.openTodoConversation(
                         tmuxName: started.tmuxName, cwd: started.cwd, sessionId: started.sessionId,
                         tool: started.tool, mcpServers: servers, worktree: started.worktree,
-                        promptFile: try await makePromptFile(), detached: true, model: started.model,
+                        promptFile: promptFile, detached: true, model: started.model,
                         worktreeBase: started.worktreeBase
-                    ))
-                }
-                var result = try await start(servers: started.mcpServers)
-                if Self.shouldRetryWithoutServers(result, servers: started.mcpServers, tool: started.tool) {
-                    result = try await start(servers: nil)
+                    )
                 }
                 try RemoteConversations.check(result, computerName: conversation.computer.name)
             } catch {
@@ -625,6 +613,7 @@ final class TodoHubStore {
         mcpServers: [String]?, config: HostConnectionConfig, computerName: String
     ) async throws -> StartAgents.Outcome {
         let count = rows.count
+        try await clearLeftoverStart(todo: todo, config: config)
         let upload = try await writeHandoff(firstMessage, computerName: computerName, config: config)
         defer {
             Task { _ = try? await NIOSSHClient().exec(config, command: TmuxCommandBuilder.removePromptFile(path: upload)) }
@@ -650,6 +639,24 @@ final class TodoHubStore {
             },
             message: { TodoHubStore.message(for: $0) }
         )
+    }
+
+    /// A start that never finished leaves a row with no session id. The Start step shows
+    /// again, but the hub refuses several agents while the todo has any conversation. That
+    /// row goes first, with the tmux session it may have left (a new row on this todo gets
+    /// the same tmux name). A new one may still be starting elsewhere, so it is left alone.
+    private func clearLeftoverStart(todo: Todo, config: HostConnectionConfig) async throws {
+        guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
+        switch StartAgents.leftover(try await client.conversations(forTodo: todo.id)) {
+        case .none:
+            return
+        case .starting:
+            throw TodoHubError.conflict("This todo is still starting a conversation. Try again in a minute.")
+        case let .clear(leftover):
+            _ = try? await NIOSSHClient().exec(config, command: TmuxCommandBuilder.killSessionExact(tmuxName: leftover.tmuxName))
+            try await forgetOnHub(client, leftover)
+            forget(leftover)
+        }
     }
 
     /// A second conversation on the same computer and folder. The caller has already decided
@@ -679,21 +686,22 @@ final class TodoHubStore {
         promptFile: PromptFileMaker? = nil
     ) async throws -> Conversation {
         let firstPrompt = DuplicateHandoff.firstPrompt(plan, tool: created.tool)
+        let makePromptFile: PromptFileMaker? = firstPrompt.map { text in
+            promptFile ?? { try await self.writeHandoff(text, on: created, config: config) }
+        }
         switch DuplicateIn.followUp(plan: plan, created: created) {
         case .resume:
-            guard let firstPrompt else { return created }
+            guard let makePromptFile else { return created }
             do {
-                let path: String
-                if let promptFile {
-                    path = try await promptFile()
-                } else {
-                    path = try await writeHandoff(firstPrompt, on: created, config: config)
+                let result = try await runStart(
+                    config: config, servers: created.mcpServers, tool: created.tool, makePromptFile: makePromptFile
+                ) { servers, path in
+                    TmuxCommandBuilder.openTodoConversation(
+                        tmuxName: created.tmuxName, cwd: created.cwd, sessionId: created.sessionId, tool: created.tool,
+                        mcpServers: servers, worktree: created.worktree, promptFile: path, detached: true,
+                        model: created.model, worktreeBase: created.worktreeBase
+                    )
                 }
-                let result = try await NIOSSHClient().exec(config, command: TmuxCommandBuilder.openTodoConversation(
-                    tmuxName: created.tmuxName, cwd: created.cwd, sessionId: created.sessionId, tool: created.tool,
-                    mcpServers: created.mcpServers, worktree: created.worktree, promptFile: path, detached: true,
-                    model: created.model, worktreeBase: created.worktreeBase
-                ))
                 try RemoteConversations.check(result, computerName: created.computer.name)
                 return created
             } catch {
@@ -701,39 +709,23 @@ final class TodoHubStore {
                 throw error
             }
         case .captureFresh:
-            var path: String?
-            if let firstPrompt {
-                do {
-                    if let promptFile {
-                        path = try await promptFile()
-                    } else {
-                        path = try await writeHandoff(firstPrompt, on: created, config: config)
-                    }
-                } catch {
-                    await discardStart(created, config: config)
-                    throw error
+            return try await captureNewSession(created, config: config) {
+                try await self.runStart(
+                    config: config, servers: created.mcpServers, tool: created.tool, makePromptFile: makePromptFile
+                ) { servers, path in
+                    TmuxCommandBuilder.freshTodoConversation(
+                        tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool,
+                        mcpServers: servers, worktree: created.worktree, promptFile: path,
+                        model: created.model, worktreeBase: created.worktreeBase
+                    )
                 }
             }
-            return try await captureNewSession(
-                created, config: config,
-                command: TmuxCommandBuilder.freshTodoConversation(
-                    tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool,
-                    mcpServers: created.mcpServers, worktree: created.worktree, promptFile: path,
-                    model: created.model, worktreeBase: created.worktreeBase
-                ),
-                fallbackCommand: Self.shouldOfferFallback(created)
-                    ? TmuxCommandBuilder.freshTodoConversation(
-                        tmuxName: created.tmuxName, cwd: created.cwd, tool: created.tool,
-                        worktree: created.worktree, promptFile: path,
-                        model: created.model, worktreeBase: created.worktreeBase
-                    ) : nil
-            )
         case let .captureFork(sourceSessionId):
             let arguments = ForkCommand.arguments(tool: created.tool, sessionId: sourceSessionId) ?? []
-            return try await captureNewSession(
-                created, config: config,
-                command: Self.forkCommand(created, arguments: arguments)
-            )
+            let command = Self.forkCommand(created, arguments: arguments)
+            return try await captureNewSession(created, config: config) {
+                try await NIOSSHClient().exec(config, command: command)
+            }
         }
     }
 
@@ -743,8 +735,21 @@ final class TodoHubStore {
         result.exitCode == 64 && servers != nil && tool != "cursor"
     }
 
-    private static func shouldOfferFallback(_ conversation: Conversation) -> Bool {
-        conversation.mcpServers != nil && conversation.tool != "cursor"
+    /// Runs a start, and once more without `--mcp` when old scripts reject it (exit 64). Each
+    /// run gets its own prompt file: after an exit 64 the first one may be gone (the script
+    /// removes it on exit) or left behind (it exited before setting that up). So it is removed,
+    /// and the retry gets a new one instead of a path that may no longer exist.
+    private func runStart(
+        config: HostConnectionConfig, servers: [String]?, tool: String, makePromptFile: PromptFileMaker?,
+        command: (_ servers: [String]?, _ promptFile: String?) -> String
+    ) async throws -> SSHExecResult {
+        let first = try await makePromptFile?()
+        let result = try await NIOSSHClient().exec(config, command: command(servers, first))
+        guard Self.shouldRetryWithoutServers(result, servers: servers, tool: tool) else { return result }
+        if let first {
+            _ = try? await NIOSSHClient().exec(config, command: TmuxCommandBuilder.removePromptFile(path: first))
+        }
+        return try await NIOSSHClient().exec(config, command: command(nil, try await makePromptFile?()))
     }
 
     /// The hub copies the source's MCP selection onto the new row, so the fork starts with the
@@ -800,16 +805,12 @@ final class TodoHubStore {
     }
 
     private func captureNewSession(
-        _ conversation: Conversation, config: HostConnectionConfig, command: String,
-        fallbackCommand: String? = nil
+        _ conversation: Conversation, config: HostConnectionConfig,
+        start: () async throws -> SSHExecResult
     ) async throws -> Conversation {
         guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
         do {
-            var result = try await NIOSSHClient().exec(config, command: command)
-            if let fallbackCommand,
-               Self.shouldRetryWithoutServers(result, servers: conversation.mcpServers, tool: conversation.tool) {
-                result = try await NIOSSHClient().exec(config, command: fallbackCommand)
-            }
+            let result = try await start()
             let createdId = ConversationStart.createdSessionId(from: result.stdout)
             guard result.exitCode != 94, let createdId else {
                 let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)

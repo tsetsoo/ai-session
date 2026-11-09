@@ -57,6 +57,9 @@ public enum StartAgents {
     /// Why this project can't start several agents (they would share one folder), or nil.
     public static func refusal(project: Project?) -> String? {
         guard let project else { return "This todo has no project, so several agents can't each get their own copy." }
+        if project.folder.trimmingCharacters(in: .whitespaces).isEmpty {
+            return "This project has no folder, so several agents can't each get their own copy. Set its folder in the project's settings."
+        }
         if !project.worktrees {
             return "This project has worktrees turned off. Several agents can't share one folder. Start with one agent, or turn worktrees on in the project's settings."
         }
@@ -122,13 +125,29 @@ public enum StartAgents {
         return false
     }
 
-    /// The open made this row, so it may get the first message, or be removed when its start
-    /// fails. The hub says so (`created`). An older hub doesn't: then only a row this device
-    /// didn't know and that never reported a status counts. Anything else is an existing
-    /// conversation, never removed or re-prompted.
-    public static func createdByThisOpen(_ conversation: Conversation, created: Bool?, knownIds: Set<String>) -> Bool {
-        if let created { return created }
-        return !knownIds.contains(conversation.id) && conversation.status == .unknown
+    /// What a start with several agents does about the todo's conversations first.
+    public enum Leftover: Equatable, Sendable {
+        /// Nothing to clear; the hub decides.
+        case none
+        /// A start that never finished (no session id yet, older than `leftoverAge`): kill its
+        /// tmux session and remove its row, then start.
+        case clear(Conversation)
+        /// That row is new: another device may still be starting it.
+        case starting
+    }
+
+    /// How long an unfinished start may take before it counts as abandoned. A Codex start
+    /// waits up to about 30 seconds for its id.
+    public static let leftoverAge: TimeInterval = 120
+
+    /// The todo's only conversation, when it has no session id yet, is a start that didn't
+    /// finish. Anything else is left to the hub, which refuses a todo that has a conversation.
+    public static func leftover(_ conversations: [Conversation], now: Date = Date()) -> Leftover {
+        guard conversations.count == 1, let only = conversations.first, only.sessionId.isEmpty else { return .none }
+        if let created = HubDates.date(from: only.createdAt), now.timeIntervalSince(created) < leftoverAge {
+            return .starting
+        }
+        return .clear(only)
     }
 
     /// `2 of 3 agents started. Codex didn't start: …`; nil when all started.

@@ -709,7 +709,9 @@ struct ConversationFrame: View {
 
     /// `origin/HEAD` on the section's computer, after a fetch: where every agent starts.
     private func loadStartBase() async throws -> StartBase {
-        guard let computer = newConversationComputer, let folder = store.project(id: todo.projectId)?.folder else {
+        guard let computer = newConversationComputer,
+              let folder = store.project(id: todo.projectId)?.folder.trimmingCharacters(in: .whitespaces), !folder.isEmpty
+        else {
             throw TodoHubError.conflict("This todo has no project folder on a computer yet.")
         }
         return try await store.startBase(folder: folder, computer: computer, config: newConversationConfig())

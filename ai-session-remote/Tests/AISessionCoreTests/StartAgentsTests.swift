@@ -38,6 +38,9 @@ final class StartAgentsTests: XCTestCase {
         var noRepo = ok; noRepo.repoUrl = " "
         XCTAssertEqual(StartAgents.refusal(project: noRepo),
                        "This project has no repository, so several agents can't each get their own copy. Start with one agent.")
+        var noFolder = ok; noFolder.folder = "  "
+        XCTAssertEqual(StartAgents.refusal(project: noFolder),
+                       "This project has no folder, so several agents can't each get their own copy. Set its folder in the project's settings.")
         XCTAssertNil(StartAgents.refusal(project: ok))
     }
 
@@ -196,13 +199,20 @@ final class StartAgentsTests: XCTestCase {
     /// or to remove when that start fails; another device's conversation is left alone.
     /// The hub says whether its open made the row. An older hub doesn't: then only an unseen
     /// row that never reported a status counts (best effort; install order avoids it).
-    func testCreatedByThisOpen() {
-        XCTAssertTrue(StartAgents.createdByThisOpen(conversation("old"), created: true, knownIds: ["old"]))
-        XCTAssertFalse(StartAgents.createdByThisOpen(conversation("new"), created: false, knownIds: []))
-        XCTAssertTrue(StartAgents.createdByThisOpen(conversation("new"), created: nil, knownIds: ["old"]))
-        XCTAssertFalse(StartAgents.createdByThisOpen(conversation("old"), created: nil, knownIds: ["old"]))
-        var busy = conversation("new"); busy.status = .busy
-        XCTAssertFalse(StartAgents.createdByThisOpen(busy, created: nil, knownIds: []))
+    func testLeftoverStart() {
+        let now = HubDates.date(from: "2026-11-09 10:00:00")!
+        func unstarted(createdAt: String) -> Conversation {
+            var c = conversation("c1"); c.tool = "codex"; c.sessionId = ""; c.createdAt = createdAt; return c
+        }
+        let old = unstarted(createdAt: "2026-11-09 09:57:59")
+        XCTAssertEqual(StartAgents.leftover([old], now: now), .clear(old))
+        XCTAssertEqual(StartAgents.leftover([unstarted(createdAt: "2026-11-09 09:59:30")], now: now), .starting)
+        // A date it can't read counts as old: nothing else can clear the row.
+        let unreadable = unstarted(createdAt: "")
+        XCTAssertEqual(StartAgents.leftover([unreadable], now: now), .clear(unreadable))
+        XCTAssertEqual(StartAgents.leftover([], now: now), .none)
+        XCTAssertEqual(StartAgents.leftover([conversation("c1")], now: now), .none)
+        XCTAssertEqual(StartAgents.leftover([old, conversation("c2")], now: now), .none)
     }
 
     func testStartAgentsStopsWhenTheFirstFails() async {
