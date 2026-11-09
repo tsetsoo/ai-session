@@ -129,21 +129,25 @@ public enum StartAgents {
     public enum Leftover: Equatable, Sendable {
         /// Nothing to clear; the hub decides.
         case none
-        /// A start that never finished (no session id yet, older than `leftoverAge`): kill its
+        /// A start that never finished (no session id or status yet, older than `leftoverAge`): kill its
         /// tmux session and remove its row, then start.
         case clear(Conversation)
         /// That row is new: another device may still be starting it.
         case starting
     }
 
-    /// How long an unfinished start may take before it counts as abandoned. A Codex start
-    /// waits up to about 30 seconds for its id.
-    public static let leftoverAge: TimeInterval = 120
+    /// How long an unfinished start may take before it counts as abandoned: well past a slow
+    /// start (a big repo's worktree, Codex's 30-second wait for its id) and some clock skew
+    /// between this device and the hub.
+    public static let leftoverAge: TimeInterval = 600
 
-    /// The todo's only conversation, when it has no session id yet, is a start that didn't
-    /// finish. Anything else is left to the hub, which refuses a todo that has a conversation.
+    /// The todo's only conversation, when it has no session id and never reported a status,
+    /// is a start that didn't finish. One that ran (a runner agent whose id report failed)
+    /// keeps its row. Anything else is left to the hub, which refuses a todo that has a
+    /// conversation.
     public static func leftover(_ conversations: [Conversation], now: Date = Date()) -> Leftover {
-        guard conversations.count == 1, let only = conversations.first, only.sessionId.isEmpty else { return .none }
+        guard conversations.count == 1, let only = conversations.first, only.sessionId.isEmpty,
+              only.status == .unknown else { return .none }
         if let created = HubDates.date(from: only.createdAt), now.timeIntervalSince(created) < leftoverAge {
             return .starting
         }

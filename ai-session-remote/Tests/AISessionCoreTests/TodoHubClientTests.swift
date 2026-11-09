@@ -376,6 +376,9 @@ final class TodoHubClientTests: XCTestCase {
         XCTAssertTrue(TmuxCommandBuilder.killSessionExact(tmuxName: "ai/claude/todo-1").hasSuffix(
             "tmux kill-session -t '=ai/claude/todo-1'"
         ))
+        XCTAssertTrue(TmuxCommandBuilder.hasSessionExact(tmuxName: "ai/codex/todo-1").hasSuffix(
+            "tmux has-session -t '=ai/codex/todo-1' 2>/dev/null"
+        ))
     }
 }
 

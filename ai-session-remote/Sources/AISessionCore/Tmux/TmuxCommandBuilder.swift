@@ -51,6 +51,11 @@ public enum TmuxCommandBuilder {
 
     /// Kills exactly `tmuxName` (the `=` target prefix disables tmux's prefix matching, so
     /// `todo-0f3a9c21` can't hit `todo-0f3a9c21-…`). Exit status 1 when it is already gone.
+    /// Exit 0 when a tmux session has exactly this name, 1 when none does.
+    public static func hasSessionExact(tmuxName: String) -> String {
+        wrap("tmux has-session -t \(shellQuote("=" + tmuxName)) 2>/dev/null")
+    }
+
     public static func killSessionExact(tmuxName: String) -> String {
         wrap("tmux kill-session -t \(shellQuote("=" + tmuxName))")
     }

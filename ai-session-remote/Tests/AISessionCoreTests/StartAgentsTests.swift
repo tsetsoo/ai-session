@@ -204,12 +204,15 @@ final class StartAgentsTests: XCTestCase {
         func unstarted(createdAt: String) -> Conversation {
             var c = conversation("c1"); c.tool = "codex"; c.sessionId = ""; c.createdAt = createdAt; return c
         }
-        let old = unstarted(createdAt: "2026-11-09 09:57:59")
+        let old = unstarted(createdAt: "2026-11-09 09:49:59")
         XCTAssertEqual(StartAgents.leftover([old], now: now), .clear(old))
-        XCTAssertEqual(StartAgents.leftover([unstarted(createdAt: "2026-11-09 09:59:30")], now: now), .starting)
+        XCTAssertEqual(StartAgents.leftover([unstarted(createdAt: "2026-11-09 09:51:00")], now: now), .starting)
         // A date it can't read counts as old: nothing else can clear the row.
         let unreadable = unstarted(createdAt: "")
         XCTAssertEqual(StartAgents.leftover([unreadable], now: now), .clear(unreadable))
+        // One that reported a status ran: a runner agent whose id report failed.
+        var ran = old; ran.status = .idle
+        XCTAssertEqual(StartAgents.leftover([ran], now: now), .none)
         XCTAssertEqual(StartAgents.leftover([], now: now), .none)
         XCTAssertEqual(StartAgents.leftover([conversation("c1")], now: now), .none)
         XCTAssertEqual(StartAgents.leftover([old, conversation("c2")], now: now), .none)

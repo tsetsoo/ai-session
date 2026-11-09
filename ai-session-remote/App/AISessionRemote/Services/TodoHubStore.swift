@@ -613,7 +613,7 @@ final class TodoHubStore {
         mcpServers: [String]?, config: HostConnectionConfig, computerName: String
     ) async throws -> StartAgents.Outcome {
         let count = rows.count
-        try await clearLeftoverStart(todo: todo, config: config)
+        try await clearLeftoverStart(todo: todo, config: config, computerName: computerName)
         let upload = try await writeHandoff(firstMessage, computerName: computerName, config: config)
         defer {
             Task { _ = try? await NIOSSHClient().exec(config, command: TmuxCommandBuilder.removePromptFile(path: upload)) }
@@ -642,10 +642,12 @@ final class TodoHubStore {
     }
 
     /// A start that never finished leaves a row with no session id. The Start step shows
-    /// again, but the hub refuses several agents while the todo has any conversation. That
-    /// row goes first, with the tmux session it may have left (a new row on this todo gets
-    /// the same tmux name). A new one may still be starting elsewhere, so it is left alone.
-    private func clearLeftoverStart(todo: Todo, config: HostConnectionConfig) async throws {
+    /// again, but the hub refuses several agents while the todo has any conversation. Such a
+    /// row goes first, but only when nothing runs under its tmux name on its computer: the
+    /// runner also leaves rows without an id while their agent works (an `ai-todo-open`
+    /// timeout, a session report that failed). Nothing is ever killed here. A row on another
+    /// computer, or one whose check fails, is left to the hub's refusal.
+    private func clearLeftoverStart(todo: Todo, config: HostConnectionConfig, computerName: String) async throws {
         guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
         switch StartAgents.leftover(try await client.conversations(forTodo: todo.id)) {
         case .none:
@@ -653,8 +655,22 @@ final class TodoHubStore {
         case .starting:
             throw TodoHubError.conflict("This todo is still starting a conversation. Try again in a minute.")
         case let .clear(leftover):
-            _ = try? await NIOSSHClient().exec(config, command: TmuxCommandBuilder.killSessionExact(tmuxName: leftover.tmuxName))
-            try await forgetOnHub(client, leftover)
+            guard leftover.computer.name == computerName,
+                  let check = try? await NIOSSHClient().exec(
+                      config, command: TmuxCommandBuilder.hasSessionExact(tmuxName: leftover.tmuxName)
+                  )
+            else { return }
+            if check.exitCode == 0 {
+                throw TodoHubError.conflict(
+                    "This todo's \(ResearchAgents.toolName(leftover.tool)) conversation is still running on \(computerName), so several agents can't start here yet."
+                )
+            }
+            guard check.exitCode == 1 else { return }
+            do {
+                try await forgetOnHub(client, leftover)
+            } catch TodoHubError.notFound {
+                // Already gone.
+            }
             forget(leftover)
         }
     }
