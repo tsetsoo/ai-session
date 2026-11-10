@@ -278,6 +278,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
             state = .connected
         } catch {
             guard sessionGeneration == generation else { return }
+            TerminalConnectionDiagnostics.record(error, host: hostConfig.host)
             self.session = nil
             state = .failed
             DispatchQueue.main.async { [weak self] in

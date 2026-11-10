@@ -1,10 +1,36 @@
 import AISessionCore
 import Foundation
+import OSLog
 
 enum SSHTerminalSessionError: Error {
     case invalidPrivateKey
     case connectionFailed
     case channelSetupFailed
+}
+
+/// Keep the channel-open cause instead of reducing every failure to channelSetupFailed.
+struct TerminalSetupFailure: LocalizedError {
+    let stage: String
+    let underlying: Error
+
+    var errorDescription: String? {
+        "\(stage): \(TerminalConnectionDiagnostics.details(underlying))"
+    }
+}
+
+enum TerminalConnectionDiagnostics {
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AISessionRemote", category: "Terminal")
+
+    static func details(_ error: Error) -> String {
+        if let failure = error as? SSHChannelOpenFailure { return details(failure.underlying) }
+        if let failure = error as? TerminalSetupFailure { return failure.localizedDescription }
+        return "\(String(reflecting: error))\n\(error.localizedDescription)"
+    }
+
+    static func record(_ error: Error, host: String) {
+        let detail = details(error)
+        logger.error("Terminal connection failed for \(host, privacy: .private): \(detail, privacy: .public)")
+    }
 }
 
 enum TerminalMode: Equatable {

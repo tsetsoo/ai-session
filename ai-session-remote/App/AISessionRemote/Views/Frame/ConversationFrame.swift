@@ -529,7 +529,7 @@ struct ConversationFrame: View {
                 handle: terminal,
                 onConnectionFailed: { error in
                     let noted = SSHSignInRecord.problem(hostID: open.config.hostID)
-                    loader.connectionFailed(.classify(error, signInProblem: noted))
+                    loader.connectionFailed(.classify(error, signInProblem: noted), error: error)
                 },
                 onEnded: { exitStatus in loader.ended(exitStatus: exitStatus) },
                 // Only while armed: otherwise every keystroke would write this @State.

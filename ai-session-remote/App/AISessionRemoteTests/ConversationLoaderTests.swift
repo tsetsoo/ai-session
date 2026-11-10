@@ -299,6 +299,14 @@ final class ConversationLoaderTests: XCTestCase {
         }
     }
 
+    func testTerminalFailureIncludesUnderlyingError() async {
+        let l = await readyLoader()
+        let error = TerminalSetupFailure(stage: "Opening SSH terminal channel",
+                                         underlying: SSHTerminalSessionError.channelSetupFailed)
+        l.connectionFailed(.terminal, error: error)
+        XCTAssertEqual(l.phase, .problem(.terminalFailed("Mac Studio", details: TerminalConnectionDiagnostics.details(error))))
+    }
+
     func testConnectionFailedIgnoredWhenNotReady() {
         let (l, _) = loader(open: { self.conversation() })
         l.connectionFailed(.unreachable)

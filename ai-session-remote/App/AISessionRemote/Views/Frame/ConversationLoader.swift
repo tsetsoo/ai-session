@@ -56,7 +56,7 @@ enum FrameProblem: Equatable {
     /// The computer's identity isn't the one this device trusted when it first connected.
     case hostKeyChanged(String)
     /// Signed in, but the computer wouldn't open a terminal.
-    case terminalFailed(String)
+    case terminalFailed(String, details: String? = nil)
     case helpersMissing(String)
     case toolMissing(String)
     case folderMissing(String, String)
@@ -83,6 +83,9 @@ enum TerminalConnectFailure: Equatable {
     /// to reach the host at all stays unreachable whatever an earlier attempt noted.
     static func classify(_ error: Error, signInProblem: SSHSignInRecord.Problem?) -> TerminalConnectFailure {
         if let failure = error as? SSHChannelOpenFailure {
+            return classify(failure.underlying, signInProblem: signInProblem)
+        }
+        if let failure = error as? TerminalSetupFailure {
             return classify(failure.underlying, signInProblem: signInProblem)
         }
         switch error {
@@ -271,14 +274,14 @@ final class ConversationLoader {
     }
 
     /// The frame calls this when the terminal's connect fails.
-    func connectionFailed(_ failure: TerminalConnectFailure) {
+    func connectionFailed(_ failure: TerminalConnectFailure, error: Error? = nil) {
         guard case let .ready(open) = phase else { return }
         let name = open.conversation.computer.name
         switch failure {
         case .unreachable: phase = .problem(.unreachable(name))
         case .signIn: phase = .problem(.signInFailed(name))
         case .hostKeyChanged: phase = .problem(.hostKeyChanged(name))
-        case .terminal: phase = .problem(.terminalFailed(name))
+        case .terminal: phase = .problem(.terminalFailed(name, details: error.map(TerminalConnectionDiagnostics.details)))
         }
     }
 

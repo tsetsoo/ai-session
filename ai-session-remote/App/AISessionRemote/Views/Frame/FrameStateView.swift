@@ -160,10 +160,11 @@ struct FrameStateView: View {
                 message: "If \(name) was reinstalled or replaced, review its access and choose Forget Host Key, then try again. If not, don't connect.",
                 primary: FrameStateButton(title: "Review \(name)") { actions.editAccess(name) }
             )
-        case let .terminalFailed(name):
+        case let .terminalFailed(name, details):
             FrameStateBlock(
                 systemImage: "exclamationmark.triangle",
                 title: "Couldn't open a terminal on \(name)",
+                code: details,
                 primary: FrameStateButton(title: "Try Again", action: actions.retry)
             )
         case let .helpersMissing(name):

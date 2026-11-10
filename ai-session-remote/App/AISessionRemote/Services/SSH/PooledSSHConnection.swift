@@ -265,8 +265,7 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
     /// life of the terminal screen instead of tearing it down after a single command.
     ///
     /// A channel-setup failure here (handshake layer gone, `createChannel` rejected) throws
-    /// `SSHTerminalSessionError.channelSetupFailed` rather than an `SSHRemoteError`, exactly as
-    /// it did when `SSHTerminalSession` dialled and opened this channel itself — a single
+    /// `TerminalSetupFailure` with the stage and original error. A single
     /// channel failing to open is not evidence the shared parent transport is broken, so unlike
     /// `exec` above this never calls `markDead()`.
     func openPTY(
@@ -280,7 +279,7 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
         do {
             sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
         } catch {
-            throw SSHTerminalSessionError.channelSetupFailed
+            throw TerminalSetupFailure(stage: "Accessing SSH transport", underlying: error)
         }
 
         let channelPromise = channel.eventLoop.makePromise(of: Channel.self)
@@ -318,7 +317,7 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
         do {
             sessionChannel = try await channelPromise.futureResult.get()
         } catch {
-            throw SSHTerminalSessionError.channelSetupFailed
+            throw TerminalSetupFailure(stage: "Opening SSH terminal channel", underlying: error)
         }
 
         return PTYHandle(
