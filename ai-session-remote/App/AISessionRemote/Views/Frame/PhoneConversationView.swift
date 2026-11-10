@@ -40,6 +40,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
     @State private var windowLimit = ChatTimeline.windowSize
     /// Pasted photos on their way to the computer.
     @State private var photoUploads = PhotoUploads()
+    @State private var fileAttachments = FileAttachments()
     /// Paths of photos on the computer whose message hasn't been sent yet.
     @State private var uploadedPhotos: [String] = []
 
@@ -96,7 +97,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
         .onChange(of: isFrontmost) { _, front in
             if !front { reviewedOnOpen = false; sendTask?.cancel(); photoUploads.cancelAll(); composing = false; ReadAloud.shared.stop() }
         }
-        .onDisappear { sendTask?.cancel(); photoUploads.cancelAll(); ReadAloud.shared.stop() }
+        .onDisappear { sendTask?.cancel(); photoUploads.cancelAll(); fileAttachments.cancel(); ReadAloud.shared.stop() }
         // No background audio: speech stops when the app leaves the foreground, so does the button.
         .onChange(of: scenePhase) { _, phase in if phase != .active { ReadAloud.shared.stop() } }
         #if DEBUG
@@ -195,6 +196,15 @@ struct PhoneConversationView<TerminalContent: View>: View {
                 .buttonStyle(.plain)
                 .padding(.bottom, 4)
             }
+            HStack {
+                FileAttachmentButton(config: config, connected: terminal.isConnected, attachments: fileAttachments) { path in
+                    uploadedPhotos.append(path)
+                    draftEditor.insert(PhotoUpload.typed(path) + " ")
+                }
+                Spacer()
+            }
+            .padding(.horizontal)
+            FileAttachmentStatus(attachments: fileAttachments)
             ChatComposer(
                 draft: $draft, focused: $composing, mode: $composerMode, editor: draftEditor,
                 connected: terminal.isConnected, promptShowing: prompt != nil || showsFallback,
@@ -204,6 +214,17 @@ struct PhoneConversationView<TerminalContent: View>: View {
             )
         }
         .background(Color(uiColor: .systemGroupedBackground))
+        .dropDestination(for: URL.self) { urls, _ in
+            guard terminal.isConnected, isFrontmost, !urls.isEmpty else { return false }
+            fileAttachments.upload(urls, config: config) { path in
+                uploadedPhotos.append(path)
+                draftEditor.insert(PhotoUpload.typed(path) + " ")
+            }
+            return true
+        }
+        .onChange(of: terminal.isConnected) { _, connected in
+            if !connected { fileAttachments.cancel() }
+        }
         .sheet(item: $openWorker) { opened in
             // The list refreshes underneath, so show its newest copy of this worker.
             WorkerSheet(

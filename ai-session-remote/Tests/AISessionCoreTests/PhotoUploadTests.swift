@@ -43,6 +43,58 @@ final class PhotoUploadTests: XCTestCase {
 
     private var quotedDir: String { "'\(dir.path)'" }
 
+    func testFileAttachmentsKeepBinaryBytesAndSafeUniqueNames() async throws {
+        let original = "../report's $(touch nope) résumé.pdf"
+        let name = FileUpload.remoteName(for: original)
+        XCTAssertTrue(name.hasSuffix(".pdf"))
+        XCTAssertNotEqual(name, FileUpload.remoteName(for: original))
+        XCTAssertFalse(name.contains("/"))
+        XCTAssertFalse(name.contains("$"))
+        let data = Data((0...255).map { UInt8($0) })
+        let path = try await PhotoUpload.upload(
+            data, name: name, config: config, ssh: LocalShell(shell: "/bin/sh"), directory: quotedDir
+        )
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), data)
+        let empty = try await PhotoUpload.upload(
+            Data(), name: FileUpload.remoteName(for: "empty.txt"), config: config,
+            ssh: LocalShell(shell: "/bin/sh"), directory: quotedDir
+        )
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: empty)), Data())
+    }
+
+    func testProgressReportsConfirmedFileBytesIncludingPartialLastChunk() async throws {
+        let recorder = UploadProgressRecorder()
+        let data = photo(bytes: 100_001)
+        _ = try await PhotoUpload.upload(
+            data, name: "progress.bin", config: config, ssh: LocalShell(shell: "/bin/sh"), directory: quotedDir,
+            onProgress: { sent, total in await recorder.append(sent, total) }
+        )
+        let bytes = await recorder.bytes
+        let totals = await recorder.totals
+        XCTAssertEqual(bytes, [0, 49_152, 98_304, 100_001])
+        XCTAssertEqual(totals, Array(repeating: data.count, count: bytes.count))
+    }
+
+    func testProgressDoesNotCountAFailedChunk() async throws {
+        let recorder = UploadProgressRecorder()
+        let ssh = FakeSSHExecutor(defaultResult: SSHExecResult(exitCode: 0, stdout: "", stderr: ""))
+        ssh.enqueueResponses([
+            SSHExecResult(exitCode: 0, stdout: "", stderr: ""),
+            SSHExecResult(exitCode: 1, stdout: "", stderr: "disk full"),
+        ], forPrefix: "printf %s")
+        do {
+            _ = try await PhotoUpload.upload(
+                photo(bytes: 100_001), name: "failed.bin", config: config, ssh: ssh,
+                onProgress: { sent, total in await recorder.append(sent, total) }
+            )
+            XCTFail("expected failure")
+        } catch {
+            XCTAssertEqual(error as? PhotoUpload.Failure, .failed("disk full"))
+        }
+        let bytes = await recorder.bytes
+        XCTAssertEqual(bytes, [0, 49_152])
+    }
+
     func testEveryCommandFitsInOneLinuxArgument() {
         let commands = PhotoUpload.commands(data: photo(bytes: 600_000), name: "a.jpg")
         XCTAssertGreaterThan(commands.count, 3)
@@ -122,5 +174,14 @@ private struct PrefixedOutput: SSHExecuting {
         var result = try await base.exec(config, command: command)
         result.stdout = prefix + result.stdout
         return result
+    }
+}
+
+private actor UploadProgressRecorder {
+    var bytes: [Int] = []
+    var totals: [Int] = []
+    func append(_ sent: Int, _ total: Int) {
+        bytes.append(sent)
+        totals.append(total)
     }
 }

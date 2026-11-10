@@ -436,6 +436,17 @@ final class TerminalCoordinator: TerminalViewDelegate {
     }
     #endif
 
+    /// An attachment is ready on this host. Match the terminal photo paste's expiry.
+    func insertAttachment(_ path: String) {
+        let config = hostConfig
+        Task.detached {
+            _ = try? await NIOSSHClient().exec(config, command: PhotoUpload.deleteCommand(paths: [path]))
+        }
+        guard state == .connected else { return }
+        send(TerminalPaste.bytes(for: PhotoUpload.typed(path) + " ", bracketed: isBracketedPasteMode))
+        onUserInput?()
+    }
+
     /// Types `text` as a paste, then Return.
     func submit(_ text: String) {
         send(TerminalPaste.submission(text, bracketed: isBracketedPasteMode))

@@ -68,19 +68,28 @@ public enum PhotoUpload {
 
     /// Uploads `data` and returns the absolute path it landed at on the computer. On failure or
     /// cancel the partial file is removed and the error rethrown (`CancellationError` if cancelled).
+    /// `onProgress` reports original file bytes acknowledged by the destination, before decoding.
     public static func upload(
         _ data: Data, name: String, config: HostConnectionConfig, ssh: SSHExecuting,
-        directory: String = defaultDirectory
+        directory: String = defaultDirectory,
+        onProgress: (@Sendable (_ bytesSent: Int, _ totalBytes: Int) async -> Void)? = nil
     ) async throws -> String {
         do {
             var output = ""
-            for command in commands(data: data, name: name, directory: directory) {
+            await onProgress?(0, data.count)
+            let uploadCommands = commands(data: data, name: name, directory: directory)
+            for (index, command) in uploadCommands.enumerated() {
                 try Task.checkCancellation()
                 let result = try await ssh.exec(config, command: command)
                 guard result.exitCode == 0 else {
                     throw Failure.failed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
                 output = result.stdout
+                // First command prepares the directory; last decodes and publishes the file.
+                // Each intervening base64 chunk carries chunkSize / 4 * 3 original bytes.
+                if index > 0 && index < uploadCommands.count - 1 {
+                    await onProgress?(min(index * (chunkSize / 4 * 3), data.count), data.count)
+                }
             }
             try Task.checkCancellation()
             let path = output.split(whereSeparator: \.isNewline).last.map(String.init) ?? ""

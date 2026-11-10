@@ -34,6 +34,49 @@ final class LocalClipboardTerminalView: TerminalView {
     /// The conversation's tool, for the bytes Shift+Return sends.
     var tool: String?
     var clipboardCode: [String] = []
+    var onDropFiles: (([URL]) -> Bool)?
+    var canDropFiles = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    private func droppedFiles(_ sender: NSDraggingInfo) -> [URL] {
+        sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] ?? []
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let accepts = canDropFiles && !droppedFiles(sender).isEmpty
+        wantsLayer = true
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        layer?.borderWidth = accepts ? 2 : 0
+        return accepts ? .copy : []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        draggingEntered(sender)
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        layer?.borderWidth = 0
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        layer?.borderWidth = 0
+        let urls = droppedFiles(sender)
+        guard canDropFiles, !urls.isEmpty else { return false }
+        window?.makeFirstResponder(self)
+        return onDropFiles?(urls) ?? false
+    }
+
     private var keyMonitor: Any?
     private var reportsPointerGesture = false
 
@@ -188,6 +231,8 @@ private struct TerminalContainerView: NSViewRepresentable {
     let hitTarget: TerminalHitTarget
     let cover: AnyView?
     let tool: String?
+    let canDropFiles: Bool
+    let onDropFiles: ([URL]) -> Bool
 
     func makeCoordinator() -> CoverHost { CoverHost() }
 
@@ -201,6 +246,8 @@ private struct TerminalContainerView: NSViewRepresentable {
         coordinator.setPalette(palette)
         view.optionAsMetaKey = true
         view.tool = tool
+        view.canDropFiles = canDropFiles
+        view.onDropFiles = onDropFiles
         coordinator.attach(to: view)
         let gate = TerminalClickGate(terminalView: view)
         updateCover(gate, context: context)
@@ -210,7 +257,11 @@ private struct TerminalContainerView: NSViewRepresentable {
     func updateNSView(_ gate: TerminalClickGate, context: Context) {
         TerminalAppearance.apply(to: gate.terminalView, palette: palette, fontSize: fontSize)
         coordinator.setPalette(palette)
-        (gate.terminalView as? LocalClipboardTerminalView)?.tool = tool
+        if let view = gate.terminalView as? LocalClipboardTerminalView {
+            view.tool = tool
+            view.canDropFiles = canDropFiles
+            view.onDropFiles = onDropFiles
+        }
         coordinator.attach(to: gate.terminalView)
         updateCover(gate, context: context)
     }
@@ -356,6 +407,7 @@ struct TerminalSurface: View {
     @AppStorage("terminal.fontSize") private var fontSize = TerminalAppearance.defaultFontSize
     @AppStorage("terminal.theme") private var themeRaw = TerminalTheme.system.rawValue
     @State private var coordinator: TerminalCoordinator
+    @State private var fileAttachments = FileAttachments()
     @State private var connectionState: TerminalConnectionState = .idle
     @State private var isDisconnected = false
     /// Why the session ended, for the card: a lost connection, or the tool quitting.
@@ -515,6 +567,30 @@ struct TerminalSurface: View {
             }
             #endif
         }
+        .overlay(alignment: .top) {
+            FileAttachmentStatus(attachments: fileAttachments).padding(.top, 8)
+        }
+        .onChange(of: connectionState) { _, state in
+            if state != .connected { fileAttachments.cancel() }
+        }
+        #if os(iOS)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            HStack {
+                Spacer(minLength: 0)
+                FileAttachmentButton(config: config, connected: connectionState == .connected,
+                                     attachments: fileAttachments) { path in
+                    coordinator.insertAttachment(path)
+                }
+            }
+            .padding(8)
+            .background(.regularMaterial)
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard connectionState == .connected, shown, !urls.isEmpty else { return false }
+            fileAttachments.upload(urls, config: config) { coordinator.insertAttachment($0) }
+            return true
+        }
+        #endif
         #if os(iOS)
         .animation(.easeInOut(duration: 0.2), value: coordinator.photoUploads.status)
         #endif
@@ -587,6 +663,7 @@ struct TerminalSurface: View {
         }
         .onDisappear {
             connectingOverlayTask?.cancel()
+            fileAttachments.cancel()
             coordinator.disconnect()
             // Unless a newer surface already took the handle over.
             if handle?.coordinator === coordinator {
@@ -629,7 +706,13 @@ struct TerminalSurface: View {
             fontSize: fontSize,
             hitTarget: hitTarget,
             cover: hitTarget == .cover ? AnyView(disconnectedOverlay) : nil,
-            tool: tool
+            tool: tool,
+            canDropFiles: connectionState == .connected && hitTarget == .grid,
+            onDropFiles: { urls in
+                guard connectionState == .connected, hitTarget == .grid else { return false }
+                fileAttachments.upload(urls, config: config) { coordinator.insertAttachment($0) }
+                return true
+            }
         )
         .padding(Self.inset)
         .background(Color(palette.background))

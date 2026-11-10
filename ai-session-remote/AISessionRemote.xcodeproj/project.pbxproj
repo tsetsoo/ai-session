@@ -79,9 +79,11 @@
 		381174EAEAAB226799F0A307 /* RestartSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4CDA2E8FBBB71F1BB5048A8 /* RestartSheet.swift */; };
 		38388D5CFD2F84A54431E65F /* SSHTerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */; };
 		395EC1561CA9993A6BC51396 /* TodoAddDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF94862244A57B5C08D789B6 /* TodoAddDraft.swift */; };
+		399B06B069F4632E2402C89C /* FileAttachmentButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4C6B7403D6F5243C603C440 /* FileAttachmentButton.swift */; };
 		3B44E4781A8573AE6FDA8795 /* AISessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 08EDCE470559EAA59731684C /* AISessionCore */; };
 		3C20726A071B705FCC2F9714 /* ListSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD8D8139CC242C8EF215944D /* ListSelection.swift */; };
 		3D1684ED234059326AF42DBD /* ChatCodeBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D85EAC354443F3D03E6BAD90 /* ChatCodeBlock.swift */; };
+		3D42B168CBDB20662B902598 /* FileAttachmentButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4C6B7403D6F5243C603C440 /* FileAttachmentButton.swift */; };
 		3D7A44B4B3D6A2068F76FFD3 /* RemoteRestart.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDC0C15755494AAA0C43292F /* RemoteRestart.swift */; };
 		3ECEE70113B596539FC80047 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A467E31C965B1E36C7CB08F0 /* RootView.swift */; };
 		3F22FB2E2CA5703D4C1286C2 /* AddTodoSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FAAD07AAEDF8D67ADBBFBF4 /* AddTodoSheet.swift */; };
@@ -536,6 +538,7 @@
 		F0E92D9DEB7C4816EBDB4B77 /* LocalConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalConnection.swift; sourceTree = "<group>"; };
 		F359B9E7301AF9D445728DC0 /* ReviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSession.swift; sourceTree = "<group>"; };
 		F4325A2838E2861F98B34246 /* PooledSSHConnectionCloseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PooledSSHConnectionCloseTests.swift; sourceTree = "<group>"; };
+		F4C6B7403D6F5243C603C440 /* FileAttachmentButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAttachmentButton.swift; sourceTree = "<group>"; };
 		F538A47A9E801D82DC090741 /* ReviewStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewStoreTests.swift; sourceTree = "<group>"; };
 		F6DF7A48AF9E2D3EED9528A2 /* FrameStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameStateView.swift; sourceTree = "<group>"; };
 		F734A46121C5F35DAB720843 /* TodayPanes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayPanes.swift; sourceTree = "<group>"; };
@@ -625,6 +628,7 @@
 				87495E95B7CCFE26E721047A /* ConversationFrame.swift */,
 				2795545DB4B7B10EE099084F /* ConversationLoader.swift */,
 				AF89B193750522EEAD51834C /* DuplicateInMenu.swift */,
+				F4C6B7403D6F5243C603C440 /* FileAttachmentButton.swift */,
 				F6DF7A48AF9E2D3EED9528A2 /* FrameStateView.swift */,
 				4968C45BBA0F9D47DF734624 /* KeyBar.swift */,
 				1EF7DAFF1BD631F66BD246CA /* MCPServerChecklist.swift */,
@@ -1216,6 +1220,7 @@
 				58B06EFD5A3B0C22125068DC /* DesignSystem.swift in Sources */,
 				99D85BE4B3A86446B9E2C27A /* Dictation.swift in Sources */,
 				9406089777419F1CC417A885 /* DuplicateInMenu.swift in Sources */,
+				3D42B168CBDB20662B902598 /* FileAttachmentButton.swift in Sources */,
 				98A1C69A53591DA84B0ECD48 /* FormTextField.swift in Sources */,
 				24750E39423E40466A045301 /* FrameStateView.swift in Sources */,
 				59BACE3CA9D655C4E792B679 /* HostEditorView.swift in Sources */,
@@ -1362,6 +1367,7 @@
 				FA892114C3F43ADB562DB7E4 /* DesignSystem.swift in Sources */,
 				BA395060BF5B29480DAF51F6 /* Dictation.swift in Sources */,
 				4D0C1AAFE68D17AC4996BB55 /* DuplicateInMenu.swift in Sources */,
+				399B06B069F4632E2402C89C /* FileAttachmentButton.swift in Sources */,
 				9208C2AE3FC146F0F63CCD2F /* FormTextField.swift in Sources */,
 				EC0EC66AF6A143704EC053CD /* FrameStateView.swift in Sources */,
 				9457E33FBF3D6F5F05EAD86F /* HostEditorView.swift in Sources */,
