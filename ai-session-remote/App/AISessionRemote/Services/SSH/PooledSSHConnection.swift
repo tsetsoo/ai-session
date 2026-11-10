@@ -279,7 +279,7 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
         do {
             sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
         } catch {
-            throw TerminalSetupFailure(stage: "Accessing SSH transport", underlying: error)
+            throw SSHChannelOpenFailure(underlying: TerminalSetupFailure(stage: "Accessing SSH transport", underlying: error))
         }
 
         let channelPromise = channel.eventLoop.makePromise(of: Channel.self)
@@ -317,7 +317,7 @@ final class PooledSSHConnection: PooledConnecting, @unchecked Sendable {
         do {
             sessionChannel = try await channelPromise.futureResult.get()
         } catch {
-            throw TerminalSetupFailure(stage: "Opening SSH terminal channel", underlying: error)
+            throw SSHChannelOpenFailure(underlying: TerminalSetupFailure(stage: "Opening SSH terminal channel", underlying: error))
         }
 
         return PTYHandle(

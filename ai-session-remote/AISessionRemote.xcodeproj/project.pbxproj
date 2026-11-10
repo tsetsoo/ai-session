@@ -229,6 +229,7 @@
 		A41E9EBB5F02EED9196ACAC5 /* RemoteUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = B04D268F7E1BD8358A6FBD15 /* RemoteUpgrade.swift */; };
 		A42A10F59D0F513381FF64CC /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 069864B039E21288F0AD21AA /* ReviewView.swift */; };
 		A4969E70C98FC8113339AE7A /* MacCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 244B79FA4458DBBC91C4A9BA /* MacCompatibility.swift */; };
+		A62BD08C2FF4C47DF8B89153 /* SSHConnectionPoolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C847D08DA7894C6518E52709 /* SSHConnectionPoolTests.swift */; };
 		A698ABD1647F3AEBF7A07835 /* TodoConversationScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D950090C7A69096F9F3FF813 /* TodoConversationScreen.swift */; };
 		A7F52FFAC413E96F08E0561B /* IdeasPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 137F28FB6F0222F70DE53BCF /* IdeasPanes.swift */; };
 		A833E425DF3BF7260B05B895 /* WatchersPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCE24CED81E2D0F51FE59940 /* WatchersPanes.swift */; };
@@ -1522,6 +1523,7 @@
 				0713A5A621B24DFD7E77273B /* ReviewAcknowledgementTests.swift in Sources */,
 				B2E3FF58288F25ED9645E58C /* ReviewSessionTests.swift in Sources */,
 				1AF24721F851D000BC658951 /* ReviewStoreTests.swift in Sources */,
+				A62BD08C2FF4C47DF8B89153 /* SSHConnectionPoolTests.swift in Sources */,
 				F8E1B6C4DFB2FFCDE521132F /* ShellWorkspaceTests.swift in Sources */,
 				E22EBE050F90F7253F66ACF9 /* TerminalConnectionDiagnosticsTests.swift in Sources */,
 				21AA7F7C909E4283BEFDDDFD /* TerminalSelectionTests.swift in Sources */,

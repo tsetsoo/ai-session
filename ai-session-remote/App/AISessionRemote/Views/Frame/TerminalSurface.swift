@@ -410,6 +410,7 @@ struct TerminalSurface: View {
     @State private var fileAttachments = FileAttachments()
     @State private var connectionState: TerminalConnectionState = .idle
     @State private var isDisconnected = false
+    @State private var connectionError: String?
     /// Why the session ended, for the card: a lost connection, or the tool quitting.
     @State private var ending: TerminalEnding = .connectionLost
     /// Gates `connectingOverlay`. With a warm connection pool, attach (and reconnect) are
@@ -601,13 +602,18 @@ struct TerminalSurface: View {
                 handle?.connectionChanged(to: state)
                 if state == .connected {
                     isDisconnected = false
+                    connectionError = nil
                     // A session that finished connecting behind another conversation stays quiet.
                     if coordinator.isShown { PlatformSupport.connectedFeedback() }
                 }
             }
             connectionState = coordinator.state
             handle?.connectionChanged(to: coordinator.state)
-            coordinator.onError = { error in onConnectionFailed(error) }
+            coordinator.onError = { error in
+                connectionError = TerminalConnectionDiagnostics.details(error)
+                isDisconnected = true
+                onConnectionFailed(error)
+            }
             coordinator.onDisconnected = { exitStatus in
                 ending = TerminalEnding(exitStatus: exitStatus)
                 isDisconnected = true
@@ -738,6 +744,9 @@ struct TerminalSurface: View {
     private var endedCard: (symbol: String, title: String, message: String, action: String) {
         let host = hostName ?? config.host
         let what = tool.map(RowText.toolName) ?? "The session"
+        if let connectionError {
+            return ("exclamationmark.triangle", "Couldn't open a terminal on \(host)", connectionError, "Try Again")
+        }
         switch ending {
         case .connectionLost:
             return ("wifi.slash", "Disconnected", disconnectedMessage, "Reconnect")
@@ -762,6 +771,7 @@ struct TerminalSurface: View {
                     Text(card.title)
                         .font(.title3.weight(.semibold))
                     Text(card.message)
+                        .textSelection(.enabled)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -789,6 +799,7 @@ struct TerminalSurface: View {
 
     private func reconnect() async {
         isDisconnected = false
+        connectionError = nil
         await coordinator.reconnect()
     }
 }

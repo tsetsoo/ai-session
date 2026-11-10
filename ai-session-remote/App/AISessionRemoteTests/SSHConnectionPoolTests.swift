@@ -1,6 +1,10 @@
 import AISessionCore
 import XCTest
+#if os(macOS)
+@testable import AI_Session_Remote
+#else
 @testable import AISessionRemote
+#endif
 
 private final class FakeConnection: PooledConnecting, @unchecked Sendable {
     var isAlive = true
@@ -162,6 +166,9 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
 
     /// When set, the next `openPTY` throws this once and then clears it.
     var failNextOpenPTYWith: Error?
+    var closeOnOpenFailure = false
+    var maximumActivePTYs: Int?
+    private var activePTYs = 0
     private(set) var openPTYCount = 0
     /// The `onClose` callback `SSHConnectionPool.openPTY` wired up for each PTY this connection
     /// has opened, in call order. A test "kills" a PTY's channel (simulating a remote exit or
@@ -198,13 +205,27 @@ private final class FakeConnection: PooledConnecting, @unchecked Sendable {
         if let error = failNextOpenPTYWith {
             failNextOpenPTYWith = nil
             lock.unlock()
+            if closeOnOpenFailure { onClose(nil) }
             throw error
         }
+        if let maximumActivePTYs, activePTYs >= maximumActivePTYs {
+            lock.unlock()
+            throw SSHChannelOpenFailure(underlying: SSHTerminalSessionError.channelSetupFailed)
+        }
+        activePTYs += 1
         openPTYCount += 1
         ptyOnCloseCallbacks.append(onClose)
         lock.unlock()
 
-        return PTYHandle(send: { _ in }, resize: { _, _ in }, close: {})
+        var isClosed = false
+        return PTYHandle(send: { _ in }, resize: { _, _ in }, close: { [self] in
+            lock.lock()
+            if !isClosed {
+                isClosed = true
+                activePTYs -= 1
+            }
+            lock.unlock()
+        })
     }
 
     /// Suspends until `openPTY` has been called at least once — and, if `openPTYGate` is set,
@@ -426,10 +447,8 @@ final class SSHConnectionPoolTests: XCTestCase {
     }
 
     /// Regression test for a channel-open failure that does not implicate the shared transport —
-    /// e.g. sshd transiently refusing a new session (MaxSessions/MaxStartups) while the
-    /// connection itself is healthy. That must not evict/close the connection out from under
-    /// every other caller sharing it; the pool's retry-once logic should reuse the same
-    /// connection instead of redialing.
+    /// e.g. a session limit while the connection itself is healthy. Retry on another
+    /// connection while preserving terminals already using the original connection.
     func testChannelOpenFailureThatLeavesConnectionAliveIsNotEvicted() async throws {
         let dialCount = Counter()
         let connections = ConnectionBox()
@@ -449,9 +468,9 @@ final class SSHConnectionPoolTests: XCTestCase {
 
         let result = try await pool.exec(config, command: "second")
 
-        XCTAssertEqual(result.stdout, "ok", "the retry must succeed by reusing the still-alive connection")
+        XCTAssertEqual(result.stdout, "ok", "the retry must succeed on another connection")
         let count = await dialCount.value
-        XCTAssertEqual(count, 1, "a failure that leaves the connection alive must not trigger a redial")
+        XCTAssertEqual(count, 2, "retry must use another connection without closing the first")
         guard let connection = await connections.last() else {
             XCTFail("expected a dialed connection")
             return
@@ -1167,5 +1186,158 @@ private actor ConnectionBox {
         return await withCheckedContinuation { continuation in
             firstWaiters.append(continuation)
         }
+    }
+}
+
+extension SSHConnectionPoolTests {
+    func testConcurrentTerminalsRespectChannelBudget() async throws {
+        let connections = ConnectionBox()
+        let gate = OneShotGate()
+        let pool = SSHConnectionPool(dial: { _ in
+            let connection = FakeConnection()
+            await connections.add(connection)
+            await gate.wait()
+            return connection
+        })
+        let config = config()
+        let handles = try await withThrowingTaskGroup(of: PTYHandle.self) { group in
+            for _ in 0..<25 {
+                group.addTask {
+                    try await pool.openPTY(config, mode: .plainShell, cols: 80, rows: 24,
+                                           onOutput: { _ in }, onClose: { _ in })
+                }
+            }
+            await waitUntil("callers coalesced") { await pool.coalescedJoinCount() >= 4 }
+            await gate.open()
+            var handles: [PTYHandle] = []
+            for try await handle in group { handles.append(handle) }
+            return handles
+        }
+        let count = await connections.count()
+        XCTAssertEqual(count, 4)
+        for index in 0..<count {
+            let connection = await connections.connection(at: index)
+            XCTAssertLessThanOrEqual(connection.openPTYCount, 8)
+            XCTAssertEqual(connection.closeCount, 0)
+        }
+        let leases = await pool.leaseCount(for: config)
+        XCTAssertEqual(leases, 25)
+        _ = try await pool.exec(config, command: "status")
+        let last = await connections.connection(at: 3)
+        XCTAssertEqual(last.recordedTimeouts.count, 1)
+        for handle in handles { handle.close() }
+        await waitUntil("reservations released") { await pool.leaseCount(for: config) == 0 }
+        await pool.closeAll()
+        let closed = await connections.totalCloseCount()
+        XCTAssertEqual(closed, 4)
+    }
+
+    func testRejectedTerminalRetriesElsewhereAndPreservesExistingTerminal() async throws {
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(dial: { _ in
+            let connection = FakeConnection()
+            await connections.add(connection)
+            return connection
+        })
+        let config = config()
+        let first = try await pool.openPTY(config, mode: .plainShell, cols: 80, rows: 24,
+                                          onOutput: { _ in }, onClose: { _ in })
+        let original = await connections.connection(at: 0)
+        original.failNextOpenPTYWith = SSHChannelOpenFailure(underlying: SSHTerminalSessionError.channelSetupFailed)
+        original.closeOnOpenFailure = true
+        var closes = 0
+        let second = try await pool.openPTY(config, mode: .plainShell, cols: 80, rows: 24,
+                                           onOutput: { _ in }, onClose: { _ in closes += 1 })
+        let count = await connections.count()
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(closes, 0, "rejected attempt must not disconnect the recovered terminal")
+        XCTAssertEqual(original.closeCount, 0)
+        let leases = await pool.leaseCount(for: config)
+        XCTAssertEqual(leases, 2)
+        first.close()
+        second.close()
+        await waitUntil("both released") { await pool.leaseCount(for: config) == 0 }
+        await pool.closeAll()
+    }
+
+    func testRejectedTerminalRetriesOnlyOnce() async throws {
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(dial: { _ in
+            let connection = FakeConnection()
+            connection.failNextOpenPTYWith = SSHChannelOpenFailure(underlying: SSHTerminalSessionError.channelSetupFailed)
+            await connections.add(connection)
+            return connection
+        })
+        let config = config()
+        do {
+            _ = try await pool.openPTY(config, mode: .plainShell, cols: 80, rows: 24,
+                                      onOutput: { _ in }, onClose: { _ in })
+            XCTFail("expected rejection")
+        } catch {
+            XCTAssertTrue(error is SSHChannelOpenFailure)
+        }
+        let count = await connections.count()
+        XCTAssertEqual(count, 2)
+        let leases = await pool.leaseCount(for: config)
+        XCTAssertEqual(leases, 0)
+        await pool.closeAll()
+    }
+
+    func testOldTerminalCloseCannotReleaseReplacementLease() async throws {
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(dial: { _ in
+            let connection = FakeConnection()
+            await connections.add(connection)
+            return connection
+        })
+        let config = config()
+        let old = try await pool.openPTY(config, mode: .plainShell, cols: 80, rows: 24,
+                                        onOutput: { _ in }, onClose: { _ in })
+        let original = await connections.connection(at: 0)
+        original.isAlive = false
+        let replacement = try await pool.openPTY(config, mode: .plainShell, cols: 80, rows: 24,
+                                                onOutput: { _ in }, onClose: { _ in })
+        old.close()
+        original.killMostRecentPTY()
+        await Task.yield()
+        let leases = await pool.leaseCount(for: config)
+        XCTAssertEqual(leases, 1)
+        replacement.close()
+        await waitUntil("replacement released") { await pool.leaseCount(for: config) == 0 }
+        await pool.closeAll()
+    }
+}
+
+extension SSHConnectionPoolTests {
+    func testServerLimitBelowDefaultOpensThirdConnectionAndReusesFreedCapacity() async throws {
+        let connections = ConnectionBox()
+        let pool = SSHConnectionPool(dial: { _ in
+            let connection = FakeConnection()
+            connection.maximumActivePTYs = 2
+            await connections.add(connection)
+            return connection
+        })
+        let config = config()
+        var handles: [PTYHandle] = []
+        for _ in 0..<5 {
+            handles.append(try await pool.openPTY(config, mode: .plainShell, cols: 80, rows: 24,
+                                                 onOutput: { _ in }, onClose: { _ in }))
+        }
+        let count = await connections.count()
+        XCTAssertEqual(count, 3, "fifth terminal needs a third connection")
+        let leases = await pool.leaseCount(for: config)
+        XCTAssertEqual(leases, 5)
+        handles.removeFirst().close()
+        await waitUntil("one slot freed") { await pool.leaseCount(for: config) == 4 }
+        handles.append(try await pool.openPTY(config, mode: .plainShell, cols: 80, rows: 24,
+                                             onOutput: { _ in }, onClose: { _ in }))
+        let afterReuse = await connections.count()
+        XCTAssertEqual(afterReuse, 3, "reuse the freed slot instead of opening another connection")
+        let first = await connections.connection(at: 0)
+        XCTAssertEqual(first.openPTYCount, 3)
+        XCTAssertEqual(first.closeCount, 0)
+        for handle in handles { handle.close() }
+        await waitUntil("all terminals released") { await pool.leaseCount(for: config) == 0 }
+        await pool.closeAll()
     }
 }
