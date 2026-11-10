@@ -339,17 +339,24 @@ struct ReviewView: View {
                        let pr = list.prs.first(where: { $0.number == number }) {
                         PullRequestRow(item: pr, provider: list.provider, selected: true)
                     }
-                    Menu {
-                        PullRequestMenuItems(list: list,
-                                             selected: session.scope == .pullRequest ? session.selectedPullRequest : nil,
-                                             selectedBranch: session.reviewedBranch?.branch.name,
-                                             open: { session.open(pullRequest: $0) },
-                                             openBranch: { session.open(branch: $0) })
-                    } label: {
+                    HStack {
                         Text(session.scope == .pullRequest || session.reviewedBranch != nil ? "Switch…" : "Review a Pull Request…")
+                        Spacer()
+                        Menu {
+                            PullRequestMenuItems(list: list,
+                                                 selected: session.scope == .pullRequest ? session.selectedPullRequest : nil,
+                                                 selectedBranch: session.reviewedBranch?.branch.name,
+                                                 open: { session.open(pullRequest: $0) },
+                                                 openBranch: { session.open(branch: $0) })
+                        } label: {
+                            Image(systemName: "chevron.down")
+                        }
+                        .menuIndicator(.hidden)
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .accessibilityLabel("Switch review target")
+                        .help("Your pull requests in this repository, latest first. One shows exactly its changes, as on \(list.provider == "gitlab" ? "GitLab" : "GitHub").")
                     }
-                    .menuStyle(.borderlessButton)
-                    .help("Your pull requests in this repository, latest first. One shows exactly its changes, as on \(list.provider == "gitlab" ? "GitLab" : "GitHub").")
                 }
             }
         }
