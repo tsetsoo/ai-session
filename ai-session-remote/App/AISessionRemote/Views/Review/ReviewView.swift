@@ -244,7 +244,7 @@ struct ReviewView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if !session.suggestedWorktrees.isEmpty {
+            if !session.isResolvingTarget, !session.suggestedWorktrees.isEmpty {
                 Section("The Agent May Be Working Elsewhere") {
                     ForEach(session.suggestedWorktrees) { worktree in
                         Button {
@@ -281,10 +281,12 @@ struct ReviewView: View {
                         .foregroundStyle(DS.warning)
                 }
             }
-            Section(filesHeader) {
-                ForEach(session.diff.files) { file in
-                    FileRow(file: file, comments: session.commentCount(file: file))
-                        .tag(file.path)
+            if !session.isResolvingTarget {
+                Section(filesHeader) {
+                    ForEach(session.diff.files) { file in
+                        FileRow(file: file, comments: session.commentCount(file: file))
+                            .tag(file.path)
+                    }
                 }
             }
             let elsewhere = session.commentsOutsideDiff()
@@ -347,6 +349,7 @@ struct ReviewView: View {
                         Label(session.scope == .pullRequest || session.reviewedBranch != nil ? "Switch…" : "Review a Pull Request…",
                               systemImage: "arrow.triangle.pull")
                     }
+                    .labelStyle(.titleAndIcon)
                     .menuStyle(.borderlessButton)
                     .help("Your pull requests in this repository, latest first. One shows exactly its changes, as on \(list.provider == "gitlab" ? "GitLab" : "GitHub").")
                 }
@@ -382,7 +385,9 @@ struct ReviewView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let path = selectedPath, let file = session.diff.files.first(where: { $0.path == path }) {
+        if session.isResolvingTarget {
+            ProgressView("Finding this conversation’s changes…")
+        } else if let path = selectedPath, let file = session.diff.files.first(where: { $0.path == path }) {
             FileDiffView(file: file, session: session, focus: focus)
                 // By file only: a reload with new revisions keeps a half-written comment.
                 .id(path)
@@ -406,31 +411,33 @@ struct ReviewView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Menu {
-                Button {
-                    session.choose(folder: nil)
-                } label: {
-                    Text("This Conversation's Folder")
-                    Text(session.conversation.cwd)
-                }
-                if !session.worktrees.isEmpty {
-                    Section("Worktrees of This Repository, Latest First") {
-                        ForEach(session.worktrees.prefix(30)) { worktree in
-                            Button {
-                                session.choose(folder: worktree.path)
-                            } label: {
-                                Text((worktree.changedSince ? "● " : "") + worktree.name)
-                                Text(worktreeDetail(worktree))
+        if session.scope != .pullRequest {
+            ToolbarItem(placement: .navigation) {
+                Menu {
+                    Button {
+                        session.choose(folder: nil)
+                    } label: {
+                        Text("This Conversation's Folder")
+                        Text(session.conversation.cwd)
+                    }
+                    if !session.worktrees.isEmpty {
+                        Section("Worktrees of This Repository, Latest First") {
+                            ForEach(session.worktrees.prefix(30)) { worktree in
+                                Button {
+                                    session.choose(folder: worktree.path)
+                                } label: {
+                                    Text((worktree.changedSince ? "● " : "") + worktree.name)
+                                    Text(worktreeDetail(worktree))
+                                }
                             }
                         }
                     }
+                } label: {
+                    Label(reviewingTitle, systemImage: "arrow.triangle.branch")
+                        .labelStyle(.titleAndIcon)
                 }
-            } label: {
-                Label(reviewingTitle, systemImage: "arrow.triangle.branch")
-                    .labelStyle(.titleAndIcon)
+                .help("Which worktree to review. ● changed since this conversation started: an agent may have made a worktree of its own.")
             }
-            .help("Which worktree to review. ● changed since this conversation started: an agent may have made a worktree of its own.")
         }
         ToolbarItem(placement: .navigation) {
             Picker("Changes", selection: Binding(get: { session.scope }, set: { session.pick(scope: $0) })) {
@@ -451,23 +458,25 @@ struct ReviewView: View {
             .fixedSize()
             .help("Uncommitted: what isn't committed yet. Conversation: everything since the conversation started, committed or not (in a shared folder, others' commits since then too). Branch: what this branch has that the default branch doesn't. Since Feedback: what changed after the last comments were sent.")
         }
-        ToolbarItem(placement: .navigation) {
-            Menu {
-                if session.commits.isEmpty {
-                    Text("No commits yet")
-                }
-                ForEach(session.commits) { commit in
-                    Button {
-                        session.compare(from: commit)
-                    } label: {
-                        Text(commitLabel(commit))
+        if session.scope != .pullRequest {
+            ToolbarItem(placement: .navigation) {
+                Menu {
+                    if session.commits.isEmpty {
+                        Text("No commits yet")
                     }
+                    ForEach(session.commits) { commit in
+                        Button {
+                            session.compare(from: commit)
+                        } label: {
+                            Text(commitLabel(commit))
+                        }
+                    }
+                } label: {
+                    Label(session.scope == .commit ? "From \(session.baseCommit.map { String($0.sha.prefix(7)) } ?? "")" : "Compare With",
+                          systemImage: "clock.arrow.circlepath")
                 }
-            } label: {
-                Label(session.scope == .commit ? "From \(session.baseCommit.map { String($0.sha.prefix(7)) } ?? "")" : "Compare With",
-                      systemImage: "clock.arrow.circlepath")
+                .help("Review everything since a commit you pick, up to the worktree now.")
             }
-            .help("Review everything since a commit you pick, up to the worktree now.")
         }
         ToolbarItem(placement: .status) {
             Text(statusLine)
@@ -479,7 +488,7 @@ struct ReviewView: View {
                 .frame(maxWidth: 300)
                 .help(statusLine)
         }
-        if let pullRequest = conversation.pullRequest {
+        if let pullRequest = conversation.pullRequest, session.scope != .pullRequest {
             ToolbarItem(placement: .status) {
                 PullRequestChip(pullRequest: pullRequest)
             }
@@ -549,7 +558,7 @@ struct ReviewView: View {
             } primaryAction: {
                 Task { await withConfig { await session.startReview(tool: "claude", brief: brief, config: $0) } }
             }
-            .disabled(session.reviewBlocker != nil || session.isLoading)
+            .disabled(session.reviewBlocker != nil || session.isLoading || session.isResolvingTarget)
             .help(session.reviewBlocker ?? "Have a reviewer agent read the changes on screen and list what it would raise. "
                   + "Its findings go to you, not to the agent, until you send them.")
         }
@@ -576,6 +585,7 @@ struct ReviewView: View {
 
     /// The branch on screen, or the worktree's folder name.
     private var reviewingTitle: String {
+        if let branch = session.reviewedBranch?.branch.name { return branch }
         if let branch = session.status?.branch { return branch }
         if let worktree = session.worktrees.first(where: { $0.path == session.folder }) { return worktree.name }
         return (session.folder as NSString).lastPathComponent
@@ -619,14 +629,16 @@ struct ReviewView: View {
     }
 
     private var statusLine: String {
-        guard let status = session.status else { return session.isLoading ? "Loading…" : "" }
+        if session.isResolvingTarget { return "Finding this conversation’s changes…" }
         var parts: [String] = []
-        if session.scope == .pullRequest, let number = session.selectedPullRequest, let result = session.result {
+        if session.scope == .pullRequest, let number = session.selectedPullRequest {
+            guard let result = session.result else { return "Loading \(pullRequestName(number))…" }
             let ref = session.pullRequests?.prs.first { $0.number == number }?.headRef
             parts.append("\(pullRequestName(number))\(ref.map { " · \($0)" } ?? "")")
             parts.append("\(result.from.prefix(7))..\(result.to.prefix(7)), as on \(session.pullRequests?.provider == "gitlab" ? "GitLab" : "GitHub")")
             return parts.joined(separator: " · ")
         }
+        guard let status = session.status else { return session.isLoading ? "Loading…" : "" }
         if let branch = session.reviewedBranch?.branch {
             parts.append(branch.name)
             if let base = status.base, session.scope == .branch { parts.append("vs \(base.ref)") }

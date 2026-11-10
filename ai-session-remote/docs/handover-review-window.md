@@ -1,9 +1,16 @@
 # Handover: review window — find and show the conversation's PRs/MRs and branches
 
-Status on 2026-11-10: shipped to main (last review commits `c1bace8`, `ce29ef2`). Host scripts are
-installed on all three Macs, and the Mac app was rebuilt from `ce29ef2`. The user tried it and
-says it is **"still a bit buggy"** but didn't say what. **Start by asking for a screenshot**, or
-open the window yourself on the conversation below, before changing anything.
+Status on 2026-11-10: the installed app was inspected on the real test conversation. It
+opens **#1859** after the transcript lookup. Reproduced problems: the initial folder diff
+flashes before the lookup completes; unrelated worktree suggestions remain in PR scope;
+`main` and Compare With describe the folder beside the PR diff; Switch… renders as an icon.
+Two copies of the app were running (the installed app and another worktree's release build),
+so inspect `~/Applications/AI Session Remote.app` explicitly when using computer automation.
+
+Follow-up fixes: hide the folder diff until both target lookups finish (including failures),
+clear the previous diff when opening a PR, hide worktree suggestions and folder toolbar
+controls in PR scope, show Switch… with its title, and remember worktree choices only when
+made by the user. Regression checks cover target loading/failure and automatic folder memory.
 
 ## What the user wants
 
@@ -17,7 +24,8 @@ Their test case: the todo **"Cypher query simplification"** on **spreads-macbook
   `e6388597-160c-4ed1-be2f-6efb411ee839`, Codex session `01a15ed1-3d29-7fd1-b72e-efb9f1287608`.
 - It has run since 2026-10-22 and opened dozens of PRs, each from a worktree it made itself
   under `/private/tmp/ein…` or `~/.codex/worktrees/…`.
-- Expected today: the window opens **#1859** (5 files, +323 −92), lists 24 PRs under
+- Expected: the window opens **#1859** (GitHub verified 2026-11-10: 9 files, +336 −217;
+  the earlier 5 files, +323 −92 was before subsequent updates), lists 24 PRs under
   "Made by This Conversation", and lists 16 branches without a PR.
 
 History of their complaints, in order:
@@ -82,12 +90,11 @@ History of their complaints, in order:
   - **Sidebar:** the open PR or branch (`PullRequestRow` / `BranchRow`), a **Switch…** menu,
     then the files.
 
-## Suspects for "still a bit buggy" (unverified, check first)
+## Remaining suspects for "still a bit buggy"
 
-- **Remembered folder:** auto-opening a branch that is checked out in a worktree calls
-  `show(folder:)`. That saves the folder in UserDefaults (`review.folder.<conversation id>`),
-  so later windows start in that worktree. The remembered value for the test conversation was
-  `/private/tmp/ein13910-cross-dataset-deadlocks` before this work.
+- **Remembered folder:** automatic branch selection no longer saves a folder. Existing saved
+  user choices remain. The old remembered value for the test conversation was
+  `/private/tmp/ein13910-cross-dataset-deadlocks`.
 - **Reloads:** when the folder changes, `pullRequests` is cleared and the list reloads. Look
   for flicker, the picker flashing, or a double load.
 - **Branches that do have a PR:** a branch whose PR is older than the 30 listed, and that the
@@ -99,8 +106,8 @@ History of their complaints, in order:
   is wrong for self-hosted GitLab. Filtering compares paths only, so mostly harmless.
 - **Agents not seen:** Codex subagents' own rollouts are not scanned; Claude sidechains are
   included.
-- **Toolbar:** the scope menu, "Compare With" and the status line still describe the folder,
-  and are confusing in PR or branch scope. The toolbar overflowed (») once before.
+- **Toolbar:** PR scope now hides the folder and Compare With menus. Check smaller windows
+  for overflow; the status line still competes with the window title for space.
 - **"since":** every PR counts as "since the conversation began" for old conversations.
 - **Phone:** the ⋯ ▸ Review sheet shows review items only. It has no PRs, branches or diff.
 

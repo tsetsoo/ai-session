@@ -46,6 +46,7 @@ final class ReviewSessionTests: XCTestCase {
     /// helper that doesn't take `--session` (exit 64).
     private var transcriptBranch: String?
     private var sessionUnsupported = false
+    private var listFails = false
 
     private let mapping = """
     diff --git a/f.txt b/f.txt
@@ -125,6 +126,7 @@ final class ReviewSessionTests: XCTestCase {
             return SSHExecResult(exitCode: writeExit, stdout: "{}", stderr: writeExit == 0 ? "" : "ai-todo-review: PR 9 moved on to abc12345")
         }
         if command.contains(" prs ") {
+            if listFails { return SSHExecResult(exitCode: 1, stdout: "", stderr: "unavailable") }
             if sessionUnsupported, command.contains("--session") { return SSHExecResult(exitCode: 64, stdout: "", stderr: "usage") }
             if let transcriptBranch, command.contains("--session") {
                 let rows: [[String: Any]] = [
@@ -638,6 +640,7 @@ final class ReviewSessionTests: XCTestCase {
         let (session, _) = makeSession()
         UserDefaults.standard.removeObject(forKey: "review.folder.\(session.key)")
         addTeardownBlock { UserDefaults.standard.removeObject(forKey: "review.folder.\(session.key)") }
+        session.pick(scope: .uncommitted)
         await session.load(config: config)
         await session.loadWorktrees(config: config)
         XCTAssertEqual(session.suggestedWorktrees.map(\.path), ["/tmp/agent-tree"])
@@ -664,14 +667,20 @@ final class ReviewSessionTests: XCTestCase {
     func testTheConversationsPullRequestOpensWithExactlyItsChanges() async throws {
         let (session, _) = makeSession()
         UserDefaults.standard.removeObject(forKey: "review.folder.\(session.key)")
+        XCTAssertTrue(session.isResolvingTarget)
         await session.load(config: config)
         await session.loadPullRequests(config: config)
+        XCTAssertTrue(session.isResolvingTarget, "the folder diff stays hidden until both lookups finish")
         // Updated lately but on no branch the agent is on: may be another conversation's.
         XCTAssertEqual(session.scope, .uncommitted)
         // Its branch is checked out in a worktree active since the conversation began: the agent's.
         await session.loadWorktrees(config: config)
         XCTAssertEqual(session.scope, .pullRequest)
         XCTAssertEqual(session.selectedPullRequest, 1859)
+        XCTAssertFalse(session.isResolvingTarget)
+        XCTAssertNil(session.result, "the folder diff must not appear under the PR heading")
+        XCTAssertTrue(session.diff.files.isEmpty)
+        XCTAssertTrue(session.suggestedWorktrees.isEmpty, "the target is known, so unrelated trees are not suggested")
         await session.load(config: config)
         XCTAssertTrue(commands.contains { $0.contains("fetch-pr") && $0.contains("--number 1859") })
         let diff = try XCTUnwrap(commands.last { $0.contains(" diff ") })
@@ -734,6 +743,20 @@ final class ReviewSessionTests: XCTestCase {
         XCTAssertNil(session.reviewedBranch)
         XCTAssertEqual(session.folder, "/tmp/agent-tree")
         XCTAssertEqual(session.scope, .branch)
+        let (again, _) = makeSession()
+        XCTAssertEqual(again.folder, again.conversation.cwd, "an automatic target must not become a remembered user choice")
+    }
+
+    func testFailedTargetLookupFallsBackToFolderAfterBothAttempts() async {
+        listFails = true
+        let session = makeCodexSession()
+        await session.loadWorktrees(config: config)
+        XCTAssertTrue(session.isResolvingTarget)
+        await session.loadPullRequests(config: config)
+        XCTAssertFalse(session.isResolvingTarget)
+        XCTAssertEqual(session.scope, .uncommitted)
+        await session.load(config: config)
+        XCTAssertNotNil(session.result)
     }
 
     func testAnOlderHelperStillListsThePullRequests() async throws {

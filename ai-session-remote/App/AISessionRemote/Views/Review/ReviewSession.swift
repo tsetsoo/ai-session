@@ -478,7 +478,11 @@ final class ReviewSession {
     /// The PR/MR shown in the Pull Request scope.
     private(set) var selectedPullRequest: Int?
     /// The user picked something themselves: the window doesn't pick a PR for them any more.
-    @ObservationIgnored private var userChose = false
+    private var userChose = false
+    private var pullRequestsLoaded = false
+
+    /// Don't present the folder's diff while the initial PR/branch lookup is still running.
+    var isResolvingTarget: Bool { !userChose && (!pullRequestsLoaded || !worktreesLoaded) }
 
     /// Shows exactly this PR's changes.
     func open(pullRequest number: Int, byUser: Bool = true) {
@@ -487,6 +491,9 @@ final class ReviewSession {
         reviewedBranch = nil
         selectedPullRequest = number
         pullRequest = nil
+        result = nil
+        diff = UnifiedDiff(files: [])
+        anchors = [:]
         scope = .pullRequest
     }
 
@@ -498,7 +505,7 @@ final class ReviewSession {
         if byUser { userChose = true }
         // Checked out somewhere: that worktree, so what isn't committed yet shows too.
         if let worktree = worktrees.first(where: { $0.branch == branch.name }) {
-            show(folder: worktree.path)
+            show(folder: worktree.path, remember: byUser)
             if scope != .branch { scope = .branch }
             return
         }
@@ -529,6 +536,12 @@ final class ReviewSession {
     /// updated since the conversation began) unless the user already chose what to look at.
     func loadPullRequests(config: HostConnectionConfig) async {
         let asked = folder
+        defer {
+            if asked == folder {
+                pullRequestsLoaded = true
+                openLikelyPullRequest()
+            }
+        }
         let since = Self.gitTime(conversation.createdAt)
         guard var output = try? await exec(config, TmuxCommandBuilder.reviewPullRequests(
             cwd: asked, since: since, tool: conversation.tool, sessionID: conversation.sessionId)),
@@ -548,13 +561,13 @@ final class ReviewSession {
         guard let list: ReviewPullRequestList = try? await decode(output) else { return }
         helperProblem = nil
         pullRequests = list
-        openLikelyPullRequest()
     }
 
     /// Opens the conversation's PR when it's clear which that is (see `likely`), once the
     /// list and the worktrees are in, unless the user chose what to look at.
     private func openLikelyPullRequest() {
-        guard !userChose, selectedPullRequest == nil, reviewedBranch == nil, worktreesLoaded, let list = pullRequests else { return }
+        guard !userChose, selectedPullRequest == nil, reviewedBranch == nil,
+              worktreesLoaded, pullRequestsLoaded, let list = pullRequests else { return }
         var branches = Set(worktrees.filter(\.changedSince).compactMap(\.branch))
         if chosenFolder == nil, let branch = status?.branch { branches.insert(branch) }
         switch list.target(linkedURL: conversation.pullRequest?.url, agentBranches: branches) {
@@ -572,7 +585,7 @@ final class ReviewSession {
     /// The repository's worktrees, most recently active first; from the last load.
     private(set) var worktrees: [ReviewWorktrees.Worktree] = []
     /// The worktrees were read once (or failed to be): the window may open something by itself.
-    @ObservationIgnored private var worktreesLoaded = false
+    private var worktreesLoaded = false
 
     private static func folderDefaultsKey(_ key: String) -> String { "review.folder.\(key)" }
 
@@ -598,15 +611,16 @@ final class ReviewSession {
     /// conversation's own folder again. The window's reload follows.
     func choose(folder: String?) {
         userChose = true
-        show(folder: folder)
+        show(folder: folder, remember: true)
     }
 
     /// Reviews `folder` (nil: the conversation's own); for the user's pick and for opening a
     /// branch that's checked out there.
-    private func show(folder: String?) {
+    private func show(folder: String?, remember: Bool) {
         let folder = folder.flatMap { $0 == conversationRoot || Self.matches($0, [conversation.cwd]) ? nil : $0 }
         let leftBranch = reviewedBranch != nil
         reviewedBranch = nil
+        if remember { UserDefaults.standard.set(folder, forKey: Self.folderDefaultsKey(key)) }
         guard folder != chosenFolder else {
             if leftBranch {
                 pullRequest = nil
@@ -619,7 +633,6 @@ final class ReviewSession {
             return
         }
         chosenFolder = folder
-        UserDefaults.standard.set(folder, forKey: Self.folderDefaultsKey(key))
         // Another tree: nothing on screen belongs to it.
         status = nil
         result = nil
@@ -651,7 +664,7 @@ final class ReviewSession {
     /// where its agent may really be working. Offered while the window shows the
     /// conversation's own folder.
     var suggestedWorktrees: [ReviewWorktrees.Worktree] {
-        guard chosenFolder == nil else { return [] }
+        guard !isResolvingTarget, scope != .pullRequest, reviewedBranch == nil, chosenFolder == nil else { return [] }
         let here = status?.root ?? conversation.cwd
         return Array(worktrees.filter {
             $0.changedSince && !$0.current && $0.path != here && !Self.matches($0.path, otherConversationFolders)
