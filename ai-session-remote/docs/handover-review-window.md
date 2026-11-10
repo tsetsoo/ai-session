@@ -132,12 +132,19 @@ History of their complaints, in order:
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - **Tests:**
   - `swift test` (580)
-  - `xcodebuild -scheme AISessionRemoteMac -derivedDataPath <scratch>/dd CODE_SIGNING_ALLOWED=NO test` (62)
+  - `xcodebuild -scheme AISessionRemoteMac -derivedDataPath <scratch>/dd CODE_SIGNING_ALLOWED=NO test` (90)
   - `scripts/todo/test-todo-scripts.sh` (308, about 8 min). Timing tests fail when load is
     above about 30: rerun. When running it from a copy, copy `scripts`, `watchers` and `jobs`.
   - Quick check of the review sections only: lines 1–94 of the script, then
     `REVIEW="${SCRIPT_DIR}/ai-todo-review"`, then the `# ai-todo-review prs / fetch-pr` section
     through `pass "review_prs_from_the_conversations_transcript"`, then the last 4 lines.
+- **Unsigned Mac test host stuck before tests start:** a process sample showed the main
+  thread blocked in `TodoHubSettings.token` / `SecItemCopyMatching`, reading the real hub
+  token. Avoid changing Keychain access: run `build-for-testing`, copy the generated
+  `Build/Products/*.xctestrun` beside the original, set the test target's `CommandLineArguments`
+  to `["-todoHub.baseURL", "disabled://tests"]`, then use `test-without-building -xctestrun`
+  on that copy. This overrides the URL only for the test process. An empty string is omitted
+  by Xcode and doesn't reliably override the saved URL.
 - **Install host scripts from a clean detached worktree of main:**
   - This Mac: `scripts/todo/install.sh`.
   - The other two:

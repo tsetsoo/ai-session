@@ -346,10 +346,8 @@ struct ReviewView: View {
                                              open: { session.open(pullRequest: $0) },
                                              openBranch: { session.open(branch: $0) })
                     } label: {
-                        Label(session.scope == .pullRequest || session.reviewedBranch != nil ? "Switch…" : "Review a Pull Request…",
-                              systemImage: "arrow.triangle.pull")
+                        Text(session.scope == .pullRequest || session.reviewedBranch != nil ? "Switch…" : "Review a Pull Request…")
                     }
-                    .labelStyle(.titleAndIcon)
                     .menuStyle(.borderlessButton)
                     .help("Your pull requests in this repository, latest first. One shows exactly its changes, as on \(list.provider == "gitlab" ? "GitLab" : "GitHub").")
                 }
