@@ -123,7 +123,7 @@ struct ReviewView: View {
             }
         }
         // The PR on screen (the picked one, or the branch's), with its threads.
-        .task(id: "\(pullRequestReads)|\(session.folder)|\(session.selectedPullRequest ?? 0)|\(session.scope == .pullRequest)|\(session.reviewedBranch?.branch.ref ?? "")") {
+        .task(id: "\(pullRequestReads)|\(session.folder)|\(session.selectedPullRequest ?? 0)|\(session.scope == .pullRequest)|\(session.reviewedBranch?.branch.ref ?? "")|\(session.reviewedWorktree?.branch ?? "")") {
             await withConfig { await session.loadPullRequest(config: $0) }
         }
         // A run started here or by an earlier window: followed while the window is open.
@@ -199,8 +199,10 @@ struct ReviewView: View {
 
     /// What's on screen: a change of any of it is a new load.
     private var loadKey: String {
-        [session.scope.rawValue, session.baseCommit?.sha ?? "", session.folder,
-         String(session.selectedPullRequest ?? 0), session.reviewedBranch?.branch.ref ?? ""].joined(separator: "|")
+        let matched = session.reviewedWorktree?.branch.flatMap { session.pullRequests?.pullRequest(for: $0) }
+        return [session.scope.rawValue, session.baseCommit?.sha ?? "", session.folder,
+                String(session.selectedPullRequest ?? 0), session.reviewedBranch?.branch.ref ?? "", session.reviewedWorktree?.branch ?? "",
+                matched?.comparisonKey ?? ""].joined(separator: "|")
     }
 
     private func reload() async {
@@ -245,10 +247,10 @@ struct ReviewView: View {
                 }
             }
             if !session.isResolvingTarget, !session.suggestedWorktrees.isEmpty {
-                Section("The Agent May Be Working Elsewhere") {
+                Section("Other Worktrees Used by This Conversation") {
                     ForEach(session.suggestedWorktrees) { worktree in
                         Button {
-                            session.choose(folder: worktree.path)
+                            session.open(worktree: worktree)
                         } label: {
                             VStack(alignment: .leading, spacing: 1) {
                                 Label("Review \(worktree.name)", systemImage: "arrow.triangle.branch")
@@ -281,7 +283,7 @@ struct ReviewView: View {
                         .foregroundStyle(DS.warning)
                 }
             }
-            if !session.isResolvingTarget {
+            if !session.isResolvingTarget, !session.needsTargetChoice {
                 Section(filesHeader) {
                     ForEach(session.diff.files) { file in
                         FileRow(file: file, comments: session.commentCount(file: file))
@@ -331,18 +333,42 @@ struct ReviewView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            } else if !list.prs.isEmpty || !(list.branches ?? []).isEmpty {
-                Section(session.reviewedBranch != nil ? "Branch" : list.provider == "gitlab" ? "Merge Request" : "Pull Request") {
-                    if let branch = session.reviewedBranch?.branch {
+            }
+            if !list.prs.isEmpty || !(list.branches ?? []).isEmpty || session.reviewedWorktree != nil || !session.conversationWorktrees.isEmpty {
+                Section(session.reviewedWorktree != nil && session.scope != .pullRequest ? "Worktree" : session.reviewedBranch != nil ? "Branch" : list.provider == "gitlab" ? "Merge Request" : "Pull Request") {
+                    if let tree = session.reviewedWorktree, session.scope != .pullRequest {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(tree.name).fontWeight(.medium)
+                            Text(tree.path).font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.middle)
+                            Text("Committed and uncommitted changes").font(.caption).foregroundStyle(.secondary)
+                            if let branch = tree.branch, let pr = list.pullRequest(for: branch) {
+                                Text("\(list.provider == "gitlab" ? "MR !" : "PR #")\(pr.number) · \(pr.state)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    } else if let branch = session.reviewedBranch?.branch {
                         BranchRow(branch: branch)
                     } else if session.scope == .pullRequest, let number = session.selectedPullRequest,
                        let pr = list.prs.first(where: { $0.number == number }) {
                         PullRequestRow(item: pr, provider: list.provider, selected: true)
                     }
                     HStack {
-                        Text(session.scope == .pullRequest || session.reviewedBranch != nil ? "Switch…" : "Review a Pull Request…")
+                        Text(session.scope == .pullRequest || session.reviewedBranch != nil || session.reviewedWorktree != nil ? "Switch…" : "Review a Pull Request…")
                         Spacer()
                         Menu {
+                            if !session.conversationWorktrees.isEmpty {
+                                Section("Worktrees Used by This Conversation") {
+                                    ForEach(session.conversationWorktrees) { tree in
+                                        Button {
+                                            session.open(worktree: tree)
+                                        } label: {
+                                            Text(tree.name)
+                                            Text(tree.path)
+                                        }
+                                    }
+                                }
+                            }
                             PullRequestMenuItems(list: list,
                                                  selected: session.scope == .pullRequest ? session.selectedPullRequest : nil,
                                                  selectedBranch: session.reviewedBranch?.branch.name,
@@ -392,6 +418,8 @@ struct ReviewView: View {
     private var detail: some View {
         if session.isResolvingTarget {
             ProgressView("Finding this conversation’s changes…")
+        } else if session.needsTargetChoice {
+            targetPicker(session.pullRequests ?? ReviewPullRequestList(provider: nil, access: false, prs: []))
         } else if let path = selectedPath, let file = session.diff.files.first(where: { $0.path == path }) {
             FileDiffView(file: file, session: session, focus: focus)
                 // By file only: a reload with new revisions keeps a half-written comment.
@@ -403,13 +431,19 @@ struct ReviewView: View {
         } else if session.scope != .pullRequest, session.reviewedBranch == nil, session.diff.files.isEmpty, let list = session.pullRequests,
                   list.access, !list.prs.isEmpty || !(list.branches ?? []).isEmpty {
             // Nothing in the folder, and the agent's work is in a PR: pick it right here.
-            PullRequestPicker(list: list, emptyTitle: session.result == nil ? nil : emptyTitle,
-                              open: { session.open(pullRequest: $0) }, openBranch: { session.open(branch: $0) })
+            targetPicker(list)
         } else if session.diff.files.isEmpty, session.failure == nil, session.result != nil {
             ContentUnavailableView(emptyTitle, systemImage: "checkmark.circle", description: Text(emptyDetail))
         } else {
             Color.clear
         }
+    }
+
+    private func targetPicker(_ list: ReviewPullRequestList) -> some View {
+        PullRequestPicker(list: list, emptyTitle: session.needsTargetChoice || session.result == nil ? nil : emptyTitle,
+                          worktrees: session.conversationWorktrees, folder: session.conversation.cwd,
+                          openWorktree: { session.open(worktree: $0) }, reviewFolder: { session.choose(folder: nil) },
+                          open: { session.open(pullRequest: $0) }, openBranch: { session.open(branch: $0) })
     }
 
     // MARK: Toolbar
@@ -429,7 +463,7 @@ struct ReviewView: View {
                         Section("Worktrees of This Repository, Latest First") {
                             ForEach(session.worktrees.prefix(30)) { worktree in
                                 Button {
-                                    session.choose(folder: worktree.path)
+                                    session.open(worktree: worktree)
                                 } label: {
                                     Text((worktree.changedSince ? "● " : "") + worktree.name)
                                     Text(worktreeDetail(worktree))
@@ -563,7 +597,7 @@ struct ReviewView: View {
             } primaryAction: {
                 Task { await withConfig { await session.startReview(tool: "claude", brief: brief, config: $0) } }
             }
-            .disabled(session.reviewBlocker != nil || session.isLoading || session.isResolvingTarget)
+            .disabled(session.reviewBlocker != nil || session.isLoading || session.isResolvingTarget || session.needsTargetChoice)
             .help(session.reviewBlocker ?? "Have a reviewer agent read the changes on screen and list what it would raise. "
                   + "Its findings go to you, not to the agent, until you send them.")
         }
@@ -613,7 +647,7 @@ struct ReviewView: View {
         if let active = worktree.activeAt.flatMap(ReviewSync.date(from:)) {
             parts.append("active " + active.formatted(.relative(presentation: .named)))
         }
-        if worktree.current { parts.append("on screen") }
+        if ReviewPullRequestList.sameFolder(worktree.path, session.folder) { parts.append("on screen") }
         return parts.joined(separator: " · ")
     }
 
@@ -635,6 +669,7 @@ struct ReviewView: View {
 
     private var statusLine: String {
         if session.isResolvingTarget { return "Finding this conversation’s changes…" }
+        if session.needsTargetChoice { return "Choose a worktree, branch, or pull request" }
         var parts: [String] = []
         if session.scope == .pullRequest, let number = session.selectedPullRequest {
             guard let result = session.result else { return "Loading \(pullRequestName(number))…" }
@@ -686,20 +721,22 @@ private enum PullRequestGroups {
 
     /// What the conversation made or changed (latest first), its branches without a PR, what
     /// it read, then the account's other PRs: open, then merged or closed.
-    static func make(_ list: ReviewPullRequestList) -> [Group] {
+    static func make(_ list: ReviewPullRequestList, includeOthers: Bool = true) -> [Group] {
         let byMine: (ReviewPullRequestList.Item, ReviewPullRequestList.Item) -> Bool = { ($0.mineAt ?? "") > ($1.mineAt ?? "") }
-        let made = list.prs.filter(\.isMine).sorted(by: byMine)
-        let read = list.prs.filter { $0.mine == "read" }.sorted(by: byMine)
-        let others = list.prs.filter { $0.mine == nil }
+        let made = list.prs.filter { list.isConversationWork($0) }.sorted(by: byMine)
+        let madeIDs = Set(made.map(\.number))
+        let read = list.prs.filter { $0.mine != nil && !madeIDs.contains($0.number) }.sorted(by: byMine)
+        let others = list.prs.filter { $0.mine == nil && !madeIDs.contains($0.number) }
         let pr = list.provider == "gitlab" ? "Merge Requests" : "Pull Requests"
-        return [
-            Group(title: "Made by This Conversation", entries: made.map(Entry.pullRequest)),
-            Group(title: "Its Branches Without a Pull Request", entries: (list.branches ?? []).map(Entry.branch)),
-            Group(title: "Read by This Conversation", entries: read.map(Entry.pullRequest)),
+        let groups = [
+            Group(title: "Pull Requests for This Conversation’s Work", entries: made.map(Entry.pullRequest)),
+            Group(title: "Branches Without a Listed Pull Request", entries: (list.branches ?? []).map(Entry.branch)),
+            Group(title: "Other Pull Requests Mentioned by This Conversation", entries: read.map(Entry.pullRequest)),
             Group(title: list.transcript == true ? "Your Other Open \(pr)" : "Open", entries: others.filter { $0.state == "open" }.map(Entry.pullRequest)),
             Group(title: list.transcript == true ? "Your Other Merged or Closed \(pr)" : "Merged or Closed",
                   entries: others.filter { $0.state != "open" }.map(Entry.pullRequest)),
-        ].filter { !$0.entries.isEmpty }
+        ]
+        return (includeOthers ? groups : Array(groups.prefix(2))).filter { !$0.entries.isEmpty }
     }
 }
 
@@ -742,6 +779,10 @@ private struct PullRequestPicker: View {
     let list: ReviewPullRequestList
     /// Why there's nothing else to show (the folder's scope came back empty), if it did.
     let emptyTitle: String?
+    let worktrees: [ReviewWorktrees.Worktree]
+    let folder: String
+    let openWorktree: (ReviewWorktrees.Worktree) -> Void
+    let reviewFolder: () -> Void
     let open: (Int) -> Void
     let openBranch: (ReviewPullRequestList.Branch) -> Void
 
@@ -755,7 +796,31 @@ private struct PullRequestPicker: View {
             }
             .padding([.horizontal, .top], DS.spacing.l)
             List {
-                ForEach(PullRequestGroups.make(list), id: \.title) { group in
+                if !worktrees.isEmpty {
+                    Section("Worktrees Used by This Conversation") {
+                        ForEach(worktrees) { tree in
+                            Button { openWorktree(tree) } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(tree.name).fontWeight(.medium)
+                                    Text(tree.path).font(.caption).foregroundStyle(.secondary)
+                                    if let branch = tree.branch, let pr = list.pullRequest(for: branch) {
+                                        Text("\(list.provider == "gitlab" ? "MR !" : "PR #")\(pr.number) · \(pr.state)")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }
+                Section("This Checkout") {
+                    Button(action: reviewFolder) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Review this folder’s uncommitted changes")
+                            Text(folder).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.buttonStyle(.plain)
+                }
+                ForEach(PullRequestGroups.make(list, includeOthers: false), id: \.title) { group in
                     Section(group.title) {
                         ForEach(group.entries) { entry in
                             switch entry {
@@ -787,7 +852,7 @@ private struct PullRequestPicker: View {
     private var subtitle: String {
         let site = list.provider == "gitlab" ? "GitLab" : "GitHub"
         var text = emptyTitle.map { "\($0) in this folder. " } ?? ""
-        text += "Pick a pull request to see exactly its changes, as on \(site), or a branch to see what it adds."
+        text += "Choose a worktree for its committed and unpublished changes, or a branch or pull request for its diff on \(site). Other worktrees are available in the folder menu."
         if list.transcript == false { text += " This conversation's transcript isn't on the computer, so its own work can't be told apart." }
         return text
     }

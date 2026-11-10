@@ -1,16 +1,19 @@
 # Handover: review window — find and show the conversation's PRs/MRs and branches
 
-Status on 2026-11-10: the installed app was inspected on the real test conversation. It
-opens **#1859** after the transcript lookup. Reproduced problems: the initial folder diff
-flashes before the lookup completes; unrelated worktree suggestions remain in PR scope;
-`main` and Compare With describe the folder beside the PR diff; Switch… renders as an icon.
-Two copies of the app were running (the installed app and another worktree's release build),
-so inspect `~/Applications/AI Session Remote.app` explicitly when using computer automation.
+Status on 2026-11-10 (evening): the user said the PR-first approach still failed to identify
+what they changed and asked to base review on the worktree, its branches and PRs. The resolver
+now uses the conversation's assigned worktree first. For older conversations on a shared
+checkout it uses branches the conversation created/pushed, validated against Git, and the
+worktrees checking them out. Repository-wide activity and PR comments do not prove ownership.
 
-Follow-up fixes: hide the folder diff until both target lookups finish (including failures),
-clear the previous diff when opening a PR, hide worktree suggestions and folder toolbar
-controls in PR scope, show Switch… with its title, and remember worktree choices only when
-made by the user. Regression checks cover target loading/failure and automatic folder memory.
+A worktree review shows the live snapshot, including unpublished edits and commits. A matching
+PR supplies its target branch (including release targets), but never replaces the live
+snapshot with the last pushed head. `fetch-pr --live SHA` refreshes the target ref and computes
+the merge base with the local snapshot, so unpublished rebases do not include unrelated base
+commits. An unchanged merged PR head retains its historical PR base; a moved merged branch
+uses the live base and leaves its completed PR snapshot available explicitly. Explicit PR selection still opens the
+published PR diff. With no trustworthy target, the window asks for a choice instead of showing
+a shared checkout's unrelated changes. Saved folder preferences are no longer restored.
 
 ## What the user wants
 
@@ -24,9 +27,14 @@ Their test case: the todo **"Cypher query simplification"** on **spreads-macbook
   `e6388597-160c-4ed1-be2f-6efb411ee839`, Codex session `01a15ed1-3d29-7fd1-b72e-efb9f1287608`.
 - It has run since 2026-10-22 and opened dozens of PRs, each from a worktree it made itself
   under `/private/tmp/ein…` or `~/.codex/worktrees/…`.
-- Expected: the window opens **#1859** (GitHub verified 2026-11-10: 9 files, +336 −217;
-  the earlier 5 files, +323 −92 was before subsequent updates), lists 24 PRs under
-  "Made by This Conversation", and lists 16 branches without a PR.
+- Latest verified ownership on the evening of 2026-11-10: branch
+  `codex/ein-13516-restore-edge-followup`, worktree `/private/tmp/ein13516-restore-edge-followup`,
+  PR **#1883** (merged during validation). The previous **#1859** expectation is historical; it must not pin the
+  conversation to an older PR as the conversation moves on.
+- Other proven worktrees include `codex/ein-14093-single-delete-cleanup` (PR #1878) and
+  `codex/ein-13515-bulk-delete` (PR #1876). The helper returned 48 extant owned branches.
+- #1859 still has 9 files, +336 −217 as verified earlier that day; it is available explicitly
+  in the target switcher, alongside the conversation's other branches and PRs.
 
 History of their complaints, in order:
 1. Wrong tree reviewed.
@@ -39,8 +47,10 @@ History of their complaints, in order:
 ## How it works now
 
 **Host helper**, `ai-session-remote/scripts/todo/ai-todo-review` (Python, installed to `~/.ai-remote/bin/`):
-- `prs <cwd> [--since ISO] [--session claude|codex:<id>]` lists the PRs/MRs the computer's gh/glab
-  account opened, the 30 most recently updated.
+- `prs <cwd> [--since ISO] [--session claude|codex:<id>]` starts with the account’s 30 most
+  recently updated PRs/MRs, then directly looks up the checked-out and proven conversation
+  branches across authors and states. GitHub uses a batched GraphQL head-branch query; GitLab
+  uses source-branch filtering. The latest 15 proven branches are enriched per request.
 - With `--session` it also reads the conversation's transcript (`conversation_work`, class `Work`).
   This is plain text parsing, with no model:
   - **Codex:** `CommandExecution` items, each a command with its output; `McpToolCall` items
@@ -58,43 +68,45 @@ History of their complaints, in order:
 - `add_work()` filters, enriches and marks the results:
   - **This repository only:** PRs by URL slug against origin. Branches and number-only PRs are
     dropped only when their cwd is provably another repo (`other_repo`).
-  - **Branches:** must exist locally or on origin, with commits beyond the default branch.
+  - **Branches:** must exist locally or on origin. `work_branches` retains ownership even
+    after merge; the older `branches` list contains only branches with changes and no listed PR.
   - **PRs missing from the account's list:** fetched in one GraphQL query (one by one if that
     fails), at most 15.
   - **PR fields:** `mine` (`created`|`changed`|`read`) and `mine_at`. A PR whose head is one of
     the conversation's branches counts as `changed`.
-  - **Output:** the PR list, plus `branches` (those with no listed PR) and `transcript` (true/false).
+  - **Output:** the PR list, `work_branches` (all extant proven branches, even merged),
+    `default_branch`, `branches` (changed branches with no listed PR), and `transcript`.
+    Local ownership is still returned if the forge CLI cannot be reached. `repository` and
+    each PR’s `head_repository` prevent same-named fork branches being associated with local
+    branches. GitHub validates head repository identity; GitLab validates source/target project IDs.
 - `fetch-pr <cwd> --number N` fetches `pull/N/head` into `refs/ai-review/pr/N`. The base is the
   merge base; for a merged PR it is the parent of the first commit or GitLab's
   `diff_refs.base_sha`. The diff matched GitHub's file and line counts for 8 real PRs.
 - `status`/`diff --ref X` now also accept `origin/<branch>`.
 
 **App:**
-- `Sources/AISessionCore/Review/ReviewModels.swift`: `ReviewPullRequestList` (`Item.mine/mineAt/isMine`,
-  `Branch`, `branches`, `transcript`) and `target(linkedURL:agentBranches:)`. The runner-linked
-  PR comes first, then whatever the conversation made, changed or pushed most recently, then
-  the old rule (open PR on the agent's branch).
-- `App/AISessionRemote/Views/Review/ReviewSession.swift`:
-  - `loadPullRequests` sends `--session`, and retries without it on exit 64 (older helper).
-  - `openLikelyPullRequest` runs only after both the PR list and the worktrees have loaded, and
-    only until the user picks something (`userChose`).
-  - `open(pullRequest:)` shows the PR scope.
-  - `open(branch:)`: a branch checked out in a worktree opens that worktree in Branch scope, so
-    uncommitted work shows too. Otherwise `reviewedBranch` is set, and the reads use
-    `--ref <branch or origin/branch>` from the current folder.
-  - `choose(folder:)` is the user's pick; `show(folder:)` is shared with branch opening.
-- `App/AISessionRemote/Views/Review/ReviewView.swift`:
-  - **Detail pane:** with nothing to show, `PullRequestPicker` lists "What to review?" in groups
-    built by `PullRequestGroups.make`: Made by This Conversation, Its Branches Without a Pull
-    Request, Read by This Conversation, Your Other Open, Your Other Merged or Closed.
-  - **Sidebar:** the open PR or branch (`PullRequestRow` / `BranchRow`), a **Switch…** menu,
-    then the files.
+- `Sources/AISessionCore/Review/ReviewModels.swift`: `target` and `associatedWorktrees` resolve
+  assigned worktree → actual non-default checkout → proven branches/worktrees → explicit PR
+  link. Commit/reflog activity ranks only already-owned worktrees. Another conversation’s
+  worktree is excluded. Multiple historical PRs without branch evidence require a choice.
+- `ReviewSession` waits for PR and worktree reads, resolves once, and respects manual choices.
+  It opens an assigned worktree in Conversation scope (recorded base → live snapshot), or an
+  agent-created worktree in Branch scope. A branch’s matched PR supplies the base when present;
+  the local snapshot supplies the new side. PR scope remains an explicit published snapshot.
+  PR state is part of the diff load key so merging a PR reloads its historical comparison.
+  Target changes invalidate in-flight diff/PR reads synchronously; reselecting the same checkout
+  preserves PR information when its source is unchanged.
+  Worktree discovery stays rooted in the conversation when switching among temporary trees;
+  PR discovery also queries the currently selected checkout’s head branch.
+- `ReviewView` shows the chosen worktree, its branch and matching PR, and offers the other
+  proven worktrees in Switch…. An ambiguous target opens the picker even if the original
+  shared folder has unrelated dirty files. Other account PRs remain in the explicit switcher.
+  Comments on another PR do not put it into the initial conversation-work group.
 
 ## Remaining suspects for "still a bit buggy"
 
-- **Remembered folder:** automatic branch selection no longer saves a folder. Existing saved
-  user choices remain. The old remembered value for the test conversation was
-  `/private/tmp/ein13910-cross-dataset-deadlocks`.
+- **Remembered folder:** removed from initial resolution. Every new window resolves from the
+  conversation’s current identity and Git data; an old preference cannot redirect it.
 - **Reloads:** when the folder changes, `pullRequests` is cleared and the list reloads. Look
   for flicker, the picker flashing, or a double load.
 - **Branches that do have a PR:** a branch whose PR is older than the 30 listed, and that the
@@ -132,7 +144,7 @@ History of their complaints, in order:
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - **Tests:**
   - `swift test` (580)
-  - `xcodebuild -scheme AISessionRemoteMac -derivedDataPath <scratch>/dd CODE_SIGNING_ALLOWED=NO test` (90)
+  - `xcodebuild -scheme AISessionRemoteMac -derivedDataPath <scratch>/dd CODE_SIGNING_ALLOWED=NO test` (96)
   - `scripts/todo/test-todo-scripts.sh` (308, about 8 min). Timing tests fail when load is
     above about 30: rerun. When running it from a copy, copy `scripts`, `watchers` and `jobs`.
   - Quick check of the review sections only: lines 1–94 of the script, then
@@ -157,4 +169,4 @@ History of their complaints, in order:
 - **iPhone:** deploy only when the phone UI changes.
 - **Real data:** reproduce on the Spread Mac. Example:
   `cd /private/tmp/ein13910-cross-dataset-deadlocks && ai-todo-review prs . --since 2026-10-22T20:38:40Z --session codex:01a15ed1-3d29-7fd1-b72e-efb9f1287608`
-  (delete `~/.ai-remote/review-scan/codex-01a15ed1*` first to force a full rescan).
+  (a full rescan is only needed when transcript parsing changes; ownership/PR enrichment is live).

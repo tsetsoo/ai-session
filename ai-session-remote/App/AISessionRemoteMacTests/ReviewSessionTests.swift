@@ -47,6 +47,12 @@ final class ReviewSessionTests: XCTestCase {
     private var transcriptBranch: String?
     private var sessionUnsupported = false
     private var listFails = false
+    private var worktreeRows: [[String: Any]]?
+    private var matchingBranchPR = false
+    private var branchPRBase = "release"
+    private var branchPRState = "open"
+    private var branchWorktreeHead = "head1"
+    private var emptyBranchDiff = false
 
     private let mapping = """
     diff --git a/f.txt b/f.txt
@@ -76,6 +82,9 @@ final class ReviewSessionTests: XCTestCase {
                 return json(["root": "/project", "branch": "ai/x-1", "head": "tip1", "revision": "tip1", "clean": true,
                              "ref": "ai/x-1"])
             }
+            if command.contains("status '/tmp/agent-tree'") {
+                return json(["root": "/tmp/agent-tree", "branch": "codex/fk", "head": branchWorktreeHead, "revision": revision, "clean": false])
+            }
             if folderGone { return SSHExecResult(exitCode: 69, stdout: "", stderr: "no folder") }
             if atPullRequestHead {
                 return json(["root": "/w", "branch": "feat", "head": revision, "revision": revision, "clean": true, "ahead": 0, "behind": 0])
@@ -96,7 +105,7 @@ final class ReviewSessionTests: XCTestCase {
             let patch = renamed
                 ? "diff --git a/f.txt b/g.txt\nsimilarity index 90%\nrename from f.txt\nrename to g.txt\n--- a/f.txt\n+++ b/g.txt\n@@ -1,2 +1,3 @@\n a\n+inserted\n b\n"
                 : "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,3 @@\n a\n+inserted\n b\n"
-            return json(["from": "head1", "to": revision, "scope": scope, "patch": patch, "truncated": false])
+            return json(["from": "head1", "to": revision, "scope": scope, "patch": emptyBranchDiff && scope == "branch" ? "" : patch, "truncated": false])
         }
         if command.contains(" keep ") { return json(["kept": revision]) }
         if command.contains(" run ") {
@@ -129,14 +138,18 @@ final class ReviewSessionTests: XCTestCase {
             if listFails { return SSHExecResult(exitCode: 1, stdout: "", stderr: "unavailable") }
             if sessionUnsupported, command.contains("--session") { return SSHExecResult(exitCode: 64, stdout: "", stderr: "usage") }
             if let transcriptBranch, command.contains("--session") {
-                let rows: [[String: Any]] = [
+                var rows: [[String: Any]] = [
                     ["number": 1850, "title": "Older", "url": "https://github.com/o/r/pull/1850", "state": "merged", "draft": false,
                      "head_ref": "old", "base_ref": "main", "head_sha": "x", "updated_at": "2026-11-01T00:00:00Z", "since": false,
                      "mine": "created", "mine_at": "2026-11-06T10:00:00.000Z"],
                 ]
+                if matchingBranchPR {
+                    rows.append(["number": 1859, "title": "Branch PR", "head_ref": transcriptBranch, "base_ref": branchPRBase,
+                                 "head_sha": "prhead", "state": branchPRState, "draft": false, "since": true])
+                }
                 let branch: [String: Any] = ["name": transcriptBranch, "ref": "origin/" + transcriptBranch, "pushed": true,
                                              "at": "2026-11-06T12:00:00.000Z"]
-                return json(["provider": "github", "access": true, "viewer": "me", "prs": rows, "branches": [branch], "transcript": true])
+                return json(["provider": "github", "access": true, "viewer": "me", "prs": rows, "branches": matchingBranchPR ? [] : [branch], "work_branches": [branch], "transcript": true])
             }
             let rows: [[String: Any]] = [
                 ["number": 1859, "title": "Scoped FK", "url": "https://github.com/o/r/pull/1859", "state": "open", "draft": false,
@@ -147,14 +160,14 @@ final class ReviewSessionTests: XCTestCase {
             return json(["provider": "github", "access": true, "viewer": "me", "prs": rows])
         }
         if command.contains(" fetch-pr ") {
-            return json(["number": 1859, "head": "prhead", "base": "prbase", "base_ref": "main"])
+            return json(["number": 1859, "head": "prhead", "base": "prbase", "base_ref": matchingBranchPR ? branchPRBase : "main"])
         }
         if command.contains(" worktrees ") {
             let rows: [[String: Any]] = [
                 ["path": "/tmp/agent-tree", "branch": "codex/fk", "detached": false, "current": false, "active_at": "2026-11-06T20:00:00Z", "changed_since": true],
                 ["path": "/w", "branch": "main", "detached": false, "current": true, "active_at": "2026-11-01T00:00:00Z", "changed_since": false],
             ]
-            return json(["root": "/w", "worktrees": rows])
+            return json(["root": "/w", "worktrees": worktreeRows ?? rows])
         }
         if command.contains(" threads ") {
             let thread: [String: Any] = ["id": "T1", "path": "f.txt", "side": "new", "line_start": 2, "line_end": 2, "commit": "rev2",
@@ -637,11 +650,13 @@ final class ReviewSessionTests: XCTestCase {
     }
 
     func testAnAgentsOwnWorktreeIsSuggestedAndCanBeChosen() async throws {
-        let (session, _) = makeSession()
+        transcriptBranch = "codex/fk"
+        let session = makeCodexSession()
         UserDefaults.standard.removeObject(forKey: "review.folder.\(session.key)")
         addTeardownBlock { UserDefaults.standard.removeObject(forKey: "review.folder.\(session.key)") }
         session.pick(scope: .uncommitted)
         await session.load(config: config)
+        await session.loadPullRequests(config: config)
         await session.loadWorktrees(config: config)
         XCTAssertEqual(session.suggestedWorktrees.map(\.path), ["/tmp/agent-tree"])
         // Another conversation's worktree isn't this agent's.
@@ -657,9 +672,9 @@ final class ReviewSessionTests: XCTestCase {
         await session.load(config: config)
         XCTAssertTrue(commands.last { $0.contains(" status ") }?.contains("status '/tmp/agent-tree'") == true)
         XCTAssertTrue(commands.last { $0.contains(" diff ") }?.contains("diff '/tmp/agent-tree'") == true)
-        // Remembered for the next window of this conversation.
+        // A reopened window resolves from the conversation again, not the old folder.
         let (again, _) = makeSession()
-        XCTAssertEqual(again.folder, "/tmp/agent-tree")
+        XCTAssertEqual(again.folder, again.conversation.cwd)
         again.choose(folder: nil)
         XCTAssertEqual(again.folder, again.conversation.cwd)
     }
@@ -673,8 +688,12 @@ final class ReviewSessionTests: XCTestCase {
         XCTAssertTrue(session.isResolvingTarget, "the folder diff stays hidden until both lookups finish")
         // Updated lately but on no branch the agent is on: may be another conversation's.
         XCTAssertEqual(session.scope, .uncommitted)
-        // Its branch is checked out in a worktree active since the conversation began: the agent's.
+        // Activity in another worktree is not evidence this conversation owns it.
         await session.loadWorktrees(config: config)
+        XCTAssertEqual(session.scope, .uncommitted)
+        XCTAssertNil(session.selectedPullRequest)
+        XCTAssertTrue(session.needsTargetChoice)
+        session.open(pullRequest: 1859)
         XCTAssertEqual(session.scope, .pullRequest)
         XCTAssertEqual(session.selectedPullRequest, 1859)
         XCTAssertFalse(session.isResolvingTarget)
@@ -747,6 +766,112 @@ final class ReviewSessionTests: XCTestCase {
         XCTAssertEqual(again.folder, again.conversation.cwd, "an automatic target must not become a remembered user choice")
     }
 
+    func testAssignedWorktreeBeatsStalePRAndUsesItsRecordedBase() async throws {
+        worktreeBase = "assigned-base"
+        let (session, _) = makeSession(worktree: true)
+        var conversation = session.conversation
+        conversation.pullRequest = PullRequestLink(url: "https://github.com/o/r/pull/1850", state: "merged")
+        session.refresh(conversation)
+        worktreeRows = [["path": conversation.cwd, "branch": conversation.branch!, "detached": false,
+                         "current": true, "changed_since": true]]
+        await session.loadPullRequests(config: config)
+        await session.loadWorktrees(config: config)
+        XCTAssertEqual(session.reviewedWorktree?.path, conversation.cwd)
+        XCTAssertNil(session.selectedPullRequest)
+        XCTAssertEqual(session.scope, .conversation)
+        await session.load(config: config)
+        let command = try XCTUnwrap(commands.last { $0.contains(" diff ") })
+        XCTAssertTrue(command.contains("--from 'assigned-base'") && command.contains("--to 'rev2'"), command)
+        XCTAssertFalse(commands.contains { $0.contains("fetch-pr") }, "live unpublished changes must not be replaced by the PR head")
+    }
+
+    func testBranchWithPRStillOpensItsLiveWorktree() async throws {
+        transcriptBranch = "codex/fk"
+        matchingBranchPR = true
+        let session = makeCodexSession()
+        await session.loadPullRequests(config: config)
+        await session.loadWorktrees(config: config)
+        XCTAssertEqual(session.reviewedWorktree?.path, "/tmp/agent-tree")
+        XCTAssertEqual(session.scope, .branch)
+        await session.load(config: config)
+        XCTAssertEqual(session.scope, .branch)
+        let command = try XCTUnwrap(commands.last { $0.contains(" diff ") })
+        XCTAssertTrue(command.contains("--from 'prbase'") && command.contains("--to 'rev2'"), command)
+        XCTAssertFalse(command.contains("--to 'prhead'"), "unpublished changes belong in the worktree review")
+        XCTAssertTrue(commands.last { $0.contains("fetch-pr") }?.contains("--live 'rev2'") == true,
+                      "an open PR must compare the live rebased branch, not its older published head")
+        XCTAssertFalse(session.diff.files.isEmpty)
+        // Re-selecting the same live tree must not clear the diff without triggering a load.
+        let shown = session.result
+        session.open(worktree: try XCTUnwrap(session.reviewedWorktree))
+        XCTAssertEqual(session.result, shown)
+        worktreeRows = [["path": "/tmp/agent-tree", "branch": "next", "detached": false,
+                         "current": true, "changed_since": true]]
+        await session.loadWorktrees(config: config)
+        XCTAssertEqual(session.reviewedWorktree?.branch, "next", "Refresh follows the branch actually checked out in the selected tree")
+    }
+
+    func testReopeningTheCurrentWorktreePreservesItsPRControls() async throws {
+        transcriptBranch = "codex/fk"
+        let session = makeCodexSession()
+        await session.loadPullRequests(config: config)
+        await session.loadWorktrees(config: config)
+        await session.load(config: config)
+        await session.loadPullRequest(config: config)
+        let info = try XCTUnwrap(session.pullRequest)
+        session.pick(scope: .uncommitted)
+        session.open(worktree: try XCTUnwrap(session.reviewedWorktree))
+        XCTAssertEqual(session.pullRequest, info)
+    }
+
+    func testAResponseForTheOldTargetCannotPopulateTheNewTarget() async {
+        for pr in [true, false] {
+            held = nil
+            holdUncommitted = true
+            let (session, _) = makeSession()
+            let first = Task { await session.load(config: config) }
+            while held == nil { await Task.yield() }
+            if pr { session.open(pullRequest: 1859) }
+            else { session.open(worktree: .init(path: "/tmp/agent-tree", branch: "codex/fk")) }
+            held?.resume()
+            await first.value
+            XCTAssertNil(session.result, "an old response must be discarded before the next UI task starts")
+            XCTAssertTrue(session.diff.files.isEmpty)
+            XCTAssertFalse(session.isLoading)
+        }
+    }
+
+    func testAMergedBranchThatMovedUsesTheLiveBase() async {
+        transcriptBranch = "codex/fk"
+        matchingBranchPR = true
+        branchPRState = "merged"
+        let session = makeCodexSession()
+        await session.loadPullRequests(config: config)
+        await session.loadWorktrees(config: config)
+        await session.load(config: config)
+        XCTAssertTrue(commands.last { $0.contains("fetch-pr") }?.contains("--live 'rev2'") == true)
+    }
+
+    func testMergedBranchKeepsItsPRBaseAndLiveRevision() async throws {
+        transcriptBranch = "codex/fk"
+        matchingBranchPR = true
+        branchPRState = "merged"
+        branchWorktreeHead = "prhead"
+        emptyBranchDiff = true
+        let session = makeCodexSession()
+        await session.loadPullRequests(config: config)
+        await session.loadWorktrees(config: config)
+        await session.load(config: config)
+        XCTAssertEqual(session.scope, .branch)
+        XCTAssertNil(session.selectedPullRequest)
+        XCTAssertFalse(session.diff.files.isEmpty, "merging into main must not erase the worktree's recorded PR changes")
+        let command = try XCTUnwrap(commands.last { $0.contains(" diff ") })
+        XCTAssertTrue(command.contains("--from 'prbase'") && command.contains("--to 'rev2'"), command)
+        XCTAssertEqual(session.status?.base?.ref, "release")
+        XCTAssertFalse(commands.last { $0.contains("fetch-pr") }?.contains("--live") == true,
+                       "an unchanged merged head retains its historical PR base")
+    }
+
     func testFailedTargetLookupFallsBackToFolderAfterBothAttempts() async {
         listFails = true
         let session = makeCodexSession()
@@ -755,6 +880,8 @@ final class ReviewSessionTests: XCTestCase {
         await session.loadPullRequests(config: config)
         XCTAssertFalse(session.isResolvingTarget)
         XCTAssertEqual(session.scope, .uncommitted)
+        XCTAssertTrue(session.needsTargetChoice)
+        session.choose(folder: nil)
         await session.load(config: config)
         XCTAssertNotNil(session.result)
     }

@@ -96,10 +96,11 @@ extension TmuxCommandBuilder {
 
     /// Fetches a PR's head and base from origin; prints both.
     /// `base` and `head` (from the PR list) spare a forge call, and the fetch when it's here.
-    public static func reviewFetchPullRequest(cwd: String, number: Int, base: String? = nil, head: String? = nil) -> String {
+    public static func reviewFetchPullRequest(cwd: String, number: Int, base: String? = nil, head: String? = nil, live: String? = nil) -> String {
         var command = "exec \(reviewHelper) fetch-pr \(shellQuotePath(cwd)) --number \(number)"
         if let base { command += " --base \(shellQuote(base))" }
         if let head { command += " --head \(shellQuote(head))" }
+        if let live { command += " --live \(shellQuote(live))" }
         return wrap(command)
     }
 }

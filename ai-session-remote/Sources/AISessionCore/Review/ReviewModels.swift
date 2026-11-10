@@ -340,6 +340,8 @@ public struct ReviewPullRequestList: Codable, Equatable, Sendable {
         public var headRef: String?
         public var baseRef: String?
         public var headSHA: String?
+        /// Source repository identity; a fork can reuse a local branch’s name.
+        public var headRepository: String?
         public var updatedAt: String?
         /// Updated since the conversation began.
         public var since: Bool
@@ -352,15 +354,17 @@ public struct ReviewPullRequestList: Codable, Equatable, Sendable {
         public var id: Int { number }
         /// The conversation made it or worked on it.
         public var isMine: Bool { mine == "created" || mine == "changed" }
+        public var comparisonKey: String { "\(number):\(state):\(baseRef ?? ""):\(headSHA ?? ""):\(headRepository ?? "")" }
 
         private enum CodingKeys: String, CodingKey {
             case number, title, url, state, draft, since, mine
             case headRef = "head_ref", baseRef = "base_ref", headSHA = "head_sha", updatedAt = "updated_at", mineAt = "mine_at"
+            case headRepository = "head_repository"
         }
 
         public init(number: Int, title: String, url: String? = nil, state: String = "open", draft: Bool = false,
                     headRef: String? = nil, baseRef: String? = nil, headSHA: String? = nil, updatedAt: String? = nil,
-                    since: Bool = false, mine: String? = nil, mineAt: String? = nil) {
+                    since: Bool = false, mine: String? = nil, mineAt: String? = nil, headRepository: String? = nil) {
             self.number = number
             self.title = title
             self.url = url
@@ -369,6 +373,7 @@ public struct ReviewPullRequestList: Codable, Equatable, Sendable {
             self.headRef = headRef
             self.baseRef = baseRef
             self.headSHA = headSHA
+            self.headRepository = headRepository
             self.updatedAt = updatedAt
             self.since = since
             self.mine = mine
@@ -402,11 +407,22 @@ public struct ReviewPullRequestList: Codable, Equatable, Sendable {
     public var prs: [Item]
     /// Nil from helpers that don't read transcripts, or when none was asked for.
     public var branches: [Branch]?
+    /// Branches actually created or pushed by this conversation, including merged branches
+    /// and those with a PR. Unlike `branches`, this is ownership evidence, not a diff list.
+    public var workBranches: [Branch]?
+    public var defaultBranch: String?
+    public var repository: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case provider, access, error, viewer, prs, branches, transcript, repository
+        case workBranches = "work_branches", defaultBranch = "default_branch"
+    }
+
     /// The conversation's transcript was found on the computer (nil: not asked, or an older helper).
     public var transcript: Bool?
 
     public init(provider: String?, access: Bool, error: String? = nil, viewer: String? = nil, prs: [Item],
-                branches: [Branch]? = nil, transcript: Bool? = nil) {
+                branches: [Branch]? = nil, transcript: Bool? = nil, workBranches: [Branch]? = nil, defaultBranch: String? = nil, repository: String? = nil) {
         self.provider = provider
         self.access = access
         self.error = error
@@ -414,27 +430,124 @@ public struct ReviewPullRequestList: Codable, Equatable, Sendable {
         self.prs = prs
         self.branches = branches
         self.transcript = transcript
+        self.workBranches = workBranches
+        self.defaultBranch = defaultBranch
+        self.repository = repository
     }
 
     /// What the window opens on by itself.
     public enum Target: Equatable, Sendable {
         case pullRequest(Int)
         case branch(Branch)
+        case worktree(ReviewWorktrees.Worktree)
     }
 
-    /// The runner's linked PR, else what the conversation worked on last (a PR it made or
-    /// changed, or a branch it made or pushed), else `likely`'s branch match.
-    public func target(linkedURL: String?, agentBranches: Set<String>) -> Target? {
-        if let linkedURL, let number = likely(linkedURL: linkedURL, agentBranches: []) { return .pullRequest(number) }
-        let pr = prs.filter(\.isMine).max { ($0.mineAt ?? "") < ($1.mineAt ?? "") }
-        let branch = (branches ?? []).max { ($0.at ?? "") < ($1.at ?? "") }
-        switch (pr, branch) {
-        case let (pr?, branch?):
-            return (branch.at ?? "") > (pr.mineAt ?? "") ? .branch(branch) : .pullRequest(pr.number)
-        case let (pr?, nil): return .pullRequest(pr.number)
-        case let (nil, branch?): return .branch(branch)
-        case (nil, nil): return likely(linkedURL: nil, agentBranches: agentBranches).map(Target.pullRequest)
+    /// Match remote home paths and macOS's /tmp alias without using this device's home.
+    public static func sameFolder(_ path: String, _ folder: String) -> Bool {
+        func normalized(_ value: String) -> String {
+            var path = value
+            while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
+            return path.hasPrefix("/private/tmp/") ? String(path.dropFirst(8)) : path
         }
+        let path = normalized(path), folder = normalized(folder)
+        if path == folder { return true }
+        return folder.hasPrefix("~/") && path.hasSuffix(String(folder.dropFirst(1)))
+    }
+
+    private static func activity(_ value: String?) -> Date {
+        value.flatMap(ReviewSync.date(from:)) ?? .distantPast
+    }
+
+    /// Proven branches, newest actual branch activity first. Old helpers can still prove
+    /// ownership through a created PR; a comment or merge on someone else's PR cannot.
+    public var ownedBranches: [Branch] {
+        let shared = Set([defaultBranch ?? "main", "main", "master"])
+        if let workBranches {
+            return workBranches.filter { !shared.contains($0.name) }.sorted { Self.activity($0.at) > Self.activity($1.at) }
+        }
+        var found = branches ?? []
+        for pr in prs where pr.mine == "created" && (repository == nil || pr.headRepository?.lowercased() == repository?.lowercased()) {
+            if let name = pr.headRef, !found.contains(where: { $0.name == name }) {
+                found.append(Branch(name: name, pushed: true, at: pr.mineAt))
+            }
+        }
+        return found.filter { !shared.contains($0.name) }.sorted { Self.activity($0.at) > Self.activity($1.at) }
+    }
+
+    public func associatedWorktrees(folder: String, branch: String?, dedicated: Bool,
+                                    worktrees: [ReviewWorktrees.Worktree], excluding: [String] = []) -> [ReviewWorktrees.Worktree] {
+        let names = Set(ownedBranches.map(\.name))
+        return worktrees.filter { tree in
+            // An assigned path is authoritative even when sibling agents share that tree.
+            if dedicated && Self.sameFolder(tree.path, folder) { return true }
+            return !excluding.contains(where: { Self.sameFolder(tree.path, $0) }) &&
+                ((dedicated && tree.branch == branch && branch != nil) || tree.branch.map(names.contains) == true)
+        }.sorted { a, b in
+            let ownA = dedicated && Self.sameFolder(a.path, folder)
+            let ownB = dedicated && Self.sameFolder(b.path, folder)
+            if ownA != ownB { return ownA }
+            let atA = max(Self.activity(ownedBranches.first { $0.name == a.branch }?.at), Self.activity(a.activeAt))
+            let atB = max(Self.activity(ownedBranches.first { $0.name == b.branch }?.at), Self.activity(b.activeAt))
+            return atA == atB ? a.path < b.path : atA > atB
+        }
+    }
+
+    /// Worktree identity first, then branches actually created/pushed, then an explicit PR
+    /// link. Repository activity and PR comments never establish ownership.
+    public func target(linkedURL: String?, folder: String, branch: String?, dedicated: Bool,
+                       worktrees: [ReviewWorktrees.Worktree], excluding: [String] = []) -> Target? {
+        let trees = associatedWorktrees(folder: folder, branch: branch, dedicated: dedicated,
+                                        worktrees: worktrees, excluding: excluding)
+        if dedicated {
+            if let own = trees.first(where: { Self.sameFolder($0.path, folder) }) { return .worktree(own) }
+            if let own = trees.first(where: { $0.branch == branch && branch != nil }) { return .worktree(own) }
+            // A removed assigned worktree is handled by the kept-branch loader. Don't jump
+            // to an older, unrelated PR or worktree in the same repository.
+            return nil
+        }
+        if defaultBranch != nil, let current = worktrees.first(where: { tree in
+            Self.sameFolder(tree.path, folder) && tree.branch != nil &&
+            ![defaultBranch ?? "main", "main", "master"].contains(tree.branch!) &&
+            !excluding.contains(where: { Self.sameFolder(tree.path, $0) })
+        }) { return .worktree(current) }
+        let candidates = ownedBranches.sorted { a, b in
+            let atA = max(Self.activity(a.at), Self.activity(trees.first { $0.branch == a.name }?.activeAt))
+            let atB = max(Self.activity(b.at), Self.activity(trees.first { $0.branch == b.name }?.activeAt))
+            return atA == atB ? a.name < b.name : atA > atB
+        }
+        for owned in candidates {
+            if let tree = trees.first(where: { $0.branch == owned.name }) { return .worktree(tree) }
+            // Do not silently take a branch checked out in another conversation's tree.
+            if worktrees.contains(where: { $0.branch == owned.name }) { continue }
+            if let pr = pullRequest(for: owned.name) { return .pullRequest(pr.number) }
+            if (branches ?? []).contains(where: { $0.name == owned.name }) { return .branch(owned) }
+        }
+        func belongsElsewhere(_ pr: Item) -> Bool {
+            guard let name = pr.headRef,
+                  repository == nil || pr.headRepository?.lowercased() == repository?.lowercased() else { return false }
+            return worktrees.contains { tree in
+                tree.branch == name && excluding.contains { Self.sameFolder(tree.path, $0) }
+            }
+        }
+        if let linkedURL, let number = likely(linkedURL: linkedURL, agentBranches: []) {
+            if !prs.contains(where: { $0.number == number && belongsElsewhere($0) }) { return .pullRequest(number) }
+        }
+        let created = prs.filter { $0.mine == "created" && !belongsElsewhere($0) }
+        return created.count == 1 ? .pullRequest(created[0].number) : nil
+    }
+
+    public func isConversationWork(_ pr: Item) -> Bool {
+        if pr.mine == "created" { return true }
+        guard repository == nil || pr.headRepository?.lowercased() == repository?.lowercased(),
+              let branch = pr.headRef else { return false }
+        return ownedBranches.contains { $0.name == branch }
+    }
+
+    public func pullRequest(for branch: String) -> Item? {
+        prs.filter { $0.headRef == branch && (repository == nil || $0.headRepository?.lowercased() == repository?.lowercased()) }.sorted {
+            if ($0.state == "open") != ($1.state == "open") { return $0.state == "open" }
+            return ($0.updatedAt ?? "") > ($1.updatedAt ?? "")
+        }.first
     }
 
     /// The PR to open the window on, by number: the one the runner linked to the conversation

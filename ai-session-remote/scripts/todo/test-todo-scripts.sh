@@ -4831,6 +4831,19 @@ fp_files="$("$REVIEW" diff "$FP_REPO" --scope since --from "$fp_base" --to "$fp_
 # With --base and --head from `prs` and the head already here: no forge call, no fetch.
 fp_again="$(AI_TODO_GH_BIN="${SANDBOX}/missing-gh" "$REVIEW" fetch-pr "$FP_REPO" --number 9 --base main --head "$fp_head")" || fail "fetch-pr with known head"
 [[ "$fp_again" == *"\"base\": \"${fp_base}\""* ]] || fail "fetch-pr known head: $fp_again"
+# An unpublished rebase includes newer target commits. The live PR base must exclude those
+# unrelated commits while keeping the rebased feature and dirty files, even with a cached PR.
+fp_git "$FP_REPO" checkout -qb live "$fp_head"
+fp_git "$FP_REPO" rebase -q origin/main
+printf 'not pushed\n' >"${FP_REPO}/unpublished.txt"
+fp_live="$("$REVIEW" status "$FP_REPO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["revision"])')"
+fp_live_out="$(AI_TODO_GH_BIN="$FP_GH" "$REVIEW" fetch-pr "$FP_REPO" --number 9 --base main --head "$fp_head" --live "$fp_live")" || fail "live PR base"
+fp_live_base="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["base"])' "$fp_live_out")"
+fp_live_files="$("$REVIEW" diff "$FP_REPO" --scope since --from "$fp_live_base" --to "$fp_live" | python3 -c 'import json,sys,re; print(" ".join(sorted(set(re.findall(r"^diff --git a/(\S+)", json.load(sys.stdin)["patch"], re.M)))))')"
+[[ "$fp_live_files" == "a.txt b.txt unpublished.txt" ]] || fail "unpublished rebase included target changes: $fp_live_files"
+[[ "$fp_live_base" == "$(git -C "$FP_REPO" rev-parse origin/main)" ]] || fail "live merge base: $fp_live_out"
+rm "${FP_REPO}/unpublished.txt"
+fp_git "$FP_REPO" checkout -q main
 # Merged with a merge commit: the base branch has it all, yet the PR still shows its own change.
 fp_git "$FP_SEED" merge -q --no-ff -m "Merge PR 9" "$fp_head"
 git -C "$FP_SEED" push -q "$FP_ORIGIN" main
@@ -4898,13 +4911,17 @@ CW_GH="${SANDBOX}/bin/fake-cw-gh"
 cat >"$CW_GH" <<'FAKE'
 #!/bin/sh
 case "$1 $2" in
-  "pr list") echo '[{"number":41,"title":"Made","url":"https://github.com/o/r/pull/41","state":"OPEN","isDraft":false,"headRefName":"feat/made","baseRefName":"main","headRefOid":"a","updatedAt":"2026-11-06T09:00:00Z"},{"number":40,"title":"Other","url":"https://github.com/o/r/pull/40","state":"OPEN","isDraft":false,"headRefName":"x","baseRefName":"main","headRefOid":"b","updatedAt":"2026-11-07T00:00:00Z"}]' ;;
+  "pr list") echo '[{"number":41,"title":"Made","url":"https://github.com/o/r/pull/41","state":"OPEN","isDraft":false,"headRepository":{"nameWithOwner":"o/r"},"headRefName":"feat/made","baseRefName":"main","headRefOid":"a","updatedAt":"2026-11-06T09:00:00Z"},{"number":40,"title":"Other","url":"https://github.com/o/r/pull/40","state":"OPEN","isDraft":false,"headRepository":{"nameWithOwner":"o/r"},"headRefName":"x","baseRefName":"main","headRefOid":"b","updatedAt":"2026-11-07T00:00:00Z"},{"number":47,"title":"Another fork branch","url":"https://github.com/o/r/pull/47","state":"OPEN","isDraft":false,"headRefName":"feat/pushed-only","headRepository":{"nameWithOwner":"x/r"},"baseRefName":"release","headRefOid":"fork","updatedAt":"2099-01-01T00:00:00Z"}]' ;;
   "api user") echo '{"login":"me"}' ;;
   "api graphql") echo "GRAPHQL $*" >>"${CW_LOG}"
+    case "$*" in *headRefName:*)
+      echo '{"data":{"repository":{"b0":{"nodes":[{"number":45,"title":"Older merged branch PR by a teammate","url":"https://github.com/o/r/pull/45","state":"MERGED","isDraft":false,"headRepository":{"nameWithOwner":"o/r"},"headRefName":"feat/empty","baseRefName":"main","headRefOid":"a","updatedAt":"2026-10-01T00:00:00Z"},{"number":46,"title":"Fork with the same branch name","url":"https://github.com/o/r/pull/45","state":"MERGED","isDraft":false,"headRepository":{"nameWithOwner":"x/r"},"headRefName":"feat/empty","baseRefName":"main","headRefOid":"a","updatedAt":"2026-10-01T00:00:00Z"}]}}}}'
+      exit 0 ;;
+    esac
     case "$*" in *p3:*) echo "Could not resolve to a PullRequest with the number of 3" >&2; exit 1 ;; esac
-    echo '{"data":{"repository":{"p12":{"number":12,"title":"Someone else","url":"https://github.com/o/r/pull/12","state":"MERGED","isDraft":false,"headRefName":"theirs","baseRefName":"main","headRefOid":"c","updatedAt":"2026-10-01T00:00:00Z"},"p44":{"number":44,"title":"Made, then a step failed","url":"https://github.com/o/r/pull/44","state":"OPEN","isDraft":false,"headRefName":"feat/x","baseRefName":"main","headRefOid":"d","updatedAt":"2026-11-06T00:00:00Z"}}}}' ;;
+    echo '{"data":{"repository":{"p12":{"number":12,"title":"Someone else","url":"https://github.com/o/r/pull/12","state":"MERGED","isDraft":false,"headRepository":{"nameWithOwner":"o/r"},"headRefName":"theirs","baseRefName":"main","headRefOid":"c","updatedAt":"2026-10-01T00:00:00Z"},"p44":{"number":44,"title":"Made, then a step failed","url":"https://github.com/o/r/pull/44","state":"OPEN","isDraft":false,"headRepository":{"nameWithOwner":"o/r"},"headRefName":"feat/x","baseRefName":"main","headRefOid":"d","updatedAt":"2026-11-06T00:00:00Z"}}}}' ;;
   "pr view") case "$2 $3" in
-      "view 12") echo '{"number":12,"title":"Someone else","url":"https://github.com/o/r/pull/12","state":"MERGED","isDraft":false,"headRefName":"theirs","baseRefName":"main","headRefOid":"c","updatedAt":"2026-10-01T00:00:00Z"}' ;;
+      "view 12") echo '{"number":12,"title":"Someone else","url":"https://github.com/o/r/pull/12","state":"MERGED","isDraft":false,"headRepository":{"nameWithOwner":"o/r"},"headRefName":"theirs","baseRefName":"main","headRefOid":"c","updatedAt":"2026-10-01T00:00:00Z"}' ;;
       *) echo "no pull requests found" >&2; exit 1 ;;
     esac ;;
   *) echo "unexpected: $*" >&2; exit 1 ;;
@@ -4920,12 +4937,17 @@ python3 - "$cw_out" <<'PY' || fail "prs --session: $cw_out"
 import json, sys
 d = json.loads(sys.argv[1])
 assert d["transcript"] is True, d
+assert d["default_branch"] == "main", d
 prs = {p["number"]: p for p in d["prs"]}
 assert [p["number"] for p in d["prs"]][0] == 41, d["prs"]
 assert prs[41]["mine"] == "created" and prs[41]["mine_at"] == "2026-11-06T10:02:00.000Z", prs[41]
 assert prs[40]["mine"] is None, prs[40]
 assert prs[12]["mine"] == "read" and prs[12]["title"] == "Someone else", prs.get(12)
 assert 3 not in prs, prs
+assert prs[45]["head_ref"] == "feat/empty" and prs[45]["mine"] == "changed", prs
+assert 46 not in prs and prs[47]["mine"] is None, prs
+assert "feat/empty" in [b["name"] for b in d["work_branches"]], d
+assert "feat/other" not in [b["name"] for b in d["work_branches"]], d
 names = [b["name"] for b in d["branches"]]
 assert names == ["feat/pushed-only", "feat/local-new", "feat/old-codex"], d["branches"]
 assert [b["pushed"] for b in d["branches"]] == [True, False, True], d["branches"]
@@ -4950,6 +4972,26 @@ p = [p for p in d["prs"] if p["number"] == 41][0]
 assert p["mine"] == "created" and p["mine_at"] == "2026-11-06T11:00:00.000Z", p
 assert [b["name"] for b in d["branches"]] == ["feat/pushed-only", "feat/local-new", "feat/old-codex"], d["branches"]
 PY
+# Commenting on a PR this conversation originally created must not make its branch
+# look newer than branches it actually worked on. Replace the intentionally partial tail.
+python3 - "$CW_ROLLOUT" "$CW_REPO" <<'PY_COMMENT'
+import json, sys
+path, repo = sys.argv[1:]
+with open(path) as f: content = f.read()
+with open(path, "w") as f:
+    f.write(content[:content.rfind("\n") + 1])
+    f.write(json.dumps({"timestamp": "2026-11-06T23:00:00.000Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {
+        "type": "CommandExecution", "command": ["/bin/zsh", "-lc", "gh pr comment 41 --body reviewed"], "cwd": "file://" + repo,
+        "aggregated_output": "", "exit_code": 0}}}) + "\n")
+PY_COMMENT
+cw_comment="$(CODEX_HOME="$CW_CODEX" AI_TODO_GH_BIN="$CW_GH" "$REVIEW" prs "$CW_REPO" --session codex:cw-codex-1)" || fail "comment attribution"
+python3 - "$cw_comment" <<'PY_COMMENT_CHECK' || fail "comment changed branch activity: $cw_comment"
+import json, sys
+d = json.loads(sys.argv[1])
+b = next(b for b in d["work_branches"] if b["name"] == "feat/made")
+assert b["at"] == "2026-11-06T11:00:00.000Z", b
+assert next(p for p in d["prs"] if p["number"] == 41)["mine_at"] == "2026-11-06T23:00:00.000Z", d
+PY_COMMENT_CHECK
 # Claude: Bash with its output, gitOperation notes, an MCP call.
 CW_CLAUDE="${SANDBOX}/cw-claude"
 mkdir -p "${CW_CLAUDE}/projects/p"
@@ -4996,11 +5038,40 @@ assert 7 not in prs, prs
 assert [p["number"] for p in d["prs"]][:3] == [44, 40, 41], d["prs"]
 assert [b["name"] for b in d["branches"]] == ["feat/pushed-only"], d["branches"]
 PY
+# Branch ownership remains usable when the forge CLI is missing; no repository-wide
+# activity heuristic is needed to find the conversation's live worktree.
+cw_offline="$(CODEX_HOME="$CW_CODEX" AI_TODO_GH_BIN="${SANDBOX}/missing-gh" "$REVIEW" prs "$CW_REPO" --session codex:cw-codex-1)" || fail "offline work ownership"
+python3 - "$cw_offline" <<'PY_CHECK' || fail "offline ownership: $cw_offline"
+import json, sys
+d = json.loads(sys.argv[1])
+assert not d["access"] and d["prs"] == [], d
+assert "feat/made" in [b["name"] for b in d["work_branches"]], d
+PY_CHECK
 # No transcript on this computer: said, and the list is as before.
 cw_out="$(AI_TODO_GH_BIN="$CW_GH" "$REVIEW" prs "$CW_REPO" --session codex:nope)" || fail "prs without transcript"
 [[ "$cw_out" == *'"transcript": false'* && "$cw_out" != *'"branches"'* ]] || fail "prs without transcript: $cw_out"
 status=0; "$REVIEW" prs "$CW_REPO" --session 'codex:a;b' >/dev/null 2>&1 || status=$?
 [[ $status -eq 64 ]] || fail "prs bad --session exit $status"
+# GitLab source-project identity is just as important as GitHub's head repository.
+python3 - "$REVIEW" <<'PY_SOURCE' || fail "GitLab branch source identity"
+import runpy, sys
+m = runpy.run_path(sys.argv[1])
+g = m["fetch_branch_prs"].__globals__
+g["origin_slug"] = lambda root: "o/r"
+g["forge_json"] = lambda *args: [
+    {"iid": 1, "source_project_id": 7, "target_project_id": 7, "source_branch": "feature", "state": "opened"},
+    {"iid": 2, "source_project_id": 8, "target_project_id": 7, "source_branch": "feature", "state": "opened"}]
+rows = m["fetch_branch_prs"]("gitlab", "/repo", ["feature"])
+assert [(r["number"], r["head_repository"]) for r in rows] == [(1, "o/r")], rows
+# A custom shared default is not a task branch even if the transcript pushed it.
+g["default_branch_ref"] = lambda root: "refs/remotes/origin/develop"
+g["git"] = lambda *args, **kwargs: ("refs/heads/develop\nrefs/heads/feature", "")
+g["line"] = lambda *args: "1"
+work = m["Work"]({"branches": {"develop": {"at": "2099", "pushed": True}, "feature": {"at": "2026", "pushed": True}}})
+out = {"access": False}
+m["add_work"]("github", "/repo", [], work, out)
+assert [b["name"] for b in out["work_branches"]] == ["feature"], out
+PY_SOURCE
 unset CW_LOG AI_TODO_REVIEW_SCAN_DIR
 pass "review_prs_from_the_conversations_transcript"
 

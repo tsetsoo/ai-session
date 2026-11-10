@@ -1391,6 +1391,20 @@ def same_repo(root, folder, cache):
     return bool(cache[folder]) and cache[folder] == cache[":root"]
 
 
+def github_pr_rows(rows):
+    return [{"number": r.get("number"), "title": r.get("title") or "", "url": r.get("url"),
+             "state": str(r.get("state") or "").lower(), "draft": bool(r.get("isDraft")),
+             "head_ref": r.get("headRefName"), "base_ref": r.get("baseRefName"),
+             "head_sha": r.get("headRefOid"), "updated_at": r.get("updatedAt"),
+             "head_repository": (r.get("headRepository") or {}).get("nameWithOwner")}
+            for r in rows if isinstance(r, dict)]
+
+
+def gitlab_head_repository(root, row):
+    source = row.get("source_project_id")
+    return origin_slug(root) if source is not None and source == row.get("target_project_id") else None
+
+
 def fetch_prs(kind, root, slug, numbers):
     """The forge's rows for these PR/MR numbers (ones the account didn't open, or older than
     the list): [{...as in `prs`}]. Missing or unreadable ones are left out."""
@@ -1400,7 +1414,7 @@ def fetch_prs(kind, root, slug, numbers):
         owner, _, name = slug.partition("/")
         fields = "number title url state isDraft headRefName baseRefName headRefOid updatedAt"
         query = "query($o:String!,$n:String!){repository(owner:$o,name:$n){%s}}" % " ".join(
-            "p%d: pullRequest(number:%d){%s}" % (n, n, fields) for n in numbers)
+            "p%d: pullRequest(number:%d){%s headRepository{nameWithOwner}}" % (n, n, fields) for n in numbers)
         try:
             data = forge_json(kind, root, "api", "graphql", "-f", "query=" + query, "-f", "o=" + owner, "-f", "n=" + name)
             repo = ((data or {}).get("data") or {}).get("repository") or {}
@@ -1410,15 +1424,12 @@ def fetch_prs(kind, root, slug, numbers):
             rows = []
             for n in numbers:
                 try:
-                    r = forge_json(kind, root, "pr", "view", str(n), "--json", fields.replace(" ", ","))
+                    r = forge_json(kind, root, "pr", "view", str(n), "--json", fields.replace(" ", ",") + ",headRepository")
                 except NoAccess:
                     continue
                 if isinstance(r, dict):
                     rows.append(r)
-        return [{"number": r.get("number"), "title": r.get("title") or "", "url": r.get("url"),
-                 "state": str(r.get("state") or "").lower(), "draft": bool(r.get("isDraft")),
-                 "head_ref": r.get("headRefName"), "base_ref": r.get("baseRefName"),
-                 "head_sha": r.get("headRefOid"), "updated_at": r.get("updatedAt")} for r in rows]
+        return github_pr_rows(rows)
     out = []
     states = {"opened": "open", "locked": "open"}
     for n in numbers:
@@ -1429,8 +1440,44 @@ def fetch_prs(kind, root, slug, numbers):
         out.append({"number": r.get("iid"), "title": r.get("title") or "", "url": r.get("web_url"),
                     "state": states.get(r.get("state"), r.get("state") or ""), "draft": bool(r.get("draft")),
                     "head_ref": r.get("source_branch"), "base_ref": r.get("target_branch"),
-                    "head_sha": r.get("sha"), "updated_at": r.get("updated_at")})
+                    "head_sha": r.get("sha"), "updated_at": r.get("updated_at"),
+                    "head_repository": gitlab_head_repository(root, r)})
     return out
+
+
+def fetch_branch_prs(kind, root, names):
+    """Match actual branch heads, across authors and states; never guess from update time."""
+    if not names:
+        return []
+    if kind == "github":
+        owner, _, repo = (origin_slug(root) or "").partition("/")
+        fields = "number title url state isDraft headRefName baseRefName headRefOid updatedAt"
+        query = "query($o:String!,$n:String!){repository(owner:$o,name:$n){%s}}" % " ".join(
+            "b%d:pullRequests(headRefName:%s,first:5,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{%s headRepository{nameWithOwner}}}"
+            % (i, json.dumps(name), fields) for i, name in enumerate(names))
+        try:
+            data = forge_json(kind, root, "api", "graphql", "-f", "query=" + query, "-f", "o=" + owner, "-f", "n=" + repo)
+            connections = ((data or {}).get("data") or {}).get("repository") or {}
+            rows = [r for c in connections.values() if isinstance(c, dict)
+                    for r in c.get("nodes", []) if isinstance(r, dict)]
+        except NoAccess:
+            return []
+        slug = (origin_slug(root) or "").lower()
+        return [r for r in github_pr_rows(rows) if (r.get("head_repository") or "").lower() == slug]
+    rows = []
+    for name in names:
+        try:
+            found = forge_json(kind, root, "mr", "list", "--source-branch", name, "--all", "-F", "json", "--per-page", "5")
+        except NoAccess:
+            continue
+        for r in found or []:
+            if isinstance(r, dict) and gitlab_head_repository(root, r):
+                rows.append({"number": r.get("iid"), "title": r.get("title") or "", "url": r.get("web_url"),
+                             "state": "open" if r.get("state") in ("opened", "locked") else r.get("state") or "",
+                             "draft": bool(r.get("draft")), "head_ref": r.get("source_branch"),
+                             "base_ref": r.get("target_branch"), "head_sha": r.get("sha"), "updated_at": r.get("updated_at"),
+                             "head_repository": gitlab_head_repository(root, r)})
+    return rows
 
 
 MAX_FETCHED_PRS = 15
@@ -1450,21 +1497,22 @@ def cmd_prs(args):
         die("--since needs an ISO time", 64)
     root = repo_root(args[0])
     kind = forge_kind(root)
-    out = {"provider": kind, "access": False, "error": None, "viewer": None, "prs": []}
+    out = {"provider": kind, "access": False, "error": None, "viewer": None, "prs": [], "repository": origin_slug(root)}
     if kind is None:
         out["error"] = "origin is neither GitHub nor GitLab"
         print(json.dumps(out))
         return
+    prs = []
+    default_ref = default_branch_ref(root)
+    default_name = short_ref(default_ref) if default_ref else ""
+    out["default_branch"] = default_name[len("origin/"):] if default_name.startswith("origin/") else default_name or None
     try:
         if kind == "github":
             # The 30 most recently updated, not created: an old PR the agent just pushed to counts.
             rows = forge_json(kind, root, "pr", "list", "--author", "@me", "--state", "all", "--limit", "30",
                               "--search", "sort:updated-desc",
-                              "--json", "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,updatedAt")
-            prs = [{"number": r.get("number"), "title": r.get("title") or "", "url": r.get("url"),
-                    "state": str(r.get("state") or "").lower(), "draft": bool(r.get("isDraft")),
-                    "head_ref": r.get("headRefName"), "base_ref": r.get("baseRefName"),
-                    "head_sha": r.get("headRefOid"), "updated_at": r.get("updatedAt")} for r in rows or [] if isinstance(r, dict)]
+                              "--json", "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,updatedAt,headRepository")
+            prs = github_pr_rows(rows or [])
         else:
             rows = forge_json(kind, root, "mr", "list", "--author=@me", "--all", "-F", "json", "--per-page", "30",
                               "--order", "updated_at", "--sort", "desc")
@@ -1472,13 +1520,12 @@ def cmd_prs(args):
             prs = [{"number": r.get("iid"), "title": r.get("title") or "", "url": r.get("web_url"),
                     "state": states.get(r.get("state"), r.get("state") or ""), "draft": bool(r.get("draft")),
                     "head_ref": r.get("source_branch"), "base_ref": r.get("target_branch"),
-                    "head_sha": r.get("sha"), "updated_at": r.get("updated_at")} for r in rows or [] if isinstance(r, dict)]
+                    "head_sha": r.get("sha"), "updated_at": r.get("updated_at"),
+                    "head_repository": gitlab_head_repository(root, r)} for r in rows or [] if isinstance(r, dict)]
         out["access"] = True
         out["viewer"] = viewer(kind, root)
     except NoAccess as error:
         out["error"] = str(error)
-        print(json.dumps(out))
-        return
     def stamp(pr):
         return iso_ts(pr.get("updated_at")) or 0
 
@@ -1489,6 +1536,12 @@ def cmd_prs(args):
         out["transcript"] = work is not None
         if work is not None:
             prs = add_work(kind, root, prs, work, out)
+    # The checked-out branch may have a PR by another author or older than the account list.
+    current = line(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if out["access"] and current and current not in ("main", "master", out["default_branch"]):
+        known = {p["number"] for p in prs}
+        prs += [p for p in fetch_branch_prs(kind, root, [current])
+                if isinstance(p.get("number"), int) and p["number"] not in known and p.get("head_ref") == current]
     for pr in prs:
         pr["since"] = bool(since_ts is not None and stamp(pr) >= since_ts)
     # The conversation's own first, the latest it touched first; then the rest by update.
@@ -1518,52 +1571,77 @@ def add_work(kind, root, prs, work, out):
             t["at"] = pr["at"]
     listed = {p["number"] for p in prs}
     missing = sorted((n for n in touched if n not in listed), key=lambda n: touched[n]["at"] or "", reverse=True)
-    prs = prs + [p for p in fetch_prs(kind, root, slug or "", missing[:MAX_FETCHED_PRS]) if isinstance(p.get("number"), int)]
+    if out.get("access"):
+        prs = prs + [p for p in fetch_prs(kind, root, slug or "", missing[:MAX_FETCHED_PRS]) if isinstance(p.get("number"), int)]
+    for pr in prs:
+        proof = touched.get(pr["number"])
+        if proof and proof["role"] == "created" and (pr.get("head_repository") or "").lower() == slug:
+            # Creation proves identity, but the PR timestamp can advance on a later comment.
+            # Keep branch activity tied to actual Git creation/push/commit evidence.
+            work.branch(pr.get("head_ref"), None, pushed=True)
     try:
         refs = set(git(root, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")[0].split())
     except GitError:
         refs = set()
     branches = {}
+    work_branches = {}
     default = default_branch_ref(root)
+    shared_name = short_ref(default) if default else ""
+    shared_name = shared_name[len("origin/"):] if shared_name.startswith("origin/") else shared_name
     for name, b in work.branches.items():
+        if name == shared_name:
+            continue  # Pushing the shared default branch does not make it this task's branch.
         local, remote = "refs/heads/" + name, "refs/remotes/origin/" + name
         if local not in refs and remote not in refs:
             continue  # Another repository's, or gone.
         if other_repo(root, b.get("cwd"), repos):
             continue  # Made in another repository that has a branch of the same name.
         tip = local if local in refs else remote
+        work_branches[name] = {"name": name, "ref": name if local in refs else "origin/" + name,
+                               "pushed": bool(b.get("pushed")), "at": b.get("at")}
         if default and line(root, "rev-list", "--count", tip, "--not", default) == "0":
             continue  # Nothing on it the default branch lacks: made and never committed to, or merged.
         branches[name] = {"name": name, "ref": name if local in refs else "origin/" + name,
                           "pushed": bool(b.get("pushed")), "at": b.get("at")}
+    out["work_branches"] = sorted(work_branches.values(), key=lambda b: b["at"] or "", reverse=True)
+    if out.get("access"):
+        names = [b["name"] for b in out["work_branches"][:MAX_FETCHED_PRS]]
+        known = {p["number"] for p in prs}
+        prs += [p for p in fetch_branch_prs(kind, root, names)
+                if isinstance(p.get("number"), int) and p["number"] not in known and p.get("head_ref") in work_branches]
     for pr in prs:
         mine = touched.get(pr["number"])
-        on_branch = branches.get(pr.get("head_ref") or "")
+        on_branch = work_branches.get(pr.get("head_ref") or "") if (pr.get("head_repository") or "").lower() == slug else None
         if on_branch:
             mine = {"role": "changed" if not mine or mine["role"] == "read" else mine["role"],
                     "at": max((mine or {}).get("at") or "", on_branch["at"] or "") or None}
         pr["mine"] = mine["role"] if mine else None
         pr["mine_at"] = mine["at"] if mine else None
-    heads = {p.get("head_ref") for p in prs}
+    heads = {p.get("head_ref") for p in prs if (p.get("head_repository") or "").lower() == slug}
     out["branches"] = sorted((b for b in branches.values() if b["name"] not in heads),
                              key=lambda b: b["at"] or "", reverse=True)
     return prs
 
 
 def cmd_fetch_pr(args):
-    """fetch-pr <cwd> --number N [--base REF] [--head SHA]: the PR/MR's head
+    """fetch-pr <cwd> --number N [--base REF] [--head SHA] [--live SHA]: the PR/MR's head
     (refs/ai-review/pr/N, from GitHub's pull/N/head or GitLab's merge-requests/N/head) and its
     base branch from origin; {number, head, base, base_ref}. base..head is exactly the PR's
     changes, wherever the agent worked: the merge base with the base branch, or for a merged
     PR (already in it) where it began. --base and --head (from `prs`) skip asking the forge,
     and the fetch when the head is already here. Only refs/ai-review/ and origin's base branch
-    change."""
+    change. --live SHA compares the live snapshot with a freshly fetched target branch,
+    so an unpublished merge/rebase does not include unrelated target changes."""
     args, number = take_number(args)
     args, base_ref = take_option(args, "--base")
     args, want = take_option(args, "--head")
+    args, live = take_option(args, "--live")
     if number is None or len(args) != 1:
-        die("usage: ai-todo-review fetch-pr <cwd> --number N [--base <branch>] [--head <sha>]", 64)
+        die("usage: ai-todo-review fetch-pr <cwd> --number N [--base <branch>] [--head <sha>] [--live <sha>]", 64)
     root = repo_root(args[0])
+    if live and (not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", live)
+                 or not line(root, "rev-parse", "--verify", "-q", live + "^{commit}")):
+        die("--live needs a local snapshot commit", 65)
     kind = forge_kind(root)
     if kind is None:
         die("origin is neither GitHub nor GitLab", 64)
@@ -1583,7 +1661,7 @@ def cmd_fetch_pr(args):
     remote_ref = ("pull/%d/head" if kind == "github" else "merge-requests/%d/head") % number
     have = line(root, "rev-parse", "--verify", "-q", local + "^{commit}")
     base_tracking = "refs/remotes/origin/%s" % base_ref
-    if not (want and have == want and line(root, "rev-parse", "--verify", "-q", base_tracking)):
+    if live or not (want and have == want and line(root, "rev-parse", "--verify", "-q", base_tracking)):
         try:
             git(root, "fetch", "--quiet", "--no-tags", "origin",
                 "+%s:%s" % (remote_ref, local), "+refs/heads/%s:%s" % (base_ref, base_tracking),
@@ -1593,8 +1671,8 @@ def cmd_fetch_pr(args):
     head = line(root, "rev-parse", "--verify", "-q", local + "^{commit}")
     if not head:
         die("no head for %d after fetching" % number, 70)
-    base = line(root, "merge-base", base_tracking, head)
-    if base == head:
+    base = line(root, "merge-base", base_tracking, live or head)
+    if not live and base == head:
         # Merged (with a merge commit): the base branch has it all. Where it began instead.
         base = merged_base(kind, root, number, head)
     if not base:

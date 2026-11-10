@@ -492,24 +492,126 @@ struct ReviewConversationWorkTests {
         #expect(old.branches == nil && old.prs[0].mine == nil && old.transcript == nil)
     }
 
-    @Test func opensWhatTheConversationWorkedOnLast() {
-        let made = Item(number: 7, title: "made", mine: "created", mineAt: "2026-11-06T10:00:00Z")
-        let later = Item(number: 8, title: "pushed to", state: "merged", mine: "changed", mineAt: "2026-11-06T12:00:00Z")
-        let read = Item(number: 9, title: "read", mine: "read", mineAt: "2026-11-07T00:00:00Z")
-        let other = Item(number: 10, title: "other", headRef: "agent")
-        var list = ReviewPullRequestList(provider: "github", access: true, prs: [other, read, made, later])
-        // Read only doesn't count; the latest made or changed does, merged or not.
-        #expect(list.target(linkedURL: nil, agentBranches: []) == .pullRequest(8))
-        // A branch pushed after that wins.
-        let branch = Branch(name: "next", pushed: true, at: "2026-11-06T13:00:00Z")
-        list.branches = [branch]
-        #expect(list.target(linkedURL: nil, agentBranches: []) == .branch(branch))
-        // The runner's link comes first.
-        #expect(list.target(linkedURL: "https://github.com/o/r/pull/7", agentBranches: []) == .pullRequest(7))
-        // Without a transcript: the old rule, by the agent's branch.
-        let plain = ReviewPullRequestList(provider: "github", access: true, prs: [other])
-        #expect(plain.target(linkedURL: nil, agentBranches: ["agent"]) == .pullRequest(10))
-        #expect(plain.target(linkedURL: nil, agentBranches: []) == nil)
+    @Test func assignedWorktreeBeatsAStalePRAndRecentComments() {
+        let own = ReviewWorktrees.Worktree(path: "/private/tmp/own", branch: "my-work")
+        let other = ReviewWorktrees.Worktree(path: "/tmp/other", branch: "other", activeAt: "2099", changedSince: true)
+        let list = ReviewPullRequestList(provider: "github", access: true, prs: [
+            Item(number: 7, title: "old", headRef: "old", mine: "created"),
+            Item(number: 8, title: "commented", headRef: "other", mine: "changed", mineAt: "2099")
+        ])
+        #expect(list.target(linkedURL: "https://github.com/o/r/pull/7", folder: "/tmp/own", branch: "my-work",
+                            dedicated: true, worktrees: [other, own], excluding: ["/tmp/own"]) == .worktree(own))
+    }
+
+    @Test func branchOwnershipFindsTheLiveWorktreeBeforeItsPR() {
+        let branch = Branch(name: "work", pushed: true, at: "2026-11-06T13:00:00Z")
+        let tree = ReviewWorktrees.Worktree(path: "/tmp/work", branch: "work")
+        let list = ReviewPullRequestList(provider: "github", access: true,
+            prs: [Item(number: 10, title: "PR", headRef: "work")], branches: [], workBranches: [branch])
+        // The live worktree includes edits and commits not yet pushed to the PR.
+        #expect(list.target(linkedURL: "https://github.com/o/r/pull/1859", folder: "/repo", branch: nil, dedicated: false,
+                            worktrees: [tree]) == .worktree(tree))
+        // Once the tree is gone, the PR is still identified through its actual head branch.
+        #expect(list.target(linkedURL: nil, folder: "/repo", branch: nil, dedicated: false,
+                            worktrees: []) == .pullRequest(10))
+    }
+
+    @Test func repositoryActivityDoesNotEstablishOwnership() {
+        let active = ReviewWorktrees.Worktree(path: "/tmp/other", branch: "other", changedSince: true)
+        let list = ReviewPullRequestList(provider: "github", access: true, prs: [
+            Item(number: 10, title: "someone else's", headRef: "other", mine: "changed", mineAt: "2099")
+        ], workBranches: [])
+        #expect(list.target(linkedURL: nil, folder: "/repo", branch: nil, dedicated: false,
+                            worktrees: [active]) == nil)
+    }
+
+    @Test func recentCommitsRankOnlyAlreadyOwnedWorktrees() {
+        let old = Branch(name: "old", at: "2026-11-01T00:00:00Z")
+        let recent = Branch(name: "recent", at: "2026-11-02T00:00:00Z")
+        let tree = ReviewWorktrees.Worktree(path: "/tmp/old", branch: "old", activeAt: "2026-11-03T00:00:00Z")
+        let stranger = ReviewWorktrees.Worktree(path: "/tmp/stranger", branch: "stranger", activeAt: "2099-01-01T00:00:00Z")
+        let list = ReviewPullRequestList(provider: "github", access: true, prs: [], branches: [recent], workBranches: [old, recent])
+        #expect(list.target(linkedURL: nil, folder: "/repo", branch: nil, dedicated: false,
+                            worktrees: [stranger, tree]) == .worktree(tree))
+    }
+
+    @Test func otherConversationsWorktreesAreExcluded() {
+        let branch = Branch(name: "work", pushed: true)
+        let tree = ReviewWorktrees.Worktree(path: "/Users/remote/project", branch: "work")
+        let list = ReviewPullRequestList(provider: "github", access: true,
+                                        prs: [Item(number: 1, title: "PR", headRef: "work")], workBranches: [branch])
+        #expect(list.associatedWorktrees(folder: "/repo", branch: nil, dedicated: false,
+                                         worktrees: [tree], excluding: ["~/project"]).isEmpty)
+        #expect(list.target(linkedURL: nil, folder: "/repo", branch: nil, dedicated: false,
+                            worktrees: [tree], excluding: ["~/project"]) == nil)
+    }
+
+    @Test func aMissingAssignedTreeDoesNotFallBackToAnUnrelatedPR() {
+        let list = ReviewPullRequestList(provider: "github", access: true,
+                                         prs: [Item(number: 7, title: "old", mine: "created")])
+        #expect(list.target(linkedURL: "https://github.com/o/r/pull/7", folder: "/gone", branch: "kept",
+                            dedicated: true, worktrees: []) == nil)
+    }
+
+    @Test func theActualCheckoutBranchOutranksTranscriptHistory() {
+        let tree = ReviewWorktrees.Worktree(path: "/repo", branch: "current", current: true)
+        let list = ReviewPullRequestList(provider: "github", access: true,
+                                         prs: [Item(number: 7, title: "old", mine: "created")], defaultBranch: "develop")
+        #expect(list.target(linkedURL: "https://github.com/o/r/pull/7", folder: "/repo", branch: nil,
+                            dedicated: false, worktrees: [tree]) == .worktree(tree))
+        let shared = ReviewWorktrees.Worktree(path: "/repo", branch: "develop", current: true)
+        let empty = ReviewPullRequestList(provider: "github", access: true, prs: [], defaultBranch: "develop")
+        #expect(empty.target(linkedURL: nil, folder: "/repo", branch: nil, dedicated: false, worktrees: [shared]) == nil)
+    }
+
+    @Test func multipleCreatedPRsNeedAChoiceWithoutBranchEvidence() {
+        let list = ReviewPullRequestList(provider: "github", access: true, prs: [
+            Item(number: 1, title: "a", mine: "created"), Item(number: 2, title: "b", mine: "created")
+        ], workBranches: [])
+        #expect(list.target(linkedURL: nil, folder: "/repo", branch: nil, dedicated: false, worktrees: []) == nil)
+    }
+
+    @Test func pushingTheDefaultBranchDoesNotClaimTheSharedCheckout() {
+        let list = ReviewPullRequestList(provider: "github", access: true, prs: [], branches: [.init(name: "feature")],
+            workBranches: [.init(name: "develop", at: "2099-01-01T00:00:00Z"), .init(name: "feature")], defaultBranch: "develop")
+        let shared = ReviewWorktrees.Worktree(path: "/repo", branch: "develop")
+        let own = ReviewWorktrees.Worktree(path: "/feature", branch: "feature")
+        #expect(list.target(linkedURL: nil, folder: "/repo", branch: nil, dedicated: false,
+                            worktrees: [shared, own]) == .worktree(own))
+    }
+
+    @Test func excludedWorktreesCannotReenterThroughTheCreatedPRFallback() {
+        let list = ReviewPullRequestList(provider: "github", access: true,
+            prs: [Item(number: 1, title: "created", headRef: "feature", mine: "created")],
+            workBranches: [.init(name: "feature")], defaultBranch: "develop")
+        let trees: [ReviewWorktrees.Worktree] = [.init(path: "/repo", branch: "develop"), .init(path: "/feature", branch: "feature")]
+        #expect(list.target(linkedURL: "https://github.com/o/r/pull/1", folder: "/repo", branch: nil,
+                            dedicated: false, worktrees: trees, excluding: ["/feature"]) == nil)
+    }
+
+    @Test func anUnknownDefaultBranchRequiresOwnershipEvidence() {
+        let list = ReviewPullRequestList(provider: nil, access: false, prs: [])
+        #expect(list.target(linkedURL: nil, folder: "/repo", branch: nil, dedicated: false,
+                            worktrees: [.init(path: "/repo", branch: "develop")]) == nil)
+    }
+
+    @Test func aForkBranchCannotSupplyTheLocalWorktreesPRBase() {
+        let local = Item(number: 1, title: "local", headRef: "feature", baseRef: "main", headRepository: "o/r")
+        let fork = Item(number: 2, title: "fork", headRef: "feature", baseRef: "release", updatedAt: "2099", headRepository: "fork/r")
+        let unknown = Item(number: 3, title: "unknown", headRef: "feature", baseRef: "wrong")
+        let list = ReviewPullRequestList(provider: "github", access: true, prs: [fork, unknown, local], workBranches: [.init(name: "feature")], repository: "o/r")
+        #expect(list.pullRequest(for: "feature")?.number == 1)
+        #expect(list.isConversationWork(local))
+        #expect(!list.isConversationWork(fork) && !list.isConversationWork(unknown))
+        let forkOnly = ReviewPullRequestList(provider: "github", access: true, prs: [fork], repository: "o/r")
+        #expect(forkOnly.pullRequest(for: "feature") == nil)
+    }
+
+    @Test func mergingAPRKeepsTheDiffReloadKeyCurrent() {
+        var pr = Item(number: 1, title: "x", headRef: "feature", baseRef: "main", headSHA: "same-head")
+        let openKey = pr.comparisonKey
+        pr.state = "merged"
+        #expect(pr.comparisonKey != openKey)
     }
 
     @Test func asksForTheTranscriptOnlyWithASafeID() {
