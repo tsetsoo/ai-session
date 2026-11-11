@@ -1002,7 +1002,8 @@ private struct ConversationColumn: View {
             resumeOnReset: ConversationToolbar.resumeToggle(conversation),
             onToggleResume: { send(.toggleResume, for: todo.id) },
             showsResumeNow: conversation?.paused?.offer == true && !model.store.isOffline,
-            onResumeNow: { send(.resumeNow, for: todo.id) }
+            onResumeNow: { send(.resumeNow, for: todo.id) },
+            onTakeover: conversation?.tool == "codex" ? { send(.takeover, for: todo.id) } : nil
         )
     }
 

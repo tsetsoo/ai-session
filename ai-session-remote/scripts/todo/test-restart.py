@@ -356,5 +356,144 @@ class RestartTests(unittest.TestCase):
             self.assertEqual(restart.restart(name, self.sid, "codex")[1]["result"], "stopped")
 
 
+class TakeoverTests(unittest.TestCase):
+    sid = "01a1a6bf-e5af-7360-a4fe-271996e66d90"
+    name = "ai/codex/todo-takeover"
+    identity = "Wed Nov 11 12:00:00 2026 /tmp/codex app-server --listen unix:///tmp/other.sock"
+    lock_screen = ("This conversation is open in another app\n"
+                   "Close it there and press R to continue here.\n"
+                   "r retry   f fork   ←/esc command center   ⌃c/q exit   ⌃t transcript\n")
+
+    def test_backend_detection_ignores_unbalanced_quotes_in_ps_config_values(self):
+        self.assertTrue(restart.codex_backend(self.identity + ' -c name="unfinished'))
+        self.assertFalse(restart.codex_backend(self.identity.replace('codex app-server', 'codex exec')))
+
+    def test_free_conversation_does_not_stop_any_process(self):
+        with patch.object(restart, "writer_locked", return_value=False), \
+                patch.object(restart, "session_exists", return_value=False), \
+                patch.object(status, "file_holders") as holders, patch.object(os, "kill") as kill:
+            code, result = restart.takeover(self.name, self.sid)
+        self.assertEqual((code, result["result"]), (0, "taken_over"))
+        holders.assert_not_called()
+        kill.assert_not_called()
+
+    def test_unknown_owner_is_not_killed(self):
+        with patch.object(restart, "writer_locked", return_value=True), \
+                patch.object(status, "file_holders", return_value=[123]), \
+                patch.object(restart, "process_identity", return_value="Wed Nov 11 12:00:00 2026 /tmp/editor"), \
+                patch.object(os, "kill") as kill:
+            code, result = restart.takeover(self.name, self.sid)
+        self.assertEqual((code, result["result"]), (1, "failed"))
+        kill.assert_not_called()
+
+    def test_recycled_pid_is_not_killed(self):
+        with patch.object(restart, "writer_locked", return_value=True), \
+                patch.object(status, "file_holders", return_value=[123]), \
+                patch.object(restart, "process_identity", side_effect=[self.identity, self.identity.replace("12:00", "13:00")]), \
+                patch.object(os, "kill") as kill:
+            code, result = restart.takeover(self.name, self.sid)
+        self.assertEqual(code, 1)
+        kill.assert_not_called()
+
+    def test_confirmed_owner_stops_and_retry_is_only_sent_to_lock_screen(self):
+        for screen, expected_sends in [(self.lock_screen, 1), ("Ask Codex to do anything", 0),
+                                       (self.lock_screen + "Ask Codex to do anything\n", 0)]:
+            calls = []
+            def run(argv, **kwargs):
+                calls.append(argv)
+                output = screen if "capture-pane" in argv and not any("send-keys" in call for call in calls) else "Ask Codex to do anything"
+                return subprocess.CompletedProcess(argv, 0, output, "")
+            with patch.object(restart, "writer_locked", side_effect=[True, True, False]), \
+                    patch.object(status, "file_holders", return_value=[123]), \
+                    patch.object(restart, "process_identity", return_value=self.identity), \
+                    patch.object(restart, "alive", return_value=False), \
+                    patch.object(restart, "session_exists", return_value=True), \
+                    patch.object(restart, "tmux_args", return_value=["tmux"]), \
+                    patch.object(subprocess, "run", side_effect=run), patch.object(os, "kill") as kill:
+                code, result = restart.takeover(self.name, self.sid)
+            self.assertEqual(code, 0)
+            kill.assert_called_once_with(123, restart.signal.SIGTERM)
+            self.assertEqual(sum("send-keys" in argv for argv in calls), expected_sends)
+
+    def test_terminal_read_failure_after_retry_is_not_success(self):
+        outputs = [subprocess.CompletedProcess([], 0, self.lock_screen, ""),
+                   subprocess.CompletedProcess([], 0, "", ""),
+                   subprocess.CompletedProcess([], 1, "", "no session")]
+        with patch.object(restart, "writer_locked", return_value=False), \
+                patch.object(restart, "session_exists", return_value=True), \
+                patch.object(restart, "tmux_args", return_value=["tmux"]), \
+                patch.object(subprocess, "run", side_effect=outputs):
+            code, result = restart.takeover(self.name, self.sid)
+        self.assertEqual((code, result["result"]), (1, "failed"))
+
+    def test_replaced_lock_inode_does_not_stop_old_owner(self):
+        with patch.object(restart, "lock_identity", side_effect=[(1, 10), (1, 11)]), \
+                patch.object(restart, "writer_locked", return_value=True), \
+                patch.object(status, "file_holders", return_value=[123]), \
+                patch.object(restart, "process_identity", return_value=self.identity), \
+                patch.object(os, "kill") as kill:
+            code, result = restart.takeover(self.name, self.sid)
+        self.assertEqual(code, 1)
+        kill.assert_not_called()
+
+    def test_current_terminals_backend_is_not_stopped(self):
+        own = status.terminal_socket(self.name)
+        identity = self.identity.rsplit(" unix://", 1)[0] + " unix://" + str(own)
+        with patch.object(restart, "writer_locked", return_value=True), \
+                patch.object(status, "file_holders", return_value=[123]), \
+                patch.object(restart, "process_identity", return_value=identity), \
+                patch.object(restart, "running_entry", return_value={"pid": 456}), \
+                patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "456\n", "")), \
+                patch.object(restart, "session_exists", return_value=False), patch.object(os, "kill") as kill:
+            code, result = restart.takeover(self.name, self.sid)
+        self.assertEqual((code, result["result"]), (0, "taken_over"))
+        kill.assert_not_called()
+
+    def test_real_lock_probe_keeps_inode(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "thread.lock"
+            with path.open("w") as holder:
+                fcntl.flock(holder, fcntl.LOCK_EX)
+                inode = path.stat().st_ino
+                self.assertTrue(restart.writer_locked(path))
+                self.assertEqual(path.stat().st_ino, inode)
+            self.assertFalse(restart.writer_locked(path))
+
+    @unittest.skipUnless(shutil.which("cc") and shutil.which("lsof"), "needs compiler and lsof")
+    def test_takeover_releases_a_real_backend_lock_without_deleting_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            locks = home / "thread-writer-locks"
+            locks.mkdir()
+            lock = locks / (self.sid + ".lock")
+            source, binary = home / "fake.c", home / "codex"
+            source.write_text('#include <sys/file.h>\n#include <fcntl.h>\n#include <unistd.h>\n'
+                              'int main(int argc,char **argv) { int fd=open(argv[2],O_CREAT|O_RDWR,0600);'
+                              'if(fd<0 || flock(fd,LOCK_EX)) return 1; for(;;) pause(); }\n')
+            subprocess.run(["cc", str(source), "-o", str(binary)], check=True, capture_output=True)
+            history = home / "saved-history.jsonl"
+            history.write_text("saved conversation\n")
+            process = subprocess.Popen([str(binary), "app-server", str(lock)])
+            try:
+                deadline = time.monotonic() + 5
+                while not restart.writer_locked(lock) and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(restart.writer_locked(lock))
+                inode = lock.stat().st_ino
+                with patch.object(status, "codex_home", return_value=home), \
+                        patch.object(restart, "session_exists", return_value=False):
+                    code, result = restart.takeover(self.name, self.sid)
+                self.assertEqual((code, result["result"]), (0, "taken_over"))
+                self.assertEqual(result["stopped_pids"], [process.pid])
+                self.assertFalse(restart.writer_locked(lock))
+                self.assertEqual(lock.stat().st_ino, inode)
+                self.assertEqual(history.read_text(), "saved conversation\n")
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=5)
+
+
 if __name__ == "__main__":
     unittest.main()

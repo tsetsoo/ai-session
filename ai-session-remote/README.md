@@ -184,6 +184,12 @@ The installer is safe to re-run. It sets up:
     existing login/model and a disposable session; it never approves user conversations.
 
 To rebuild the Mac app you run, use `scripts/rebuild-mac-app.sh`. It builds Release, checks the Apple Development team, and replaces `~/Applications/AI Session Remote.app`. `scripts/build-mac-release.sh` only prints the built `.app` path.
+
+For a Codex terminal stuck on “This conversation is open in another app”, use the
+conversation’s **… → Take Over Conversation…** action. After confirmation it stops the
+other Codex backend holding the conversation and retries here, keeping saved history.
+Other conversations sharing that backend may be interrupted; unsent text may be lost.
+The host needs updated todo scripts (`ai-todo-status takeover NAME ID`).
 - On Mac, copying a complete code snippet restores its original text from the saved reply
   when there is a unique match. This removes Claude's display wrapping and padding while
   preserving quoted spaces, actual newlines, continuations and heredocs for `!` commands.

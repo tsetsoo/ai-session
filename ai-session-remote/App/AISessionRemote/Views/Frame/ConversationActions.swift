@@ -97,6 +97,7 @@ enum ConversationToolbarCommand: Equatable {
     case rename
     case servers
     case restart
+    case takeover
     case copyResume
     case memories
     /// The Mac's Workers panel.
@@ -174,6 +175,7 @@ struct ConversationMenu: View {
     /// Resume After Session Limit: nil hides it (no conversation, or not Codex).
     var resumeOnReset: Bool? = nil
     var onToggleResume: () -> Void = {}
+    var onTakeover: (() -> Void)? = nil
 
     @AppStorage(TextSizeShortcuts.fontSizeKey) private var fontSize = TerminalAppearance.defaultFontSize
 
@@ -217,6 +219,11 @@ struct ConversationMenu: View {
                 Label("Restart…", systemImage: "arrow.triangle.2.circlepath")
             }
             .disabled(!canRestart)
+            if let onTakeover {
+                Button(action: onTakeover) {
+                    Label("Take Over Conversation…", systemImage: "arrow.right.square")
+                }
+            }
             if let resumeOnReset {
                 // Continues on its own once a 5-hour limit resets. Weekly limits always ask.
                 Toggle(isOn: Binding(get: { resumeOnReset }, set: { _ in onToggleResume() })) {
@@ -347,6 +354,7 @@ struct ConversationToolbarActions: View {
     /// A weekly or unknown limit has reset: the one-tap Resume.
     var showsResumeNow = false
     var onResumeNow: () -> Void = {}
+    var onTakeover: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: ConversationToolbar.controlSpacing) {
@@ -413,7 +421,8 @@ struct ConversationToolbarActions: View {
                 onPaste: onPaste,
                 onReview: onReview,
                 resumeOnReset: resumeOnReset,
-                onToggleResume: onToggleResume
+                onToggleResume: onToggleResume,
+                onTakeover: onTakeover
             )
         }
     }

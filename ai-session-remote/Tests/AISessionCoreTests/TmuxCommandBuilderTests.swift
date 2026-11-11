@@ -2,6 +2,12 @@ import XCTest
 @testable import AISessionCore
 
 final class TmuxCommandBuilderTests: XCTestCase {
+    func testTakeoverQuotesConversationArguments() {
+        let command = TmuxCommandBuilder.takeoverConversation(tmuxName: "ai/codex/todo-o'hare", sessionId: "session'id")
+        XCTAssertTrue(command.contains("takeover 'ai/codex/todo-o'\"'\"'hare' 'session'\"'\"'id'"))
+        XCTAssertFalse(command.contains("kill-session"))
+    }
+
     func testPersistentShellReattachesWithoutResettingItsDirectory() {
         let command = TmuxCommandBuilder.persistentShell(tmuxName: "remote-shell-o'hare")
         XCTAssertTrue(command.contains("exec tmux -u new-session -A -s 'remote-shell-o'\"'\"'hare' -c \"$HOME\""))

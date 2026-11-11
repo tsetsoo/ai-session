@@ -4,6 +4,20 @@ import Foundation
 /// Restarting one conversation on its computer (`ai-todo-status restart` over SSH), and its
 /// saved launch settings. Only on the user's request.
 enum RemoteRestart {
+    static func takeover(_ conversation: Conversation, config: HostConnectionConfig) async throws {
+        let result = try await NIOSSHClient(execTimeoutSeconds: 90).exec(config, command:
+            TmuxCommandBuilder.takeoverConversation(tmuxName: conversation.tmuxName, sessionId: conversation.sessionId))
+        if result.exitCode == TmuxCommandBuilder.scriptMissingExitCode || result.exitCode == 64 {
+            throw OldScripts(computer: conversation.computer.name)
+        }
+        guard let decoded = try? RestartResult.decode(Data(result.stdout.utf8)) else {
+            throw Failed(message: "The computer couldn't take over this conversation.")
+        }
+        guard result.exitCode == 0, decoded.result == "taken_over" else {
+            throw Failed(message: decoded.message ?? "The conversation is still held by another app.")
+        }
+    }
+
     /// The computer's scripts predate restart: the caller falls back to ending tmux.
     struct OldScripts: LocalizedError {
         let computer: String

@@ -4,7 +4,11 @@
 resume TOOL ID  the app's one-tap Resume for a conversation paused by a usage limit: check it
                 (no question card, nothing typed, the limit has reset), take the hub's lease
                 and type the resume message into its tmux session. Prints JSON; exit 0 when
-                typed, 75 when not now ({"resumed": false, "reason": ...})."""
+                typed, 75 when not now ({"resumed": false, "reason": ...}).
+
+takeover NAME ID  explicitly confirmed Codex takeover: stop other Codex backends holding
+                  this conversation and retry its read-only terminal. May interrupt other
+                  threads sharing the old backend; never deletes saved history."""
 import json
 import os
 from pathlib import Path
@@ -74,6 +78,11 @@ def main(args):
         if result is None:
             print(__doc__, file=sys.stderr)
             return code
+        print(json.dumps(result))
+        return code
+    elif args[:1] == ["takeover"] and len(args) == 3:
+        from ai_todo_restart import takeover
+        code, result = takeover(args[1], args[2])
         print(json.dumps(result))
         return code
     elif args[:1] == ["upgrade"]:

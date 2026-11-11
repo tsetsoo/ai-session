@@ -32,6 +32,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
+import fcntl
 import signal
 import subprocess
 import time
@@ -54,6 +56,134 @@ MESSAGES = {
     "unknown": "Its state can't be read, so it may be working.",
     "background": "It has background tasks running, which a restart would end.",
 }
+
+
+def writer_locked(path):
+    """Probe the existing inode; never unlink a live writer's lock file."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return False
+        except BlockingIOError:
+            return True
+    finally:
+        os.close(fd)
+
+
+def process_identity(pid):
+    return subprocess.run(["ps", "-p", str(pid), "-o", "lstart=,command="],
+                          capture_output=True, text=True, timeout=5).stdout.strip()
+
+
+def codex_backend(identity):
+    # ps's lstart occupies five words. Only known Codex app-server processes may be stopped;
+    # never kill an arbitrary application just because it opened a lock file.
+    # Only parse the prefix: ps renders -c configuration values without preserving shell
+    # quoting, so quotes later in a perfectly valid process's argv may be unbalanced.
+    words = shlex.shlex(identity, posix=True)
+    words.whitespace_split = True
+    try:
+        for _ in range(5):
+            next(words)
+        return Path(next(words)).name == "codex" and next(words) == "app-server"
+    except (StopIteration, ValueError):
+        return False
+
+
+def codex_lock_screen(screen):
+    """Only retry the actual lock UI, never a mention of it in a normal transcript."""
+    lines = screen.rstrip().splitlines()
+    footer = lines[-1] if lines else ""
+    return ("This conversation is open in another app" in screen
+            and "Close it there and press R to continue here." in screen
+            and "r retry" in footer and "f fork" in footer and "command center" in footer)
+
+
+def lock_identity(path):
+    try:
+        info = path.stat()
+        return info.st_dev, info.st_ino
+    except FileNotFoundError:
+        return None
+
+
+def takeover(name, sid):
+    """Explicit, confirmed takeover: release other Codex writers, then retry the lock screen.
+
+    Stopping a backend can interrupt its other threads. The app warns before calling this.
+    Never sends a prompt, deletes a lock, archives history, or kills the current terminal.
+    """
+    if not name.startswith("ai/codex/todo-"):
+        raise ValueError("Takeover is only available for Codex conversations")
+    launch.record_path("codex", sid)
+    result = {"tmux": name, "session_id": sid, "tool": "codex"}
+    lock = status.codex_home() / "thread-writer-locks" / (sid + ".lock")
+    lock_inode = lock_identity(lock)
+    own = status.terminal_socket(name)
+    stopped = []
+    # Validate every candidate before stopping any of them. The ps start time and open file
+    # are rechecked immediately before each signal to avoid acting on a recycled PID.
+    candidates = []
+    own_writer = False
+    if writer_locked(lock):
+        for pid in status.file_holders(lock):
+            identity = process_identity(pid)
+            if not codex_backend(identity):
+                return 1, dict(result, result="failed", message="The conversation is held by another app. Close it there before taking over.")
+            if identity.rsplit(" unix://", 1)[-1] == str(own):
+                # A backend may have survived while its TUI became read-only. Only treat it
+                # as ours if the current pane actually descends from this backend's parent.
+                entry = running_entry(name)
+                parent = subprocess.run(["ps", "-p", str(pid), "-o", "ppid="], capture_output=True, text=True).stdout.strip()
+                if entry and str(entry.get("pid")) == parent:
+                    own_writer = True
+                    continue
+            candidates.append((pid, identity))
+        if not candidates and not own_writer:
+            return 1, dict(result, result="failed", message="Couldn't identify the conversation owner. No process was stopped.")
+    for pid, identity in candidates:
+        if lock_identity(lock) != lock_inode:
+            return 1, dict(result, result="failed", message="The conversation lock changed. Try taking over again.")
+        if not writer_locked(lock):
+            break
+        if process_identity(pid) != identity or pid not in status.file_holders(lock):
+            return 1, dict(result, result="failed", message="The conversation owner changed. Try taking over again.")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        deadline = time.monotonic() + STOP_WAIT_S
+        while alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if alive(pid):
+            return 1, dict(result, result="failed", message="The other Codex process did not stop. No forced termination was sent.")
+        stopped.append(pid)
+    if candidates and writer_locked(lock):
+        return 1, dict(result, result="failed", message="Another process still holds the conversation. Try taking over again.")
+    if session_exists(name):
+        target = "=" + name + ":"
+        screen = subprocess.run(tmux_args() + ["capture-pane", "-p", "-t", target],
+                                capture_output=True, text=True, timeout=5)
+        if screen.returncode:
+            return 1, dict(result, result="failed", message="Couldn't read the conversation terminal. Try again.")
+        if codex_lock_screen(screen.stdout):
+            subprocess.run(tmux_args() + ["send-keys", "-t", target, "r"], check=True, capture_output=True, timeout=5)
+            deadline = time.monotonic() + 5
+            while True:
+                screen = subprocess.run(tmux_args() + ["capture-pane", "-p", "-t", target],
+                                        capture_output=True, text=True, timeout=5)
+                if screen.returncode:
+                    return 1, dict(result, result="failed", message="Couldn't verify the terminal after retrying. Reconnect to check it.")
+                if not codex_lock_screen(screen.stdout):
+                    break
+                if time.monotonic() >= deadline:
+                    return 1, dict(result, result="failed", message="Codex is still read-only after retrying. Try taking over again.")
+                time.sleep(0.1)
+    return 0, dict(result, result="taken_over", stopped_pids=stopped)
 
 
 def conversation_state(tool, sid):

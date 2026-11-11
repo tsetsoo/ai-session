@@ -93,6 +93,8 @@ struct ConversationFrame: View {
     @State private var restartSheetTarget: Conversation?
     /// A restart the computer refused while the tool works or waits: asked before forcing it.
     @State private var restartRequest: RestartRequest?
+    @State private var takeoverTarget: Conversation?
+    @State private var isTakingOver = false
     /// How the conversation just created should attach, and the text to type once it connects.
     @State private var duplicateLaunch: DuplicateLaunch?
     /// The conversation an Add Agent sheet is open for.
@@ -321,6 +323,15 @@ struct ConversationFrame: View {
     /// Servers… and Restart…: their sheets, and the question when the tool is working or waiting.
     private func serversPresentation(_ content: some View) -> some View {
         content
+        .confirmationDialog("Take Over Conversation?", isPresented: Binding(
+            get: { isFrontmost && takeoverTarget != nil },
+            set: { if !$0 { takeoverTarget = nil } }
+        ), titleVisibility: .visible, presenting: takeoverTarget) { target in
+            Button("Take Over", role: .destructive) { takeOver(target) }
+            Button("Cancel", role: .cancel) {}
+        } message: { target in
+            Text("Stops the other Codex process holding this conversation on \(target.computer.name), then reconnects here. This can interrupt work in other conversations sharing that process. Saved conversation history is kept; unsent text may be lost.")
+        }
         .confirmationDialog(
             "Restart \(RowText.toolName(restartRequest?.conversation.tool ?? "claude")) Anyway?",
             isPresented: Binding(
@@ -884,7 +895,8 @@ struct ConversationFrame: View {
             resumeOnReset: ConversationToolbar.resumeToggle(conversation),
             onToggleResume: toggleResume,
             showsResumeNow: conversation?.paused?.offer == true && !store.isOffline,
-            onResumeNow: resumeNow
+            onResumeNow: resumeNow,
+            onTakeover: conversation?.tool == "codex" && !isTakingOver ? { takeoverTarget = conversation } : nil
         )
     }
 
@@ -947,6 +959,8 @@ struct ConversationFrame: View {
         case .rename: if !store.isOffline { renameTarget = todo }
         case .servers: changeServers()
         case .restart: openRestart()
+        case .takeover:
+            if conversation?.tool == "codex", !isTakingOver { takeoverTarget = conversation }
         case .copyResume: copyResumeCommand()
         case .memories: sidePanel = .memories
         case .workers: sidePanel = .workers
@@ -1320,6 +1334,26 @@ struct ConversationFrame: View {
                 try await store.endSession(conversation, config: config)
             }
             loader.restart(conversation)
+        }
+    }
+
+    private func takeOver(_ target: Conversation) {
+        guard !isTakingOver else { return }
+        isTakingOver = true
+        Task {
+            defer { isTakingOver = false }
+            do {
+                let config = try HostLookup.config(for: target.computer, in: hosts)
+                try await RemoteRestart.takeover(target, config: config)
+                // The user may have selected another conversation during the remote stop.
+                if conversation?.sessionId == target.sessionId,
+                   conversation?.tmuxName == target.tmuxName {
+                    loader.restart(target)
+                }
+            } catch {
+                failure = ActionFailure(title: "Couldn't Take Over Conversation",
+                                        message: ConversationRowActions.message(for: error, computer: target.computer))
+            }
         }
     }
 
