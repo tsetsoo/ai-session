@@ -661,6 +661,14 @@ def _publish(body, observed_ns=None, source="hook", try_send=True):
             evidence = claude_hook_evidence(previous, hook_event, claude_metadata, observed, instance)
         elif tool == "claude":
             evidence = claude_runtime_evidence(evidence, (body["status"], body.get("message")), observed, instance)
+        if tool == "codex" and hook_event == "PermissionRequest" and body["status"] == "waiting":
+            # Review routing is configuration, not transient activity. Keep using
+            # the observed policy when a slow/disconnected poll makes its activity
+            # snapshot too old to override hooks. Questions still need an answer.
+            routing = read_json(root() / "runtime.json", {}).get("approvals_reviewers", {})
+            if routing.get(sid) in ("auto_review", "guardian_subagent"):
+                body["status"] = "busy"
+                body.pop("message", None)
         if source != "runtime" and hook_event != "UserPromptSubmit":
             snapshot = fresh_runtime_state(sid, tool)
             if snapshot and snapshot[0] >= turn_started:
@@ -910,6 +918,8 @@ class RuntimeSocket:
     def states(self):
         loaded = self.call("thread/loaded/list", {}).get("data", [])
         result = {}
+        self.approvals_reviewers = {}
+        configs = {}
         for sid in loaded:
             try:
                 thread = self.call("thread/read", {"threadId": sid, "includeTurns": False}).get("thread", {})
@@ -919,10 +929,15 @@ class RuntimeSocket:
                 continue
             raw_status = thread.get("status", {})
             reviewer = None
-            if "waitingOnApproval" in raw_status.get("activeFlags", []):
+            if raw_status.get("type") == "active":
                 try:
-                    config = self.call("config/read", {"cwd": thread.get("cwd")}).get("config", {})
+                    cwd = thread.get("cwd")
+                    if cwd not in configs:
+                        configs[cwd] = self.call("config/read", {"cwd": cwd}).get("config", {})
+                    config = configs[cwd]
                     reviewer = config.get("approvals_reviewer")
+                    if reviewer is not None:
+                        self.approvals_reviewers[sid] = reviewer
                 except RuntimeRPCError:
                     pass  # Older runtimes may not expose config; retain the prompt.
             state = runtime_status(raw_status, reviewer)
@@ -1330,12 +1345,19 @@ class RuntimePool:
         for removed in set(self.clients) - paths:
             self.clients.pop(removed).close()
         result = {}
+        self.approvals_reviewers = {}
         connected = 0
         for path in sorted(paths):
             try:
                 if path not in self.clients:
                     self.clients[path] = RuntimeSocket(path)
-                result.update(self.clients[path].states())
+                states = self.clients[path].states()
+                # If multiple runtimes know a thread, its routing must match the
+                # same runtime whose state wins, including unknown routing.
+                for sid in states:
+                    self.approvals_reviewers.pop(sid, None)
+                result.update(states)
+                self.approvals_reviewers.update(getattr(self.clients[path], "approvals_reviewers", {}))
                 connected += 1
             except (OSError, ValueError, EOFError, TimeoutError):
                 client = self.clients.pop(path, None)
@@ -1512,14 +1534,24 @@ def poll_runtime(client, previous, try_send=True, tool="codex"):
         else:
             prior.pop("idle_since_ns", None)
         effective[sid] = state
-    atomic_json(root() / ("claude-runtime.json" if tool == "claude" else "runtime.json"), {"observed_ns": observed, "threads": effective, "instances": instances})
+    snapshot = {"observed_ns": observed, "threads": effective, "instances": instances}
+    if tool == "codex":
+        snapshot["approvals_reviewers"] = getattr(client, "approvals_reviewers", {})
+    atomic_json(root() / ("claude-runtime.json" if tool == "claude" else "runtime.json"), snapshot)
     for sid, raw_state in effective.items():
-        record = read_json(root() / f"claude.{sid}.json", {}) if tool == "claude" else {}
+        filename = f"claude.{sid}.json" if tool == "claude" else f"{sid}.json"
+        record = read_json(root() / filename, {})
         record["claude_turn"] = claude_runtime_evidence(record.get("claude_turn", {}), raw_state, observed, instances.get(sid))
         state = claude_effective_state(sid, raw_state, record, instances.get(sid)) if tool == "claude" else raw_state
         prior = previous[sid]
+        # A hook can land between unchanged polls. Don't leave its stale prompt
+        # up until the next heartbeat. Retained busy during idle confirmation
+        # isn't evidence of work, and must not undo a real completion.
+        codex_prompt_answered = (tool == "codex" and states[sid][0] == "busy"
+                                 and record.get("body", {}).get("status") == "waiting")
         if (tuple(prior.get("state", ())) != tuple(state)
                 or tool == "claude" and tuple(prior.get("raw_state", ())) != tuple(raw_state)
+                or codex_prompt_answered
                 or observed - prior.get("reported_ns", 0) >= 30_000_000_000):
             publish({"session_id": sid, "tool": tool, "status": raw_state[0], "message": raw_state[1], "attended": False, "_claude_instance": instances.get(sid)}, observed, source="runtime", try_send=try_send)
             prior.update(state=state, raw_state=raw_state, reported_ns=observed)

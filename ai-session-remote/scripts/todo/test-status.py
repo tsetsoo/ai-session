@@ -126,7 +126,61 @@ class StatusTests(unittest.TestCase):
         raw["activeFlags"] = ["waitingOnUserInput"]
         calls.clear()
         self.assertEqual(client.states()["thread-1"], ("waiting", "Codex needs your answer"))
+        raw.update(type="idle", activeFlags=[])
+        calls.clear()
+        self.assertEqual(client.states()["thread-1"], ("idle", None))
         self.assertNotIn("config/read", [method for method, _ in calls])
+
+    def test_approval_hook_uses_review_routing_when_activity_snapshot_is_stale(self):
+        for reviewer, expected in (("auto_review", "busy"), ("guardian_subagent", "busy"),
+                                   ("user", "waiting"), (None, "waiting")):
+            with self.subTest(reviewer=reviewer):
+                status.atomic_json(status.root() / "runtime.json", {
+                    "observed_ns": time.time_ns() - 10_000_000_000,
+                    "threads": {"thread-1": ["busy", None]},
+                    "approvals_reviewers": {"thread-1": reviewer},
+                })
+                status.publish(dict(self.body("waiting"), _hook_event="PermissionRequest",
+                                    message="Codex needs your permission to use Bash"))
+                self.assertEqual(self.record()["body"]["status"], expected)
+                if expected == "busy":
+                    self.assertNotIn("message", self.record()["body"])
+                # The same policy must never suppress an actual user question.
+                status.publish(dict(self.body("waiting"), _hook_event="Notification",
+                                    message="Codex needs your answer"))
+                self.assertEqual(self.record()["body"]["status"], "waiting")
+
+    def test_unchanged_runtime_corrects_conflicting_hook_on_the_next_poll(self):
+        class Client:
+            def states(self):
+                return {"thread-1": ("busy", None)}
+
+        client, previous = Client(), {}
+        status.poll_runtime(client, previous)
+        # Reproduce a hook landing while the monitor's activity snapshot is stale.
+        snapshot = status.read_json(status.root() / "runtime.json")
+        snapshot["observed_ns"] -= 10_000_000_000
+        status.atomic_json(status.root() / "runtime.json", snapshot)
+        status.publish(dict(self.body("waiting"), _hook_event="PermissionRequest"))
+        self.assertEqual(self.record()["body"]["status"], "waiting")
+        status.poll_runtime(client, previous)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+        count = len(self.requests)
+        status.poll_runtime(client, previous)
+        self.assertEqual(len(self.requests), count, "matching reports still coalesce")
+
+    def test_legacy_approval_notify_uses_the_same_automatic_review_policy(self):
+        status.atomic_json(status.root() / "runtime.json", {
+            "observed_ns": time.time_ns() - 10_000_000_000,
+            "threads": {"thread-1": ["busy", None]},
+            "approvals_reviewers": {"thread-1": "auto_review"},
+        })
+        notify = str(Path(__file__).with_name("ai-todo-codex-notify"))
+        environment = dict(os.environ, AI_TODO_HOOK_SYNC="1", TMUX="", AI_TODO_TMUX_SESSION="")
+        subprocess.run([notify, json.dumps({"thread-id": "thread-1", "type": "approval-requested"})],
+                       env=environment, check=True, timeout=10, capture_output=True)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+        self.assertNotIn("_hook_event", self.requests[-1])
 
     def test_failed_final_event_survives_until_an_independent_retry(self):
         self.http_status = 503
@@ -276,12 +330,15 @@ class StatusTests(unittest.TestCase):
             def __init__(self, endpoint):
                 self.endpoint = endpoint
             def states(self):
-                return {"own" if self.endpoint == path.with_suffix(".sock") else "shared": ("busy", None)}
+                sid = "own" if self.endpoint == path.with_suffix(".sock") else "shared"
+                self.approvals_reviewers = {sid: "auto_review" if sid == "own" else "user"}
+                return {sid: ("busy", None)}
             def close(self):
                 pass
         with patch.object(status, "RuntimeSocket", Client):
             pool = status.RuntimePool()
             self.assertEqual(set(pool.states()), {"own", "shared"})
+            self.assertEqual(pool.approvals_reviewers, {"own": "auto_review", "shared": "user"})
             pool.close()
 
     def test_monitor_closes_connections_when_backend_registry_is_removed(self):
@@ -326,6 +383,8 @@ class StatusTests(unittest.TestCase):
         def call(method, params):
             if method == "thread/loaded/list":
                 return {"data": ["gone", "working"]}
+            if method == "config/read":
+                return {"config": {"approvals_reviewer": "auto_review"}}
             if params["threadId"] == "gone":
                 raise status.RuntimeRPCError("thread/read failed")
             return {"thread": {"status": {"type": "active", "activeFlags": []}}}

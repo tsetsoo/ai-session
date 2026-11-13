@@ -140,7 +140,10 @@ if status is None or not isinstance(sid, str) or not sid or not all(c.isalnum() 
     sys.exit(1)
 print(sid)
 print(status)
-print(json.dumps({"session_id": sid, "tool": "codex", "status": status, "attended": False}))
+out = {"session_id": sid, "tool": "codex", "status": status, "attended": False}
+if data.get("type") == "approval-requested":
+    out["_hook_event"] = "PermissionRequest"
+print(json.dumps(out))
 ' "$json" 2>/dev/null) || exit 0
 sid=$(printf '%s\n' "$body" | sed -n 1p)
 status=$(printf '%s\n' "$body" | sed -n 2p)
@@ -171,6 +174,7 @@ post() {
     printf '%s' "$body" | "$status_bin" publish --time "$event_time"
     return $?
   fi
+  body=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.dumps({k:v for k,v in json.load(sys.stdin).items() if not k.startswith("_")}))')
   # The token goes through curl's config on stdin so it never shows up in `ps`.
   {
     if [ -n "$TODO_API_TOKEN" ]; then
