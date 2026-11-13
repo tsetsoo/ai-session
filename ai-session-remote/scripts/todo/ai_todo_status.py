@@ -483,6 +483,46 @@ def codex_rollout(session_id):
     return found[-1] if found else None
 
 
+def codex_approvals_reviewer(session_id):
+    """Latest turn's review routing, including standalone TUIs with no runtime socket.
+
+    Walk backwards: a long-running command can be megabytes after its turn context.
+    Read only metadata, and never infer routing from another session or global config.
+    """
+    path = codex_rollout(session_id)
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            position = handle.seek(0, os.SEEK_END)
+            remainder = b""
+            while position:
+                size = min(position, 65536)
+                position -= size
+                handle.seek(position)
+                lines = (handle.read(size) + remainder).split(b"\n")
+                remainder = lines.pop(0) if position else b""
+                for line in reversed(lines):
+                    if b'"turn_context"' not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except (ValueError, UnicodeError):
+                        continue
+                    if not isinstance(record, dict) or record.get("type") != "turn_context":
+                        continue
+                    payload = record.get("payload")
+                    if not isinstance(payload, dict):
+                        continue
+                    if payload.get("model") == "codex-auto-review":
+                        continue  # Internal review turns aren't the user's turn settings.
+                    reviewer = payload.get("approvals_reviewer")
+                    return reviewer if isinstance(reviewer, str) else None
+    except OSError:
+        pass
+    return None
+
+
 def codex_limit_pause(session_id, now=None):
     """The pause when the Codex thread's last turn ended on its usage limit, else None."""
     path = codex_rollout(session_id)
@@ -666,7 +706,10 @@ def _publish(body, observed_ns=None, source="hook", try_send=True):
             # the observed policy when a slow/disconnected poll makes its activity
             # snapshot too old to override hooks. Questions still need an answer.
             routing = read_json(root() / "runtime.json", {}).get("approvals_reviewers", {})
-            if routing.get(sid) in ("auto_review", "guardian_subagent"):
+            reviewer = routing.get(sid)
+            if reviewer is None:
+                reviewer = codex_approvals_reviewer(sid)
+            if reviewer in ("auto_review", "guardian_subagent"):
                 body["status"] = "busy"
                 body.pop("message", None)
         if source != "runtime" and hook_event != "UserPromptSubmit":

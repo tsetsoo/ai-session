@@ -182,6 +182,39 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(self.requests[-1]["status"], "busy")
         self.assertNotIn("_hook_event", self.requests[-1])
 
+    def test_standalone_codex_approval_hook_reads_its_own_turn_policy(self):
+        sid = "standalone-thread"
+        path = self.codex_rollout(sid)
+        hook = str(Path(__file__).with_name("ai-todo-hook"))
+        environment = dict(os.environ, CODEX_HOME=str(self.home / ".codex"),
+                           AI_TODO_HOOK_SYNC="1", AI_TODO_TMUX_SESSION="other", TMUX="")
+        payload = {"session_id": sid, "hook_event_name": "PermissionRequest", "tool_name": "Bash"}
+        for reviewer, expected in (("auto_review", "busy"), ("user", "waiting"), (None, "waiting")):
+            with self.subTest(reviewer=reviewer):
+                path.write_text(json.dumps({"type": "turn_context", "payload": {
+                    "approvals_reviewer": reviewer, "model": "gpt-test"}}) + "\n")
+                subprocess.run([hook, "--codex", "waiting"], input=json.dumps(payload), env=environment,
+                               text=True, capture_output=True, check=True, timeout=10)
+                self.assertEqual(self.requests[-1]["status"], expected)
+                self.assertNotIn("_hook_event", self.requests[-1])
+
+    def test_standalone_reviewer_finds_context_before_large_output_and_uses_latest_turn(self):
+        sid = "long-turn"
+        path = self.codex_rollout(sid)
+        context = {"type": "turn_context", "payload": {"approvals_reviewer": "auto_review"}}
+        output = {"type": "response_item", "payload": {"output": "x" * 300000}}
+        path.write_text(json.dumps(context) + "\n" + json.dumps(output) + "\n")
+        self.assertEqual(status.codex_approvals_reviewer(sid), "auto_review")
+        # Latest settings win, including a newer context with no known policy.
+        for reviewer in ("user", None):
+            context["payload"]["approvals_reviewer"] = reviewer
+            with path.open("a") as handle:
+                handle.write(json.dumps(context) + "\n{partial")
+            self.assertEqual(status.codex_approvals_reviewer(sid), reviewer)
+            with path.open("a") as handle:
+                handle.write("\n")
+        self.assertIsNone(status.codex_approvals_reviewer("missing-thread"))
+
     def test_failed_final_event_survives_until_an_independent_retry(self):
         self.http_status = 503
         self.assertFalse(status.publish(self.body("idle"), 100))
