@@ -83,6 +83,51 @@ class StatusTests(unittest.TestCase):
         status.retry_pending()
         self.assertEqual(self.requests[-1]["event_timestamp_ns"], 300)
 
+    def test_automatic_review_is_work_but_user_questions_still_need_an_answer(self):
+        for reviewer in ("auto_review", "guardian_subagent"):
+            with self.subTest(reviewer=reviewer):
+                self.assertEqual(status.runtime_status(
+                    {"type": "active", "activeFlags": ["waitingOnApproval"]}, reviewer), ("busy", None))
+                self.assertEqual(status.runtime_status(
+                    {"type": "active", "activeFlags": ["waitingOnApproval", "waitingOnUserInput"]}, reviewer),
+                    ("waiting", "Codex needs your answer"))
+
+    def test_runtime_uses_effective_reviewer_and_reconciles_false_waiting(self):
+        client = object.__new__(status.RuntimeSocket)
+        raw = {"type": "active", "activeFlags": ["waitingOnApproval"]}
+        reviewer = "auto_review"
+        calls = []
+
+        def call(method, params):
+            calls.append((method, params))
+            if method == "thread/loaded/list":
+                return {"data": ["thread-1"]}
+            if method == "thread/read":
+                return {"thread": {"status": raw, "cwd": "/project"}}
+            if method == "config/read":
+                if reviewer == "unavailable":
+                    raise status.RuntimeRPCError("config/read failed")
+                return {"config": {"approvals_reviewer": reviewer}}
+            self.fail(method)
+
+        client.call = call
+        previous = {}
+        status.publish(self.body("waiting"), source="runtime")
+        status.poll_runtime(client, previous)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+        self.assertIsNone(self.requests[-1].get("message"))
+        self.assertIn(("config/read", {"cwd": "/project"}), calls)
+        # Hooks also use this snapshot, so they cannot resurrect the false prompt.
+        status.publish(dict(self.body("waiting"), _hook_event="PermissionRequest"))
+        self.assertEqual(self.record()["body"]["status"], "busy")
+        for reviewer in ("user", None, "unavailable"):
+            with self.subTest(reviewer=reviewer):
+                self.assertEqual(client.states()["thread-1"], ("waiting", "Codex needs approval"))
+        raw["activeFlags"] = ["waitingOnUserInput"]
+        calls.clear()
+        self.assertEqual(client.states()["thread-1"], ("waiting", "Codex needs your answer"))
+        self.assertNotIn("config/read", [method for method, _ in calls])
+
     def test_failed_final_event_survives_until_an_independent_retry(self):
         self.http_status = 503
         self.assertFalse(status.publish(self.body("idle"), 100))

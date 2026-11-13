@@ -88,14 +88,16 @@ def session_lock(sid, blocking=True, tool="codex"):
         yield directory / (key + ".json")
 
 
-def runtime_status(status):
+def runtime_status(status, approvals_reviewer=None):
     kind = status.get("type")
     if kind == "active":
         flags = set(status.get("activeFlags", []))
-        if "waitingOnApproval" in flags:
-            return "waiting", "Codex needs approval"
         if "waitingOnUserInput" in flags:
             return "waiting", "Codex needs your answer"
+        # Automatic approval review is ongoing work, even though Codex exposes
+        # the same active flag as an approval routed to the user.
+        if "waitingOnApproval" in flags and approvals_reviewer not in ("auto_review", "guardian_subagent"):
+            return "waiting", "Codex needs approval"
         return "busy", None
     if kind == "idle":
         return "idle", None
@@ -915,7 +917,15 @@ class RuntimeSocket:
                 # A thread can unload between listing and reading. Keep observing the
                 # other threads; transport errors still reconnect the whole socket.
                 continue
-            state = runtime_status(thread.get("status", {}))
+            raw_status = thread.get("status", {})
+            reviewer = None
+            if "waitingOnApproval" in raw_status.get("activeFlags", []):
+                try:
+                    config = self.call("config/read", {"cwd": thread.get("cwd")}).get("config", {})
+                    reviewer = config.get("approvals_reviewer")
+                except RuntimeRPCError:
+                    pass  # Older runtimes may not expose config; retain the prompt.
+            state = runtime_status(raw_status, reviewer)
             if state:
                 result[sid] = state
         return result
