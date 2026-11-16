@@ -159,10 +159,11 @@ final class LocalClipboardTerminalView: TerminalView {
 }
 
 /// Hosts the terminal and, while disconnected, the Reconnect card in front of it.
-/// The card is a subview, so AppKit hit testing reaches the button. The grid keeps its
-/// autoresizing mask and is not resized again from `layout()`.
+/// The card is a subview, so AppKit hit testing reaches the button. Hidden grids keep their
+/// dimensions until held output has been parsed at the size that produced it.
 final class TerminalClickGate: NSView {
     let terminalView: TerminalView
+    var beforeGridResize: (() -> Void)?
     private var coverView: NSView?
     private var passesThrough = false
 
@@ -170,7 +171,7 @@ final class TerminalClickGate: NSView {
         self.terminalView = terminalView
         super.init(frame: .zero)
         terminalView.translatesAutoresizingMaskIntoConstraints = true
-        terminalView.autoresizingMask = [.width, .height]
+        terminalView.autoresizingMask = []
         terminalView.frame = bounds
         addSubview(terminalView)
     }
@@ -195,6 +196,25 @@ final class TerminalClickGate: NSView {
             passesThrough = true
             setCover(nil)
         }
+        resizeGridIfShown()
+    }
+
+    override func layout() {
+        super.layout()
+        resizeGridIfShown()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        resizeGridIfShown()
+    }
+
+    private func resizeGridIfShown() {
+        guard !passesThrough, terminalView.frame != bounds else { return }
+        // Cursor-addressed output belongs to the old grid. Replaying it after a resize
+        // leaves fragments and background fills in unrelated columns.
+        beforeGridResize?()
+        terminalView.frame = bounds
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -250,6 +270,7 @@ private struct TerminalContainerView: NSViewRepresentable {
         view.onDropFiles = onDropFiles
         coordinator.attach(to: view)
         let gate = TerminalClickGate(terminalView: view)
+        gate.beforeGridResize = { [weak coordinator] in coordinator?.flushHeldOutput() }
         updateCover(gate, context: context)
         return gate
     }

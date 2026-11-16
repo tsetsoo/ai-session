@@ -302,6 +302,7 @@
 		DE9A16A1D79FF049E688395B /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = 650353A821892A0627808D84 /* NIOPosix */; };
 		DEC7BB251D56E61ACCB79C2D /* SSHConnectionPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */; };
 		DFE51CCFE1AF61B94531D16D /* PastedPhoto.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA6283BF8B0D73C324854FCF /* PastedPhoto.swift */; };
+		E122AE9F0DDCD9A4ED4C2688 /* TerminalRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69B866F8D5D57939AF5B655E /* TerminalRenderingTests.swift */; };
 		E135A9C032C1EEE94521B02D /* ChatCodeBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D85EAC354443F3D03E6BAD90 /* ChatCodeBlock.swift */; };
 		E174CD3627AEC66039734C6F /* OnThisComputerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24947A77BA8C57130367110F /* OnThisComputerView.swift */; };
 		E22EBE050F90F7253F66ACF9 /* TerminalConnectionDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20819AADB57F2C1EB714DC4 /* TerminalConnectionDiagnosticsTests.swift */; };
@@ -430,6 +431,7 @@
 		603592DBCC8D740212BE0676 /* AISessionRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionRemoteApp.swift; sourceTree = "<group>"; };
 		624E206917FBF40B8104F71E /* ConversationSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSwitcher.swift; sourceTree = "<group>"; };
 		6853D306579AF19D0E50F568 /* SelectionDebounceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionDebounceTests.swift; sourceTree = "<group>"; };
+		69B866F8D5D57939AF5B655E /* TerminalRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalRenderingTests.swift; sourceTree = "<group>"; };
 		6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParserTests.swift; sourceTree = "<group>"; };
 		6D77F4B71B24E6F3E37B3E21 /* InlineTodoAdd.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineTodoAdd.swift; sourceTree = "<group>"; };
 		6E4A53D3BFF6584E29811BD0 /* CommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPalette.swift; sourceTree = "<group>"; };
@@ -711,6 +713,7 @@
 				F538A47A9E801D82DC090741 /* ReviewStoreTests.swift */,
 				E0376DF73A5814B23C3C80EE /* ShellWorkspaceTests.swift */,
 				E20819AADB57F2C1EB714DC4 /* TerminalConnectionDiagnosticsTests.swift */,
+				69B866F8D5D57939AF5B655E /* TerminalRenderingTests.swift */,
 				8B1150B78937B45875C56973 /* TerminalSelectionTests.swift */,
 				B0318083FCE727F91B9342F3 /* TodoHoldDropTests.swift */,
 			);
@@ -1526,6 +1529,7 @@
 				A62BD08C2FF4C47DF8B89153 /* SSHConnectionPoolTests.swift in Sources */,
 				F8E1B6C4DFB2FFCDE521132F /* ShellWorkspaceTests.swift in Sources */,
 				E22EBE050F90F7253F66ACF9 /* TerminalConnectionDiagnosticsTests.swift in Sources */,
+				E122AE9F0DDCD9A4ED4C2688 /* TerminalRenderingTests.swift in Sources */,
 				21AA7F7C909E4283BEFDDDFD /* TerminalSelectionTests.swift in Sources */,
 				D83BED1012CFC26D4F60CFEE /* TodoHoldDropTests.swift in Sources */,
 			);

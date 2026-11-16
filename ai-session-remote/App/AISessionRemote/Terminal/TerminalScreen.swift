@@ -198,10 +198,16 @@ final class TerminalCoordinator: TerminalViewDelegate {
             return
         }
         guard terminalView != nil else { return }
+        flushHeldOutput()
+        sendThemeNotice()
+    }
+
+    /// Called before the Mac grid changes dimensions, including when a hidden grid returns.
+    func flushHeldOutput() {
+        coalescer.flush()
         if let pending = hiddenOutput.flushHeld(isShown: true) {
             feedTerminal(pending[...])
         }
-        sendThemeNotice()
     }
 
     /// Tells tmux the palette's theme if it changed since tmux last heard. Only while shown:

@@ -68,6 +68,12 @@ final class TerminalOutputCoalescer: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Delivers already-arrived output before a grid resize. Call on the same main thread
+    /// as scheduled drains; their later callbacks safely find an empty buffer.
+    func flush() {
+        drain()
+    }
+
     private func drain() {
         lock.lock()
         let pending = buffer
