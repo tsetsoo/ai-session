@@ -475,6 +475,18 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(self.reap(set()), [])
         self.assertFalse(path.with_suffix(".json").exists())
 
+    def test_reaper_survives_tmux_failure_between_records_and_retries_next_pass(self):
+        for name in ("first", "second"):
+            status.atomic_json(status.root() / "r" / (name + ".json"), {})
+        with patch.object(status, "tmux_sessions", side_effect=[set(), None]), \
+                patch.object(status, "reap_backend") as reap:
+            self.assertEqual(status.reap_backends(), [])
+            reap.assert_not_called()
+        with patch.object(status, "tmux_sessions", return_value=set()), \
+                patch.object(status, "reap_backend", return_value=None) as reap:
+            self.assertEqual(status.reap_backends(), [])
+            self.assertEqual(reap.call_count, 2)
+
     def test_backend_is_replaced_after_an_update_only_when_idle_and_ours(self):
         decide = status.backend_decision
         self.assertEqual(decide(False, False, True, False), "keep", "nothing changed")
@@ -599,6 +611,22 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(self.links, [("/api/conversations/conversation-1/session", {"session_id": "current-id"})])
             runtime.states()
             self.assertEqual(len(self.links), 1, "reconciliation is throttled")
+
+    def test_claude_live_shell_registry_requires_matching_process_identity(self):
+        for change in (None, "pid", "sessionId", "startedAt", "status"):
+            with self.subTest(change=change):
+                row, local = self.claude_identity_fixture()
+                local["status"] = "shell"
+                if change:
+                    local[change] = {"pid": 99, "sessionId": "another-session", "startedAt": 99,
+                                     "status": "idle"}[change]
+                status.atomic_json(self.home / ".claude/sessions/42.json", local)
+                with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(self.home / ".claude")}), \
+                        patch.object(status, "find_claude", return_value="/claude"), \
+                        patch.object(status, "run_group") as command:
+                    command.return_value = subprocess.CompletedProcess([], 0, json.dumps([dict(row, status="busy")]), "")
+                    state = status.ClaudeRuntime().states()["current-id"]
+                self.assertEqual(state, ("busy", status.CLAUDE_BACKGROUND_MESSAGE if change is None else None))
 
     def test_claude_session_relink_requires_same_host_terminal_and_live_instance(self):
         for change in ("host", "terminal", "closed", "already-linked", "background", "stale-registry", "ambiguous"):
@@ -1026,6 +1054,45 @@ class StatusTests(unittest.TestCase):
                 self.claude_transcript_row()
                 self.poll_at(client, previous, self.claude_now, 40)
                 self.assertEqual(self.requests[-1]["status"], "busy")
+
+    def test_confirmed_runtime_idle_overrides_stale_monitors(self):
+        for tasks in ([{"id": "old-monitor", "type": "monitor"}],
+                      [{"id": "old-monitor", "type": "monitor"}, {"id": "shell", "type": "shell"}]):
+            with self.subTest(tasks=tasks):
+                client, previous = self.claude_completion_fixture(tasks)
+                self.claude_transcript_row()
+                self.poll_at(client, previous, self.claude_now, 4)
+                self.assertEqual(self.requests[-1]["status"], "busy")
+                client.value[self.claude_sid] = ("idle", None)
+                self.poll_at(client, previous, self.claude_now, 5)
+                self.assertEqual(self.requests[-1]["status"], "busy", "confirm idle before settling")
+                self.poll_at(client, previous, self.claude_now, 7)
+                self.assertEqual(self.requests[-1]["status"], "idle")
+                previous.clear()  # A monitor restart must not resurrect the old task.
+                self.poll_at(client, previous, self.claude_now, 40)
+                self.poll_at(client, previous, self.claude_now, 42)
+                self.assertEqual(self.requests[-1]["status"], "idle")
+
+    def test_live_runtime_shell_keeps_monitor_working_after_main_stop(self):
+        # Claude reports Monitor as a shell in both its process status and Stop tasks.
+        client, previous = self.claude_completion_fixture([{"id": "watch", "type": "shell"}])
+        self.claude_transcript_row()
+        client.value[self.claude_sid] = status.claude_status({"status": "shell"})
+        self.poll_at(client, previous, self.claude_now, 4)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+        self.assertEqual(self.requests[-1]["message"], status.CLAUDE_BACKGROUND_MESSAGE)
+        # A hook and a service restart cannot mistake the completed main turn for
+        # completion of the runtime's still-live background work.
+        self.claude_hook("PostToolUse", "idle", 5)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+        previous.clear()
+        self.poll_at(client, previous, self.claude_now, 6)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+        client.value[self.claude_sid] = status.claude_status({"status": "idle"})
+        self.poll_at(client, previous, self.claude_now, 7)
+        self.assertEqual(self.requests[-1]["status"], "busy")
+        self.poll_at(client, previous, self.claude_now, 9)
+        self.assertEqual(self.requests[-1]["status"], "idle")
 
     def test_new_runtime_instance_and_background_job_are_never_settled_by_old_stop(self):
         for change in ({"pid": 43}, {"startedAt": 200}, {"kind": "background"}):

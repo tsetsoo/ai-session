@@ -60,6 +60,9 @@ struct TodoRow: View {
                 if conversation != nil || projectName != nil {
                     TodoSubtitleLabel(conversation: conversation, status: status, projectName: projectName)
                 }
+                if let conversation, status != .closed {
+                    StatusFreshnessLabel(conversation: conversation)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

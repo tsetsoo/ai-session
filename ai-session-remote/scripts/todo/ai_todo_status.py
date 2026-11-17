@@ -233,11 +233,18 @@ def claude_stop_confirmed(sid, completion):
         return False
 
 
+CLAUDE_BACKGROUND_MESSAGE = "Claude has background work running"
+
+
 def claude_effective_state(sid, state, record, instance=None):
     evidence = record.get("claude_turn", {})
     prompts = evidence.get("prompts", {})
     if prompts and state[0] != "waiting":
         return "waiting", next(iter(prompts.values()))["message"]
+    if state == ("busy", CLAUDE_BACKGROUND_MESSAGE):
+        # `shell` is live runtime evidence of background work, including Monitor
+        # tasks that Stop's task registry also calls shells. A main Stop cannot end it.
+        return state
     completion = evidence.get("completion")
     if not completion or state[0] == "waiting":
         return state  # A pending approval/question always takes precedence.
@@ -248,7 +255,11 @@ def claude_effective_state(sid, state, record, instance=None):
     if isinstance(started, (int, float)) and started * 1_000_000 > completion["stopped_ns"]:
         return state
     tasks = evidence.get("tasks")
-    if tasks is not None and any(task.get("type") != "shell" for task in tasks):
+    # Monitors have no completion hook: Stop's snapshot can outlive one. Trust
+    # confirmed runtime idle for monitors; independent agents still need to finish.
+    if tasks is not None and any(task.get("type") != "shell"
+                                 and not (task.get("type") == "monitor" and state[0] == "idle")
+                                 for task in tasks):
         return "busy", None
     if tasks is None or state[0] != "busy":
         return state
@@ -1161,7 +1172,11 @@ def reap_backends():
                 # session that already exists: under it, a session that is still missing is gone.
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 sessions = tmux_sessions()
-                if sessions is None or record_path.stem in {terminal_socket(name).stem for name in sessions}:
+                if sessions is None:
+                    # Don't reuse this failed listing in the next iteration: it
+                    # would crash the cleanup thread and disable future passes.
+                    return stopped
+                if record_path.stem in {terminal_socket(name).stem for name in sessions}:
                     continue
                 pid = reap_backend(record_path)
                 if pid:
@@ -1442,11 +1457,26 @@ def claude_status(row):
                            "sandbox request": "Claude needs sandbox approval"}.get(reason, "Claude needs your attention")
     if state == "failed":
         return "waiting", "Claude encountered an error; open the conversation"
+    if status == "shell":
+        return "busy", CLAUDE_BACKGROUND_MESSAGE
     if status == "busy" or state == "working":
         return "busy", None
-    if status in ("idle", "shell") or state in ("done", "stopped"):
+    if status == "idle" or state in ("done", "stopped"):
         return "idle", None
     return None  # Missing or new status values are not proof that work completed.
+
+
+def claude_background_running(row):
+    # `agents --json` normalizes shell to busy on some versions. The matching
+    # process registry retains shell, including while a Monitor runs after Stop.
+    pid = row.get("pid")
+    if row.get("kind") != "interactive" or not isinstance(pid, int) or isinstance(pid, bool):
+        return False
+    directory = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
+    local = read_json(directory / "sessions" / f"{pid}.json", {})
+    return (local.get("pid") == pid and local.get("sessionId") == row.get("sessionId")
+            and local.get("startedAt") is not None and local.get("startedAt") == row.get("startedAt")
+            and local.get("status") == "shell")
 
 
 def reconcile_claude_sessions(rows):
@@ -1545,6 +1575,8 @@ class ClaudeRuntime:
         for sid, (_, row) in newest.items():
             state = claude_status(row)
             if state:
+                if state[0] != "waiting" and claude_background_running(row):
+                    state = ("busy", CLAUDE_BACKGROUND_MESSAGE)
                 result[sid] = state
         return result
 

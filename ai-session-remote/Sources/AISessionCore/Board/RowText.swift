@@ -73,6 +73,7 @@ public enum RowText {
         case .needsYou:
             return message(conversation) ?? "Waiting for you"
         case .working:
+            if let detail = workingDetail(conversation) { return detail }
             guard let since = date(conversation.statusUpdatedAt) else { return "Working" }
             let elapsed = now.timeIntervalSince(since)
             return elapsed < 60 ? "Working" : "Working for \(shortInterval(elapsed))"
@@ -145,10 +146,33 @@ public enum RowText {
                                     now: Date) -> String? {
         guard let conversation, let status else { return nil }
         if status == .needsYou, let message = message(conversation) { return message }
+        if status == .working, let detail = workingDetail(conversation) {
+            return "\(conversation.computer.name) · \(detail)"
+        }
         if status == .paused, let pause = conversation.paused { return pauseText(pause, now: now) }
         return [conversation.computer.name, age(of: conversation, now: now)]
             .compactMap { $0 }
             .joined(separator: " · ")
+    }
+
+    private static func workingDetail(_ conversation: Conversation) -> String? {
+        guard let text = message(conversation) else { return nil }
+        return text == "Claude has background work running" ? "Background work running" : text
+    }
+
+    public static func freshness(_ freshness: StatusFreshness, now: Date) -> String? {
+        let prefix: String
+        switch freshness.state {
+        case .live: return nil
+        case .checking: return "Checking status…"
+        case .offline: prefix = "Offline"
+        case .unavailable: prefix = "Status monitoring unavailable"
+        case .stale: prefix = "Status not recently checked"
+        }
+        guard let confirmed = freshness.lastConfirmedAt else { return prefix }
+        let elapsed = now.timeIntervalSince(confirmed)
+        let age = elapsed < 60 ? "just now" : "\(shortInterval(elapsed)) ago"
+        return "\(prefix) · last confirmed \(age)"
     }
 
     private static func message(_ conversation: Conversation) -> String? {

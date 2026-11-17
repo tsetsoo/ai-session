@@ -144,6 +144,23 @@ final class RowTextTests: XCTestCase {
                                                    now: now), "Finished just now")
     }
 
+    func testWorkingRowsExplainLiveBackgroundWork() {
+        let conversation = conv(message: "Claude has background work running")
+        XCTAssertEqual(RowText.conversationMessage(conversation, status: .working, now: now),
+                       "Background work running")
+        XCTAssertEqual(RowText.todoSubtitle(conversation, status: .working, now: now),
+                       "mac-studio · Background work running")
+    }
+
+    func testFreshnessDoesNotConfuseLastConfirmationWithStatusDuration() {
+        XCTAssertNil(RowText.freshness(.init(state: .live), now: now))
+        XCTAssertEqual(RowText.freshness(.init(state: .offline, lastConfirmedAt: now.addingTimeInterval(-240)), now: now),
+                       "Offline · last confirmed 4m ago")
+        XCTAssertEqual(RowText.freshness(.init(state: .unavailable), now: now), "Status monitoring unavailable")
+        XCTAssertEqual(RowText.freshness(.init(state: .stale, lastConfirmedAt: now.addingTimeInterval(2)), now: now),
+                       "Status not recently checked · last confirmed just now")
+    }
+
     func testTodoSubtitle() {
         XCTAssertNil(RowText.todoSubtitle(nil, status: nil, now: now))
         let waiting = conv(status: .waiting, message: "Claude needs your permission to use Edit")

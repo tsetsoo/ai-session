@@ -78,6 +78,10 @@ struct ConversationRow: View {
                     .font(.footnote)
                     .lineLimit(1)
                     .padding(.leading, Self.dotColumn + DS.spacing.s)
+                if status != .closed {
+                    StatusFreshnessLabel(conversation: conversation)
+                        .padding(.leading, Self.dotColumn + DS.spacing.s)
+                }
             }
         }
         .padding(.vertical, DS.spacing.xs)

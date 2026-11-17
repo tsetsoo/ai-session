@@ -87,6 +87,74 @@ final class AppModel {
     private(set) var livenessAbandoned = 0
     /// computerID to when its `liveTmux` entry was listed (when the listing was asked for).
     private(set) var listedAt: [String: Date] = [:]
+    private struct MonitorCheck {
+        var snapshot: StatusMonitorSnapshot?
+        var failure: StatusFreshness.State
+        var checkedAt: Date
+    }
+    private var monitorChecks: [String: MonitorCheck] = [:]
+    private var lastStatusConfirmed: [String: Date] = [:]
+    @ObservationIgnored private var checkingMonitors = false
+
+    func statusFreshness(for conversation: Conversation, at date: Date) -> StatusFreshness {
+        #if DEBUG
+        if DemoFixtures.isEnabled { return .init(state: .live) }
+        #endif
+        guard conversation.tool == "claude" || conversation.tool == "codex",
+              conversation.status != .closed else { return .init(state: .live) }
+        let key = conversation.computer.id + ":" + conversation.tool + ":" + conversation.sessionId
+        let last = lastStatusConfirmed[key]
+        guard let check = monitorChecks[conversation.computer.id] else { return .init(state: .checking) }
+        guard date.timeIntervalSince(check.checkedAt) < 60 else {
+            return .init(state: .stale, lastConfirmedAt: last)
+        }
+        guard let snapshot = check.snapshot else { return .init(state: check.failure, lastConfirmedAt: last) }
+        return .init(state: snapshot.confirmedAt(tool: conversation.tool, sessionID: conversation.sessionId) == nil ? .unavailable : .live,
+                     lastConfirmedAt: last)
+    }
+
+    /// Lightweight heartbeat reads while a shell is active, independent of hub state changes.
+    func refreshStatusMonitoring(hosts: [HostEntity]) async {
+        guard !checkingMonitors, listTmuxOverride == nil else { return }
+        #if DEBUG
+        guard !DemoFixtures.isEnabled else { return }
+        #endif
+        checkingMonitors = true
+        defer { checkingMonitors = false }
+        let factory = SessionServiceFactory()
+        var connections: [String: (service: SessionService, config: HostConnectionConfig)] = [:]
+        for computer in store.computers {
+            guard let host = HostLookup.host(for: computer, in: hosts),
+                  let connection = try? factory.make(for: host) else {
+                monitorChecks[computer.id] = MonitorCheck(snapshot: nil, failure: .unavailable, checkedAt: now())
+                continue
+            }
+            connections[computer.id] = connection
+        }
+        await withTaskGroup(of: (String, StatusMonitorSnapshot?, StatusFreshness.State).self) { group in
+            for (id, connection) in connections {
+                group.addTask {
+                    do { return (id, try await connection.service.statusMonitorSnapshot(config: connection.config), .live) }
+                    catch SSHRemoteError.unreachable { return (id, nil, .offline) }
+                    catch { return (id, nil, .unavailable) }
+                }
+            }
+            for await (id, snapshot, failure) in group {
+                guard !Task.isCancelled else { continue }
+                applyStatusMonitorSnapshot(snapshot, computerID: id, failure: failure)
+            }
+        }
+    }
+
+    func applyStatusMonitorSnapshot(_ snapshot: StatusMonitorSnapshot?, computerID: String,
+                                    failure: StatusFreshness.State = .unavailable) {
+        monitorChecks[computerID] = MonitorCheck(snapshot: snapshot, failure: failure, checkedAt: now())
+        for conversation in store.conversations.values where conversation.computer.id == computerID {
+            if let confirmed = snapshot?.confirmedAt(tool: conversation.tool, sessionID: conversation.sessionId) {
+                lastStatusConfirmed[computerID + ":" + conversation.tool + ":" + conversation.sessionId] = confirmed
+            }
+        }
+    }
     /// Bumped when a conversation changed after its computer's listing and isn't in it (started
     /// or reported since). Each shell lists again on this (`.task(id:)`); the first value, 0,
     /// lists every computer, and later values list only the stale ones.

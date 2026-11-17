@@ -219,6 +219,7 @@ struct PhoneShell: View {
             todoGrouping = .section
         }
         .task { await model.startSync() }
+        .modifier(StatusMonitoring(hosts: hosts))
         // One listing for this shell. The first pass (still 0) lists every computer; a later
         // bump lists only computers whose conversations changed after their listing.
         .task(id: model.automaticLivenessID(hostIDs: hosts.map(\.id))) {

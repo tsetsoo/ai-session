@@ -30,6 +30,26 @@ public struct SessionService: Sendable {
         }
     }
 
+    /// Only small local heartbeat files; never starts a CLI or resumes a conversation.
+    public func statusMonitorSnapshot(config: HostConnectionConfig) async throws -> StatusMonitorSnapshot {
+        let command = TmuxCommandBuilder.wrap("""
+        printf '{"host_time_s":%s,"codex":' "$(date +%s)"
+        cat "$HOME/.ai-remote/status-state/health.json" 2>/dev/null || printf null
+        printf ',"claude":'
+        cat "$HOME/.ai-remote/status-state/claude-health.json" 2>/dev/null || printf null
+        printf ',"codex_runtime":'
+        cat "$HOME/.ai-remote/status-state/runtime.json" 2>/dev/null || printf null
+        printf ',"claude_runtime":'
+        cat "$HOME/.ai-remote/status-state/claude-runtime.json" 2>/dev/null || printf null
+        printf '}\\n'
+        """)
+        let result = try await ssh.exec(config, command: command)
+        guard result.exitCode == 0 else {
+            throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
+        }
+        return try StatusMonitorSnapshot(data: Data(result.stdout.utf8), receivedAt: Date())
+    }
+
     public func probeBinaries(config: HostConnectionConfig) async throws -> HostBinaryHealth {
         let result = try await ssh.exec(config, command: TmuxCommandBuilder.probeBinaries())
         try requireSuccess(result)
