@@ -150,6 +150,40 @@ class StatusTests(unittest.TestCase):
                                     message="Codex needs your answer"))
                 self.assertEqual(self.record()["body"]["status"], "waiting")
 
+    def test_codex_turn_reviewer_overrides_directory_defaults_for_approval(self):
+        sid = "thread-1"
+        path = self.codex_rollout(sid)
+        client = object.__new__(status.RuntimeSocket)
+
+        def call(method, params):
+            if method == "thread/loaded/list":
+                return {"data": [sid]}
+            if method == "thread/read":
+                return {"thread": {"cwd": "/project", "status": {
+                    "type": "active", "activeFlags": ["waitingOnApproval"]}}}
+            if method == "config/read":
+                return {"config": {"approvals_reviewer": directory_reviewer}}
+            self.fail(method)
+
+        client.call = call
+        previous = {}
+        for reviewer, directory_reviewer, expected in (
+            ("user", "auto_review", "waiting"),
+            ("auto_review", "user", "busy"),
+        ):
+            with self.subTest(reviewer=reviewer):
+                path.write_text(json.dumps({"type": "turn_context", "payload": {
+                    "approvals_reviewer": reviewer}}) + "\n")
+                status.atomic_json(status.root() / "runtime.json", {
+                    "observed_ns": time.time_ns() - 10_000_000_000,
+                    "approvals_reviewers": {sid: directory_reviewer},
+                })
+                status.publish(dict(self.body("waiting"), _hook_event="PermissionRequest"))
+                self.assertEqual(self.record()["body"]["status"], expected)
+                status.poll_runtime(client, previous)
+                self.assertEqual(self.requests[-1]["status"], expected)
+                self.assertEqual(client.approvals_reviewers[sid], reviewer)
+
     def test_unchanged_runtime_corrects_conflicting_hook_on_the_next_poll(self):
         class Client:
             def states(self):

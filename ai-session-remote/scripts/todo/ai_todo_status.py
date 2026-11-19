@@ -716,10 +716,10 @@ def _publish(body, observed_ns=None, source="hook", try_send=True):
             # Review routing is configuration, not transient activity. Keep using
             # the observed policy when a slow/disconnected poll makes its activity
             # snapshot too old to override hooks. Questions still need an answer.
-            routing = read_json(root() / "runtime.json", {}).get("approvals_reviewers", {})
-            reviewer = routing.get(sid)
+            reviewer = codex_approvals_reviewer(sid)
             if reviewer is None:
-                reviewer = codex_approvals_reviewer(sid)
+                routing = read_json(root() / "runtime.json", {}).get("approvals_reviewers", {})
+                reviewer = routing.get(sid)
             if reviewer in ("auto_review", "guardian_subagent"):
                 body["status"] = "busy"
                 body.pop("message", None)
@@ -984,16 +984,21 @@ class RuntimeSocket:
             raw_status = thread.get("status", {})
             reviewer = None
             if raw_status.get("type") == "active":
-                try:
+                # The turn can change who approves its requests. config/read only
+                # returns the defaults for this directory, even for a loaded thread.
+                if "waitingOnApproval" in raw_status.get("activeFlags", []):
+                    reviewer = codex_approvals_reviewer(sid)
+                if reviewer is None:
                     cwd = thread.get("cwd")
                     if cwd not in configs:
-                        configs[cwd] = self.call("config/read", {"cwd": cwd}).get("config", {})
-                    config = configs[cwd]
-                    reviewer = config.get("approvals_reviewer")
-                    if reviewer is not None:
-                        self.approvals_reviewers[sid] = reviewer
-                except RuntimeRPCError:
-                    pass  # Older runtimes may not expose config; retain the prompt.
+                        try:
+                            config = self.call("config/read", {"cwd": cwd}).get("config", {})
+                            configs[cwd] = config.get("approvals_reviewer")
+                        except RuntimeRPCError:
+                            configs[cwd] = None  # Older runtimes may not expose config.
+                    reviewer = configs[cwd]
+                if reviewer is not None:
+                    self.approvals_reviewers[sid] = reviewer
             state = runtime_status(raw_status, reviewer)
             if state:
                 result[sid] = state
