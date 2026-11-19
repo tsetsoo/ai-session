@@ -410,7 +410,16 @@ final class AppModel {
             Task { await self?.openFromNotification(todoId) }
         }
         NotificationCenterCoordinator.shared.onOpenToday = { [weak self] in
-            self?.appMode = .today
+            guard let self else { return }
+            if self.appMode == .today {
+                Task { await self.store.loadToday() }
+            }
+            self.todayItem = .today
+            self.todaySelection = nil
+            self.appMode = .today
+        }
+        NotificationCenterCoordinator.shared.onReminderChanged = { [weak self] in
+            Task { await self?.store.loadToday() }
         }
         #if os(iOS)
         AppDelegate.onShortcutItem = { [weak self] item in

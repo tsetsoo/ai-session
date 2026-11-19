@@ -159,6 +159,7 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/reminders/{id}", web::delete().to(today::delete_reminder))
         .route("/api/reminders/{id}/done", web::post().to(today::done_reminder))
         .route("/api/reminders/{id}/snooze", web::post().to(today::snooze_reminder))
+        .route("/api/reminders/{id}/notification-action", web::post().to(today::reminder_action))
         .route("/api/people", web::get().to(today::list_people))
         .route("/api/people", web::post().to(today::create_person))
         .route("/api/people/{id}", web::patch().to(today::update_person))

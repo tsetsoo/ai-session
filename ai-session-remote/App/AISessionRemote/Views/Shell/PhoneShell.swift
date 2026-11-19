@@ -45,6 +45,7 @@ struct PhoneShell: View {
     @State private var conversationsPath: [Route] = []
     @State private var projectsPath: [Route] = []
     @State private var computersPath: [Route] = []
+    @State private var todayNavigationID = UUID()
     /// Unused (Automation pushes views, not routes); keeps `currentPath` total.
     @State private var automationPath: [Route] = []
     @State private var filter = ConversationListView.Filter.review
@@ -142,13 +143,16 @@ struct PhoneShell: View {
             NavigationStack {
                 Group {
                     if isConfigured {
-                        PhoneTodayRoot(store: store, onOpenTodo: openTodoFromAutomation, onOpenDay: openUpdateDay)
+                        PhoneTodayRoot(store: store, onOpenTodo: openTodoFromAutomation, onOpenConversation: { conversation in
+                            showConversation(for: conversation.todoId, key: conversation.listKey)
+                        }, onOpenDay: openUpdateDay)
                     } else {
                         notConfigured
                     }
                 }
                 .phoneTab("Today", openSettings: openSettings)
             }
+            .id(todayNavigationID)
             .tabItem { Label("Today", systemImage: "sun.max") }
             .badge(store.dueReminderCount)
             .tag(Tab.today)
@@ -162,11 +166,12 @@ struct PhoneShell: View {
             .tag(Tab.computers)
         }
         .tint(DS.accent)
-        .onChange(of: model.appMode) { _, mode in
+        .onChange(of: model.appMode, initial: true) { _, mode in
             if mode == .automation {
                 tab = .automation
                 model.appMode = .sessions
             } else if mode == .today {
+                todayNavigationID = UUID()
                 tab = .today
                 model.appMode = .sessions
             }
@@ -203,7 +208,7 @@ struct PhoneShell: View {
         .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
             guard let todoID else { return }
             model.pendingOpenTodoID = nil
-            openFromNotification(todoID)
+            showConversation(for: todoID, key: store.conversationToOpen(forTodo: todoID))
         }
         // The Home-screen "New Todo" quick action. The I section's title field takes the focus.
         .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
@@ -345,10 +350,9 @@ struct PhoneShell: View {
         todosPath = [.todo(todoID)]
     }
 
-    /// A notification tap shows the conversation on the Conversations tab, in place of what
-    /// that tab had open. It attaches only if the conversation runs, never starts one.
-    private func openFromNotification(_ todoID: String) {
-        model.selectedConversationID = store.conversationToOpen(forTodo: todoID)
+    /// Shows the selected conversation on the Conversations tab without starting an agent.
+    private func showConversation(for todoID: String, key: String?) {
+        model.selectedConversationID = key
         tab = .conversations
         conversationsPath = [.todo(todoID)]
     }

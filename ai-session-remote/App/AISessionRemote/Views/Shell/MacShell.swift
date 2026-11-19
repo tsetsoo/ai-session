@@ -90,6 +90,18 @@ struct MacShell: View {
         model.pendingOpenTodoID = todoID
     }
 
+    private func showConversation(for todo: Todo, conversation: Conversation? = nil) {
+        model.appMode = .sessions
+        model.shells.selectedID = nil
+        model.sidebarSelection = Self.sidebarTarget(showing: todo, conversation: conversation, from: sidebarItem, board: model.board)
+        computerPage = nil
+        model.selectedConversationID = conversation?.listKey ?? store.conversationToOpen(forTodo: todo.id)
+        model.selectedTodoID = todo.id
+        #if os(macOS)
+        if model.poppedOut.contains(todo.id) { model.popOut(todo.id, openWindow: openWindow) }
+        #endif
+    }
+
     /// A day from Weekly: back to Sessions, the project's page, that day of its Updates open.
     private func openUpdateDay(_ projectId: String, _ day: String) {
         model.updateDayRequest = .init(projectId: projectId, day: day)
@@ -119,7 +131,10 @@ struct MacShell: View {
                 if model.appMode == .automation {
                     AutomationListColumn(onOpenTodo: openTodoFromAutomation)
                 } else if model.appMode == .today {
-                    TodayListColumn(onOpenTodo: openTodoFromAutomation)
+                    TodayListColumn(onOpenTodo: openTodoFromAutomation) { conversation in
+                        guard let todo = store.todos.first(where: { $0.id == conversation.todoId }) else { return }
+                        showConversation(for: todo, conversation: conversation)
+                    }
                 } else {
                     contentColumn
                 }
@@ -205,15 +220,7 @@ struct MacShell: View {
         .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
             guard let todoID, let todo = store.todos.first(where: { $0.id == todoID }) else { return }
             model.pendingOpenTodoID = nil
-            model.appMode = .sessions
-            model.shells.selectedID = nil
-            model.sidebarSelection = Self.sidebarTarget(showing: todo, from: sidebarItem, board: model.board)
-            computerPage = nil
-            model.selectedConversationID = store.conversationToOpen(forTodo: todo.id)
-            model.selectedTodoID = todo.id
-            #if os(macOS)
-            if model.poppedOut.contains(todo.id) { model.popOut(todo.id, openWindow: openWindow) }
-            #endif
+            showConversation(for: todo)
         }
         // The Home-screen "New Todo" quick action (iPad in regular width): the New Todo sheet,
         // or nothing while the todo server isn't set up.

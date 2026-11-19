@@ -67,6 +67,23 @@ final class TodoHubClientTests: XCTestCase {
         StubURLProtocol.handler = nil
     }
 
+    func testReminderNotificationActionUsesItsDeliveryIdentity() async throws {
+        XCTAssertNil(ReminderPush(userInfo: ["kind": "today", "reminder_id": "r1"]))
+        let pushedAt = "2026-11-06 08:00:00"
+        let push = try XCTUnwrap(ReminderPush(userInfo: [
+            "kind": "today", "reminder_id": "r1", "reminder_pushed_at": pushedAt,
+        ]))
+        StubURLProtocol.handler = { _ in .init(status: 204, body: "") }
+        try await client().applyReminderAction(.snooze, to: push)
+
+        let request = try XCTUnwrap(StubURLProtocol.requests.last)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/api/reminders/r1/notification-action")
+        let body = try XCTUnwrap(request.httpBody)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: String],
+                       ["action": "snooze", "pushed_at": pushedAt])
+    }
+
     func testDecodesTodosWithOptionalConversationStatus() async throws {
         StubURLProtocol.handler = { _ in .init(status: 200, body: Self.todosJSON) }
         let todos = try await client().listTodos(section: .i, filter: .all)
