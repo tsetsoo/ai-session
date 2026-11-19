@@ -24,15 +24,16 @@ struct TodaySidebar: View {
 struct TodayListColumn: View {
     @Environment(AppModel.self) private var model
     let onOpenTodo: (String) -> Void
+    let onOpenConversation: (Conversation) -> Void
 
     var body: some View {
         @Bindable var model = model
         Group {
             switch model.todayItem {
             case .today:
-                TodaySummaryList(store: model.store, onOpenTodo: onOpenTodo) { item in
+                TodaySummaryList(store: model.store, onOpenTodo: onOpenTodo, onOpenConversation: onOpenConversation, onShow: { item in
                     model.todayItem = item
-                }
+                })
             case .reminders:
                 RemindersList(store: model.store, selection: $model.todaySelection)
             case .people:
@@ -80,33 +81,34 @@ struct TodayDetailColumn: View {
 
 // MARK: - Today summary
 
-/// The briefing, live: due reminders first (Done / Snooze), then today's reminders, dates,
-/// what's ready for review, what needs you, and watcher issues.
+/// Today’s action items, morning briefing, and open conversations.
 struct TodaySummaryList: View {
+    private typealias ConversationItem = (conversation: Conversation, todo: Todo)
+
+    @Environment(AppModel.self) private var model
     let store: TodoHubStore
     let onOpenTodo: (String) -> Void
+    let onOpenConversation: (Conversation) -> Void
     /// Opens Reminders or People.
     let onShow: (TodayItem) -> Void
     /// The phone's "Last week's recap" row on Mondays (Sofia); the Mac has Weekly in the sidebar.
     var showsWeeklyRow = false
     var onOpenDay: (String, String) -> Void = { _, _ in }
+    @State private var collapsedProjects: Set<String?> = []
 
     var body: some View {
+        let board = model.board
+        let todos = Dictionary(store.todos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         List {
+            attentionSection(board, todos: todos)
             if showsWeeklyRow && WeeklyRecap.isRecapDay(.now) {
                 NavigationLink { WeeklyView(store: store, onOpenTodo: onOpenTodo, onOpenDay: onOpenDay) } label: {
                     Label("Last week's recap", systemImage: "calendar.badge.checkmark")
                 }
             }
             if let b = store.briefing {
-                if b.isEmpty && store.reminders.filter(\.isDue).isEmpty {
+                if b.isEmpty && store.reminders.filter(\.isDue).isEmpty && board.open.isEmpty {
                     Label("Nothing for today.", systemImage: "sun.max").foregroundStyle(.secondary)
-                }
-                let due = store.reminders.filter(\.isDue)
-                if !due.isEmpty {
-                    Section("Due now") {
-                        ForEach(due) { ReminderDueRow(store: store, reminder: $0) }
-                    }
                 }
                 let upcoming = b.reminders.filter { !$0.isDue }
                 if !upcoming.isEmpty {
@@ -126,29 +128,104 @@ struct TodaySummaryList: View {
                         }
                     }
                 }
-                if !b.readyForReview.isEmpty {
-                    Section("Ready for review") {
-                        ForEach(b.readyForReview, id: \.todoId) { item in
-                            Button { onOpenTodo(item.todoId) } label: { Label(item.title, systemImage: "checkmark.bubble") }
-                                .buttonStyle(.plain)
-                        }
-                    }
-                }
-                if b.needsYou > 0 || !b.watch.isEmpty {
+                if !b.watch.isEmpty {
                     Section("Also") {
-                        if b.needsYou > 0 {
-                            Label("\(b.needsYou) conversation\(b.needsYou == 1 ? "" : "s") need you", systemImage: "exclamationmark.bubble")
-                        }
-                        if !b.watch.isEmpty {
-                            Label(watchText(b.watch), systemImage: "exclamationmark.triangle")
-                        }
+                        Label(watchText(b.watch), systemImage: "exclamationmark.triangle")
                     }
                 }
             } else {
                 Text("Today needs a newer hub.").foregroundStyle(.secondary)
             }
+            openConversations(board, todos: todos)
         }
         .navigationTitle("Today")
+    }
+
+    @ViewBuilder
+    private func attentionSection(_ board: ConversationBoard, todos: [String: Todo]) -> some View {
+        let due = store.reminders.filter(\.isDue)
+        let conversations = conversationItems(board.needsYou + board.review, todos: todos)
+        let liveReviewTodos = Set(board.review.map(\.todoId))
+        let otherReviewItems = store.briefing?.readyForReview.filter { !liveReviewTodos.contains($0.todoId) } ?? []
+        if !due.isEmpty || !conversations.isEmpty || !otherReviewItems.isEmpty {
+            Section("Needs your attention") {
+                ForEach(due) { ReminderDueRow(store: store, reminder: $0) }
+                ForEach(conversations, id: \.conversation.listKey) { row in
+                    Button { onOpenConversation(row.conversation) } label: {
+                        LabeledContent(
+                            RowText.conversationTitle(todoTitle: row.todo.title, label: row.conversation.label),
+                            value: board.status(of: row.conversation).label
+                        )
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                ForEach(otherReviewItems, id: \.todoId) { item in
+                    Button { onOpenTodo(item.todoId) } label: {
+                        LabeledContent(item.title, value: "Ready for review")
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func conversationItems(_ conversations: [Conversation], todos: [String: Todo]) -> [ConversationItem] {
+        conversations.compactMap { conversation in
+            todos[conversation.todoId].map { (conversation: conversation, todo: $0) }
+        }
+    }
+
+    @ViewBuilder
+    private func openConversations(_ board: ConversationBoard, todos: [String: Todo]) -> some View {
+        let projectIDs = Set(store.projects.map(\.id))
+        let rows = conversationItems(board.open, todos: todos)
+        let groups = Dictionary(grouping: rows) { row in
+            row.todo.projectId.flatMap { projectIDs.contains($0) ? $0 : nil }
+        }
+        if !groups.isEmpty {
+            Section("Open conversations") {
+                ForEach(store.projects) { project in
+                    if let rows = groups[project.id] {
+                        DisclosureGroup("\(project.name) (\(rows.count))", isExpanded: projectExpanded(project.id)) {
+                            conversationRows(rows, board: board)
+                        }
+                    }
+                }
+                if let rows = groups[nil] {
+                    DisclosureGroup("No project (\(rows.count))", isExpanded: projectExpanded(nil)) {
+                        conversationRows(rows, board: board)
+                    }
+                }
+            }
+        }
+    }
+
+    private func projectExpanded(_ projectID: String?) -> Binding<Bool> {
+        Binding(get: { !collapsedProjects.contains(projectID) }, set: { expanded in
+            if expanded {
+                collapsedProjects.remove(projectID)
+            } else {
+                collapsedProjects.insert(projectID)
+            }
+        })
+    }
+
+    private func conversationRows(_ rows: [ConversationItem], board: ConversationBoard) -> some View {
+        ForEach(rows, id: \.conversation.listKey) { row in
+            Button { onOpenConversation(row.conversation) } label: {
+                ConversationRow(
+                    title: RowText.conversationTitle(todoTitle: row.todo.title, label: row.conversation.label),
+                    section: row.todo.section,
+                    conversation: row.conversation,
+                    status: board.status(of: row.conversation),
+                    isBusy: false
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private func watchText(_ w: WatchCounts) -> String {
@@ -207,8 +284,9 @@ struct TodaySettingsPane: View {
         Form {
             if let s = store.todaySettings {
                 Section {
-                    Toggle("Morning briefing", isOn: Binding(get: { s.briefingEnabled }, set: { on in save(TodaySettingsUpdate(briefingEnabled: on)) }))
-                    DatePicker("At", selection: Binding(get: { briefingTime ?? time(s.briefingTime) }, set: { new in
+                    Toggle("Morning notifications", isOn: Binding(get: { s.briefingEnabled }, set: { on in save(TodaySettingsUpdate(briefingEnabled: on)) }))
+                    LabeledContent("Morning reminders", value: "09:00 Sofia time")
+                    DatePicker("General briefing", selection: Binding(get: { briefingTime ?? time(s.briefingTime) }, set: { new in
                         briefingTime = new
                         pendingSave?.cancel()
                         pendingSave = Task {
@@ -217,11 +295,12 @@ struct TodaySettingsPane: View {
                             save(TodaySettingsUpdate(briefingTime: hhmm(new)))
                         }
                     }), displayedComponents: .hourAndMinute)
+                        .environment(\.timeZone, TodayTime.zone)
                         .disabled(!s.briefingEnabled)
                 } header: {
-                    Text("Briefing")
+                    Text("Morning")
                 } footer: {
-                    Text("A push each morning with today's reminders and dates, what finished overnight, what needs you, and watcher issues. Nothing to say, no push.")
+                    Text("The 09:00 summary covers today’s and overdue reminders. The general briefing covers dates, results ready for review, conversations that need you, and watcher issues. Both use Sofia time and skip empty summaries.")
                 }
                 Section {
                     Picker("Model", selection: Binding(get: { s.assistantModel }, set: { save(TodaySettingsUpdate(assistantModel: $0)) })) {
@@ -250,13 +329,12 @@ struct TodaySettingsPane: View {
     }
 
     private func time(_ hhmm: String) -> Date {
-        let parts = hhmm.split(separator: ":").compactMap { Int($0) }
-        return Calendar.current.date(bySettingHour: parts.first ?? 8, minute: parts.count > 1 ? parts[1] : 0, second: 0, of: .now) ?? .now
+        let day = TodayTime.wallClock(.now).prefix(10)
+        return TodayTime.date(fromWallClock: "\(day) \(hhmm)") ?? .now
     }
 
     private func hhmm(_ date: Date) -> String {
-        let c = Calendar.current.dateComponents([.hour, .minute], from: date)
-        return String(format: "%02d:%02d", c.hour ?? 8, c.minute ?? 0)
+        String(TodayTime.wallClock(date).suffix(5))
     }
 }
 
@@ -544,10 +622,12 @@ struct AssistantSheet: View {
 struct PhoneTodayRoot: View {
     let store: TodoHubStore
     let onOpenTodo: (String) -> Void
+    let onOpenConversation: (Conversation) -> Void
     let onOpenDay: (String, String) -> Void
 
     var body: some View {
-        TodaySummaryList(store: store, onOpenTodo: onOpenTodo, onShow: { _ in }, showsWeeklyRow: true, onOpenDay: onOpenDay)
+        TodaySummaryList(store: store, onOpenTodo: onOpenTodo, onOpenConversation: onOpenConversation,
+                         onShow: { _ in }, showsWeeklyRow: true, onOpenDay: onOpenDay)
             .safeAreaInset(edge: .bottom) { EmptyView() }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {

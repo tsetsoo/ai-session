@@ -146,6 +146,10 @@ pub fn init_pool(db_path: &str) -> DbPool {
     crate::reviews::create_v32_objects(&conn).expect("Failed to add the published column");
     create_v33_objects(&conn).expect("Failed to add the workers column");
     create_v34_objects(&conn).expect("Failed to create the research group objects");
+    if !column_exists(&conn, "today_settings", "last_reminder_digest_on").expect("Failed to inspect Today settings") {
+        conn.execute_batch("ALTER TABLE today_settings ADD COLUMN last_reminder_digest_on TEXT;")
+            .expect("Failed to add the reminder digest date");
+    }
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
     if version <= SCHEMA_VERSION {
@@ -988,9 +992,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v33: `conversations.workers` (additive)
 /// - v34: `run_groups`, `idea_findings`, `job_runs` attempt columns, `ideas.group_id`,
 ///   `computers.tools` (additive)
+/// - v35: `today_settings.last_reminder_digest_on` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 34;
+pub const SCHEMA_VERSION: i64 = 35;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -1018,7 +1023,7 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
                                                 if column_exists(conn, "review_items", "published_at")? {
                                                     if column_exists(conn, "conversations", "workers")? {
                                                         if table_sql(conn, "run_groups")?.is_some() {
-                                                            return Ok(34);
+                                                            return Ok(if column_exists(conn, "today_settings", "last_reminder_digest_on")? { 35 } else { 34 });
                                                         }
                                                         return Ok(33);
                                                     }

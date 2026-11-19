@@ -599,6 +599,15 @@ public struct TodoHubClient: Sendable {
         try await decode(Reminder.self, send("POST", "/api/reminders/\(escape(id))/snooze", body: SnoozeBody(until: until)))
     }
 
+    public func applyReminderAction(_ action: ReminderPush.Action, to push: ReminderPush) async throws {
+        struct Body: Encodable {
+            let action: ReminderPush.Action
+            let pushedAt: String
+        }
+        _ = try await send("POST", "/api/reminders/\(escape(push.id))/notification-action",
+                           body: Body(action: action, pushedAt: push.pushedAt))
+    }
+
     public func listPeople() async throws -> [Person] {
         try await decode([Person].self, send("GET", "/api/people"))
     }

@@ -66,8 +66,7 @@ pub(crate) async fn run_tick(pool: &DbPool, broadcaster: &Broadcaster, notifier:
             if !pushes.is_empty() {
                 broadcaster.send();
             }
-            for (title, body) in pushes {
-                let alert = Alert { todo_id: None, session_id: None, title, subtitle: body, kind: PushKind::Today, passive: false };
+            for alert in pushes {
                 notifier.send_to_devices(pool, &alert, None).await;
             }
         }

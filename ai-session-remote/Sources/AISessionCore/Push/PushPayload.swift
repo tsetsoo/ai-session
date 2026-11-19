@@ -27,3 +27,22 @@ public struct PushPayload: Equatable, Sendable {
         self.init(todoId: todoId, sessionId: userInfo["session_id"] as? String, kind: userInfo["kind"] as? String)
     }
 }
+
+/// The delivery identity required to act on a due reminder from a notification.
+public struct ReminderPush: Equatable, Sendable {
+    public enum Action: String, Encodable, Sendable {
+        case done, snooze
+    }
+
+    public let id: String
+    public let pushedAt: String
+
+    public init?(userInfo: [AnyHashable: Any]) {
+        guard PushPayload.isToday(userInfo: userInfo),
+              let id = userInfo["reminder_id"] as? String, !id.isEmpty,
+              let pushedAt = userInfo["reminder_pushed_at"] as? String, !pushedAt.isEmpty
+        else { return nil }
+        self.id = id
+        self.pushedAt = pushedAt
+    }
+}

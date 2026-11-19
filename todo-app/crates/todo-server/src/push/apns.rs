@@ -130,7 +130,7 @@ impl JwtSigner {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PushKind {
     Waiting,
     Done { minutes: u32 },
@@ -139,26 +139,28 @@ pub enum PushKind {
     Scheduled,
     /// A reminder, a date or the morning briefing: opens Today in the app.
     Today,
+    /// An individual due reminder, with actions scoped to this delivery.
+    Reminder { id: String, pushed_at: String },
 }
 
 impl PushKind {
-    fn as_str(self) -> &'static str {
+    fn as_str(&self) -> &'static str {
         match self {
             PushKind::Waiting => "waiting",
             PushKind::Done { .. } => "done",
             PushKind::Test => "test",
             PushKind::Scheduled => "scheduled",
-            PushKind::Today => "today",
+            PushKind::Today | PushKind::Reminder { .. } => "today",
         }
     }
 
-    fn body(self) -> String {
+    fn body(&self) -> String {
         match self {
             PushKind::Waiting => "Needs you".into(),
             PushKind::Done { minutes } => format!("Done after {minutes} min"),
             PushKind::Test => "Test notification".into(),
             PushKind::Scheduled => "Scheduled".into(),
-            PushKind::Today => "Today".into(),
+            PushKind::Today | PushKind::Reminder { .. } => "Today".into(),
         }
     }
 }
@@ -189,7 +191,7 @@ fn truncate_title(title: &str) -> String {
 pub fn build_payload(alert: &Alert) -> serde_json::Value {
     // A Today push (reminder, date, briefing) is all text: it goes in the body, which shows
     // every line; other pushes keep `<section> · <computer>` as the subtitle.
-    let text = if matches!(alert.kind, PushKind::Today) {
+    let text = if matches!(alert.kind, PushKind::Today | PushKind::Reminder { .. }) {
         if alert.subtitle.is_empty() {
             serde_json::json!({"title": truncate_title(&alert.title)})
         } else {
@@ -200,9 +202,13 @@ pub fn build_payload(alert: &Alert) -> serde_json::Value {
     };
     let mut aps = serde_json::json!({
         "alert": text,
-        "category": CATEGORY,
         "interruption-level": if alert.passive { "passive" } else { "active" },
     });
+    match &alert.kind {
+        PushKind::Today => {}
+        PushKind::Reminder { .. } => aps["category"] = "TODO_REMINDER".into(),
+        _ => aps["category"] = CATEGORY.into(),
+    }
     if !alert.passive {
         aps["sound"] = "default".into();
     }
@@ -215,6 +221,10 @@ pub fn build_payload(alert: &Alert) -> serde_json::Value {
     }
     if let Some(session_id) = &alert.session_id {
         payload["session_id"] = session_id.as_str().into();
+    }
+    if let PushKind::Reminder { id, pushed_at } = &alert.kind {
+        payload["reminder_id"] = id.as_str().into();
+        payload["reminder_pushed_at"] = pushed_at.as_str().into();
     }
     payload
 }
@@ -633,6 +643,7 @@ pub(crate) mod tests {
         let p = build_payload(&alert);
         assert_eq!(p["aps"]["alert"]["body"], "Reminders: 09:00 Pills\nTomorrow: Maria's birthday");
         assert!(p["aps"]["alert"].get("subtitle").is_none(), "{p}");
+        assert!(p["aps"].get("category").is_none(), "{p}");
         assert_eq!(p["kind"], "today");
         let empty = Alert { subtitle: String::new(), ..alert };
         assert!(build_payload(&empty)["aps"]["alert"].get("body").is_none(), "no stray 'Today' line");

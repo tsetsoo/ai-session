@@ -35,7 +35,10 @@ final class NotificationCenterCoordinator {
     /// Hub URL this device's push token is registered with (see `PushRegistrationState`).
     private static let registeredHubKey = "notify.registeredHub"
     static let category = "TODO_CONVERSATION"
+    private static let reminderCategory = "TODO_REMINDER"
     private static let muteAction = "MUTE_TODO"
+    private static let reminderDoneAction = "REMINDER_DONE"
+    private static let reminderSnoozeAction = "REMINDER_SNOOZE"
     private static let presenceRefresh: Duration = .seconds(30)
 
     private(set) var pushState: PushState = .off
@@ -72,6 +75,8 @@ final class NotificationCenterCoordinator {
             }
         }
     }
+
+    var onReminderChanged: (() -> Void)?
 
     func openToday() {
         guard let onOpenToday else {
@@ -132,8 +137,11 @@ final class NotificationCenterCoordinator {
         let center = UNUserNotificationCenter.current()
         center.delegate = delegateProxy
         let mute = UNNotificationAction(identifier: Self.muteAction, title: "Mute this todo", options: [])
+        let done = UNNotificationAction(identifier: Self.reminderDoneAction, title: "Done", options: [.authenticationRequired])
+        let snooze = UNNotificationAction(identifier: Self.reminderSnoozeAction, title: "Snooze 1 hour", options: [.authenticationRequired])
         center.setNotificationCategories([
             UNNotificationCategory(identifier: Self.category, actions: [mute], intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: Self.reminderCategory, actions: [done, snooze], intentIdentifiers: [], options: []),
         ])
         let notifications = NotificationCenter.default
         notifications.addObserver(forName: Self.didBecomeActive, object: nil, queue: .main) { _ in
@@ -450,6 +458,32 @@ final class NotificationCenterCoordinator {
             break
         }
     }
+
+    fileprivate func handleReminder(action: String, push: ReminderPush, title: String) async {
+        let operation: ReminderPush.Action
+        switch action {
+        case Self.reminderDoneAction: operation = .done
+        case Self.reminderSnoozeAction: operation = .snooze
+        default: return
+        }
+        let retryID = "reminder-action-\(push.id)-\(push.pushedAt)"
+        let center = UNUserNotificationCenter.current()
+        do {
+            guard let client = TodoHubSettings.makeClient() else { throw TodoHubError.invalidBaseURL }
+            try await client.applyReminderAction(operation, to: push)
+            center.removeDeliveredNotifications(withIdentifiers: [retryID])
+            onReminderChanged?()
+        } catch {
+            let content = UNMutableNotificationContent()
+            content.title = title.isEmpty ? "Reminder" : title
+            content.body = "Couldn’t update reminder. Try again or open Today."
+            content.categoryIdentifier = Self.reminderCategory
+            content.userInfo = ["kind": "today", "reminder_id": push.id, "reminder_pushed_at": push.pushedAt]
+            try? await center.add(UNNotificationRequest(
+                identifier: retryID, content: content, trigger: nil
+            ))
+        }
+    }
 }
 
 /// `UNUserNotificationCenterDelegate` must be an `NSObject`; the coordinator is `@Observable`.
@@ -468,6 +502,12 @@ private final class DelegateProxy: NSObject, UNUserNotificationCenterDelegate {
         let userInfo = response.notification.request.content.userInfo
         if PushPayload.isToday(userInfo: userInfo), action == UNNotificationDefaultActionIdentifier {
             await MainActor.run { NotificationCenterCoordinator.shared.openToday() }
+            return
+        }
+        if let push = ReminderPush(userInfo: userInfo) {
+            await NotificationCenterCoordinator.shared.handleReminder(
+                action: action, push: push, title: response.notification.request.content.title
+            )
             return
         }
         let payload = PushPayload(userInfo: userInfo)
