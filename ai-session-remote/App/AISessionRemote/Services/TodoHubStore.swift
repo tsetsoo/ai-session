@@ -384,7 +384,12 @@ final class TodoHubStore {
 
     func setWorkStatus(_ status: TodoWorkStatus, for todo: Todo) async {
         await mutate { client in
-            let request = UpdateTodoRequest(onHold: status == .onHold, waiting: status == .waiting)
+            let request: UpdateTodoRequest
+            switch status {
+            case .active: request = UpdateTodoRequest(onHold: false, waiting: false)
+            case .waiting: request = UpdateTodoRequest(waiting: true)
+            case .onHold: request = UpdateTodoRequest(onHold: true)
+            }
             let updated = try await client.updateTodo(id: todo.id, request)
             guard updated.workStatus == status, !updated.completed else {
                 throw NSError(domain: "TodoHub", code: 0, userInfo: [

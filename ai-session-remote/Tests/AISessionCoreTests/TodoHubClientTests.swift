@@ -122,11 +122,11 @@ final class TodoHubClientTests: XCTestCase {
             todo["waiting"] = true
             return .init(status: 200, body: String(decoding: try! JSONSerialization.data(withJSONObject: todo), as: UTF8.self))
         }
-        let todo = try await client().updateTodo(id: "t", UpdateTodoRequest(onHold: false, waiting: true))
+        let todo = try await client().updateTodo(id: "t", UpdateTodoRequest(waiting: true))
         XCTAssertEqual(todo.workStatus, .waiting)
         let body = try XCTUnwrap(StubURLProtocol.requests.last?.httpBody)
         XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: Bool],
-                       ["on_hold": false, "waiting": true])
+                       ["waiting": true])
         let snapshot = try JSONEncoder().encode(todo)
         XCTAssertEqual(try JSONDecoder().decode(Todo.self, from: snapshot).workStatus, .waiting)
     }
