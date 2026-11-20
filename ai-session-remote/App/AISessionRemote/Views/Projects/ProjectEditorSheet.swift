@@ -2,17 +2,15 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// Create a project (blank, or prefilled from a suggestion) or edit one. A project belongs to
-/// a section. The hub rejects a section with no computer, and a second project at the same
-/// folder in that section, with a `409` that is shown as is.
+/// Creates or edits a project on a computer.
 struct ProjectEditorSheet: View {
     enum Mode: Identifiable {
-        case create(ProjectSuggestion?)
+        case create(ProjectSuggestion?, computerID: String? = nil)
         case edit(Project)
 
         var id: String {
             switch self {
-            case let .create(suggestion): "create|\(suggestion?.id ?? "")"
+            case let .create(suggestion, computerID): "create|\(suggestion?.id ?? computerID ?? "")"
             case let .edit(project): "edit|\(project.id)"
             }
         }
@@ -24,8 +22,7 @@ struct ProjectEditorSheet: View {
     var onCreated: (Project) -> Void = { _ in }
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openAppSettings) private var openAppSettings
-    @State private var section: TodoSection?
+    @State private var computerID: String?
     @State private var name = ""
     @State private var folder = ""
     @State private var repoUrl = ""
@@ -43,18 +40,15 @@ struct ProjectEditorSheet: View {
             Form {
                 Section {
                     if case let .edit(project) = mode {
-                        LabeledContent("Section", value: project.section.rawValue)
                         LabeledContent("Computer", value: project.computer.name)
+                    } else if case let .create(_, fixedID?) = mode {
+                        LabeledContent("Computer", value: store.computers.first { $0.id == fixedID }?.name ?? "Computer")
                     } else {
-                        Picker("Section", selection: $section) {
-                            Text("Choose").tag(TodoSection?.none)
-                            ForEach(TodoSection.allCases) { item in
-                                let computer = store.sectionComputers[item]?.computer.name ?? "No computer"
-                                Text("\(item.rawValue) · \(computer)").tag(Optional(item))
+                        Picker("Computer", selection: $computerID) {
+                            Text("Choose").tag(String?.none)
+                            ForEach(store.computers.filter { store.projectRoutingSection(on: $0.id) != nil }) { computer in
+                                Text(computer.name).tag(Optional(computer.id))
                             }
-                        }
-                        if let section, store.sectionComputers[section] == nil {
-                            Button("Choose Computer") { openAppSettings?(.sections(section)) }
                         }
                     }
                     FormTextField("Name", text: $name)
@@ -63,7 +57,7 @@ struct ProjectEditorSheet: View {
                         .autocorrectionDisabled()
                         .font(.body.monospaced())
                 } footer: {
-                    Text("The section's computer is where this folder lives. A nested folder is its own project.")
+                    Text("The folder lives on this computer. A nested folder is its own project.")
                 }
                 Section {
                     FormTextField("Repository URL (optional)", text: $repoUrl)
@@ -109,7 +103,7 @@ struct ProjectEditorSheet: View {
                 if case let .edit(project) = mode {
                     ProjectDefaultServersSection(project: project, store: store, selection: $mcpDefault)
                 }
-                if case let .create(suggestion?) = mode, !suggestion.exampleCwds.isEmpty {
+                if case let .create(suggestion?, _) = mode, !suggestion.exampleCwds.isEmpty {
                     Section("Seen in") {
                         ForEach(suggestion.exampleCwds, id: \.self) { cwd in
                             Text(cwd).font(.caption.monospaced()).foregroundStyle(.secondary)
@@ -149,30 +143,23 @@ struct ProjectEditorSheet: View {
     private func trimmed(_ text: String) -> String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var canSave: Bool {
-        guard !isSaving, !trimmed(name).isEmpty, !trimmed(folder).isEmpty, let section else { return false }
-        if isCreate { return store.sectionComputers[section] != nil }
-        return true
+        guard !isSaving, !trimmed(name).isEmpty, !trimmed(folder).isEmpty else { return false }
+        return !isCreate || computerID.flatMap { store.projectRoutingSection(on: $0) } != nil
     }
 
     private func load() {
         guard !loaded else { return }
         loaded = true
         switch mode {
-        case let .create(suggestion):
+        case let .create(suggestion, fixedID):
             if let suggestion {
                 name = suggestion.name
                 folder = suggestion.folder
                 repoUrl = suggestion.repoUrl ?? ""
-                let matches = TodoSection.allCases.filter {
-                    store.sectionComputers[$0]?.computer.id == suggestion.computer.id
-                }
-                if matches.count == 1 { section = matches[0] }
-            } else {
-                let ready = TodoSection.allCases.filter { store.sectionComputers[$0] != nil }
-                if ready.count == 1 { section = ready[0] }
             }
+            let eligible = store.computers.filter { store.projectRoutingSection(on: $0.id) != nil }
+            computerID = fixedID ?? suggestion?.computer.id ?? (eligible.count == 1 ? eligible.first?.id : nil)
         case let .edit(project):
-            section = project.section
             name = project.name
             folder = project.folder
             repoUrl = project.repoUrl ?? ""
@@ -195,7 +182,7 @@ struct ProjectEditorSheet: View {
             do {
                 switch mode {
                 case .create:
-                    guard let section else { return }
+                    guard let computerID, let section = store.projectRoutingSection(on: computerID) else { return }
                     let created = try await store.createProject(CreateProjectRequest(
                         name: name, section: section, folder: folder,
                         repoUrl: repo.isEmpty ? nil : repo, digestEnabled: digestEnabled

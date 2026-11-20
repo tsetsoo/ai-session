@@ -1,75 +1,22 @@
 import AISessionCore
 import SwiftUI
 
-/// The add row at the top of a section, or on a project page: one "Add Todo" row that opens
-/// the form in place. The title is multiline and stays on screen. A successful add or Cancel
-/// folds the form back into the row.
+/// Expands an Add Todo row into a title field for this project.
 struct InlineTodoAdd: View {
-    enum Place {
-        case section(TodoSection)
-        case project(Project)
-    }
-
-    let place: Place
-    /// The phone Home-screen action focuses this row.
-    var acceptsQuickAddFocus = false
+    let project: Project
 
     @Environment(AppModel.self) private var model
-    @Environment(\.openAppSettings) private var openAppSettings
     @State private var draft = TodoAddDraft()
     @FocusState private var focused: Bool
-    @State private var isShown = false
     @State private var isExpanded = false
     /// Set by `expand()`: the title field takes focus once it is in the list.
     @State private var focusWhenShown = false
 
     private var store: TodoHubStore { model.store }
 
-    private var section: TodoSection {
-        switch place {
-        case let .section(section): section
-        case let .project(project): project.section
-        }
-    }
-
-    private var computerName: String? {
-        switch place {
-        case .section:
-            store.sectionComputers[section]?.computer.name
-        case let .project(project):
-            store.sectionComputers[project.section]?.computer.name ?? project.computer.name
-        }
-    }
-
-    private var hasComputer: Bool { computerName != nil }
-
-    private var fields: TodoAddFields {
-        switch place {
-        case .project:
-            TodoAddForm.fields(inProject: true, inSection: true, hasComputer: hasComputer)
-        case .section:
-            TodoAddForm.fields(inProject: false, inSection: true, hasComputer: hasComputer)
-        }
-    }
-
-    private var sectionProjects: [Project] {
-        store.projects.filter { $0.section == section }
-    }
-
-    /// A project page's row adds to that project and asks only for a title.
-    private var lockedProjectID: String? {
-        if case let .project(project) = place { project.id } else { nil }
-    }
-
-    private var canSubmit: Bool {
-        draft.canSubmit(hasComputer: hasComputer, lockedProjectID: lockedProjectID)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: DS.spacing.xs) {
-            if !hasComputer {
-                noComputerLine
-            } else if !isExpanded {
+            if !isExpanded {
                 Button(action: expand) {
                     Label("Add Todo", systemImage: "plus")
                         .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -78,15 +25,12 @@ struct InlineTodoAdd: View {
                 .buttonStyle(.borderless)
             } else {
                 formHeader
-                if fields != .titleOnly {
-                    projectControls
-                }
                 HStack(alignment: .firstTextBaseline, spacing: DS.spacing.s) {
                     TodoTitleField(title: $draft.title, focused: $focused, onSubmit: submit)
                     // Borderless: in a list row a plain button would take the whole row's taps.
                     Button("Add", action: submit)
                         .buttonStyle(.borderless)
-                        .disabled(!canSubmit)
+                        .disabled(!draft.canSubmit(hasComputer: true, lockedProjectID: project.id))
                 }
                 .onAppear {
                     guard focusWhenShown else { return }
@@ -104,42 +48,15 @@ struct InlineTodoAdd: View {
         .selectionDisabled()
         .disabled(store.isOffline)
         .focusedValue(\.isEditingTodoText, isExpanded ? true : nil)
-        .onAppear {
-            isShown = true
-            pickDefaultProject()
-            takeQuickActionFocus()
-        }
-        .onDisappear { isShown = false }
-        .onChange(of: model.quickAddFocusRequested) { _, _ in takeQuickActionFocus() }
-        .onChange(of: sectionProjects.map(\.id)) { _, _ in pickDefaultProject() }
     }
 
-    /// "New todo", or on a project page the computer it runs on (a section's header already
-    /// names it), with Cancel.
     private var formHeader: some View {
         HStack(spacing: DS.spacing.s) {
-            Group {
-                if case .project = place, let computerName {
-                    Text("New todo on \(computerName)")
-                } else {
-                    Text("New todo")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            Spacer(minLength: DS.spacing.s)
-            Button("Cancel", action: collapse)
-                .buttonStyle(.borderless)
-                .font(.caption)
-        }
-    }
-
-    private var noComputerLine: some View {
-        HStack(spacing: DS.spacing.s) {
-            Text("No computer")
+            Text("New todo on \(project.computer.name)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Button("Choose Computer") { openAppSettings?(.sections(section)) }
+            Spacer(minLength: DS.spacing.s)
+            Button("Cancel", action: collapse)
                 .buttonStyle(.borderless)
                 .font(.caption)
         }
@@ -163,44 +80,10 @@ struct InlineTodoAdd: View {
         withAnimation { isExpanded = false }
     }
 
-    @ViewBuilder
-    private var projectControls: some View {
-        Picker("Project", selection: $draft.pickerTag) {
-            ForEach(sectionProjects) { project in
-                Text(project.name).tag(project.id)
-            }
-            Text("New project").tag("new")
-        }
-        .pickerStyle(.menu)
-        if draft.choice.makingNew {
-            TextField("Project name", text: $draft.newName)
-            TextField("Folder, e.g. ~/programming/app", text: $draft.newFolder)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.body.monospaced())
-        }
-    }
-
-    private func pickDefaultProject() {
-        guard fields != .titleOnly else { return }
-        draft.choice.pickDefault(among: sectionProjects.map(\.id))
-    }
-
-    private func takeQuickActionFocus() {
-        guard acceptsQuickAddFocus, isShown, model.quickAddFocusRequested else { return }
-        Task {
-            try? await Task.sleep(for: .milliseconds(350))
-            guard acceptsQuickAddFocus, isShown, model.quickAddFocusRequested else { return }
-            model.quickAddFocusRequested = false
-            expand()
-        }
-    }
-
     private func submit() {
-        let section = section
         Task {
-            if await draft.submit(store: store, section: section, hasComputer: hasComputer,
-                                  lockedProjectID: lockedProjectID) {
+            if await draft.submit(store: store, section: project.section, hasComputer: true,
+                                  lockedProjectID: project.id) {
                 collapse()
             }
         }

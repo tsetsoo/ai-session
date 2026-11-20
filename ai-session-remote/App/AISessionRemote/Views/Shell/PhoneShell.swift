@@ -52,7 +52,7 @@ struct PhoneShell: View {
     /// Once the filter is picked by hand it stays; until then it follows the default rule.
     @State private var filterChosen = false
     /// The Todos tab's grouping, kept across launches.
-    @AppStorage("todos.grouping") private var todoGrouping = TodoGrouping.section
+    @AppStorage("todos.grouping") private var todoGrouping = TodoGrouping.project
     @State private var settings: SettingsRequest?
     @State private var showingAdd = false
     @State private var showingNewFromConversation = false
@@ -190,6 +190,7 @@ struct PhoneShell: View {
         }
         .todoStoreErrorAlert(store)
         .onAppear {
+            if todoGrouping == .section { todoGrouping = .project }
             applyDefaultFilter()
             reopenSelection()
             #if DEBUG
@@ -210,7 +211,7 @@ struct PhoneShell: View {
             model.pendingOpenTodoID = nil
             showConversation(for: todoID, key: store.conversationToOpen(forTodo: todoID))
         }
-        // The Home-screen "New Todo" quick action. The I section's title field takes the focus.
+        // The Home-screen "New Todo" quick action. Open the New Todo sheet.
         .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
             guard requested else { return }
             guard isConfigured else {
@@ -220,8 +221,8 @@ struct PhoneShell: View {
             }
             tab = .todos
             todosPath = []
-            // Only the Section grouping has the I section's add field.
-            todoGrouping = .section
+            model.quickAddFocusRequested = false
+            showingAdd = true
         }
         .task { await model.startSync() }
         .modifier(StatusMonitoring(hosts: hosts))
@@ -242,7 +243,7 @@ struct PhoneShell: View {
         } else if store.todos.isEmpty && !store.hasLoadedOnce {
             ProgressView()
         } else {
-            TodoListView(sections: TodoSection.allCases, quickAddSection: .i, grouping: $todoGrouping) {
+            TodoListView(grouping: $todoGrouping) {
                 todosPath.append(.todo($0.id))
             }
         }

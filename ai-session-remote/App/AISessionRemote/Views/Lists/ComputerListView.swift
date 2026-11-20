@@ -2,8 +2,7 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// The hub's computers with live counts, the sections each serves and whether this device can
-/// reach it; then "Other computers", saved hosts that are no hub computer. Tapping a hub
+/// The hub's computers with live counts and whether this device can reach them; then "Other computers", saved hosts that are no hub computer. Tapping a hub
 /// computer calls `onOpen`.
 struct ComputerListView: View {
     let onOpen: (Computer) -> Void
@@ -34,7 +33,6 @@ struct ComputerListView: View {
                 ForEach(store.computers) { computer in
                     ComputerRow(
                         computer: computer,
-                        sections: TodoSection.allCases.filter { store.sectionComputers[$0]?.computer.id == computer.id },
                         working: board.workingCount(computerID: computer.id),
                         review: board.reviewCount(computerID: computer.id),
                         needsYou: board.needsYouCount(computerID: computer.id),
@@ -96,7 +94,6 @@ struct ComputerIcon: View {
 
 private struct ComputerRow: View {
     let computer: Computer
-    let sections: [TodoSection]
     let working: Int
     let review: Int
     let needsYou: Int
@@ -115,19 +112,6 @@ private struct ComputerRow: View {
                 } else {
                     Text("This device can't open conversations here yet")
                         .foregroundStyle(.secondary)
-                }
-                if !sections.isEmpty {
-                    HStack(spacing: 5) {
-                        ForEach(sections) { section in
-                            Text(section.rawValue)
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 1)
-                                .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        }
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Sections \(sections.map(\.rawValue).joined(separator: ", "))")
                 }
             }
             .font(.footnote)

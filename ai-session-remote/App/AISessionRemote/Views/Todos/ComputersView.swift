@@ -2,7 +2,7 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// Manage the hub's computers and which computer each section uses.
+/// Manage the hub's computers.
 struct ComputersView: View {
     let store: TodoHubStore
     @Environment(\.dismiss) private var dismiss
@@ -23,30 +23,6 @@ struct ComputersView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    ForEach(TodoSection.allCases) { section in
-                        Button {
-                            editingSection = section
-                        } label: {
-                            HStack {
-                                Text(section.rawValue).font(.headline).frame(width: 32, alignment: .leading)
-                                if let mapping = store.sectionComputers[section] {
-                                    Text(mapping.computer.name)
-                                } else {
-                                    Text("No computer").foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                            }
-                        }
-                        .foregroundStyle(.primary)
-                    }
-                } header: {
-                    Text("Sections")
-                } footer: {
-                    Text("New conversations for a section's todos start on its computer.")
-                }
-
                 Section("Computers") {
                     if store.computers.isEmpty {
                         Text("No computers yet").foregroundStyle(.secondary)
@@ -142,7 +118,7 @@ struct ComputersView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: { _ in
-                Text("It's removed from the todo server for all your devices. A computer that a section, conversation or project still uses can't be deleted.")
+                Text("It's removed from the todo server for all your devices. A computer still used for routing, conversations or projects can't be deleted.")
             }
             .alert(
                 "Computers",
@@ -234,7 +210,7 @@ private struct SectionMappingSheet: View {
                     ForEach(computers) { Text($0.name).tag(Optional($0.id)) }
                 }
             }
-            .navigationTitle(section.rawValue)
+            .navigationTitle("Choose Computer")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

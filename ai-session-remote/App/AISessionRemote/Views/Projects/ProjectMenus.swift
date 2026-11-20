@@ -2,7 +2,7 @@ import AISessionCore
 import SwiftUI
 
 /// "Project ▸" submenu for a todo's context menu. A todo always has a project, so the menu
-/// only offers projects, each labeled with its section code.
+/// offers projects grouped by computer.
 struct TodoProjectMenu: View {
     let todo: Todo
     let store: TodoHubStore
@@ -15,11 +15,10 @@ struct TodoProjectMenu: View {
                         Button {
                             Task { await store.setProject(project.id, for: todo) }
                         } label: {
-                            let title = TodoProjectMenuTitle.row(section: project.section, name: project.name)
                             if todo.projectId == project.id {
-                                Label(title, systemImage: "checkmark")
+                                Label(project.name, systemImage: "checkmark")
                             } else {
-                                Text(title)
+                                Text(project.name)
                             }
                         }
                     }

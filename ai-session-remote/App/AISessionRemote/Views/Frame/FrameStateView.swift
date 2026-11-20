@@ -119,8 +119,8 @@ struct FrameStateView: View {
         case let .noComputer(section):
             FrameStateBlock(
                 systemImage: "desktopcomputer",
-                title: "No computer runs \(section.rawValue) conversations yet",
-                message: "Choose which computer and folder \(section.rawValue) conversations start on.",
+                title: "No computer is assigned to this todo",
+                message: "Choose the computer where this todo runs.",
                 primary: FrameStateButton(title: "Choose Computer") { actions.openSettings(.sections(section)) }
             )
         case let .needsAccess(computer):

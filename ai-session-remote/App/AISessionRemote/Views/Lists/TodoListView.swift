@@ -2,18 +2,13 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// Todos in inset-grouped sections, each headed by its code and computer. Tapping a todo calls
-/// `onOpen`; the caller owns navigation to its conversation. Given a `selection` (the Mac list
-/// column) rows select by todo id instead. Given a `grouping` (the phone) a picker on top
-/// switches to open todos by project or by their conversation's status.
+/// A project’s todos or the full todo list grouped by project or status.
 struct TodoListView: View {
-    let sections: [TodoSection]
+    let project: Project?
     let onOpen: (Todo) -> Void
     private let onRestart: ((Todo) -> Void)?
     private let query: String
     private let selection: Binding<String?>?
-    /// The section whose add field takes the phone Home-screen focus.
-    private let quickAddSection: TodoSection?
     private let grouping: Binding<TodoGrouping>?
 
     @Environment(AppModel.self) private var model
@@ -25,13 +20,12 @@ struct TodoListView: View {
     /// Delete Todo… asks first.
     @State private var deleteTarget: Todo?
 
-    init(sections: [TodoSection], query: String = "", selection: Binding<String?>? = nil,
-         quickAddSection: TodoSection? = nil, grouping: Binding<TodoGrouping>? = nil,
+    init(project: Project? = nil, query: String = "", selection: Binding<String?>? = nil,
+         grouping: Binding<TodoGrouping>? = nil,
          onRestart: ((Todo) -> Void)? = nil, onOpen: @escaping (Todo) -> Void) {
-        self.sections = sections
+        self.project = project
         self.query = query
         self.selection = selection
-        self.quickAddSection = quickAddSection
         self.grouping = grouping
         self.onRestart = onRestart
         self.onOpen = onOpen
@@ -49,7 +43,7 @@ struct TodoListView: View {
             if let grouping {
                 Section {
                     Picker("Group by", selection: grouping) {
-                        ForEach(TodoGrouping.allCases, id: \.self) { Text($0.label).tag($0) }
+                        ForEach([TodoGrouping.project, .status], id: \.self) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
@@ -60,27 +54,40 @@ struct TodoListView: View {
             #if os(macOS)
             TodoHoldDropArea(store: store, status: .active)
             #endif
-            switch grouping?.wrappedValue ?? .section {
-            case .section:
-                ForEach(sections) { section in
-                    sectionView(section, board: board)
+            if let project {
+                Section {
+                    InlineTodoAdd(project: project)
+                    let todos = searched.filter(isInMainList)
+                    if todos.isEmpty {
+                        if !store.hasLoadedOnce { ProgressView() }
+                        else if !query.isEmpty { ContentUnavailableView.search(text: query) }
+                        else { Text("No todos").foregroundStyle(.secondary) }
+                    }
+                    ForEach(todos) { todo in row(todo, board: board) }
                 }
-            case .project:
+                .todoStatusDropTarget(store: store, status: .active)
+            } else if grouping?.wrappedValue == .status {
+                let groups = TodoGrouping.byStatus(searched.filter(isInMainList)) { board.status(forTodo: $0) }
+                if groups.isEmpty { emptyGroups }
+                ForEach(groups) { group in
+                    groupView(group.status.label, detail: nil, todos: group.todos, addTo: nil, board: board)
+                }
+            } else {
                 let groups = TodoGrouping.byProject(searched.filter(isInMainList), projects: store.projects)
                 if groups.isEmpty { emptyGroups }
                 ForEach(groups) { group in
                     groupView(group.title, detail: group.project?.computer.name, todos: group.todos,
                               addTo: group.project, board: board)
                 }
-            case .status:
-                let groups = TodoGrouping.byStatus(searched.filter(isInMainList)) { board.status(forTodo: $0) }
-                if groups.isEmpty { emptyGroups }
-                ForEach(groups) { group in
-                    groupView(group.status.label, detail: nil, todos: group.todos, addTo: nil, board: board)
+                if grouping == nil {
+                    let completed = searched.filter { $0.completed && isInMainList($0) }
+                    if !completed.isEmpty {
+                        groupView("Completed", detail: nil, todos: completed, addTo: nil, board: board)
+                    }
                 }
             }
             ForEach([TodoWorkStatus.waiting, .onHold], id: \.self) { status in
-                let items = searched.filter { sections.contains($0.section) && $0.workStatus == status && (showScheduled || $0.scheduledJobId == nil) }
+                let items = searched.filter { $0.workStatus == status && (showScheduled || $0.scheduledJobId == nil) }
                 if showsWorkStatusSection(hasItems: !items.isEmpty) {
                     Section {
                         #if os(macOS)
@@ -109,7 +116,8 @@ struct TodoListView: View {
 
     /// Every todo matching the search, for the project and status groupings.
     private var searched: [Todo] {
-        store.todos.filter { ListSearch.matches(query, $0.title) }
+        let todos = project.map { store.todos(inProject: $0.id) } ?? store.todos
+        return todos.filter { ListSearch.matches(query, $0.title) }
     }
 
     private func isInMainList(_ todo: Todo) -> Bool {
@@ -138,7 +146,7 @@ struct TodoListView: View {
                            board: ConversationBoard) -> some View {
         Section {
             if let project {
-                InlineTodoAdd(place: .project(project))
+                InlineTodoAdd(project: project)
             }
             ForEach(todos) { todo in
                 row(todo, board: board)
@@ -154,43 +162,6 @@ struct TodoListView: View {
             .font(.footnote)
             .textCase(nil)
             .todoStatusDropTarget(store: store, status: .active)
-        }
-    }
-
-    private func sectionView(_ section: TodoSection, board: ConversationBoard) -> some View {
-        Section {
-            InlineTodoAdd(place: .section(section), acceptsQuickAddFocus: quickAddSection == section)
-            let all = store.todos(in: section).filter(isInMainList)
-            let todos = all.filter { ListSearch.matches(query, $0.title) }
-            if !all.isEmpty && todos.isEmpty {
-                Text("No results for “\(query)” in \(section.rawValue)")
-                    .foregroundStyle(.secondary)
-                    .frame(minHeight: DS.rowMinHeight)
-            } else if todos.isEmpty && !store.hasLoadedOnce {
-                ProgressView()
-                    .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight)
-            } else if todos.isEmpty {
-                Text("No todos in \(section.rawValue)")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight, alignment: .leading)
-            }
-            ForEach(todos) { todo in
-                row(todo, board: board)
-            }
-        } header: {
-            // One section (the Mac list column) is already named above the list.
-            if sections.count > 1 {
-                HStack {
-                    Text(section.rawValue).fontWeight(.semibold)
-                    Spacer()
-                    if let mapping = store.sectionComputers[section] {
-                        Text(mapping.computer.name).foregroundStyle(.secondary)
-                    }
-                }
-                .font(.footnote)
-                .textCase(nil)
-                .todoStatusDropTarget(store: store, status: .active)
-            }
         }
     }
 
@@ -303,7 +274,7 @@ struct TodoListView: View {
 #if DEBUG
 #Preview("Todos") {
     NavigationStack {
-        TodoListView(sections: TodoSection.allCases) { _ in }
+        TodoListView() { _ in }
             .navigationTitle("Todos")
     }
     .environment(AppModel(demo: true))

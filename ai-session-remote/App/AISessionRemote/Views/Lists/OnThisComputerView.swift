@@ -62,7 +62,7 @@ struct OnThisComputerView: View {
     }
 }
 
-/// Open todos without a conversation, by section; tapping one links the picked conversation.
+/// Open todos without a conversation, by project; tapping one links the picked conversation.
 private struct LinkToTodoList: View {
     let remote: RemoteConversation
     let computer: Computer
@@ -79,21 +79,19 @@ private struct LinkToTodoList: View {
                     .foregroundStyle(DS.error)
                     .font(.subheadline)
             }
-            if !TodoSection.allCases.contains(where: { !candidates(in: $0).isEmpty }) {
+            let groups = TodoGrouping.byProject(candidates, projects: store.projects)
+            if groups.isEmpty {
                 Text("Every open todo already has a conversation.")
                     .foregroundStyle(.secondary)
             }
-            ForEach(TodoSection.allCases) { section in
-                let todos = candidates(in: section)
-                if !todos.isEmpty {
-                    Section {
-                        ForEach(todos) { todo in
-                            Button(todo.title) { link(todo) }
-                                .foregroundStyle(.primary)
-                        }
-                    } header: {
-                        Text(section.rawValue).textCase(nil)
+            ForEach(groups) { group in
+                Section {
+                    ForEach(group.todos) { todo in
+                        Button(todo.title) { link(todo) }
+                            .foregroundStyle(.primary)
                     }
+                } header: {
+                    Text(group.title).textCase(nil)
                 }
             }
         }
@@ -104,8 +102,8 @@ private struct LinkToTodoList: View {
         .navigationTitle("Link to Todo")
     }
 
-    private func candidates(in section: TodoSection) -> [Todo] {
-        store.todos(in: section).filter { !$0.completed && store.mostUrgent(forTodo: $0.id) == nil }
+    private var candidates: [Todo] {
+        store.todos.filter { !$0.completed && store.mostUrgent(forTodo: $0.id) == nil }
     }
 
     private func link(_ todo: Todo) {

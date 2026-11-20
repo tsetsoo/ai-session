@@ -1,12 +1,20 @@
 import AISessionCore
 import SwiftUI
 
-/// The Mac (and regular-width iPad) sidebar: Needs you, To review and Working, the todo sections,
-/// Projects, then the computers, with the sync line and Settings at the bottom.
+/// Session queues and the computer/project hierarchy for Mac and regular-width iPad.
 struct SidebarView: View {
     @Binding var selection: AppModel.SidebarItem?
     /// Settings on iPad; the Mac opens its Settings scene instead.
     let openSettings: () -> Void
+    let addProject: (String) -> Void
+    @State private var collapsedComputers: Set<String> = []
+
+    private func expansion(for id: String) -> Binding<Bool> {
+        Binding(get: { !collapsedComputers.contains(id) }, set: { expanded in
+            if expanded { collapsedComputers.remove(id) }
+            else { collapsedComputers.insert(id) }
+        })
+    }
 
     @Environment(AppModel.self) private var model
     @Environment(\.openAppSettings) private var openAppSettings
@@ -14,7 +22,11 @@ struct SidebarView: View {
     private var store: TodoHubStore { model.store }
 
     var body: some View {
-        let counts = SidebarCounts(board: model.board, computers: store.computers)
+        let board = model.board
+        let counts = SidebarCounts(board: board, computers: store.computers)
+        let projects = Dictionary(uniqueKeysWithValues: store.projectsByComputer.map { ($0.computer.id, $0.projects) })
+        let urgentTodos = Set(board.needsYou.map(\.todoId))
+        let urgentProjects = Set(store.todos.filter { urgentTodos.contains($0.id) }.compactMap(\.projectId))
         List(selection: $selection) {
             Section {
                 SidebarRow(title: "Needs you", systemImage: "exclamationmark.circle", iconTint: DS.accent,
@@ -25,27 +37,41 @@ struct SidebarView: View {
                 SidebarRow(title: "Working", systemImage: "bolt", count: counts.working)
                     .tag(AppModel.SidebarItem.working)
             }
-            Section("Todos") {
-                ForEach(counts.sections, id: \.section) { row in
-                    SidebarRow(title: row.section.rawValue, systemImage: "checkmark.square",
-                               count: row.openTodos, showsDot: row.needsYou)
-                        .tag(AppModel.SidebarItem.section(row.section))
-                }
-            }
-            Section {
-                SidebarRow(title: "Projects", systemImage: "folder", count: store.pendingMemoryCount)
-                    .tag(AppModel.SidebarItem.projects)
-            }
+            SidebarRow(title: "Todos", systemImage: "checkmark.square", count: 0)
+                .tag(AppModel.SidebarItem.todos)
             if !counts.computers.isEmpty {
                 Section("Computers") {
                     ForEach(counts.computers, id: \.id) { row in
-                        SidebarRow(title: row.name, systemImage: "desktopcomputer", count: row.open)
-                            .tag(AppModel.SidebarItem.computer(row.id))
+                        DisclosureGroup(isExpanded: expansion(for: row.id)) {
+                            ForEach(projects[row.id] ?? []) { project in
+                                SidebarRow(title: project.name, systemImage: "folder", count: project.openTodos,
+                                           showsDot: urgentProjects.contains(project.id))
+                                    .tag(AppModel.SidebarItem.project(project.id))
+                                    .contextMenu {
+                                        Button("Project Details", systemImage: "info.circle") {
+                                            selection = .project(project.id)
+                                            model.selectedProjectID = project.id
+                                        }
+                                    }
+                            }
+                        } label: {
+                            SidebarRow(title: row.name, systemImage: "desktopcomputer", count: row.open)
+                                .contextMenu {
+                                    Button("Add Project", systemImage: "plus") { addProject(row.id) }
+                                        .disabled(!store.canCreateProject(on: row.id))
+                                }
+                        }
+                        .tag(AppModel.SidebarItem.computer(row.id))
                     }
                 }
             }
         }
         .listStyle(.sidebar)
+        .onChange(of: selection) { _, item in
+            if case let .project(id) = item, let project = store.project(id: id) {
+                collapsedComputers.remove(project.computer.id)
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             footer
         }

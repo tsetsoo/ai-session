@@ -81,12 +81,6 @@ struct NotificationSettingsView: View {
                     Text("Notifications in quiet hours arrive silently and wait in Notification Center.")
                 }
 
-                Section("Muted sections") {
-                    ForEach(TodoSection.allCases) { section in
-                        Toggle(section.rawValue, isOn: sectionMuted(binding, section))
-                    }
-                }
-
                 if !binding.wrappedValue.mutedTodoIds.isEmpty {
                     Section("Muted todos") {
                         ForEach(binding.wrappedValue.mutedTodoIds, id: \.self) { todoId in
@@ -165,19 +159,6 @@ struct NotificationSettingsView: View {
         )
     }
 
-    private func sectionMuted(_ s: Binding<PushSettings>, _ section: TodoSection) -> Binding<Bool> {
-        Binding(
-            get: { s.wrappedValue.mutedSections.contains(section) },
-            set: { muted in
-                update(s) { settings in
-                    settings.mutedSections.removeAll { $0 == section }
-                    if muted { settings.mutedSections.append(section) }
-                }
-            }
-        )
-    }
-
-    /// Apply locally, then save after 0.5 s without further changes.
     private func update(_ s: Binding<PushSettings>, _ change: (inout PushSettings) -> Void) {
         change(&s.wrappedValue)
         let snapshot = s.wrappedValue

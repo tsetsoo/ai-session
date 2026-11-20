@@ -1253,6 +1253,15 @@ final class TodoHubStore {
         return projects.first { $0.id == id }
     }
 
+    /// The current API uses a routing section when creating a project.
+    func projectRoutingSection(on computerID: String) -> TodoSection? {
+        TodoSection.allCases.first { sectionComputers[$0]?.computer.id == computerID }
+    }
+
+    func canCreateProject(on computerID: String) -> Bool {
+        isConfigured && !isOffline && projectRoutingSection(on: computerID) != nil
+    }
+
     /// Projects grouped by computer (computers by name, projects by name).
     var projectsByComputer: [(computer: Computer, projects: [Project])] {
         let byName: (Project, Project) -> Bool = { $0.name.localizedStandardCompare($1.name) == .orderedAscending }

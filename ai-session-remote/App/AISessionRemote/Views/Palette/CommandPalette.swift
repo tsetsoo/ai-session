@@ -343,13 +343,13 @@ private struct PaletteRow: View {
 
     private var title: String { item.title }
 
-    /// "Sp · mac-studio · Claude", "P · no conversation yet", or a project's "mac-studio · ~/code/x".
+    /// Computer and tool for conversations, computer and folder for projects.
     private var meta: String? {
         switch item {
-        case let .conversation(todo, conversation, _, _):
-            return "\(todo.section.rawValue) · \(conversation.computer.name) · \(RowText.toolName(conversation.tool))"
-        case let .todo(todo, conversation, _):
-            return "\(todo.section.rawValue) · \(conversation?.computer.name ?? "no conversation yet")"
+        case let .conversation(_, conversation, _, _):
+            return "\(conversation.computer.name) · \(RowText.toolName(conversation.tool))"
+        case let .todo(_, conversation, _):
+            return conversation?.computer.name ?? "No conversation yet"
         case let .project(project):
             return "\(project.computer.name) · \(project.folder)"
         case .action:

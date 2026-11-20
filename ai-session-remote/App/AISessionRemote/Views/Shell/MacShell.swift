@@ -9,14 +9,12 @@ import AppKit
 /// underneath a shell as its Back destination, but must not keep the list selected meanwhile.
 enum ShellDestination: Equatable {
     case shell(UUID)
-    case projects
     case computerPage(ComputerPage)
     case conversation(String?)
 
     static func resolve(sidebar: AppModel.SidebarItem?, page: ComputerPage?, shellID: UUID?,
                         todoID: String?) -> Self {
         if let shellID { return .shell(shellID) }
-        if sidebar == .projects { return .projects }
         if case .computer = sidebar, let page { return .computerPage(page) }
         return .conversation(todoID)
     }
@@ -24,7 +22,6 @@ enum ShellDestination: Equatable {
     var listTag: String? {
         switch self {
         case .shell: ComputerPage.shell.tag
-        case .projects: nil
         case let .computerPage(page): page.tag
         case let .conversation(id): id
         }
@@ -75,6 +72,7 @@ struct MacShell: View {
     /// ⏎, a double-click or Open for the selected todo's frame.
     @State private var frameRequest: FrameRequest?
     @State private var toolbarRequest: ConversationToolbarRequest?
+    @State private var projectEditor: ProjectEditorSheet.Mode?
     /// A computer's Other Sessions, On This Computer or Open Shell, shown in the detail column.
     @State private var computerPage: ComputerPage?
     /// The sidebar row picked for the user at launch, until they pick one or it moves to Needs you.
@@ -106,7 +104,7 @@ struct MacShell: View {
     private func openUpdateDay(_ projectId: String, _ day: String) {
         model.updateDayRequest = .init(projectId: projectId, day: day)
         model.appMode = .sessions
-        model.sidebarSelection = .projects
+        model.sidebarSelection = .project(projectId)
         model.selectedProjectID = projectId
     }
 
@@ -122,7 +120,9 @@ struct MacShell: View {
                 } else if model.appMode == .today {
                     TodaySidebar()
                 } else {
-                    SidebarView(selection: $model.sidebarSelection) { settings = SettingsRequest(initial: nil) }
+                    SidebarView(selection: $model.sidebarSelection, openSettings: {
+                        settings = SettingsRequest(initial: nil)
+                    }, addProject: addProject)
                 }
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 232, max: 320)
@@ -169,7 +169,7 @@ struct MacShell: View {
             SettingsView(initial: request.initial)
         }
         .sheet(isPresented: $showingAdd) {
-            AddTodoSheet(fixedSection: selectedSection, store: store)
+            AddTodoSheet(project: selectedProject, computerID: selectedComputerID, store: store)
                 .tint(DS.accent)
         }
         .sheet(isPresented: $showingNewFromConversation) {
@@ -195,6 +195,34 @@ struct MacShell: View {
         .focusedSceneValue(\.shellCommands, shellCommands)
         .todoDeleteConfirmation($todoToDelete, store: store)
         .todoStoreErrorAlert(store)
+        .sheet(item: $projectEditor) { mode in
+            ProjectEditorSheet(mode: mode, store: store) { project in
+                model.sidebarSelection = .project(project.id)
+            }
+        }
+        .sheet(isPresented: Binding(get: { model.selectedProjectID != nil }, set: {
+            if !$0 { model.selectedProjectID = nil }
+        })) {
+            if let id = model.selectedProjectID {
+                NavigationStack {
+                    ProjectDetailView(projectId: id, store: store) { todo in
+                        model.selectedProjectID = nil
+                        open(todo)
+                    }
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { model.selectedProjectID = nil }
+                        }
+                    }
+                }
+                #if os(macOS)
+                .frame(minWidth: 640, minHeight: 540)
+                #endif
+            }
+        }
+        .onChange(of: model.appMode) { _, mode in
+            if mode != .sessions { model.selectedProjectID = nil }
+        }
         // Launched before sync filled the board: move to Needs you once something does, unless
         // the user has picked a row since.
         .onChange(of: model.board.needsYou.isEmpty) { _, empty in
@@ -206,10 +234,16 @@ struct MacShell: View {
             model.sidebarSelection = .needsYou
             defaultSidebar = nil
         }
-        .onChange(of: model.sidebarSelection) { _, _ in
+        .onChange(of: model.sidebarSelection) { _, item in
             query = ""
             computerPage = nil
             model.shells.selectedID = nil
+            if case let .project(id) = item,
+               let todoID = model.selectedTodoID,
+               !store.todos.contains(where: { $0.id == todoID && $0.projectId == id }) {
+                model.selectedTodoID = nil
+                model.selectedConversationID = nil
+            }
         }
         .onChange(of: model.selectedTodoID) { _, id in
             if id != nil { model.shells.selectedID = nil }
@@ -255,37 +289,43 @@ struct MacShell: View {
                 notConfigured
             }
         }
-        .navigationTitle(ContentHeader.title(for: item, computers: store.computers))
+        .navigationTitle(ContentHeader.title(for: item, computers: store.computers, projects: store.projects))
         #if os(macOS)
-        .navigationSubtitle(ContentHeader.subtitle(for: item, board: model.board) {
-            store.sectionComputers[$0]?.computer.name
-        })
+        .navigationSubtitle(ContentHeader.subtitle(for: item, board: model.board, projects: store.projects))
         #endif
         .toolbar {
-            // Projects has its own + (New Project) instead.
-            if sidebarItem != .projects {
-                ToolbarItem(id: "list.newTodo", placement: .primaryAction) {
-                    // Click: new todo. The menu (its arrow on the Mac, a hold on iPad): new todo from
-                    // an existing conversation.
-                    Menu {
-                        Button {
-                            showingAdd = true
-                        } label: {
-                            Label("New Todo", systemImage: "plus")
-                        }
-                        Button {
-                            showingNewFromConversation = true
-                        } label: {
-                            Label("New Todo from Conversation…", systemImage: "text.bubble")
-                        }
+            if let project = selectedProject {
+                ToolbarItem(id: "list.projectDetails", placement: .primaryAction) {
+                    Button("Project Details", systemImage: "info.circle") { model.selectedProjectID = project.id }
+                }
+            }
+            if case let .computer(id) = item {
+                ToolbarItem(id: "list.addProject", placement: .primaryAction) {
+                    Button("Add Project", systemImage: "folder.badge.plus") { addProject(id) }
+                        .disabled(!store.canCreateProject(on: id))
+                }
+            }
+            ToolbarItem(id: "list.newTodo", placement: .primaryAction) {
+                // Click: new todo. The menu (its arrow on the Mac, a hold on iPad): new todo from
+                // an existing conversation.
+                Menu {
+                    Button {
+                        showingAdd = true
                     } label: {
                         Label("New Todo", systemImage: "plus")
-                    } primaryAction: {
-                        showingAdd = true
                     }
-                    .help("New Todo")
-                    .disabled(!model.isConfigured || store.isOffline)
+                    Button {
+                        showingNewFromConversation = true
+                    } label: {
+                        Label("New Todo from Conversation…", systemImage: "text.bubble")
+                    }
+                } label: {
+                    Label("New Todo", systemImage: "plus")
+                } primaryAction: {
+                    showingAdd = true
                 }
+                .help("New Todo")
+                .disabled(!model.isConfigured || store.isOffline)
             }
         }
     }
@@ -297,29 +337,35 @@ struct MacShell: View {
             ConversationListView(filter: .constant(Self.conversationFilter(for: item) ?? .all), showsFilterPicker: false,
                                  showsShortcuts: Self.showsShortcuts, query: query, selection: selection,
                                  onOpen: { open($0) })
-        case let .section(section):
-            TodoListView(sections: [section], query: query, selection: selection, onRestart: { todo in
-                model.shells.selectedID = nil
-                computerPage = nil
-                model.selectedConversationID = store.mostUrgent(forTodo: todo.id)?.listKey
-                model.selectedTodoID = todo.id
-                toolbarRequest = ConversationToolbarRequest(command: .restart, todoID: todo.id)
-            }, onOpen: { open($0) })
-        case .projects:
-            ProjectsList(store: store, selection: Binding(
-                get: { model.selectedProjectID },
-                set: { model.selectedProjectID = $0 }
-            ))
+        case .todos:
+            todoList()
+        case let .project(id):
+            if let project = store.project(id: id) {
+                todoList(project)
+            } else if !store.hasLoadedOnce {
+                ProgressView()
+            } else {
+                ContentUnavailableView("Project Unavailable", systemImage: "folder")
+            }
         case let .computer(id):
             if let computer = store.computers.first(where: { $0.id == id }) {
-                // Other Sessions, On This Computer and Open Shell select like conversations and
-                // open in the detail column: the list column is too narrow for them.
                 ComputerDetailView(computer: computer, query: query, selection: selection, onOpen: { open($0) })
                     .id(id)
             } else {
                 ContentUnavailableView("Computer Not Found", systemImage: "desktopcomputer")
             }
         }
+    }
+
+    private func todoList(_ project: Project? = nil) -> some View {
+        TodoListView(project: project, query: query, selection: selection, onRestart: { todo in
+            model.shells.selectedID = nil
+            computerPage = nil
+            model.selectedConversationID = store.mostUrgent(forTodo: todo.id)?.listKey
+            model.selectedTodoID = todo.id
+            toolbarRequest = ConversationToolbarRequest(command: .restart, todoID: todo.id)
+        }, onOpen: { open($0) })
+        .id(project?.id)
     }
 
     /// ⌘1–⌘9 hints in the conversation lists: a keyboard is a given on the Mac only.
@@ -335,10 +381,18 @@ struct MacShell: View {
         ServerNotConfiguredView()
     }
 
-    /// The section list, when one is selected. The toolbar sheet asks for a section otherwise.
-    private var selectedSection: TodoSection? {
-        if case let .section(section) = sidebarItem { return section }
+    private var selectedProject: Project? {
+        if case let .project(id) = sidebarItem { return store.project(id: id) }
         return nil
+    }
+
+    private var selectedComputerID: String? {
+        if case let .computer(id) = sidebarItem { return id }
+        return nil
+    }
+
+    private func addProject(_ computerID: String) {
+        projectEditor = .create(nil, computerID: computerID)
     }
 
     // MARK: Fast paths
@@ -427,7 +481,7 @@ struct MacShell: View {
             #endif
             go(to: todo)
         case let .project(project):
-            model.sidebarSelection = .projects
+            model.sidebarSelection = .project(project.id)
             model.selectedProjectID = project.id
         case .action(.newTodo):
             showingAdd = true
@@ -486,7 +540,7 @@ struct MacShell: View {
     }
 
     /// The current list when it has the todo (or `conversation`), else the conversation list for
-    /// its status, else the todo's section.
+    /// its status, else the todo’s project or the full todo list.
     static func sidebarTarget(showing todo: Todo, conversation: Conversation? = nil, from current: AppModel.SidebarItem,
                               board: ConversationBoard) -> AppModel.SidebarItem {
         let status = conversation.map(board.status(of:)) ?? board.status(forTodo: todo.id)
@@ -497,9 +551,10 @@ struct MacShell: View {
         case .ready, .closed, nil: nil
         }
         switch current {
-        case .section(todo.section): return current
+        case let .project(id) where id == todo.projectId: return current
+        case .todos: return current
         case _ where current == list: return current
-        default: return list ?? .section(todo.section)
+        default: return list ?? todo.projectId.map(AppModel.SidebarItem.project) ?? .todos
         }
     }
 
@@ -569,7 +624,7 @@ struct MacShell: View {
     private func applyInitialSelection() {
         #if DEBUG
         if DemoFixtures.isEnabled {
-            // `-uiDemoSidebar needsyou|review|working|Sp|I|Si|P|computer:<id>` and `-uiDemoOpen <todo id>`.
+            // `-uiDemoSidebar needsyou|review|working|todos|project:<id>|computer:<id>` and `-uiDemoOpen <todo id>`.
             // Only on first appearance: an iPad shell swap keeps what was selected.
             if model.sidebarSelection == nil {
                 model.sidebarSelection = DemoFixtures.value(after: "-uiDemoSidebar")
@@ -608,8 +663,8 @@ struct MacShell: View {
         }
         // `-demoProjects` (canned projects, see TodoHubDemo): open on Projects.
         if let demo = store.demo, model.sidebarSelection == nil {
-            model.sidebarSelection = .projects
-            model.selectedProjectID = ProjectsDemo.projectPage(store) ?? demo.projects.first?.id
+            model.sidebarSelection = (ProjectsDemo.projectPage(store) ?? demo.projects.first?.id).map(AppModel.SidebarItem.project)
+            model.selectedProjectID = ProjectsDemo.projectPage(store)
         }
         #endif
         if model.sidebarSelection == nil {
@@ -669,8 +724,6 @@ private struct ShellDetail: View {
                 if let shell = model.shells.shells.first(where: { $0.id == id }) {
                     shellDetail(shell)
                 }
-            case .projects:
-                projectDetail
             case let .computerPage(page):
                 if case let .computer(id) = model.sidebarSelection,
                    let computer = store.computers.first(where: { $0.id == id }),
@@ -748,26 +801,7 @@ private struct ShellDetail: View {
         .background(.bar)
     }
 
-    /// The selected project's page. Opening one of its todos selects that todo in its section
-    /// and starts (or resumes) it, so the conversation shows in this column as usual.
-    @ViewBuilder
-    private var projectDetail: some View {
-        if let id = model.selectedProjectID {
-            NavigationStack {
-                ProjectDetailView(projectId: id, store: store) { todo in
-                    model.sidebarSelection = .section(todo.section)
-                    onOpen(todo)
-                }
-            }
-            .id(id)
-        } else {
-            ContentUnavailableView {
-                Label("Select a project", systemImage: "folder")
-            } description: {
-                Text("Projects group todos, conversations and memories by folder.")
-            }
-        }
-    }
+
 }
 
 /// The conversations whose terminals stay alive. Selecting one that is already mounted shows
@@ -1460,16 +1494,16 @@ extension AppModel {
 
 #if DEBUG
 extension AppModel.SidebarItem {
-    /// `-uiDemoSidebar` values: needsyou, review, working, a section code, projects, or computer:<id>.
+    /// `-uiDemoSidebar` values: needsyou, review, working, todos, project:<id>, or computer:<id>.
     init?(demoArgument: String) {
         switch demoArgument {
         case "needsyou": self = .needsYou
         case "review": self = .review
         case "working", "running": self = .working
-        case "projects": self = .projects
+        case "todos": self = .todos
         default:
-            if let section = TodoSection(rawValue: demoArgument) {
-                self = .section(section)
+            if demoArgument.hasPrefix("project:") {
+                self = .project(String(demoArgument.dropFirst("project:".count)))
             } else if demoArgument.hasPrefix("computer:") {
                 self = .computer(String(demoArgument.dropFirst("computer:".count)))
             } else {

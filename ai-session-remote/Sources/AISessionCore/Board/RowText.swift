@@ -47,11 +47,13 @@ public enum RowText {
         [section?.rawValue, conversation.computer.name].compactMap { $0 }.joined(separator: " · ")
     }
 
-    /// "Sp · mac-studio · ~/repo". The tool is the terminal band, not this line.
+    /// The computer and optional folder for the conversation header.
+    public static func frameSubtitle(computer: String, folder: String?) -> String {
+        [computer, folder].compactMap { $0 }.joined(separator: " · ")
+    }
+
     public static func frameSubtitle(section: TodoSection, computer: String, folder: String?) -> String {
-        var parts = [section.rawValue, computer]
-        if let folder { parts.append(folder) }
-        return parts.joined(separator: " · ")
+        [section.rawValue, frameSubtitle(computer: computer, folder: folder)].joined(separator: " · ")
     }
 
     /// The gray line plus the tool name, so a search for "Claude" still hits the row.

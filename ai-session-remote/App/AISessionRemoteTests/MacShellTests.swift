@@ -20,12 +20,6 @@ final class MacShellTests: XCTestCase {
         XCTAssertEqual(counts.needsYou, 2)
         XCTAssertEqual(counts.review, 1)
         XCTAssertEqual(counts.working, 2)
-        XCTAssertEqual(counts.sections, [
-            .init(section: .sp, openTodos: 3, needsYou: true),
-            .init(section: .i, openTodos: 2, needsYou: true),
-            .init(section: .si, openTodos: 1, needsYou: false),
-            .init(section: .p, openTodos: 2, needsYou: false),
-        ])
         XCTAssertEqual(counts.computers, [
             .init(id: "mac-studio", name: "mac-studio", open: 3),
             .init(id: "linux-box", name: "linux-box", open: 2),
@@ -44,7 +38,6 @@ final class MacShellTests: XCTestCase {
         XCTAssertEqual(counts.review, 0)
         XCTAssertEqual(counts.working, 1)
         XCTAssertEqual(counts.computers.map(\.open), [0, 2])
-        XCTAssertFalse(counts.sections[0].needsYou)
     }
 
     func testZeroShowsNoCount() {
@@ -173,23 +166,18 @@ final class MacShellTests: XCTestCase {
         XCTAssertEqual(ContentHeader.title(for: .needsYou, computers: computers), "Needs you")
         XCTAssertEqual(ContentHeader.title(for: .review, computers: computers), "To review")
         XCTAssertEqual(ContentHeader.title(for: .working, computers: computers), "Working")
-        XCTAssertEqual(ContentHeader.title(for: .section(.si), computers: computers), "Si")
-        XCTAssertEqual(ContentHeader.title(for: .projects, computers: computers), "Projects")
+        XCTAssertEqual(ContentHeader.title(for: .todos, computers: computers), "Todos")
         XCTAssertEqual(ContentHeader.title(for: .computer("linux-box"), computers: computers), "linux-box")
     }
 
     func testHeaderSubtitles() {
-        let computer: (TodoSection) -> String? = { $0 == .sp ? "mac-studio" : nil }
-        XCTAssertEqual(ContentHeader.subtitle(for: .review, board: board, sectionComputer: computer),
+        XCTAssertEqual(ContentHeader.subtitle(for: .review, board: board),
                        "1 conversation")
-        XCTAssertEqual(ContentHeader.subtitle(for: .working, board: board, sectionComputer: computer),
+        XCTAssertEqual(ContentHeader.subtitle(for: .working, board: board),
                        "2 conversations")
-        XCTAssertEqual(ContentHeader.subtitle(for: .needsYou, board: board, sectionComputer: computer),
+        XCTAssertEqual(ContentHeader.subtitle(for: .needsYou, board: board),
                        "2 conversations")
-        XCTAssertEqual(ContentHeader.subtitle(for: .section(.sp), board: board, sectionComputer: computer),
-                       "3 open · mac-studio")
-        XCTAssertEqual(ContentHeader.subtitle(for: .section(.p), board: board, sectionComputer: computer), "2 open")
-        XCTAssertEqual(ContentHeader.subtitle(for: .computer("mac-studio"), board: board, sectionComputer: computer),
+        XCTAssertEqual(ContentHeader.subtitle(for: .computer("mac-studio"), board: board),
                        "1 needs you · 1 to review · 1 working")
     }
 
@@ -223,8 +211,8 @@ final class MacShellTests: XCTestCase {
         XCTAssertNil(PaletteModel.shortcutTarget(3, board: board, todos: DemoFixtures.todos, in: working))
         XCTAssertEqual(MacShell.shortcutList(for: .review, board: board).map(\.todoId), ["t5"])
         XCTAssertEqual(MacShell.shortcutList(for: .needsYou, board: board).map(\.todoId), ["t1", "t3"])
-        XCTAssertEqual(MacShell.shortcutList(for: .section(.sp), board: board), [])
-        XCTAssertEqual(MacShell.shortcutList(for: .projects, board: board), [])
+        XCTAssertEqual(MacShell.shortcutList(for: .project("project"), board: board), [])
+        XCTAssertEqual(MacShell.shortcutList(for: .todos, board: board), [])
     }
 
     func testRateOnTheDemoBoardListsOnlyWholeMatches() {
@@ -244,8 +232,13 @@ final class MacShellTests: XCTestCase {
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t1"), from: .needsYou, board: board), .needsYou)
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .review, board: board), .review)
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t2"), from: .working, board: board), .working)
-        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .section(.sp), board: board), .section(.sp))
-        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t7"), from: .section(.i), board: board), .section(.i))
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .todos, board: board), .todos)
+        var projectTodo = todo("t7")
+        projectTodo.projectId = "project"
+        XCTAssertEqual(MacShell.sidebarTarget(showing: projectTodo, from: .project("project"), board: board),
+                       .project("project"))
+        XCTAssertEqual(MacShell.sidebarTarget(showing: projectTodo, from: .review, board: board),
+                       .project("project"))
     }
 
     func testGoingToATodoElsewhereSwitchesList() {
@@ -253,9 +246,9 @@ final class MacShellTests: XCTestCase {
         // never list todos.
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t2"), from: .needsYou, board: board), .working)
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .working, board: board), .review)
-        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t3"), from: .section(.sp), board: board), .needsYou)
-        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t7"), from: .review, board: board), .section(.i))
-        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t8"), from: .projects, board: board), .section(.p))
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t3"), from: .project("another"), board: board), .needsYou)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t7"), from: .review, board: board), .todos)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t8"), from: .todos, board: board), .todos)
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t1"), from: .computer("mac-studio"), board: board),
                        .needsYou)
     }
@@ -281,7 +274,7 @@ final class MacShellTests: XCTestCase {
             XCTAssertEqual(MacShell.shortcutList(for: item, board: board).map(\.listKey),
                            filter?.conversations(board).map(\.listKey))
         }
-        XCTAssertNil(MacShell.conversationFilter(for: .projects))
+        XCTAssertNil(MacShell.conversationFilter(for: .todos))
     }
 
     func testDismissingThePaletteReturnsFocusToTheVisibleTerminal() {
@@ -298,7 +291,7 @@ final class MacShellTests: XCTestCase {
         XCTAssertEqual(AppModel.SidebarItem(demoArgument: "review"), .review)
         XCTAssertEqual(AppModel.SidebarItem(demoArgument: "working"), .working)
         XCTAssertEqual(AppModel.SidebarItem(demoArgument: "running"), .working)
-        XCTAssertEqual(AppModel.SidebarItem(demoArgument: "Si"), .section(.si))
+        XCTAssertEqual(AppModel.SidebarItem(demoArgument: "project:example"), .project("example"))
         XCTAssertEqual(AppModel.SidebarItem(demoArgument: "computer:mac-studio"), .computer("mac-studio"))
         XCTAssertNil(AppModel.SidebarItem(demoArgument: "sp"))
     }

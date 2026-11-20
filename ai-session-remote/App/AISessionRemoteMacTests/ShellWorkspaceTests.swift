@@ -37,7 +37,7 @@ final class ShellWorkspaceTests: XCTestCase {
     func testPopOutOnlyTargetsTheVisibleConversation() {
         var opened: [String] = []
         let open: (String) -> Void = { opened.append($0) }
-        let conversation = ShellDestination.resolve(sidebar: .section(.p), page: nil,
+        let conversation = ShellDestination.resolve(sidebar: .project("project"), page: nil,
                                                       shellID: nil, todoID: "visible-todo")
         let action = conversation.popOutAction(open)
         XCTAssertNotNil(action)
@@ -45,11 +45,10 @@ final class ShellWorkspaceTests: XCTestCase {
         XCTAssertEqual(opened, ["visible-todo"])
 
         for destination in [
-            ShellDestination.resolve(sidebar: .section(.p), page: nil,
+            ShellDestination.resolve(sidebar: .project("project"), page: nil,
                                      shellID: UUID(), todoID: "hidden-todo"),
             .resolve(sidebar: .computer("mac"), page: .otherSessions,
                      shellID: nil, todoID: "hidden-todo"),
-            .resolve(sidebar: .projects, page: nil, shellID: nil, todoID: "hidden-todo"),
             .resolve(sidebar: .review, page: nil, shellID: nil, todoID: nil),
         ] {
             XCTAssertNil(destination.popOutAction(open))

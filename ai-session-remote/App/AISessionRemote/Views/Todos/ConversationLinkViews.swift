@@ -270,9 +270,6 @@ struct LinkConversationSheet: View {
         #if os(macOS)
         .frame(minWidth: 560, minHeight: 480)
         #endif
-        .sheet(item: $choosingComputer) { section in
-            SettingsView(initial: .sections(section))
-        }
     }
 
     @ViewBuilder
@@ -287,9 +284,9 @@ struct LinkConversationSheet: View {
             )
         } else {
             ContentUnavailableView {
-                Label("No computer runs \(todo.section.rawValue) conversations yet", systemImage: "desktopcomputer")
+                Label("No computer is assigned to this todo", systemImage: "desktopcomputer")
             } description: {
-                Text("Choose which computer \(todo.section.rawValue) conversations run on, then link one from it.")
+                Text("Choose the computer where this todo runs, then link a conversation from it.")
             } actions: {
                 Button("Choose Computer") { choosingComputer = todo.section }
                     .buttonStyle(AccentButtonStyle())
@@ -365,9 +362,9 @@ struct NewTodoFromConversationSheet: View {
         List {
             if store.computers.isEmpty {
                 VStack(alignment: .leading, spacing: DS.spacing.s) {
-                    Text("No computers yet. Add one under Settings → Sections & computers.")
+                    Text("No computers yet. Add one under Settings → Computers.")
                         .foregroundStyle(.secondary)
-                    Button("Open Sections & Computers") { showingComputers = true }
+                    Button("Open Computers") { showingComputers = true }
                 }
             }
             ForEach(store.computers) { computer in
@@ -401,7 +398,6 @@ struct NewTodoDetailsForm: View {
     var lockedProject: Project?
     let onCreate: (TodoSection, String, String) async throws -> Void
 
-    @State private var section: TodoSection?
     @State private var title = ""
     @State private var projectID: String?
     @State private var makingNew = false
@@ -409,20 +405,19 @@ struct NewTodoDetailsForm: View {
     @State private var newFolder = ""
     @State private var error: String?
     @State private var isWorking = false
-    /// Choose Computer: Settings, on the chosen section, over this form.
-    @State private var choosingComputer: TodoSection?
-
-    private var chosenSection: TodoSection? { lockedProject?.section ?? section }
-
-    private var sectionProjects: [Project] {
-        guard let chosenSection else { return [] }
-        return store.projects.filter { $0.section == chosenSection }
+    private var chosenSection: TodoSection? {
+        if let lockedProject { return lockedProject.section }
+        if !makingNew, let projectID, let project = computerProjects.first(where: { $0.id == projectID }) {
+            return project.section
+        }
+        return store.projectRoutingSection(on: computer.id)
     }
 
-    private var hasComputer: Bool {
-        guard let chosenSection else { return false }
-        return store.sectionComputers[chosenSection] != nil
+    private var computerProjects: [Project] {
+        store.projectsByComputer.first { $0.computer.id == computer.id }?.projects ?? []
     }
+
+    private var hasComputer: Bool { chosenSection != nil }
 
     private var canCreate: Bool {
         guard !trimmedTitle.isEmpty, !isWorking, hasComputer else { return false }
@@ -440,30 +435,15 @@ struct NewTodoDetailsForm: View {
     var body: some View {
         Form {
             Section {
-                if lockedProject == nil {
-                    Picker("Section", selection: $section) {
-                        Text("Choose").tag(TodoSection?.none)
-                        ForEach(TodoSection.allCases) { Text($0.rawValue).tag(Optional($0)) }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                if let chosenSection, let mapping = store.sectionComputers[chosenSection] {
-                    LabeledContent("Computer", value: mapping.computer.name)
-                } else if let chosenSection {
-                    // Create stays off until the section has a computer: say why and offer the fix.
-                    VStack(alignment: .leading, spacing: DS.spacing.xs) {
-                        Text("No computer runs \(chosenSection.rawValue) conversations yet")
-                        Text("Choose one to create this todo in \(chosenSection.rawValue).")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    Button("Choose Computer") { choosingComputer = chosenSection }
+                if !hasComputer {
+                    Text("The Todo Hub is missing project routing for this computer.")
+                        .foregroundStyle(.secondary)
                 }
                 if let lockedProject {
                     LabeledContent("Project", value: lockedProject.name)
                 } else if hasComputer {
                     Picker("Project", selection: projectChoice) {
-                        ForEach(sectionProjects) { project in
+                        ForEach(computerProjects) { project in
                             Text(project.name).tag(project.id)
                         }
                         Text("New project").tag("new")
@@ -490,9 +470,6 @@ struct NewTodoDetailsForm: View {
             }
         }
         .navigationTitle("New Todo")
-        .sheet(item: $choosingComputer) { section in
-            SettingsView(initial: .sections(section))
-        }
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Create") { create() }
@@ -501,24 +478,15 @@ struct NewTodoDetailsForm: View {
         }
         .onAppear {
             if title.isEmpty {
-                section = store.onlySection(for: computer)
                 title = remote.title
                 newFolder = remote.cwd
                 if let lockedProject {
-                    section = lockedProject.section
                     projectID = lockedProject.id
                 } else {
                     pickDefaultProject()
                 }
             }
         }
-        .onChange(of: section) { _, _ in
-            guard lockedProject == nil else { return }
-            projectID = nil
-            makingNew = false
-            pickDefaultProject()
-        }
-        // Choose Computer just gave the section one: offer its projects.
         .onChange(of: hasComputer) { _, _ in pickDefaultProject() }
     }
 
@@ -540,11 +508,11 @@ struct NewTodoDetailsForm: View {
     private func pickDefaultProject() {
         guard lockedProject == nil, hasComputer else { return }
         if makingNew { return }
-        if let projectID, sectionProjects.contains(where: { $0.id == projectID }) { return }
-        if sectionProjects.isEmpty {
+        if let projectID, computerProjects.contains(where: { $0.id == projectID }) { return }
+        if computerProjects.isEmpty {
             makingNew = true
         } else {
-            projectID = sectionProjects[0].id
+            projectID = computerProjects[0].id
         }
     }
 
@@ -571,6 +539,10 @@ struct NewTodoDetailsForm: View {
                     projectId = existing
                 } else {
                     return
+                }
+                if makingNew {
+                    projectID = projectId
+                    self.makingNew = false
                 }
                 try await onCreate(chosenSection, trimmedTitle, projectId)
             } catch {

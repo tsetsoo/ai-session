@@ -3,13 +3,6 @@ import Foundation
 
 /// The numbers next to the Mac sidebar's rows. Zero shows no number.
 struct SidebarCounts: Equatable {
-    struct SectionRow: Equatable {
-        let section: TodoSection
-        let openTodos: Int
-        /// A conversation in this section needs you: the accent dot.
-        let needsYou: Bool
-    }
-
     struct ComputerRow: Equatable {
         let id: String
         let name: String
@@ -20,16 +13,12 @@ struct SidebarCounts: Equatable {
     let needsYou: Int
     let review: Int
     let working: Int
-    let sections: [SectionRow]
     let computers: [ComputerRow]
 
     init(board: ConversationBoard, computers: [Computer]) {
         needsYou = board.needsYou.count
         review = board.review.count
         working = board.working.count
-        sections = TodoSection.allCases.map {
-            SectionRow(section: $0, openTodos: board.openTodoCount($0), needsYou: board.sectionNeedsYou($0))
-        }
         self.computers = computers.map {
             ComputerRow(id: $0.id, name: $0.name, open: board.openCount(computerID: $0.id))
         }
@@ -88,20 +77,20 @@ struct SyncLine: Equatable {
 
 /// Title and secondary line above the Mac list column.
 enum ContentHeader {
-    static func title(for item: AppModel.SidebarItem, computers: [Computer]) -> String {
+    static func title(for item: AppModel.SidebarItem, computers: [Computer], projects: [Project] = []) -> String {
         switch item {
         case .needsYou: "Needs you"
         case .review: "To review"
         case .working: "Working"
-        case let .section(section): section.rawValue
-        case .projects: "Projects"
+        case .todos: "Todos"
+        case let .project(id): projects.first { $0.id == id }?.name ?? "Project"
         case let .computer(id): computers.first { $0.id == id }?.name ?? "Computer"
         }
     }
 
     /// "5 conversations", "12 open · mac-studio", "1 needs you · 3 working".
     static func subtitle(for item: AppModel.SidebarItem, board: ConversationBoard,
-                         sectionComputer: (TodoSection) -> String?) -> String {
+                         projects: [Project] = []) -> String {
         switch item {
         case .needsYou:
             return conversations(board.needsYou.count)
@@ -109,11 +98,11 @@ enum ContentHeader {
             return conversations(board.review.count)
         case .working:
             return conversations(board.working.count)
-        case let .section(section):
-            let open = "\(board.openTodoCount(section)) open"
-            return sectionComputer(section).map { "\(open) · \($0)" } ?? open
-        case .projects:
+        case .todos:
             return ""
+        case let .project(id):
+            guard let project = projects.first(where: { $0.id == id }) else { return "" }
+            return "\(project.openTodos) open · \(project.computer.name)"
         case let .computer(id):
             return RowText.computerLine(working: board.workingCount(computerID: id),
                                         review: board.reviewCount(computerID: id),

@@ -172,7 +172,7 @@ struct ProjectDetailView: View {
 
     private func todosSection(_ project: Project) -> some View {
         Section("Todos") {
-            InlineTodoAdd(place: .project(project))
+            InlineTodoAdd(project: project)
             let todos = store.todos(inProject: project.id)
             if todos.isEmpty {
                 Text("No todos in this project").foregroundStyle(.secondary)

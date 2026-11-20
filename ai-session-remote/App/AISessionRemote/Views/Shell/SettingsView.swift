@@ -7,7 +7,7 @@ extension EnvironmentValues {
     @Entry var openAppSettings: ((SettingsDestination) -> Void)?
 }
 
-/// Settings, shown as a sheet: Todo server, Sections & computers, Access & keys (the only place
+/// Settings, shown as a sheet: Todo server, Computers, Access & keys (the only place
 /// SSH words appear), Terminal and Notifications.
 ///
 /// The server, sections and access screens each own a navigation stack, so they open as sheets
@@ -66,13 +66,13 @@ struct SettingsView: View {
                     SettingsSheetRow(title: "Todo server", systemImage: "server.rack", value: serverName) {
                         sheet = .server
                     }
-                    SettingsSheetRow(title: "Sections & computers", systemImage: "desktopcomputer") {
+                    SettingsSheetRow(title: "Computers", systemImage: "desktopcomputer") {
                         sheet = .sections
                     }
                     .disabled(!model.store.isConfigured)
                 } footer: {
                     if !model.store.isConfigured {
-                        Text("Sections and computers live on the todo server. Connect to it first.")
+                        Text("Computer settings live on the todo server. Connect to it first.")
                     }
                 }
                 Section {

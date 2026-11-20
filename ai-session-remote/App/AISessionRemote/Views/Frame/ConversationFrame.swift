@@ -572,7 +572,7 @@ struct ConversationFrame: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
-                Text("No computer runs \(todo.section.rawValue) conversations yet")
+                Text("No computer is assigned to this todo")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -754,7 +754,7 @@ struct ConversationFrame: View {
     /// How to reach the section's computer, where a new conversation starts.
     private func newConversationConfig() throws -> HostConnectionConfig {
         guard let computer = store.sectionComputers[todo.section]?.computer else {
-            throw TodoHubError.conflict("Section \(todo.section.rawValue) has no computer assigned")
+            throw TodoHubError.conflict("No computer is assigned to this todo")
         }
         guard let host = HostLookup.host(for: computer, in: hosts) else {
             throw HostLookup.Failure.noHost(computer)
@@ -1008,9 +1008,9 @@ struct ConversationFrame: View {
             }
             return nil
         }()
-        guard let target else { return "\(todo.section.rawValue) · no computer" }
+        guard let target else { return "No computer" }
         let folder = includeFolder && !target.folder.isEmpty ? middleTruncated(target.folder) : nil
-        return RowText.frameSubtitle(section: todo.section, computer: target.computer, folder: folder)
+        return RowText.frameSubtitle(computer: target.computer, folder: folder)
     }
 
     /// The tool this frame is for: the running conversation, else where a new one would start.

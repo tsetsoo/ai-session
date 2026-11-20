@@ -59,7 +59,7 @@ struct ConversationRow: View {
                     }
                 }
                 HStack(spacing: DS.spacing.s) {
-                    Text(RowText.conversationMeta(conversation, section: section))
+                    Text(conversation.computer.name)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if let review {
                         ReviewBadge(summary: review)
