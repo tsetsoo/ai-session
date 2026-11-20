@@ -8,7 +8,7 @@ import Foundation
 /// when the inputs change.
 public final class ConversationBoard: Sendable {
     private let closed: [Conversation]
-    private let onHoldTodoIDs: Set<String>
+    private let todoWorkStatuses: [String: TodoWorkStatus]
     private let statusByTodoID: [String: ConversationDisplayStatus]
     private let statusByListKey: [String: ConversationDisplayStatus]
     private let openTodoCounts: [TodoSection: Int]
@@ -26,7 +26,7 @@ public final class ConversationBoard: Sendable {
     ///     unknown rather than closed. Without a date the listing counts as current.
     public init(todos: [Todo], conversations: [String: Conversation], liveTmux: [String: Set<String>],
                 listedAt: [String: Date] = [:]) {
-        onHoldTodoIDs = Set(todos.lazy.filter(\.onHold).map(\.id))
+        todoWorkStatuses = Dictionary(todos.map { ($0.id, $0.workStatus) }, uniquingKeysWith: { first, _ in first })
         var statusByListKey: [String: ConversationDisplayStatus] = [:]
         statusByListKey.reserveCapacity(conversations.count)
         var byTodo: [String: [(Conversation, ConversationDisplayStatus)]] = [:]
@@ -158,12 +158,16 @@ public final class ConversationBoard: Sendable {
     }
 
     public func isOnHold(_ conversation: Conversation) -> Bool {
-        onHoldTodoIDs.contains(conversation.todoId)
+        workStatus(of: conversation) == .onHold
     }
 
-    /// Preserve the existing order within each group; Mac lists put On hold at the bottom.
+    public func workStatus(of conversation: Conversation) -> TodoWorkStatus {
+        todoWorkStatuses[conversation.todoId] ?? .active
+    }
+
+    /// Preserve the existing order within each group.
     public func activeFirst(_ conversations: [Conversation]) -> [Conversation] {
-        conversations.filter { !isOnHold($0) } + conversations.filter { isOnHold($0) }
+        TodoWorkStatus.allCases.flatMap { status in conversations.filter { workStatus(of: $0) == status } }
     }
 
     /// This conversation's own status, including a dead tmux session.

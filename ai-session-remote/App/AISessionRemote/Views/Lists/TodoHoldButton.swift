@@ -7,16 +7,15 @@ struct TodoHoldButton: View {
     let store: TodoHubStore
 
     var body: some View {
-        #if os(macOS)
         if !todo.completed {
-            Button {
-                Task { await store.setOnHold(!todo.onHold, for: todo) }
-            } label: {
-                Label(todo.onHold ? "Resume Todo" : "Put Todo on Hold",
-                      systemImage: todo.onHold ? "play.circle" : "pause.circle")
+            ForEach(TodoWorkStatus.allCases.filter { $0 != todo.workStatus }, id: \.self) { status in
+                Button {
+                    Task { await store.setWorkStatus(status, for: todo) }
+                } label: {
+                    Label("Move Todo to \(status.label)", systemImage: status.systemImage)
+                }
+                .disabled(store.isOffline)
             }
-            .disabled(store.isOffline)
         }
-        #endif
     }
 }

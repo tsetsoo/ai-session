@@ -57,6 +57,9 @@ struct TodoListView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
             }
+            #if os(macOS)
+            TodoHoldDropArea(store: store, status: .active)
+            #endif
             switch grouping?.wrappedValue ?? .section {
             case .section:
                 ForEach(sections) { section in
@@ -76,18 +79,24 @@ struct TodoListView: View {
                     groupView(group.status.label, detail: nil, todos: group.todos, addTo: nil, board: board)
                 }
             }
-            #if os(macOS)
-            let held = searched.filter { sections.contains($0.section) && $0.onHold }
-            Section {
-                TodoHoldDropArea(store: store)
-                ForEach(held) { todo in
-                    row(todo, board: board)
+            ForEach([TodoWorkStatus.waiting, .onHold], id: \.self) { status in
+                let items = searched.filter { sections.contains($0.section) && $0.workStatus == status && (showScheduled || $0.scheduledJobId == nil) }
+                if showsWorkStatusSection(hasItems: !items.isEmpty) {
+                    Section {
+                        #if os(macOS)
+                        if items.isEmpty {
+                            TodoHoldDropArea(store: store, status: status)
+                        }
+                        #endif
+                        ForEach(items) { todo in
+                            row(todo, board: board)
+                        }
+                    } header: {
+                        Text("\(status.label) (\(items.count))").textCase(nil)
+                            .todoStatusDropTarget(store: store, status: status)
+                    }
                 }
-            } header: {
-                Text("On hold (\(held.count))").textCase(nil)
-                    .todoHoldDropTarget(store: store)
             }
-            #endif
         }
         .listStyle(.insetGrouped)
         .refreshable { await store.refresh() }
@@ -105,11 +114,7 @@ struct TodoListView: View {
 
     private func isInMainList(_ todo: Todo) -> Bool {
         guard showScheduled || todo.scheduledJobId == nil else { return false }
-        #if os(macOS)
-        return !todo.onHold
-        #else
-        return true
-        #endif
+        return todo.workStatus == .active
     }
 
     @ViewBuilder
@@ -148,6 +153,7 @@ struct TodoListView: View {
             }
             .font(.footnote)
             .textCase(nil)
+            .todoStatusDropTarget(store: store, status: .active)
         }
     }
 
@@ -183,6 +189,7 @@ struct TodoListView: View {
                 }
                 .font(.footnote)
                 .textCase(nil)
+                .todoStatusDropTarget(store: store, status: .active)
             }
         }
     }
@@ -285,7 +292,7 @@ struct TodoListView: View {
             TodoProjectMenu(todo: todo, store: store)
         }
         .todoDragSource(todo, store: store)
-        .todoHoldDropTarget(store: store, enabled: todo.onHold)
+        .todoStatusDropTarget(store: store, status: todo.workStatus)
     }
 
     private func toggle(_ todo: Todo) {

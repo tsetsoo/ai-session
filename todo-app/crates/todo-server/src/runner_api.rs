@@ -699,7 +699,7 @@ pub(crate) fn fail_attempt(conn: &Connection, run_id: &str) -> rusqlite::Result<
         conn.execute("DELETE FROM todos WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM conversations WHERE todo_id = ?1)", params![todo])?;
         // Only closed attempts left: the todo is done (they can still be read there).
         conn.execute(
-            "UPDATE todos SET completed = 1, completed_at = datetime('now'), updated_at = datetime('now')
+            "UPDATE todos SET completed = 1, on_hold = 0, waiting = 0, completed_at = datetime('now'), updated_at = datetime('now')
              WHERE id = ?1 AND completed = 0 AND NOT EXISTS (SELECT 1 FROM conversations WHERE todo_id = ?1 AND status != 'closed')",
             params![todo],
         )?;

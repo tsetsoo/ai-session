@@ -152,6 +152,10 @@ pub fn init_pool(db_path: &str) -> DbPool {
     }
 
     let version = schema_version(&conn).expect("Failed to read the schema version");
+    if !column_exists(&conn, "todos", "waiting").expect("Failed to inspect todo status") {
+        conn.execute_batch("ALTER TABLE todos ADD COLUMN waiting INTEGER NOT NULL DEFAULT 0 CHECK(waiting IN (0,1));")
+            .expect("Failed to add Waiting status");
+    }
     if version <= SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
             .expect("Failed to record the schema version");
@@ -993,9 +997,10 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v34: `run_groups`, `idea_findings`, `job_runs` attempt columns, `ideas.group_id`,
 ///   `computers.tools` (additive)
 /// - v35: `today_settings.last_reminder_digest_on` (additive)
+/// - v36: `todos.waiting` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 35;
+pub const SCHEMA_VERSION: i64 = 36;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -1023,7 +1028,10 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
                                                 if column_exists(conn, "review_items", "published_at")? {
                                                     if column_exists(conn, "conversations", "workers")? {
                                                         if table_sql(conn, "run_groups")?.is_some() {
-                                                            return Ok(if column_exists(conn, "today_settings", "last_reminder_digest_on")? { 35 } else { 34 });
+                                                            if !column_exists(conn, "today_settings", "last_reminder_digest_on")? {
+                                                                return Ok(34);
+                                                            }
+                                                            return Ok(if column_exists(conn, "todos", "waiting")? { 36 } else { 35 });
                                                         }
                                                         return Ok(33);
                                                     }
@@ -2714,13 +2722,14 @@ mod tests {
             conn.execute_batch(
                 "INSERT INTO todos (id, section, title, completed) VALUES ('t', 'Sp', 'Later', 0), ('done', 'I', 'Done', 1);
                  ALTER TABLE todos DROP COLUMN on_hold;
+                 ALTER TABLE todos DROP COLUMN waiting;
                  PRAGMA user_version = 10;",
             ).unwrap();
         }
         {
             let pool = db.pool();
             let conn = pool.get().unwrap();
-            let active: i64 = conn.query_row("SELECT COUNT(*) FROM todos WHERE on_hold = 0", [], |r| r.get(0)).unwrap();
+            let active: i64 = conn.query_row("SELECT COUNT(*) FROM todos WHERE on_hold = 0 AND waiting = 0", [], |r| r.get(0)).unwrap();
             assert_eq!(active, 2);
             assert_eq!(user_version(&conn), SCHEMA_VERSION);
             assert_eq!(db.backups().len(), 1);

@@ -147,6 +147,7 @@ fn base_description() -> Value {
                     "fields": {
                         "title": {"type": "string", "required": false},
                         "completed": {"type": "boolean", "required": false},
+                        "waiting": {"type": "boolean", "required": false, "description": "Set Waiting for an unfinished todo you plan to return to shortly. Setting it clears On hold."},
                         "on_hold": {"type": "boolean", "required": false, "description": "Pause or resume an unfinished todo. Does not stop its conversations. Completing a todo clears On hold."},
                         "section": {"type": "string", "required": false, "enum": ["Sp", "I", "Si", "P"]},
                         "importance": {"type": "string", "required": false, "enum": ["low", "medium", "high", "critical"]},
@@ -289,6 +290,7 @@ fn base_description() -> Value {
                 "section": "string enum: Sp | I | Si | P",
                 "title": "string - the todo title",
                 "completed": "boolean - whether the todo is done",
+                "waiting": "boolean - returning to this todo shortly, default false",
                 "on_hold": "boolean - deliberately paused, default false; independent of conversation status",
                 "importance": "string enum: low | medium | high | critical",
                 "due_date": "string (YYYY-MM-DD) or null - optional due date",

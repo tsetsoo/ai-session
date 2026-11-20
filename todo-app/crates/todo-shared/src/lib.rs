@@ -121,6 +121,8 @@ pub struct Todo {
     /// Deliberately paused; independent of the AI conversation's status.
     #[serde(default)]
     pub on_hold: bool,
+    #[serde(default)]
+    pub waiting: bool,
     pub importance: Importance,
     /// Optional due date in YYYY-MM-DD format
     pub due_date: Option<String>,
@@ -169,6 +171,8 @@ pub struct UpdateTodoRequest {
     pub completed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_hold: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<Section>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2335,6 +2339,7 @@ mod tests {
             title: "x".into(),
             completed: false,
             on_hold: false,
+            waiting: false,
             importance: Importance::Medium,
             due_date: None,
             daily_date: None,

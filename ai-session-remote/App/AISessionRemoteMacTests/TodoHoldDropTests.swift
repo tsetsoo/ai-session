@@ -22,12 +22,12 @@ final class TodoHoldDropTests: XCTestCase {
         return TodoHubStore(cache: cache, makeClient: { client }, sleep: { _ in })
     }
 
-    func testOnlyActiveTodosAreDraggableAndOnlyWhileOnline() {
+    func testUnfinishedTodosAreDraggableWhileOnline() {
         let active = Todo(id: "active", section: .sp, title: "a")
         XCTAssertTrue(TodoHoldDrop.canDrag(active, isOffline: false))
         XCTAssertFalse(TodoHoldDrop.canDrag(active, isOffline: true))
         XCTAssertFalse(TodoHoldDrop.canDrag(Todo(id: "d", section: .sp, title: "d", completed: true), isOffline: false))
-        XCTAssertFalse(TodoHoldDrop.canDrag(Todo(id: "h", section: .sp, title: "h", onHold: true), isOffline: false))
+        XCTAssertTrue(TodoHoldDrop.canDrag(Todo(id: "h", section: .sp, title: "h", onHold: true), isOffline: false))
         XCTAssertFalse(TodoHoldDrop.canDrag(nil, isOffline: false))
     }
 
@@ -36,7 +36,7 @@ final class TodoHoldDropTests: XCTestCase {
         let refreshed = expectation(description: "Drop saved to hub and refreshed")
         store.onRefresh = { _ in refreshed.fulfill() }
         let accepted = TodoHoldDrop.accept(
-            ["active", "active", "done", "held", "missing"].map { TodoDragItem(todoID: $0).itemProvider() }, store: store
+            ["active", "active", "done", "held", "missing"].map { TodoDragItem(todoID: $0).itemProvider() }, store: store, status: .onHold
         )
         XCTAssertTrue(accepted)
         await fulfillment(of: [refreshed], timeout: 3)
@@ -48,12 +48,23 @@ final class TodoHoldDropTests: XCTestCase {
         XCTAssertFalse(updated.completed)
     }
 
+    func testDropMovesHeldTodoToWaiting() async throws {
+        let store = try store()
+        let refreshed = expectation(description: "Waiting saved to hub and refreshed")
+        store.onRefresh = { _ in refreshed.fulfill() }
+        let accepted = TodoHoldDrop.accept([TodoDragItem(todoID: "held")], store: store, status: .waiting)
+        XCTAssertTrue(accepted)
+        await fulfillment(of: [refreshed], timeout: 3)
+        XCTAssertEqual(HoldDropHub.patchedIDs, ["held"])
+        XCTAssertEqual(store.todos.first { $0.id == "held" }?.workStatus, .waiting)
+    }
+
     func testDropRejectsUnknownCompletedAlreadyHeldAndEmptyPayloads() throws {
         let store = try store()
         for ids in [[], ["missing"], ["done"], ["held"]] {
-            XCTAssertFalse(TodoHoldDrop.accept(ids.map { TodoDragItem(todoID: $0) }, store: store))
+            XCTAssertFalse(TodoHoldDrop.accept(ids.map { TodoDragItem(todoID: $0) }, store: store, status: .onHold))
         }
-        XCTAssertFalse(TodoHoldDrop.accept([NSItemProvider(object: "active" as NSString)], store: store))
+        XCTAssertFalse(TodoHoldDrop.accept([NSItemProvider(object: "active" as NSString)], store: store, status: .onHold))
         XCTAssertTrue(HoldDropHub.patchedIDs.isEmpty)
     }
 
@@ -62,7 +73,7 @@ final class TodoHoldDropTests: XCTestCase {
         HoldDropHub.goOffline()
         await store.refresh(trigger: .background)
         XCTAssertTrue(store.isOffline)
-        XCTAssertFalse(TodoHoldDrop.accept([TodoDragItem(todoID: "active")], store: store))
+        XCTAssertFalse(TodoHoldDrop.accept([TodoDragItem(todoID: "active")], store: store, status: .onHold))
         XCTAssertFalse(try XCTUnwrap(store.todos.first { $0.id == "active" }).onHold)
         XCTAssertTrue(HoldDropHub.patchedIDs.isEmpty)
     }
@@ -107,7 +118,8 @@ private final class HoldDropHub: URLProtocol, @unchecked Sendable {
         if request.httpMethod == "PATCH", let id = request.url?.lastPathComponent,
            let index = Self.todos.firstIndex(where: { $0.id == id }) {
             Self.patches.append(id)
-            Self.todos[index].onHold = true
+            Self.todos[index].onHold = id == "active"
+            Self.todos[index].waiting = id == "held"
             data = try! encoder.encode(Self.todos[index])
         } else if request.url?.path == "/api/todos" {
             data = try! encoder.encode(Self.todos)

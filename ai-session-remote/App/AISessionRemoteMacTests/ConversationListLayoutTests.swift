@@ -43,8 +43,8 @@ final class ConversationListLayoutTests: XCTestCase {
             show([conversation])
             try await settle()
             let table = try XCTUnwrap(table(in: host))
-            // The first section has a blank header followed by the conversation.
-            XCTAssertEqual(table.numberOfRows, 4) // header, conversation, On hold header, drop area
+            // Active header and conversation, then Waiting and On hold headers and drop areas.
+            XCTAssertEqual(table.numberOfRows, 6)
             let cell = try XCTUnwrap(table.view(atColumn: 0, row: 1, makeIfNecessary: true))
             XCTAssertGreaterThanOrEqual(cell.fittingSize.height, DS.rowMinHeight)
             XCTAssertGreaterThanOrEqual(table.rect(ofRow: 1).height, cell.fittingSize.height,

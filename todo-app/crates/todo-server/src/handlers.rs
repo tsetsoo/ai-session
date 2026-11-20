@@ -7,7 +7,7 @@ use crate::broadcast::Broadcaster;
 use crate::db::DbPool;
 use crate::models::row_to_todo;
 
-pub(crate) const SELECT_COLS: &str = "id, section, title, completed, on_hold, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, project_id, scheduled_job_id, scheduled_run_id, \
+pub(crate) const SELECT_COLS: &str = "id, section, title, completed, on_hold, waiting, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, project_id, scheduled_job_id, scheduled_run_id, \
     (SELECT status FROM conversations WHERE conversations.todo_id = todos.id \
         ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'busy' THEN 1 \
             WHEN 'idle' THEN 2 WHEN 'unknown' THEN 2 WHEN 'closed' THEN 3 ELSE 4 END, \
@@ -208,12 +208,15 @@ pub async fn update_todo(
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "project_id is required"}));
     }
 
-    if body.on_hold == Some(true) {
+    if body.on_hold == Some(true) && body.waiting == Some(true) {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "Choose either Waiting or On hold"}));
+    }
+    if body.on_hold == Some(true) || body.waiting == Some(true) {
         let completed = body.completed.unwrap_or_else(|| {
             conn.query_row("SELECT completed FROM todos WHERE id = ?1", params![id], |row| row.get::<_, bool>(0)).unwrap()
         });
         if completed {
-            return HttpResponse::BadRequest().json(serde_json::json!({"error": "A completed todo cannot be put on hold"}));
+            return HttpResponse::BadRequest().json(serde_json::json!({"error": "A completed todo cannot be moved to Waiting or On hold"}));
         }
     }
 
@@ -248,26 +251,26 @@ pub async fn update_todo(
         conn.execute("UPDATE todos SET title = ?1, updated_at = datetime('now') WHERE id = ?2", params![title, id]).unwrap();
     }
 
-    if let Some(completed) = body.completed {
-        if completed {
-            conn.execute(
-                "UPDATE todos SET completed = 1, on_hold = 0, updated_at = datetime('now'), completed_at = COALESCE(completed_at, datetime('now')), carried_from = NULL WHERE id = ?1",
-                params![id],
-            )
-            .unwrap();
-        } else {
-            conn.execute("UPDATE todos SET completed = 0, updated_at = datetime('now'), completed_at = NULL WHERE id = ?1", params![id]).unwrap();
-        }
+    if body.completed.is_some() || body.on_hold.is_some() || body.waiting.is_some() {
+        conn.execute(
+            "UPDATE todos SET
+                completed = COALESCE(?1, completed),
+                on_hold = CASE WHEN COALESCE(?1, completed) OR ?3 = 1 THEN 0 ELSE COALESCE(?2, on_hold) END,
+                waiting = CASE WHEN COALESCE(?1, completed) OR ?2 = 1 THEN 0 ELSE COALESCE(?3, waiting) END,
+                completed_at = CASE ?1 WHEN 1 THEN COALESCE(completed_at, datetime('now'))
+                                       WHEN 0 THEN NULL ELSE completed_at END,
+                carried_from = CASE WHEN ?1 = 1 THEN NULL ELSE carried_from END,
+                updated_at = datetime('now')
+             WHERE id = ?4",
+            params![body.completed, body.on_hold, body.waiting, id],
+        )
+        .unwrap();
     }
 
     if new_project.is_none() {
         if let Some(section) = body.section {
             conn.execute("UPDATE todos SET section = ?1, updated_at = datetime('now') WHERE id = ?2", params![section.as_str(), id]).unwrap();
         }
-    }
-
-    if let Some(on_hold) = body.on_hold {
-        conn.execute("UPDATE todos SET on_hold = ?1, updated_at = datetime('now') WHERE id = ?2", params![on_hold, id]).unwrap();
     }
 
     if let Some(importance) = body.importance {
@@ -321,6 +324,7 @@ pub async fn toggle_todo(pool: web::Data<DbPool>, path: web::Path<String>, broad
             "UPDATE todos SET
                 completed = 1 - completed,
                 on_hold = 0,
+                waiting = 0,
                 updated_at = datetime('now'),
                 completed_at = CASE WHEN completed = 0 THEN datetime('now') ELSE NULL END,
                 carried_from = CASE WHEN completed = 0 THEN NULL ELSE carried_from END
@@ -480,6 +484,43 @@ mod tests {
         let (status, _) = patch(&pool, &uri, json!({"completed": true, "on_hold": true})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(conn.query_row("SELECT status FROM conversations WHERE id = 'c'", [], |r| r.get::<_, String>(0)).unwrap(), "busy");
+    }
+
+    #[actix_web::test]
+    async fn waiting_switches_status_and_clears_on_completion() {
+        use crate::test_support::{get, patch};
+        let (_db, pool) = pool("todo-waiting");
+        let conn = pool.get().unwrap();
+        seed_computers(&conn);
+        let project = project_on(&conn, "Si");
+        let (_, created) = post(&pool, "/api/todos", json!({"title": "Return shortly", "project_id": project})).await;
+        assert_eq!(created["waiting"], false);
+        let id = created["id"].as_str().unwrap();
+        let uri = format!("/api/todos/{id}");
+        for (change, waiting, on_hold) in [
+            (json!({"on_hold": true}), false, true),
+            (json!({"waiting": true}), true, false),
+            (json!({"title": "Renamed"}), true, false),
+            (json!({"waiting": false}), false, false),
+            (json!({"waiting": true}), true, false),
+            (json!({"on_hold": true}), false, true),
+            (json!({"waiting": true}), true, false),
+        ] {
+            let (status, updated) = patch(&pool, &uri, change).await;
+            assert_eq!(status, StatusCode::OK, "{updated}");
+            assert_eq!(updated["waiting"], waiting);
+            assert_eq!(updated["on_hold"], on_hold);
+            assert_eq!(updated["project_id"], project);
+        }
+        let (_, listed) = get(&pool, "/api/todos").await;
+        assert_eq!(listed[0]["waiting"], true);
+        let (status, _) = patch(&pool, &uri, json!({"waiting": true, "on_hold": true})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, done) = post(&pool, &format!("{uri}/toggle"), json!({})).await;
+        assert_eq!(done["completed"], true);
+        assert_eq!(done["waiting"], false);
+        let (status, _) = patch(&pool, &uri, json!({"waiting": true})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[actix_web::test]

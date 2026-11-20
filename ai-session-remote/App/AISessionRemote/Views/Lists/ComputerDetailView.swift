@@ -83,12 +83,7 @@ struct ComputerDetailView: View {
                                       RowText.conversationSearchText(conversation, section: todo?.section),
                                       conversation.statusMessage)
         }
-        #if os(macOS)
-        let active = running.filter { !board.isOnHold($0) }
-        let held = running.filter { board.isOnHold($0) }
-        #else
-        let active = running
-        #endif
+        let active = running.filter { board.workStatus(of: $0) == .active }
         SelectableList(selection: selection) {
             ListStatusBanner(store: store)
             if host == nil {
@@ -98,6 +93,11 @@ struct ComputerDetailView: View {
             }
             PendingMemoriesSection(memories: pendingGlobal, store: store)
             Section {
+                #if os(macOS)
+                if active.isEmpty {
+                    TodoHoldDropArea(store: store, status: .active)
+                }
+                #endif
                 if running.isEmpty && !query.isEmpty {
                     Text("No results for “\(query)”")
                         .foregroundStyle(.secondary)
@@ -110,6 +110,7 @@ struct ComputerDetailView: View {
                 }
             } header: {
                 Text("Open").textCase(nil)
+                    .todoStatusDropTarget(store: store, status: .active)
             }
             if let host {
                 Section {
@@ -130,17 +131,24 @@ struct ComputerDetailView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            #if os(macOS)
-            Section {
-                TodoHoldDropArea(store: store)
-                ForEach(held, id: \.listKey) { conversation in
-                    row(conversation, todo: todos[conversation.todoId], board: board)
+            ForEach([TodoWorkStatus.waiting, .onHold], id: \.self) { status in
+                let items = running.filter { board.workStatus(of: $0) == status }
+                if showsWorkStatusSection(hasItems: !items.isEmpty) {
+                    Section {
+                        #if os(macOS)
+                        if items.isEmpty {
+                            TodoHoldDropArea(store: store, status: status)
+                        }
+                        #endif
+                        ForEach(items, id: \.listKey) { conversation in
+                            row(conversation, todo: todos[conversation.todoId], board: board)
+                        }
+                    } header: {
+                        Text("\(status.label) (\(items.count))").textCase(nil)
+                            .todoStatusDropTarget(store: store, status: status)
+                    }
                 }
-            } header: {
-                Text("On hold (\(held.count))").textCase(nil)
-                    .todoHoldDropTarget(store: store)
             }
-            #endif
         }
         .listStyle(.insetGrouped)
         .task(id: "\(computer.id)|\(store.revision)") {
@@ -223,7 +231,7 @@ struct ComputerDetailView: View {
         .conversationRowMenu(conversation, todo: todo, isRunning: status != .closed, actions: actions,
                              store: store, hosts: hosts, open: open)
         .todoDragSource(todo, store: store)
-        .todoHoldDropTarget(store: store, enabled: todo?.onHold == true)
+        .todoStatusDropTarget(store: store, status: todo?.workStatus ?? .active)
     }
 }
 

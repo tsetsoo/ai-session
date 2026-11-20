@@ -27,6 +27,7 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
     public var title: String
     public var completed: Bool
     public var onHold: Bool
+    public var waiting: Bool
     public var importance: TodoImportance
     public var dueDate: String?
     public var dailyDate: String?
@@ -57,13 +58,15 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
         completedAt: String? = nil,
         conversationStatus: ConversationStatus? = nil,
         projectId: String? = nil,
-        onHold: Bool = false
+        onHold: Bool = false,
+        waiting: Bool = false
     ) {
         self.id = id
         self.section = section
         self.title = title
         self.completed = completed
         self.onHold = onHold
+        self.waiting = waiting
         self.importance = importance
         self.dueDate = dueDate
         self.dailyDate = dailyDate
@@ -76,7 +79,7 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, section, title, completed, onHold, importance, dueDate, dailyDate, carriedFrom
+        case id, section, title, completed, onHold, waiting, importance, dueDate, dailyDate, carriedFrom
         case createdAt, updatedAt, completedAt, conversationStatus, projectId, scheduledJobId, scheduledRunId
     }
 
@@ -86,8 +89,9 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
         section = try c.decode(TodoSection.self, forKey: .section)
         title = try c.decode(String.self, forKey: .title)
         completed = try c.decode(Bool.self, forKey: .completed)
-        // Older hubs and cached snapshots predate On hold.
+        // Older hubs and cached snapshots may omit these fields.
         onHold = try c.decodeIfPresent(Bool.self, forKey: .onHold) ?? false
+        waiting = try c.decodeIfPresent(Bool.self, forKey: .waiting) ?? false
         importance = try c.decode(TodoImportance.self, forKey: .importance)
         dueDate = try c.decodeIfPresent(String.self, forKey: .dueDate)
         dailyDate = try c.decodeIfPresent(String.self, forKey: .dailyDate)
@@ -584,23 +588,25 @@ public struct UpdateTodoRequest: Encodable, Sendable {
     public var title: String?
     public var completed: Bool?
     public var onHold: Bool?
+    public var waiting: Bool?
     public var section: TodoSection?
     public var importance: TodoImportance?
     /// `nil`: project unchanged (key absent). `.clear` sends `"project_id": null`.
     public var projectId: ProjectChange?
 
     public init(title: String? = nil, completed: Bool? = nil, section: TodoSection? = nil,
-                importance: TodoImportance? = nil, projectId: ProjectChange? = nil, onHold: Bool? = nil) {
+                importance: TodoImportance? = nil, projectId: ProjectChange? = nil, onHold: Bool? = nil, waiting: Bool? = nil) {
         self.title = title
         self.completed = completed
         self.onHold = onHold
+        self.waiting = waiting
         self.section = section
         self.importance = importance
         self.projectId = projectId
     }
 
     private enum CodingKeys: String, CodingKey {
-        case title, completed, section, importance, projectId, onHold
+        case title, completed, section, importance, projectId, onHold, waiting
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -608,6 +614,7 @@ public struct UpdateTodoRequest: Encodable, Sendable {
         try c.encodeIfPresent(title, forKey: .title)
         try c.encodeIfPresent(completed, forKey: .completed)
         try c.encodeIfPresent(onHold, forKey: .onHold)
+        try c.encodeIfPresent(waiting, forKey: .waiting)
         try c.encodeIfPresent(section, forKey: .section)
         try c.encodeIfPresent(importance, forKey: .importance)
         try c.encodeChange(projectId, forKey: .projectId)
@@ -867,5 +874,33 @@ struct PresenceBody: Encodable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(clientId, forKey: .clientId)
         try c.encode(todoId, forKey: .todoId)
+    }
+}
+
+public enum TodoWorkStatus: CaseIterable, Hashable, Sendable {
+    case active, waiting, onHold
+
+    public var label: String {
+        switch self {
+        case .active: "Active"
+        case .waiting: "Waiting"
+        case .onHold: "On hold"
+        }
+    }
+
+    public var systemImage: String {
+        switch self {
+        case .active: "play.circle"
+        case .waiting: "clock"
+        case .onHold: "pause.circle"
+        }
+    }
+}
+
+extension Todo {
+    public var workStatus: TodoWorkStatus {
+        if onHold { return .onHold }
+        if waiting { return .waiting }
+        return .active
     }
 }

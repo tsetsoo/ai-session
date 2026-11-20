@@ -25,13 +25,13 @@ struct TodoDragItem: Codable {
 
 @MainActor
 enum TodoHoldDrop {
-    /// A row can be dragged to On hold when its todo is active and the hub is reachable.
+    /// Any unfinished todo can switch sections while the hub is reachable.
     static func canDrag(_ todo: Todo?, isOffline: Bool) -> Bool {
         guard let todo else { return false }
-        return !todo.completed && !todo.onHold && !isOffline
+        return !todo.completed && !isOffline
     }
 
-    static func accept(_ providers: [NSItemProvider], store: TodoHubStore) -> Bool {
+    static func accept(_ providers: [NSItemProvider], store: TodoHubStore, status: TodoWorkStatus) -> Bool {
         Logger(subsystem: "com.aisessionremote.mac.drag", category: "Todos").debug("Todo drop received")
         guard !store.isOffline else { return false }
         let providers = providers.filter { $0.hasItemConformingToTypeIdentifier(TodoDragItem.contentType.identifier) }
@@ -48,32 +48,33 @@ enum TodoHoldDrop {
                     items.append(item)
                 }
             }
-            _ = accept(items, store: store)
+            _ = accept(items, store: store, status: status)
         }
         return true
     }
 
-    static func accept(_ items: [TodoDragItem], store: TodoHubStore) -> Bool {
+    static func accept(_ items: [TodoDragItem], store: TodoHubStore, status: TodoWorkStatus) -> Bool {
         guard !store.isOffline else { return false }
         let ids = Set(items.map(\.todoID))
         // Resolve against current data: the todo might have changed during the drag.
-        let todos = store.todos.filter { ids.contains($0.id) && !$0.completed && !$0.onHold }
+        let todos = store.todos.filter { ids.contains($0.id) && !$0.completed && $0.workStatus != status }
         guard !todos.isEmpty else { return false }
         Task {
-            for todo in todos { await store.setOnHold(true, for: todo) }
+            for todo in todos { await store.setWorkStatus(status, for: todo) }
         }
         return true
     }
 }
 
-/// A real list row remains available as a drop target even when no todos are held.
+/// An empty status section still needs a full-width drop target.
 struct TodoHoldDropArea: View {
     let store: TodoHubStore
+    let status: TodoWorkStatus
     @State private var isTargeted = false
 
     var body: some View {
-        Label(isTargeted ? "Release to put on hold" : "Drag todos here to put on hold",
-              systemImage: "pause.circle")
+        Label(isTargeted ? "Release to move to \(status.label)" : "Drop to move to \(status.label)",
+              systemImage: status.systemImage)
             .font(.callout)
             .foregroundStyle(isTargeted ? DS.accent : Color.secondary)
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -86,11 +87,11 @@ struct TodoHoldDropArea: View {
             }
             .contentShape(Rectangle())
             .onDrop(of: [TodoDragItem.contentType], isTargeted: $isTargeted) { providers in
-                TodoHoldDrop.accept(providers, store: store)
+                TodoHoldDrop.accept(providers, store: store, status: status)
             }
             .opacity(store.isOffline ? 0.5 : 1)
-            .accessibilityLabel("On hold drop area")
-            .help(store.isOffline ? "Reconnect to put todos on hold" : "Drag a todo or conversation here to put its todo on hold")
+            .accessibilityLabel("\(status.label) drop area")
+            .help(store.isOffline ? "Reconnect to move todos" : "Drop a todo or conversation to move its todo to \(status.label)")
     }
 }
 
@@ -113,21 +114,19 @@ private struct TodoDragSource: ViewModifier {
     }
 }
 
-/// Only held rows (which an on-hold change moves to another section anyway) and the header
-/// carry a drop target, so the condition can switch the modifier on and off.
 private struct TodoHoldDropTarget: ViewModifier {
     let store: TodoHubStore
-    let enabled: Bool
+    let status: TodoWorkStatus?
     @State private var isTargeted = false
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if enabled {
+        if let status {
             content
                 .contentShape(Rectangle())
                 .background(isTargeted ? DS.accent.opacity(0.12) : Color.clear)
                 .onDrop(of: [TodoDragItem.contentType], isTargeted: $isTargeted) { providers in
-                    TodoHoldDrop.accept(providers, store: store)
+                    TodoHoldDrop.accept(providers, store: store, status: status)
                 }
         } else {
             content
@@ -145,12 +144,19 @@ extension View {
         #endif
     }
 
-    /// Existing held rows also accept drops, making the whole section a target.
-    func todoHoldDropTarget(store: TodoHubStore, enabled: Bool = true) -> some View {
+    func todoStatusDropTarget(store: TodoHubStore, status: TodoWorkStatus?) -> some View {
         #if os(macOS)
-        modifier(TodoHoldDropTarget(store: store, enabled: enabled))
+        modifier(TodoHoldDropTarget(store: store, status: status))
         #else
         self
         #endif
     }
+}
+
+func showsWorkStatusSection(hasItems: Bool) -> Bool {
+    #if os(macOS)
+    true
+    #else
+    hasItems
+    #endif
 }

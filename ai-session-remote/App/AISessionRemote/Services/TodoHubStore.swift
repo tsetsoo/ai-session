@@ -382,12 +382,13 @@ final class TodoHubStore {
         await mutate { client in upsert(try await client.toggleTodo(id: todo.id)) }
     }
 
-    func setOnHold(_ onHold: Bool, for todo: Todo) async {
+    func setWorkStatus(_ status: TodoWorkStatus, for todo: Todo) async {
         await mutate { client in
-            let updated = try await client.updateTodo(id: todo.id, UpdateTodoRequest(onHold: onHold))
-            guard updated.onHold == onHold else {
+            let request = UpdateTodoRequest(onHold: status == .onHold, waiting: status == .waiting)
+            let updated = try await client.updateTodo(id: todo.id, request)
+            guard updated.workStatus == status, !updated.completed else {
                 throw NSError(domain: "TodoHub", code: 0, userInfo: [
-                    NSLocalizedDescriptionKey: "The todo hub needs to be updated to support On hold."
+                    NSLocalizedDescriptionKey: "Could not move this todo to \(status.label). Check that the todo is open and the hub is up to date."
                 ])
             }
             upsert(updated)

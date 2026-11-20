@@ -69,12 +69,7 @@ struct ConversationListView: View {
         let shortcuts: [String: Int] = showsShortcuts
             ? Dictionary(uniqueKeysWithValues: filtered.prefix(9).enumerated().map { ($1.listKey, $0 + 1) })
             : [:]
-        #if os(macOS)
-        let active = conversations.filter { !board.isOnHold($0) }
-        let held = conversations.filter { board.isOnHold($0) }
-        #else
-        let active = conversations
-        #endif
+        let active = conversations.filter { board.workStatus(of: $0) == .active }
         SelectableList(selection: selection) {
             ListStatusBanner(store: store)
             if showsFilterPicker {
@@ -88,6 +83,11 @@ struct ConversationListView: View {
             // Replacing whole sections lets the Mac List reuse a header's cached height
             // for a conversation, clipping its computer and status lines.
             Section {
+                #if os(macOS)
+                if active.isEmpty {
+                    TodoHoldDropArea(store: store, status: .active)
+                }
+                #endif
                 if conversations.isEmpty {
                     Group {
                         if filtered.isEmpty && !store.hasLoadedOnce {
@@ -107,6 +107,11 @@ struct ConversationListView: View {
                             shortcut: shortcuts[conversation.listKey])
                     }
                 }
+            } header: {
+                #if os(macOS)
+                Text("Active").textCase(nil)
+                    .todoStatusDropTarget(store: store, status: .active)
+                #endif
             } footer: {
                 #if os(iOS)
                 if !conversations.isEmpty {
@@ -114,18 +119,25 @@ struct ConversationListView: View {
                 }
                 #endif
             }
-            #if os(macOS)
-            Section {
-                TodoHoldDropArea(store: store)
-                ForEach(held, id: \.listKey) { conversation in
-                    row(conversation, todo: todos[conversation.todoId], board: board,
-                        shortcut: shortcuts[conversation.listKey])
+            ForEach([TodoWorkStatus.waiting, .onHold], id: \.self) { status in
+                let items = conversations.filter { board.workStatus(of: $0) == status }
+                if showsWorkStatusSection(hasItems: !items.isEmpty) {
+                    Section {
+                        #if os(macOS)
+                        if items.isEmpty {
+                            TodoHoldDropArea(store: store, status: status)
+                        }
+                        #endif
+                        ForEach(items, id: \.listKey) { conversation in
+                            row(conversation, todo: todos[conversation.todoId], board: board,
+                                shortcut: shortcuts[conversation.listKey])
+                        }
+                    } header: {
+                        Text("\(status.label) (\(items.count))").textCase(nil)
+                            .todoStatusDropTarget(store: store, status: status)
+                    }
                 }
-            } header: {
-                Text("On hold (\(held.count))").textCase(nil)
-                    .todoHoldDropTarget(store: store)
             }
-            #endif
         }
         .listStyle(.insetGrouped)
         .refreshable {
@@ -180,7 +192,7 @@ struct ConversationListView: View {
         .conversationRowMenu(conversation, todo: todo, isRunning: status != .closed, actions: actions,
                              store: store, hosts: hosts, open: open)
         .todoDragSource(todo, store: store)
-        .todoHoldDropTarget(store: store, enabled: todo?.onHold == true)
+        .todoStatusDropTarget(store: store, status: todo?.workStatus ?? .active)
     }
 
     @ViewBuilder private var emptyState: some View {
