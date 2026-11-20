@@ -33,6 +33,7 @@ Scoped tokens can also make these writes:
 | Todo | Edit or toggle any visible todo. Create in or move to a granted project on a granted computer. Delete when the todo has no linked conversations, memories, job runs, ideas, or push mute. |
 | Project | Edit the name, digest and daily update settings, worktree preference, and MCP defaults on a visible project. |
 | Computer | Rename a granted computer and set its MCP defaults. |
+| Conversation | Start a conversation in a granted project on a granted computer. Save or remove a conversation when its todo, project and computer are visible to the token. |
 
 Creating or deleting a project or computer, changing a project's folder or repository, and changing a computer's SSH settings require a full-access token. The same applies to WebSocket updates and endpoints for other resources.
 

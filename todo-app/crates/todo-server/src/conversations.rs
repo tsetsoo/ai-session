@@ -8,7 +8,7 @@
 //! server-minted session id. Codex and Cursor start without one; the client stores the
 //! id the tool assigns. An existing conversation can also be linked by its session id.
 
-use crate::auth::{forbidden, resolve_scope, RequestHelper, RequestScope};
+use crate::auth::{forbidden, resolve_scope, RequestHelper, RequestScope, ResourceScope};
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
@@ -356,21 +356,64 @@ pub(crate) fn open_conversation_with(
     mcp_servers: Option<&[String]>,
     options: &OpenOptions,
 ) -> Result<Conversation, OpenError> {
-    open_or_create(conn, todo_id, tool, mcp_servers, options).map(|(conversation, _)| conversation)
+    open_or_create(conn, todo_id, tool, mcp_servers, options, None).map(|(conversation, _)| conversation)
 }
 
 /// The todo's conversation, and whether this call created it (else it already existed).
-pub(crate) fn open_or_create(
+fn open_or_create(
     conn: &Connection,
     todo_id: &str,
     tool: &str,
     mcp_servers: Option<&[String]>,
     options: &OpenOptions,
+    scope: Option<&ResourceScope>,
 ) -> Result<(Conversation, bool), OpenError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let scope = scope.map(|scope| scope.resolve_projects(&tx)).transpose()?;
+    if let Some(scope) = &scope {
+        let (project, computer): (Option<String>, Option<String>) = tx.query_row(
+            "SELECT t.project_id, sc.computer_id FROM todos t
+             LEFT JOIN section_computers sc ON sc.section = t.section WHERE t.id = ?1",
+            [todo_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?.ok_or(OpenError::TodoNotFound)?;
+        if !scope.allows_todo(todo_id, project.as_deref()) {
+            return Err(OpenError::TodoNotFound);
+        }
+        if let Some(existing) = load_conversation(&tx, todo_id)? {
+            authorize_scoped_conversation(&tx, scope, &existing)?;
+        } else if !project.as_ref().is_some_and(|id| scope.project_ids.contains(id))
+            || !computer.as_ref().is_some_and(|id| scope.computer_ids.contains(id))
+        {
+            return Err(OpenError::TodoNotFound);
+        }
+    }
     let opened = open_conversation_in(&tx, todo_id, tool, mcp_servers, options)?;
+    if let Some(scope) = &scope {
+        authorize_scoped_conversation(&tx, scope, &opened.0)?;
+    }
     tx.commit()?;
     Ok(opened)
+}
+
+fn authorize_scoped_conversation(
+    conn: &Connection,
+    scope: &ResourceScope,
+    conversation: &Conversation,
+) -> Result<(), OpenError> {
+    let project: Option<String> = conn.query_row(
+        "SELECT project_id FROM todos WHERE id = ?1",
+        [&conversation.todo_id],
+        |row| row.get(0),
+    ).optional()?.ok_or(OpenError::TodoNotFound)?;
+    if scope.computer_ids.contains(&conversation.computer.id)
+        && conversation.project_id.as_ref().is_none_or(|id| scope.project_ids.contains(id))
+        && scope.allows_todo(&conversation.todo_id, project.as_deref())
+    {
+        Ok(())
+    } else {
+        Err(OpenError::TodoNotFound)
+    }
 }
 
 /// A commit sha as git prints it, short or full.
@@ -638,7 +681,7 @@ pub(crate) fn set_conversation_session_db(
     expected: Option<&str>,
 ) -> Result<Conversation, OpenError> {
     let id = require_single(conn, todo_id)?;
-    set_session_on(conn, &id, session_id, expected)
+    set_session_on(conn, &id, session_id, expected, None)
 }
 
 fn set_session_on(
@@ -646,12 +689,26 @@ fn set_session_on(
     conversation_id: &str,
     session_id: &str,
     expected: Option<&str>,
+    scope: Option<&ResourceScope>,
 ) -> Result<Conversation, OpenError> {
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return Err(OpenError::BadRequest("session_id is required"));
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let scope = scope.map(|scope| scope.resolve_projects(&tx)).transpose()?;
+    if let Some(scope) = &scope {
+        let conversation = load_conversation_by_id(&tx, conversation_id)?.ok_or(OpenError::TodoNotFound)?;
+        authorize_scoped_conversation(&tx, scope, &conversation)?;
+        let foreign_session: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sessions WHERE tool = ?1 AND session_id = ?2 AND computer_id != ?3)",
+            params![conversation.tool, session_id, conversation.computer.id],
+            |row| row.get(0),
+        )?;
+        if foreign_session {
+            return Err(OpenError::TodoNotFound);
+        }
+    }
     let updated = tx.execute(
         "UPDATE conversations SET session_id = ?1 WHERE id = ?2
          AND (?3 IS NULL OR COALESCE(session_id, '') = ?3 OR session_id = ?1)",
@@ -660,6 +717,9 @@ fn set_session_on(
     let conversation = load_conversation_by_id(&tx, conversation_id)?.ok_or(OpenError::TodoNotFound)?;
     if updated == 0 {
         return Err(OpenError::Conflict("The linked session changed while the conversation was opening"));
+    }
+    if let Some(scope) = &scope {
+        authorize_scoped_conversation(&tx, scope, &conversation)?;
     }
     tx.commit()?;
     Ok(conversation)
@@ -1436,6 +1496,7 @@ pub async fn open_conversation(
     path: web::Path<String>,
     body: web::Json<OpenConversationRequest>,
     broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
@@ -1451,7 +1512,9 @@ pub async fn open_conversation(
         base_sha: body.base_sha.as_deref(),
         agents: body.agents.unwrap_or(1),
     };
-    match open_or_create(&conn, &path.into_inner(), &body.tool, mcp_servers.as_deref(), &options) {
+    match open_or_create(&conn, &path.into_inner(), &body.tool, mcp_servers.as_deref(), &options,
+        scope.as_ref().map(|scope| scope.as_ref()),
+    ) {
         Ok((c, created)) => {
             broadcaster.send();
             // `created`: the app may start this conversation with a first message, or remove
@@ -1796,19 +1859,31 @@ pub async fn delete_conversation_by_id(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
     broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
 ) -> HttpResponse {
     let id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match conn.execute("DELETE FROM conversations WHERE id = ?1", params![id]) {
-        Ok(0) => not_found("Conversation not found"),
+    let deleted = (|| -> Result<usize, OpenError> {
+        let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+        if let Some(scope) = scope {
+            let scope = scope.resolve_projects(&tx)?;
+            let conversation = load_conversation_by_id(&tx, &id)?.ok_or(OpenError::TodoNotFound)?;
+            authorize_scoped_conversation(&tx, &scope, &conversation)?;
+        }
+        let deleted = tx.execute("DELETE FROM conversations WHERE id = ?1", [&id])?;
+        tx.commit()?;
+        Ok(deleted)
+    })();
+    match deleted {
+        Ok(0) | Err(OpenError::TodoNotFound) => not_found("Conversation not found"),
         Ok(_) => {
             broadcaster.send();
             HttpResponse::Ok().json(DeleteResponse { deleted: id })
         }
-        Err(e) => server_error(e),
+        Err(e) => open_error(e),
     }
 }
 
@@ -1818,6 +1893,7 @@ pub async fn set_conversation_session_by_id(
     body: web::Json<SetConversationSessionRequest>,
     broadcaster: web::Data<Broadcaster>,
     helper: RequestHelper,
+    scope: RequestScope,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
@@ -1846,7 +1922,9 @@ pub async fn set_conversation_session_by_id(
             Err(e) => server_error(e),
         };
     }
-    match set_session_on(&conn, &id, &body.session_id, body.expected_session_id.as_deref()) {
+    match set_session_on(&conn, &id, &body.session_id, body.expected_session_id.as_deref(),
+        scope.as_ref().map(|scope| scope.as_ref()),
+    ) {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)
@@ -2878,7 +2956,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         let conv = open_conversation_db(&conn, TODO, "codex", None, false).unwrap();
-        set_session_on(&conn, &conv.id, "ordered-codex", None).unwrap();
+        set_session_on(&conn, &conv.id, "ordered-codex", None, None).unwrap();
         let event = |status, timestamp| ConversationStatusRequest {
             status, event_timestamp_ns: timestamp, ..Default::default()
         };
@@ -2903,7 +2981,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         let conv = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
-        set_session_on(&conn, &conv.id, "ordered-claude", None).unwrap();
+        set_session_on(&conn, &conv.id, "ordered-claude", None, None).unwrap();
         let event = |status, timestamp| ConversationStatusRequest {
             status, event_timestamp_ns: timestamp, ..Default::default()
         };
@@ -2929,7 +3007,7 @@ mod tests {
             let conn = pool.get().unwrap();
             seed(&conn);
             let conv = open_conversation_db(&conn, TODO, tool, None, false).unwrap();
-            set_session_on(&conn, &conv.id, "offline-turn", None).unwrap();
+            set_session_on(&conn, &conv.id, "offline-turn", None, None).unwrap();
             let event = |at, turn| ConversationStatusRequest {
                 status: ConversationStatus::Idle, event_timestamp_ns: Some(at), turn_started_ns: Some(turn), ..Default::default()
             };
@@ -3259,13 +3337,13 @@ mod tests {
         seed(&conn);
         let conversation = open_conversation_db(&conn, TODO, "codex", None, false).unwrap();
         let id = &conversation.id;
-        set_session_on(&conn, id, "original", Some("")).unwrap();
-        set_session_on(&conn, id, "replacement", Some("original")).unwrap();
+        set_session_on(&conn, id, "original", Some(""), None).unwrap();
+        set_session_on(&conn, id, "replacement", Some("original"), None).unwrap();
         assert!(matches!(
-            set_session_on(&conn, id, "different", Some("original")),
+            set_session_on(&conn, id, "different", Some("original"), None),
             Err(OpenError::Conflict(_))
         ));
-        let replay = set_session_on(&conn, id, "replacement", Some("original")).unwrap();
+        let replay = set_session_on(&conn, id, "replacement", Some("original"), None).unwrap();
         assert_eq!(replay.session_id, "replacement");
     }
 

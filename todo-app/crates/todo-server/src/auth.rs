@@ -171,7 +171,9 @@ fn scoped_route(method: &actix_web::http::Method, path: &str) -> bool {
         (&Method::GET | &Method::PATCH, ["", "api", "projects", id]) =>
             !id.is_empty() && *id != "suggestions",
         (&Method::PATCH, ["", "api", "computers", id])
-        | (&Method::POST, ["", "api", "todos", id, "toggle"]) => !id.is_empty(),
+        | (&Method::POST, ["", "api", "todos", id, "toggle" | "conversation"])
+        | (&Method::PUT, ["", "api", "conversations", id, "session"])
+        | (&Method::DELETE, ["", "api", "conversations", id]) => !id.is_empty(),
         _ => false,
     }
 }
@@ -357,6 +359,39 @@ mod tests {
             let request = write(method, path, body);
             let resp = test::call_service(&app, request).await;
             assert_eq!(resp.status(), status, "{path}");
+        }
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "INSERT INTO todos (id, section, title, project_id) VALUES
+                    ('start-spread', 'Sp', 'Spread start', 'allowed');
+                UPDATE conversations SET status = 'waiting' WHERE id = 'other-computer';"
+            ).unwrap();
+        }
+        let open = |path| write(Method::POST, path, serde_json::json!({"tool": "codex"}));
+        for path in [
+            "/api/todos/hidden/conversation",
+            "/api/todos/in-project/conversation",
+        ] {
+            assert_eq!(test::call_service(&app, open(path)).await.status(), 404, "{path}");
+        }
+        let response = test::call_service(&app, open("/api/todos/start-spread/conversation")).await;
+        assert_eq!(response.status(), 200);
+        let chat: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(chat["computer"]["id"], "spread");
+        assert_eq!(chat["created"], true);
+        let chat_id = chat["id"].as_str().unwrap();
+        for (id, status) in [("other-computer", 404), ("other-todo", 404), (chat_id, 200)] {
+            let path = format!("/api/conversations/{id}/session");
+            let request = write(Method::PUT, &path, serde_json::json!({
+                "session_id": "new-codex-id", "expected_session_id": ""
+            }));
+            assert_eq!(test::call_service(&app, request).await.status(), status, "{path}");
+        }
+        for (id, status) in [("other-computer", 404), ("other-todo", 404), (chat_id, 200)] {
+            let path = format!("/api/conversations/{id}");
+            let request = write(Method::DELETE, &path, serde_json::Value::Null);
+            assert_eq!(test::call_service(&app, request).await.status(), status, "{path}");
         }
         let todo: serde_json::Value = test::call_and_read_body_json(&app, get("/api/todos/in-project")).await;
         assert_eq!(todo["title"], "Project todo");
