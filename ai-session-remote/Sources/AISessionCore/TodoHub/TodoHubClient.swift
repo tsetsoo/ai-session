@@ -219,17 +219,17 @@ public struct TodoHubClient: Sendable {
     }
 
     /// Stores the id a new Codex or Cursor conversation reported.
-    public func setConversationSession(todoId: String, sessionId: String) async throws -> Conversation {
+    public func setConversationSession(todoId: String, sessionId: String, expectedSessionId: String? = nil) async throws -> Conversation {
         try await decode(
             Conversation.self,
-            send("PUT", "/api/todos/\(escape(todoId))/conversation/session", body: SetConversationSessionRequest(sessionId: sessionId))
+            send("PUT", "/api/todos/\(escape(todoId))/conversation/session", body: SetConversationSessionRequest(sessionId: sessionId, expectedSessionId: expectedSessionId))
         )
     }
 
-    public func setConversationSession(id: String, sessionId: String) async throws -> Conversation {
+    public func setConversationSession(id: String, sessionId: String, expectedSessionId: String? = nil) async throws -> Conversation {
         try await decode(
             Conversation.self,
-            send("PUT", "/api/conversations/\(escape(id))/session", body: SetConversationSessionRequest(sessionId: sessionId))
+            send("PUT", "/api/conversations/\(escape(id))/session", body: SetConversationSessionRequest(sessionId: sessionId, expectedSessionId: expectedSessionId))
         )
     }
 

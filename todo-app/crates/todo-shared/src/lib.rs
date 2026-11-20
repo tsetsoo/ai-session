@@ -417,6 +417,8 @@ pub struct DuplicateConversationRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SetConversationSessionRequest {
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

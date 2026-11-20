@@ -58,7 +58,8 @@
 #             94 no Codex or Cursor conversation with that id, or a new one
 #             did not appear within 30 seconds,
 #             95 another Codex holds that Codex conversation (its writer lock),
-#             96 the conversation's worktree could not be made (--worktree).
+#             96 the conversation's worktree could not be made (--worktree),
+#             97 the running Codex session differs from the linked one.
 #
 # Test hooks (not for normal use):
 #   AI_TODO_TMUX_SOCKET  use a private tmux server (tmux -L <name>)
@@ -200,19 +201,6 @@ attach() {
 open_sid=$3
 open_tool=${4:-claude}
 
-# A running session attaches at once, before the checks only a new one needs
-# (they cost about 150 ms). The name is only a quoted tmux target here, but it
-# must still be this tool's. A fresh start (`-`) never does: it replaces a
-# session left by a failed start.
-case "$1" in
-  "ai/${4:-claude}/todo-"*)
-    if [ "$3" != - ] && tmux_cmd has-session -t "=$1" 2>/dev/null; then
-      name=$1
-      attach attach
-    fi
-    ;;
-esac
-
 name=$1
 cwd=$2
 sid=$3
@@ -320,6 +308,27 @@ pane_lock_id() {
   )
   [ -n "$locks" ] && [ "$(printf '%s\n' "$locks" | wc -l | tr -d ' ')" -eq 1 ] && printf '%s\n' "$locks"
   return 0
+}
+
+# A live pane's lock is direct evidence. The managed backend is scoped to this
+# tmux session, but can retain multiple threads, so only use an unambiguous result.
+verify_codex_session() {
+  [ "$tool" = codex ] || return 0
+  actual=$(pane_lock_id)
+  if [ -z "$actual" ] && [ -x "$launch_bin" ]; then
+    actual=$("$launch_bin" loaded "$name" 2>/dev/null | LC_ALL=C grep -Ex "$uuid_re" | LC_ALL=C sort -u)
+  fi
+  check_codex_session "$actual"
+}
+
+check_codex_session() {
+  case "$1" in
+    ""|*"
+"*) return 0 ;;
+    "$sid") return 0 ;;
+  esac
+  echo "Codex opened session $1, but this todo is linked to $sid." >&2
+  exit 97
 }
 
 # A Codex thread has one writer at a time. When another Codex holds this one (Codex's
@@ -441,6 +450,7 @@ if tmux_cmd has-session -t "=$name" 2>/dev/null; then
   if [ "$fresh" = 1 ]; then
     tmux_cmd kill-session -t "=$name" 2>/dev/null || true
   else
+    verify_codex_session
     attach attach
   fi
 fi
@@ -706,10 +716,10 @@ fresh_before=
 loaded_before=
 if [ "$fresh" = 1 ]; then
   fresh_before=$(fresh_ids "$tool")
-  # This session's backend can outlive its tmux session; its threads are not the new one.
-  if [ "$tool" = codex ] && [ "${managed_runtime:-0}" = 1 ]; then
-    loaded_before=$("$status_bin" loaded "$name" 2>/dev/null || true)
-  fi
+fi
+# This session's backend can outlive its pane. Compare against its existing threads.
+if [ "$tool" = codex ] && [ "${managed_runtime:-0}" = 1 ]; then
+  loaded_before=$("$status_bin" loaded "$name" 2>/dev/null || true)
 fi
 # Cursor's CLI probes the macOS login keychain when it thinks it is on SSH.
 # This tmux server cannot pass that probe, so `agent` exits immediately and
@@ -738,6 +748,17 @@ if [ "$fresh" = 1 ]; then
   report_mcp "$new_id"
   save_launch "$new_id"
 else
+  if [ "$tool" = codex ] && [ "${managed_runtime:-0}" = 1 ]; then
+    deadline=$(( $(date +%s) + 2 ))
+    while [ "$(date +%s)" -le "$deadline" ]; do
+      actual=$(backend_new_ids)
+      if [ -n "$actual" ]; then
+        check_codex_session "$actual"
+        break
+      fi
+      sleep 0.2
+    done
+  fi
   report_mcp "$sid"
   if [ "$mode" = created ]; then save_launch "$sid"; fi
 fi

@@ -743,9 +743,11 @@ public struct DuplicateConversationRequest: Encodable, Sendable {
 
 public struct SetConversationSessionRequest: Encodable, Sendable {
     public var sessionId: String
+    public var expectedSessionId: String?
 
-    public init(sessionId: String) {
+    public init(sessionId: String, expectedSessionId: String? = nil) {
         self.sessionId = sessionId
+        self.expectedSessionId = expectedSessionId
     }
 }
 

@@ -212,6 +212,16 @@ struct FrameStateView: View {
                     FrameStateButton(title: "Copy Resume Command") { actions.copy(command) }
                 }
             )
+        case let .sessionMismatch(name):
+            FrameStateBlock(
+                systemImage: "exclamationmark.bubble",
+                title: "Codex opened a different conversation on \(name)",
+                message: "The todo still points to its original transcript. You can copy its resume command to open it separately.",
+                primary: FrameStateButton(title: "Try Again", action: actions.retry),
+                secondary: resumeCommand.map { command in
+                    FrameStateButton(title: "Copy Resume Command") { actions.copy(command) }
+                }
+            )
         case let .openElsewhere(name, check):
             FrameStateBlock(
                 systemImage: "lock",

@@ -200,12 +200,13 @@ final class TodoHubClientTests: XCTestCase {
         let openBody = try XCTUnwrap(open.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
         XCTAssertEqual(openBody["tool"] as? String, "codex")
 
-        _ = try await client().setConversationSession(todoId: "t1", sessionId: "019f8b4e")
+        _ = try await client().setConversationSession(todoId: "t1", sessionId: "019f8b4e", expectedSessionId: "")
         let put = try XCTUnwrap(StubURLProtocol.requests.last)
         XCTAssertEqual(put.httpMethod, "PUT")
         XCTAssertEqual(put.url?.path, "/api/todos/t1/conversation/session")
         let putBody = try XCTUnwrap(put.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
         XCTAssertEqual(putBody["session_id"] as? String, "019f8b4e")
+        XCTAssertEqual(putBody["expected_session_id"] as? String, "")
     }
 
     func testNullSessionIdDecodesAsEmpty() throws {

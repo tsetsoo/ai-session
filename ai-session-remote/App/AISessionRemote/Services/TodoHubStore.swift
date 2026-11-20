@@ -539,6 +539,7 @@ final class TodoHubStore {
                 forget(conversation)
                 throw TodoHubError.conflict("No \(tool) conversation appeared")
             }
+            let created: String
             do {
                 let started = conversation
                 let result = try await runStart(
@@ -550,15 +551,14 @@ final class TodoHubStore {
                         model: started.model, worktreeBase: started.worktreeBase
                     )
                 }
-                let created = ConversationStart.createdSessionId(from: result.stdout)
-                guard result.exitCode != 94, let created else {
+                guard result.exitCode != 94,
+                      let sessionId = ConversationStart.createdSessionId(from: result.stdout) else {
                     let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                     throw TodoHubError.conflict(
                         detail.isEmpty ? "No new \(tool) conversation appeared" : detail
                     )
                 }
-                conversation = try await storeSession(client, conversation, created)
-
+                created = sessionId
             } catch {
                 // The script may already have created the tmux session. Leaving it makes the
                 // next fresh open attach to a session that never printed an id.
@@ -570,6 +570,7 @@ final class TodoHubStore {
                 forget(conversation)
                 throw error
             }
+            conversation = try await storeSession(client, conversation, created)
         } else if let makePromptFile, let config {
             // Claude's id is already on the hub: start it now with the message, then attach.
             do {
@@ -831,21 +832,17 @@ final class TodoHubStore {
         start: () async throws -> SSHExecResult
     ) async throws -> Conversation {
         guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
+        let createdId: String
         do {
             let result = try await start()
-            let createdId = ConversationStart.createdSessionId(from: result.stdout)
-            guard result.exitCode != 94, let createdId else {
+            guard result.exitCode != 94,
+                  let sessionId = ConversationStart.createdSessionId(from: result.stdout) else {
                 let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                 throw TodoHubError.conflict(
                     detail.isEmpty ? "No new \(conversation.tool) conversation appeared" : detail
                 )
             }
-            let stored = try await storeSession(client, conversation, createdId)
-            remember(stored)
-            if let title = todos.first(where: { $0.id == stored.todoId })?.title {
-                RemoteConversations.nameWhenReady(stored, title: title, config: config)
-            }
-            return stored
+            createdId = sessionId
         } catch {
             _ = try? await NIOSSHClient().exec(
                 config, command: TmuxCommandBuilder.killSessionExact(tmuxName: conversation.tmuxName)
@@ -854,6 +851,12 @@ final class TodoHubStore {
             forget(conversation)
             throw error
         }
+        let stored = try await storeSession(client, conversation, createdId)
+        remember(stored)
+        if let title = todos.first(where: { $0.id == stored.todoId })?.title {
+            RemoteConversations.nameWhenReady(stored, title: title, config: config)
+        }
+        return stored
     }
 
     /// The source conversation's user and assistant text, from the computer that has it.
@@ -1034,9 +1037,9 @@ final class TodoHubStore {
 
     private func storeSession(_ client: TodoHubClient, _ conversation: Conversation, _ sessionId: String) async throws -> Conversation {
         if conversation.id.isEmpty {
-            return try await client.setConversationSession(todoId: conversation.todoId, sessionId: sessionId)
+            return try await client.setConversationSession(todoId: conversation.todoId, sessionId: sessionId, expectedSessionId: conversation.sessionId)
         }
-        return try await client.setConversationSession(id: conversation.id, sessionId: sessionId)
+        return try await client.setConversationSession(id: conversation.id, sessionId: sessionId, expectedSessionId: conversation.sessionId)
     }
 
     private func forgetOnHub(_ client: TodoHubClient, _ conversation: Conversation) async throws {

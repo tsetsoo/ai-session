@@ -15,6 +15,8 @@ struct NativeCollapsibleSplit<Top: View, Bottom: View>: NSViewRepresentable {
     var top: Top
     var bottom: Bottom
 
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeNSView(context: Context) -> SplitView {
         let view = SplitView()
         view.isVertical = isVertical
@@ -23,7 +25,9 @@ struct NativeCollapsibleSplit<Top: View, Bottom: View>: NSViewRepresentable {
         view.expandedSize = initialExpandedSize
         view.minimumLeadingSize = minimumLeadingSize
         view.dividerStyle = .thin
-        view.delegate = view
+        // AppKit asks the delegate whether it responds to sidebar actions. A split
+        // view acting as its own delegate recurses during menu validation.
+        view.delegate = context.coordinator
         let topHost = NSHostingView(rootView: AnyView(top.environment(\.self, environment)))
         let bottomHost = NSHostingView(rootView: AnyView(bottom.environment(\.self, environment)))
         topHost.sizingOptions = []
@@ -45,7 +49,27 @@ struct NativeCollapsibleSplit<Top: View, Bottom: View>: NSViewRepresentable {
         }
     }
 
-    final class SplitView: NSSplitView, NSSplitViewDelegate {
+    final class Coordinator: NSObject, NSSplitViewDelegate {
+        func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+            (splitView as? SplitView)?.placePanes()
+        }
+
+        func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
+                       ofSubviewAt dividerIndex: Int) -> CGFloat {
+            (splitView as? SplitView)?.minimumDividerPosition ?? proposedMinimumPosition
+        }
+
+        func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
+                       ofSubviewAt dividerIndex: Int) -> CGFloat {
+            (splitView as? SplitView)?.maximumDividerPosition ?? proposedMaximumPosition
+        }
+
+        func splitViewDidResizeSubviews(_ notification: Notification) {
+            (notification.object as? SplitView)?.panesDidResize()
+        }
+    }
+
+    final class SplitView: NSSplitView {
         var visible = false
         var onVisibilityChange: ((Bool) -> Void)?
         var expandedSize: CGFloat = 270
@@ -53,6 +77,8 @@ struct NativeCollapsibleSplit<Top: View, Bottom: View>: NSViewRepresentable {
         var minimumExpandedSize: CGFloat = 130
         var minimumLeadingSize: CGFloat = 100
         private var length: CGFloat { isVertical ? bounds.width : bounds.height }
+        var maximumDividerPosition: CGFloat { max(0, length - collapsedSize - dividerThickness) }
+        var minimumDividerPosition: CGFloat { min(minimumLeadingSize, maximumDividerPosition) }
         private var placing = false
         override var isFlipped: Bool { true }
 
@@ -75,17 +101,7 @@ struct NativeCollapsibleSplit<Top: View, Bottom: View>: NSViewRepresentable {
             placing = false
         }
 
-        func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
-            placePanes()
-        }
-
-        func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
-                       ofSubviewAt dividerIndex: Int) -> CGFloat { min(minimumLeadingSize, max(0, length - collapsedSize - dividerThickness)) }
-
-        func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
-                       ofSubviewAt dividerIndex: Int) -> CGFloat { max(0, length - collapsedSize - dividerThickness) }
-
-        func splitViewDidResizeSubviews(_ notification: Notification) {
+        func panesDidResize() {
             guard !placing, arrangedSubviews.count == 2 else { return }
             let size = isVertical ? arrangedSubviews[1].frame.width : arrangedSubviews[1].frame.height
             let next = size > 40

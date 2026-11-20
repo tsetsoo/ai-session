@@ -634,24 +634,34 @@ pub(crate) fn set_conversation_session_db(
     conn: &Connection,
     todo_id: &str,
     session_id: &str,
+    expected: Option<&str>,
 ) -> Result<Conversation, OpenError> {
     let id = require_single(conn, todo_id)?;
-    set_session_on(conn, &id, session_id)
+    set_session_on(conn, &id, session_id, expected)
 }
 
-fn set_session_on(conn: &Connection, conversation_id: &str, session_id: &str) -> Result<Conversation, OpenError> {
+fn set_session_on(
+    conn: &Connection,
+    conversation_id: &str,
+    session_id: &str,
+    expected: Option<&str>,
+) -> Result<Conversation, OpenError> {
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return Err(OpenError::BadRequest("session_id is required"));
     }
-    let updated = conn.execute(
-        "UPDATE conversations SET session_id = ?1 WHERE id = ?2",
-        params![session_id, conversation_id],
+    let tx = conn.unchecked_transaction()?;
+    let updated = tx.execute(
+        "UPDATE conversations SET session_id = ?1 WHERE id = ?2
+         AND (?3 IS NULL OR COALESCE(session_id, '') = ?3 OR session_id = ?1)",
+        params![session_id, conversation_id, expected],
     )?;
+    let conversation = load_conversation_by_id(&tx, conversation_id)?.ok_or(OpenError::TodoNotFound)?;
     if updated == 0 {
-        return Err(OpenError::TodoNotFound);
+        return Err(OpenError::Conflict("The linked session changed while the conversation was opening"));
     }
-    load_conversation_by_id(conn, conversation_id)?.ok_or(OpenError::TodoNotFound)
+    tx.commit()?;
+    Ok(conversation)
 }
 
 /// The conversation id when the todo has exactly one. More than one is a conflict:
@@ -1410,7 +1420,9 @@ pub async fn set_conversation_session(
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match set_conversation_session_db(&conn, &path.into_inner(), &body.session_id) {
+    match set_conversation_session_db(
+        &conn, &path.into_inner(), &body.session_id, body.expected_session_id.as_deref(),
+    ) {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)
@@ -1721,7 +1733,9 @@ pub async fn set_conversation_session_by_id(
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match set_session_on(&conn, &path.into_inner(), &body.session_id) {
+    match set_session_on(
+        &conn, &path.into_inner(), &body.session_id, body.expected_session_id.as_deref(),
+    ) {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)
@@ -2751,7 +2765,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         let conv = open_conversation_db(&conn, TODO, "codex", None, false).unwrap();
-        set_session_on(&conn, &conv.id, "ordered-codex").unwrap();
+        set_session_on(&conn, &conv.id, "ordered-codex", None).unwrap();
         let event = |status, timestamp| ConversationStatusRequest {
             status, event_timestamp_ns: timestamp, ..Default::default()
         };
@@ -2776,7 +2790,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         let conv = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
-        set_session_on(&conn, &conv.id, "ordered-claude").unwrap();
+        set_session_on(&conn, &conv.id, "ordered-claude", None).unwrap();
         let event = |status, timestamp| ConversationStatusRequest {
             status, event_timestamp_ns: timestamp, ..Default::default()
         };
@@ -2802,7 +2816,7 @@ mod tests {
             let conn = pool.get().unwrap();
             seed(&conn);
             let conv = open_conversation_db(&conn, TODO, tool, None, false).unwrap();
-            set_session_on(&conn, &conv.id, "offline-turn").unwrap();
+            set_session_on(&conn, &conv.id, "offline-turn", None).unwrap();
             let event = |at, turn| ConversationStatusRequest {
                 status: ConversationStatus::Idle, event_timestamp_ns: Some(at), turn_started_ns: Some(turn), ..Default::default()
             };
@@ -3116,13 +3130,30 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         open_conversation_db(&conn, TODO, "codex", None, false).unwrap();
-        let set = set_conversation_session_db(&conn, TODO, "019f8b4e").unwrap();
+        let set = set_conversation_session_db(&conn, TODO, "019f8b4e", None).unwrap();
         assert_eq!(set.session_id, "019f8b4e");
         let again = open_conversation_db(&conn, TODO, "claude", None, false).unwrap();
         assert_eq!(again.session_id, "019f8b4e");
         assert_eq!(again.tool, "codex");
         let rows: i64 = conn.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0)).unwrap();
         assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn guarded_session_replacement_rejects_a_stale_link_and_allows_retries() {
+        let (_db, pool) = pool();
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let conversation = open_conversation_db(&conn, TODO, "codex", None, false).unwrap();
+        let id = &conversation.id;
+        set_session_on(&conn, id, "original", Some("")).unwrap();
+        set_session_on(&conn, id, "replacement", Some("original")).unwrap();
+        assert!(matches!(
+            set_session_on(&conn, id, "different", Some("original")),
+            Err(OpenError::Conflict(_))
+        ));
+        let replay = set_session_on(&conn, id, "replacement", Some("original")).unwrap();
+        assert_eq!(replay.session_id, "replacement");
     }
 
     #[test]
