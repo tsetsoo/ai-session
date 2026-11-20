@@ -108,7 +108,7 @@ _SECRETS = None
 def redact(text):
     global _SECRETS
     if _SECRETS is None:
-        _SECRETS = secret_values_from_env(os.environ) + [Config().get("TODO_API_TOKEN")]
+        _SECRETS = secret_values_from_env(os.environ) + [Config().get(key) for key in ("TODO_API_TOKEN", "TODO_HELPER_API_TOKEN")]
     return _redact(text or "", [s for s in _SECRETS if s])
 
 
@@ -207,7 +207,7 @@ class HubError(Exception):
 class Hub:
     def __init__(self, conf):
         self.url = conf.get("TODO_HUB_URL").rstrip("/")
-        self.token = conf.get("TODO_API_TOKEN")
+        self.token = conf.get("TODO_HELPER_API_TOKEN") or conf.get("TODO_API_TOKEN")
 
     def request(self, method, path, query=None, body=None, timeout=30):
         url = self.url + path + ("?" + urllib.parse.urlencode(query) if query else "")

@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 
+use crate::auth::{authorize_helper_computer, RequestHelper};
 use actix_web::{web, HttpResponse};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -225,11 +226,19 @@ pub(crate) struct ReportOutcome {
 }
 
 /// A check's problems: record them, clear what's gone, finish the run, queue debug runs.
+#[cfg(test)]
 pub(crate) fn report_db(conn: &Connection, run_id: &str, report: &WatchReport, now: DateTime<Utc>) -> Result<ReportOutcome, WatchError> {
+    report_for_computer(conn, run_id, report, now, None)
+}
+
+fn report_for_computer(conn: &Connection, run_id: &str, report: &WatchReport, now: DateTime<Utc>, helper: Option<&str>) -> Result<ReportOutcome, WatchError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let run = load_run(&tx, run_id)?.ok_or(WatchError::NotFound("Run not found"))?;
     let job = load_job(&tx, &run.job_id)?.ok_or(WatchError::NotFound("Job not found"))?;
     let Some(watch) = watch_parts(&job) else { return Err(WatchError::Conflict("Not a watch run")) };
+    if helper.is_some_and(|id| run.computer_id.as_deref() != Some(id) || watch.computer_id != id) {
+        return Err(WatchError::NotFound("Run not found"));
+    }
     if run.state != "running" {
         return Err(WatchError::Conflict("Run is not running"));
     }
@@ -701,7 +710,21 @@ pub struct ResolveResult {
 }
 
 /// The runner's answer to a resolve: cleared, or back to open with the error.
-pub(crate) fn resolve_result_db(conn: &Connection, id: &str, req: &ResolveResult, now: DateTime<Utc>) -> Result<(), WatchError> {
+fn resolve_result_for_computer(conn: &Connection, id: &str, req: &ResolveResult, now: DateTime<Utc>, helper: Option<&str>) -> Result<(), WatchError> {
+    let tx = if let Some(computer) = helper {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        let job_id: Option<String> = tx.query_row("SELECT job_id FROM watch_issues WHERE id = ?1", [id], |row| row.get(0)).optional()?.flatten();
+        let job = match job_id {
+            Some(job_id) => load_job(&tx, &job_id)?,
+            None => None,
+        };
+        if job.as_ref().and_then(watch_parts).is_none_or(|watch| watch.computer_id != computer) {
+            return Err(WatchError::NotFound("Issue not found"));
+        }
+        Some(tx)
+    } else {
+        None
+    };
     let stamp = sql_time(now);
     let changed = if req.ok {
         conn.execute(
@@ -720,6 +743,9 @@ pub(crate) fn resolve_result_db(conn: &Connection, id: &str, req: &ResolveResult
         let exists: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM watch_issues WHERE id = ?1)", params![id], |r| r.get(0))?;
         return Err(if exists { WatchError::Conflict("Issue is not resolving") } else { WatchError::NotFound("Issue not found") });
     }
+    if let Some(tx) = tx {
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -731,12 +757,13 @@ pub async fn report(
     body: web::Json<WatchReport>,
     broadcaster: web::Data<Broadcaster>,
     notifier: web::Data<PushNotifier>,
+    helper: RequestHelper,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    let out = match report_db(&conn, &path, &body, Utc::now()) {
+    let out = match report_for_computer(&conn, &path, &body, Utc::now(), helper.as_ref().map(|helper| helper.0.as_str())) {
         Ok(out) => out,
         Err(e) => return respond(e),
     };
@@ -759,12 +786,13 @@ pub async fn resolve_result(
     path: web::Path<String>,
     body: web::Json<ResolveResult>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match resolve_result_db(&conn, &path, &body, Utc::now()) {
+    match resolve_result_for_computer(&conn, &path, &body, Utc::now(), helper.as_ref().map(|helper| helper.0.as_str())) {
         Ok(()) => {
             broadcaster.send();
             HttpResponse::Ok().json(serde_json::json!({"ok": true}))
@@ -895,7 +923,11 @@ pub async fn put_job_templates(
     path: web::Path<String>,
     body: web::Json<Vec<todo_shared::JobTemplate>>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
+    if let Err(response) = authorize_helper_computer(&helper, &path) {
+        return response;
+    }
     let conn = conn!(pool);
     done(set_job_templates_db(&conn, &path, &body).map(|_| serde_json::json!({"ok": true})), &broadcaster)
 }
@@ -921,7 +953,11 @@ pub async fn put_watchers(
     path: web::Path<String>,
     body: web::Json<Vec<todo_shared::WatcherInfo>>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
+    if let Err(response) = authorize_helper_computer(&helper, &path) {
+        return response;
+    }
     let conn = conn!(pool);
     done(set_watchers_db(&conn, &path, &body).map(|_| serde_json::json!({"ok": true})), &broadcaster)
 }
@@ -931,7 +967,11 @@ pub async fn put_tools(
     path: web::Path<String>,
     body: web::Json<Vec<String>>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
+    if let Err(response) = authorize_helper_computer(&helper, &path) {
+        return response;
+    }
     let conn = conn!(pool);
     done(set_tools_db(&conn, &path, &body).map(|_| serde_json::json!({"ok": true})), &broadcaster)
 }

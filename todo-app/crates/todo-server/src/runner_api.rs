@@ -2,6 +2,7 @@
 //! (atomically), mark it waiting for usage headroom, start it (the hub creates the scheduled
 //! todo and its conversation), and report how it ended.
 
+use crate::auth::{forbidden, RequestHelper};
 use actix_web::{web, HttpResponse};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -338,13 +339,42 @@ fn respond(e: RunError) -> HttpResponse {
     }
 }
 
-fn claim_db(conn: &Connection, run_id: &str, computer_id: &str, no_reading: bool, base_sha: Option<&str>) -> Result<DueRun, RunError> {
+/// Authorize an unclaimed run against its configured destination, never the
+/// caller-supplied computer or a previous claim's computer.
+fn require_run_destination(conn: &Connection, id: &str, computer: &str) -> Result<(), RunError> {
+    let run = load_run(conn, id)?.ok_or(RunError::NotFound("Run not found"))?;
+    let job = load_job(conn, &run.job_id)?.ok_or(RunError::NotFound("Run not found"))?;
+    let pinned = run_group(conn, &run)?.and_then(|(_, pinned)| pinned);
+    let destination = if let Some(pinned) = pinned {
+        Some(pinned)
+    } else if let Some(watch) = watch_parts(&job) {
+        Some(watch.computer_id.to_string())
+    } else {
+        resolved_computer(conn, &job.action)?
+    };
+    if destination.as_deref() != Some(computer) {
+        return Err(RunError::NotFound("Run not found"));
+    }
+    Ok(())
+}
+
+fn require_claimed_computer(run: &JobRun, computer: Option<&str>) -> Result<(), RunError> {
+    if computer.is_some_and(|id| run.computer_id.as_deref() != Some(id)) {
+        return Err(RunError::NotFound("Run not found"));
+    }
+    Ok(())
+}
+
+fn claim_db(conn: &Connection, run_id: &str, computer_id: &str, no_reading: bool, base_sha: Option<&str>, helper: bool) -> Result<DueRun, RunError> {
     let base_sha = base_sha.map(str::trim).filter(|b| !b.is_empty());
     // SHA-1 (40) or SHA-256 (64) object ids, or an abbreviation.
     if base_sha.is_some_and(|b| !(7..=64).contains(&b.len()) || !b.chars().all(|c| c.is_ascii_hexdigit())) {
         return Err(RunError::BadRequest("base_sha must be a commit sha"));
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    if helper {
+        require_run_destination(&tx, run_id, computer_id)?;
+    }
     if no_reading {
         let run = load_run(&tx, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
         let tool = match &run.attempt_tool {
@@ -391,7 +421,14 @@ fn claim_in(conn: &Connection, run_id: &str, computer_id: &str, base_sha: Option
     Ok(DueRun { run, job, wait_runs_24h: 0, group })
 }
 
-fn wait_db(conn: &Connection, run_id: &str, reason: &str) -> Result<(), RunError> {
+fn wait_db(conn: &Connection, run_id: &str, reason: &str, helper: Option<&str>) -> Result<(), RunError> {
+    let tx = if let Some(computer) = helper {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        require_run_destination(&tx, run_id, computer)?;
+        Some(tx)
+    } else {
+        None
+    };
     let changed = conn.execute(
         "UPDATE job_runs SET state = 'waiting', waiting_reason = ?2, updated_at = datetime('now')
          WHERE id = ?1 AND state IN ('due','waiting')",
@@ -403,16 +440,20 @@ fn wait_db(conn: &Connection, run_id: &str, reason: &str) -> Result<(), RunError
             None => Err(RunError::NotFound("Run not found")),
         };
     }
+    if let Some(tx) = tx {
+        tx.commit()?;
+    }
     Ok(())
 }
 
-fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<StartResponse, RunError> {
+fn start_db(conn: &Connection, run_id: &str, req: &StartRequest, helper: Option<&str>) -> Result<StartResponse, RunError> {
     let cwd = req.cwd.trim();
     if cwd.is_empty() {
         return Err(RunError::BadRequest("cwd is required"));
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let run = load_run(&tx, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
+    require_claimed_computer(&run, helper)?;
     if run.state != "running" || run.todo_id.is_some() {
         return Err(RunError::Conflict("Run is not claimed, or already started"));
     }
@@ -640,10 +681,18 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest) -> Result<Start
     })
 }
 
-fn finish_db(conn: &Connection, run_id: &str, req: &FinishRequest) -> Result<(), RunError> {
+fn finish_db(conn: &Connection, run_id: &str, req: &FinishRequest, helper: Option<&str>) -> Result<(), RunError> {
     if !matches!(req.state.as_str(), "done" | "failed") {
         return Err(RunError::BadRequest("state must be done or failed"));
     }
+    let tx = if helper.is_some() {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        let run = load_run(&tx, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
+        require_claimed_computer(&run, helper)?;
+        Some(tx)
+    } else {
+        None
+    };
     let changed = conn.execute(
         "UPDATE job_runs SET state = ?2, result = ?3, updated_at = datetime('now') WHERE id = ?1 AND state = 'running'",
         params![run_id, req.state, req.result.chars().take(500).collect::<String>()],
@@ -662,6 +711,9 @@ fn finish_db(conn: &Connection, run_id: &str, req: &FinishRequest) -> Result<(),
             params![run_id],
         )?;
         fail_attempt(conn, run_id)?;
+    }
+    if let Some(tx) = tx {
+        tx.commit()?;
     }
     Ok(())
 }
@@ -736,10 +788,13 @@ fn retry_run_db(conn: &Connection, run_id: &str) -> Result<JobRun, RunError> {
 
 // --- Handlers ---------------------------------------------------------------------
 
-pub async fn due(pool: web::Data<DbPool>, query: web::Query<std::collections::HashMap<String, String>>) -> HttpResponse {
+pub async fn due(pool: web::Data<DbPool>, query: web::Query<std::collections::HashMap<String, String>>, helper: RequestHelper) -> HttpResponse {
     let Some(computer_id) = query.get("computer_id").filter(|c| !c.trim().is_empty()) else {
         return bad_request("computer_id is required");
     };
+    if helper.as_ref().is_some_and(|helper| &helper.0 != computer_id) {
+        return forbidden("Helper token belongs to another computer");
+    }
     let checked_in = |c: &Connection| -> rusqlite::Result<DueResponse> {
         // The daily updates wait only for computers whose runner checked in lately.
         c.execute("UPDATE computers SET runner_seen_at = datetime('now') WHERE id = ?1", params![computer_id])?;
@@ -785,8 +840,12 @@ pub async fn pull_requests(
     pool: web::Data<DbPool>,
     broadcaster: web::Data<Broadcaster>,
     body: web::Json<PullRequestsRequest>,
+    helper: RequestHelper,
 ) -> HttpResponse {
     let req = body.into_inner();
+    if helper.as_ref().is_some_and(|helper| helper.0 != req.computer_id) {
+        return forbidden("Helper token belongs to another computer");
+    }
     if req.computer_id.trim().is_empty() {
         return bad_request("computer_id is required");
     }
@@ -833,8 +892,12 @@ pub async fn claim(
     path: web::Path<String>,
     body: web::Json<ClaimRequest>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
-    with_conn!(pool, broadcaster, |c: &Connection| claim_db(c, &path, body.computer_id.trim(), body.no_reading, body.base_sha.as_deref()), |v| HttpResponse::Ok().json(v))
+    if helper.as_ref().is_some_and(|helper| helper.0 != body.computer_id) {
+        return forbidden("Helper token belongs to another computer");
+    }
+    with_conn!(pool, broadcaster, |c: &Connection| claim_db(c, &path, body.computer_id.trim(), body.no_reading, body.base_sha.as_deref(), helper.is_some()), |v| HttpResponse::Ok().json(v))
 }
 
 pub async fn wait(
@@ -842,8 +905,9 @@ pub async fn wait(
     path: web::Path<String>,
     body: web::Json<WaitRequest>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
-    with_conn!(pool, broadcaster, |c: &Connection| wait_db(c, &path, &body.reason), |_| HttpResponse::Ok()
+    with_conn!(pool, broadcaster, |c: &Connection| wait_db(c, &path, &body.reason, helper.as_ref().map(|helper| helper.0.as_str())), |_| HttpResponse::Ok()
         .json(serde_json::json!({"ok": true})))
 }
 
@@ -852,8 +916,9 @@ pub async fn start(
     path: web::Path<String>,
     body: web::Json<StartRequest>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
-    with_conn!(pool, broadcaster, |c: &Connection| start_db(c, &path, &body), |v| HttpResponse::Ok().json(v))
+    with_conn!(pool, broadcaster, |c: &Connection| start_db(c, &path, &body, helper.as_ref().map(|helper| helper.0.as_str())), |v| HttpResponse::Ok().json(v))
 }
 
 pub async fn retry(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
@@ -866,10 +931,11 @@ pub async fn finish(
     body: web::Json<FinishRequest>,
     broadcaster: web::Data<Broadcaster>,
     notifier: web::Data<crate::push::PushNotifier>,
+    helper: RequestHelper,
 ) -> HttpResponse {
     // A watcher whose checks keep failing tells the user (once a day).
     let finished = pool.get().map_err(server_error).and_then(|c| {
-        finish_db(&c, &path, &body).map_err(respond)?;
+        finish_db(&c, &path, &body, helper.as_ref().map(|helper| helper.0.as_str())).map_err(respond)?;
         let alert = if body.state == "failed" {
             load_run(&c, &path).ok().flatten().and_then(|run| crate::watch::failed_checks_alert(&c, &run.job_id, Utc::now()).ok().flatten())
         } else {

@@ -6,6 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use todo_shared::{WeeklyDayState, WeeklyJob, WeeklyJobs, WeeklyRecap, WeeklyRunLine, WeeklySection, WeeklyTotals};
 
+use crate::auth::RequestHelper;
 use crate::broadcast::Broadcaster;
 use crate::conversations::server_error;
 use crate::cron::TZ;
@@ -550,10 +551,11 @@ pub async fn put_weekly(
     broadcaster: web::Data<Broadcaster>,
     path: web::Path<(String, String)>,
     req: web::Json<PutWeeklyRequest>,
+    helper: RequestHelper,
 ) -> HttpResponse {
     let (project_id, week) = path.into_inner();
     match pool.get() {
-        Ok(conn) => match put_weekly_db(&conn, &project_id, &week, &req, Utc::now()) {
+        Ok(conn) => match crate::updates::write_for_project(&conn, &helper, &project_id, || put_weekly_db(&conn, &project_id, &week, &req, Utc::now())) {
             Ok(()) => {
                 broadcaster.send();
                 HttpResponse::Ok().json(serde_json::json!({"week": week}))

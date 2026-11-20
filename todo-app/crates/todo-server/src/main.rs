@@ -218,13 +218,15 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
+    let api_token = auth::ApiToken::from_env();
+    let scoped_tokens = auth::ScopedTokens::from_env(&api_token)?;
+
     println!("Initializing database at: {}", args.db);
     let pool = db::init_pool(&args.db);
     let broadcaster = broadcast::Broadcaster::new();
-    let api_token = auth::ApiToken::from_env();
     println!(
         "API token auth: {}",
-        if api_token.0.is_some() { "enabled" } else { "disabled (set TODO_API_TOKEN to enable)" }
+        if api_token.0.is_some() || scoped_tokens.is_configured() { "enabled" } else { "disabled (set TODO_API_TOKEN to enable)" }
     );
 
     // Push notifications. The only outbound calls this server makes: HTTPS to Apple's APNs.
@@ -282,6 +284,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(broadcaster_clone.clone()))
             .app_data(web::Data::new(api_token.clone()))
+            .app_data(web::Data::new(scoped_tokens.clone()))
             .app_data(web::Data::new(notifier.clone()))
             .app_data(web::Data::new(presence.clone()))
             .app_data(web::Data::new(shared_limits.clone()))

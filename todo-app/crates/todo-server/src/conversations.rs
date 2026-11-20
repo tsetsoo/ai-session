@@ -8,6 +8,7 @@
 //! server-minted session id. Codex and Cursor start without one; the client stores the
 //! id the tool assigns. An existing conversation can also be linked by its session id.
 
+use crate::auth::{forbidden, resolve_scope, RequestHelper, RequestScope};
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
@@ -956,11 +957,22 @@ pub(crate) struct StatusChange {
 /// Apply a hook status update to the `(tool, session_id)` conversation (UNIQUE, so at most
 /// one). `None` when there is no such conversation or it is closed: a hook that lands after
 /// the user closed the conversation must not make it look live again.
+#[cfg(test)]
 pub(crate) fn set_status_db(
     conn: &Connection,
     tool: &str,
     session_id: &str,
     req: &ConversationStatusRequest,
+) -> rusqlite::Result<Option<StatusChange>> {
+    set_status_for_computer(conn, tool, session_id, req, None)
+}
+
+fn set_status_for_computer(
+    conn: &Connection,
+    tool: &str,
+    session_id: &str,
+    req: &ConversationStatusRequest,
+    computer: Option<&str>,
 ) -> rusqlite::Result<Option<StatusChange>> {
     // IMMEDIATE: take the write lock before reading, so a concurrent writer makes this wait
     // (busy timeout) instead of failing the update on a stale read snapshot.
@@ -969,8 +981,9 @@ pub(crate) fn set_status_db(
     let current: Option<Current> = tx
         .query_row(
             "SELECT todo_id, status, status_event_ns, status_turn_ns, id, paused_kind, paused_until
-             FROM conversations WHERE tool = ?1 AND session_id = ?2 AND status != 'closed'",
-            params![tool, session_id],
+             FROM conversations WHERE tool = ?1 AND session_id = ?2 AND status != 'closed'
+             AND (?3 IS NULL OR computer_id = ?3)",
+            params![tool, session_id, computer],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )
         .optional()?;
@@ -1004,7 +1017,7 @@ pub(crate) fn set_status_db(
          resume_token = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN NULL ELSE resume_token END,
          resume_lease_until = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN NULL ELSE resume_lease_until END,
          workers = ?10
-         WHERE tool = ?3 AND session_id = ?4 AND status != 'closed'",
+         WHERE tool = ?3 AND session_id = ?4 AND status != 'closed' AND (?11 IS NULL OR computer_id = ?11)",
         params![
             req.status.as_str(),
             req.message,
@@ -1016,6 +1029,7 @@ pub(crate) fn set_status_db(
             fresh.map(|p| p.kind.as_str()),
             fresh.and_then(|p| p.resets_at.as_deref()),
             req.workers.as_ref().filter(|w| !w.is_empty()).map(|w| serde_json::to_string(w).expect("workers serialize")),
+            computer,
         ],
     )?;
     if fresh.is_some() {
@@ -1041,7 +1055,7 @@ fn valid_port(p: Option<u16>) -> bool {
 // Computers
 // ---------------------------------------------------------------------------
 
-pub async fn list_computers(pool: web::Data<DbPool>) -> HttpResponse {
+pub async fn list_computers(pool: web::Data<DbPool>, scope: RequestScope, helper: RequestHelper) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
@@ -1050,13 +1064,19 @@ pub async fn list_computers(pool: web::Data<DbPool>) -> HttpResponse {
         Ok(s) => s,
         Err(e) => return server_error(e),
     };
-    let computers: Vec<Computer> = match stmt.query_map([], computer_with_tools) {
+    let mut computers: Vec<Computer> = match stmt.query_map([], computer_with_tools) {
         Ok(rows) => match rows.collect::<rusqlite::Result<_>>() {
             Ok(v) => v,
             Err(e) => return server_error(e),
         },
         Err(e) => return server_error(e),
     };
+    if let Some(scope) = scope {
+        computers.retain(|computer| scope.computer_ids.contains(&computer.id));
+    }
+    if let Some(helper) = helper {
+        computers.retain(|computer| computer.id == helper.0);
+    }
     HttpResponse::Ok().json(computers)
 }
 
@@ -1095,8 +1115,17 @@ pub async fn update_computer(
     path: web::Path<String>,
     body: web::Json<UpdateComputerRequest>,
     broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
 ) -> HttpResponse {
     let id = path.into_inner();
+    if let Some(scope) = scope {
+        if !scope.computer_ids.contains(&id) {
+            return not_found("Computer not found");
+        }
+        if body.hostname.is_some() || body.port.is_some() || body.username.is_some() {
+            return forbidden("Changing a computer's SSH settings requires a full-access token");
+        }
+    }
     if body.name.as_deref().is_some_and(|s| !valid_text(s))
         || body.hostname.as_deref().is_some_and(|s| !valid_hostname(s))
         || body.username.as_deref().is_some_and(|s| !valid_text(s))
@@ -1173,7 +1202,7 @@ pub async fn delete_computer(
 // Section → computer mapping
 // ---------------------------------------------------------------------------
 
-pub async fn list_section_computers(pool: web::Data<DbPool>) -> HttpResponse {
+pub async fn list_section_computers(pool: web::Data<DbPool>, scope: RequestScope) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
@@ -1189,6 +1218,9 @@ pub async fn list_section_computers(pool: web::Data<DbPool>) -> HttpResponse {
         },
         Err(e) => return server_error(e),
     };
+    if let Some(scope) = scope {
+        mappings.retain(|mapping| scope.computer_ids.contains(&mapping.computer.id));
+    }
     mappings.sort_by_key(|m| Section::all().iter().position(|s| *s == m.section));
     HttpResponse::Ok().json(mappings)
 }
@@ -1275,10 +1307,44 @@ pub struct ConversationsQuery {
 /// Every conversation, newest first. By default it leaves out the conversations of
 /// archived todos, the same todos `GET /api/todos` leaves out, so a list never shows
 /// a conversation whose todo it can't name. `?show=all` includes them.
-pub async fn list_conversations(pool: web::Data<DbPool>, query: web::Query<ConversationsQuery>) -> HttpResponse {
+pub async fn list_conversations(pool: web::Data<DbPool>, query: web::Query<ConversationsQuery>, scope: RequestScope, helper: RequestHelper) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
+    };
+    if let Some(helper) = helper {
+        let result = (|| -> rusqlite::Result<Vec<_>> {
+            let mut stmt = conn.prepare(
+                "SELECT id, tool, session_id, status, tmux_name FROM conversations
+                 WHERE computer_id = ?1 AND status != 'closed'",
+            )?;
+            let rows = stmt.query_map([&helper.0], |row| Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "tool": row.get::<_, String>(1)?,
+                "session_id": row.get::<_, String>(2)?,
+                "status": row.get::<_, String>(3)?,
+                "tmux_name": row.get::<_, String>(4)?,
+                "computer": {"id": helper.0}
+            })))?;
+            rows.collect()
+        })();
+        return match result {
+            Ok(rows) => HttpResponse::Ok().json(rows),
+            Err(err) => server_error(err),
+        };
+    }
+    // Read linked todo grants and conversation metadata from the same snapshot.
+    let _snapshot = if scope.is_some() {
+        match conn.unchecked_transaction() {
+            Ok(transaction) => Some(transaction),
+            Err(err) => return server_error(err),
+        }
+    } else {
+        None
+    };
+    let scope = match resolve_scope(&conn, scope) {
+        Ok(scope) => scope,
+        Err(response) => return response,
     };
     let filter = match query.show.as_deref() {
         None => {
@@ -1299,10 +1365,33 @@ pub async fn list_conversations(pool: web::Data<DbPool>, query: web::Query<Conve
         },
         Err(e) => return server_error(e),
     };
-    let conversations: Vec<Conversation> = match rows.into_iter().map(|row| with_project(&conn, row)).collect() {
+    let mut conversations: Vec<Conversation> = match rows.into_iter().map(|row| with_project(&conn, row)).collect() {
         Ok(v) => v,
         Err(e) => return server_error(e),
     };
+    if let Some(scope) = scope {
+        let mut todo_project = match conn.prepare("SELECT project_id FROM todos WHERE id = ?1") {
+            Ok(stmt) => stmt,
+            Err(err) => return server_error(err),
+        };
+        let mut visible = Vec::new();
+        for conversation in conversations {
+            if !scope.computer_ids.contains(&conversation.computer.id)
+                || conversation.project_id.as_ref().is_some_and(|id| !scope.project_ids.contains(id))
+            {
+                continue;
+            }
+            let project: Option<String> = match todo_project.query_row([&conversation.todo_id], |row| row.get(0)) {
+                Ok(project) => project,
+                Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                Err(err) => return server_error(err),
+            };
+            if scope.allows_todo(&conversation.todo_id, project.as_deref()) {
+                visible.push(conversation);
+            }
+        }
+        conversations = visible;
+    }
     HttpResponse::Ok().json(conversations)
 }
 
@@ -1728,14 +1817,36 @@ pub async fn set_conversation_session_by_id(
     path: web::Path<String>,
     body: web::Json<SetConversationSessionRequest>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match set_session_on(
-        &conn, &path.into_inner(), &body.session_id, body.expected_session_id.as_deref(),
-    ) {
+    let id = path.into_inner();
+    if let Some(helper) = helper {
+        let session = body.session_id.trim();
+        if session.is_empty() {
+            return bad_request("session_id is required");
+        }
+        return match conn.execute(
+            "UPDATE conversations AS c SET session_id = ?1
+             WHERE c.id = ?2 AND c.computer_id = ?3 AND c.status != 'closed'
+               AND (?4 IS NULL OR COALESCE(c.session_id, '') = ?4 OR c.session_id = ?1)
+               AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.tool = c.tool
+                   AND s.session_id = ?1 AND s.computer_id != ?3)",
+            params![session, id, helper.0, body.expected_session_id.as_deref()],
+        ) {
+            Ok(0) => not_found("Conversation not found"),
+            Ok(_) => {
+                broadcaster.send();
+                HttpResponse::NoContent().finish()
+            }
+            Err(e) if is_constraint_violation(&e) => conflict("That conversation is already linked to another todo"),
+            Err(e) => server_error(e),
+        };
+    }
+    match set_session_on(&conn, &id, &body.session_id, body.expected_session_id.as_deref()) {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)
@@ -1784,6 +1895,7 @@ pub async fn report_conversation_mcp(
     pool: web::Data<DbPool>,
     body: web::Json<ReportConversationMcpRequest>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
     let mcp_servers = match validate_mcp_names(body.mcp_servers.clone()) {
         Ok(names) => names,
@@ -1794,8 +1906,8 @@ pub async fn report_conversation_mcp(
         Err(e) => return server_error(e),
     };
     match conn.execute(
-        "UPDATE conversations SET mcp_servers = ?1 WHERE tool = ?2 AND session_id = ?3",
-        params![mcp_to_sql(Some(&mcp_servers)), body.tool.trim(), body.session_id.trim()],
+        "UPDATE conversations SET mcp_servers = ?1 WHERE tool = ?2 AND session_id = ?3 AND (?4 IS NULL OR computer_id = ?4)",
+        params![mcp_to_sql(Some(&mcp_servers)), body.tool.trim(), body.session_id.trim(), helper.as_ref().map(|helper| helper.0.as_str())],
     ) {
         Ok(0) => not_found("Unknown session_id"),
         Ok(_) => {
@@ -1814,6 +1926,7 @@ pub async fn post_conversation_status(
     body: web::Json<ConversationStatusRequest>,
     broadcaster: web::Data<Broadcaster>,
     notifier: web::Data<PushNotifier>,
+    helper: RequestHelper,
 ) -> HttpResponse {
     if body.event_timestamp_ns.is_some_and(|timestamp| timestamp < 0) || body.turn_started_ns.is_some_and(|timestamp| timestamp < 0) {
         return bad_request("status timestamps must be nonnegative");
@@ -1845,7 +1958,7 @@ pub async fn post_conversation_status(
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match set_status_db(&conn, tool, session_id, &body) {
+    match set_status_for_computer(&conn, tool, session_id, &body, helper.as_ref().map(|helper| helper.0.as_str())) {
         Ok(None) => not_found("Unknown or closed session_id"),
         Ok(Some(change)) => {
             if !change.applied {

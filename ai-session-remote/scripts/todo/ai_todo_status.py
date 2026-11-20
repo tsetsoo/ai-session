@@ -59,7 +59,7 @@ def configuration():
     url = values.get("TODO_HUB_URL", "").rstrip("/")
     if not url.startswith(("http://", "https://")):
         raise ValueError("TODO_HUB_URL is missing or invalid")
-    return url, values.get("TODO_API_TOKEN", "")
+    return url, values.get("TODO_HELPER_API_TOKEN") or values.get("TODO_API_TOKEN", "")
 
 
 def hub_values():

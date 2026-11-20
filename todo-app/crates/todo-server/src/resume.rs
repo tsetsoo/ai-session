@@ -12,6 +12,7 @@
 //! `resume_at`, `resume_offer` and the lease belong to one pause: `set_status_db` clears them
 //! when a new pause arrives or the pause ends.
 
+use crate::auth::RequestHelper;
 use actix_web::{web, HttpResponse};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -196,15 +197,34 @@ impl From<rusqlite::Error> for ResumeError {
 
 /// Apply one action from the computer. Returns the state after it and whether anything the
 /// apps show changed.
-pub(crate) fn resume_action_db(
+#[cfg(test)]
+fn resume_action_db(
     conn: &Connection,
     req: &ConversationResumeRequest,
     now: DateTime<Utc>,
+) -> Result<(ConversationResumeState, bool), ResumeError> {
+    resume_action_for_computer(conn, req, now, None)
+}
+
+fn resume_action_for_computer(
+    conn: &Connection,
+    req: &ConversationResumeRequest,
+    now: DateTime<Utc>,
+    computer: Option<&str>,
 ) -> Result<(ConversationResumeState, bool), ResumeError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let Some(mut row) = load(&tx, req.tool.trim(), req.session_id.trim())? else {
         return Err(ResumeError::NotFound);
     };
+    if let Some(computer) = computer {
+        let allowed: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1 AND computer_id = ?2)",
+            params![row.id, computer], |r| r.get(0),
+        )?;
+        if !allowed {
+            return Err(ResumeError::NotFound);
+        }
+    }
     let before = (row.on, row.off_reason.clone(), row.resume_at.clone(), row.offer);
     let mut granted = false;
     let mut reason = None;
@@ -335,12 +355,13 @@ pub async fn post_conversation_resume(
     pool: web::Data<DbPool>,
     body: web::Json<ConversationResumeRequest>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match resume_action_db(&conn, &body, Utc::now()) {
+    match resume_action_for_computer(&conn, &body, Utc::now(), helper.as_ref().map(|helper| helper.0.as_str())) {
         Ok((state, changed)) => {
             if changed {
                 broadcaster.send();

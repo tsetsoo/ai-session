@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use todo_shared::{ProjectUpdate, UpdateSummary};
 use uuid::Uuid;
 
+use crate::auth::{authorize_helper_computer, RequestHelper};
 use crate::broadcast::Broadcaster;
 use crate::conversations::{bad_request, server_error};
 use crate::cron::TZ;
@@ -153,22 +154,33 @@ pub struct MatchedSession {
     pub project_id: String,
 }
 
-pub(crate) fn match_db(conn: &Connection, req: &MatchRequest) -> Result<Vec<MatchedSession>, UpdateError> {
+fn match_for_computer(conn: &Connection, req: &MatchRequest, helper: bool) -> Result<Vec<MatchedSession>, UpdateError> {
     if req.sessions.len() > 5000 {
         return Err(UpdateError::BadRequest("at most 5000 sessions".into()));
     }
+    let snapshot = if helper { Some(conn.unchecked_transaction()?) } else { None };
     let mut out = Vec::new();
     for s in &req.sessions {
+        if helper && crate::sessions::session_on_another_computer(conn, &s.tool, &s.session_id, &req.computer_id)? {
+            continue;
+        }
         if let Some(project_id) = project_of(conn, &req.computer_id, &s.tool, &s.session_id, &s.cwd)? {
+            if helper && !crate::projects::project_on_computer(conn, &project_id, &req.computer_id)? {
+                continue;
+            }
             out.push(MatchedSession { tool: s.tool.clone(), session_id: s.session_id.clone(), project_id });
         }
     }
+    drop(snapshot);
     Ok(out)
 }
 
-pub async fn match_sessions(pool: web::Data<DbPool>, req: web::Json<MatchRequest>) -> HttpResponse {
+pub async fn match_sessions(pool: web::Data<DbPool>, req: web::Json<MatchRequest>, helper: RequestHelper) -> HttpResponse {
+    if let Err(response) = authorize_helper_computer(&helper, &req.computer_id) {
+        return response;
+    }
     match pool.get() {
-        Ok(conn) => match match_db(&conn, &req) {
+        Ok(conn) => match match_for_computer(&conn, &req, helper.is_some()) {
             Ok(v) => HttpResponse::Ok().json(v),
             Err(e) => respond(e),
         },
@@ -209,7 +221,12 @@ pub struct SummariesResponse {
     pub skipped: u32,
 }
 
-pub(crate) fn summaries_db(conn: &Connection, req: &SummariesRequest) -> Result<SummariesResponse, UpdateError> {
+#[cfg(test)]
+fn summaries_db(conn: &Connection, req: &SummariesRequest) -> Result<SummariesResponse, UpdateError> {
+    summaries_for_computer(conn, req, false)
+}
+
+fn summaries_for_computer(conn: &Connection, req: &SummariesRequest, helper: bool) -> Result<SummariesResponse, UpdateError> {
     checked_day(&req.day)?;
     if req.items.len() > MAX_ITEMS {
         return Err(UpdateError::BadRequest(format!("at most {MAX_ITEMS} items")));
@@ -217,10 +234,18 @@ pub(crate) fn summaries_db(conn: &Connection, req: &SummariesRequest) -> Result<
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let (mut stored, mut skipped) = (0, 0);
     for item in &req.items {
+        if helper && crate::sessions::session_on_another_computer(&tx, &item.tool, &item.session_id, &req.computer_id)? {
+            skipped += 1;
+            continue;
+        }
         let Some(project_id) = project_of(&tx, &req.computer_id, &item.tool, &item.session_id, &item.cwd)? else {
             skipped += 1;
             continue;
         };
+        if helper && !crate::projects::project_on_computer(&tx, &project_id, &req.computer_id)? {
+            skipped += 1;
+            continue;
+        }
         let todo_id: Option<String> = tx
             .query_row(
                 "SELECT todo_id FROM conversations WHERE tool = ?1 AND session_id = ?2 AND todo_id IS NOT NULL LIMIT 1",
@@ -262,9 +287,12 @@ pub(crate) fn summaries_db(conn: &Connection, req: &SummariesRequest) -> Result<
     Ok(SummariesResponse { stored, skipped })
 }
 
-pub async fn post_summaries(pool: web::Data<DbPool>, broadcaster: web::Data<Broadcaster>, req: web::Json<SummariesRequest>) -> HttpResponse {
+pub async fn post_summaries(pool: web::Data<DbPool>, broadcaster: web::Data<Broadcaster>, req: web::Json<SummariesRequest>, helper: RequestHelper) -> HttpResponse {
+    if let Err(response) = authorize_helper_computer(&helper, &req.computer_id) {
+        return response;
+    }
     match pool.get() {
-        Ok(conn) => match summaries_db(&conn, &req) {
+        Ok(conn) => match summaries_for_computer(&conn, &req, helper.is_some()) {
             Ok(v) => {
                 if v.stored > 0 {
                     broadcaster.send();
@@ -300,7 +328,10 @@ pub(crate) fn report_db(conn: &Connection, req: &ReportRequest) -> Result<(), Up
     Ok(())
 }
 
-pub async fn post_report(pool: web::Data<DbPool>, req: web::Json<ReportRequest>) -> HttpResponse {
+pub async fn post_report(pool: web::Data<DbPool>, req: web::Json<ReportRequest>, helper: RequestHelper) -> HttpResponse {
+    if let Err(response) = authorize_helper_computer(&helper, &req.computer_id) {
+        return response;
+    }
     match pool.get() {
         Ok(conn) => match report_db(&conn, &req) {
             Ok(()) => HttpResponse::Ok().json(serde_json::json!({"ok": true})),
@@ -555,10 +586,13 @@ pub(crate) fn runner_db(conn: &Connection, computer_id: &str, now: DateTime<Utc>
     Ok(RunnerWork { settings, days, projects, write, weekly })
 }
 
-pub async fn runner_work(pool: web::Data<DbPool>, query: web::Query<std::collections::HashMap<String, String>>) -> HttpResponse {
+pub async fn runner_work(pool: web::Data<DbPool>, query: web::Query<std::collections::HashMap<String, String>>, helper: RequestHelper) -> HttpResponse {
     let Some(computer_id) = query.get("computer_id").filter(|c| !c.trim().is_empty()) else {
         return bad_request("computer_id is required");
     };
+    if let Err(response) = authorize_helper_computer(&helper, computer_id) {
+        return response;
+    }
     match pool.get() {
         Ok(conn) => match runner_db(&conn, computer_id, Utc::now()) {
             Ok(v) => HttpResponse::Ok().json(v),
@@ -636,15 +670,29 @@ pub(crate) fn put_update_db(
     Ok(StoredUpdate { day: day.to_string(), waiting_on: waiting })
 }
 
+pub(crate) fn write_for_project<T>(
+    conn: &Connection, helper: &RequestHelper, project: &str, write: impl FnOnce() -> Result<T, UpdateError>,
+) -> Result<T, UpdateError> {
+    let Some(helper) = helper else { return write() };
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    if !crate::projects::project_on_computer(&tx, project, &helper.0)? {
+        return Err(UpdateError::NotFound("Project not found"));
+    }
+    let output = write()?;
+    tx.commit()?;
+    Ok(output)
+}
+
 pub async fn put_update(
     pool: web::Data<DbPool>,
     broadcaster: web::Data<Broadcaster>,
     path: web::Path<(String, String)>,
     req: web::Json<PutUpdateRequest>,
+    helper: RequestHelper,
 ) -> HttpResponse {
     let (project_id, day) = path.into_inner();
     match pool.get() {
-        Ok(conn) => match put_update_db(&conn, &project_id, &day, &req, Utc::now()) {
+        Ok(conn) => match write_for_project(&conn, &helper, &project_id, || put_update_db(&conn, &project_id, &day, &req, Utc::now())) {
             Ok(v) => {
                 broadcaster.send();
                 HttpResponse::Ok().json(v)

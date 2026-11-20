@@ -14,6 +14,7 @@ use todo_shared::{
     WorkerUpload,
 };
 
+use crate::auth::{authorize_helper_computer, RequestHelper};
 use crate::broadcast::Broadcaster;
 use crate::conversations::{bad_request, conflict, get_computer, not_found, server_error, SUPPORTED_TOOLS};
 use crate::daily::valid_date;
@@ -194,11 +195,19 @@ pub(crate) fn ensure_session_db(
     Ok(project_id)
 }
 
+pub(crate) fn session_on_another_computer(conn: &Connection, tool: &str, session: &str, computer: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE tool = ?1 AND session_id = ?2 AND computer_id != ?3)
+             OR EXISTS(SELECT 1 FROM conversations WHERE tool = ?1 AND session_id = ?2 AND computer_id != ?3)",
+        params![tool, session, computer], |row| row.get(0),
+    )
+}
+
 /// Upsert the stats of a computer's sessions, in one IMMEDIATE transaction. The numbers
 /// are a full recompute per transcript, so uploading the same thing twice changes nothing;
 /// `days` replaces all of a session's day rows. Sessions without a project override are
 /// matched again (their cwd may have moved); an override is kept.
-pub(crate) fn upload_stats_db(conn: &Connection, upload: &SessionStatsUpload) -> Result<Vec<SessionProjectRef>, SessionError> {
+fn upload_stats_db(conn: &Connection, upload: &SessionStatsUpload, helper: bool) -> Result<Vec<SessionProjectRef>, SessionError> {
     for s in &upload.sessions {
         if !SUPPORTED_TOOLS.contains(&s.tool.trim()) {
             return Err(SessionError::BadRequest(format!("Unsupported tool: {}", s.tool)));
@@ -235,6 +244,9 @@ pub(crate) fn upload_stats_db(conn: &Connection, upload: &SessionStatsUpload) ->
     let mut result = Vec::with_capacity(upload.sessions.len());
     for s in &upload.sessions {
         let (tool, session_id) = (s.tool.trim(), s.session_id.trim());
+        if helper && session_on_another_computer(&tx, tool, session_id, computer_id)? {
+            return Err(SessionError::NotFound("Session not found"));
+        }
         let cwd = paths::normalize(&s.cwd, &computer.username);
         let repo_root = s.repo_root.as_deref().map(|r| paths::normalize(r, &computer.username));
         let title = s.title.as_deref().map(|t| t.trim().chars().take(MAX_TITLE_CHARS).collect::<String>());
@@ -702,12 +714,16 @@ pub async fn upload_stats(
     pool: web::Data<DbPool>,
     body: web::Json<SessionStatsUpload>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
+    if let Err(response) = authorize_helper_computer(&helper, body.computer_id.trim()) {
+        return response;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match upload_stats_db(&conn, &body) {
+    match upload_stats_db(&conn, &body, helper.is_some()) {
         Ok(sessions) => {
             broadcaster.send();
             HttpResponse::Ok().json(SessionStatsResponse { upserted: sessions.len(), sessions })

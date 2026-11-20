@@ -2,6 +2,7 @@
 //! for global memories, a computer) was active. A memory nobody used for 14 active days of
 //! its scope is archived as `unused`; a later use brings it back.
 
+use crate::auth::{authorize_helper_computer, RequestHelper};
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -51,10 +52,11 @@ fn valid_day(day: &str) -> bool {
 /// Archive (reason `unused`) every live memory whose scope had at least 14 active days after
 /// both its `aged_from` day and its last use. Pinned, pending and imported (`claude-memory`)
 /// memories are never pruned; neither is one with no project and no computer.
-pub(crate) fn prune_unused(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+fn prune_unused(conn: &Connection, helper: Option<&str>) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "UPDATE memories SET archived = 1, archived_reason = 'unused', updated_at = datetime('now')
          WHERE archived = 0 AND pinned = 0 AND pending = 0 AND source != 'claude-memory'
+           AND (?2 IS NULL OR computer_id = ?2)
            AND (project_id IS NOT NULL OR computer_id IS NOT NULL)
            AND (SELECT COUNT(*) FROM memory_active_days d
                 WHERE d.scope = CASE WHEN memories.project_id IS NOT NULL THEN 'project:' || memories.project_id
@@ -62,7 +64,7 @@ pub(crate) fn prune_unused(conn: &Connection) -> rusqlite::Result<Vec<String>> {
                   AND d.day > MAX(memories.aged_from, COALESCE(date(memories.last_used_at), ''))) >= ?1
          RETURNING id",
     )?;
-    let ids = stmt.query_map(params![UNUSED_ACTIVE_DAYS], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+    let ids = stmt.query_map(params![UNUSED_ACTIVE_DAYS, helper], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
     Ok(ids)
 }
 
@@ -78,7 +80,7 @@ impl From<rusqlite::Error> for UsesError {
     }
 }
 
-fn record_uses_db(conn: &Connection, req: &UsesRequest) -> Result<UsesResponse, UsesError> {
+fn record_uses_db(conn: &Connection, req: &UsesRequest, helper: Option<&str>) -> Result<UsesResponse, UsesError> {
     if !valid_day(&req.day) {
         return Err(UsesError::BadRequest("day must be YYYY-MM-DD".into()));
     }
@@ -90,21 +92,34 @@ fn record_uses_db(conn: &Connection, req: &UsesRequest) -> Result<UsesResponse, 
     if get_computer(&tx, computer_id)?.is_none() {
         return Err(UsesError::NotFound("Computer not found"));
     }
-    let scopes = std::iter::once(format!("computer:{computer_id}"))
-        .chain(req.project_ids.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).map(|p| format!("project:{p}")));
-    for scope in scopes {
-        tx.execute("INSERT OR IGNORE INTO memory_active_days (scope, day) VALUES (?1, ?2)", params![scope, req.day])?;
+    tx.execute("INSERT OR IGNORE INTO memory_active_days (scope, day) VALUES (?1, ?2)",
+        params![format!("computer:{computer_id}"), req.day])?;
+    for project in req.project_ids.iter().map(|p| p.trim()).filter(|p| !p.is_empty()) {
+        if let Some(helper) = helper {
+            if !crate::projects::project_on_computer(&tx, project, helper)? {
+                continue;
+            }
+        }
+        tx.execute("INSERT OR IGNORE INTO memory_active_days (scope, day) VALUES (?1, ?2)",
+            params![format!("project:{project}"), req.day])?;
     }
     let mut recorded = 0;
     let mut unknown = Vec::new();
     for u in &req.uses {
-        if record_use(&tx, &u.id, &u.signal)? {
+        let visible = match helper {
+            None => true,
+            Some(computer) => tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memories WHERE id = ?1 AND computer_id = ?2)",
+                params![u.id, computer], |row| row.get(0),
+            )?,
+        };
+        if visible && record_use(&tx, &u.id, &u.signal)? {
             recorded += 1;
         } else {
             unknown.push(u.id.clone());
         }
     }
-    let archived = prune_unused(&tx)?;
+    let archived = prune_unused(&tx, helper)?;
     tx.commit()?;
     Ok(UsesResponse { recorded, unknown, archived })
 }
@@ -113,12 +128,16 @@ pub async fn record_uses(
     pool: web::Data<DbPool>,
     body: web::Json<UsesRequest>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
+    if let Err(response) = authorize_helper_computer(&helper, body.computer_id.trim()) {
+        return response;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match record_uses_db(&conn, &body) {
+    match record_uses_db(&conn, &body, helper.as_ref().map(|helper| helper.0.as_str())) {
         Ok(resp) => {
             if resp.recorded > 0 || !resp.archived.is_empty() {
                 broadcaster.send();

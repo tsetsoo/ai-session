@@ -28,7 +28,7 @@ fn base_description() -> Value {
         "app": "TODO List",
         "version": "2.1.0",
         "description": "Personal TODO list with 4 sections: Sp, I, Si, P. Each todo has a priority level and optional due date. Each section can be assigned a computer, and each todo can have one AI conversation (Claude Code in tmux) on that computer. Projects are folders on a computer; todos and conversations can belong to one. Computers push conversation stats and extracted memories; the server only stores them.",
-        "auth": "When the server runs with TODO_API_TOKEN set, every /api endpoint except /api/health requires 'Authorization: Bearer <token>' (/api/ws also accepts ?token=).",
+        "auth": "When full-access or scoped tokens are configured, /api endpoints except /api/health require 'Authorization: Bearer <token>'. Scoped tokens grant read access and selected writes on granted records. /api/ws requires a full-access token and also accepts ?token= when authentication is enabled.",
         "base_url": "/api",
         "quick_start": {
             "create_a_todo": "curl -X POST /api/todos -H 'Content-Type: application/json' -d '{\"section\":\"P\",\"title\":\"Go for a run\",\"importance\":\"high\",\"due_date\":\"2026-02-21\"}'",

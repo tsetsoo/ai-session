@@ -356,7 +356,7 @@ class Config:
 class Hub:
     def __init__(self, conf):
         self.url = conf.get("TODO_HUB_URL").rstrip("/")
-        self.token = conf.get("TODO_API_TOKEN")
+        self.token = conf.get("TODO_HELPER_API_TOKEN") or conf.get("TODO_API_TOKEN")
 
     def request(self, method, path, query=None, body=None, timeout=20):
         if not self.url:
@@ -934,8 +934,9 @@ class Context:
                 die("ai_todo_redact.py not found in %s; refusing to send anything" % LIB_DIR, 90)
             self._redactor = ai_todo_redact
             self.secrets = ai_todo_redact.secret_values_from_env(os.environ)
-            if self.conf.get("TODO_API_TOKEN"):
-                self.secrets.append(self.conf.get("TODO_API_TOKEN"))
+            for key in ("TODO_API_TOKEN", "TODO_HELPER_API_TOKEN"):
+                if self.conf.get(key):
+                    self.secrets.append(self.conf.get(key))
         return lambda text: self._redactor.redact(text, self.secrets)
 
 

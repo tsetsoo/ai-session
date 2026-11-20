@@ -664,8 +664,8 @@ report_mcp() { # <session id>
     attempt=1
     while :; do
       code=$({
-        if [ -n "$TODO_API_TOKEN" ]; then
-          printf 'header = "Authorization: Bearer %s"\n' "$TODO_API_TOKEN"
+        if [ -n "${TODO_HELPER_API_TOKEN:-$TODO_API_TOKEN}" ]; then
+          printf 'header = "Authorization: Bearer %s"\n' "${TODO_HELPER_API_TOKEN:-$TODO_API_TOKEN}"
         fi
       } | curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 -K - \
         -H 'Content-Type: application/json' --data-binary "$body" \

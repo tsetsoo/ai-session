@@ -1,8 +1,9 @@
 use actix_web::{web, HttpRequest, HttpResponse};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use todo_shared::{CreateTodoRequest, DeleteResponse, Importance, Section, SectionCount, UpdateTodoRequest};
 use uuid::Uuid;
 
+use crate::auth::{forbidden, resolve_scope, RequestScope, ResourceScope};
 use crate::broadcast::Broadcaster;
 use crate::db::DbPool;
 use crate::models::row_to_todo;
@@ -14,14 +15,55 @@ pub(crate) const SELECT_COLS: &str = "id, section, title, completed, on_hold, wa
             status_updated_at IS NULL, status_updated_at DESC, created_at DESC, id ASC \
         LIMIT 1) AS conversation_status";
 
-pub async fn get_sections(pool: web::Data<DbPool>) -> HttpResponse {
+fn scoped_read_snapshot<'a>(conn: &'a Connection, scope: &RequestScope) -> Result<Option<Transaction<'a>>, HttpResponse> {
+    scope.as_ref().filter(|scope| scope.include_computer_projects)
+        .map(|_| conn.unchecked_transaction())
+        .transpose().map_err(crate::conversations::server_error)
+}
+
+pub async fn get_sections(pool: web::Data<DbPool>, scope: RequestScope) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     };
+    let _snapshot = match scoped_read_snapshot(&conn, &scope) {
+        Ok(snapshot) => snapshot,
+        Err(response) => return response,
+    };
+    let scope = match resolve_scope(&conn, scope) {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
 
     let mut counts: Vec<SectionCount> = Vec::new();
     let active_filter = "AND NOT (completed = 1 AND completed_at IS NOT NULL AND completed_at < datetime('now', '-1 day'))";
+    if let Some(scope) = scope {
+        let result = (|| -> rusqlite::Result<()> {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT id, project_id, section, completed FROM todos WHERE 1=1 {active_filter}"
+            ))?;
+            let mut rows = stmt.query([])?;
+            counts.extend(Section::all().iter().map(|section| SectionCount {
+                section: *section, total: 0, completed: 0,
+            }));
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                let project: Option<String> = row.get(1)?;
+                if scope.allows_todo(&id, project.as_deref()) {
+                    let section: String = row.get(2)?;
+                    if let Some(count) = counts.iter_mut().find(|count| count.section.as_str() == section) {
+                        count.total += 1;
+                        count.completed += usize::from(row.get::<_, bool>(3)?);
+                    }
+                }
+            }
+            Ok(())
+        })();
+        return match result {
+            Ok(()) => HttpResponse::Ok().json(counts),
+            Err(_) => HttpResponse::InternalServerError().finish(),
+        };
+    }
     for section in Section::all() {
         let s = section.as_str();
         let total: usize = conn
@@ -44,10 +86,18 @@ pub struct TodosQuery {
     pub project_id: Option<String>,
 }
 
-pub async fn list_todos(pool: web::Data<DbPool>, query: web::Query<TodosQuery>) -> HttpResponse {
+pub async fn list_todos(pool: web::Data<DbPool>, query: web::Query<TodosQuery>, scope: RequestScope) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+    };
+    let _snapshot = match scoped_read_snapshot(&conn, &scope) {
+        Ok(snapshot) => snapshot,
+        Err(response) => return response,
+    };
+    let scope = match resolve_scope(&conn, scope) {
+        Ok(scope) => scope,
+        Err(response) => return response,
     };
 
     let order = match query.sort.as_deref() {
@@ -74,28 +124,50 @@ pub async fn list_todos(pool: web::Data<DbPool>, query: web::Query<TodosQuery>) 
         "SELECT {SELECT_COLS} FROM todos WHERE (?1 IS NULL OR section = ?1) AND (?2 IS NULL OR project_id = ?2) {show_filter} ORDER BY {order}"
     );
     let mut stmt = conn.prepare(&sql).unwrap();
-    let todos = stmt
+    let mut todos = stmt
         .query_map(params![query.section, query.project_id], row_to_todo)
         .unwrap()
         .filter_map(std::result::Result::ok)
         .collect::<Vec<_>>();
 
+    if let Some(scope) = scope {
+        todos.retain_mut(|todo| {
+            let visible = scope.allows_todo(&todo.id, todo.project_id.as_deref());
+            if visible {
+                scope.redact_todo(todo);
+            }
+            visible
+        });
+    }
     HttpResponse::Ok().json(todos)
 }
 
-pub async fn get_todo(pool: web::Data<DbPool>, path: web::Path<String>) -> HttpResponse {
+pub async fn get_todo(pool: web::Data<DbPool>, path: web::Path<String>, scope: RequestScope) -> HttpResponse {
     let id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+    };
+    let _snapshot = match scoped_read_snapshot(&conn, &scope) {
+        Ok(snapshot) => snapshot,
+        Err(response) => return response,
+    };
+    let scope = match resolve_scope(&conn, scope) {
+        Ok(scope) => scope,
+        Err(response) => return response,
     };
 
     let sql = format!("SELECT {SELECT_COLS} FROM todos WHERE id = ?1");
     let result = conn.query_row(&sql, params![id], row_to_todo);
 
     match result {
-        Ok(todo) => HttpResponse::Ok().json(todo),
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
+        Ok(mut todo) if scope.as_ref().is_none_or(|scope| scope.allows_todo(&todo.id, todo.project_id.as_deref())) => {
+            if let Some(scope) = scope {
+                scope.redact_todo(&mut todo);
+            }
+            HttpResponse::Ok().json(todo)
+        }
+        Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => {
             HttpResponse::NotFound().json(serde_json::json!({"error": "Todo not found"}))
         }
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
@@ -147,12 +219,58 @@ fn project_section_of_todo(conn: &rusqlite::Connection, id: &str) -> rusqlite::R
     .optional()
 }
 
-pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequest>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
+fn authorize_todo(conn: &Connection, scope: &ResourceScope, id: &str) -> Result<(), HttpResponse> {
+    let project = conn.query_row("SELECT project_id FROM todos WHERE id = ?1", [id], |row| row.get::<_, Option<String>>(0))
+        .optional().map_err(crate::conversations::server_error)?;
+    match project {
+        Some(project) if scope.allows_todo(id, project.as_deref()) => Ok(()),
+        _ => Err(crate::conversations::not_found("Todo not found")),
+    }
+}
+
+fn authorize_destination(conn: &Connection, scope: &ResourceScope, id: &str) -> Result<(), HttpResponse> {
+    let computer = conn.query_row(
+        "SELECT m.computer_id FROM projects p JOIN section_computers m ON p.section = m.section WHERE p.id = ?1",
+        [id], |row| row.get::<_, String>(0),
+    ).optional().map_err(crate::conversations::server_error)?;
+    if scope.project_ids.contains(id) && computer.is_some_and(|id| scope.computer_ids.contains(&id)) {
+        Ok(())
+    } else {
+        Err(project_not_found())
+    }
+}
+
+fn write_transaction<'a>(conn: &'a Connection, scope: &RequestScope) -> Result<Option<Transaction<'a>>, HttpResponse> {
+    scope.as_ref().map(|_| Transaction::new_unchecked(conn, TransactionBehavior::Immediate))
+        .transpose().map_err(crate::conversations::server_error)
+}
+
+fn finish_todo_write(
+    tx: Option<Transaction<'_>>, broadcaster: &Broadcaster, response: HttpResponse,
+) -> HttpResponse {
+    if let Some(tx) = tx {
+        if let Err(err) = tx.commit() {
+            return crate::conversations::server_error(err);
+        }
+    }
+    broadcaster.send();
+    response
+}
+
+pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequest>, broadcaster: web::Data<Broadcaster>, scope: RequestScope) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     };
 
+    let tx = match write_transaction(&conn, &scope) {
+        Ok(tx) => tx,
+        Err(response) => return response,
+    };
+    let scope = match resolve_scope(&conn, scope) {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
     let title = body.title.trim();
     if title.is_empty() {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "Title cannot be empty"}));
@@ -161,6 +279,11 @@ pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequ
     let Some(project_id) = body.project_id.as_deref().filter(|id| !id.trim().is_empty()) else {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "project_id is required"}));
     };
+    if let Some(scope) = &scope {
+        if let Err(response) = authorize_destination(&conn, scope, project_id) {
+            return response;
+        }
+    }
     let project_section = match project_section(&conn, project_id) {
         Ok(Some(section)) => section,
         Ok(None) => return project_not_found(),
@@ -175,10 +298,12 @@ pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequ
 
     match insert_todo(&conn, section, title, body.importance, body.due_date.as_deref(), Some(project_id)) {
         Ok(id) => {
-            broadcaster.send();
             let sql = format!("SELECT {SELECT_COLS} FROM todos WHERE id = ?1");
-            let todo = conn.query_row(&sql, params![id], row_to_todo).unwrap();
-            HttpResponse::Created().json(todo)
+            let mut todo = conn.query_row(&sql, params![id], row_to_todo).unwrap();
+            if let Some(scope) = scope {
+                scope.redact_todo(&mut todo);
+            }
+            finish_todo_write(tx, &broadcaster, HttpResponse::Created().json(todo))
         }
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     }
@@ -189,12 +314,27 @@ pub async fn update_todo(
     path: web::Path<String>,
     body: web::Json<UpdateTodoRequest>,
     broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
 ) -> HttpResponse {
     let id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     };
+
+    let tx = match write_transaction(&conn, &scope) {
+        Ok(tx) => tx,
+        Err(response) => return response,
+    };
+    let scope = match resolve_scope(&conn, scope) {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
+    if let Some(scope) = &scope {
+        if let Err(response) = authorize_todo(&conn, scope, &id) {
+            return response;
+        }
+    }
 
     let exists: bool = conn
         .query_row("SELECT COUNT(*) FROM todos WHERE id = ?1", params![id], |row| row.get::<_, i32>(0))
@@ -221,6 +361,11 @@ pub async fn update_todo(
     }
 
     let new_project = if let Some(Some(project_id)) = body.project_id.as_ref() {
+        if let Some(scope) = &scope {
+            if let Err(response) = authorize_destination(&conn, scope, project_id) {
+                return response;
+            }
+        }
         match project_section(&conn, project_id) {
             Ok(Some(section)) => Some((project_id.clone(), section)),
             Ok(None) => return project_not_found(),
@@ -238,6 +383,9 @@ pub async fn update_todo(
                 Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
             }
         };
+        if scope.is_some() && expected.is_none() {
+            return forbidden("Moving a todo requires a granted destination project");
+        }
         if expected.is_some_and(|section| section != asked.as_str()) {
             return HttpResponse::BadRequest().json(serde_json::json!({"error": "section does not match project"}));
         }
@@ -289,35 +437,80 @@ pub async fn update_todo(
         .unwrap();
     }
 
-    broadcaster.send();
     let sql = format!("SELECT {SELECT_COLS} FROM todos WHERE id = ?1");
-    let todo = conn.query_row(&sql, params![id], row_to_todo).unwrap();
-    HttpResponse::Ok().json(todo)
+    let mut todo = conn.query_row(&sql, params![id], row_to_todo).unwrap();
+    if let Some(scope) = scope {
+        scope.redact_todo(&mut todo);
+    }
+    finish_todo_write(tx, &broadcaster, HttpResponse::Ok().json(todo))
 }
 
-pub async fn delete_todo(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
+pub async fn delete_todo(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>, scope: RequestScope) -> HttpResponse {
     let id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     };
+
+    let tx = match write_transaction(&conn, &scope) {
+        Ok(tx) => tx,
+        Err(response) => return response,
+    };
+    let scope = match resolve_scope(&conn, scope) {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
+    if let Some(scope) = &scope {
+        if let Err(response) = authorize_todo(&conn, scope, &id) {
+            return response;
+        }
+    }
+
+    if scope.is_some() {
+        let linked: rusqlite::Result<bool> = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversations WHERE todo_id = ?1)
+                 OR EXISTS(SELECT 1 FROM memories WHERE todo_id = ?1)
+                 OR EXISTS(SELECT 1 FROM job_runs WHERE todo_id = ?1)
+                 OR EXISTS(SELECT 1 FROM ideas WHERE todo_id = ?1)
+                 OR EXISTS(SELECT 1 FROM push_muted_todos WHERE todo_id = ?1)",
+            [&id], |row| row.get(0),
+        );
+        match linked {
+            Ok(false) => {}
+            Ok(true) => return forbidden("Deleting a todo with linked records requires a full-access token"),
+            Err(err) => return crate::conversations::server_error(err),
+        }
+    }
 
     let affected = conn.execute("DELETE FROM todos WHERE id = ?1", params![id]).unwrap_or(0);
 
     if affected == 0 {
         HttpResponse::NotFound().json(serde_json::json!({"error": "Todo not found"}))
     } else {
-        broadcaster.send();
-        HttpResponse::Ok().json(DeleteResponse { deleted: id })
+        finish_todo_write(tx, &broadcaster, HttpResponse::Ok().json(DeleteResponse { deleted: id }))
     }
 }
 
-pub async fn toggle_todo(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
+pub async fn toggle_todo(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>, scope: RequestScope) -> HttpResponse {
     let id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     };
+
+    let tx = match write_transaction(&conn, &scope) {
+        Ok(tx) => tx,
+        Err(response) => return response,
+    };
+    let scope = match resolve_scope(&conn, scope) {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
+    if let Some(scope) = &scope {
+        if let Err(response) = authorize_todo(&conn, scope, &id) {
+            return response;
+        }
+    }
 
     let affected = conn
         .execute(
@@ -337,10 +530,12 @@ pub async fn toggle_todo(pool: web::Data<DbPool>, path: web::Path<String>, broad
         return HttpResponse::NotFound().json(serde_json::json!({"error": "Todo not found"}));
     }
 
-    broadcaster.send();
     let sql = format!("SELECT {SELECT_COLS} FROM todos WHERE id = ?1");
-    let todo = conn.query_row(&sql, params![id], row_to_todo).unwrap();
-    HttpResponse::Ok().json(todo)
+    let mut todo = conn.query_row(&sql, params![id], row_to_todo).unwrap();
+    if let Some(scope) = scope {
+        scope.redact_todo(&mut todo);
+    }
+    finish_todo_write(tx, &broadcaster, HttpResponse::Ok().json(todo))
 }
 
 pub async fn ws_handler(

@@ -7,6 +7,7 @@
 use unicode_normalization::UnicodeNormalization;
 use std::collections::HashSet;
 
+use crate::auth::{authorize_helper_computer, RequestHelper};
 use actix_web::{web, HttpResponse};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
@@ -191,12 +192,13 @@ struct Known {
 
 /// The memories a new one is compared with: the project's (all of them, archived
 /// included), or, for a session without a project, that session's.
-fn known_memories(conn: &Connection, project_id: Option<&str>, tool: &str, session_id: &str) -> rusqlite::Result<Vec<Known>> {
+fn known_memories(conn: &Connection, project_id: Option<&str>, tool: &str, session_id: &str, helper: Option<&str>) -> rusqlite::Result<Vec<Known>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT id, kind, text_key, created_at >= datetime('now', '{FUZZY_WINDOW}') FROM memories
-         WHERE CASE WHEN ?1 IS NOT NULL THEN project_id = ?1 ELSE tool = ?2 AND session_id = ?3 END"
+         WHERE CASE WHEN ?1 IS NOT NULL THEN project_id = ?1 ELSE tool = ?2 AND session_id = ?3 END
+           AND (?4 IS NULL OR computer_id = ?4)"
     ))?;
-    let rows = stmt.query_map(params![project_id, tool, session_id], |r| {
+    let rows = stmt.query_map(params![project_id, tool, session_id, helper], |r| {
         let kind: String = r.get(1)?;
         Ok(Known {
             id: r.get(0)?,
@@ -226,7 +228,12 @@ fn find_duplicate<'a>(known: &'a [Known], kind: MemoryKind, key: &str) -> Option
 /// The session row is created if missing (so the memories get its project), the todo comes
 /// from the conversation link, duplicates are counted instead of inserted, and `supersedes`
 /// archives unpinned memories of the same project.
+#[cfg(test)]
 pub(crate) fn insert_bulk_db(conn: &Connection, req: &BulkMemoriesRequest) -> Result<BulkMemoriesResponse, MemoryError> {
+    insert_bulk_for_computer(conn, req, None)
+}
+
+fn insert_bulk_for_computer(conn: &Connection, req: &BulkMemoriesRequest, helper: Option<&str>) -> Result<BulkMemoriesResponse, MemoryError> {
     let tool = req.tool.trim();
     if !SUPPORTED_TOOLS.contains(&tool) {
         return Err(MemoryError::BadRequest("Unsupported tool".into()));
@@ -248,7 +255,15 @@ pub(crate) fn insert_bulk_db(conn: &Connection, req: &BulkMemoriesRequest) -> Re
     if get_computer(&tx, computer_id)?.is_none() {
         return Err(MemoryError::NotFound("Computer not found"));
     }
+    if helper.is_some() && crate::sessions::session_on_another_computer(&tx, tool, session_id, computer_id)? {
+        return Err(MemoryError::NotFound("Session not found"));
+    }
     let project_id = ensure_session_db(&tx, computer_id, tool, session_id, req.cwd.trim())?;
+    if let (Some(computer), Some(project)) = (helper, project_id.as_deref()) {
+        if !crate::projects::project_on_computer(&tx, project, computer)? {
+            return Err(MemoryError::NotFound("Project not found"));
+        }
+    }
     let todo_id: Option<String> = tx
         .query_row(
             "SELECT todo_id FROM conversations WHERE tool = ?1 AND session_id = ?2",
@@ -256,7 +271,7 @@ pub(crate) fn insert_bulk_db(conn: &Connection, req: &BulkMemoriesRequest) -> Re
             |r| r.get(0),
         )
         .optional()?;
-    let mut known = known_memories(&tx, project_id.as_deref(), tool, session_id)?;
+    let mut known = known_memories(&tx, project_id.as_deref(), tool, session_id, helper)?;
 
     let mut inserted_ids = Vec::new();
     let mut archived: Vec<String> = Vec::new();
@@ -294,8 +309,9 @@ pub(crate) fn insert_bulk_db(conn: &Connection, req: &BulkMemoriesRequest) -> Re
                 }
                 let changed = tx.execute(
                     "UPDATE memories SET archived = 1, archived_reason = 'superseded', updated_at = datetime('now')
-                     WHERE id = ?1 AND project_id = ?2 AND pinned = 0 AND archived = 0",
-                    params![target, project_id],
+                     WHERE id = ?1 AND project_id = ?2 AND pinned = 0 AND archived = 0
+                       AND (?3 IS NULL OR computer_id = ?3)",
+                    params![target, project_id, helper],
                 )?;
                 if changed > 0 {
                     archived.push(target.clone());
@@ -454,7 +470,7 @@ pub(crate) fn update_memory_db(conn: &Connection, id: &str, req: &UpdateMemoryRe
 
 /// Imported Claude memory files, upserted on (computer_id, source_key). A changed text
 /// updates the row (and brings back one archived as unused); an unchanged one is left alone.
-pub(crate) fn import_memories_db(conn: &Connection, req: &ImportMemoriesRequest) -> Result<ImportMemoriesResponse, MemoryError> {
+fn import_memories_db(conn: &Connection, req: &ImportMemoriesRequest, helper: Option<&str>) -> Result<ImportMemoriesResponse, MemoryError> {
     let computer_id = req.computer_id.trim();
     let mut checked = Vec::with_capacity(req.items.len());
     for item in &req.items {
@@ -472,7 +488,11 @@ pub(crate) fn import_memories_db(conn: &Connection, req: &ImportMemoriesRequest)
     let (mut inserted, mut updated, mut unchanged) = (0, 0, 0);
     for (key, project_id, text, kind) in checked {
         if let Some(project_id) = project_id {
-            if !project_exists(&tx, project_id)? {
+            let visible = match helper {
+                Some(computer) => crate::projects::project_on_computer(&tx, project_id, computer)?,
+                None => project_exists(&tx, project_id)?,
+            };
+            if !visible {
                 return Err(MemoryError::NotFound("Project not found"));
             }
         }
@@ -702,11 +722,17 @@ pub(crate) fn list_memories_db(conn: &Connection, q: &MemoryQuery) -> Result<Vec
 // Handlers
 // ---------------------------------------------------------------------------
 
-pub async fn list_memories(pool: web::Data<DbPool>, query: web::Query<Vec<(String, String)>>) -> HttpResponse {
-    let q = match MemoryQuery::parse(&query) {
+pub async fn list_memories(pool: web::Data<DbPool>, query: web::Query<Vec<(String, String)>>, helper: RequestHelper) -> HttpResponse {
+    let mut q = match MemoryQuery::parse(&query) {
         Ok(q) => q,
         Err(msg) => return bad_request(&msg),
     };
+    if let Some(helper) = helper {
+        if q.computer_id.as_ref().is_some_and(|id| *id != helper.0) {
+            return HttpResponse::Ok().json(Vec::<Memory>::new());
+        }
+        q.computer_id = Some(helper.0.clone());
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
@@ -739,12 +765,16 @@ pub async fn bulk_memories(
     pool: web::Data<DbPool>,
     body: web::Json<BulkMemoriesRequest>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
+    if let Err(response) = authorize_helper_computer(&helper, body.computer_id.trim()) {
+        return response;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match insert_bulk_db(&conn, &body) {
+    match insert_bulk_for_computer(&conn, &body, helper.as_ref().map(|helper| helper.0.as_str())) {
         Ok(resp) => {
             broadcaster.send();
             HttpResponse::Created().json(resp)
@@ -757,12 +787,16 @@ pub async fn import_memories(
     pool: web::Data<DbPool>,
     body: web::Json<ImportMemoriesRequest>,
     broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
 ) -> HttpResponse {
+    if let Err(response) = authorize_helper_computer(&helper, body.computer_id.trim()) {
+        return response;
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match import_memories_db(&conn, &body) {
+    match import_memories_db(&conn, &body, helper.as_ref().map(|helper| helper.0.as_str())) {
         Ok(resp) => {
             broadcaster.send();
             HttpResponse::Ok().json(resp)

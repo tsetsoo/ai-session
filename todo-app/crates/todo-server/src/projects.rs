@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::auth::{forbidden, RequestHelper, RequestScope, ResourceScope};
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{Computer, CreateProjectRequest, DeleteResponse, Project, ProjectSuggestion, Section, UpdateProjectRequest};
@@ -85,6 +86,14 @@ fn list_projects_db(conn: &Connection) -> rusqlite::Result<Vec<Project>> {
 }
 
 /// `(id, section, folder)` of every project whose section uses this computer.
+pub(crate) fn project_on_computer(conn: &Connection, project: &str, computer: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projects p JOIN section_computers sc ON sc.section = p.section
+                       WHERE p.id = ?1 AND sc.computer_id = ?2)",
+        params![project, computer], |row| row.get(0),
+    )
+}
+
 fn computer_projects(conn: &Connection, computer_id: &str) -> rusqlite::Result<Vec<(String, String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT p.id, p.section, p.folder FROM projects p
@@ -242,6 +251,7 @@ pub(crate) fn rematch_sessions(conn: &Connection, computer_id: &str) -> rusqlite
 #[derive(Debug)]
 pub(crate) enum ProjectError {
     BadRequest(&'static str),
+    Forbidden(&'static str),
     NotFound(&'static str),
     Conflict(String),
     Db(rusqlite::Error),
@@ -257,6 +267,7 @@ fn project_error_response(e: ProjectError) -> HttpResponse {
     match e {
         ProjectError::BadRequest(msg) => bad_request(msg),
         ProjectError::NotFound(msg) => not_found(msg),
+        ProjectError::Forbidden(msg) => forbidden(msg),
         ProjectError::Conflict(msg) => conflict(msg),
         ProjectError::Db(e) => server_error(e),
     }
@@ -320,7 +331,7 @@ pub(crate) fn create_project_db(conn: &Connection, req: &CreateProjectRequest) -
     Ok(project)
 }
 
-pub(crate) fn update_project_db(conn: &Connection, id: &str, req: &UpdateProjectRequest) -> Result<Project, ProjectError> {
+fn update_project_db(conn: &Connection, id: &str, req: &UpdateProjectRequest, scope: Option<&ResourceScope>) -> Result<Project, ProjectError> {
     let name = req.name.as_deref().map(checked_name).transpose()?;
     let mcp_default = req
         .mcp_default
@@ -333,6 +344,14 @@ pub(crate) fn update_project_db(conn: &Connection, id: &str, req: &UpdateProject
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let existing = load_project(&tx, id)?.ok_or(ProjectError::NotFound("Project not found"))?;
+    if let Some(scope) = scope {
+        if !scope.allows_project(&existing) {
+            return Err(ProjectError::NotFound("Project not found"));
+        }
+        if req.folder.is_some() || req.repo_url.is_some() {
+            return Err(ProjectError::Forbidden("Changing a project's folder or repository requires a full-access token"));
+        }
+    }
     let section = existing.section.as_str();
     let folder = match req.folder.as_deref() {
         Some(folder) => {
@@ -509,25 +528,44 @@ pub(crate) fn suggestions_db(conn: &Connection) -> rusqlite::Result<Vec<ProjectS
 // Handlers
 // ---------------------------------------------------------------------------
 
-pub async fn list_projects(pool: web::Data<DbPool>) -> HttpResponse {
+pub async fn list_projects(pool: web::Data<DbPool>, scope: RequestScope, helper: RequestHelper) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
     match list_projects_db(&conn) {
-        Ok(projects) => HttpResponse::Ok().json(projects),
+        Ok(mut projects) => {
+            if let Some(scope) = scope {
+                projects.retain(|project| scope.allows_project(project));
+                for project in &mut projects {
+                    scope.redact_project(project);
+                }
+            }
+            if let Some(helper) = helper {
+                projects.retain(|project| project.computer.id == helper.0);
+                for project in &mut projects {
+                    ResourceScope::default().redact_project(project);
+                }
+            }
+            HttpResponse::Ok().json(projects)
+        }
         Err(e) => server_error(e),
     }
 }
 
-pub async fn get_project(pool: web::Data<DbPool>, path: web::Path<String>) -> HttpResponse {
+pub async fn get_project(pool: web::Data<DbPool>, path: web::Path<String>, scope: RequestScope) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
     match load_project(&conn, &path.into_inner()) {
-        Ok(Some(p)) => HttpResponse::Ok().json(p),
-        Ok(None) => not_found("Project not found"),
+        Ok(Some(mut project)) if scope.as_ref().is_none_or(|scope| scope.allows_project(&project)) => {
+            if let Some(scope) = scope {
+                scope.redact_project(&mut project);
+            }
+            HttpResponse::Ok().json(project)
+        }
+        Ok(_) => not_found("Project not found"),
         Err(e) => server_error(e),
     }
 }
@@ -555,13 +593,17 @@ pub async fn update_project(
     path: web::Path<String>,
     body: web::Json<UpdateProjectRequest>,
     broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match update_project_db(&conn, &path.into_inner(), &body) {
-        Ok(p) => {
+    match update_project_db(&conn, &path.into_inner(), &body, scope.as_ref().map(|scope| scope.as_ref())) {
+        Ok(mut p) => {
+            if let Some(scope) = scope {
+                scope.redact_project(&mut p);
+            }
             broadcaster.send();
             HttpResponse::Ok().json(p)
         }

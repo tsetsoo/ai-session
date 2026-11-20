@@ -6,6 +6,7 @@
 //! latest one per computer as it came: the app reads the fields it knows, and a newer
 //! script's extra fields need no hub change.
 
+use crate::auth::{authorize_helper_computer, RequestHelper};
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -96,7 +97,10 @@ pub async fn get_health(pool: web::Data<DbPool>, path: web::Path<String>) -> Htt
     }
 }
 
-pub async fn put_health(pool: web::Data<DbPool>, path: web::Path<String>, body: web::Json<Value>) -> HttpResponse {
+pub async fn put_health(pool: web::Data<DbPool>, path: web::Path<String>, body: web::Json<Value>, helper: RequestHelper) -> HttpResponse {
+    if let Err(response) = authorize_helper_computer(&helper, &path) {
+        return response;
+    }
     match pool.get() {
         Ok(conn) => respond(set_health_db(&conn, &path, &body).map(|_| json!({"ok": true}))),
         Err(e) => server_error(e),
