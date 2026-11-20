@@ -466,10 +466,14 @@ pub async fn delete_todo(pool: web::Data<DbPool>, path: web::Path<String>, broad
         }
     }
 
-    if scope.is_some() {
+    if let Some(scope) = &scope {
+        match crate::conversations::todo_conversations_within_scope(&conn, scope, &id, false) {
+            Ok(true) => {}
+            Ok(false) => return forbidden("Deleting would remove a conversation outside your grants"),
+            Err(err) => return crate::conversations::open_error(err),
+        }
         let linked: rusqlite::Result<bool> = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM conversations WHERE todo_id = ?1)
-                 OR EXISTS(SELECT 1 FROM memories WHERE todo_id = ?1)
+            "SELECT EXISTS(SELECT 1 FROM memories WHERE todo_id = ?1)
                  OR EXISTS(SELECT 1 FROM job_runs WHERE todo_id = ?1)
                  OR EXISTS(SELECT 1 FROM ideas WHERE todo_id = ?1)
                  OR EXISTS(SELECT 1 FROM push_muted_todos WHERE todo_id = ?1)",

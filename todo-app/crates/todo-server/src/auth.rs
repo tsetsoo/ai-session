@@ -172,6 +172,7 @@ fn scoped_route(method: &actix_web::http::Method, path: &str) -> bool {
             !id.is_empty() && *id != "suggestions",
         (&Method::PATCH, ["", "api", "computers", id])
         | (&Method::POST, ["", "api", "todos", id, "toggle" | "conversation"])
+        | (&Method::POST, ["", "api", "conversations", id, "continue" | "reopen"])
         | (&Method::PUT, ["", "api", "conversations", id, "session"])
         | (&Method::DELETE, ["", "api", "conversations", id]) => !id.is_empty(),
         _ => false,
@@ -381,6 +382,34 @@ mod tests {
         assert_eq!(chat["computer"]["id"], "spread");
         assert_eq!(chat["created"], true);
         let chat_id = chat["id"].as_str().unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute("UPDATE conversations SET status = 'closed' WHERE id = ?1", [chat_id]).unwrap();
+            conn.execute(
+                "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id)
+                 VALUES ('spread-sibling', 'start-spread', 'spread', '/tmp', 'claude', 'sibling', 'sibling')",
+                [],
+            ).unwrap();
+        }
+        for (id, action, status) in [
+            ("other-todo", "reopen", 404),
+            ("other-computer", "continue", 404),
+            ("visible-chat", "continue", 403),
+            (chat_id, "reopen", 200),
+            (chat_id, "continue", 200),
+        ] {
+            let path = format!("/api/conversations/{id}/{action}");
+            let request = write(Method::POST, &path, serde_json::Value::Null);
+            assert_eq!(test::call_service(&app, request).await.status(), status, "{path}");
+        }
+        {
+            let conn = pool.get().unwrap();
+            let sibling_status: String = conn.query_row(
+                "SELECT status FROM conversations WHERE id = 'spread-sibling'",
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(sibling_status, "closed");
+        }
         for (id, status) in [("other-computer", 404), ("other-todo", 404), (chat_id, 200)] {
             let path = format!("/api/conversations/{id}/session");
             let request = write(Method::PUT, &path, serde_json::json!({
@@ -393,6 +422,9 @@ mod tests {
             let request = write(Method::DELETE, &path, serde_json::Value::Null);
             assert_eq!(test::call_service(&app, request).await.status(), status, "{path}");
         }
+        assert_eq!(test::call_service(
+            &app, write(Method::DELETE, "/api/todos/start-spread", serde_json::Value::Null),
+        ).await.status(), 200);
         let todo: serde_json::Value = test::call_and_read_body_json(&app, get("/api/todos/in-project")).await;
         assert_eq!(todo["title"], "Project todo");
         assert_eq!(todo["completed"], true);

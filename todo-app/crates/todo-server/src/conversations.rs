@@ -290,6 +290,7 @@ pub(crate) enum OpenError {
     BadRequest(&'static str),
     NoTmuxName,
     Conflict(&'static str),
+    Forbidden(&'static str),
     Db(rusqlite::Error),
 }
 
@@ -414,6 +415,30 @@ fn authorize_scoped_conversation(
     } else {
         Err(OpenError::TodoNotFound)
     }
+}
+
+fn authorize_conversation_id(
+    conn: &Connection, scope: &ResourceScope, id: &str,
+) -> Result<(), OpenError> {
+    let conversation = load_conversation_by_id(conn, id)?.ok_or(OpenError::TodoNotFound)?;
+    authorize_scoped_conversation(conn, scope, &conversation)
+}
+
+pub(crate) fn todo_conversations_within_scope(
+    conn: &Connection, scope: &ResourceScope, todo_id: &str, open_only: bool,
+) -> Result<bool, OpenError> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM conversations WHERE todo_id = ?1 AND (NOT ?2 OR status != 'closed')",
+    )?;
+    let ids = stmt.query_map(params![todo_id, open_only], |row| row.get::<_, String>(0))?;
+    for id in ids {
+        match authorize_conversation_id(conn, scope, &id?) {
+            Ok(()) => {}
+            Err(OpenError::TodoNotFound) => return Ok(false),
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(true)
 }
 
 /// A commit sha as git prints it, short or full.
@@ -1526,14 +1551,7 @@ pub async fn open_conversation(
             body["created"] = serde_json::Value::Bool(created);
             HttpResponse::Ok().json(body)
         }
-        Err(OpenError::TodoNotFound) => not_found("Todo not found"),
-        Err(OpenError::NoComputer(section)) => conflict(format!("Section {section} has no computer assigned")),
-        Err(OpenError::UnsupportedTool) => bad_request("Unsupported tool"),
-        Err(OpenError::NoProject) => bad_request("project_id is required"),
-        Err(OpenError::BadRequest(msg)) => bad_request(msg),
-        Err(OpenError::NoTmuxName) => conflict("No free tmux session name for this todo"),
-        Err(OpenError::Conflict(msg)) => conflict(msg),
-        Err(OpenError::Db(e)) => server_error(e),
+        Err(err) => open_error(err),
     }
 }
 
@@ -1585,7 +1603,7 @@ pub async fn set_conversation_session(
     }
 }
 
-fn open_error(e: OpenError) -> HttpResponse {
+pub(crate) fn open_error(e: OpenError) -> HttpResponse {
     match e {
         OpenError::TodoNotFound => not_found("Todo not found"),
         OpenError::NoComputer(section) => conflict(format!("Section {section} has no computer assigned")),
@@ -1594,6 +1612,7 @@ fn open_error(e: OpenError) -> HttpResponse {
         OpenError::BadRequest(msg) => bad_request(msg),
         OpenError::NoTmuxName => conflict("No free tmux session name for this todo"),
         OpenError::Conflict(msg) => conflict(msg),
+        OpenError::Forbidden(msg) => forbidden(msg),
         OpenError::Db(e) => server_error(e),
     }
 }
@@ -1680,12 +1699,19 @@ fn close_conversation_id(conn: &Connection, id: &str) -> Result<Conversation, Op
 /// "Continue with this": `id` becomes its todo's main conversation and every other open
 /// conversation of the todo is closed (rows, sessions, worktrees and branches are kept).
 /// Returns the ones it closed, so the app can stop their tmux sessions.
-pub(crate) fn continue_with_db(conn: &Connection, id: &str) -> Result<Vec<Conversation>, OpenError> {
+fn continue_with_db(conn: &Connection, id: &str, scope: RequestScope) -> Result<Vec<Conversation>, OpenError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let (todo_id, status): (String, String) = tx
         .query_row("SELECT todo_id, status FROM conversations WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?
         .ok_or(OpenError::TodoNotFound)?;
+    if let Some(scope) = &scope {
+        let scope = scope.resolve_projects(&tx)?;
+        authorize_conversation_id(&tx, &scope, id)?;
+        if !todo_conversations_within_scope(&tx, &scope, &todo_id, true)? {
+            return Err(OpenError::Forbidden("Continuing would close a conversation outside your grants"));
+        }
+    }
     if status == "closed" {
         return Err(OpenError::Conflict("This conversation is closed; reopen it first"));
     }
@@ -1697,6 +1723,9 @@ pub(crate) fn continue_with_db(conn: &Connection, id: &str) -> Result<Vec<Conver
         })
         .optional()?;
     if let Some((run_id, group_id)) = attempt {
+        if scope.is_some() {
+            return Err(OpenError::Forbidden("Selecting a research result requires a full-access token"));
+        }
         tx.execute("UPDATE run_groups SET chosen_run_id = ?2 WHERE id = ?1", params![group_id, run_id])?;
         tx.execute(
             "UPDATE ideas SET findings = f.findings, updated_at = datetime('now')
@@ -1731,12 +1760,13 @@ pub async fn continue_with_conversation(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
     broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match continue_with_db(&conn, &path.into_inner()) {
+    match continue_with_db(&conn, &path.into_inner(), scope) {
         Ok(closed) => {
             broadcaster.send();
             HttpResponse::Ok().json(closed)
@@ -1750,12 +1780,25 @@ pub async fn reopen_conversation(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
     broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match reopen_db(&conn, &path.into_inner()) {
+    let id = path.into_inner();
+    let reopened = (|| -> Result<Conversation, OpenError> {
+        if let Some(scope) = scope {
+            let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+            authorize_conversation_id(&tx, &scope.resolve_projects(&tx)?, &id)?;
+            let conversation = reopen_db(&tx, &id)?;
+            tx.commit()?;
+            Ok(conversation)
+        } else {
+            reopen_db(&conn, &id)
+        }
+    })();
+    match reopened {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)
@@ -1870,8 +1913,7 @@ pub async fn delete_conversation_by_id(
         let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
         if let Some(scope) = scope {
             let scope = scope.resolve_projects(&tx)?;
-            let conversation = load_conversation_by_id(&tx, &id)?.ok_or(OpenError::TodoNotFound)?;
-            authorize_scoped_conversation(&tx, &scope, &conversation)?;
+            authorize_conversation_id(&tx, &scope, &id)?;
         }
         let deleted = tx.execute("DELETE FROM conversations WHERE id = ?1", [&id])?;
         tx.commit()?;
