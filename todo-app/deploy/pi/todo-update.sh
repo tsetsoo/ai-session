@@ -6,6 +6,7 @@ TODO_RELEASE_BASE="${TODO_RELEASE_BASE:-https://github.com/tsetsoo/ai-session/re
 TODO_HEALTH_URL="${TODO_HEALTH_URL:-http://127.0.0.1:8080/api/health}"
 TODO_SYSTEMCTL="${TODO_SYSTEMCTL:-systemctl}"
 KEEP_RELEASES="${KEEP_RELEASES:-3}"
+TODO_HEALTH_ATTEMPTS="${TODO_HEALTH_ATTEMPTS:-60}"
 
 mkdir -p "$TODO_ROOT/releases" "$TODO_ROOT/data"
 
@@ -81,7 +82,8 @@ restart_failed=0
 
 ok=0
 if [[ "$restart_failed" -eq 0 ]]; then
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
+  # Schema migrations can take longer than a normal restart on the Pi.
+  for ((attempt = 0; attempt < TODO_HEALTH_ATTEMPTS; attempt++)); do
     if curl -fsS "$TODO_HEALTH_URL" >/dev/null; then
       ok=1
       break
