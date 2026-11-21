@@ -31,8 +31,8 @@ final class AutomationModelTests: XCTestCase {
         XCTAssertEqual(ideas.filter(IdeaFilter.researched.matches).map(\.id), ["b"])
         let groups = IdeaGrouping.byProject(ideas.filter(IdeaFilter.all.matches),
                                             projects: [try project("p1", name: "zeta"), try project("p2", name: "alpha")])
-        XCTAssertEqual(groups.map { $0.project?.name }, ["alpha", "zeta", nil], "by name, unknown last")
-        XCTAssertEqual(groups.map { $0.ideas.map(\.id) }, [["a"], ["b", "c"], ["e"]])
+        XCTAssertEqual(groups.map { $0.project?.name }, ["zeta", "alpha", nil], "supplied order, unknown last")
+        XCTAssertEqual(groups.map { $0.ideas.map(\.id) }, [["b", "c"], ["a"], ["e"]])
         XCTAssertEqual(IdeaFilter.waiting.label, "Waiting for OK")
     }
 

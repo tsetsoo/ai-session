@@ -209,7 +209,7 @@ public enum IdeaFilter: String, CaseIterable, Hashable, Sendable {
 }
 
 public enum IdeaGrouping {
-    /// Groups in project-name order; ideas of an unknown project come last. Order within a
+    /// Groups in the supplied project order; ideas of an unknown project come last. Order within a
     /// group is kept as given (the hub's: starred, then by status, then newest).
     public static func byProject(_ ideas: [Idea], projects: [Project]) -> [(project: Project?, ideas: [Idea])] {
         let byId = Dictionary(projects.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -219,8 +219,7 @@ public enum IdeaGrouping {
             if groups[idea.projectId] == nil { order.append(idea.projectId) }
             groups[idea.projectId, default: []].append(idea)
         }
-        let known = order.filter { byId[$0] != nil }
-            .sorted { byId[$0]!.name.localizedCaseInsensitiveCompare(byId[$1]!.name) == .orderedAscending }
+        let known = projects.map(\.id).filter { groups[$0] != nil }
         let unknown = order.filter { byId[$0] == nil }
         return (known + unknown).map { (project: byId[$0], ideas: groups[$0] ?? []) }
     }

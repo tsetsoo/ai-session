@@ -22,8 +22,17 @@ struct ProjectEditorSheet: View {
     var onCreated: (Project) -> Void = { _ in }
 
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
+    @State private var browsing: BrowseRequest?
+    @State private var browseError: String?
+    @State private var repoWasEdited = false
+    @State private var detectedRepo = ""
+    @State private var detectedLookup: OriginLookup?
+    @State private var detectingRepo = false
+
     @State private var computerID: String?
     @State private var name = ""
+    @State private var suggestedName = ""
     @State private var folder = ""
     @State private var repoUrl = ""
     @State private var digestEnabled = true
@@ -36,6 +45,7 @@ struct ProjectEditorSheet: View {
     @State private var worktrees = true
 
     var body: some View {
+        let lookup = originLookup
         NavigationStack {
             Form {
                 Section {
@@ -56,14 +66,28 @@ struct ProjectEditorSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.body.monospaced())
+                    Button("Browse Folders…", systemImage: "folder") { browse() }
+                        .disabled(selectedComputer == nil)
+                    if let browseError {
+                        Text(browseError).foregroundStyle(DS.error)
+                    }
                 } footer: {
                     Text("The folder lives on this computer. A nested folder is its own project.")
                 }
                 Section {
-                    FormTextField("Repository URL (optional)", text: $repoUrl)
+                    FormTextField("Repository URL (optional)", text: Binding(
+                        get: { repoUrl },
+                        set: {
+                            repoWasEdited = true
+                            repoUrl = $0
+                        }
+                    ))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                    if detectingRepo && !repoWasEdited {
+                        ProgressView("Detecting Git remote…")
+                    }
                 }
                 if case .edit = mode, !trimmed(repoUrl).isEmpty {
                     Section {
@@ -129,10 +153,101 @@ struct ProjectEditorSheet: View {
                 }
             }
             .onAppear(perform: load)
+            .onChange(of: computerID) { _, _ in browseError = nil }
+            .task(id: lookup) { await detectOrigin(lookup) }
+            .sheet(item: $browsing) { request in
+                ProjectFolderPicker(
+                    computer: request.computer,
+                    config: request.config,
+                    initialFolder: request.folder,
+                    registeredFolders: Set(store.projects.lazy
+                        .filter { $0.computer.id == request.computer.id }.map(\.folder)),
+                    onSelect: useFolder
+                )
+            }
         }
         #if os(macOS)
         .frame(minWidth: 520, minHeight: 460)
         #endif
+    }
+
+    private var selectedComputer: Computer? {
+        if case let .edit(project) = mode { return project.computer }
+        return store.computers.first { $0.id == computerID }
+    }
+
+    private struct BrowseRequest: Identifiable {
+        let id = UUID()
+        let computer: Computer
+        let config: HostConnectionConfig
+        let folder: String
+    }
+
+    private struct OriginLookup: Equatable {
+        let computer: Computer
+        let folder: String
+    }
+
+    private var originLookup: OriginLookup? {
+        guard let computer = selectedComputer, loaded else { return nil }
+        let path = trimmed(folder)
+        guard path.hasPrefix("/") || path.hasPrefix("~/") || path == "~" else { return nil }
+        return OriginLookup(computer: computer, folder: path)
+    }
+
+    private func browse() {
+        guard let computer = selectedComputer else { return }
+        browseError = nil
+        do {
+            let config = try HostLookup.config(for: computer, in: hosts)
+            let path = trimmed(folder)
+            browsing = BrowseRequest(computer: computer, config: config, folder: path.isEmpty ? "~" : path)
+        } catch {
+            browseError = TodoHubStore.message(for: error)
+        }
+    }
+
+    private func useFolder(_ path: String) {
+        if trimmed(name).isEmpty || name == suggestedName {
+            suggestedName = path.split(separator: "/").last.map(String.init) ?? path
+            name = suggestedName
+        }
+        folder = path
+    }
+
+    private func detectOrigin(_ lookup: OriginLookup?) async {
+        guard !Task.isCancelled, originLookup == lookup else { return }
+        detectingRepo = false
+        guard !repoWasEdited, repoUrl.isEmpty || repoUrl == detectedRepo else { return }
+        repoUrl = ""
+        detectedRepo = ""
+        detectedLookup = nil
+        guard let lookup else { return }
+        detectingRepo = true
+        defer { if !Task.isCancelled { detectingRepo = false } }
+        do {
+            try await Task.sleep(for: .milliseconds(350))
+            guard !repoWasEdited, let config = try? HostLookup.config(for: lookup.computer, in: hosts) else { return }
+            let result = try await NIOSSHClient(execTimeoutSeconds: 5).exec(
+                config, command: TmuxCommandBuilder.projectOrigin(in: lookup.folder)
+            )
+            guard !Task.isCancelled, originLookup == lookup, !repoWasEdited, result.exitCode == 0 else { return }
+            let origin = trimmed(result.stdout)
+            if origin.contains("://") {
+                guard var url = URLComponents(string: origin), let scheme = url.scheme?.lowercased() else { return }
+                if scheme == "http" || scheme == "https" || url.password != nil {
+                    url.user = nil
+                    url.password = nil
+                }
+                detectedRepo = url.string ?? ""
+            } else {
+                detectedRepo = origin
+            }
+            detectedLookup = lookup
+            repoUrl = detectedRepo
+        } catch {
+            // Git may be absent or this folder may be outside a repository. The URL stays optional.
+        }
     }
 
     private var isCreate: Bool {
@@ -144,7 +259,8 @@ struct ProjectEditorSheet: View {
 
     private var canSave: Bool {
         guard !isSaving, !trimmed(name).isEmpty, !trimmed(folder).isEmpty else { return false }
-        return !isCreate || computerID.flatMap { store.projectRoutingSection(on: $0) } != nil
+        return !isCreate || ((repoWasEdited || !detectingRepo)
+            && computerID.flatMap { store.projectRoutingSection(on: $0) } != nil)
     }
 
     private func load() {
@@ -176,7 +292,8 @@ struct ProjectEditorSheet: View {
         error = nil
         let name = trimmed(name)
         let folder = trimmed(folder)
-        let repo = trimmed(repoUrl)
+        let isStaleOrigin = !repoWasEdited && detectedLookup != nil && detectedLookup != originLookup
+        let repo = isStaleOrigin ? "" : trimmed(repoUrl)
         Task {
             defer { isSaving = false }
             do {

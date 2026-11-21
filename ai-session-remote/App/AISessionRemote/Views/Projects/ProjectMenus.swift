@@ -72,7 +72,6 @@ struct SessionProjectMenu: View {
     private var candidates: [Project] {
         store.projects
             .filter { $0.computer.id == session.computerId }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     private func run(_ body: @escaping () async throws -> Void) {
@@ -82,6 +81,46 @@ struct SessionProjectMenu: View {
             } catch {
                 onError(TodoHubStore.message(for: error))
             }
+        }
+    }
+}
+
+/// Reordering here or in a list updates the shared display order.
+struct ComputerOrderActions: View {
+    let computerID: String
+    let store: TodoHubStore
+
+    var body: some View {
+        let ids = store.computers.map(\.id)
+        if let index = ids.firstIndex(of: computerID) {
+            OrderActions(index: index, count: ids.count) { store.moveComputer(computerID, by: $0) }
+        }
+    }
+}
+
+struct ProjectOrderActions: View {
+    let project: Project
+    let store: TodoHubStore
+
+    var body: some View {
+        let projects = store.projectsByComputer.first { $0.computer.id == project.computer.id }?.projects ?? []
+        if let index = projects.firstIndex(where: { $0.id == project.id }) {
+            OrderActions(index: index, count: projects.count) { store.moveProject(project, by: $0) }
+        }
+    }
+}
+
+private struct OrderActions: View {
+    let index: Int
+    let count: Int
+    let move: (Int) -> Void
+
+    var body: some View {
+        if index > 0 {
+            Button("Move Up", systemImage: "arrow.up") { move(-1) }
+        }
+        if index + 1 < count {
+            Button("Move Down", systemImage: "arrow.down") { move(1) }
         }
     }
 }

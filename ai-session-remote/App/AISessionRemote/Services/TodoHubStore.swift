@@ -13,9 +13,40 @@ final class TodoHubStore {
     /// `todo:<todo id>` so a one-conversation cache does not collapse onto `""`.
     private(set) var conversations: [String: Conversation] = [:]
     private(set) var sectionComputers: [TodoSection: SectionComputer] = [:]
-    private(set) var computers: [Computer] = []
-    /// Ordered by name. Older hubs without projects leave this empty.
-    private(set) var projects: [Project] = []
+    private var hubComputers: [Computer] = []
+    private var hubProjects: [Project] = []
+    private var computerOrder = UserDefaults.standard.stringArray(forKey: "displayOrder.computers") ?? []
+    private var projectOrder = UserDefaults.standard.stringArray(forKey: "displayOrder.projects") ?? []
+
+    var computers: [Computer] { Self.ordered(hubComputers, by: computerOrder) }
+    var projects: [Project] { projectsByComputer.flatMap(\.projects) }
+
+    private static func ordered<Item: Identifiable>(_ items: [Item], by ids: [String]) -> [Item]
+        where Item.ID == String {
+        let positions = Dictionary(ids.enumerated().map { ($0.element, $0.offset) },
+                                   uniquingKeysWith: { first, _ in first })
+        return items.sorted { positions[$0.id, default: .max] < positions[$1.id, default: .max] }
+    }
+
+    func moveComputer(_ id: String, by offset: Int) {
+        var ids = computers.map(\.id)
+        guard let index = ids.firstIndex(of: id), ids.indices.contains(index + offset) else { return }
+        ids.swapAt(index, index + offset)
+        computerOrder = ids
+        if demo == nil { UserDefaults.standard.set(ids, forKey: "displayOrder.computers") }
+    }
+
+    func moveProject(_ project: Project, by offset: Int) {
+        guard let group = projectsByComputer.first(where: { $0.computer.id == project.computer.id }),
+              let index = group.projects.firstIndex(where: { $0.id == project.id }),
+              group.projects.indices.contains(index + offset) else { return }
+        let neighbor = group.projects[index + offset].id
+        var ids = projects.map(\.id)
+        guard let from = ids.firstIndex(of: project.id), let to = ids.firstIndex(of: neighbor) else { return }
+        ids.swapAt(from, to)
+        projectOrder = ids
+        if demo == nil { UserDefaults.standard.set(ids, forKey: "displayOrder.projects") }
+    }
     /// Folders with conversations that could become projects.
     private(set) var suggestions: [ProjectSuggestion] = []
     /// Bumped when projects or suggestions change, or when the set of conversation identities
@@ -131,7 +162,7 @@ final class TodoHubStore {
         }
         if let snapshot = cache.load() {
             apply(todos: snapshot.todos, conversations: snapshot.conversations)
-            projects = snapshot.projects
+            hubProjects = snapshot.projects
             cachedAt = snapshot.savedAt
             rememberSaved(snapshot)
         }
@@ -171,9 +202,9 @@ final class TodoHubStore {
     func loadDemo(_ demo: TodoHubDemo) {
         self.demo = demo
         apply(todos: demo.todos, conversations: demo.conversations)
-        projects = demo.projects
+        hubProjects = demo.projects
         suggestions = demo.suggestions
-        computers = demo.computers
+        hubComputers = demo.computers
         hasLoadedOnce = true
     }
     #endif
@@ -338,8 +369,8 @@ final class TodoHubStore {
                            conversations: conversations, sessions: [], memories: [])
         apply(todos: todos, conversations: conversations)
         self.sectionComputers = Dictionary(sectionComputers.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new })
-        self.computers = computers
-        self.projects = projects
+        hubComputers = computers
+        hubProjects = projects
         hasLoadedOnce = true
         // As if just fetched: the sync line reads "Synced · just now", not the real cache's age.
         cachedAt = .now
@@ -1262,15 +1293,17 @@ final class TodoHubStore {
         isConfigured && !isOffline && projectRoutingSection(on: computerID) != nil
     }
 
-    /// Projects grouped by computer (computers by name, projects by name).
     var projectsByComputer: [(computer: Computer, projects: [Project])] {
-        let byName: (Project, Project) -> Bool = { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        return Dictionary(grouping: projects, by: \.computer.id).values
-            .compactMap { items -> (computer: Computer, projects: [Project])? in
-                guard let first = items.first else { return nil }
-                return (first.computer, items.sorted(by: byName))
-            }
-            .sorted { $0.computer.name.localizedStandardCompare($1.computer.name) == .orderedAscending }
+        let alphabetic = hubProjects.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+        let grouped = Dictionary(grouping: Self.ordered(alphabetic, by: projectOrder), by: \.computer.id)
+        let known = Set(hubComputers.map(\.id))
+        let missing = grouped.values.compactMap { $0.first?.computer }.filter { !known.contains($0.id) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return Self.ordered(hubComputers + missing, by: computerOrder).compactMap { computer in
+            grouped[computer.id].map { (computer: computer, projects: $0) }
+        }
     }
 
     /// The project's todos, open first, newest first.
@@ -1303,7 +1336,7 @@ final class TodoHubStore {
             try await client.deleteProject(id: project.id)
             if projects.contains(where: { $0.id == project.id }) {
                 localChanges += 1
-                projects.removeAll { $0.id == project.id }
+                hubProjects.removeAll { $0.id == project.id }
             }
         }
     }
@@ -1784,19 +1817,19 @@ final class TodoHubStore {
 
     private func upsert(_ computer: Computer) {
         localChanges += 1
-        if let index = computers.firstIndex(where: { $0.id == computer.id }) {
-            computers[index] = computer
+        if let index = hubComputers.firstIndex(where: { $0.id == computer.id }) {
+            hubComputers[index] = computer
         } else {
-            computers.append(computer)
+            hubComputers.append(computer)
         }
     }
 
     /// Shows a project the hub just returned, in the hub's order (name ignoring case, then id).
     private func upsert(_ project: Project) {
         localChanges += 1
-        projects.removeAll { $0.id == project.id }
-        projects.append(project)
-        projects.sort { ($0.name.lowercased(), $0.id) < ($1.name.lowercased(), $1.id) }
+        hubProjects.removeAll { $0.id == project.id }
+        hubProjects.append(project)
+        hubProjects.sort { ($0.name.lowercased(), $0.id) < ($1.name.lowercased(), $1.id) }
     }
 
     /// `perform` for todo changes: failures go to the shell's Todos alert.
@@ -1830,11 +1863,11 @@ final class TodoHubStore {
             sectionComputers.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new }
         )
         if self.sectionComputers != mappedSections { self.sectionComputers = mappedSections }
-        if self.computers != computers { self.computers = computers }
+        if hubComputers != computers { hubComputers = computers }
 
         var projectsChanged = false
-        if let projects, projects != self.projects {
-            self.projects = projects
+        if let projects, projects != hubProjects {
+            hubProjects = projects
             projectsChanged = true
         }
         var suggestionsChanged = false
@@ -1848,7 +1881,7 @@ final class TodoHubStore {
         isOffline = false
         backgroundIssue = nil
         tokenRejected = false
-        await saveCacheIfChanged(todos: todos, conversations: conversations, projects: self.projects)
+        await saveCacheIfChanged(todos: todos, conversations: conversations, projects: hubProjects)
     }
 
     /// Todo id + session id. Status and status message are not part of the identity, so a

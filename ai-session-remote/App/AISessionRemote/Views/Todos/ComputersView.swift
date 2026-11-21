@@ -53,6 +53,7 @@ struct ComputersView: View {
                             .tint(.indigo)
                         }
                         .contextMenu {
+                            ComputerOrderActions(computerID: computer.id, store: store)
                             Button {
                                 serversComputer = computer
                             } label: {

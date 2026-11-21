@@ -448,3 +448,34 @@ final class TranscriptCommandTests: XCTestCase {
     }
 }
 #endif
+
+#if os(macOS)
+final class ProjectFolderCommandTests: XCTestCase {
+    func testBrowseAndDiscoverRepositoriesWithSpecialCharactersInPaths() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let repo = "client's app"
+        let dir = home.appendingPathComponent("work/\(repo)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        func run(_ command: String) throws -> String {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", command]
+            process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
+            let output = Pipe()
+            process.standardOutput = output
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0, command)
+            return String(decoding: data, as: UTF8.self)
+        }
+
+        _ = try run(#"git init -q "$HOME/work/client's app" && git -C "$HOME/work/client's app" remote add origin git@example.com:team/app.git"#)
+        XCTAssertEqual(try run(TmuxCommandBuilder.browseProjectFolders("~/work")), "~/work\0~/work/\(repo)\0")
+        XCTAssertEqual(try run(TmuxCommandBuilder.discoverProjectRepositories(in: "~")), "./work/\(repo)/.git\0")
+        XCTAssertEqual(try run(TmuxCommandBuilder.projectOrigin(in: "~/work/\(repo)")), "git@example.com:team/app.git\n")
+    }
+}
+#endif

@@ -489,6 +489,39 @@ public enum TmuxCommandBuilder {
         )
     }
 
+    public static func browseProjectFolders(_ folder: String) -> String {
+        wrap("sh -c \(shellQuote(#"""
+            cd -- "$1" || exit 1
+            show_path() {
+                case "$1" in
+                    "$HOME") printf '%s\000' '~' ;;
+                    "$HOME"/*) printf '%s\000' "~${1#"$HOME"}" ;;
+                    *) printf '%s\000' "$1" ;;
+                esac
+            }
+            show_path "$PWD"
+            prefix="${PWD%/}"
+            for path in "$prefix"/.[!.]* "$prefix"/..?* "$prefix"/*; do
+                [ -d "$path" ] || continue
+                show_path "$path"
+            done
+            """#)) sh \(shellQuotePath(folder))")
+    }
+
+    public static func discoverProjectRepositories(in folder: String) -> String {
+        wrap("sh -c \(shellQuote(#"""
+            cd -- "$1" || exit 1
+            [ "$PWD" != / ] || exit 0
+            find . -xdev -maxdepth 5 \( -name .git -print0 -prune \) -o \
+                \( -name '.*' ! -name . -o -name Library -o -name node_modules \
+                   -o -name vendor -o -name target -o -name build \) -prune 2>/dev/null
+            """#)) sh \(shellQuotePath(folder))")
+    }
+
+    public static func projectOrigin(in folder: String) -> String {
+        wrap("git -C \(shellQuotePath(folder)) config --local --get remote.origin.url 2>/dev/null")
+    }
+
     static func wrap(_ command: String) -> String {
         "\(pathExport); \(utf8Locale); \(command)"
     }

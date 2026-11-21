@@ -40,6 +40,7 @@ struct ComputerListView: View {
                         onSetUp: { setUpPrefill = HostEditorPrefill(computer: computer) }
                     )
                     .rowTap { onOpen(computer) }
+                    .contextMenu { ComputerOrderActions(computerID: computer.id, store: store) }
                 }
             } footer: {
                 if !store.computers.isEmpty {

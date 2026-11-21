@@ -112,6 +112,7 @@
 		4EC9FAFBEED69FA5A34DE6B2 /* StatusMonitoring.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65729FC1D2C53A94E3FDC02D /* StatusMonitoring.swift */; };
 		4F3045F6CDD8A515D866D341 /* IdeasPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 137F28FB6F0222F70DE53BCF /* IdeasPanes.swift */; };
 		5116AFC9335F2CAC3AF1BC5F /* TodoRename.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12D5F34B1CF5313030CABD54 /* TodoRename.swift */; };
+		51671614ECD14F80AF82F917 /* ProjectFolderPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF8B69EE0B91DA779617AED8 /* ProjectFolderPicker.swift */; };
 		52393CB02747D23C39B7110E /* ReadAloudSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB05A31BB0133D0F6B4ADF75 /* ReadAloudSettingsView.swift */; };
 		526B8FB11A2265507B1D21EC /* ReadAloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1793D57706890A26C94F6B6 /* ReadAloud.swift */; };
 		54786EE8A4EC63320E5D2268 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AEEFD06D4BF1BB591C6A637 /* AppDelegate.swift */; };
@@ -191,6 +192,7 @@
 		8FD2326FAEDE2A82D4131BB4 /* ConversationLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2795545DB4B7B10EE099084F /* ConversationLoader.swift */; };
 		8FDFD567428FABBFBA8F8EE2 /* RemoteLimits.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAA172C22AAE74D2E6E00975 /* RemoteLimits.swift */; };
 		913DDA93ADA392AC140E715D /* ComputerListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 739BB066C50D554FBFA92B3C /* ComputerListView.swift */; };
+		91CE11B946E65821666540DD /* ProjectFolderPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF8B69EE0B91DA779617AED8 /* ProjectFolderPicker.swift */; };
 		9208C2AE3FC146F0F63CCD2F /* FormTextField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DB375F033AD740D7FE5EEAE /* FormTextField.swift */; };
 		9319FAEB5DC0DF9A6C10C1B3 /* PhoneConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19388DFC31D114300D5C298 /* PhoneConversationView.swift */; };
 		93BB67AB83C83B09CE1C55B2 /* TodoListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3C31BAE70EEEAC4E0643FB /* TodoListView.swift */; };
@@ -506,6 +508,7 @@
 		BDC0C15755494AAA0C43292F /* RemoteRestart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteRestart.swift; sourceTree = "<group>"; };
 		BDECEE903A5E03F5371FB37C /* VisiblePresenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisiblePresenceTests.swift; sourceTree = "<group>"; };
 		BEC0FF09B4815F076FB3472E /* TextSizeShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextSizeShortcuts.swift; sourceTree = "<group>"; };
+		BF8B69EE0B91DA779617AED8 /* ProjectFolderPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectFolderPicker.swift; sourceTree = "<group>"; };
 		BF94862244A57B5C08D789B6 /* TodoAddDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoAddDraft.swift; sourceTree = "<group>"; };
 		C2E686F0583F636575A8741C /* DesignSystemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystemTests.swift; sourceTree = "<group>"; };
 		C31D6AD3EA2554B5CB910FC8 /* RetryAfterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetryAfterTests.swift; sourceTree = "<group>"; };
@@ -733,6 +736,7 @@
 				94877436C6D2727F5D498710 /* MemoryViews.swift */,
 				6FD185A20B04E7AD8AE4F055 /* ProjectDetailView.swift */,
 				97B7A594C8A26491ACD55735 /* ProjectEditorSheet.swift */,
+				BF8B69EE0B91DA779617AED8 /* ProjectFolderPicker.swift */,
 				1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */,
 				F85D0650002C6172FF438409 /* ProjectsView.swift */,
 				3E412E70D538D46BA26B6BE6 /* ProjectUpdatesSection.swift */,
@@ -1270,6 +1274,7 @@
 				E66F716710375D2CAED0DD14 /* PooledSSHConnection.swift in Sources */,
 				02A843B56A4F87D4678B9E41 /* ProjectDetailView.swift in Sources */,
 				96BC86AE987F12B6E6A0FCAD /* ProjectEditorSheet.swift in Sources */,
+				51671614ECD14F80AF82F917 /* ProjectFolderPicker.swift in Sources */,
 				44F3E96E02F25239D27F1CE9 /* ProjectMenus.swift in Sources */,
 				B2BC95296C9E4B85FBB28FBD /* ProjectUpdatesSection.swift in Sources */,
 				0E084439FFE2FCB9C1C81AF4 /* ProjectsView.swift in Sources */,
@@ -1419,6 +1424,7 @@
 				AE67B4C34F8CAF0F30BE3BFD /* PooledSSHConnection.swift in Sources */,
 				EACD9032F907D8FAFA651A6C /* ProjectDetailView.swift in Sources */,
 				EF6087053C1B3C66DF8EDFEC /* ProjectEditorSheet.swift in Sources */,
+				91CE11B946E65821666540DD /* ProjectFolderPicker.swift in Sources */,
 				BC64832FF85ABCAF0A96EABD /* ProjectMenus.swift in Sources */,
 				F63A01C308A69AECA93D054C /* ProjectUpdatesSection.swift in Sources */,
 				6E12123A6B2B469E369C9DAB /* ProjectsView.swift in Sources */,

@@ -58,7 +58,7 @@ public enum TodoGrouping: String, CaseIterable, Sendable {
         public var id: String { status.id }
     }
 
-    /// One group per project with open todos, projects by name, then "No project". Done todos
+    /// One group per project with open todos, projects in the supplied order, then "No project". Done todos
     /// are left out.
     public static func byProject(_ todos: [Todo], projects: [Project]) -> [ProjectGroup] {
         let known = Dictionary(projects.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -66,7 +66,6 @@ public enum TodoGrouping: String, CaseIterable, Sendable {
             todo.projectId.flatMap { known[$0] == nil ? nil : $0 } ?? ""
         }
         let named = projects
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             .compactMap { project -> ProjectGroup? in
                 guard let items = byProject[project.id], !items.isEmpty else { return nil }
                 return ProjectGroup(project: project, todos: newestFirst(items))

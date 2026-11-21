@@ -90,21 +90,32 @@ struct ProjectsList<Route: Hashable>: View {
         ForEach(store.projectsByComputer, id: \.computer.id) { group in
             Section {
                 ForEach(group.projects) { project in
-                    if selection != nil {
-                        ProjectRow(project: project)
-                            .tag(project.id)
-                    } else {
-                        NavigationLink(value: route(project.id)) {
-                            ProjectRow(project: project)
+                    projectLink(project)
+                        .contextMenu {
+                            Button("Edit Project…", systemImage: "pencil") { editor = .edit(project) }
+                                .disabled(store.isOffline)
+                            ProjectOrderActions(project: project, store: store)
                         }
-                    }
                 }
             } header: {
                 Label(group.computer.name, systemImage: "desktopcomputer")
+                    .contextMenu { ComputerOrderActions(computerID: group.computer.id, store: store) }
             }
         }
     }
 
+
+    @ViewBuilder
+    private func projectLink(_ project: Project) -> some View {
+        if selection != nil {
+            ProjectRow(project: project)
+                .tag(project.id)
+        } else {
+            NavigationLink(value: route(project.id)) {
+                ProjectRow(project: project)
+            }
+        }
+    }
 
     private func loadPending() async {
         guard store.isConfigured else { return }

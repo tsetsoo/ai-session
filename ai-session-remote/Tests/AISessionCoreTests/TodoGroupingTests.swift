@@ -12,7 +12,7 @@ final class TodoGroupingTests: XCTestCase {
         Project(id: id, name: name, computer: mac, folder: "~/\(id)")
     }
 
-    func testByProjectOrdersProjectsByNameThenNoProject() {
+    func testByProjectUsesSuppliedProjectOrderThenNoProject() {
         let projects = [project("p2", "website"), project("p1", "API"), project("p3", "Empty")]
         let todos = [
             todo("loose", created: "2026-10-20"),
@@ -23,8 +23,8 @@ final class TodoGroupingTests: XCTestCase {
             todo("api-done", project: "p1", done: true, created: "2026-10-22"),
         ]
         let groups = TodoGrouping.byProject(todos, projects: projects)
-        XCTAssertEqual(groups.map(\.title), ["API", "website", "No project"], "empty projects are left out")
-        XCTAssertEqual(groups.map { $0.todos.map(\.id) }, [["api"], ["web-new", "web-old"], ["gone-project", "loose"]])
+        XCTAssertEqual(groups.map(\.title), ["website", "API", "No project"], "empty projects are left out")
+        XCTAssertEqual(groups.map { $0.todos.map(\.id) }, [["web-new", "web-old"], ["api"], ["gone-project", "loose"]])
     }
 
     func testByProjectWithoutLooseTodosHasNoNoProjectGroup() {

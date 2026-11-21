@@ -7,6 +7,7 @@ struct SidebarView: View {
     /// Settings on iPad; the Mac opens its Settings scene instead.
     let openSettings: () -> Void
     let addProject: (String) -> Void
+    @State private var editingProject: ProjectEditorSheet.Mode?
     @State private var collapsedComputers: Set<String> = []
 
     private func expansion(for id: String) -> Binding<Bool> {
@@ -48,6 +49,9 @@ struct SidebarView: View {
                                            showsDot: urgentProjects.contains(project.id))
                                     .tag(AppModel.SidebarItem.project(project.id))
                                     .contextMenu {
+                                        Button("Edit Project…", systemImage: "pencil") { editingProject = .edit(project) }
+                                            .disabled(store.isOffline)
+                                        ProjectOrderActions(project: project, store: store)
                                         Button("Project Details", systemImage: "info.circle") {
                                             selection = .project(project.id)
                                             model.selectedProjectID = project.id
@@ -59,6 +63,7 @@ struct SidebarView: View {
                                 .contextMenu {
                                     Button("Add Project", systemImage: "plus") { addProject(row.id) }
                                         .disabled(!store.canCreateProject(on: row.id))
+                                    ComputerOrderActions(computerID: row.id, store: store)
                                 }
                         }
                         .tag(AppModel.SidebarItem.computer(row.id))
@@ -67,6 +72,7 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .sheet(item: $editingProject) { ProjectEditorSheet(mode: $0, store: store) }
         .onChange(of: selection) { _, item in
             if case let .project(id) = item, let project = store.project(id: id) {
                 collapsedComputers.remove(project.computer.id)
