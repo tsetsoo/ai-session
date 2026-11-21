@@ -7,18 +7,13 @@ struct ComputersView: View {
     let store: TodoHubStore
     @Environment(\.dismiss) private var dismiss
     @State private var showingAddComputer = false
-    @State private var editingSection: TodoSection?
     /// Shown inside this sheet: the Todos screen's alert can't present over it.
     @State private var errorMessage: String?
     @State private var computerToDelete: Computer?
     @State private var serversComputer: Computer?
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
 
-    /// `editing` opens that section's computer at once (a fix from the frame).
-    init(store: TodoHubStore, editing section: TodoSection? = nil) {
-        self.store = store
-        _editingSection = State(initialValue: section)
-    }
+    init(store: TodoHubStore) { self.store = store }
 
     var body: some View {
         NavigationStack {
@@ -84,15 +79,6 @@ struct ComputersView: View {
             .sheet(isPresented: $showingAddComputer) {
                 AddComputerSheet { name, hostname, port, username in
                     run { try await store.addComputer(name: name, hostname: hostname, port: port, username: username) }
-                }
-            }
-            .sheet(item: $editingSection) { section in
-                SectionMappingSheet(
-                    section: section,
-                    computers: store.computers,
-                    current: store.sectionComputers[section]
-                ) { computerID in
-                    run { try await store.assign(section, computerID: computerID) }
                 }
             }
             .sheet(item: $serversComputer) { computer in
@@ -185,47 +171,6 @@ private struct AddComputerSheet: View {
         guard let p = Int(port), (1...65535).contains(p) else { return false }
         return !name.trimmed.isEmpty && !hostname.trimmed.isEmpty && !hostname.contains(" ")
             && !username.trimmed.isEmpty
-    }
-}
-
-private struct SectionMappingSheet: View {
-    let section: TodoSection
-    let computers: [Computer]
-    let onSave: (String?) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var computerID: String?
-
-    init(section: TodoSection, computers: [Computer], current: SectionComputer?,
-         onSave: @escaping (String?) -> Void) {
-        self.section = section
-        self.computers = computers
-        self.onSave = onSave
-        _computerID = State(initialValue: current?.computer.id)
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Picker("Computer", selection: $computerID) {
-                    Text("None").tag(String?.none)
-                    ForEach(computers) { Text($0.name).tag(Optional($0.id)) }
-                }
-            }
-            .navigationTitle("Choose Computer")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        onSave(computerID)
-                        dismiss()
-                    }
-                }
-            }
-        }
-        .presentationDetents([.medium])
     }
 }
 

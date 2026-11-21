@@ -151,9 +151,6 @@ pub struct Todo {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTodoRequest {
-    /// Omitted means the new todo uses its project's section.
-    #[serde(default)]
-    pub section: Option<Section>,
     pub title: String,
     #[serde(default)]
     pub importance: Option<Importance>,
@@ -174,8 +171,6 @@ pub struct UpdateTodoRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub section: Option<Section>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub importance: Option<Importance>,
     /// `null` clears the due date.
     #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
@@ -183,13 +178,6 @@ pub struct UpdateTodoRequest {
     /// A project. JSON `null` is rejected: a todo keeps a project.
     #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<Option<String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SectionCount {
-    pub section: Section,
-    pub total: usize,
-    pub completed: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,17 +290,6 @@ pub struct UpdateComputerRequest {
     /// `null` clears the default.
     #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
     pub mcp_default: Option<Option<Vec<String>>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SectionComputer {
-    pub section: Section,
-    pub computer: Computer,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SetSectionComputerRequest {
-    pub computer_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -616,7 +593,6 @@ pub struct LinkConversationRequest {
 /// Create a todo from an existing conversation, linked to it.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TodoFromConversationRequest {
-    pub section: Section,
     pub title: String,
     pub project_id: String,
     pub computer_id: String,
@@ -719,7 +695,7 @@ pub struct UpdateSummary {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateProjectRequest {
     pub name: String,
-    pub section: Section,
+    pub computer_id: String,
     pub folder: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_url: Option<String>,
@@ -1000,15 +976,6 @@ pub struct ProjectRollup {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SectionRollup {
-    pub section: Option<Section>,
-    #[serde(flatten)]
-    pub counters: StatsCounters,
-    #[serde(default)]
-    pub workers: StatsCounters,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComputerRollup {
     pub computer_id: String,
     pub name: String,
@@ -1031,7 +998,6 @@ pub struct WeeklyStats {
     #[serde(default)]
     pub workers: StatsCounters,
     pub by_project: Vec<ProjectRollup>,
-    pub by_section: Vec<SectionRollup>,
     pub by_computer: Vec<ComputerRollup>,
 }
 
@@ -1534,7 +1500,7 @@ pub struct PushSettings {
     pub done_after_minutes: Option<u32>,
     pub grace_seconds: u32,
     pub quiet_hours: Option<QuietHours>,
-    pub muted_sections: Vec<Section>,
+    pub muted_project_ids: Vec<String>,
     pub muted_todo_ids: Vec<String>,
 }
 
@@ -1545,7 +1511,7 @@ impl Default for PushSettings {
             done_after_minutes: None,
             grace_seconds: DEFAULT_PUSH_GRACE_SECONDS,
             quiet_hours: None,
-            muted_sections: Vec::new(),
+            muted_project_ids: Vec::new(),
             muted_todo_ids: Vec::new(),
         }
     }
@@ -1560,7 +1526,7 @@ pub struct PushSettingsUpdate {
     pub done_after_minutes: Option<u32>,
     pub grace_seconds: u32,
     pub quiet_hours: Option<QuietHours>,
-    pub muted_sections: Vec<Section>,
+    pub muted_project_ids: Vec<String>,
 }
 
 impl Default for PushSettingsUpdate {
@@ -1571,7 +1537,7 @@ impl Default for PushSettingsUpdate {
             done_after_minutes: d.done_after_minutes,
             grace_seconds: d.grace_seconds,
             quiet_hours: d.quiet_hours,
-            muted_sections: d.muted_sections,
+            muted_project_ids: d.muted_project_ids,
         }
     }
 }
@@ -1672,7 +1638,7 @@ pub enum JobAction {
     /// A push, sent by the hub.
     Push { title: String, body: String },
     /// A todo, created by the hub.
-    Todo { title: String, project_id: Option<String>, section: Option<Section> },
+    Todo { title: String, project_id: Option<String> },
     /// A watcher check on one computer; new problems push, and with a debug tool open problems
     /// are taken by debugging conversations (runs of the watcher's hidden Debug job).
     Watch {
@@ -2436,16 +2402,14 @@ mod tests {
         assert!(json["project_id"].is_null() && json["name"].is_null());
         assert_eq!(json["sessions"], 0);
         assert!(json["input_tokens"].is_null());
-        let section = SectionRollup { section: Some(Section::Sp), counters: StatsCounters::default(), workers: StatsCounters::default() };
-        assert_eq!(serde_json::to_value(section).unwrap()["section"], "Sp");
     }
 
     #[test]
     fn push_settings_update_defaults_omitted_fields() {
-        let u: PushSettingsUpdate = serde_json::from_str(r#"{"muted_sections":["P"]}"#).unwrap();
+        let u: PushSettingsUpdate = serde_json::from_str(r#"{"muted_project_ids":["p1"]}"#).unwrap();
         assert!(u.notify_waiting);
         assert_eq!(u.grace_seconds, DEFAULT_PUSH_GRACE_SECONDS);
-        assert_eq!(u.muted_sections, vec![Section::P]);
+        assert_eq!(u.muted_project_ids, vec!["p1"]);
         let d: PushDeviceRequest = serde_json::from_str(
             r#"{"token":"ab","platform":"ios","environment":"sandbox","bundle_id":"b","app_version":"1"}"#,
         )

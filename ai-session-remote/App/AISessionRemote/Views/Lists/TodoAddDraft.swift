@@ -47,9 +47,9 @@ final class TodoAddDraft {
 
     /// Creates New project first when it is chosen, then the todo. True once the todo is added;
     /// otherwise `localError` says why. Offline, the store's offline error is the message.
-    func submit(store: TodoHubStore, section: TodoSection, hasComputer: Bool,
+    func submit(store: TodoHubStore, computerID: String,
                 lockedProjectID: String? = nil) async -> Bool {
-        guard canSubmit(hasComputer: hasComputer, lockedProjectID: lockedProjectID) else { return false }
+        guard canSubmit(hasComputer: true, lockedProjectID: lockedProjectID) else { return false }
         isSubmitting = true
         defer { isSubmitting = false }
         localError = nil
@@ -61,7 +61,7 @@ final class TodoAddDraft {
             } else if choice.makingNew {
                 guard let created = try await store.createProject(CreateProjectRequest(
                     name: newName.trimmingCharacters(in: .whitespacesAndNewlines),
-                    section: section,
+                    computerId: computerID,
                     folder: newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
                 )) else { return false }
                 projectId = created.id

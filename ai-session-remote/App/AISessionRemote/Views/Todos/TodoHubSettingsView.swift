@@ -92,7 +92,7 @@ struct TodoHubSettingsView: View {
         let client = TodoHubClient(baseURL: url, token: token)
         do {
             try await client.health()
-            _ = try await client.listSectionComputers()
+            _ = try await client.listComputers()
             testSucceeded = true
             testResult = "Connected"
         } catch {

@@ -104,13 +104,13 @@ public enum JobAction: Codable, Equatable, Hashable, Sendable {
     /// Research the project's next idea; the prompt holds optional extra instructions.
     case research(ConversationJobAction)
     case push(title: String, body: String)
-    case todo(title: String, projectId: String?, section: String?)
+    case todo(title: String, projectId: String?)
     /// A watcher check; open problems are taken by debugging conversations.
     case watch(WatchJobAction)
     /// A kind this app doesn't know yet (a newer hub). Shown, never sent back.
     case unsupported(kind: String)
 
-    private enum CodingKeys: String, CodingKey { case kind, title, body, projectId, section }
+    private enum CodingKeys: String, CodingKey { case kind, title, body, projectId }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -126,8 +126,7 @@ public enum JobAction: Codable, Equatable, Hashable, Sendable {
             self = .push(title: try c.decode(String.self, forKey: .title), body: try c.decodeIfPresent(String.self, forKey: .body) ?? "")
         case "todo":
             self = .todo(title: try c.decode(String.self, forKey: .title),
-                         projectId: try c.decodeIfPresent(String.self, forKey: .projectId),
-                         section: try c.decodeIfPresent(String.self, forKey: .section))
+                         projectId: try c.decodeIfPresent(String.self, forKey: .projectId))
         default:
             self = .unsupported(kind: kind)
         }
@@ -152,11 +151,10 @@ public enum JobAction: Codable, Equatable, Hashable, Sendable {
             try c.encode("push", forKey: .kind)
             try c.encode(title, forKey: .title)
             try c.encode(body, forKey: .body)
-        case let .todo(title, projectId, section):
+        case let .todo(title, projectId):
             try c.encode("todo", forKey: .kind)
             try c.encode(title, forKey: .title)
             try c.encodeIfPresent(projectId, forKey: .projectId)
-            try c.encodeIfPresent(section, forKey: .section)
         }
     }
 }

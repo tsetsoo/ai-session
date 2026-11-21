@@ -156,6 +156,9 @@ pub fn init_pool(db_path: &str) -> DbPool {
         conn.execute_batch("ALTER TABLE todos ADD COLUMN waiting INTEGER NOT NULL DEFAULT 0 CHECK(waiting IN (0,1));")
             .expect("Failed to add Waiting status");
     }
+    migrate_project_computers(&conn, db_path, version).expect("Failed to assign computers to projects");
+    migrate_project_mutes(&conn, db_path, version).expect("Failed to migrate project mutes");
+    migrate_retired_section_settings(&conn, db_path, version).expect("Failed to migrate retired section settings");
     if version <= SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
             .expect("Failed to record the schema version");
@@ -164,6 +167,93 @@ pub fn init_pool(db_path: &str) -> DbPool {
     }
 
     pool
+}
+
+/// Retire the old mute table and preserve the default computer for the assistant.
+fn migrate_retired_section_settings(conn: &Connection, db_path: &str, version: i64) -> rusqlite::Result<()> {
+    if column_exists(conn, "today_settings", "assistant_computer_id")? {
+        return Ok(());
+    }
+    if version == 39 {
+        backup_before_migration(conn, db_path, 40)?;
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "ALTER TABLE today_settings ADD COLUMN assistant_computer_id TEXT REFERENCES computers(id) ON DELETE SET NULL;
+         INSERT INTO today_settings (id, assistant_computer_id)
+             SELECT 1, computer_id FROM section_computers WHERE section = 'P'
+             ON CONFLICT(id) DO UPDATE SET assistant_computer_id = excluded.assistant_computer_id;
+         DROP TABLE IF EXISTS push_muted_sections;",
+    )?;
+    tx.commit()
+}
+
+/// Carry section mutes over to their existing projects and to any projectless todos.
+fn migrate_project_mutes(conn: &Connection, db_path: &str, version: i64) -> rusqlite::Result<()> {
+    if table_sql(conn, "push_muted_projects")?.is_some() {
+        return Ok(());
+    }
+    if version == 38 {
+        backup_before_migration(conn, db_path, 39)?;
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE push_muted_projects (
+             project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE
+         );
+         INSERT INTO push_muted_projects (project_id)
+             SELECT p.id FROM projects p JOIN push_muted_sections m ON m.section = p.section;
+         INSERT OR IGNORE INTO push_muted_todos (todo_id)
+             SELECT t.id FROM todos t JOIN push_muted_sections m ON m.section = t.section
+             WHERE t.project_id IS NULL;",
+    )?;
+    tx.commit()
+}
+
+/// Preserve the computer selected by each legacy section when upgrading.
+fn migrate_project_computers(conn: &Connection, db_path: &str, version: i64) -> rusqlite::Result<()> {
+    if !column_exists(conn, "projects", "computer_id")? {
+        if version == 36 {
+            backup_before_migration(conn, db_path, 37)?;
+        }
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(
+            "ALTER TABLE projects ADD COLUMN computer_id TEXT REFERENCES computers(id) ON DELETE RESTRICT;
+             UPDATE projects SET computer_id = (
+                 SELECT computer_id FROM section_computers WHERE section = projects.section
+             );",
+        )?;
+        tx.commit()?;
+    }
+    let ddl = table_sql(conn, "projects")?.ok_or(rusqlite::Error::InvalidQuery)?;
+    if let Some((_, columns)) = ddl.split_once('(') {
+        if columns.contains("UNIQUE(section, folder)") {
+            if version == 37 {
+                backup_before_migration(conn, db_path, 38)?;
+            }
+            conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+            let rebuild = (|| -> rusqlite::Result<()> {
+                let tx = conn.unchecked_transaction()?;
+                let columns = columns.replace("UNIQUE(section, folder)", "UNIQUE(section, folder, computer_id)");
+                tx.execute_batch(&format!(
+                    "DROP VIEW IF EXISTS project_computers;
+                     CREATE TABLE projects_new ({columns};
+                     INSERT INTO projects_new SELECT * FROM projects;
+                     DROP TABLE projects;
+                     ALTER TABLE projects_new RENAME TO projects;"
+                ))?;
+                tx.commit()
+            })();
+            conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+            rebuild?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS projects_computer ON projects(computer_id);
+         CREATE VIEW IF NOT EXISTS project_computers AS
+         SELECT p.id AS project_id, COALESCE(p.computer_id, sc.computer_id) AS computer_id
+         FROM projects p LEFT JOIN section_computers sc ON sc.section = p.section;",
+    )
 }
 
 /// Tools whose conversations can be stored. New conversations started from a todo are
@@ -1000,7 +1090,7 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v36: `todos.waiting` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 36;
+pub const SCHEMA_VERSION: i64 = 40;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -1031,7 +1121,21 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
                                                             if !column_exists(conn, "today_settings", "last_reminder_digest_on")? {
                                                                 return Ok(34);
                                                             }
-                                                            return Ok(if column_exists(conn, "todos", "waiting")? { 36 } else { 35 });
+                                                            return Ok(if column_exists(conn, "projects", "computer_id")? {
+                                                                if column_exists(conn, "today_settings", "assistant_computer_id")? {
+                                                                    40
+                                                                } else if table_sql(conn, "push_muted_projects")?.is_some() {
+                                                                    39
+                                                                } else if table_sql(conn, "projects")?.is_some_and(|sql| sql.contains("UNIQUE(section, folder, computer_id)")) {
+                                                                    38
+                                                                } else {
+                                                                    37
+                                                                }
+                                                            } else if column_exists(conn, "todos", "waiting")? {
+                                                                36
+                                                            } else {
+                                                                35
+                                                            });
                                                         }
                                                         return Ok(33);
                                                     }
@@ -1376,6 +1480,13 @@ fn migrate_v5_to_v6_in(conn: &Connection) -> rusqlite::Result<()> {
 /// Everything v4 adds: the push notification tables (see push/store.rs). Only creates,
 /// so it is safe to run on every start and an older binary after a rollback ignores them.
 fn create_v4_objects(conn: &Connection) -> rusqlite::Result<()> {
+    if table_sql(conn, "push_muted_projects")?.is_none() {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS push_muted_sections (
+                 section TEXT PRIMARY KEY CHECK(section IN ('Sp','I','Si','P'))
+             );",
+        )?;
+    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS push_devices (
             token        TEXT PRIMARY KEY,
@@ -1397,9 +1508,6 @@ fn create_v4_objects(conn: &Connection) -> rusqlite::Result<()> {
             quiet_start        TEXT,
             quiet_end          TEXT,
             quiet_tz           TEXT
-        );
-        CREATE TABLE IF NOT EXISTS push_muted_sections (
-            section TEXT PRIMARY KEY CHECK(section IN ('Sp','I','Si','P'))
         );
         CREATE TABLE IF NOT EXISTS push_muted_todos (
             todo_id    TEXT PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE,
@@ -2093,7 +2201,7 @@ mod tests {
     ";
 
     const V3_TABLES: [&str; 4] = ["projects", "sessions", "session_days", "memories"];
-    const V4_TABLES: [&str; 4] = ["push_devices", "push_settings", "push_muted_sections", "push_muted_todos"];
+    const V4_TABLES: [&str; 3] = ["push_devices", "push_settings", "push_muted_todos"];
 
     /// A v3 database as the projects/memories release leaves it: the v2 fixture plus the v3
     /// objects, one project, and user_version 3.
@@ -2204,7 +2312,7 @@ mod tests {
         let conn = pool.get().unwrap();
         assert_eq!(user_version(&conn), SCHEMA_VERSION);
         let project_cols = column_names(&conn, "projects");
-        assert!(!project_cols.iter().any(|c| c == "computer_id"));
+        assert!(project_cols.iter().any(|c| c == "computer_id"));
         assert!(project_cols.iter().any(|c| c == "section"));
         let section_cols = column_names(&conn, "section_computers");
         assert!(!section_cols.iter().any(|c| c == "cwd" || c == "tool"));
@@ -3078,6 +3186,69 @@ mod tests {
         assert!(column_exists(&conn, "conversations", "branch").unwrap());
         let on: i64 = conn.query_row("SELECT worktrees FROM projects WHERE id = 'p'", [], |r| r.get(0)).unwrap();
         assert_eq!(on, 1);
+    }
+
+    #[test]
+    fn v39_preserves_section_mutes_for_existing_projects_and_projectless_todos() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        crate::test_support::seed_computers(&conn);
+        conn.execute_batch(
+            "DROP TABLE push_muted_projects;
+             ALTER TABLE today_settings DROP COLUMN assistant_computer_id;
+             CREATE TABLE push_muted_sections (section TEXT PRIMARY KEY);
+             PRAGMA user_version = 38;
+             INSERT INTO projects (id, name, section, folder) VALUES
+                 ('muted', 'App', 'Si', '~/app'), ('unmuted', 'Other', 'P', '~/other');
+             INSERT INTO todos (id, title, section, project_id) VALUES
+                 ('project-todo', 'Task', 'Si', 'muted'), ('loose-todo', 'Loose task', 'Si', NULL);
+             INSERT INTO push_muted_sections (section) VALUES ('Si');",
+        ).unwrap();
+        drop(conn);
+
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert!(table_sql(&conn, "push_muted_sections").unwrap().is_none());
+        let computer: String = conn.query_row(
+            "SELECT assistant_computer_id FROM today_settings WHERE id = 1", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(computer, "mac");
+        let settings = crate::push::store::load_settings(&conn).unwrap();
+        assert_eq!(settings.muted_project_ids, vec!["muted"]);
+        assert_eq!(settings.muted_todo_ids, vec!["loose-todo"]);
+        assert!(crate::push::store::is_muted(&conn, "project-todo").unwrap());
+        assert!(crate::push::store::is_muted(&conn, "loose-todo").unwrap());
+    }
+
+    #[test]
+    fn v37_preserves_project_computers_from_legacy_sections() {
+        let db = TestDb::new("migrate");
+        drop(db.pool());
+        let conn = Connection::open(&db.path).unwrap();
+        conn.execute_batch(
+            "DROP VIEW project_computers;
+             DROP INDEX projects_computer;
+             DROP TABLE projects;
+             CREATE TABLE projects (
+                 id TEXT PRIMARY KEY, name TEXT NOT NULL, section TEXT NOT NULL, folder TEXT NOT NULL,
+                 UNIQUE(section, folder)
+             );
+             PRAGMA user_version = 36;",
+        ).unwrap();
+        crate::test_support::seed_computers(&conn);
+        conn.execute("INSERT INTO projects (id, name, section, folder) VALUES ('p', 'app', 'Si', '~/app')", []).unwrap();
+        drop(conn);
+
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        let stored: String = conn.query_row("SELECT computer_id FROM projects WHERE id = 'p'", [], |r| r.get(0)).unwrap();
+        assert_eq!(stored, "mac");
+        conn.execute("DELETE FROM section_computers WHERE section = 'Si'", []).unwrap();
+        let routed: String = conn.query_row("SELECT computer_id FROM project_computers WHERE project_id = 'p'", [], |r| r.get(0)).unwrap();
+        assert_eq!(routed, stored);
     }
 
     #[test]

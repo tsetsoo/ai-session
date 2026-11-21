@@ -13,13 +13,6 @@ final class PhoneShellTests: XCTestCase {
 
     // MARK: Quick-add
 
-    func testQuickAddSectionDefaultsToI() {
-        XCTAssertEqual(QuickAdd.section(from: "Sp"), .sp)
-        XCTAssertEqual(QuickAdd.section(from: "P"), .p)
-        XCTAssertEqual(QuickAdd.section(from: ""), .i)
-        XCTAssertEqual(QuickAdd.section(from: "sp"), .i)
-    }
-
     func testDictationGoesAfterTypedText() {
         XCTAssertEqual(QuickAdd.text(typed: "", dictated: "call Santé"), "call Santé")
         XCTAssertEqual(QuickAdd.text(typed: "Todo:", dictated: "call Santé"), "Todo: call Santé")

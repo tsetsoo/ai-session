@@ -56,7 +56,7 @@ struct ProjectEditorSheet: View {
                     } else {
                         Picker("Computer", selection: $computerID) {
                             Text("Choose").tag(String?.none)
-                            ForEach(store.computers.filter { store.projectRoutingSection(on: $0.id) != nil }) { computer in
+                            ForEach(store.computers) { computer in
                                 Text(computer.name).tag(Optional(computer.id))
                             }
                         }
@@ -260,7 +260,7 @@ struct ProjectEditorSheet: View {
     private var canSave: Bool {
         guard !isSaving, !trimmed(name).isEmpty, !trimmed(folder).isEmpty else { return false }
         return !isCreate || ((repoWasEdited || !detectingRepo)
-            && computerID.flatMap { store.projectRoutingSection(on: $0) } != nil)
+            && computerID != nil)
     }
 
     private func load() {
@@ -273,7 +273,7 @@ struct ProjectEditorSheet: View {
                 folder = suggestion.folder
                 repoUrl = suggestion.repoUrl ?? ""
             }
-            let eligible = store.computers.filter { store.projectRoutingSection(on: $0.id) != nil }
+            let eligible = store.computers
             computerID = fixedID ?? suggestion?.computer.id ?? (eligible.count == 1 ? eligible.first?.id : nil)
         case let .edit(project):
             name = project.name
@@ -299,9 +299,9 @@ struct ProjectEditorSheet: View {
             do {
                 switch mode {
                 case .create:
-                    guard let computerID, let section = store.projectRoutingSection(on: computerID) else { return }
+                    guard let computerID else { return }
                     let created = try await store.createProject(CreateProjectRequest(
-                        name: name, section: section, folder: folder,
+                        name: name, computerId: computerID, folder: folder,
                         repoUrl: repo.isEmpty ? nil : repo, digestEnabled: digestEnabled
                     ))
                     dismiss()

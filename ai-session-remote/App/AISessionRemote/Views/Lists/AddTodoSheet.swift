@@ -18,10 +18,6 @@ struct AddTodoSheet: View {
         project?.computer ?? store.computers.first { $0.id == chosenComputerID }
     }
 
-    private var routingSection: TodoSection? {
-        project?.section ?? chosenProject?.section ?? chosenComputerID.flatMap { store.projectRoutingSection(on: $0) }
-    }
-
     private var computerProjects: [Project] {
         store.projectsByComputer.first { $0.computer.id == chosenComputerID }?.projects ?? []
     }
@@ -31,7 +27,7 @@ struct AddTodoSheet: View {
     }
 
     private var canSubmit: Bool {
-        draft.canSubmit(hasComputer: routingSection != nil, lockedProjectID: project?.id)
+        draft.canSubmit(hasComputer: chosenComputerID != nil, lockedProjectID: project?.id)
     }
 
     var body: some View {
@@ -121,9 +117,6 @@ struct AddTodoSheet: View {
             let folder = chosenProject?.folder ?? draft.newFolderTrimmed
             Label(folder.isEmpty ? chosenComputer.name : "\(chosenComputer.name):\(folder)",
                   systemImage: "desktopcomputer")
-            if routingSection == nil {
-                Text("The Todo Hub is missing project routing for this computer.")
-            }
         } else {
             Text("Choose the computer where the todo will run.")
         }
@@ -134,9 +127,9 @@ struct AddTodoSheet: View {
     }
 
     private func submit() {
-        guard let routingSection else { return }
+        guard let chosenComputerID else { return }
         Task {
-            if await draft.submit(store: store, section: routingSection, hasComputer: true,
+            if await draft.submit(store: store, computerID: chosenComputerID,
                                   lockedProjectID: project?.id) {
                 dismiss()
             }

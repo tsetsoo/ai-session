@@ -536,7 +536,7 @@ pub(crate) mod tests {
             todo_id: Some("t1".into()),
             session_id: Some("sess-1".into()),
             title: "Fix invoice export".into(),
-            subtitle: "Si · tsvetelins-macbook-pro".into(),
+            subtitle: "tsvetelins-macbook-pro".into(),
             kind: PushKind::Waiting,
             passive: false,
         }
@@ -607,7 +607,7 @@ pub(crate) mod tests {
             payload,
             serde_json::json!({
                 "aps": {
-                    "alert": {"title": "Fix invoice export", "subtitle": "Si · tsvetelins-macbook-pro", "body": "Needs you"},
+                    "alert": {"title": "Fix invoice export", "subtitle": "tsvetelins-macbook-pro", "body": "Needs you"},
                     "sound": "default",
                     "thread-id": "t1",
                     "category": "TODO_CONVERSATION",

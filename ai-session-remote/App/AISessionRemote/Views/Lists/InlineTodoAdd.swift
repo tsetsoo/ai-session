@@ -82,7 +82,7 @@ struct InlineTodoAdd: View {
 
     private func submit() {
         Task {
-            if await draft.submit(store: store, section: project.section, hasComputer: true,
+            if await draft.submit(store: store, computerID: project.computer.id,
                                   lockedProjectID: project.id) {
                 collapse()
             }

@@ -108,7 +108,7 @@ enum JobText {
         case let .research(a):
             "Research ideas · \(store.project(id: a.projectId)?.name ?? "a project") · \(a.tool.capitalized)"
         case .push: "Push"
-        case let .todo(_, projectId, _):
+        case let .todo(_, projectId):
             "Todo" + (projectId.flatMap { store.project(id: $0)?.name }.map { " · \($0)" } ?? "")
         case let .watch(w):
             "Watch · \(w.watcher) · \(store.project(id: w.projectId)?.name ?? "a project")"
@@ -132,7 +132,7 @@ enum JobText {
             let pushes = a.priority == .urgent ? "Sends pushes." : "No pushes."
             return "\(what) in \(project?.name ?? "a project") with \(a.tool.capitalized) on \(computer), in its own worktree. \(limit) \(pushes)"
         case let .push(title, body): return "Sends a push: “\(title)”" + (body.isEmpty ? "" : " — \(body)")
-        case let .todo(title, _, _): return "Creates the todo “\(title)”."
+        case let .todo(title, _): return "Creates the todo “\(title)”."
         case let .watch(w):
             let computer = store.computers.first { $0.id == w.computerId }?.name ?? "its computer"
             let project = store.project(id: w.projectId)?.name ?? "a project"
@@ -445,7 +445,7 @@ struct JobFormPane: View {
                 Section("Todo") {
                     TextField("Todo title", text: $draft.title)
                     Picker("Project", selection: $draft.projectId) {
-                        Text("None").tag("")
+                        Text("Choose a project").tag("")
                         ForEach(store.projects, id: \.id) { Text($0.name).tag($0.id) }
                     }
                 }

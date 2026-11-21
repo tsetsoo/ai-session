@@ -244,6 +244,10 @@ mod tests {
     #[actix_web::test]
     async fn settings_round_trip_and_bad_tz_400() {
         let (_db, pool) = pool("push-api");
+        pool.get().unwrap().execute(
+            "INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'App', 'P', '~/app')",
+            [],
+        ).unwrap();
         let (_, defaults) = get(&pool, "/api/push/settings").await;
         assert_eq!(defaults["notify_waiting"], true);
         assert_eq!(defaults["grace_seconds"], 20);
@@ -252,11 +256,11 @@ mod tests {
             "done_after_minutes": 5,
             "grace_seconds": 20,
             "quiet_hours": {"start": "22:30", "end": "07:30", "tz": "Europe/Sofia"},
-            "muted_sections": ["P"]
+            "muted_project_ids": ["p1"]
         });
         let (status, saved) = put(&pool, "/api/push/settings", body.clone()).await;
         assert_eq!(status, StatusCode::OK, "{saved}");
-        assert_eq!(saved["muted_sections"], json!(["P"]));
+        assert_eq!(saved["muted_project_ids"], json!(["p1"]));
         assert_eq!(saved["quiet_hours"]["tz"], "Europe/Sofia");
         let (_, loaded) = get(&pool, "/api/push/settings").await;
         assert_eq!(loaded, saved);

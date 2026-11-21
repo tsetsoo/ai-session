@@ -47,7 +47,7 @@ struct OpenTodoConversation: Identifiable, Hashable {
 
 /// Why the conversation frame can't show a terminal; each case maps to one problem card.
 enum FrameProblem: Equatable {
-    case noComputer(TodoSection)
+    case noComputer
     case needsAccess(Computer)
     case keyMissing(String)
     case unreachable(String)
@@ -190,7 +190,7 @@ final class ConversationLoader {
             } catch let TodoHubError.conflict(message) {
                 phase = .problem(
                     message.localizedCaseInsensitiveContains("no computer")
-                        ? .noComputer(todo.section)
+                        ? .noComputer
                         : .hub(TodoHubStore.message(for: TodoHubError.conflict(message)))
                 )
                 return

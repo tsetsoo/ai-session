@@ -1,6 +1,6 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use todo_shared::{CreateTodoRequest, DeleteResponse, Importance, Section, SectionCount, UpdateTodoRequest};
+use todo_shared::{CreateTodoRequest, DeleteResponse, Importance, Section, UpdateTodoRequest};
 use uuid::Uuid;
 
 use crate::auth::{forbidden, resolve_scope, RequestScope, ResourceScope};
@@ -21,66 +21,8 @@ fn scoped_read_snapshot<'a>(conn: &'a Connection, scope: &RequestScope) -> Resul
         .transpose().map_err(crate::conversations::server_error)
 }
 
-pub async fn get_sections(pool: web::Data<DbPool>, scope: RequestScope) -> HttpResponse {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    };
-    let _snapshot = match scoped_read_snapshot(&conn, &scope) {
-        Ok(snapshot) => snapshot,
-        Err(response) => return response,
-    };
-    let scope = match resolve_scope(&conn, scope) {
-        Ok(scope) => scope,
-        Err(response) => return response,
-    };
-
-    let mut counts: Vec<SectionCount> = Vec::new();
-    let active_filter = "AND NOT (completed = 1 AND completed_at IS NOT NULL AND completed_at < datetime('now', '-1 day'))";
-    if let Some(scope) = scope {
-        let result = (|| -> rusqlite::Result<()> {
-            let mut stmt = conn.prepare(&format!(
-                "SELECT id, project_id, section, completed FROM todos WHERE 1=1 {active_filter}"
-            ))?;
-            let mut rows = stmt.query([])?;
-            counts.extend(Section::all().iter().map(|section| SectionCount {
-                section: *section, total: 0, completed: 0,
-            }));
-            while let Some(row) = rows.next()? {
-                let id: String = row.get(0)?;
-                let project: Option<String> = row.get(1)?;
-                if scope.allows_todo(&id, project.as_deref()) {
-                    let section: String = row.get(2)?;
-                    if let Some(count) = counts.iter_mut().find(|count| count.section.as_str() == section) {
-                        count.total += 1;
-                        count.completed += usize::from(row.get::<_, bool>(3)?);
-                    }
-                }
-            }
-            Ok(())
-        })();
-        return match result {
-            Ok(()) => HttpResponse::Ok().json(counts),
-            Err(_) => HttpResponse::InternalServerError().finish(),
-        };
-    }
-    for section in Section::all() {
-        let s = section.as_str();
-        let total: usize = conn
-            .query_row(&format!("SELECT COUNT(*) FROM todos WHERE section = ?1 {active_filter}"), params![s], |row| row.get(0))
-            .unwrap_or(0);
-        let completed: usize = conn
-            .query_row(&format!("SELECT COUNT(*) FROM todos WHERE section = ?1 AND completed = 1 {active_filter}"), params![s], |row| row.get(0))
-            .unwrap_or(0);
-        counts.push(SectionCount { section: *section, total, completed });
-    }
-
-    HttpResponse::Ok().json(counts)
-}
-
 #[derive(serde::Deserialize)]
 pub struct TodosQuery {
-    pub section: Option<String>,
     pub sort: Option<String>,
     pub show: Option<String>,
     pub project_id: Option<String>,
@@ -117,15 +59,12 @@ pub async fn list_todos(pool: web::Data<DbPool>, query: web::Query<TodosQuery>, 
         _ => "AND NOT (completed = 1 AND completed_at IS NOT NULL AND completed_at < datetime('now', '-1 day'))",
     };
 
-    if query.section.as_deref().is_some_and(|s| Section::parse(s).is_none()) {
-        return HttpResponse::BadRequest().json(serde_json::json!({"error": "Invalid section"}));
-    }
     let sql = format!(
-        "SELECT {SELECT_COLS} FROM todos WHERE (?1 IS NULL OR section = ?1) AND (?2 IS NULL OR project_id = ?2) {show_filter} ORDER BY {order}"
+        "SELECT {SELECT_COLS} FROM todos WHERE (?1 IS NULL OR project_id = ?1) {show_filter} ORDER BY {order}"
     );
     let mut stmt = conn.prepare(&sql).unwrap();
     let mut todos = stmt
-        .query_map(params![query.section, query.project_id], row_to_todo)
+        .query_map(params![query.project_id], row_to_todo)
         .unwrap()
         .filter_map(std::result::Result::ok)
         .collect::<Vec<_>>();
@@ -210,15 +149,6 @@ fn project_section(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<Op
     conn.query_row("SELECT section FROM projects WHERE id = ?1", params![id], |row| row.get(0)).optional()
 }
 
-fn project_section_of_todo(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<String>> {
-    conn.query_row(
-        "SELECT p.section FROM todos t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
-        params![id],
-        |row| row.get(0),
-    )
-    .optional()
-}
-
 fn authorize_todo(conn: &Connection, scope: &ResourceScope, id: &str) -> Result<(), HttpResponse> {
     let project = conn.query_row("SELECT project_id FROM todos WHERE id = ?1", [id], |row| row.get::<_, Option<String>>(0))
         .optional().map_err(crate::conversations::server_error)?;
@@ -230,7 +160,7 @@ fn authorize_todo(conn: &Connection, scope: &ResourceScope, id: &str) -> Result<
 
 fn authorize_destination(conn: &Connection, scope: &ResourceScope, id: &str) -> Result<(), HttpResponse> {
     let computer = conn.query_row(
-        "SELECT m.computer_id FROM projects p JOIN section_computers m ON p.section = m.section WHERE p.id = ?1",
+        "SELECT m.computer_id FROM projects p JOIN project_computers m ON m.project_id = p.id AND m.computer_id IS NOT NULL WHERE p.id = ?1",
         [id], |row| row.get::<_, String>(0),
     ).optional().map_err(crate::conversations::server_error)?;
     if scope.project_ids.contains(id) && computer.is_some_and(|id| scope.computer_ids.contains(&id)) {
@@ -292,10 +222,6 @@ pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequ
     let Some(section) = named_section(&project_section) else {
         return HttpResponse::InternalServerError().json(serde_json::json!({"error": "project section is invalid"}));
     };
-    if body.section.is_some_and(|asked| asked != section) {
-        return HttpResponse::BadRequest().json(serde_json::json!({"error": "section does not match project"}));
-    }
-
     match insert_todo(&conn, section, title, body.importance, body.due_date.as_deref(), Some(project_id)) {
         Ok(id) => {
             let sql = format!("SELECT {SELECT_COLS} FROM todos WHERE id = ?1");
@@ -374,23 +300,6 @@ pub async fn update_todo(
     } else {
         None
     };
-    if let Some(asked) = body.section {
-        let expected = if let Some((_, section)) = &new_project {
-            Some(section.clone())
-        } else {
-            match project_section_of_todo(&conn, &id) {
-                Ok(section) => section,
-                Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-            }
-        };
-        if scope.is_some() && expected.is_none() {
-            return forbidden("Moving a todo requires a granted destination project");
-        }
-        if expected.is_some_and(|section| section != asked.as_str()) {
-            return HttpResponse::BadRequest().json(serde_json::json!({"error": "section does not match project"}));
-        }
-    }
-
     if let Some(ref title) = body.title {
         let title = title.trim();
         if title.is_empty() {
@@ -415,11 +324,6 @@ pub async fn update_todo(
         .unwrap();
     }
 
-    if new_project.is_none() {
-        if let Some(section) = body.section {
-            conn.execute("UPDATE todos SET section = ?1, updated_at = datetime('now') WHERE id = ?2", params![section.as_str(), id]).unwrap();
-        }
-    }
 
     if let Some(importance) = body.importance {
         conn.execute("UPDATE todos SET importance = ?1, updated_at = datetime('now') WHERE id = ?2", params![importance.as_str(), id]).unwrap();
@@ -730,19 +634,6 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"], "project_id is required");
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 0);
-    }
-
-    #[actix_web::test]
-    async fn create_todo_rejects_a_section_that_disagrees_with_the_project() {
-        let (_db, pool) = pool("todo");
-        let conn = pool.get().unwrap();
-        seed_computers(&conn);
-        let project = project_on(&conn, "Si");
-        let (status, body) = post(&pool, "/api/todos", json!({"section": "P", "title": "x", "project_id": project})).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(body["error"], "section does not match project");
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
     }
 

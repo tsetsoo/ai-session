@@ -47,7 +47,7 @@ impl ResourceScope {
         let mut resolved = self.clone();
         if self.include_computer_projects {
             let mut stmt = conn.prepare(
-                "SELECT p.id, sc.computer_id FROM projects p JOIN section_computers sc ON sc.section = p.section",
+                "SELECT p.id, sc.computer_id FROM projects p JOIN project_computers sc ON sc.project_id = p.id AND sc.computer_id IS NOT NULL",
             )?;
             let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
             for row in rows {
@@ -163,7 +163,7 @@ pub(crate) fn forbidden(message: &str) -> HttpResponse {
 fn scoped_route(method: &actix_web::http::Method, path: &str) -> bool {
     use actix_web::http::Method;
     match (method, path.split('/').collect::<Vec<_>>().as_slice()) {
-        (&Method::GET, ["", "api", "sections" | "todos" | "projects" | "computers" | "conversations"])
+        (&Method::GET, ["", "api", "todos" | "projects" | "computers" | "conversations"])
         | (&Method::GET, ["", "api", "sections", "computers"])
         | (&Method::POST, ["", "api", "todos"]) => true,
         (&Method::GET | &Method::PATCH | &Method::DELETE, ["", "api", "todos", id]) =>
@@ -326,9 +326,6 @@ mod tests {
         assert_eq!(test::call_service(&app, codbex_get("/api/todos/hidden")).await.status(), 200);
         let explicit: serde_json::Value = test::call_and_read_body_json(&app, get("/api/todos/explicit")).await;
         assert!(explicit.get("project_id").is_none());
-        let sections: Vec<todo_shared::SectionCount> =
-            test::call_and_read_body_json(&app, get("/api/sections")).await;
-        assert_eq!(sections.iter().map(|row| row.total).sum::<usize>(), 2);
         for path in ["/api/todos/hidden", "/api/projects/private"] {
             assert_eq!(test::call_service(&app, get(path)).await.status(), 404, "{path}");
         }

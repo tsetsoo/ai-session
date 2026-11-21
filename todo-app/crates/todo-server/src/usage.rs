@@ -738,7 +738,6 @@ mod tests {
         assert_eq!((&w["workers"]["sessions"], &w["workers"]["output_tokens"], &w["workers"]["active_seconds"]), (&json!(2), &json!(120), &json!(120)));
         assert_eq!((&w["by_project"][0]["project_id"], &w["by_project"][0]["workers"]["output_tokens"]), (&json!("pa"), &json!(120)));
         assert_eq!(w["by_computer"][0]["workers"]["sessions"], 2);
-        assert_eq!(w["by_section"][0]["workers"]["prompts"], 2);
         let (_, other) = get(&pool, "/api/stats/weekly?week_start=2026-10-26").await;
         assert_eq!(other["workers"]["sessions"], 0);
     }

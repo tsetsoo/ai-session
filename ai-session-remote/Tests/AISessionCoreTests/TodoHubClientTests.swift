@@ -51,10 +51,6 @@ final class TodoHubClientTests: XCTestCase {
      {"id":"11111111-2222-4333-8444-555555555555","section":"Sp","title":"legacy","completed":false,"importance":"medium","due_date":null,"daily_date":null,"carried_from":null,"created_at":"2026-10-15 20:17:44","updated_at":"2026-10-15 20:17:44","completed_at":null}]
     """
 
-    static let sectionComputersJSON = """
-    [{"section":"I","computer":{"id":"f3dde920-1744-4b76-9104-2c2b078ee3d9","name":"Mac","hostname":"mac.tailnet","port":22,"username":"me","created_at":"2026-10-15 20:17:27","updated_at":"2026-10-15 20:17:27"},"cwd":"~/programming","tool":"claude"}]
-    """
-
     private func client(token: String? = "s3cret") -> TodoHubClient {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubURLProtocol.self]
@@ -86,7 +82,7 @@ final class TodoHubClientTests: XCTestCase {
 
     func testDecodesTodosWithOptionalConversationStatus() async throws {
         StubURLProtocol.handler = { _ in .init(status: 200, body: Self.todosJSON) }
-        let todos = try await client().listTodos(section: .i, filter: .all)
+        let todos = try await client().listTodos(filter: .all)
         XCTAssertEqual(todos.count, 2)
         XCTAssertEqual(todos[0].workStatus, .active, "Older hubs default to active")
         XCTAssertEqual(todos[0].section, .i)
@@ -96,7 +92,7 @@ final class TodoHubClientTests: XCTestCase {
 
         let url = try XCTUnwrap(StubURLProtocol.requests.first?.url)
         XCTAssertEqual(url.path, "/api/todos")
-        XCTAssertEqual(url.query, "section=I&show=all")
+        XCTAssertEqual(url.query, "show=all")
     }
 
     func testOnHoldUpdateUsesWireKeyAndSurvivesCaching() async throws {
@@ -131,22 +127,14 @@ final class TodoHubClientTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(Todo.self, from: snapshot).workStatus, .waiting)
     }
 
-    func testDecodesConversationAndSectionMapping() async throws {
-        StubURLProtocol.handler = { request in
-            request.url!.path.hasSuffix("/conversation")
-                ? .init(status: 200, body: Self.conversationJSON)
-                : .init(status: 200, body: Self.sectionComputersJSON)
-        }
+    func testDecodesConversation() async throws {
+        StubURLProtocol.handler = { _ in .init(status: 200, body: Self.conversationJSON) }
         let conversation = try await client().openConversation(todoId: "4f3ff5fa-c99d-4fb0-b15f-734eb42d0f3f", tool: "claude")
         XCTAssertEqual(conversation.tmuxName, "ai/claude/todo-4f3ff5fa")
         XCTAssertEqual(conversation.sessionId, "20218a19-fdb7-4835-9c7f-ed31b2fd4423")
         XCTAssertEqual(conversation.computer.hostname, "mac.tailnet")
         XCTAssertEqual(conversation.status, .unknown)
         XCTAssertEqual(StubURLProtocol.requests.last?.httpMethod, "POST")
-
-        let mappings = try await client().listSectionComputers()
-        XCTAssertEqual(mappings.first?.section, .i)
-        XCTAssertEqual(mappings.first?.computer.id, "f3dde920-1744-4b76-9104-2c2b078ee3d9")
     }
 
     func testReviewSendsDisplayedRevisionAndDecodesAcknowledgement() async throws {
@@ -230,18 +218,6 @@ final class TodoHubClientTests: XCTestCase {
         XCTAssertNil(StubURLProtocol.requests.last?.value(forHTTPHeaderField: "Authorization"))
     }
 
-    func testEncodesSnakeCaseBodies() async throws {
-        StubURLProtocol.handler = { _ in .init(status: 200, body: Self.sectionComputersJSON.dropFirst().dropLast().description) }
-        _ = try await client().setSectionComputer(.i, SetSectionComputerRequest(computerId: "m1"))
-        let request = try XCTUnwrap(StubURLProtocol.requests.last)
-        XCTAssertEqual(request.httpMethod, "PUT")
-        XCTAssertEqual(request.url?.path, "/api/sections/I/computer")
-        let body = try XCTUnwrap(request.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
-        XCTAssertEqual(body["computer_id"] as? String, "m1")
-        XCTAssertFalse(body.keys.contains("cwd"))
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-    }
-
     func testMapsErrorStatuses() async {
         StubURLProtocol.handler = { _ in .init(status: 401, body: #"{"error":"Missing or invalid API token"}"#) }
         await XCTAssertThrowsHubError(try await client().listTodos(), .unauthorized)
@@ -317,8 +293,7 @@ final class TodoHubClientTests: XCTestCase {
         let computer = try await client.createComputer(
             CreateComputerRequest(name: "Live", hostname: "live.tailnet", username: "me")
         )
-        _ = try await client.setSectionComputer(.si, SetSectionComputerRequest(computerId: computer.id))
-        let project = try await client.createProject(CreateProjectRequest(name: "live", section: .si, folder: "~/live"))
+        let project = try await client.createProject(CreateProjectRequest(name: "live", computerId: computer.id, folder: "~/live"))
         let todo = try await client.createTodo(CreateTodoRequest(title: "live test", projectId: project.id))
         let opened = try await client.openConversation(todoId: todo.id, tool: "claude")
         XCTAssertEqual(opened.computer.id, computer.id)
@@ -333,7 +308,7 @@ final class TodoHubClientTests: XCTestCase {
         try await client.deleteTodo(id: todo.id)
         let afterDelete = try await client.conversation(todoId: todo.id)
         XCTAssertNil(afterDelete)
-        try await client.clearSectionComputer(.si)
+        try await client.deleteProject(id: project.id)
         try await client.deleteComputer(id: computer.id)
         if client.token != nil {
             await XCTAssertThrowsHubError(
@@ -357,14 +332,12 @@ final class TodoHubClientTests: XCTestCase {
         }
         try await Task.sleep(nanoseconds: 500_000_000) // let the socket connect
         let computer = try await client.createComputer(CreateComputerRequest(name: "Event", hostname: "event.tailnet", username: "me"))
-        _ = try await client.setSectionComputer(.p, SetSectionComputerRequest(computerId: computer.id))
-        let project = try await client.createProject(CreateProjectRequest(name: "event", section: .p, folder: "~/event"))
+        let project = try await client.createProject(CreateProjectRequest(name: "event", computerId: computer.id, folder: "~/event"))
         let todo = try await client.createTodo(CreateTodoRequest(title: "event test", projectId: project.id))
         await fulfillment(of: [received], timeout: 5)
         listener.cancel()
         try await client.deleteTodo(id: todo.id)
         try await client.deleteProject(id: project.id)
-        try await client.clearSectionComputer(.p)
         try await client.deleteComputer(id: computer.id)
     }
 

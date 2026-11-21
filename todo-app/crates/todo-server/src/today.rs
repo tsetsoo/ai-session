@@ -918,7 +918,7 @@ pub async fn today_view(pool: web::Data<DbPool>) -> HttpResponse {
 
 // --- The assistant ------------------------------------------------------------------
 
-/// The Personal project the assistant's conversations run in (section P, this Mac's).
+/// The project and folder used for assistant conversations.
 const ASSISTANT_PROJECT: &str = "Personal";
 const ASSISTANT_FOLDER: &str = "~/.ai-remote/assistant";
 const ASSISTANT_JOB: &str = "Assistant · Personal";
@@ -984,15 +984,24 @@ pub(crate) fn assistant_db(conn: &Connection, req: &AssistantRequest) -> Result<
     };
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let project_id: String = match tx
-        .query_row("SELECT id FROM projects WHERE name = ?1 AND section = 'P' ORDER BY created_at LIMIT 1", params![ASSISTANT_PROJECT], |r| r.get(0))
+        .query_row("SELECT id FROM projects WHERE name = ?1 AND folder = ?2 ORDER BY created_at, id LIMIT 1", params![ASSISTANT_PROJECT, ASSISTANT_FOLDER], |r| r.get(0))
         .optional()?
     {
         Some(id) => id,
         None => {
+            let computer_id: Option<String> = tx.query_row(
+                "SELECT COALESCE(
+                    (SELECT assistant_computer_id FROM today_settings WHERE id = 1),
+                    (SELECT MIN(id) FROM computers HAVING COUNT(*) = 1)
+                )",
+                [],
+                |r| r.get(0),
+            )?;
+            let computer_id = computer_id.ok_or(TodayError::BadRequest("The assistant needs a computer assignment"))?;
             let id = Uuid::new_v4().to_string();
             tx.execute(
-                "INSERT INTO projects (id, name, section, folder) VALUES (?1, ?2, 'P', ?3)",
-                params![id, ASSISTANT_PROJECT, ASSISTANT_FOLDER],
+                "INSERT INTO projects (id, name, section, folder, computer_id) VALUES (?1, ?2, 'P', ?3, ?4)",
+                params![id, ASSISTANT_PROJECT, ASSISTANT_FOLDER, computer_id],
             )?;
             id
         }
@@ -1433,6 +1442,11 @@ pub(crate) mod tests {
     }
 
     async fn assistant_run(pool: &DbPool, text: &str) -> String {
+        pool.get().unwrap().execute(
+            "INSERT INTO today_settings (id, assistant_computer_id) VALUES (1, 'mac')
+             ON CONFLICT(id) DO UPDATE SET assistant_computer_id = excluded.assistant_computer_id",
+            [],
+        ).unwrap();
         let (status, v) = post(pool, "/api/today/assistant", json!({"text": text, "kind": "reminder"})).await;
         assert_eq!(status, StatusCode::OK, "{v}");
         v["id"].as_str().unwrap().to_string()

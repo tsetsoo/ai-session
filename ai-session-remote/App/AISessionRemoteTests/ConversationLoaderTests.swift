@@ -122,7 +122,7 @@ final class ConversationLoaderTests: XCTestCase {
     func testNoComputerConflictMapsToNoComputer() async {
         let (l, _) = loader(open: { throw TodoHubError.conflict("no computer for section Sp") })
         await l.start()
-        XCTAssertEqual(l.phase, .problem(.noComputer(.sp)))
+        XCTAssertEqual(l.phase, .problem(.noComputer))
     }
 
     func testOtherHubErrorMapsToHub() async {

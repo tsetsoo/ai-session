@@ -476,7 +476,6 @@ public struct LinkConversationRequest: Encodable, Sendable {
 
 /// `POST /api/todos/from-conversation`: create a todo already linked to a conversation.
 public struct TodoFromConversationRequest: Encodable, Sendable {
-    public var section: TodoSection
     public var title: String
     public var projectId: String
     public var computerId: String
@@ -485,10 +484,9 @@ public struct TodoFromConversationRequest: Encodable, Sendable {
     public var cwd: String
 
     public init(
-        section: TodoSection, title: String, projectId: String, computerId: String,
+        title: String, projectId: String, computerId: String,
         tool: String, sessionId: String, cwd: String
     ) {
-        self.section = section
         self.title = title
         self.projectId = projectId
         self.computerId = computerId
@@ -559,26 +557,22 @@ public struct RemoteConversation: Codable, Hashable, Identifiable, Sendable {
 public struct CreateTodoRequest: Encodable, Sendable {
     public var title: String
     public var projectId: String
-    /// Sent only to reject a section that is not the project's. Omitted uses the project's section.
-    public var section: TodoSection?
     public var importance: TodoImportance?
 
-    public init(title: String, projectId: String, section: TodoSection? = nil, importance: TodoImportance? = nil) {
+    public init(title: String, projectId: String, importance: TodoImportance? = nil) {
         self.title = title
         self.projectId = projectId
-        self.section = section
         self.importance = importance
     }
 
     private enum CodingKeys: String, CodingKey {
-        case title, projectId, section, importance
+        case title, projectId, importance
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(title, forKey: .title)
         try c.encode(projectId, forKey: .projectId)
-        try c.encodeIfPresent(section, forKey: .section)
         try c.encodeIfPresent(importance, forKey: .importance)
     }
 }
@@ -589,24 +583,22 @@ public struct UpdateTodoRequest: Encodable, Sendable {
     public var completed: Bool?
     public var onHold: Bool?
     public var waiting: Bool?
-    public var section: TodoSection?
     public var importance: TodoImportance?
     /// `nil`: project unchanged (key absent). `.clear` sends `"project_id": null`.
     public var projectId: ProjectChange?
 
-    public init(title: String? = nil, completed: Bool? = nil, section: TodoSection? = nil,
+    public init(title: String? = nil, completed: Bool? = nil,
                 importance: TodoImportance? = nil, projectId: ProjectChange? = nil, onHold: Bool? = nil, waiting: Bool? = nil) {
         self.title = title
         self.completed = completed
         self.onHold = onHold
         self.waiting = waiting
-        self.section = section
         self.importance = importance
         self.projectId = projectId
     }
 
     private enum CodingKeys: String, CodingKey {
-        case title, completed, section, importance, projectId, onHold, waiting
+        case title, completed, importance, projectId, onHold, waiting
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -615,7 +607,6 @@ public struct UpdateTodoRequest: Encodable, Sendable {
         try c.encodeIfPresent(completed, forKey: .completed)
         try c.encodeIfPresent(onHold, forKey: .onHold)
         try c.encodeIfPresent(waiting, forKey: .waiting)
-        try c.encodeIfPresent(section, forKey: .section)
         try c.encodeIfPresent(importance, forKey: .importance)
         try c.encodeChange(projectId, forKey: .projectId)
     }
@@ -632,14 +623,6 @@ public struct CreateComputerRequest: Encodable, Sendable {
         self.hostname = hostname
         self.port = port
         self.username = username
-    }
-}
-
-public struct SetSectionComputerRequest: Encodable, Sendable {
-    public var computerId: String
-
-    public init(computerId: String) {
-        self.computerId = computerId
     }
 }
 
@@ -818,7 +801,7 @@ public struct PushSettings: Codable, Equatable, Sendable {
     public var doneAfterMinutes: Int?
     public var graceSeconds: Int
     public var quietHours: QuietHours?
-    public var mutedSections: [TodoSection]
+    public var mutedProjectIds: [String]
     public var mutedTodoIds: [String]
 
     public init(
@@ -826,14 +809,14 @@ public struct PushSettings: Codable, Equatable, Sendable {
         doneAfterMinutes: Int? = nil,
         graceSeconds: Int = 20,
         quietHours: QuietHours? = nil,
-        mutedSections: [TodoSection] = [],
+        mutedProjectIds: [String] = [],
         mutedTodoIds: [String] = []
     ) {
         self.notifyWaiting = notifyWaiting
         self.doneAfterMinutes = doneAfterMinutes
         self.graceSeconds = graceSeconds
         self.quietHours = quietHours
-        self.mutedSections = mutedSections
+        self.mutedProjectIds = mutedProjectIds
         self.mutedTodoIds = mutedTodoIds
     }
 }

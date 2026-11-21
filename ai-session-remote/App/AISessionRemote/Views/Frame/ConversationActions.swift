@@ -4,7 +4,7 @@ import SwiftUI
 /// Where a fix lives in Settings; `SettingsView(initial:)` opens on it.
 enum SettingsDestination: Hashable {
     case server
-    case sections(TodoSection?)
+    case computers
     case access
     case terminal
     case notifications

@@ -1137,7 +1137,6 @@ private final class HubRefreshStub: URLProtocol, @unchecked Sendable {
     struct Bodies {
         var todos = Data("[]".utf8)
         var conversations = Data("[]".utf8)
-        var sectionComputers = Data("[]".utf8)
         var computers = Data("[]".utf8)
         var projects = Data("[]".utf8)
         var suggestions = Data("[]".utf8)
@@ -1174,7 +1173,6 @@ private final class HubRefreshStub: URLProtocol, @unchecked Sendable {
         case "/api/todos" where request.httpMethod == "POST": body = Self.bodies.createdTodo
         case "/api/todos": body = Self.bodies.todos
         case "/api/conversations": body = Self.bodies.conversations
-        case "/api/sections/computers": body = Self.bodies.sectionComputers
         case "/api/computers": body = Self.bodies.computers
         case "/api/projects": body = Self.bodies.projects
         case "/api/projects/suggestions": body = Self.bodies.suggestions

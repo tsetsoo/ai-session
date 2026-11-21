@@ -147,7 +147,7 @@ fn resolved_computer(conn: &Connection, action: &JobAction) -> rusqlite::Result<
         }
         action if action.conversation_parts().is_some() => conn
             .query_row(
-                "SELECT sc.computer_id FROM projects p JOIN section_computers sc ON sc.section = p.section WHERE p.id = ?1",
+                "SELECT sc.computer_id FROM projects p JOIN project_computers sc ON sc.project_id = p.id AND sc.computer_id IS NOT NULL WHERE p.id = ?1",
                 params![action.conversation_parts().map(|p| p.project_id)],
                 |r| r.get(0),
             )

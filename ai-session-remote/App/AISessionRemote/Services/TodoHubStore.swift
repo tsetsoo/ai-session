@@ -12,7 +12,9 @@ final class TodoHubStore {
     /// Keyed by conversation id. A conversation decoded without an id (an older hub) is keyed
     /// `todo:<todo id>` so a one-conversation cache does not collapse onto `""`.
     private(set) var conversations: [String: Conversation] = [:]
-    private(set) var sectionComputers: [TodoSection: SectionComputer] = [:]
+    #if DEBUG
+    private var sectionComputers: [TodoSection: SectionComputer] = [:]
+    #endif
     private var hubComputers: [Computer] = []
     private var hubProjects: [Project] = []
     private var computerOrder = UserDefaults.standard.stringArray(forKey: "displayOrder.computers") ?? []
@@ -215,15 +217,6 @@ final class TodoHubStore {
     }
     #endif
 
-    func todos(in section: TodoSection) -> [Todo] {
-        todos
-            .filter { $0.section == section }
-            .sorted { lhs, rhs in
-                if lhs.completed != rhs.completed { return !lhs.completed }
-                return lhs.createdAt > rhs.createdAt
-            }
-    }
-
     // MARK: Loading
 
     func refresh(trigger: RefreshTrigger = .user) async {
@@ -251,7 +244,6 @@ final class TodoHubStore {
         do {
             async let todos = client.listTodos()
             async let conversations = client.listConversations()
-            async let mappings = client.listSectionComputers()
             async let computers = client.listComputers()
             // Optional: a hub from before projects answers 404 here, which must not break
             // the todo list. On any failure the last known projects stay.
@@ -263,7 +255,7 @@ final class TodoHubStore {
             async let pendingIdeasList = try? client.listIdeas(projectId: nil, pending: true)
             async let watchIssues = try? client.listWatchIssues(state: "open")
             async let reviews = try? client.reviewSummaries()
-            let (t, c, m, comps) = try await (todos, conversations, mappings, computers)
+            let (t, c, comps) = try await (todos, conversations, computers)
             let (p, sugg, pend, jobList, pendIdeas) = await (projects, suggestions, pending, loadedJobs, pendingIdeasList)
             let openIssues = await watchIssues
             let reviewList = await reviews
@@ -271,7 +263,7 @@ final class TodoHubStore {
             guard generation == refreshGeneration else { return }
             guard changesAtStart == localChanges else { return }
             await acceptFetch(
-                todos: t, conversations: c, sectionComputers: m, computers: comps,
+                todos: t, conversations: c, computers: comps,
                 projects: p, suggestions: sugg, startedAtEpoch: startedAtEpoch,
                 trigger: trigger
             )
@@ -483,16 +475,6 @@ final class TodoHubStore {
 
     func deleteComputer(_ computer: Computer) async throws {
         try await perform { client in try await client.deleteComputer(id: computer.id) }
-    }
-
-    func assign(_ section: TodoSection, computerID: String?) async throws {
-        try await perform { client in
-            if let computerID {
-                _ = try await client.setSectionComputer(section, SetSectionComputerRequest(computerId: computerID))
-            } else {
-                try await client.clearSectionComputer(section)
-            }
-        }
     }
 
     // MARK: Conversations
@@ -1239,13 +1221,12 @@ final class TodoHubStore {
     func createTodo(
         from remote: RemoteConversation,
         on computer: Computer,
-        section: TodoSection,
         title: String,
         projectId: String
     ) async throws {
         try await perform { client in
             let created = try await client.createTodoFromConversation(TodoFromConversationRequest(
-                section: section, title: title, projectId: projectId, computerId: computer.id,
+                title: title, projectId: projectId, computerId: computer.id,
                 tool: remote.tool, sessionId: remote.sessionId, cwd: remote.cwd
             ))
             remember(created.conversation)
@@ -1253,12 +1234,6 @@ final class TodoHubStore {
                 _ = try await client.updateTodo(id: created.todo.id, UpdateTodoRequest(projectId: .set(projectId)))
             }
         }
-    }
-
-    /// The section this computer serves, when exactly one does.
-    func onlySection(for computer: Computer) -> TodoSection? {
-        let sections = TodoSection.allCases.filter { sectionComputers[$0]?.computer.id == computer.id }
-        return sections.count == 1 ? sections[0] : nil
     }
 
     /// Deletes the conversation on the computer (ending its tmux session first), then unlinks
@@ -1290,13 +1265,8 @@ final class TodoHubStore {
         return projects.first { $0.id == id }
     }
 
-    /// The current API uses a routing section when creating a project.
-    func projectRoutingSection(on computerID: String) -> TodoSection? {
-        TodoSection.allCases.first { sectionComputers[$0]?.computer.id == computerID }
-    }
-
     func canCreateProject(on computerID: String) -> Bool {
-        isConfigured && !isOffline && projectRoutingSection(on: computerID) != nil
+        isConfigured && !isOffline && computers.contains { $0.id == computerID }
     }
 
     var projectsByComputer: [(computer: Computer, projects: [Project])] {
@@ -1486,10 +1456,20 @@ final class TodoHubStore {
         await loadAllIdeas()
     }
 
-    /// The computer a project's conversations usually run on: its section's, else its own.
+    /// The computer a project's conversations usually run on.
     func usualComputer(for project: Project) -> Computer {
-        let id = sectionComputers[project.section]?.computer.id ?? project.computer.id
-        return computers.first { $0.id == id } ?? sectionComputers[project.section]?.computer ?? project.computer
+        computers.first { $0.id == project.computer.id } ?? project.computer
+    }
+
+    func usualComputer(for todo: Todo) -> Computer? {
+        if let project = project(id: todo.projectId) {
+            return usualComputer(for: project)
+        }
+        #if DEBUG
+        return sectionComputers[todo.section]?.computer
+        #else
+        return nil
+        #endif
     }
 
     /// The research idea whose todo this is (its attempts are the todo's conversations).
@@ -1854,7 +1834,6 @@ final class TodoHubStore {
     private func acceptFetch(
         todos: [Todo],
         conversations: [Conversation],
-        sectionComputers: [SectionComputer],
         computers: [Computer],
         projects: [Project]?,
         suggestions: [ProjectSuggestion]?,
@@ -1865,10 +1844,6 @@ final class TodoHubStore {
         deliver(todos: todos, conversations: conversations, startedAtEpoch: startedAtEpoch)
         let identitiesChanged = Self.conversationIdentities(self.conversations) != previousIdentities
 
-        let mappedSections = Dictionary(
-            sectionComputers.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new }
-        )
-        if self.sectionComputers != mappedSections { self.sectionComputers = mappedSections }
         if hubComputers != computers { hubComputers = computers }
 
         var projectsChanged = false

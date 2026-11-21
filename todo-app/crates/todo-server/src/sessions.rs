@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
-    ComputerRollup, ConversationStatus, ModelTokens, ProjectRollup, Section, SectionRollup, Session, SessionDay,
+    ComputerRollup, ConversationStatus, ModelTokens, ProjectRollup, Session, SessionDay,
     SessionProjectRef, SessionStatsResponse, SessionStatsUpload, SetSessionProjectRequest, StatsCounters, WeeklyStats,
     WorkerUpload,
 };
@@ -475,7 +475,7 @@ pub(crate) fn set_session_project_db(
             let (computer_id, name): (String, String) = tx
                 .query_row(
                     "SELECT sc.computer_id, p.name FROM projects p
-                     JOIN section_computers sc ON sc.section = p.section
+                     JOIN project_computers sc ON sc.project_id = p.id AND sc.computer_id IS NOT NULL
                      WHERE p.id = ?1",
                     params![project_id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
@@ -556,7 +556,6 @@ pub(crate) trait StatsCountersExt {
 struct SessionWeek {
     project: Option<(String, String)>,
     computer: (String, String),
-    section: Option<Section>,
     workers: bool,
     counters: StatsCounters,
 }
@@ -588,24 +587,9 @@ pub(crate) fn week_bounds(conn: &Connection, week_start: Option<&str>) -> Result
     Ok((start, end))
 }
 
-/// Usage of one week, summed from the day rows, overall and by project, section and computer.
-///
-/// A session's section is its linked todo's section; otherwise the single section mapped to
-/// its computer; otherwise none (a computer serving several sections is ambiguous).
+/// Weekly usage totals and rollups by project and computer.
 pub(crate) fn weekly_db(conn: &Connection, week_start: Option<&str>, project_id: Option<&str>) -> Result<WeeklyStats, SessionError> {
     let (start, end) = week_bounds(conn, week_start)?;
-
-    let mut computer_sections: BTreeMap<String, Vec<Section>> = BTreeMap::new();
-    {
-        let mut stmt = conn.prepare("SELECT computer_id, section FROM section_computers")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        for row in rows {
-            let (computer_id, section) = row?;
-            if let Some(section) = Section::parse(&section) {
-                computer_sections.entry(computer_id).or_default().push(section);
-            }
-        }
-    }
 
     let mut weeks = Vec::new();
     // The conversations' own day rows, then their workers' (one row per session each).
@@ -614,8 +598,6 @@ pub(crate) fn weekly_db(conn: &Connection, week_start: Option<&str>, project_id:
     {
         let mut stmt = conn.prepare(&format!(
             "SELECT s.project_id, p.name, s.computer_id, m.name,
-                    (SELECT t.section FROM conversations c JOIN todos t ON t.id = c.todo_id
-                     WHERE c.tool = s.tool AND c.session_id = s.session_id),
                     SUM(d.prompts), SUM(d.assistant_turns), SUM(d.input_tokens), SUM(d.output_tokens),
                     SUM(d.cache_read_tokens), SUM(d.cache_creation_tokens), SUM(d.active_seconds), SUM(d.files_touched),
                     {sessions_expr}
@@ -630,29 +612,20 @@ pub(crate) fn weekly_db(conn: &Connection, week_start: Option<&str>, project_id:
             let project_id: Option<String> = r.get(0)?;
             let project_name: Option<String> = r.get(1)?;
             let computer_id: String = r.get(2)?;
-            let linked_section: Option<String> = r.get(4)?;
-            let section = match linked_section.as_deref().and_then(Section::parse) {
-                Some(section) => Some(section),
-                None => match computer_sections.get(&computer_id).map(Vec::as_slice) {
-                    Some([only]) => Some(*only),
-                    _ => None,
-                },
-            };
             Ok(SessionWeek {
                 project: project_id.map(|id| (id, project_name.unwrap_or_default())),
                 computer: (computer_id, r.get(3)?),
-                section,
                 workers,
                 counters: StatsCounters {
-                    sessions: r.get(13)?,
-                    prompts: r.get(5)?,
-                    assistant_turns: r.get(6)?,
-                    input_tokens: r.get(7)?,
-                    output_tokens: r.get(8)?,
-                    cache_read_tokens: r.get(9)?,
-                    cache_creation_tokens: r.get(10)?,
-                    active_seconds: r.get(11)?,
-                    files_touched: r.get(12)?,
+                    sessions: r.get(12)?,
+                    prompts: r.get(4)?,
+                    assistant_turns: r.get(5)?,
+                    input_tokens: r.get(6)?,
+                    output_tokens: r.get(7)?,
+                    cache_read_tokens: r.get(8)?,
+                    cache_creation_tokens: r.get(9)?,
+                    active_seconds: r.get(10)?,
+                    files_touched: r.get(11)?,
                 },
             })
         })?;
@@ -663,10 +636,8 @@ pub(crate) fn weekly_db(conn: &Connection, week_start: Option<&str>, project_id:
 
     let mut totals = StatsCounters::default();
     let mut worker_totals = StatsCounters::default();
-    // Keys sort the groups: projects by name (no project last), sections in code order
-    // (none last), computers by name.
+    // Sort by name, with unassigned projects last.
     let mut by_project: BTreeMap<(bool, String, String), ProjectRollup> = BTreeMap::new();
-    let mut by_section: BTreeMap<usize, SectionRollup> = BTreeMap::new();
     let mut by_computer: BTreeMap<(String, String), ComputerRollup> = BTreeMap::new();
     for week in weeks {
         week.add_to(&mut totals, &mut worker_totals);
@@ -679,13 +650,6 @@ pub(crate) fn weekly_db(conn: &Connection, week_start: Option<&str>, project_id:
             workers: StatsCounters::default(),
         });
         week.add_to(&mut project.counters, &mut project.workers);
-        let order = week.section.map_or(Section::all().len(), |s| Section::all().iter().position(|x| *x == s).unwrap_or(0));
-        let section = by_section.entry(order).or_insert_with(|| SectionRollup {
-            section: week.section,
-            counters: StatsCounters::default(),
-            workers: StatsCounters::default(),
-        });
-        week.add_to(&mut section.counters, &mut section.workers);
         let (cid, cname) = week.computer.clone();
         let computer = by_computer.entry((cname.to_lowercase(), cid.clone())).or_insert_with(|| ComputerRollup {
             computer_id: cid,
@@ -701,7 +665,6 @@ pub(crate) fn weekly_db(conn: &Connection, week_start: Option<&str>, project_id:
         totals,
         workers: worker_totals,
         by_project: by_project.into_values().collect(),
-        by_section: by_section.into_values().collect(),
         by_computer: by_computer.into_values().collect(),
     })
 }
@@ -1062,18 +1025,6 @@ mod tests {
         assert_eq!((&w["totals"]["assistant_turns"], &w["totals"]["files_touched"]), (&json!(9), &json!(6)));
         assert_eq!((&w["totals"]["output_tokens"], &w["totals"]["cache_read_tokens"]), (&json!(26), &json!(37)));
 
-        let sections: Vec<(Value, Counters)> =
-            w["by_section"].as_array().unwrap().iter().map(|s| (s["section"].clone(), counters(s))).collect();
-        assert_eq!(
-            sections,
-            vec![
-                (json!("Sp"), (1, 1, None, None, 50)),
-                (json!("I"), (1, 5, Some(10), None, 300)),
-                (Value::Null, (1, 4, Some(5), None, 300)),
-            ],
-            "linked → its todo's section; spread → its only section; the Mac serves two → null"
-        );
-
         let computers: Vec<(Value, Value, i64)> = w["by_computer"]
             .as_array()
             .unwrap()
@@ -1099,7 +1050,7 @@ mod tests {
         // A week without days: zero counters, null tokens, empty groupings.
         let (_, w) = get(&pool, "/api/stats/weekly?week_start=2026-09-28").await;
         assert_eq!(counters(&w["totals"]), (0, 0, None, None, 0));
-        assert_eq!((&w["by_project"], &w["by_section"], &w["by_computer"]), (&json!([]), &json!([]), &json!([])));
+        assert_eq!((&w["by_project"], &w["by_computer"]), (&json!([]), &json!([])));
     }
 
     #[actix_web::test]
@@ -1110,7 +1061,6 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{w}");
         assert_eq!(counters(&w["totals"]), (1, 5, Some(10), None, 300));
         assert_eq!(w["by_project"].as_array().unwrap().len(), 1);
-        assert_eq!(w["by_section"].as_array().unwrap().iter().map(|s| s["section"].clone()).collect::<Vec<_>>(), vec![json!("I")]);
         assert_eq!(w["by_computer"].as_array().unwrap().len(), 1);
         assert_eq!(w["by_computer"][0]["computer_id"], "mac");
     }

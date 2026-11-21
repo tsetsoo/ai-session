@@ -65,7 +65,7 @@ public struct JobDraft: Equatable, Sendable {
             }
         case let .push(t, b):
             kind = .push; title = t; pushBody = b
-        case let .todo(t, p, _):
+        case let .todo(t, p):
             kind = .todo; title = t; projectId = p ?? ""
         case let .watch(w):
             kind = .watch; projectId = w.projectId; computerId = w.computerId; watcher = w.watcher
@@ -85,7 +85,8 @@ public struct JobDraft: Equatable, Sendable {
         switch kind {
         case .conversation: return !projectId.isEmpty && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .research: return !projectId.isEmpty
-        case .push, .todo: return !title.trimmingCharacters(in: .whitespaces).isEmpty
+        case .push: return !title.trimmingCharacters(in: .whitespaces).isEmpty
+        case .todo: return !projectId.isEmpty && !title.trimmingCharacters(in: .whitespaces).isEmpty
         case .watch: return !projectId.isEmpty && !computerId.isEmpty && !watcher.trimmingCharacters(in: .whitespaces).isEmpty
         }
     }
@@ -108,7 +109,7 @@ public struct JobDraft: Equatable, Sendable {
         case .conversation: .conversation(conversation)
         case .research: .research(conversation)
         case .push: .push(title: title, body: pushBody)
-        case .todo: .todo(title: title, projectId: projectId.isEmpty ? nil : projectId, section: nil)
+        case .todo: .todo(title: title, projectId: projectId.isEmpty ? nil : projectId)
         case .watch: .watch(WatchJobAction(projectId: projectId, computerId: computerId,
                                            watcher: watcher.trimmingCharacters(in: .whitespaces),
                                            debugTool: debugTool.isEmpty ? nil : debugTool, prompt: prompt))

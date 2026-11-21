@@ -583,7 +583,7 @@ pub(crate) fn rewrite_weekly_db(
     // Only a project some computer writes for (as `on_projects`) is ever rewritten.
     let on: Option<(bool, bool)> = conn
         .query_row(
-            "SELECT p.daily_updates = 1, EXISTS(SELECT 1 FROM section_computers sc WHERE sc.section = p.section)
+            "SELECT p.daily_updates = 1, EXISTS(SELECT 1 FROM project_computers pc WHERE pc.project_id = p.id AND pc.computer_id IS NOT NULL)
              FROM projects p WHERE p.id = ?1",
             params![project_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -646,7 +646,7 @@ pub(crate) fn list_weekly_db(conn: &Connection, q: &ListQuery) -> Result<Vec<Wee
     let mut sections_stmt = conn.prepare(
         "SELECT project_id, project_name, headline, wins, failed,
                 (rewrite_requested = 1 OR stale = 1) AND EXISTS(SELECT 1 FROM projects p
-                    JOIN section_computers sc ON sc.section = p.section
+                    JOIN project_computers sc ON sc.project_id = p.id AND sc.computer_id IS NOT NULL
                     WHERE p.id = weekly_recaps.project_id AND p.daily_updates = 1),
                 commits, conversations, days_with_work, days, written_at
          FROM weekly_recaps WHERE week = ?1 AND (failed = 1 OR wins != '')

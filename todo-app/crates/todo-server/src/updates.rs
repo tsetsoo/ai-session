@@ -512,7 +512,7 @@ pub(crate) struct OnProject {
 pub(crate) fn on_projects(conn: &Connection) -> rusqlite::Result<Vec<OnProject>> {
     let mut stmt = conn.prepare(
         "SELECT p.id, p.name, p.folder, p.update_style, COALESCE(p.daily_updates_since, ''), sc.computer_id
-         FROM projects p JOIN section_computers sc ON sc.section = p.section
+         FROM projects p JOIN project_computers sc ON sc.project_id = p.id AND sc.computer_id IS NOT NULL
          WHERE p.daily_updates = 1 ORDER BY p.name",
     )?;
     let rows = stmt.query_map([], |r| {

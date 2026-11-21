@@ -128,9 +128,10 @@ async fn send_all(sender: &ApnsSender, pool: &DbPool, alert: &Alert, only: Optio
 
 /// The alert for `event` about `ctx`'s todo. Never includes the hook's status message.
 fn alert_for(ctx: &store::PushContext, kind: PushKind, passive: bool) -> Alert {
-    let subtitle = match &ctx.computer_name {
-        Some(computer) => format!("{} · {computer}", ctx.section),
-        None => ctx.section.clone(),
+    let subtitle = match (&ctx.project_name, &ctx.computer_name) {
+        (Some(project), Some(computer)) => format!("{project} · {computer}"),
+        (Some(name), None) | (None, Some(name)) => name.clone(),
+        (None, None) => String::new(),
     };
     Alert {
         todo_id: Some(ctx.todo_id.clone()),
@@ -148,7 +149,7 @@ fn load(pool: &DbPool, todo_id: &str) -> Option<(store::PushContext, todo_shared
     let conn = pool.get().ok()?;
     let ctx = store::push_context(&conn, todo_id).ok()??;
     let settings = store::load_settings(&conn).ok()?;
-    let muted = store::is_muted(&conn, todo_id, &ctx.section).ok()?;
+    let muted = store::is_muted(&conn, todo_id).ok()?;
     Some((ctx, settings, muted))
 }
 

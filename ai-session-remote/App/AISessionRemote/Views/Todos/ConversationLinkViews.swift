@@ -274,7 +274,7 @@ struct LinkConversationSheet: View {
 
     @ViewBuilder
     private var content: some View {
-        if let computer = store.sectionComputers[todo.section]?.computer {
+        if let computer = store.usualComputer(for: todo) {
             ComputerConversations(
                 computer: computer,
                 linkedIDs: store.linkedConversationIDs,
@@ -333,7 +333,7 @@ struct NewTodoFromConversationSheet: View {
                     }
                 }
                 .sheet(isPresented: $showingComputers) {
-                    SettingsView(initial: .sections(nil))
+                    SettingsView(initial: .computers)
                 }
                 .navigationDestination(for: Step.self) { step in
                     switch step {
@@ -344,8 +344,8 @@ struct NewTodoFromConversationSheet: View {
                             computer: computer,
                             remote: remote,
                             store: store,
-                            onCreate: { section, title, projectId in
-                                try await store.createTodo(from: remote, on: computer, section: section, title: title,
+                            onCreate: { title, projectId in
+                                try await store.createTodo(from: remote, on: computer, title: title,
                                                            projectId: projectId)
                                 dismiss()
                             }
@@ -387,16 +387,15 @@ struct NewTodoFromConversationSheet: View {
     }
 }
 
-/// Section, project and title for a todo created from a conversation. The tool is already
-/// known, so it is shown and not chosen. The section starts set only when this computer
-/// belongs to exactly one section. A new project offers this conversation's folder.
+/// Project and title for a todo created from a conversation.
+/// A new project starts with this conversation's folder.
 struct NewTodoDetailsForm: View {
     let computer: Computer
     let remote: RemoteConversation
     let store: TodoHubStore
     /// Set when the todo already belongs to a project, as on a project page.
     var lockedProject: Project?
-    let onCreate: (TodoSection, String, String) async throws -> Void
+    let onCreate: (String, String) async throws -> Void
 
     @State private var title = ""
     @State private var projectID: String?
@@ -405,22 +404,12 @@ struct NewTodoDetailsForm: View {
     @State private var newFolder = ""
     @State private var error: String?
     @State private var isWorking = false
-    private var chosenSection: TodoSection? {
-        if let lockedProject { return lockedProject.section }
-        if !makingNew, let projectID, let project = computerProjects.first(where: { $0.id == projectID }) {
-            return project.section
-        }
-        return store.projectRoutingSection(on: computer.id)
-    }
-
     private var computerProjects: [Project] {
         store.projectsByComputer.first { $0.computer.id == computer.id }?.projects ?? []
     }
 
-    private var hasComputer: Bool { chosenSection != nil }
-
     private var canCreate: Bool {
-        guard !trimmedTitle.isEmpty, !isWorking, hasComputer else { return false }
+        guard !trimmedTitle.isEmpty, !isWorking else { return false }
         if lockedProject != nil { return true }
         if makingNew {
             return TodoAddForm.canSubmit(
@@ -435,13 +424,9 @@ struct NewTodoDetailsForm: View {
     var body: some View {
         Form {
             Section {
-                if !hasComputer {
-                    Text("The Todo Hub is missing project routing for this computer.")
-                        .foregroundStyle(.secondary)
-                }
                 if let lockedProject {
                     LabeledContent("Project", value: lockedProject.name)
-                } else if hasComputer {
+                } else {
                     Picker("Project", selection: projectChoice) {
                         ForEach(computerProjects) { project in
                             Text(project.name).tag(project.id)
@@ -487,7 +472,6 @@ struct NewTodoDetailsForm: View {
                 }
             }
         }
-        .onChange(of: hasComputer) { _, _ in pickDefaultProject() }
     }
 
     private var projectChoice: Binding<String> {
@@ -506,7 +490,7 @@ struct NewTodoDetailsForm: View {
     }
 
     private func pickDefaultProject() {
-        guard lockedProject == nil, hasComputer else { return }
+        guard lockedProject == nil else { return }
         if makingNew { return }
         if let projectID, computerProjects.contains(where: { $0.id == projectID }) { return }
         if computerProjects.isEmpty {
@@ -519,7 +503,6 @@ struct NewTodoDetailsForm: View {
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private func create() {
-        guard let chosenSection else { return }
         isWorking = true
         error = nil
         let makingNew = makingNew && lockedProject == nil
@@ -529,22 +512,22 @@ struct NewTodoDetailsForm: View {
         Task {
             defer { isWorking = false }
             do {
-                let projectId: String
+                let project: Project
                 if makingNew {
                     guard let created = try await store.createProject(CreateProjectRequest(
-                        name: newName, section: chosenSection, folder: newFolder
+                        name: newName, computerId: computer.id, folder: newFolder
                     )) else { return }
-                    projectId = created.id
-                } else if let existing {
-                    projectId = existing
+                    project = created
+                } else if let existing, let selected = lockedProject ?? computerProjects.first(where: { $0.id == existing }) {
+                    project = selected
                 } else {
                     return
                 }
                 if makingNew {
-                    projectID = projectId
+                    projectID = project.id
                     self.makingNew = false
                 }
-                try await onCreate(chosenSection, trimmedTitle, projectId)
+                try await onCreate(trimmedTitle, project.id)
             } catch {
                 self.error = TodoHubStore.message(for: error)
             }

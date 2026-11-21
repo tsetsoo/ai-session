@@ -54,7 +54,6 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/health", web::get().to(auth::health))
         .route("/api/ws", web::get().to(handlers::ws_handler))
         .route("/api/describe", web::get().to(describe::describe))
-        .route("/api/sections", web::get().to(handlers::get_sections))
         .route("/api/todos", web::get().to(handlers::list_todos))
         .route("/api/todos", web::post().to(handlers::create_todo))
         // Before /api/todos/{id}, which would otherwise match this path (and answer 405).
@@ -79,9 +78,6 @@ pub(crate) fn api_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/computers/{id}/health", web::put().to(health::put_health))
         .route("/api/computers/{id}", web::patch().to(conversations::update_computer))
         .route("/api/computers/{id}", web::delete().to(conversations::delete_computer))
-        .route("/api/sections/computers", web::get().to(conversations::list_section_computers))
-        .route("/api/sections/{code}/computer", web::put().to(conversations::set_section_computer))
-        .route("/api/sections/{code}/computer", web::delete().to(conversations::clear_section_computer))
         .route("/api/conversations", web::get().to(conversations::list_conversations))
         .route("/api/conversations/status", web::post().to(conversations::post_conversation_status))
         .route("/api/conversations/mcp", web::post().to(conversations::report_conversation_mcp))

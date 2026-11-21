@@ -183,14 +183,14 @@ fn validate(conn: &Connection, name: &str, trigger: &JobTrigger, action: &JobAct
         JobAction::Push { title, .. } if title.trim().is_empty() => {
             return Err(JobError::BadRequest("push title is required".into()));
         }
-        JobAction::Todo { title, project_id, .. } => {
+        JobAction::Todo { title, project_id } => {
             if title.trim().is_empty() {
                 return Err(JobError::BadRequest("todo title is required".into()));
             }
-            if let Some(project_id) = project_id {
-                if !project_exists(conn, project_id)? {
-                    return Err(JobError::NotFound("Project not found"));
-                }
+            let project_id = project_id.as_deref().filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| JobError::BadRequest("project_id is required for todo jobs".into()))?;
+            if !project_exists(conn, project_id)? {
+                return Err(JobError::NotFound("Project not found"));
             }
         }
         JobAction::Push { .. } => {}

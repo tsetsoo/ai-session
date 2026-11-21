@@ -196,8 +196,6 @@ final class ProjectsClientTests: XCTestCase {
         XCTAssertEqual(weekly.byProject[0].counters.activeSeconds, 60000)
         XCTAssertNil(weekly.byProject[1].projectId)
         XCTAssertNil(weekly.byProject[1].counters.totalTokens, "all-null tokens stay null")
-        XCTAssertEqual(weekly.bySection[0].section, .sp)
-        XCTAssertNil(weekly.bySection[1].section)
         XCTAssertEqual(weekly.byComputer[0].name, "spreads-macbook-pro")
     }
 
@@ -229,8 +227,6 @@ final class ProjectsClientTests: XCTestCase {
         _ = try await client().listTodos(projectId: "p1")
         XCTAssertEqual(lastRequest.url?.path, "/api/todos")
         XCTAssertEqual(lastRequest.url?.query, "project_id=p1")
-        _ = try await client().listTodos(section: .i)
-        XCTAssertEqual(lastRequest.url?.query, "section=I")
     }
 
     func testUpdateTodoClearEncodesExplicitNull() async throws {
@@ -260,6 +256,16 @@ final class ProjectsClientTests: XCTestCase {
 
     // MARK: Projects
 
+    func testCreateProjectSendsComputerWithoutSection() async throws {
+        respond(Self.projectJSON, status: 201)
+        _ = try await client().createProject(CreateProjectRequest(
+            name: "sigma-revenue", computerId: "mac", folder: "~/programming/sigma-revenue"
+        ))
+        let body = try lastBody()
+        XCTAssertEqual(body["computer_id"] as? String, "mac")
+        XCTAssertFalse(body.keys.contains("section"))
+    }
+
     func testProjectEndpoints() async throws {
         respond("[\(Self.projectJSON)]")
         let projects = try await client().listProjects()
@@ -273,14 +279,14 @@ final class ProjectsClientTests: XCTestCase {
 
         respond(Self.projectJSON, status: 201)
         _ = try await client().createProject(CreateProjectRequest(
-            name: "sigma-revenue", section: .si, folder: "~/programming/sigma-revenue"
+            name: "sigma-revenue", computerId: "mac", folder: "~/programming/sigma-revenue"
         ))
         XCTAssertEqual(lastRequest.httpMethod, "POST")
         XCTAssertEqual(lastRequest.url?.path, "/api/projects")
         var body = try lastBody()
         XCTAssertEqual(body["name"] as? String, "sigma-revenue")
-        XCTAssertEqual(body["section"] as? String, "Si")
-        XCTAssertFalse(body.keys.contains("computer_id"))
+        XCTAssertEqual(body["computer_id"] as? String, "mac")
+        XCTAssertFalse(body.keys.contains("section"))
         XCTAssertEqual(body["folder"] as? String, "~/programming/sigma-revenue")
         XCTAssertFalse(body.keys.contains("repo_url"))
         XCTAssertFalse(body.keys.contains("digest_enabled"))
@@ -316,7 +322,7 @@ final class ProjectsClientTests: XCTestCase {
     func testProjectNestingConflictKeepsServerMessage() async {
         respond(#"{"error":"Folder is inside project sigma-revenue"}"#, status: 409)
         do {
-            _ = try await client().createProject(CreateProjectRequest(name: "x", section: .si, folder: "~/a/b"))
+            _ = try await client().createProject(CreateProjectRequest(name: "x", computerId: "mac", folder: "~/a/b"))
             XCTFail("expected a conflict")
         } catch {
             XCTAssertEqual(error as? TodoHubError, .conflict("Folder is inside project sigma-revenue"))

@@ -70,12 +70,10 @@ public struct TodoHubClient: Sendable {
     // MARK: Todos
 
     public func listTodos(
-        section: TodoSection? = nil,
         filter: TodoListFilter? = nil,
         projectId: String? = nil
     ) async throws -> [Todo] {
         var query: [URLQueryItem] = []
-        if let section { query.append(URLQueryItem(name: "section", value: section.rawValue)) }
         if let filter { query.append(URLQueryItem(name: "show", value: filter.rawValue)) }
         if let projectId { query.append(URLQueryItem(name: "project_id", value: projectId)) }
         return try await decode([Todo].self, send("GET", "/api/todos", query: query))
@@ -119,18 +117,6 @@ public struct TodoHubClient: Sendable {
 
     public func deleteComputer(id: String) async throws {
         _ = try await send("DELETE", "/api/computers/\(escape(id))")
-    }
-
-    public func listSectionComputers() async throws -> [SectionComputer] {
-        try await decode([SectionComputer].self, send("GET", "/api/sections/computers"))
-    }
-
-    public func setSectionComputer(_ section: TodoSection, _ request: SetSectionComputerRequest) async throws -> SectionComputer {
-        try await decode(SectionComputer.self, send("PUT", "/api/sections/\(section.rawValue)/computer", body: request))
-    }
-
-    public func clearSectionComputer(_ section: TodoSection) async throws {
-        _ = try await send("DELETE", "/api/sections/\(section.rawValue)/computer")
     }
 
     // MARK: Conversations

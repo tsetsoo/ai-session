@@ -49,8 +49,8 @@ struct OnThisComputerView: View {
                     computer: computer,
                     remote: remote,
                     store: store,
-                    onCreate: { section, title, projectId in
-                        try await store.createTodo(from: remote, on: computer, section: section, title: title,
+                    onCreate: { title, projectId in
+                        try await store.createTodo(from: remote, on: computer, title: title,
                                                    projectId: projectId)
                         self.step = nil
                     }

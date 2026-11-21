@@ -3,7 +3,7 @@
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use todo_shared::{
     ApnsEnvironment, ConversationStatus, PushDevice, PushDeviceRequest, PushPlatform, PushSettings,
-    PushSettingsUpdate, QuietHours, Section,
+    PushSettingsUpdate, QuietHours,
 };
 
 /// Where and how to send one push.
@@ -21,7 +21,7 @@ pub struct DeviceTarget {
 pub struct PushContext {
     pub todo_id: String,
     pub title: String,
-    pub section: String,
+    pub project_name: Option<String>,
     pub computer_name: Option<String>,
     pub session_id: String,
     pub status: ConversationStatus,
@@ -139,11 +139,10 @@ pub fn load_settings(conn: &Connection) -> rusqlite::Result<PushSettings> {
         )
         .optional()?
         .unwrap_or_default();
-    let muted: Vec<String> = conn
-        .prepare("SELECT section FROM push_muted_sections")?
+    settings.muted_project_ids = conn
+        .prepare("SELECT project_id FROM push_muted_projects ORDER BY project_id")?
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    settings.muted_sections = Section::all().iter().copied().filter(|s| muted.iter().any(|m| m == s.as_str())).collect();
     settings.muted_todo_ids = conn
         .prepare("SELECT todo_id FROM push_muted_todos ORDER BY created_at, todo_id")?
         .query_map([], |r| r.get(0))?
@@ -151,7 +150,7 @@ pub fn load_settings(conn: &Connection) -> rusqlite::Result<PushSettings> {
     Ok(settings)
 }
 
-/// Replace the settings and section mutes (per-todo mutes are left alone).
+/// Replace the settings and project mutes (per-todo mutes are left alone).
 pub fn save_settings(conn: &Connection, update: &PushSettingsUpdate) -> rusqlite::Result<()> {
     let tx = conn.unchecked_transaction()?;
     let quiet = update.quiet_hours.as_ref();
@@ -171,9 +170,12 @@ pub fn save_settings(conn: &Connection, update: &PushSettingsUpdate) -> rusqlite
             quiet.map(|q| &q.tz)
         ],
     )?;
-    tx.execute("DELETE FROM push_muted_sections", [])?;
-    for section in &update.muted_sections {
-        tx.execute("INSERT OR IGNORE INTO push_muted_sections (section) VALUES (?1)", params![section.as_str()])?;
+    tx.execute("DELETE FROM push_muted_projects", [])?;
+    for project_id in &update.muted_project_ids {
+        tx.execute(
+            "INSERT OR IGNORE INTO push_muted_projects (project_id) SELECT id FROM projects WHERE id = ?1",
+            [project_id],
+        )?;
     }
     tx.commit()
 }
@@ -192,12 +194,12 @@ pub fn set_todo_muted(conn: &Connection, todo_id: &str, muted: bool) -> rusqlite
     Ok(true)
 }
 
-/// The todo or its (current) section is muted.
-pub fn is_muted(conn: &Connection, todo_id: &str, section: &str) -> rusqlite::Result<bool> {
+/// The todo or its current project is muted.
+pub fn is_muted(conn: &Connection, todo_id: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM push_muted_todos WHERE todo_id = ?1)
-             OR EXISTS(SELECT 1 FROM push_muted_sections WHERE section = ?2)",
-        params![todo_id, section],
+             OR EXISTS(SELECT 1 FROM todos t JOIN push_muted_projects m ON m.project_id = t.project_id WHERE t.id = ?1)",
+        [todo_id],
         |r| r.get(0),
     )
 }
@@ -205,10 +207,11 @@ pub fn is_muted(conn: &Connection, todo_id: &str, section: &str) -> rusqlite::Re
 /// The todo, its conversation and computer; `None` when either is gone.
 pub fn push_context(conn: &Connection, todo_id: &str) -> rusqlite::Result<Option<PushContext>> {
     conn.query_row(
-        "SELECT t.id, t.title, t.section, c.name, cv.session_id, cv.status
+        "SELECT t.id, t.title, p.name, c.name, cv.session_id, cv.status
          FROM todos t
          JOIN conversations cv ON cv.todo_id = t.id
          LEFT JOIN computers c ON c.id = cv.computer_id
+         LEFT JOIN projects p ON p.id = t.project_id
          WHERE t.id = ?1",
         params![todo_id],
         |row| {
@@ -216,7 +219,7 @@ pub fn push_context(conn: &Connection, todo_id: &str) -> rusqlite::Result<Option
             Ok(PushContext {
                 todo_id: row.get(0)?,
                 title: row.get(1)?,
-                section: row.get(2)?,
+                project_name: row.get(2)?,
                 computer_name: row.get(3)?,
                 session_id: row.get(4)?,
                 status: ConversationStatus::parse(&status).unwrap_or(ConversationStatus::Unknown),
@@ -230,7 +233,7 @@ pub fn push_context(conn: &Connection, todo_id: &str) -> rusqlite::Result<Option
 mod tests {
     use super::*;
     use crate::test_support::{pool, seed_computers};
-    use todo_shared::{ApnsEnvironment, PushDeviceRequest, PushPlatform, PushSettingsUpdate, QuietHours, Section};
+    use todo_shared::{ApnsEnvironment, PushDeviceRequest, PushPlatform, PushSettingsUpdate, QuietHours};
 
     const TOKEN: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 
@@ -248,7 +251,9 @@ mod tests {
     fn seed_todo_with_conversation(conn: &Connection) {
         seed_computers(conn);
         conn.execute_batch(
-            "INSERT INTO todos (id, section, title) VALUES ('t1', 'Si', 'Fix invoice export'), ('t2', 'P', 'plain');
+            "INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'Invoices', 'Si', '~/invoices');
+             INSERT INTO todos (id, section, title, project_id) VALUES
+                 ('t1', 'Si', 'Fix invoice export', 'p1'), ('t2', 'P', 'plain', NULL);
              INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id, status)
                  VALUES ('t1', 'mac', '~/programming', 'claude', 'ai/claude/todo-t1', 'sess-1', 'waiting');",
         )
@@ -297,18 +302,18 @@ mod tests {
     }
 
     #[test]
-    fn section_mute_and_todo_mute() {
+    fn project_mute_and_todo_mute() {
         let (_db, pool) = pool("push-store");
         let conn = pool.get().unwrap();
         seed_todo_with_conversation(&conn);
-        assert!(!is_muted(&conn, "t1", "Si").unwrap());
+        assert!(!is_muted(&conn, "t1").unwrap());
         set_todo_muted(&conn, "t1", true).unwrap();
-        assert!(is_muted(&conn, "t1", "Si").unwrap());
+        assert!(is_muted(&conn, "t1").unwrap());
         set_todo_muted(&conn, "t1", false).unwrap();
-        assert!(!is_muted(&conn, "t1", "Si").unwrap());
-        save_settings(&conn, &PushSettingsUpdate { muted_sections: vec![Section::Si], ..Default::default() }).unwrap();
-        assert!(is_muted(&conn, "t1", "Si").unwrap());
-        assert!(!is_muted(&conn, "t2", "P").unwrap());
+        assert!(!is_muted(&conn, "t1").unwrap());
+        save_settings(&conn, &PushSettingsUpdate { muted_project_ids: vec!["p1".into()], ..Default::default() }).unwrap();
+        assert!(is_muted(&conn, "t1").unwrap());
+        assert!(!is_muted(&conn, "t2").unwrap());
     }
 
     #[test]
@@ -316,12 +321,13 @@ mod tests {
         let (_db, pool) = pool("push-store");
         let conn = pool.get().unwrap();
         assert_eq!(load_settings(&conn).unwrap(), PushSettings::default());
+        seed_todo_with_conversation(&conn);
         let update = PushSettingsUpdate {
             notify_waiting: false,
             done_after_minutes: Some(5),
             grace_seconds: 30,
             quiet_hours: Some(QuietHours { start: "22:30".into(), end: "07:30".into(), tz: "Europe/Sofia".into() }),
-            muted_sections: vec![Section::P, Section::Sp],
+            muted_project_ids: vec!["p1".into()],
         };
         save_settings(&conn, &update).unwrap();
         let loaded = load_settings(&conn).unwrap();
@@ -329,7 +335,7 @@ mod tests {
         assert_eq!(loaded.done_after_minutes, Some(5));
         assert_eq!(loaded.grace_seconds, 30);
         assert_eq!(loaded.quiet_hours, update.quiet_hours);
-        assert_eq!(loaded.muted_sections, vec![Section::Sp, Section::P], "in section order");
+        assert_eq!(loaded.muted_project_ids, vec!["p1"]);
         // Replacing drops what's left out.
         save_settings(&conn, &PushSettingsUpdate::default()).unwrap();
         assert_eq!(load_settings(&conn).unwrap(), PushSettings::default());
@@ -342,7 +348,7 @@ mod tests {
         seed_todo_with_conversation(&conn);
         let ctx = push_context(&conn, "t1").unwrap().unwrap();
         assert_eq!(ctx.title, "Fix invoice export");
-        assert_eq!(ctx.section, "Si");
+        assert_eq!(ctx.project_name.as_deref(), Some("Invoices"));
         assert_eq!(ctx.computer_name.as_deref(), Some("tsvetelins-macbook-pro"));
         assert_eq!(ctx.session_id, "sess-1");
         assert_eq!(ctx.status, ConversationStatus::Waiting);

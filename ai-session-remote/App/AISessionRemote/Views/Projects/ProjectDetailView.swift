@@ -469,8 +469,8 @@ private struct NewTodoFromSessionSheet: View {
                         remote: remote,
                         store: store,
                         lockedProject: project,
-                        onCreate: { section, title, projectId in
-                            try await store.createTodo(from: remote, on: computer, section: section, title: title,
+                        onCreate: { title, projectId in
+                            try await store.createTodo(from: remote, on: computer, title: title,
                                                        projectId: projectId)
                             dismiss()
                         }

@@ -13,8 +13,8 @@ use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
     Computer, Conversation, ConversationStatus, ConversationStatusRequest, WorkerStatus, CreateComputerRequest, DeleteResponse, PullRequest,
-    DuplicateConversationRequest, Importance, LimitPause, LinkConversationRequest, OpenConversationRequest, Section, SectionComputer,
-    ReportConversationMcpRequest, SetConversationMcpRequest, SetConversationSessionRequest, SetSectionComputerRequest,
+    DuplicateConversationRequest, Importance, LimitPause, LinkConversationRequest, OpenConversationRequest, Section,
+    ReportConversationMcpRequest, SetConversationMcpRequest, SetConversationSessionRequest,
     TodoFromConversationRequest, TodoWithConversation, UpdateComputerRequest,
 };
 use uuid::Uuid;
@@ -48,10 +48,6 @@ const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux
      LEFT JOIN todos tm ON tm.id = c.todo_id";
 
 /// Section mapping columns (0) followed by its computer (1..=8).
-const SECTION_COMPUTER_SELECT: &str = "SELECT s.section,
-        m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default
-     FROM section_computers s JOIN computers m ON m.id = s.computer_id";
-
 pub(crate) fn error(status: actix_web::http::StatusCode, msg: impl ToString) -> HttpResponse {
     HttpResponse::build(status).json(serde_json::json!({"error": msg.to_string()}))
 }
@@ -239,14 +235,6 @@ fn with_project(conn: &Connection, (mut conversation, session_known): (Conversat
     Ok(conversation)
 }
 
-fn row_to_section_computer(row: &Row) -> rusqlite::Result<SectionComputer> {
-    let section: String = row.get(0)?;
-    Ok(SectionComputer {
-        section: Section::parse(&section).unwrap_or(Section::P),
-        computer: computer_at(row, 1)?,
-    })
-}
-
 pub(crate) fn get_computer(conn: &Connection, id: &str) -> rusqlite::Result<Option<Computer>> {
     conn.query_row(&format!("SELECT {COMPUTER_COLS}, tools FROM computers WHERE id = ?1"), params![id], computer_with_tools)
         .optional()
@@ -284,7 +272,7 @@ pub(crate) fn load_conversation(conn: &Connection, todo_id: &str) -> rusqlite::R
 #[derive(Debug)]
 pub(crate) enum OpenError {
     TodoNotFound,
-    NoComputer(String),
+    NoComputer,
     UnsupportedTool,
     NoProject,
     BadRequest(&'static str),
@@ -373,8 +361,8 @@ fn open_or_create(
     let scope = scope.map(|scope| scope.resolve_projects(&tx)).transpose()?;
     if let Some(scope) = &scope {
         let (project, computer): (Option<String>, Option<String>) = tx.query_row(
-            "SELECT t.project_id, sc.computer_id FROM todos t
-             LEFT JOIN section_computers sc ON sc.section = t.section WHERE t.id = ?1",
+            "SELECT t.project_id, pc.computer_id FROM todos t
+             LEFT JOIN project_computers pc ON pc.project_id = t.project_id WHERE t.id = ?1",
             [todo_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         ).optional()?.ok_or(OpenError::TodoNotFound)?;
@@ -469,10 +457,9 @@ fn open_conversation_in(
         return Err(OpenError::BadRequest("base_sha must be a commit sha"));
     }
     let several = options.agents > 1;
-    let section: String = conn
-        .query_row("SELECT section FROM todos WHERE id = ?1", params![todo_id], |r| r.get(0))
-        .optional()?
-        .ok_or(OpenError::TodoNotFound)?;
+    if !conn.prepare("SELECT 1 FROM todos WHERE id = ?1")?.exists([todo_id])? {
+        return Err(OpenError::TodoNotFound);
+    }
 
     if let Some(existing) = load_conversation(conn, todo_id)? {
         if several {
@@ -501,21 +488,17 @@ fn open_conversation_in(
         return Err(OpenError::Conflict("The research agents are starting; their conversations appear here in a minute"));
     }
 
-    let computer_id: Option<String> = conn
-        .query_row("SELECT computer_id FROM section_computers WHERE section = ?1", params![section], |r| r.get(0))
-        .optional()?;
-    let Some(computer_id) = computer_id else {
-        return Err(OpenError::NoComputer(section));
-    };
-    let (project_id, cwd, own_worktree, title): (String, String, bool, String) = conn
+    let (project_id, cwd, own_worktree, title, computer_id): (String, String, bool, String, Option<String>) = conn
         .query_row(
-            "SELECT p.id, p.folder, p.worktrees = 1 AND COALESCE(TRIM(p.repo_url), '') <> '', t.title
-             FROM todos t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
-            params![todo_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            "SELECT p.id, p.folder, p.worktrees = 1 AND COALESCE(TRIM(p.repo_url), '') <> '', t.title, pc.computer_id
+             FROM todos t JOIN projects p ON p.id = t.project_id
+             LEFT JOIN project_computers pc ON pc.project_id = p.id WHERE t.id = ?1",
+            [todo_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?
         .ok_or(OpenError::NoProject)?;
+    let computer_id = computer_id.ok_or(OpenError::NoComputer)?;
     let own_worktree = options.worktrees && own_worktree;
     if several && !own_worktree {
         return Err(OpenError::Conflict(
@@ -1270,112 +1253,24 @@ pub async fn delete_computer(
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match conn.execute("DELETE FROM computers WHERE id = ?1", params![id]) {
-        Ok(0) => not_found("Computer not found"),
-        Ok(_) => {
+    let deleted = (|| -> rusqlite::Result<Option<usize>> {
+        let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+        if tx.prepare("SELECT 1 FROM project_computers WHERE computer_id = ?1")?.exists([&id])? {
+            return Ok(None);
+        }
+        tx.execute("DELETE FROM section_computers WHERE computer_id = ?1", [&id])?;
+        let changes = tx.execute("DELETE FROM computers WHERE id = ?1", [&id])?;
+        tx.commit()?;
+        Ok(Some(changes))
+    })();
+    match deleted {
+        Ok(Some(0)) => not_found("Computer not found"),
+        Ok(Some(_)) => {
             broadcaster.send();
             HttpResponse::Ok().json(DeleteResponse { deleted: id })
         }
-        Err(e) if is_constraint_violation(&e) => {
-            conflict("Computer is still assigned to a section or used by a conversation or project")
-        }
-        Err(e) => server_error(e),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Section → computer mapping
-// ---------------------------------------------------------------------------
-
-pub async fn list_section_computers(pool: web::Data<DbPool>, scope: RequestScope) -> HttpResponse {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(e) => return server_error(e),
-    };
-    let mut stmt = match conn.prepare(SECTION_COMPUTER_SELECT) {
-        Ok(s) => s,
-        Err(e) => return server_error(e),
-    };
-    let mut mappings: Vec<SectionComputer> = match stmt.query_map([], row_to_section_computer) {
-        Ok(rows) => match rows.collect::<rusqlite::Result<_>>() {
-            Ok(v) => v,
-            Err(e) => return server_error(e),
-        },
-        Err(e) => return server_error(e),
-    };
-    if let Some(scope) = scope {
-        mappings.retain(|mapping| scope.computer_ids.contains(&mapping.computer.id));
-    }
-    mappings.sort_by_key(|m| Section::all().iter().position(|s| *s == m.section));
-    HttpResponse::Ok().json(mappings)
-}
-
-pub async fn set_section_computer(
-    pool: web::Data<DbPool>,
-    path: web::Path<String>,
-    body: web::Json<SetSectionComputerRequest>,
-    broadcaster: web::Data<Broadcaster>,
-) -> HttpResponse {
-    let Some(section) = Section::parse(&path.into_inner()) else {
-        return bad_request("Invalid section");
-    };
-    if !valid_text(&body.computer_id) {
-        return bad_request("computer_id is required");
-    }
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(e) => return server_error(e),
-    };
-    match get_computer(&conn, &body.computer_id) {
-        Ok(Some(_)) => {}
-        Ok(None) => return not_found("Computer not found"),
-        Err(e) => return server_error(e),
-    }
-    if let Err(e) = conn.execute(
-        "INSERT INTO section_computers (section, computer_id) VALUES (?1, ?2)
-         ON CONFLICT(section) DO UPDATE SET computer_id = excluded.computer_id",
-        params![section.as_str(), body.computer_id],
-    ) {
-        return server_error(e);
-    }
-    broadcaster.send();
-    match conn
-        .query_row(&format!("{SECTION_COMPUTER_SELECT} WHERE s.section = ?1"), params![section.as_str()], row_to_section_computer)
-    {
-        Ok(m) => HttpResponse::Ok().json(m),
-        Err(e) => server_error(e),
-    }
-}
-
-pub async fn clear_section_computer(
-    pool: web::Data<DbPool>,
-    path: web::Path<String>,
-    broadcaster: web::Data<Broadcaster>,
-) -> HttpResponse {
-    let Some(section) = Section::parse(&path.into_inner()) else {
-        return bad_request("Invalid section");
-    };
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(e) => return server_error(e),
-    };
-    let projects: i64 = match conn.query_row(
-        "SELECT COUNT(*) FROM projects WHERE section = ?1",
-        params![section.as_str()],
-        |r| r.get(0),
-    ) {
-        Ok(n) => n,
-        Err(e) => return server_error(e),
-    };
-    if projects > 0 {
-        return conflict(format!("Section {section} still has projects"));
-    }
-    match conn.execute("DELETE FROM section_computers WHERE section = ?1", params![section.as_str()]) {
-        Ok(0) => not_found("Section has no computer"),
-        Ok(_) => {
-            broadcaster.send();
-            HttpResponse::Ok().json(serde_json::json!({"section": section}))
-        }
+        Ok(None) => conflict("Computer is still used by a project"),
+        Err(e) if is_constraint_violation(&e) => conflict("Computer is still used by a conversation"),
         Err(e) => server_error(e),
     }
 }
@@ -1606,7 +1501,7 @@ pub async fn set_conversation_session(
 pub(crate) fn open_error(e: OpenError) -> HttpResponse {
     match e {
         OpenError::TodoNotFound => not_found("Todo not found"),
-        OpenError::NoComputer(section) => conflict(format!("Section {section} has no computer assigned")),
+        OpenError::NoComputer => conflict("The project has no computer assigned"),
         OpenError::UnsupportedTool => bad_request("Unsupported tool"),
         OpenError::NoProject => bad_request("project_id is required"),
         OpenError::BadRequest(msg) => bad_request(msg),
@@ -1668,8 +1563,16 @@ pub async fn todo_from_conversation(
     if project_id.is_empty() {
         return bad_request("project_id is required");
     }
+    let section = match conn.query_row("SELECT section FROM projects WHERE id = ?1", [project_id], |row| row.get::<_, String>(0)).optional() {
+        Ok(Some(section)) => match Section::parse(&section) {
+            Some(section) => section,
+            None => return server_error("Invalid project section"),
+        },
+        Ok(None) => return not_found("Project not found"),
+        Err(error) => return server_error(error),
+    };
     let new = NewTodo {
-        section: body.section,
+        section,
         title,
         project_id,
         importance: body.importance,
@@ -2852,12 +2755,12 @@ mod tests {
     }
 
     #[test]
-    fn open_errors_without_todo_or_mapping() {
+    fn open_errors_without_todo_or_project() {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
         assert!(matches!(open_conversation_db(&conn, "missing", "claude", None, false), Err(OpenError::TodoNotFound)));
-        assert!(matches!(open_conversation_db(&conn, "t-p", "claude", None, false), Err(OpenError::NoComputer(s)) if s == "P"));
+        assert!(matches!(open_conversation_db(&conn, "t-p", "claude", None, false), Err(OpenError::NoProject)));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 use chrono::{DateTime, Duration, NaiveDateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use todo_shared::{JobAction, JobTrigger, Section};
+use todo_shared::{JobAction, JobTrigger};
 use uuid::Uuid;
 
 use crate::broadcast::Broadcaster;
@@ -255,18 +255,19 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
                     params![run_id, stamp],
                 )?;
             }
-            JobAction::Todo { title, project_id, section } => {
+            JobAction::Todo { title, project_id } => {
                 let project = match project_id.as_deref() {
                     Some(pid) => project_name_and_section(&tx, pid)?,
                     None => None,
                 };
-                let section = match (&project, section) {
-                    (Some((_, s)), _) => s.clone(),
-                    (None, Some(s)) => s.as_str().to_string(),
-                    (None, None) => Section::P.as_str().to_string(),
+                let Some((pname, section)) = project else {
+                    tx.execute(
+                        "UPDATE job_runs SET state = 'failed', result = 'Todo job needs an existing project', updated_at = ?2 WHERE id = ?1",
+                        params![run_id, stamp],
+                    )?;
+                    continue;
                 };
-                let pname = project.as_ref().map(|(n, _)| n.as_str()).unwrap_or("");
-                let vars = [("date", today.as_str()), ("job", name.as_str()), ("project", pname)];
+                let vars = [("date", today.as_str()), ("job", name.as_str()), ("project", pname.as_str())];
                 let todo = insert_scheduled_todo(&tx, &section, &render(&title, &vars), project_id.as_deref(), &id, &run_id)?;
                 tx.execute(
                     "UPDATE job_runs SET state = 'done', todo_id = ?2, started_at = ?3, result = 'todo created', updated_at = ?3 WHERE id = ?1",
@@ -414,6 +415,17 @@ mod tests {
             .unwrap();
         assert_eq!((title.as_str(), section.as_str(), project.as_deref(), marker.as_deref()), ("Review app PRs", "Si", Some("pa"), Some("j")));
         assert_eq!(runs(&conn, "j")[0].1, "done");
+    }
+
+    #[test]
+    fn tick_fails_legacy_todo_job_without_a_project() {
+        let (_db, pool) = pool("sched");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "j", "0 9 * * *", r#"{"kind":"todo","title":"Review","section":"Si"}"#, "2026-11-01 08:00:00");
+        let out = tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
+        assert!(out.todos.is_empty());
+        assert_eq!(runs(&conn, "j")[0].1, "failed");
     }
 
     #[test]

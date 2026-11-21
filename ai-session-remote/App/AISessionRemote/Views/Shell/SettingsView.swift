@@ -10,7 +10,7 @@ extension EnvironmentValues {
 /// Settings, shown as a sheet: Todo server, Computers, Access & keys (the only place
 /// SSH words appear), Terminal and Notifications.
 ///
-/// The server, sections and access screens each own a navigation stack, so they open as sheets
+/// The server, computers and access screens each own a navigation stack, so they open as sheets
 /// over this one rather than being pushed. Given one of them as `initial` (a fix from the
 /// conversation frame), Settings opens straight on that screen and closes with it.
 struct SettingsView: View {
@@ -26,7 +26,7 @@ struct SettingsView: View {
     }
 
     private enum Sheet: String, Identifiable {
-        case server, sections, access
+        case server, computers, access
         var id: String { rawValue }
     }
 
@@ -44,8 +44,8 @@ struct SettingsView: View {
             switch initial {
             case .server?:
                 serverSettings
-            case let .sections(section)?:
-                ComputersView(store: model.store, editing: section)
+            case .computers?:
+                ComputersView(store: model.store)
             case .access?:
                 AccessSettings()
             case .terminal?, .notifications?, nil:
@@ -67,7 +67,7 @@ struct SettingsView: View {
                         sheet = .server
                     }
                     SettingsSheetRow(title: "Computers", systemImage: "desktopcomputer") {
-                        sheet = .sections
+                        sheet = .computers
                     }
                     .disabled(!model.store.isConfigured)
                 } footer: {
@@ -121,7 +121,7 @@ struct SettingsView: View {
             Group {
                 switch sheet {
                 case .server: serverSettings
-                case .sections: ComputersView(store: model.store)
+                case .computers: ComputersView(store: model.store)
                 case .access: AccessSettings()
                 }
             }

@@ -74,7 +74,7 @@ struct PhoneShell: View {
             // An optional destination: server, computers, access, terminal, notifications.
             let initial: SettingsDestination? = switch DemoFixtures.value(after: "-uiDemoSettings") {
             case "server": .server
-            case "computers": .sections(nil)
+            case "computers": .computers
             case "access": .access
             case "terminal": .terminal
             case "notifications": .notifications

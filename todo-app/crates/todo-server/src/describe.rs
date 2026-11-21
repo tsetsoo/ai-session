@@ -27,13 +27,13 @@ fn base_description() -> Value {
     json!({
         "app": "TODO List",
         "version": "2.1.0",
-        "description": "Personal TODO list with 4 sections: Sp, I, Si, P. Each todo has a priority level and optional due date. Each section can be assigned a computer, and each todo can have one AI conversation (Claude Code in tmux) on that computer. Projects are folders on a computer; todos and conversations can belong to one. Computers push conversation stats and extracted memories; the server only stores them.",
+        "description": "Personal todo list organized by project. Projects have a folder and a computer. Todos can have AI conversations on that computer. Computers report conversation activity to the hub.",
         "auth": "When full-access or scoped tokens are configured, /api endpoints except /api/health require 'Authorization: Bearer <token>'. Scoped tokens grant read access and selected writes on granted records. /api/ws requires a full-access token and also accepts ?token= when authentication is enabled.",
         "base_url": "/api",
         "quick_start": {
-            "create_a_todo": "curl -X POST /api/todos -H 'Content-Type: application/json' -d '{\"section\":\"P\",\"title\":\"Go for a run\",\"importance\":\"high\",\"due_date\":\"2026-02-21\"}'",
+            "create_a_todo": "curl -X POST /api/todos -H 'Content-Type: application/json' -d '{\"project_id\":\"<project-id>\",\"title\":\"Go for a run\",\"importance\":\"high\",\"due_date\":\"2026-02-21\"}'",
             "list_all_todos": "curl /api/todos",
-            "list_by_section": "curl /api/todos?section=P",
+            "list_by_project": "curl /api/todos?project_id=<project-id>",
             "list_by_importance": "curl /api/todos?sort=importance",
             "toggle_complete": "curl -X POST /api/todos/{id}/toggle",
             "delete_todo": "curl -X DELETE /api/todos/{id}"
@@ -48,28 +48,9 @@ fn base_description() -> Value {
             },
             {
                 "method": "GET",
-                "path": "/api/sections",
-                "description": "List all sections with their todo counts",
-                "example_response": [
-                    {"section": "Sp", "total": 3, "completed": 1},
-                    {"section": "I", "total": 5, "completed": 2},
-                    {"section": "Si", "total": 2, "completed": 0},
-                    {"section": "P", "total": 4, "completed": 3}
-                ]
-            },
-            {
-                "method": "GET",
                 "path": "/api/todos",
-                "description": "List all todos, optionally filtered by section and/or sorted",
+                "description": "List todos, optionally filtered by project and sorted",
                 "parameters": [
-                    {
-                        "name": "section",
-                        "in": "query",
-                        "required": false,
-                        "type": "string",
-                        "enum": ["Sp", "I", "Si", "P"],
-                        "description": "Filter todos by section"
-                    },
                     {
                         "name": "sort",
                         "in": "query",
@@ -86,7 +67,7 @@ fn base_description() -> Value {
                         "description": "Only the todos of this project"
                     }
                 ],
-                "example_request": "GET /api/todos?section=P&sort=importance",
+                "example_request": "GET /api/todos?sort=importance",
                 "example_response": [
                     {
                         "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -115,7 +96,6 @@ fn base_description() -> Value {
                 "request_body": {
                     "content_type": "application/json",
                     "fields": {
-                        "section": {"type": "string", "required": false, "enum": ["Sp", "I", "Si", "P"], "description": "Must match the project. Omitted uses the project's section"},
                         "title": {"type": "string", "required": true, "description": "The todo title (non-empty)"},
                         "importance": {"type": "string", "required": false, "enum": ["low", "medium", "high", "critical"], "default": "medium"},
                         "due_date": {"type": "string", "required": false, "format": "YYYY-MM-DD", "description": "Optional due date"},
@@ -149,7 +129,6 @@ fn base_description() -> Value {
                         "completed": {"type": "boolean", "required": false},
                         "waiting": {"type": "boolean", "required": false, "description": "Set Waiting for an unfinished todo you plan to return to shortly. Setting it clears On hold."},
                         "on_hold": {"type": "boolean", "required": false, "description": "Pause or resume an unfinished todo. Does not stop its conversations. Completing a todo clears On hold."},
-                        "section": {"type": "string", "required": false, "enum": ["Sp", "I", "Si", "P"]},
                         "importance": {"type": "string", "required": false, "enum": ["low", "medium", "high", "critical"]},
                         "due_date": {"type": "string or null", "required": false, "format": "YYYY-MM-DD", "description": "Set to null to clear the due date"},
                         "project_id": {"type": "string", "required": false, "description": "Move the todo to this project and its section. JSON null is rejected. 404 for an unknown project"}
@@ -184,15 +163,7 @@ fn base_description() -> Value {
                 "response_status": 201
             },
             {"method": "PATCH", "path": "/api/computers/{id}", "description": "Update name, hostname, port, username or mcp_default (array of MCP server names ticked by default for new conversations; null clears it). 400 for an invalid MCP server name"},
-            {"method": "DELETE", "path": "/api/computers/{id}", "description": "Delete a computer; 409 while a section or conversation uses it"},
-            {"method": "GET", "path": "/api/sections/computers", "description": "Section → computer mappings (sections without one are omitted)"},
-            {
-                "method": "PUT",
-                "path": "/api/sections/{code}/computer",
-                "description": "Assign a computer to a section",
-                "example_request": {"computer_id": "<uuid>"}
-            },
-            {"method": "DELETE", "path": "/api/sections/{code}/computer", "description": "Remove a section's computer. 409 while the section still has projects"},
+            {"method": "DELETE", "path": "/api/computers/{id}", "description": "Delete a computer; 409 while a project or conversation uses it"},
             {"method": "GET", "path": "/api/conversations", "description": "All conversations with their computer and status"},
             {"method": "GET", "path": "/api/todos/{id}/conversation", "description": "The todo's most urgent conversation; 404 if none"},
             {"method": "GET", "path": "/api/todos/{id}/conversations", "description": "Every conversation of the todo, oldest first"},
@@ -218,7 +189,7 @@ fn base_description() -> Value {
                 "method": "POST",
                 "path": "/api/todos/from-conversation",
                 "description": "Create a todo linked to an existing conversation, atomically. project_id is required and stored in the same transaction; 400 when it is missing or the section disagrees, 404 when the project does not exist. 201 {todo, conversation}. Same 400/404/409 rules as link. Optional importance and due_date, as for POST /api/todos",
-                "example_request": {"section": "Sp", "title": "Review data-management PR 630", "project_id": "<uuid>", "computer_id": "<uuid>", "tool": "claude", "session_id": "<uuid>", "cwd": "~/Spread/Repository", "importance": "high"},
+                "example_request": {"title": "Review data-management PR 630", "project_id": "<uuid>", "computer_id": "<uuid>", "tool": "claude", "session_id": "<uuid>", "cwd": "~/Spread/Repository", "importance": "high"},
                 "response_status": 201
             },
             {
@@ -257,7 +228,7 @@ fn base_description() -> Value {
             {"method": "GET", "path": "/api/push/devices", "description": "Registered devices (PushDevice[])"},
             {"method": "POST", "path": "/api/push/devices/unregister", "description": "Unregister a device (the toggle was switched off). The token goes in the body because request paths are logged. 404 if unknown", "example_request": {"token": "<hex>"}},
             {"method": "GET", "path": "/api/push/settings", "description": "PushSettings: waiting pushes on/off, done-after threshold, grace, quiet hours, muted sections and todos"},
-            {"method": "PUT", "path": "/api/push/settings", "description": "Replace the settings and section mutes (todo mutes have their own endpoint). 400 for an unknown timezone or bad HH:MM", "example_request": {"notify_waiting": true, "done_after_minutes": 5, "grace_seconds": 20, "quiet_hours": {"start": "22:30", "end": "07:30", "tz": "Europe/Sofia"}, "muted_sections": ["P"]}},
+            {"method": "PUT", "path": "/api/push/settings", "description": "Replace the settings and project mutes (todo mutes have their own endpoint). 400 for an unknown timezone or bad HH:MM", "example_request": {"notify_waiting": true, "done_after_minutes": 5, "grace_seconds": 20, "quiet_hours": {"start": "22:30", "end": "07:30", "tz": "Europe/Sofia"}, "muted_project_ids": ["p1"]}},
             {"method": "POST", "path": "/api/push/presence", "description": "This client is showing todo_id's conversation (null: none). Kept in memory for 90 s; refresh every 30 s. A push for a conversation someone is viewing is not sent", "example_request": {"client_id": "<uuid>", "todo_id": "<uuid>"}},
             {"method": "GET", "path": "/api/push/status", "description": "Whether APNs is configured, the last error and send time, and the number of devices. Never contains key material"},
             {"method": "POST", "path": "/api/push/test", "description": "Send a test notification now to every device, or to {token}. Returns per-device results; 409 when APNs is not configured"},
@@ -282,7 +253,7 @@ fn base_description() -> Value {
                 "done_after_minutes": "number | null - push when a busy run of at least this many minutes goes idle (null: never)",
                 "grace_seconds": "number - wait this long before a waiting push and drop it if answered (default 20)",
                 "quiet_hours": "{start: HH:MM, end: HH:MM, tz: IANA} | null - pushes inside are delivered silently",
-                "muted_sections": "string[] - section codes",
+                "muted_project_ids": "string[] - project IDs",
                 "muted_todo_ids": "string[]"
             },
             "Todo": {
@@ -339,8 +310,8 @@ fn project_endpoints() -> Vec<Value> {
         json!({
             "method": "POST",
             "path": "/api/projects",
-            "description": "Create a project on a section. folder must start with ~ or /; /Users/<username>/… and /home/<username>/… of that section's computer are stored as ~/…, without a trailing /. 201 with the Project, including the section and its computer. 409 when the section has no computer, or when that section already has this folder. A folder inside another project is allowed. Re-matches that computer's conversations",
-            "example_request": {"name": "todo-app", "section": "Si", "folder": "~/programming/todo-app", "repo_url": "git@github.com:tsetsoo/todo-app.git", "digest_enabled": true},
+            "description": "Create a project on a computer. Use its computer_id and a folder starting with ~ or /. Home paths are normalized for the computer's username. Returns 409 if the folder already has a project on this computer. Re-matches the computer's conversations.",
+            "example_request": {"name": "todo-app", "computer_id": "mac", "folder": "~/programming/todo-app", "repo_url": "git@github.com:tsetsoo/todo-app.git", "digest_enabled": true},
             "response_status": 201
         }),
         json!({
@@ -441,7 +412,7 @@ fn session_endpoints() -> Vec<Value> {
         json!({
             "method": "GET",
             "path": "/api/stats/weekly",
-            "description": "Usage of one week (Monday to Sunday), summed from the per-day rows: totals and by_project, by_section, by_computer. sessions counts distinct conversations with activity that week. totals and every rollup are the conversations' own usage; workers (top level and on each rollup) is their sub-agents' usage on the week's days, with sessions counting workers. Token sums are null when every value is null. A conversation's section is its todo's section, else the only section mapped to its computer, else null. 400 when week_start is not a Monday",
+            "description": "Usage of one week (Monday to Sunday), summed from the per-day rows: totals, by_project and by_computer. sessions counts distinct conversations with activity that week. totals and every rollup are the conversations' own usage; workers (top level and on each rollup) is their sub-agents' usage on the week's days, with sessions counting workers. Token sums are null when every value is null. 400 when week_start is not a Monday",
             "parameters": [
                 {"name": "week_start", "in": "query", "required": false, "type": "string (YYYY-MM-DD, a Monday)", "description": "Default: the Monday of the server's local today"},
                 {"name": "project_id", "in": "query", "required": false, "type": "string", "description": "Restrict every grouping to this project's conversations"}
@@ -449,7 +420,6 @@ fn session_endpoints() -> Vec<Value> {
             "example_response": {"week_start": "2026-10-12", "week_end": "2026-10-18",
                 "totals": {"sessions": 23, "prompts": 180, "assistant_turns": 176, "input_tokens": 51_000, "output_tokens": 830_000, "cache_read_tokens": 90_000_000, "cache_creation_tokens": 4_000_000, "active_seconds": 61200, "files_touched": 88},
                 "by_project": [{"project_id": "<uuid>", "name": "todo-app", "sessions": 5}, {"project_id": null, "name": null, "sessions": 18}],
-                "by_section": [{"section": "Sp", "sessions": 4}, {"section": null, "sessions": 19}],
                 "by_computer": [{"computer_id": "<uuid>", "name": "spreads-macbook-pro", "sessions": 4}]}
         }),
         json!({
@@ -602,7 +572,6 @@ fn project_models() -> Value {
             "week_end": "string (YYYY-MM-DD, Sunday)",
             "totals": "counters: sessions, prompts, assistant_turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, active_seconds, files_touched",
             "by_project": "array of {project_id, name, …counters}; project_id null for conversations without a project",
-            "by_section": "array of {section, …counters}; section null when unassigned",
             "by_computer": "array of {computer_id, name, …counters}"
         }
     })

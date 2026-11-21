@@ -171,18 +171,18 @@ final class PushHubClientTests: XCTestCase {
     }
 
     func testSettingsRoundTrip() async throws {
-        let json = #"{"notify_waiting":true,"done_after_minutes":5,"grace_seconds":20,"quiet_hours":{"start":"22:30","end":"07:30","tz":"Europe/Sofia"},"muted_sections":["P"],"muted_todo_ids":["t1"]}"#
+        let json = #"{"notify_waiting":true,"done_after_minutes":5,"grace_seconds":20,"quiet_hours":{"start":"22:30","end":"07:30","tz":"Europe/Sofia"},"muted_project_ids":["p1"],"muted_todo_ids":["t1"]}"#
         StubURLProtocol.handler = { _ in .init(status: 200, body: json) }
         let settings = try await client().pushSettings()
         XCTAssertEqual(settings.quietHours, QuietHours(start: "22:30", end: "07:30", tz: "Europe/Sofia"))
-        XCTAssertEqual(settings.mutedSections, [.p])
+        XCTAssertEqual(settings.mutedProjectIds, ["p1"])
         XCTAssertEqual(settings.mutedTodoIds, ["t1"])
         let saved = try await client().savePushSettings(settings)
         XCTAssertEqual(saved, settings)
         XCTAssertEqual(StubURLProtocol.requests.last?.httpMethod, "PUT")
         let body = try lastBody()
         XCTAssertEqual(body["done_after_minutes"] as? Int, 5)
-        XCTAssertEqual(body["muted_sections"] as? [String], ["P"])
+        XCTAssertEqual(body["muted_project_ids"] as? [String], ["p1"])
     }
 
     func testMuteStatusAndTestPush() async throws {

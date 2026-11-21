@@ -225,14 +225,14 @@ public struct ProjectSuggestion: Decodable, Hashable, Identifiable, Sendable {
 /// `POST /api/projects`. `nil` fields are omitted.
 public struct CreateProjectRequest: Encodable, Sendable {
     public var name: String
-    public var section: TodoSection
+    public var computerId: String
     public var folder: String
     public var repoUrl: String?
     public var digestEnabled: Bool?
 
-    public init(name: String, section: TodoSection, folder: String, repoUrl: String? = nil, digestEnabled: Bool? = nil) {
+    public init(name: String, computerId: String, folder: String, repoUrl: String? = nil, digestEnabled: Bool? = nil) {
         self.name = name
-        self.section = section
+        self.computerId = computerId
         self.folder = folder
         self.repoUrl = repoUrl
         self.digestEnabled = digestEnabled
@@ -521,20 +521,6 @@ public struct ProjectRollup: Decodable, Hashable, Sendable {
     }
 }
 
-/// One `by_section` row; `section == nil` is "unassigned".
-public struct SectionRollup: Decodable, Hashable, Sendable {
-    public var section: TodoSection?
-    public var counters: StatsCounters
-
-    private enum CodingKeys: String, CodingKey { case section }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        section = try c.decodeIfPresent(TodoSection.self, forKey: .section)
-        counters = try StatsCounters(from: decoder)
-    }
-}
-
 public struct ComputerRollup: Decodable, Hashable, Sendable {
     public var computerId: String?
     public var name: String?
@@ -560,22 +546,20 @@ public struct WeeklyStats: Decodable, Hashable, Sendable {
     /// Their sub-agents' usage on the week's days (`sessions` counts workers); older hubs send none
     public var workers: StatsCounters
     public var byProject: [ProjectRollup]
-    public var bySection: [SectionRollup]
     public var byComputer: [ComputerRollup]
 
     public init(weekStart: String, weekEnd: String, totals: StatsCounters, workers: StatsCounters = StatsCounters(),
-                byProject: [ProjectRollup] = [], bySection: [SectionRollup] = [], byComputer: [ComputerRollup] = []) {
+                byProject: [ProjectRollup] = [], byComputer: [ComputerRollup] = []) {
         self.weekStart = weekStart
         self.weekEnd = weekEnd
         self.totals = totals
         self.workers = workers
         self.byProject = byProject
-        self.bySection = bySection
         self.byComputer = byComputer
     }
 
     private enum CodingKeys: String, CodingKey {
-        case weekStart, weekEnd, totals, workers, byProject, bySection, byComputer
+        case weekStart, weekEnd, totals, workers, byProject, byComputer
     }
 
     public init(from decoder: Decoder) throws {
@@ -585,7 +569,6 @@ public struct WeeklyStats: Decodable, Hashable, Sendable {
         totals = try c.decodeIfPresent(StatsCounters.self, forKey: .totals) ?? StatsCounters()
         workers = try c.decodeIfPresent(StatsCounters.self, forKey: .workers) ?? StatsCounters()
         byProject = try c.decodeIfPresent([ProjectRollup].self, forKey: .byProject) ?? []
-        bySection = try c.decodeIfPresent([SectionRollup].self, forKey: .bySection) ?? []
         byComputer = try c.decodeIfPresent([ComputerRollup].self, forKey: .byComputer) ?? []
     }
 }

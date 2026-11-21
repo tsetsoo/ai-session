@@ -1,4 +1,4 @@
-//! Projects: a folder on a section. The section's computer is the project's computer.
+//! Projects: a folder on a computer.
 //! Todos belong to one project. A session matches the longest project folder on its computer.
 //! Two projects may use the same folder, or one folder inside another.
 
@@ -29,7 +29,7 @@ const PROJECT_SELECT: &str = "SELECT p.id, p.name, p.section, p.folder, p.repo_u
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default,
         p.daily_updates, p.update_style, p.worktrees
      FROM projects p
-     JOIN section_computers sc ON sc.section = p.section
+     JOIN project_computers sc ON sc.project_id = p.id AND sc.computer_id IS NOT NULL
      JOIN computers m ON m.id = sc.computer_id";
 
 /// Longest `update_style`, in characters.
@@ -85,10 +85,10 @@ fn list_projects_db(conn: &Connection) -> rusqlite::Result<Vec<Project>> {
     rows.collect()
 }
 
-/// `(id, section, folder)` of every project whose section uses this computer.
+/// Whether the project is assigned to this computer.
 pub(crate) fn project_on_computer(conn: &Connection, project: &str, computer: &str) -> rusqlite::Result<bool> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM projects p JOIN section_computers sc ON sc.section = p.section
+        "SELECT EXISTS(SELECT 1 FROM projects p JOIN project_computers sc ON sc.project_id = p.id AND sc.computer_id IS NOT NULL
                        WHERE p.id = ?1 AND sc.computer_id = ?2)",
         params![project, computer], |row| row.get(0),
     )
@@ -97,7 +97,7 @@ pub(crate) fn project_on_computer(conn: &Connection, project: &str, computer: &s
 fn computer_projects(conn: &Connection, computer_id: &str) -> rusqlite::Result<Vec<(String, String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT p.id, p.section, p.folder FROM projects p
-         JOIN section_computers sc ON sc.section = p.section
+         JOIN project_computers sc ON sc.project_id = p.id AND sc.computer_id IS NOT NULL
          WHERE sc.computer_id = ?1",
     )?;
     let rows = stmt.query_map(params![computer_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
@@ -219,7 +219,7 @@ pub(crate) fn rematch_sessions(conn: &Connection, computer_id: &str) -> rusqlite
          WHERE computer_id = ?1 AND project_override = 1 AND project_id IS NOT NULL
            AND project_id NOT IN (
                SELECT p.id FROM projects p
-               JOIN section_computers sc ON sc.section = p.section
+               JOIN project_computers sc ON sc.project_id = p.id AND sc.computer_id IS NOT NULL
                WHERE sc.computer_id = ?1
            )",
         params![computer_id],
@@ -302,28 +302,34 @@ fn clean_url(url: Option<&str>) -> Option<&str> {
     url.map(str::trim).filter(|u| !u.is_empty())
 }
 
-fn folder_taken(conn: &Connection, section: &str, folder: &str, except: Option<&str>) -> rusqlite::Result<bool> {
-    conn.prepare("SELECT 1 FROM projects WHERE section = ?1 AND folder = ?2 AND id IS NOT ?3")?
-        .exists(params![section, folder, except])
+fn folder_taken(conn: &Connection, section: &str, computer: &str, folder: &str, except: Option<&str>) -> rusqlite::Result<bool> {
+    conn.prepare("SELECT 1 FROM projects p JOIN project_computers pc ON pc.project_id = p.id WHERE p.section = ?1 AND p.folder = ?2 AND p.id IS NOT ?3 AND pc.computer_id = ?4")?
+        .exists(params![section, folder, except, computer])
 }
 
 pub(crate) fn create_project_db(conn: &Connection, req: &CreateProjectRequest) -> Result<Project, ProjectError> {
     let name = checked_name(&req.name)?;
-    let section = req.section.as_str();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let computer_id: String = tx
-        .query_row("SELECT computer_id FROM section_computers WHERE section = ?1", params![section], |r| r.get(0))
-        .optional()?
-        .ok_or_else(|| ProjectError::Conflict(format!("Section {section} has no computer")))?;
-    let username = computer_username(&tx, &computer_id)?.ok_or(ProjectError::NotFound("Computer not found"))?;
+    let computer_id = req.computer_id.trim();
+    let username = computer_username(&tx, computer_id)?.ok_or(ProjectError::NotFound("Computer not found"))?;
     let folder = checked_folder(&req.folder, &username)?;
-    if folder_taken(&tx, section, &folder, None)? {
-        return Err(ProjectError::Conflict(format!("Section {section} already has a project at {folder}")));
+    if tx.prepare(
+        "SELECT 1 FROM projects p JOIN project_computers pc ON pc.project_id = p.id
+         WHERE pc.computer_id = ?1 AND p.folder = ?2",
+    )?.exists(params![computer_id, folder])? {
+        return Err(ProjectError::Conflict(format!("A project already uses {folder} on this computer")));
     }
+    let legacy_section: Option<String> = tx.query_row(
+        "SELECT section FROM section_computers WHERE computer_id = ?1
+         ORDER BY CASE section WHEN 'Sp' THEN 0 WHEN 'I' THEN 1 WHEN 'Si' THEN 2 ELSE 3 END LIMIT 1",
+        [computer_id],
+        |row| row.get(0),
+    ).optional()?;
+    let section = legacy_section.as_deref().unwrap_or("P");
     let id = Uuid::new_v4().to_string();
     tx.execute(
-        "INSERT INTO projects (id, name, section, folder, repo_url, digest_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, name, section, folder, clean_url(req.repo_url.as_deref()), req.digest_enabled.unwrap_or(true)],
+        "INSERT INTO projects (id, name, section, folder, repo_url, digest_enabled, computer_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![id, name, section, folder, clean_url(req.repo_url.as_deref()), req.digest_enabled.unwrap_or(true), computer_id],
     )?;
     rematch_sessions(&tx, &computer_id)?;
     let project = load_project(&tx, &id)?.ok_or(ProjectError::NotFound("Project not found"))?;
@@ -356,7 +362,7 @@ fn update_project_db(conn: &Connection, id: &str, req: &UpdateProjectRequest, sc
     let folder = match req.folder.as_deref() {
         Some(folder) => {
             let folder = checked_folder(folder, &existing.computer.username)?;
-            if folder_taken(&tx, section, &folder, Some(id))? {
+            if folder_taken(&tx, section, &existing.computer.id, &folder, Some(id))? {
                 return Err(ProjectError::Conflict(format!("Section {section} already has a project at {folder}")));
             }
             Some(folder)
@@ -406,7 +412,7 @@ pub(crate) fn delete_project_db(conn: &Connection, id: &str) -> Result<(), Proje
     let computer_id: Option<String> = tx
         .query_row(
             "SELECT sc.computer_id FROM projects p
-             LEFT JOIN section_computers sc ON sc.section = p.section
+             LEFT JOIN project_computers sc ON sc.project_id = p.id AND sc.computer_id IS NOT NULL
              WHERE p.id = ?1",
             params![id],
             |r| r.get(0),
@@ -483,7 +489,7 @@ pub(crate) fn suggestions_db(conn: &Connection) -> rusqlite::Result<Vec<ProjectS
     {
         let mut stmt = conn.prepare(
             "SELECT sc.computer_id, p.folder FROM projects p
-             JOIN section_computers sc ON sc.section = p.section",
+             JOIN project_computers sc ON sc.project_id = p.id AND sc.computer_id IS NOT NULL",
         )?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         for row in rows {
@@ -650,7 +656,11 @@ mod tests {
 
     async fn create(pool: &crate::db::DbPool, section: &str, folder: &str) -> (StatusCode, Value) {
         let name = folder.rsplit('/').find(|s| !s.is_empty()).unwrap();
-        post(pool, "/api/projects", json!({"name": name, "section": section, "folder": folder})).await
+        let computer: String = pool.get().unwrap().query_row(
+            "SELECT computer_id FROM section_computers WHERE section = ?1",
+            [section], |row| row.get(0),
+        ).unwrap();
+        post(pool, "/api/projects", json!({"name": name, "computer_id": computer, "folder": folder})).await
     }
 
     async fn create_ok(pool: &crate::db::DbPool, computer: &str, folder: &str) -> String {
@@ -681,27 +691,37 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn create_project_on_a_section_stores_no_computer_id() {
+    async fn project_creation_accepts_unmapped_computers_and_shares_paths_across_hosts() {
+        let (_db, pool) = pool("proj");
+        let conn = pool.get().unwrap();
+        for id in ["first", "second"] {
+            conn.execute("INSERT INTO computers (id, name, hostname, username) VALUES (?1, ?1, ?1, 'me')", [id]).unwrap();
+            let request = json!({"name": "App", "computer_id": id, "folder": "~/app"});
+            let (status, body) = post(&pool, "/api/projects", request.clone()).await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+            assert_eq!(body["computer"]["id"], id);
+            assert_eq!(post(&pool, "/api/projects", request).await.0, StatusCode::CONFLICT);
+        }
+    }
+
+    #[actix_web::test]
+    async fn create_project_stores_the_computer_id() {
         let (_db, pool) = pool("proj");
         let conn = pool.get().unwrap();
         seed_computers(&conn);
         let (status, body) = post(
             &pool,
             "/api/projects",
-            json!({"name": "sigma", "section": "Si", "folder": "~/programming/sigma-revenue"}),
+            json!({"name": "sigma", "computer_id": "mac", "folder": "~/programming/sigma-revenue"}),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         assert_eq!(body["section"], "Si");
         assert_eq!(body["computer"]["id"], "mac");
-        let columns: Vec<String> = conn
-            .prepare("SELECT name FROM pragma_table_info('projects')")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
+        let stored: String = conn
+            .query_row("SELECT computer_id FROM projects WHERE id = ?1", [body["id"].as_str().unwrap()], |r| r.get(0))
             .unwrap();
-        assert!(!columns.iter().any(|name| name == "computer_id"));
+        assert_eq!(stored, "mac");
     }
 
     #[actix_web::test]
@@ -714,16 +734,12 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn create_project_on_a_section_with_no_computer_is_409() {
+    async fn create_project_with_unknown_computer_is_404() {
         let (_db, pool) = pool("proj");
-        let conn = pool.get().unwrap();
-        seed_computers(&conn);
-        conn.execute("DELETE FROM section_computers WHERE section = 'P'", []).unwrap();
-        let (status, body) = create(&pool, "P", "~/programming").await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert_eq!(body["error"], "Section P has no computer");
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 0);
+        let (status, body) = post(&pool, "/api/projects", json!({
+            "name": "Project", "computer_id": "missing", "folder": "~/programming"
+        })).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     }
 
     #[actix_web::test]
@@ -732,7 +748,11 @@ mod tests {
         let conn = pool.get().unwrap();
         seed_computers(&conn);
         let si = create_ok(&pool, "Si", "~/programming/sigma-revenue").await;
-        let p = create_ok(&pool, "P", "~/programming/sigma-revenue").await;
+        let p = "legacy-p".to_string();
+        conn.execute(
+            "INSERT INTO projects (id, name, section, folder, computer_id)
+             VALUES (?1, 'Legacy', 'P', '~/programming/sigma-revenue', 'mac')", [&p],
+        ).unwrap();
         insert_session(&conn, "mac", "claude", "s1", "~/programming/sigma-revenue/src");
         conn.execute("UPDATE sessions SET project_id = ?1 WHERE session_id = 's1'", [&p]).unwrap();
         crate::projects::rematch_sessions(&conn, "mac").unwrap();
@@ -763,7 +783,7 @@ mod tests {
         let (status, body) = post(
             &pool,
             "/api/projects",
-            json!({"name": " todo-app ", "section": "Si", "folder": "/Users/me/programming//todo-app/",
+            json!({"name": " todo-app ", "computer_id": "mac", "folder": "/Users/me/programming//todo-app/",
                    "repo_url": "git@github.com:tsetsoo/todo-app.git"}),
         )
         .await;
@@ -784,9 +804,9 @@ mod tests {
 
         // Validation.
         for bad in [
-            json!({"name": " ", "section": "Si", "folder": "~/x"}),
-            json!({"name": "x", "section": "Si", "folder": " "}),
-            json!({"name": "x", "section": "Si", "folder": "relative/path"}),
+            json!({"name": " ", "computer_id": "mac", "folder": "~/x"}),
+            json!({"name": "x", "computer_id": "mac", "folder": " "}),
+            json!({"name": "x", "computer_id": "mac", "folder": "relative/path"}),
         ] {
             assert_eq!(post(&pool, "/api/projects", bad.clone()).await.0, StatusCode::BAD_REQUEST, "{bad}");
         }
@@ -1032,23 +1052,12 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn clear_section_with_projects_is_409() {
+    async fn delete_unused_computer_clears_its_legacy_mapping() {
         let (_db, pool) = pool("proj");
         let conn = pool.get().unwrap();
         seed_computers(&conn);
-        let id = create_ok(&pool, "Si", "~/x").await;
-
-        let (status, body) = delete(&pool, "/api/sections/Si/computer").await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert!(body["error"].as_str().unwrap().contains("project"), "{body}");
-        let mapping: i64 = conn
-            .query_row("SELECT COUNT(*) FROM section_computers WHERE section = 'Si'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(mapping, 1, "the computer stays on the section");
-        let (list_status, list) = get(&pool, "/api/projects").await;
-        assert_eq!(list_status, StatusCode::OK, "{list}");
-        let listed = list.as_array().unwrap().iter().any(|p| p["id"].as_str() == Some(id.as_str()));
-        assert!(listed, "the project stays on the list: {list}");
+        assert_eq!(delete(&pool, "/api/computers/spread").await.0, StatusCode::OK);
+        assert!(!conn.prepare("SELECT 1 FROM section_computers WHERE section = 'Sp'").unwrap().exists([]).unwrap());
     }
 
     #[actix_web::test]
@@ -1144,19 +1153,19 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         assert_eq!(body["error"], "Project not found");
 
-        let other = create_ok(&pool, "P", "~/b").await;
+        let other = create_ok(&pool, "Sp", "~/b").await;
         let (status, with) = post(&pool, "/api/todos", json!({"section": "Si", "title": "with", "project_id": project})).await;
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!((&with["project_id"], &with["section"]), (&json!(project), &json!("Si")));
         let (status, elsewhere) = post(&pool, "/api/todos", json!({"title": "elsewhere", "project_id": other})).await;
         assert_eq!(status, StatusCode::CREATED, "{elsewhere}");
-        assert_eq!(elsewhere["section"], "P");
+        assert_eq!(elsewhere["section"], "Sp");
 
         let (status, body) = get(&pool, &format!("/api/todos?project_id={project}")).await;
         assert_eq!(status, StatusCode::OK);
         let ids: Vec<&str> = body.as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
         assert_eq!(ids, vec![with["id"].as_str().unwrap()]);
-        let (_, body) = get(&pool, &format!("/api/todos?section=P&project_id={project}")).await;
+        let (_, body) = get(&pool, "/api/todos?project_id=missing").await;
         assert_eq!(body, json!([]));
         let (_, all) = get(&pool, "/api/todos").await;
         assert_eq!(all.as_array().unwrap().len(), 2);

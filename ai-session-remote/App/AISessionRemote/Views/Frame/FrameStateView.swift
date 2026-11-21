@@ -116,12 +116,12 @@ struct FrameStateView: View {
 
     var body: some View {
         switch problem {
-        case let .noComputer(section):
+        case .noComputer:
             FrameStateBlock(
                 systemImage: "desktopcomputer",
                 title: "No computer is assigned to this todo",
                 message: "Choose the computer where this todo runs.",
-                primary: FrameStateButton(title: "Choose Computer") { actions.openSettings(.sections(section)) }
+                primary: FrameStateButton(title: "Choose Computer") { actions.openSettings(.computers) }
             )
         case let .needsAccess(computer):
             FrameStateBlock(
@@ -193,7 +193,7 @@ struct FrameStateView: View {
                 systemImage: "folder.badge.questionmark",
                 title: "The folder \(folder) doesn't exist on \(name)",
                 message: "Conversations for this todo start in that folder. Pick another one, or create it on \(name) and try again.",
-                primary: FrameStateButton(title: "Change Folder") { actions.openSettings(.sections(nil)) },
+                primary: FrameStateButton(title: "Change Folder") { actions.openSettings(.computers) },
                 secondary: FrameStateButton(title: "Try Again", action: actions.retry)
             )
         case let .worktreeFailed(name, folder):

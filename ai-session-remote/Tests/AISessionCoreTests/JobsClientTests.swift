@@ -55,7 +55,7 @@ final class JobsClientTests: XCTestCase {
         let push = try decoder.decode(JobAction.self, from: Data(#"{"kind":"push","title":"Stand up","body":"Stretch"}"#.utf8))
         XCTAssertEqual(push, .push(title: "Stand up", body: "Stretch"))
         let todo = try decoder.decode(JobAction.self, from: Data(#"{"kind":"todo","title":"Review","project_id":null,"section":"Si"}"#.utf8))
-        XCTAssertEqual(todo, .todo(title: "Review", projectId: nil, section: "Si"))
+        XCTAssertEqual(todo, .todo(title: "Review", projectId: nil))
         XCTAssertEqual(try decoder.decode(JobTrigger.self, from: Data(#"{"kind":"manual"}"#.utf8)), .manual)
         XCTAssertEqual(try decoder.decode(LimitSetting.self, from: Data(#"{"mode":"always"}"#.utf8)), .always)
     }

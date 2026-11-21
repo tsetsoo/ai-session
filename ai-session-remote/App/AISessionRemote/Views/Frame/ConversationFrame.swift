@@ -20,7 +20,7 @@ extension EnvironmentValues {
     @Entry var toggleWorkersPanel: (() -> Void)? = nil
 }
 
-/// A todo's conversation: a native header (title, section · computer · folder, live
+/// A todo's conversation: a native header (title, computer · folder, live
 /// status pill, actions) around the terminal area. The tool is a band on the terminal.
 /// The header renders from local data at once; the terminal area moves through the loader's
 /// phases on the terminal's own background.
@@ -563,7 +563,7 @@ struct ConversationFrame: View {
 
     private var toolStep: some View {
         let folder = store.project(id: todo.projectId)?.folder
-        let computer = store.sectionComputers[todo.section]?.computer.name
+        let computer = store.usualComputer(for: todo)?.name
         return VStack(spacing: DS.spacing.m) {
             Text("Start a conversation")
                 .font(.title3.weight(.semibold))
@@ -620,8 +620,8 @@ struct ConversationFrame: View {
                     .buttonStyle(.bordered)
                     .disabled(isStarting)
                 if computer == nil {
-                    // Start has nowhere to run until the section has a computer.
-                    Button("Choose Computer") { openSettings(.sections(todo.section)) }
+                    // A conversation needs a project computer.
+                    Button("Choose Computer") { openSettings(.computers) }
                         .buttonStyle(.borderedProminent)
                         .tint(DS.accent)
                 } else {
@@ -666,7 +666,7 @@ struct ConversationFrame: View {
         }
     }
 
-    /// The tools the section's computer has (all of them when it hasn't said).
+    /// The tools the project's computer has (all of them when it hasn't said).
     private var offeredTools: [String] {
         ResearchAgents.offeredTools(installed: newConversationComputer?.tools)
     }
@@ -683,7 +683,7 @@ struct ConversationFrame: View {
         )
     }
 
-    /// `origin/HEAD` on the section's computer, after a fetch: where every agent starts.
+    /// `origin/HEAD` on the project's computer, after a fetch: where every agent starts.
     private func loadStartBase() async throws -> StartBase {
         guard let computer = newConversationComputer,
               let folder = store.project(id: todo.projectId)?.folder.trimmingCharacters(in: .whitespaces), !folder.isEmpty
@@ -751,9 +751,9 @@ struct ConversationFrame: View {
         )
     }
 
-    /// How to reach the section's computer, where a new conversation starts.
+    /// How to reach the project's computer, where a new conversation starts.
     private func newConversationConfig() throws -> HostConnectionConfig {
-        guard let computer = store.sectionComputers[todo.section]?.computer else {
+        guard let computer = store.usualComputer(for: todo) else {
             throw TodoHubError.conflict("No computer is assigned to this todo")
         }
         guard let host = HostLookup.host(for: computer, in: hosts) else {
@@ -781,10 +781,9 @@ struct ConversationFrame: View {
         )
     }
 
-    /// The section's computer, where a new conversation starts, with its stored default.
+    /// The project's computer, where a new conversation starts, with its stored default.
     private var newConversationComputer: Computer? {
-        guard let computer = store.sectionComputers[todo.section]?.computer else { return nil }
-        return store.computers.first { $0.id == computer.id } ?? computer
+        store.usualComputer(for: todo)
     }
 
     /// What a new conversation on `computer` starts with: the project's default, else the computer's.
@@ -994,17 +993,16 @@ struct ConversationFrame: View {
         Self.subtitle(todo: todo, store: store, includeFolder: includeFolder, selectedKey: appModel?.selectedConversationID)
     }
 
-    /// `section · computer · folder`, from the conversation on screen or else the section's
-    /// computer. The folder is middle-truncated. The tool is the band, not this line.
+    /// Computer and folder from the displayed conversation or its project. The folder is middle-truncated. The tool is the band, not this line.
     /// The detail column uses the same line for the window subtitle while several frames stay mounted.
     static func subtitle(todo: Todo, store: TodoHubStore, includeFolder: Bool, selectedKey: String? = nil) -> String {
         let target: (computer: String, folder: String)? = {
             if let conversation = store.displayed(forTodo: todo.id, selectedKey: selectedKey) {
                 return (conversation.computer.name, conversation.cwd)
             }
-            if let mapping = store.sectionComputers[todo.section] {
+            if let computer = store.usualComputer(for: todo) {
                 let folder = store.project(id: todo.projectId)?.folder ?? ""
-                return (mapping.computer.name, folder)
+                return (computer.name, folder)
             }
             return nil
         }()
@@ -1136,14 +1134,14 @@ struct ConversationFrame: View {
         return nil
     }
 
-    /// Where the conversation runs (or would start): the linked one, else the section's computer.
+    /// Where the conversation runs (or would start): the linked one, else the project's computer.
     private var startTarget: (computer: String, folder: String, tool: String)? {
         if let conversation {
             return (conversation.computer.name, conversation.cwd, conversation.tool)
         }
-        if let mapping = store.sectionComputers[todo.section] {
+        if let computer = store.usualComputer(for: todo) {
             let folder = store.project(id: todo.projectId)?.folder ?? ""
-            return (mapping.computer.name, folder, "")
+            return (computer.name, folder, "")
         }
         return nil
     }
@@ -1186,7 +1184,7 @@ struct ConversationFrame: View {
 
     private func openSettings(_ destination: SettingsDestination) {
         // "Change Folder" doesn't know the section; it is this todo's.
-        sheet = .settings(destination == .sections(nil) ? .sections(todo.section) : destination)
+        sheet = .settings(destination)
     }
 
     /// A settings sheet closed while a problem shows: try again with what was just fixed.
