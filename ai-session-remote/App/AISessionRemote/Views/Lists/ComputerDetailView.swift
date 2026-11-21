@@ -80,7 +80,7 @@ struct ComputerDetailView: View {
             let todo = todos[conversation.todoId]
             return conversation.computer.id == computer.id
                 && ListSearch.matches(query, todo?.title,
-                                      RowText.conversationSearchText(conversation, section: todo?.section),
+                                      RowText.conversationSearchText(conversation),
                                       conversation.statusMessage)
         }
         let active = running.filter { board.workStatus(of: $0) == .active }
@@ -216,7 +216,7 @@ struct ComputerDetailView: View {
         }
         return ConversationRow(
             title: RowText.conversationTitle(todoTitle: todo?.title ?? "Conversation", label: conversation.label),
-            section: todo?.section,
+
             conversation: conversation,
             status: status,
             isBusy: actions.inFlight.contains(conversation.listKey),

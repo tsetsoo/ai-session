@@ -85,9 +85,7 @@ final class TodoHubClientTests: XCTestCase {
         let todos = try await client().listTodos(filter: .all)
         XCTAssertEqual(todos.count, 2)
         XCTAssertEqual(todos[0].workStatus, .active, "Older hubs default to active")
-        XCTAssertEqual(todos[0].section, .i)
         XCTAssertEqual(todos[0].conversationStatus, .waiting)
-        XCTAssertEqual(todos[1].section, .sp)
         XCTAssertNil(todos[1].conversationStatus)
 
         let url = try XCTUnwrap(StubURLProtocol.requests.first?.url)
@@ -273,7 +271,7 @@ final class TodoHubClientTests: XCTestCase {
         let cache = TodoHubCache(fileURL: url)
         XCTAssertNil(cache.load())
         let snapshot = TodoHubSnapshot(
-            todos: [Todo(id: "a", section: .si, title: "x", conversationStatus: .idle)],
+            todos: [Todo(id: "a", title: "x", conversationStatus: .idle)],
             conversations: [],
             savedAt: Date(timeIntervalSince1970: 1_800_000_000)
         )

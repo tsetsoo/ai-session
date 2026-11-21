@@ -217,7 +217,7 @@ struct TodaySummaryList: View {
             Button { onOpenConversation(row.conversation) } label: {
                 ConversationRow(
                     title: RowText.conversationTitle(todoTitle: row.todo.title, label: row.conversation.label),
-                    section: row.todo.section,
+
                     conversation: row.conversation,
                     status: board.status(of: row.conversation),
                     isBusy: false

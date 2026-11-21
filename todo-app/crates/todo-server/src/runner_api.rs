@@ -488,8 +488,8 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest, helper: Option<
         }
         (None, None) => None,
     };
-    let (project_name, section): (String, String) = tx
-        .query_row("SELECT name, section FROM projects WHERE id = ?1", params![project_id], |r| Ok((r.get(0)?, r.get(1)?)))
+    let project_name: String = tx
+        .query_row("SELECT name FROM projects WHERE id = ?1", params![project_id], |r| r.get(0))
         .optional()?
         .ok_or(RunError::NotFound("Project not found"))?;
     let date = local_date(Utc::now());
@@ -592,7 +592,7 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest, helper: Option<
         tx.execute("UPDATE conversations SET model = ?2, worktree_base = ?3 WHERE id = ?1", params![id, model, base])?;
         (todo_id, id)
     } else {
-        let todo_id = insert_scheduled_todo(&tx, &section, &title, Some(project_id), &job.id, &run.id)?;
+        let todo_id = insert_scheduled_todo(&tx, &title, Some(project_id), &job.id, &run.id)?;
         if let Some((idea_id, _, _)) = &idea {
             tx.execute(
                 "UPDATE ideas SET status = 'researching', run_id = ?2, todo_id = ?3, updated_at = datetime('now') WHERE id = ?1",
@@ -966,7 +966,7 @@ mod tests {
     fn seed(conn: &Connection) {
         seed_computers(conn);
         conn.execute_batch(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('pa', 'app', 'Si', '~/a'), ('ps', 'spread', 'Sp', '~/s');",
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('pa', 'app', (SELECT id FROM computers WHERE id = 'mac'), '~/a'), ('ps', 'spread', (SELECT id FROM computers WHERE id = 'spread'), '~/s');",
         )
         .unwrap();
     }
@@ -1000,9 +1000,9 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         conn.execute_batch(
-            "INSERT INTO todos (id, section, title, project_id) VALUES ('open', 'Si', 'o', 'pa'), ('plain', 'Si', 'p', 'pa'),
-                 ('other', 'Si', 'x', 'pa');
-             INSERT INTO todos (id, section, title, project_id, completed) VALUES ('done', 'Si', 'd', 'pa', 1);
+            "INSERT INTO todos (id, title, project_id) VALUES ('open', 'o', 'pa'), ('plain', 'p', 'pa'),
+                 ('other', 'x', 'pa');
+             INSERT INTO todos (id, title, project_id, completed) VALUES ('done', 'd', 'pa', 1);
              INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id) VALUES
                  ('open', 'mac', '~/.ai-remote/worktrees/pa/c-open/app', 'claude', 'ai/claude/todo-open', 's1'),
                  ('done', 'mac', '~/.ai-remote/worktrees/pa/c-done', 'claude', 'ai/claude/todo-done', 's2'),
@@ -1021,8 +1021,8 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         conn.execute_batch(
-            "INSERT INTO todos (id, section, title, project_id) VALUES ('a', 'Si', 'a', 'pa'), ('b', 'Si', 'b', 'pa'),
-                 ('c', 'Si', 'c', 'pa'), ('d', 'Si', 'd', 'pa'), ('e', 'Si', 'e', 'pa');
+            "INSERT INTO todos (id, title, project_id) VALUES ('a', 'a', 'pa'), ('b', 'b', 'pa'),
+                 ('c', 'c', 'pa'), ('d', 'd', 'pa'), ('e', 'e', 'pa');
              INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id) VALUES
                  ('a', 'mac', '~/.ai-remote/worktrees/pa/c1', 'claude', 'ai/claude/todo-a', 's1'),
                  ('b', 'mac', '~/.ai-remote/worktrees/pa/c1/sub', 'claude', 'ai/claude/todo-b', 's2'),
@@ -1106,7 +1106,7 @@ mod tests {
         seed(&conn);
         job(&conn, "j", "pa", Some("mac"), "background", ALWAYS);
         conn.execute_batch(
-            "INSERT INTO todos (id, section, title, project_id) VALUES ('t-prev', 'Si', 'prev', 'pa');
+            "INSERT INTO todos (id, title, project_id) VALUES ('t-prev', 'prev', 'pa');
              INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id, status)
                  VALUES ('t-prev', 'mac', '~/a', 'claude', 'ai/claude/todo-prev', 's-prev', 'busy');
              INSERT INTO job_runs (id, job_id, due_at, state, todo_id, started_at)
@@ -1180,15 +1180,15 @@ mod tests {
         seed(&conn);
         let v = started(&pool, &conn, "background", true).await;
         let todo_id = v["todo_id"].as_str().unwrap();
-        let (title, section, project, job, run): (String, String, String, String, String) = conn
+        let (title, project, job, run): (String, String, String, String) = conn
             .query_row(
-                "SELECT title, section, project_id, scheduled_job_id, scheduled_run_id FROM todos WHERE id = ?1",
+                "SELECT title, project_id, scheduled_job_id, scheduled_run_id FROM todos WHERE id = ?1",
                 params![todo_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
         assert!(title.starts_with("Job j · 20"), "{title}");
-        assert_eq!((section.as_str(), project.as_str(), job.as_str(), run.as_str()), ("Si", "pa", "j", "r"));
+        assert_eq!((project.as_str(), job.as_str(), run.as_str()), ("pa", "j", "r"));
         let (cwd, computer, tool): (String, String, String) = conn
             .query_row("SELECT cwd, computer_id, tool FROM conversations WHERE todo_id = ?1", params![todo_id], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
@@ -1656,7 +1656,7 @@ mod group_runner_tests {
     fn seed(conn: &Connection) {
         seed_computers(conn);
         conn.execute_batch(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('pa', 'app', 'Si', '~/a');
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('pa', 'app', (SELECT id FROM computers WHERE id = 'mac'), '~/a');
              INSERT INTO ideas (id, project_id, title) VALUES ('idea', 'pa', 'Compare tools');",
         )
         .unwrap();

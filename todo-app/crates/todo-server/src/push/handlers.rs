@@ -245,7 +245,7 @@ mod tests {
     async fn settings_round_trip_and_bad_tz_400() {
         let (_db, pool) = pool("push-api");
         pool.get().unwrap().execute(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'App', 'P', '~/app')",
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('p1', 'App', (SELECT id FROM computers WHERE id = 'mac'), '~/app')",
             [],
         ).unwrap();
         let (_, defaults) = get(&pool, "/api/push/settings").await;
@@ -281,7 +281,7 @@ mod tests {
     #[actix_web::test]
     async fn todo_mute_404_for_unknown_todo() {
         let (_db, pool) = pool("push-api");
-        pool.get().unwrap().execute("INSERT INTO todos (id, section, title) VALUES ('t1', 'Si', 'x')", []).unwrap();
+        pool.get().unwrap().execute("INSERT INTO todos (id, title) VALUES ('t1', 'x')", []).unwrap();
         let (status, _) = put(&pool, "/api/todos/t1/push-mute", json!({})).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let (_, settings) = get(&pool, "/api/push/settings").await;
@@ -313,7 +313,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed_computers(&conn);
         conn.execute_batch(
-            "INSERT INTO todos (id, section, title) VALUES ('t1', 'Si', 'x');
+            "INSERT INTO todos (id, title) VALUES ('t1', 'x');
              INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id, status)
                  VALUES ('t1', 'mac', '~', 'claude', 'ai/claude/todo-t1', 'sess-1', 'busy');",
         )

@@ -591,7 +591,7 @@ pub(crate) fn rewrite_weekly_db(
         .optional()?;
     match on {
         Some((false, _)) => return Err(UpdateError::Conflict("Daily updates are off for this project")),
-        Some((true, false)) => return Err(UpdateError::Conflict("No computer is set for this project's section")),
+        Some((true, false)) => return Err(UpdateError::Conflict("The project has no computer assigned")),
         _ => {}
     }
     let n = conn.execute(
@@ -766,8 +766,8 @@ mod tests {
 
     fn seed(conn: &Connection) {
         conn.execute_batch(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('pa', 'Alpha', 'Si', '~/a');
-             INSERT INTO todos (id, section, title, completed) VALUES ('open1', 'Si', 'Open todo', 0), ('shut1', 'Si', 'Shut todo', 1);",
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('pa', 'Alpha', (SELECT id FROM computers WHERE id = 'mac'), '~/a');
+             INSERT INTO todos (id, title, completed) VALUES ('open1', 'Open todo', 0), ('shut1', 'Shut todo', 1);",
         )
         .unwrap();
         for (id, name, action) in [("j", "Research", TODO_JOB), ("w", "Sentry", WATCH_JOB)] {
@@ -981,7 +981,7 @@ mod tests {
     fn seed_updates(conn: &Connection, since: &str) {
         seed_computers(conn);
         conn.execute(
-            "INSERT INTO projects (id, name, section, folder, daily_updates, daily_updates_since) VALUES ('pa', 'Alpha', 'Si', '~/w/a', 1, ?1)",
+            "INSERT INTO projects (id, name, computer_id, folder, daily_updates, daily_updates_since) VALUES ('pa', 'Alpha', (SELECT id FROM computers WHERE id = 'mac'), '~/w/a', 1, ?1)",
             params![since],
         )
         .unwrap();
@@ -1666,7 +1666,7 @@ mod tests {
             let conn = pool.get().unwrap();
             seed_updates(&conn, "2026-01-01");
             // Daily updates on, but no computer serves the project's section: nothing would write it.
-            conn.execute("DELETE FROM section_computers WHERE section = 'Si'", []).unwrap();
+            conn.execute("UPDATE projects SET computer_id = NULL WHERE id = 'pa'", []).unwrap();
             recap(&conn, WEEK, "pa", "Alpha", "- a", 0, 1, 1);
             conn.execute("UPDATE weekly_recaps SET rewrite_requested = 1", []).unwrap();
         }
@@ -1693,7 +1693,7 @@ mod tests {
             recap(&conn, WEEK, "stale", "Stale", "- s", 0, 0, 1);
             seed_computers(&conn);
             conn.execute(
-                "INSERT INTO projects (id, name, section, folder, daily_updates) VALUES ('stale', 'Stale', 'Si', '~/s', 1)",
+                "INSERT INTO projects (id, name, computer_id, folder, daily_updates) VALUES ('stale', 'Stale', (SELECT id FROM computers WHERE id = 'mac'), '~/s', 1)",
                 [],
             )
             .unwrap();

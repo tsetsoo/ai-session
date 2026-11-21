@@ -755,8 +755,8 @@ mod tests {
     fn seed(conn: &Connection) {
         seed_computers(conn);
         conn.execute_batch(
-            "INSERT INTO projects (id, name, section, folder) VALUES
-                 ('pa', 'a', 'Si', '~/a'), ('pb', 'b', 'Si', '~/b'), ('ps', 'spread-a', 'Sp', '~/a');",
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES
+                 ('pa', 'a', (SELECT id FROM computers WHERE id = 'mac'), '~/a'), ('pb', 'b', (SELECT id FROM computers WHERE id = 'mac'), '~/b'), ('ps', 'spread-a', (SELECT id FROM computers WHERE id = 'spread'), '~/a');",
         )
         .unwrap();
     }
@@ -943,7 +943,7 @@ mod tests {
         body["sessions"][0]["stats"]["last_activity"] = json!("2026-10-10T10:00:00Z");
         upload(&pool, body).await;
         conn.execute_batch(
-            "INSERT INTO todos (id, section, title) VALUES ('t1', 'Si', 'linked');
+            "INSERT INTO todos (id, title) VALUES ('t1', 'linked');
              INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id, status)
                  VALUES ('t1', 'mac', '~/a', 'claude', 'ai/claude/todo-t1', 's1', 'waiting');",
         )
@@ -986,7 +986,7 @@ mod tests {
         session("mac", "mac", None);
         session("old", "mac", Some("pa"));
         conn.execute_batch(
-            "INSERT INTO todos (id, section, title) VALUES ('t1', 'I', 'linked from I');
+            "INSERT INTO todos (id, title) VALUES ('t1', 'linked from I');
              INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id)
                  VALUES ('t1', 'mac', '~', 'claude', 'ai/claude/todo-t1', 'linked');
              INSERT INTO session_days (tool, session_id, day, prompts, assistant_turns, input_tokens, output_tokens,
@@ -1101,7 +1101,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         conn.execute_batch(
-            "INSERT INTO todos (id, section, title) VALUES ('t1', 'Si', 'x'), ('t2', 'Si', 'y');
+            "INSERT INTO todos (id, title) VALUES ('t1', 'x'), ('t2', 'y');
              INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id) VALUES
                  ('t1', 'mac', '/Users/me/a/x', 'claude', 'ai/claude/todo-t1', 'unknown-session'),
                  ('t2', 'mac', '~/a', 'codex', 'ai/codex/todo-t2', 'known');

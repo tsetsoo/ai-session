@@ -3,11 +3,10 @@ import Foundation
 /// How the phone's Todos tab groups todos: by section (with its computer), by project, or by
 /// what the todo's conversation is doing.
 public enum TodoGrouping: String, CaseIterable, Sendable {
-    case section, project, status
+    case project, status
 
     public var label: String {
         switch self {
-        case .section: "Section"
         case .project: "Project"
         case .status: "Status"
         }

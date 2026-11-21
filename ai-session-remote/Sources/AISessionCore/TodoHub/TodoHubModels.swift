@@ -3,16 +3,6 @@ import Foundation
 // Mirrors `crates/todo-shared/src/lib.rs` in todo-app. JSON keys are snake_case on the wire;
 // `TodoHubClient` converts them with `.convertFromSnakeCase` / `.convertToSnakeCase`.
 
-/// Todo section. The codes are opaque labels — never expand them into names.
-public enum TodoSection: String, Codable, CaseIterable, Sendable, Identifiable {
-    case sp = "Sp"
-    case i = "I"
-    case si = "Si"
-    case p = "P"
-
-    public var id: String { rawValue }
-}
-
 public enum TodoImportance: String, Codable, CaseIterable, Sendable {
     case low, medium, high, critical
 }
@@ -23,7 +13,6 @@ public enum ConversationStatus: String, Codable, CaseIterable, Sendable {
 
 public struct Todo: Codable, Equatable, Identifiable, Sendable {
     public var id: String
-    public var section: TodoSection
     public var title: String
     public var completed: Bool
     public var onHold: Bool
@@ -46,7 +35,6 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
 
     public init(
         id: String,
-        section: TodoSection,
         title: String,
         completed: Bool = false,
         importance: TodoImportance = .medium,
@@ -62,7 +50,6 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
         waiting: Bool = false
     ) {
         self.id = id
-        self.section = section
         self.title = title
         self.completed = completed
         self.onHold = onHold
@@ -79,14 +66,13 @@ public struct Todo: Codable, Equatable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, section, title, completed, onHold, waiting, importance, dueDate, dailyDate, carriedFrom
+        case id, title, completed, onHold, waiting, importance, dueDate, dailyDate, carriedFrom
         case createdAt, updatedAt, completedAt, conversationStatus, projectId, scheduledJobId, scheduledRunId
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
-        section = try c.decode(TodoSection.self, forKey: .section)
         title = try c.decode(String.self, forKey: .title)
         completed = try c.decode(Bool.self, forKey: .completed)
         // Older hubs and cached snapshots may omit these fields.
@@ -132,11 +118,6 @@ public struct Computer: Codable, Hashable, Identifiable, Sendable {
         self.mcpDefault = mcpDefault
         self.tools = tools
     }
-}
-
-public struct SectionComputer: Codable, Equatable, Sendable {
-    public var section: TodoSection
-    public var computer: Computer
 }
 
 public struct Conversation: Codable, Equatable, Sendable {

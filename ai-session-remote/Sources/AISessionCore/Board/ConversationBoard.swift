@@ -11,8 +11,6 @@ public final class ConversationBoard: Sendable {
     private let todoWorkStatuses: [String: TodoWorkStatus]
     private let statusByTodoID: [String: ConversationDisplayStatus]
     private let statusByListKey: [String: ConversationDisplayStatus]
-    private let openTodoCounts: [TodoSection: Int]
-    private let sectionNeedsYouFlags: [TodoSection: Bool]
     private let openCounts: [String: Int]
     private let workingCounts: [String: Int]
     private let reviewCounts: [String: Int]
@@ -102,13 +100,6 @@ public final class ConversationBoard: Sendable {
             return l != r ? l > r : lhs.offset < rhs.offset
         }.map(\.element)
 
-        var openTodos = Dictionary(uniqueKeysWithValues: TodoSection.allCases.map { ($0, 0) })
-        var needsSection = Dictionary(uniqueKeysWithValues: TodoSection.allCases.map { ($0, false) })
-        for todo in todos {
-            if !todo.completed { openTodos[todo.section, default: 0] += 1 }
-            if statuses[todo.id] == .needsYou { needsSection[todo.section] = true }
-        }
-
         self.open = open.map(\.0)
         self.closed = closedConversations
         self.needsYou = needing
@@ -117,8 +108,6 @@ public final class ConversationBoard: Sendable {
         self.newerThanListing = newer
         self.statusByTodoID = statuses
         self.statusByListKey = statusByListKey
-        self.openTodoCounts = openTodos
-        self.sectionNeedsYouFlags = needsSection
         self.openCounts = openByComputer
         self.workingCounts = workingByComputer
         self.reviewCounts = reviewByComputer
@@ -202,14 +191,6 @@ public final class ConversationBoard: Sendable {
         let list = list ?? open
         guard (1...9).contains(n), n <= list.count else { return nil }
         return list[n - 1]
-    }
-
-    public func openTodoCount(_ section: TodoSection) -> Int {
-        openTodoCounts[section] ?? 0
-    }
-
-    public func sectionNeedsYou(_ section: TodoSection) -> Bool {
-        sectionNeedsYouFlags[section] ?? false
     }
 
     public func openCount(computerID: String) -> Int {

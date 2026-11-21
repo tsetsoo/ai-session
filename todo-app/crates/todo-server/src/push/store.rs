@@ -251,9 +251,9 @@ mod tests {
     fn seed_todo_with_conversation(conn: &Connection) {
         seed_computers(conn);
         conn.execute_batch(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'Invoices', 'Si', '~/invoices');
-             INSERT INTO todos (id, section, title, project_id) VALUES
-                 ('t1', 'Si', 'Fix invoice export', 'p1'), ('t2', 'P', 'plain', NULL);
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('p1', 'Invoices', (SELECT id FROM computers WHERE id = 'mac'), '~/invoices');
+             INSERT INTO todos (id, title, project_id) VALUES
+                 ('t1', 'Fix invoice export', 'p1'), ('t2', 'plain', NULL);
              INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id, status)
                  VALUES ('t1', 'mac', '~/programming', 'claude', 'ai/claude/todo-t1', 'sess-1', 'waiting');",
         )

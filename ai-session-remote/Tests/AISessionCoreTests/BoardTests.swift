@@ -14,12 +14,12 @@ final class BoardTests: XCTestCase {
 
     /// An open todo for each id, so the board lists their conversations.
     private func todos(_ ids: String...) -> [Todo] {
-        ids.map { Todo(id: $0, section: .sp, title: $0) }
+        ids.map { Todo(id: $0, title: $0) }
     }
 
     /// Without `todos`, each conversation gets an open todo.
     private func board(_ convs: [Conversation], todos: [Todo]? = nil, live: [String: Set<String>] = [:]) -> ConversationBoard {
-        let todos = todos ?? Set(convs.map(\.todoId)).map { Todo(id: $0, section: .sp, title: $0) }
+        let todos = todos ?? Set(convs.map(\.todoId)).map { Todo(id: $0, title: $0) }
         return ConversationBoard(todos: todos, conversations: Dictionary(uniqueKeysWithValues: convs.map { ($0.id, $0) }),
                                  liveTmux: live)
     }
@@ -30,8 +30,8 @@ final class BoardTests: XCTestCase {
         let active = conv("active", .waiting)
         let items = [heldBusy, active, heldWaiting]
         let b = board(items, todos: [
-            Todo(id: "held", section: .sp, title: "Later", onHold: true),
-            Todo(id: "active", section: .sp, title: "Now"),
+            Todo(id: "held", title: "Later", onHold: true),
+            Todo(id: "active", title: "Now"),
         ])
         XCTAssertEqual(b.activeFirst(items).map(\.id), [active.id, heldBusy.id, heldWaiting.id])
         XCTAssertEqual(b.status(of: heldBusy), .working)
@@ -230,9 +230,9 @@ final class BoardTests: XCTestCase {
     }
 
     func testDoneTodosLeaveReviewButStayOpen() {
-        let todos = [Todo(id: "done", section: .sp, title: "Done", completed: true),
-                     Todo(id: "doneBusy", section: .sp, title: "Done busy", completed: true),
-                     Todo(id: "todo", section: .sp, title: "Open")]
+        let todos = [Todo(id: "done", title: "Done", completed: true),
+                     Todo(id: "doneBusy", title: "Done busy", completed: true),
+                     Todo(id: "todo", title: "Open")]
         let b = board([conv("done", .idle), conv("doneBusy", .busy), conv("todo", .idle)], todos: todos,
                       live: ["m1": ["t-done", "t-doneBusy", "t-todo"]])
         XCTAssertEqual(b.review.map(\.todoId), ["todo"])
@@ -242,17 +242,12 @@ final class BoardTests: XCTestCase {
         assertAgrees(b, todos: todos)
     }
 
-    func testSectionCountsAndRunning() {
-        let todos = [Todo(id: "a", section: .sp, title: "A"),
-                     Todo(id: "b", section: .sp, title: "B", completed: true),
-                     Todo(id: "c", section: .i, title: "C"),
-                     Todo(id: "x", section: .p, title: "X", completed: true)]
+    func testComputerCountsAndRunning() {
+        let todos = [Todo(id: "a", title: "A"),
+                     Todo(id: "b", title: "B", completed: true),
+                     Todo(id: "c", title: "C"),
+                     Todo(id: "x", title: "X", completed: true)]
         let b = board([conv("a", .waiting), conv("c", .busy), conv("x", .busy, computer: box)], todos: todos)
-        XCTAssertEqual(b.openTodoCount(.sp), 1)
-        XCTAssertEqual(b.openTodoCount(.i), 1)
-        XCTAssertEqual(b.openTodoCount(.p), 0)
-        XCTAssertTrue(b.sectionNeedsYou(.sp))
-        XCTAssertFalse(b.sectionNeedsYou(.i))
         XCTAssertEqual(b.openCount(computerID: "m1"), 2)
         XCTAssertEqual(b.openCount(computerID: "m2"), 1)
         XCTAssertEqual(b.needsYouCount(computerID: "m1"), 1)
@@ -327,15 +322,12 @@ final class BoardTests: XCTestCase {
         assertAgrees(ordered)
         XCTAssertEqual(ordered.needsYou.map(\.todoId), ["c", "a"])
 
-        let todos = [Todo(id: "a", section: .sp, title: "A"),
-                     Todo(id: "b", section: .sp, title: "B", completed: true),
-                     Todo(id: "c", section: .i, title: "C"),
-                     Todo(id: "x", section: .p, title: "X", completed: true)]
+        let todos = [Todo(id: "a", title: "A"),
+                     Todo(id: "b", title: "B", completed: true),
+                     Todo(id: "c", title: "C"),
+                     Todo(id: "x", title: "X", completed: true)]
         let counted = board([conv("a", .waiting), conv("c", .busy), conv("x", .busy, computer: box)], todos: todos)
         assertAgrees(counted, todos: todos)
-        XCTAssertEqual(counted.openTodoCount(.sp), 1)
-        XCTAssertTrue(counted.sectionNeedsYou(.sp))
-        XCTAssertFalse(counted.sectionNeedsYou(.i))
         XCTAssertEqual(counted.openCount(computerID: "m1"), 2)
         XCTAssertEqual(counted.needsYouCount(computerID: "m1"), 1)
         XCTAssertEqual(counted.needsYouCount(computerID: "m2"), 0)
@@ -369,7 +361,7 @@ final class BoardTests: XCTestCase {
     /// Without `todos`, the board's todos are an open one per conversation (as `board(_:)` builds).
     private func assertAgrees(_ board: ConversationBoard, todos: [Todo]? = nil,
                               file: StaticString = #filePath, line: UInt = #line) {
-        let todos = todos ?? Set(board.all.map(\.todoId)).map { Todo(id: $0, section: .sp, title: $0) }
+        let todos = todos ?? Set(board.all.map(\.todoId)).map { Todo(id: $0, title: $0) }
         XCTAssertEqual(
             board.needsYou.map(\.todoId),
             board.open.filter { board.status(forTodo: $0.todoId) == .needsYou }.map(\.todoId),
@@ -413,15 +405,6 @@ final class BoardTests: XCTestCase {
                            file: file, line: line)
             XCTAssertEqual(board.reviewCount(computerID: id), board.review.filter { $0.computer.id == id }.count,
                            file: file, line: line)
-        }
-        for section in TodoSection.allCases {
-            XCTAssertEqual(board.openTodoCount(section), todos.filter { $0.section == section && !$0.completed }.count,
-                           file: file, line: line)
-            XCTAssertEqual(
-                board.sectionNeedsYou(section),
-                todos.contains { $0.section == section && board.status(forTodo: $0.id) == .needsYou },
-                file: file, line: line
-            )
         }
         for n in 1...9 {
             let expected = n <= board.open.count ? board.open[n - 1].todoId : nil

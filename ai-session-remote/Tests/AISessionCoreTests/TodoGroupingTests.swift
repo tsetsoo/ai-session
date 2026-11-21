@@ -5,7 +5,7 @@ final class TodoGroupingTests: XCTestCase {
     private let mac = Computer(id: "m1", name: "Mac", hostname: "mac", username: "me")
 
     private func todo(_ id: String, project: String? = nil, done: Bool = false, created: String) -> Todo {
-        Todo(id: id, section: .i, title: id, completed: done, createdAt: created, projectId: project)
+        Todo(id: id, title: id, completed: done, createdAt: created, projectId: project)
     }
 
     private func project(_ id: String, _ name: String) -> Project {

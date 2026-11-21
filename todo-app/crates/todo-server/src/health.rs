@@ -163,7 +163,6 @@ mod tests {
         let conn = pool.get().unwrap();
         crate::test_support::seed_computers(&conn);
         set_health_db(&conn, "codbex", &json!({"doctor_version": 3})).unwrap();
-        conn.execute("DELETE FROM section_computers WHERE computer_id = 'codbex'", []).unwrap();
         conn.execute("DELETE FROM computers WHERE id = 'codbex'", []).unwrap();
         let left: i64 = conn.query_row("SELECT COUNT(*) FROM computer_health", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 0);

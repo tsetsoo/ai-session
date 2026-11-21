@@ -262,7 +262,6 @@ public struct HeavyUsage: Decodable, Hashable, Sendable {
 public struct HeavyTodo: Decodable, Hashable, Sendable, Identifiable {
     public var todoId: String
     public var title: String
-    public var section: TodoSection?
     public var projectId: String?
     public var own: StatsCounters
     public var workers: StatsCounters

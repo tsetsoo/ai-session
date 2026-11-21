@@ -18,6 +18,10 @@ pub(crate) fn init_connection(c: &mut Connection) -> rusqlite::Result<()> {
 }
 
 pub fn init_pool(db_path: &str) -> DbPool {
+    init_pool_through(db_path, SCHEMA_VERSION)
+}
+
+fn init_pool_through(db_path: &str, target_version: i64) -> DbPool {
     // Ensure parent directory exists
     if let Some(parent) = Path::new(db_path).parent() {
         if !parent.as_os_str().is_empty() {
@@ -110,9 +114,13 @@ pub fn init_pool(db_path: &str) -> DbPool {
 
     migrate(&conn, db_path).expect("Failed to migrate the database schema");
 
+    let starting_version = schema_version(&conn).expect("Failed to read the schema version");
+    if starting_version < 41 {
+        conn.execute_batch(&section_computers_ddl("section_computers"))
+            .expect("Failed to create historical computer mappings");
+    }
     conn.execute_batch(&format!(
-        "{};\n{};\n{};\n{};\n{};",
-        section_computers_ddl("section_computers"),
+        "{};\n{};\n{};\n{};",
         conversations_ddl("conversations"),
         "CREATE INDEX IF NOT EXISTS conversations_todo ON conversations(todo_id)",
         "CREATE INDEX IF NOT EXISTS conversations_session_id ON conversations(session_id)",
@@ -156,17 +164,65 @@ pub fn init_pool(db_path: &str) -> DbPool {
         conn.execute_batch("ALTER TABLE todos ADD COLUMN waiting INTEGER NOT NULL DEFAULT 0 CHECK(waiting IN (0,1));")
             .expect("Failed to add Waiting status");
     }
-    migrate_project_computers(&conn, db_path, version).expect("Failed to assign computers to projects");
-    migrate_project_mutes(&conn, db_path, version).expect("Failed to migrate project mutes");
-    migrate_retired_section_settings(&conn, db_path, version).expect("Failed to migrate retired section settings");
-    if version <= SCHEMA_VERSION {
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+    if version < 41 {
+        migrate_project_computers(&conn, db_path, version).expect("Failed to assign computers to projects");
+        migrate_project_mutes(&conn, db_path, version).expect("Failed to migrate project mutes");
+        migrate_retired_section_settings(&conn, db_path, version).expect("Failed to migrate retired section settings");
+        if target_version >= 41 {
+            migrate_remove_sections(&conn, db_path, version).expect("Failed to remove sections");
+        }
+    }
+    if version <= target_version {
+        conn.pragma_update(None, "user_version", target_version)
             .expect("Failed to record the schema version");
     } else {
-        println!("Database schema v{version} is newer than this binary (v{SCHEMA_VERSION}); leaving it as is");
+        println!("Database schema v{version} is newer than this binary (v{target_version}); leaving it as is");
     }
 
     pool
+}
+
+/// Keep projects, todos, and all their relationships while dropping the section model.
+fn migrate_remove_sections(conn: &Connection, db_path: &str, version: i64) -> rusqlite::Result<()> {
+    if version == 40 {
+        backup_before_migration(conn, db_path, 41)?;
+    }
+    let ddl = table_sql(conn, "projects")?.ok_or(rusqlite::Error::InvalidQuery)?;
+    let (_, definition) = ddl.split_once('(').ok_or(rusqlite::Error::InvalidQuery)?;
+    let columns = {
+        let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('projects') WHERE name <> 'section' ORDER BY cid")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?.join(", ")
+    };
+    let definition = definition.lines()
+        .filter(|line| !line.trim_start().starts_with("section "))
+        .collect::<Vec<_>>().join("\n");
+    let (before_unique, after_unique) = definition.split_once("UNIQUE(section, folder, computer_id)")
+        .ok_or(rusqlite::Error::InvalidQuery)?;
+    let definition = format!("{}{}", before_unique.trim_end().trim_end_matches(','), after_unique);
+    conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;")?;
+    let result = (|| -> rusqlite::Result<()> {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(&format!(
+            "UPDATE projects SET computer_id = (SELECT computer_id FROM section_computers WHERE section = projects.section)
+                 WHERE computer_id IS NULL;
+             DROP VIEW project_computers;
+             CREATE TABLE projects_new ({definition};
+             INSERT INTO projects_new ({columns}) SELECT {columns} FROM projects;
+             DROP TABLE projects;
+             ALTER TABLE projects_new RENAME TO projects;
+             ALTER TABLE todos DROP COLUMN section;
+             DROP TABLE section_computers;
+             CREATE INDEX projects_computer ON projects(computer_id);
+             CREATE VIEW project_computers AS SELECT id AS project_id, computer_id FROM projects;"
+        ))?;
+        if tx.prepare("PRAGMA foreign_key_check")?.exists([])? {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        tx.commit()
+    })();
+    conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;")?;
+    result
 }
 
 /// Retire the old mute table and preserve the default computer for the assistant.
@@ -1090,7 +1146,7 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v36: `todos.waiting` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 40;
+pub const SCHEMA_VERSION: i64 = 41;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -1098,6 +1154,9 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
     let stored: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if stored != 0 {
         return Ok(stored);
+    }
+    if table_sql(conn, "projects")?.is_some() && !column_exists(conn, "projects", "section")? {
+        return Ok(41);
     }
     let sections = table_sql(conn, "section_computers")?;
     let conversations = table_sql(conn, "conversations")?;
@@ -2074,12 +2133,16 @@ impl Drop for TestDb {
 
 #[cfg(test)]
 mod tests {
+    fn historical_pool(db: &TestDb) -> DbPool {
+        init_pool_through(&db.path, 40)
+    }
+
     use super::*;
 
     #[test]
     fn every_pooled_connection_waits_for_the_lock_and_syncs_normally() {
         let db = TestDb::new("pragmas");
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         // Hold one connection so the next comes from a fresh connect.
         let (a, b) = (pool.get().unwrap(), pool.get().unwrap());
         for c in [&a, &b] {
@@ -2235,11 +2298,11 @@ mod tests {
     #[test]
     fn migrates_v3_to_v4_keeping_rows() {
         let db = v3_db();
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         assert_eq!(db.backups().len(), 1, "one backup before the v4 step");
         assert!(db.backups()[0].to_string_lossy().contains(".pre-v4-"), "{:?}", db.backups());
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         for table in V4_TABLES {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
         }
@@ -2252,7 +2315,7 @@ mod tests {
         assert!(table_sql(&backup, "push_devices").unwrap().is_none());
         drop(conn);
         drop(pool);
-        drop(db.pool());
+        drop(historical_pool(&db));
         assert_eq!(db.backups().len(), 1, "re-opening a v4 database takes no new backup");
     }
 
@@ -2308,9 +2371,9 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         let project_cols = column_names(&conn, "projects");
         assert!(project_cols.iter().any(|c| c == "computer_id"));
         assert!(project_cols.iter().any(|c| c == "section"));
@@ -2444,11 +2507,11 @@ mod tests {
     fn migrates_v2_through_v4_with_one_backup() {
         let db = TestDb::new("migrate");
         Connection::open(&db.path).unwrap().execute_batch(V2_SCHEMA).unwrap();
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         assert_eq!(db.backups().len(), 1);
         assert!(db.backups()[0].to_string_lossy().contains(".pre-v3-"));
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         for table in V3_TABLES.iter().chain(V4_TABLES.iter()) {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
         }
@@ -2505,9 +2568,9 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         let row: (String, String, String, Option<String>, String) = conn
             .query_row(
                 "SELECT todo_id, tool, tmux_name, label, id FROM conversations WHERE session_id = 'sess-1'",
@@ -2535,7 +2598,7 @@ mod tests {
     #[test]
     fn migrates_v6_to_v7_adds_null_mcp_columns() {
         let db = TestDb::new("migrate-v7");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         // A v6 database: the current tables without the v7 columns.
         conn.execute_batch(
@@ -2552,9 +2615,9 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert_eq!(db.backups().len(), 1, "migrating backs up first");
         let read = |sql: &str| -> Option<String> { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(read("SELECT mcp_servers FROM conversations WHERE id = 'c1'"), None);
@@ -2565,9 +2628,9 @@ mod tests {
     #[test]
     fn fresh_database_is_v4_without_backup() {
         let db = TestDb::new("migrate");
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(db.backups().is_empty());
         for table in V4_TABLES {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table} exists");
@@ -2577,10 +2640,10 @@ mod tests {
     #[test]
     fn schema_version_sniffs_push_devices_as_4() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.pragma_update(None, "user_version", 0).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(schema_version(&conn).unwrap(), 40);
     }
 
     fn column_names(conn: &Connection, table: &str) -> Vec<String> {
@@ -2600,15 +2663,15 @@ mod tests {
     fn migrates_v2_to_v3_keeping_rows() {
         let db = TestDb::new("migrate");
         Connection::open(&db.path).unwrap().execute_batch(V2_SCHEMA).unwrap();
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         assert_eq!(db.backups().len(), 1, "one backup before the v3 step");
         assert!(db.backups()[0].to_string_lossy().contains(".pre-v3-"), "{:?}", db.backups());
         drop(pool);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         assert_eq!(db.backups().len(), 1, "re-opening a v3 database takes no new backup");
 
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM todos"), 3);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM conversations"), 2);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM section_computers"), 2);
@@ -2638,9 +2701,9 @@ mod tests {
     #[test]
     fn fresh_database_is_v3_without_backup() {
         let db = TestDb::new("migrate");
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(db.backups().is_empty());
         assert!(column_names(&conn, "todos").contains(&"project_id".to_string()));
         for table in V3_TABLES {
@@ -2656,14 +2719,14 @@ mod tests {
     #[test]
     fn schema_version_reads_stored_3() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.pragma_update(None, "user_version", 3).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 3);
         // An unversioned database whose projects already belong to a section is v5.
         conn.execute_batch(&V4_TABLES.map(|t| format!("DROP TABLE {t};")).concat()).unwrap();
         conn.pragma_update(None, "user_version", 0).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(schema_version(&conn).unwrap(), 40);
     }
 
     #[test]
@@ -2673,9 +2736,9 @@ mod tests {
         conn.execute_batch(V2_SCHEMA).unwrap();
         conn.pragma_update(None, "user_version", 0).unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         assert_eq!(db.backups().len(), 1);
-        assert_eq!(user_version(&pool.get().unwrap()), SCHEMA_VERSION);
+        assert_eq!(user_version(&pool.get().unwrap()), 40);
     }
 
     fn v1_db() -> TestDb {
@@ -2691,14 +2754,14 @@ mod tests {
     #[test]
     fn migrates_v1_conversation_tables_keeping_rows() {
         let db = v1_db();
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         assert_eq!(db.backups().len(), 1, "one backup (of the untouched v1 file) before rewriting the tables");
         // Running it again on the migrated file must be a no-op (and take no second backup).
         drop(pool);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         assert_eq!(db.backups().len(), 1);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(column_names(&conn, "todos").contains(&"project_id".to_string()), "v1 goes all the way to v3");
 
         // The backup is the untouched v1 database.
@@ -2739,7 +2802,7 @@ mod tests {
     fn migrates_v7_results_as_unreviewed_and_preserves_conversations() {
         let db = TestDb::new("migrate-v8");
         {
-            let pool = db.pool();
+            let pool = historical_pool(&db);
             let conn = pool.get().unwrap();
             conn.execute_batch(
                 "INSERT INTO computers (id, name, hostname, username) VALUES ('mac', 'Mac', 'mac.local', 'me');
@@ -2751,9 +2814,9 @@ mod tests {
                  PRAGMA user_version = 7;",
             ).unwrap();
         }
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         let result: (String, i64, bool) = conn.query_row(
             "SELECT status, status_revision, reviewed FROM conversations WHERE id = 'c'", [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -2765,7 +2828,7 @@ mod tests {
         assert!(!column_exists(&backup, "conversations", "reviewed").unwrap());
         drop(conn);
         drop(pool);
-        drop(db.pool());
+        drop(historical_pool(&db));
         assert_eq!(db.backups().len(), 1, "reopening must not migrate again");
     }
 
@@ -2773,7 +2836,7 @@ mod tests {
     fn migrates_v8_event_ordering_without_resetting_reviewed_results() {
         let db = TestDb::new("migrate-v9");
         {
-            let pool = db.pool();
+            let pool = historical_pool(&db);
             let conn = pool.get().unwrap();
             conn.execute_batch(
                 "INSERT INTO computers (id, name, hostname, username) VALUES ('mac', 'Mac', 'mac.local', 'me');
@@ -2784,9 +2847,9 @@ mod tests {
                  PRAGMA user_version = 8;",
             ).unwrap();
         }
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         let row: (i64, bool, Option<i64>) = conn.query_row(
             "SELECT status_revision, reviewed, status_event_ns FROM conversations WHERE id = 'c'", [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -2799,7 +2862,7 @@ mod tests {
     fn migrates_v9_turn_identity_without_resetting_reviewed_results() {
         let db = TestDb::new("migrate-v10");
         {
-            let pool = db.pool();
+            let pool = historical_pool(&db);
             let conn = pool.get().unwrap();
             conn.execute_batch(
                 "INSERT INTO computers (id, name, hostname, username) VALUES ('mac', 'Mac', 'mac.local', 'me');
@@ -2810,14 +2873,14 @@ mod tests {
                  PRAGMA user_version = 9;",
             ).unwrap();
         }
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
         let row: (i64, bool, Option<i64>, Option<i64>) = conn.query_row(
             "SELECT status_revision, reviewed, status_event_ns, status_turn_ns FROM conversations WHERE id = 'c'", [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         ).unwrap();
         assert_eq!(row, (7, true, Some(123), None));
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert_eq!(db.backups().len(), 1);
     }
 
@@ -2825,7 +2888,7 @@ mod tests {
     fn migrates_v10_todos_as_active_and_preserves_holds_on_restart() {
         let db = TestDb::new("migrate-v11");
         {
-            let pool = db.pool();
+            let pool = historical_pool(&db);
             let conn = pool.get().unwrap();
             conn.execute_batch(
                 "INSERT INTO todos (id, section, title, completed) VALUES ('t', 'Sp', 'Later', 0), ('done', 'I', 'Done', 1);
@@ -2835,15 +2898,15 @@ mod tests {
             ).unwrap();
         }
         {
-            let pool = db.pool();
+            let pool = historical_pool(&db);
             let conn = pool.get().unwrap();
             let active: i64 = conn.query_row("SELECT COUNT(*) FROM todos WHERE on_hold = 0 AND waiting = 0", [], |r| r.get(0)).unwrap();
             assert_eq!(active, 2);
-            assert_eq!(user_version(&conn), SCHEMA_VERSION);
+            assert_eq!(user_version(&conn), 40);
             assert_eq!(db.backups().len(), 1);
             conn.execute("UPDATE todos SET on_hold = 1 WHERE id = 't'", []).unwrap();
         }
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
         let held: bool = conn.query_row("SELECT on_hold FROM todos WHERE id = 't'", [], |r| r.get(0)).unwrap();
         assert!(held);
@@ -2853,9 +2916,9 @@ mod tests {
     #[test]
     fn fresh_database_gets_the_current_schema_without_a_backup() {
         let db = TestDb::new("migrate");
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(db.backups().is_empty());
         let sql = table_sql(&conn, "conversations").unwrap().unwrap();
         assert!(sql.contains("session_id") && !sql.contains("claude_session_id"), "{sql}");
@@ -2876,11 +2939,11 @@ mod tests {
     fn unversioned_current_database_is_recognised_without_migrating() {
         // A database with the current tables but user_version 0.
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         Connection::open(&db.path).unwrap().pragma_update(None, "user_version", 0).unwrap();
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         assert!(db.backups().is_empty());
-        assert_eq!(user_version(&pool.get().unwrap()), SCHEMA_VERSION);
+        assert_eq!(user_version(&pool.get().unwrap()), 40);
     }
 
     /// The v11 memories table: no usage, pending or import columns, two sources.
@@ -2895,7 +2958,7 @@ mod tests {
     #[test]
     fn migrates_v11_to_v12_rebuilds_memories() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(&format!(
             "DROP TRIGGER IF EXISTS memories_fts_ai; DROP TRIGGER IF EXISTS memories_fts_ad; DROP TRIGGER IF EXISTS memories_fts_au;
@@ -2908,9 +2971,9 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert_eq!(db.backups().len(), 1, "migrating backs up first");
         let row = |id: &str| -> (i64, Option<String>) {
             conn.query_row("SELECT archived, archived_reason FROM memories WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -2937,7 +3000,7 @@ mod tests {
     #[test]
     fn fresh_database_has_v12_memory_objects() {
         let db = TestDb::new("migrate");
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
         assert!(table_sql(&conn, "memory_active_days").unwrap().is_some());
         assert!(table_sql(&conn, "memories_fts").unwrap().is_some());
@@ -2953,7 +3016,7 @@ mod tests {
     #[test]
     fn migrates_v12_to_v13_adds_scheduler_tables() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "DROP TABLE IF EXISTS job_runs; DROP TABLE IF EXISTS jobs; DROP TABLE IF EXISTS scheduler_settings;
@@ -2965,9 +3028,9 @@ mod tests {
             conn.execute_batch("ALTER TABLE todos DROP COLUMN scheduled_job_id; ALTER TABLE todos DROP COLUMN scheduled_run_id;").unwrap();
         }
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert_eq!(db.backups().len(), 1, "migrating backs up first");
         for table in ["jobs", "job_runs", "scheduler_settings"] {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table}");
@@ -2985,9 +3048,9 @@ mod tests {
     #[test]
     fn fresh_database_has_v13_objects() {
         let db = TestDb::new("migrate");
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(table_sql(&conn, "jobs").unwrap().is_some());
         assert!(table_sql(&conn, "job_runs").unwrap().is_some());
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM scheduler_settings", [], |r| r.get(0)).unwrap();
@@ -2998,16 +3061,16 @@ mod tests {
     #[test]
     fn migrates_v13_to_v14_adds_ideas() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("DROP TABLE IF EXISTS ideas; PRAGMA user_version = 13;").unwrap();
         if column_exists(&conn, "job_runs", "note").unwrap() {
             conn.execute_batch("ALTER TABLE job_runs DROP COLUMN note;").unwrap();
         }
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert_eq!(db.backups().len(), 1);
         assert!(table_sql(&conn, "ideas").unwrap().is_some());
         assert!(column_exists(&conn, "job_runs", "note").unwrap());
@@ -3016,13 +3079,13 @@ mod tests {
     #[test]
     fn v14_database_migrates_to_v15_with_watch_tables() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("DROP TABLE IF EXISTS watch_issues; DROP TABLE IF EXISTS watch_alerts; PRAGMA user_version = 14;").unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(table_sql(&conn, "watch_issues").unwrap().is_some());
         assert!(table_sql(&conn, "watch_alerts").unwrap().is_some());
     }
@@ -3030,14 +3093,14 @@ mod tests {
     #[test]
     fn v15_migrates_to_v16_adding_columns() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("ALTER TABLE job_runs DROP COLUMN branch; ALTER TABLE watch_issues DROP COLUMN commits;
              ALTER TABLE computers DROP COLUMN watchers; PRAGMA user_version = 15;").unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(column_exists(&conn, "job_runs", "branch").unwrap());
         assert!(column_exists(&conn, "watch_issues", "commits").unwrap());
         assert!(column_exists(&conn, "computers", "watchers").unwrap());
@@ -3046,14 +3109,14 @@ mod tests {
     #[test]
     fn v16_migrates_to_v17_with_today_tables() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("DROP TABLE reminders; DROP TABLE people_pushes; DROP TABLE people; DROP TABLE today_settings;
              ALTER TABLE job_runs DROP COLUMN chosen_tool; PRAGMA user_version = 16;").unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         for t in ["reminders", "people", "people_pushes", "today_settings"] {
             assert!(table_sql(&conn, t).unwrap().is_some(), "{t}");
         }
@@ -3063,20 +3126,20 @@ mod tests {
     #[test]
     fn v17_migrates_to_v18_with_job_templates() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("ALTER TABLE computers DROP COLUMN job_templates; ALTER TABLE computers DROP COLUMN job_templates_at; PRAGMA user_version = 17;").unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(column_exists(&conn, "computers", "job_templates").unwrap());
     }
 
     #[test]
     fn v18_migrates_to_v19_with_daily_updates() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "DROP TABLE update_summaries; DROP TABLE update_reports; DROP TABLE project_updates;
@@ -3086,9 +3149,9 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         for t in ["update_summaries", "update_reports", "project_updates"] {
             assert!(table_sql(&conn, t).unwrap().is_some(), "{t}");
         }
@@ -3100,7 +3163,7 @@ mod tests {
     #[test]
     fn migrates_to_v21() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "DROP TABLE weekly_job_tallies; DROP TABLE weekly_jobs; DROP TABLE weekly_recaps;
@@ -3108,9 +3171,9 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         for t in ["weekly_job_tallies", "weekly_jobs", "weekly_recaps"] {
             assert!(table_sql(&conn, t).unwrap().is_some(), "{t}");
         }
@@ -3126,13 +3189,13 @@ mod tests {
     #[test]
     fn migrates_to_v22() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("DROP INDEX IF EXISTS job_runs_untallied; PRAGMA user_version = 21;").unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         let sql: String = conn
             .query_row("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'job_runs_untallied'", [], |r| r.get(0))
             .unwrap();
@@ -3151,7 +3214,7 @@ mod tests {
     #[test]
     fn migrates_to_v23() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "ALTER TABLE projects DROP COLUMN worktrees; ALTER TABLE conversations DROP COLUMN worktree_source;
@@ -3160,9 +3223,9 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(column_exists(&conn, "conversations", "paused_kind").unwrap());
         assert!(column_exists(&conn, "conversations", "paused_until").unwrap());
     }
@@ -3170,7 +3233,7 @@ mod tests {
     #[test]
     fn migrates_v23_adds_worktree_columns_with_worktrees_on() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "ALTER TABLE projects DROP COLUMN worktrees; ALTER TABLE conversations DROP COLUMN worktree_source;
@@ -3179,9 +3242,9 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(column_exists(&conn, "conversations", "worktree_source").unwrap());
         assert!(column_exists(&conn, "conversations", "branch").unwrap());
         let on: i64 = conn.query_row("SELECT worktrees FROM projects WHERE id = 'p'", [], |r| r.get(0)).unwrap();
@@ -3189,11 +3252,43 @@ mod tests {
     }
 
     #[test]
+    fn v41_removes_sections_and_preserves_project_relationships() {
+        let db = TestDb::new("remove-sections");
+        {
+            let pool = historical_pool(&db);
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "INSERT INTO computers (id, name, hostname, username) VALUES ('host', 'Host', 'host', 'me');
+                 INSERT INTO section_computers (section, computer_id) VALUES ('P', 'host');
+                 INSERT INTO projects (id, name, section, folder) VALUES ('project', 'App', 'P', '~/app');
+                 INSERT INTO todos (id, section, title, project_id) VALUES ('todo', 'P', 'Task', 'project');
+                 INSERT INTO push_muted_projects (project_id) VALUES ('project');",
+            ).unwrap();
+        }
+        for _ in 0..2 {
+            let pool = db.pool();
+            let conn = pool.get().unwrap();
+            assert_eq!(user_version(&conn), 41);
+            assert!(!column_exists(&conn, "projects", "section").unwrap());
+            assert!(!column_exists(&conn, "todos", "section").unwrap());
+            assert!(table_sql(&conn, "section_computers").unwrap().is_none());
+            assert!(!conn.prepare("PRAGMA foreign_key_check").unwrap().exists([]).unwrap());
+            let computer: String = conn.query_row(
+                "SELECT computer_id FROM project_computers WHERE project_id = 'project'", [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(computer, "host");
+            assert!(crate::push::store::is_muted(&conn, "todo").unwrap());
+        }
+        assert_eq!(db.backups().len(), 1);
+    }
+
+    #[test]
     fn v39_preserves_section_mutes_for_existing_projects_and_projectless_todos() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         crate::test_support::seed_computers(&conn);
+        conn.execute("INSERT INTO section_computers (section, computer_id) VALUES ('P', 'mac')", []).unwrap();
         conn.execute_batch(
             "DROP TABLE push_muted_projects;
              ALTER TABLE today_settings DROP COLUMN assistant_computer_id;
@@ -3207,9 +3302,9 @@ mod tests {
         ).unwrap();
         drop(conn);
 
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(table_sql(&conn, "push_muted_sections").unwrap().is_none());
         let computer: String = conn.query_row(
             "SELECT assistant_computer_id FROM today_settings WHERE id = 1", [], |row| row.get(0),
@@ -3225,7 +3320,7 @@ mod tests {
     #[test]
     fn v37_preserves_project_computers_from_legacy_sections() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "DROP VIEW project_computers;
@@ -3238,12 +3333,13 @@ mod tests {
              PRAGMA user_version = 36;",
         ).unwrap();
         crate::test_support::seed_computers(&conn);
+        conn.execute("INSERT INTO section_computers (section, computer_id) VALUES ('Si', 'mac')", []).unwrap();
         conn.execute("INSERT INTO projects (id, name, section, folder) VALUES ('p', 'app', 'Si', '~/app')", []).unwrap();
         drop(conn);
 
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         let stored: String = conn.query_row("SELECT computer_id FROM projects WHERE id = 'p'", [], |r| r.get(0)).unwrap();
         assert_eq!(stored, "mac");
         conn.execute("DELETE FROM section_computers WHERE section = 'Si'", []).unwrap();
@@ -3254,16 +3350,16 @@ mod tests {
     #[test]
     fn migrates_to_v27() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         for (column, _) in V27_COLUMNS {
             conn.execute_batch(&format!("ALTER TABLE conversations DROP COLUMN {column};")).unwrap();
         }
         conn.execute_batch("PRAGMA user_version = 26;").unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         for (column, _) in V27_COLUMNS {
             assert!(column_exists(&conn, "conversations", column).unwrap(), "{column}");
         }
@@ -3272,10 +3368,10 @@ mod tests {
     #[test]
     fn schema_version_sniffs_v22() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(schema_version(&conn).unwrap(), 40);
         conn.execute_batch("ALTER TABLE review_items DROP COLUMN published_at;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 31);
         conn.execute_batch("ALTER TABLE conversations DROP COLUMN worktree_base;").unwrap();
@@ -3306,13 +3402,13 @@ mod tests {
     #[test]
     fn migrates_to_v30() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("DROP TABLE review_items; DROP TABLE reviews; PRAGMA user_version = 29;").unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(column_exists(&conn, "review_items", "published_at").unwrap());
         assert!(table_sql(&conn, "reviews").unwrap().is_some());
         assert!(table_sql(&conn, "review_items").unwrap().is_some());
@@ -3321,20 +3417,20 @@ mod tests {
     #[test]
     fn migrates_to_v25() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("DROP TABLE computer_health; PRAGMA user_version = 24;").unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(table_sql(&conn, "computer_health").unwrap().is_some());
     }
 
     #[test]
     fn migrates_to_v28_records_linked_sessions() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "DROP TRIGGER conversations_session_todo_ai; DROP TRIGGER conversations_session_todo_au;
@@ -3347,9 +3443,9 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         let rows: Vec<(String, String)> = conn
             .prepare("SELECT session_id, conversation_id FROM session_todos")
             .unwrap()
@@ -3363,7 +3459,7 @@ mod tests {
     #[test]
     fn migrates_to_v26() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "DROP TABLE session_models; DROP TABLE session_worker_days; DROP TABLE session_workers;
@@ -3371,9 +3467,9 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         for table in ["session_workers", "session_worker_days", "session_models"] {
             assert!(table_sql(&conn, table).unwrap().is_some(), "{table}");
         }
@@ -3381,13 +3477,13 @@ mod tests {
         drop(conn);
         drop(pool);
         // A second start changes nothing.
-        assert_eq!(user_version(&db.pool().get().unwrap()), SCHEMA_VERSION);
+        assert_eq!(user_version(&historical_pool(&db).get().unwrap()), 40);
     }
 
     #[test]
     fn migrates_to_v29() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "ALTER TABLE conversations DROP COLUMN pr_url; ALTER TABLE conversations DROP COLUMN pr_state;
@@ -3397,20 +3493,20 @@ mod tests {
         assert_eq!(schema_version(&conn).unwrap(), 28, "sniffed without the PR columns");
         conn.execute_batch("PRAGMA user_version = 28;").unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         for column in ["pr_url", "pr_state"] {
             assert!(column_exists(&conn, "conversations", column).unwrap(), "{column}");
         }
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(schema_version(&conn).unwrap(), 40);
     }
 
     #[test]
     fn migrates_to_v31() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "ALTER TABLE conversations DROP COLUMN model; ALTER TABLE conversations DROP COLUMN worktree_base;
@@ -3418,35 +3514,35 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         for (table, column) in [("conversations", "model"), ("conversations", "worktree_base"), ("todos", "main_conversation_id")] {
             assert!(column_exists(&conn, table, column).unwrap(), "{table}.{column}");
         }
         conn.execute_batch("PRAGMA user_version = 0;").unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(schema_version(&conn).unwrap(), 40);
     }
 
     #[test]
     fn migrates_to_v33() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch("ALTER TABLE conversations DROP COLUMN workers; PRAGMA user_version = 0;").unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 32, "sniffed without the workers column");
         conn.execute_batch("PRAGMA user_version = 32;").unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(column_exists(&conn, "conversations", "workers").unwrap());
     }
 
     #[test]
     fn migrates_v33_to_v34() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "PRAGMA foreign_keys=OFF; INSERT INTO job_runs (id, job_id, due_at, state) VALUES ('old', 'j', datetime('now'), 'done');
@@ -3461,9 +3557,9 @@ mod tests {
         assert_eq!(schema_version(&conn).unwrap(), 33, "sniffed without the research groups");
         conn.execute_batch("PRAGMA user_version = 33;").unwrap();
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         for (table, column) in [
             ("job_runs", "group_id"),
             ("job_runs", "attempt_tool"),
@@ -3484,7 +3580,7 @@ mod tests {
     #[test]
     fn v21_marks_old_settled_runs_tallied_but_not_this_weeks() {
         let db = TestDb::new("migrate");
-        drop(db.pool());
+        drop(historical_pool(&db));
         let conn = Connection::open(&db.path).unwrap();
         conn.execute_batch(
             "PRAGMA foreign_keys=OFF; DROP INDEX job_runs_untallied; ALTER TABLE job_runs DROP COLUMN tallied; PRAGMA user_version = 20;",
@@ -3501,7 +3597,7 @@ mod tests {
             .unwrap();
         }
         drop(conn);
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
         let tallied = |id: &str| -> i64 {
             conn.query_row("SELECT tallied FROM job_runs WHERE id = ?1", params![id], |r| r.get(0)).unwrap()
@@ -3512,9 +3608,9 @@ mod tests {
     #[test]
     fn fresh_database_has_v14_objects() {
         let db = TestDb::new("migrate");
-        let pool = db.pool();
+        let pool = historical_pool(&db);
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert_eq!(user_version(&conn), 40);
         assert!(table_sql(&conn, "ideas").unwrap().is_some());
         assert!(column_exists(&conn, "job_runs", "note").unwrap());
     }

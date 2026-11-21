@@ -18,7 +18,7 @@ final class AppModelTests: XCTestCase {
                              now: { Self.listedAt })
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
-            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+            computers: DemoFixtures.computers
         )
         return model
     }
@@ -71,7 +71,7 @@ final class AppModelTests: XCTestCase {
                 sessionId: id, status: status, statusUpdatedAt: updated, createdAt: "2026-10-16T09:00:00Z"
             )
         }
-        store.applyFetched(todos: [Todo(id: "t", section: .sp, title: "Keep going")], conversations: [
+        store.applyFetched(todos: [Todo(id: "t", title: "Keep going")], conversations: [
             conv("idle", .idle, updated: "2026-10-20T12:00:00Z"),
             conv("wait", .waiting, updated: "2026-10-20T08:00:00Z"),
         ])
@@ -81,7 +81,7 @@ final class AppModelTests: XCTestCase {
     func testBoardReflectsStoreChanges() {
         let model = makeModel()
         XCTAssertEqual(model.board.needsYou.count, 2)
-        model.store.seedForDemo(todos: [], conversations: [], sectionComputers: [], computers: [])
+        model.store.seedForDemo(todos: [], conversations: [], computers: [])
         XCTAssertTrue(model.board.needsYou.isEmpty)
     }
 
@@ -155,7 +155,7 @@ final class AppModelTests: XCTestCase {
         )
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations + [started],
-            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+            computers: DemoFixtures.computers
         )
         XCTAssertEqual(model.board.status(forTodo: "t7"), .working)
         XCTAssertEqual(model.board.open.map(\.todoId), ["t7"])
@@ -249,7 +249,7 @@ final class AppModelTests: XCTestCase {
         let model = makeModel()
         let first = model.board
         XCTAssertTrue(first === model.board)
-        model.store.seedForDemo(todos: [], conversations: [], sectionComputers: [], computers: [])
+        model.store.seedForDemo(todos: [], conversations: [], computers: [])
         XCTAssertFalse(first === model.board)
         XCTAssertTrue(model.board.needsYou.isEmpty)
         XCTAssertTrue(model.board === model.board)
@@ -277,7 +277,7 @@ final class AppModelTests: XCTestCase {
         )
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations + [started],
-            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+            computers: DemoFixtures.computers
         )
         await phase.setListingMac(true)
         await model.refreshLiveness(hosts: [], scope: .stale)
@@ -312,7 +312,7 @@ final class AppModelTests: XCTestCase {
         }, now: { clock.date })
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
-            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+            computers: DemoFixtures.computers
         )
         await model.refreshLiveness(hosts: [])
         XCTAssertEqual(model.livenessChecked[mac.id], Self.listedAt)
@@ -325,7 +325,7 @@ final class AppModelTests: XCTestCase {
         )
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations + [started],
-            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+            computers: DemoFixtures.computers
         )
         let checkedLinux = model.livenessChecked[linux.id]
         clock.date = Self.listedAt.addingTimeInterval(10)
@@ -350,7 +350,7 @@ final class AppModelTests: XCTestCase {
         await mode.set(slow: true)
         let full = Task { await model.refreshLiveness(hosts: []) }
         while await gate.waiting < DemoFixtures.computers.count { await Task.yield() }
-        model.store.seedForDemo(todos: [], conversations: [], sectionComputers: [], computers: [])
+        model.store.seedForDemo(todos: [], conversations: [], computers: [])
         await model.refreshLiveness(hosts: [])
         await gate.open()
         await full.value
@@ -365,7 +365,7 @@ final class AppModelTests: XCTestCase {
         let model = AppModel(store: TodoHubStore(cache: cache), demo: false, now: { Self.listedAt })
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
-            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+            computers: DemoFixtures.computers
         )
         await model.refreshLiveness(hosts: [])
         XCTAssertTrue(model.livenessChecked.isEmpty)
@@ -376,7 +376,7 @@ final class AppModelTests: XCTestCase {
     func testAutomaticLivenessIDChangesWhenComputersOrHostsArrive() {
         let model = makeModel()
         let empty = model.automaticLivenessID(hostIDs: [])
-        model.store.seedForDemo(todos: [], conversations: [], sectionComputers: [], computers: [])
+        model.store.seedForDemo(todos: [], conversations: [], computers: [])
         XCTAssertNotEqual(model.automaticLivenessID(hostIDs: []), empty)
         let host = UUID()
         XCTAssertNotEqual(model.automaticLivenessID(hostIDs: [host]), model.automaticLivenessID(hostIDs: []))
@@ -429,7 +429,7 @@ final class AppModelTests: XCTestCase {
         )
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations + [started],
-            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+            computers: DemoFixtures.computers
         )
         await mode.set(slow: true)
         let full = Task { await model.refreshLiveness(hosts: []) }
@@ -465,7 +465,7 @@ final class AppModelTests: XCTestCase {
         )
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations + [started],
-            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+            computers: DemoFixtures.computers
         )
         await settle(model) { model.relistRequests > 0 }
         let asked = model.relistRequests
@@ -562,7 +562,7 @@ final class AppModelTests: XCTestCase {
         }, now: { clock.now })
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
-            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+            computers: DemoFixtures.computers
         )
         await mode.set(slow: true)
         let old = Task { await model.refreshLiveness(forTodo: "t1", hosts: []) }
@@ -833,7 +833,7 @@ final class TodoHubRefreshTests: XCTestCase {
         HubRefreshStub.reset()
         let clock = ManualRefreshClock()
         let store = try makeStore(sleep: { try await clock.sleep($0) })
-        let created = Todo(id: "new", section: .sp, title: "Quick add", projectId: "p1")
+        let created = Todo(id: "new", title: "Quick add", projectId: "p1")
         HubRefreshStub.set { bodies in
             bodies.createdTodo = Self.encoded(created)
             bodies.todos = Self.encoded([created])

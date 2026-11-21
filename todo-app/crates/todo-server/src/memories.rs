@@ -858,9 +858,9 @@ mod tests {
     fn seed(conn: &Connection) {
         seed_computers(conn);
         conn.execute_batch(
-            "INSERT INTO projects (id, name, section, folder) VALUES
-                 ('pa', 'a', 'Si', '~/a'), ('pb', 'b', 'Si', '~/b'), ('ps', 'spread', 'Sp', '~/a');
-             INSERT INTO todos (id, section, title) VALUES ('t1', 'Si', 'linked'), ('t2', 'P', 'other');
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES
+                 ('pa', 'a', (SELECT id FROM computers WHERE id = 'mac'), '~/a'), ('pb', 'b', (SELECT id FROM computers WHERE id = 'mac'), '~/b'), ('ps', 'spread', (SELECT id FROM computers WHERE id = 'spread'), '~/a');
+             INSERT INTO todos (id, title) VALUES ('t1', 'linked'), ('t2', 'other');
              INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id)
                  VALUES ('t1', 'mac', '~/a', 'claude', 'ai/claude/todo-t1', 's1');",
         )

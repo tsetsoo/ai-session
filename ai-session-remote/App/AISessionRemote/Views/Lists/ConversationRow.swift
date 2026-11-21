@@ -5,7 +5,6 @@ import SwiftUI
 /// "Sp · mac-studio", and the status message, plus its ⌘n hint in the Mac's conversation lists.
 struct ConversationRow: View {
     let title: String
-    let section: TodoSection?
     let conversation: Conversation
     let status: ConversationDisplayStatus
     /// Closing or deleting it.

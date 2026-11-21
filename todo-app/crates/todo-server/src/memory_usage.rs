@@ -162,7 +162,7 @@ mod tests {
     fn seed(conn: &Connection) {
         seed_computers(conn);
         conn.execute_batch(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('pa', 'a', 'Si', '~/a');
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('pa', 'a', (SELECT id FROM computers WHERE id = 'mac'), '~/a');
              INSERT INTO memories (id, project_id, kind, text, text_key, aged_from) VALUES
                  ('m1', 'pa', 'gotcha', 'Unlock the keychain before signing', 'k1', '2026-01-01'),
                  ('m2', 'pa', 'decision', 'Pinned rule', 'k2', '2026-01-01'),

@@ -63,7 +63,7 @@ struct ConversationListView: View {
             let todo = todos[conversation.todoId]
             if !showScheduled, todo?.scheduledJobId != nil { return false }
             return ListSearch.matches(query, todo?.title,
-                                      RowText.conversationSearchText(conversation, section: todo?.section),
+                                      RowText.conversationSearchText(conversation),
                                       conversation.statusMessage)
         }
         let shortcuts: [String: Int] = showsShortcuts
@@ -176,7 +176,7 @@ struct ConversationListView: View {
         }
         return ConversationRow(
             title: RowText.conversationTitle(todoTitle: todo?.title ?? "Conversation", label: conversation.label),
-            section: todo?.section,
+
             conversation: conversation,
             status: status,
             isBusy: actions.inFlight.contains(conversation.listKey),

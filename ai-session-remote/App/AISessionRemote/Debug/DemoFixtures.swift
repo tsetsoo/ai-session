@@ -21,35 +21,37 @@ enum DemoFixtures {
     static let linuxBox = Computer(id: "linux-box", name: "linux-box", hostname: "linux-box", username: "tsvetelin")
     static let computers: [Computer] = [macStudio, linuxBox]
 
-    /// `SectionComputer` has no public initializer, so build it through its Codable form.
-    private struct SectionComputerSpec: Encodable {
-        var section: TodoSection
-        var computer: Computer
-        var cwd: String
-        var tool: String
+    private enum DemoProject: String, CaseIterable {
+        case rates, notes, scraper, website
+
+        var folder: String {
+            switch self {
+            case .rates: "~/code/rms-backend"
+            case .notes: "~/notes"
+            case .scraper: "~/scraper"
+            case .website: "~/code/website"
+            }
+        }
+
+        var computer: Computer {
+            switch self {
+            case .rates, .website: DemoFixtures.macStudio
+            case .notes, .scraper: DemoFixtures.linuxBox
+            }
+        }
     }
 
-    static let sectionComputers: [SectionComputer] = {
-        let specs = [
-            SectionComputerSpec(section: .sp, computer: macStudio, cwd: "~/code/rms-backend", tool: "claude"),
-            SectionComputerSpec(section: .i, computer: linuxBox, cwd: "~/notes", tool: "claude"),
-            SectionComputerSpec(section: .si, computer: linuxBox, cwd: "~/scraper", tool: "claude"),
-            SectionComputerSpec(section: .p, computer: macStudio, cwd: "~/code/website", tool: "claude"),
-        ]
-        do {
-            return try JSONDecoder().decode([SectionComputer].self, from: JSONEncoder().encode(specs))
-        } catch {
-            fatalError("DemoFixtures: \(error)")
-        }
-    }()
+    static let demoProjects = DemoProject.allCases.map {
+        Project(id: $0.rawValue, name: $0.rawValue, computer: $0.computer, folder: $0.folder)
+    }
 
     /// Sp's projects, for screenshots of the New Todo sheet (`-uiDemoAdd`) only: other `-uiDemo`
     /// screens keep showing no projects. (`-demoProjects` has its own, in `TodoHubDemo`.)
     static var addSheetProjects: [Project] {
         guard ProcessInfo.processInfo.arguments.contains("-uiDemoAdd") else { return [] }
         return [
-            Project(id: "demo-rms", name: "rms-backend", computer: macStudio, folder: "~/code/rms-backend", section: .sp),
-            Project(id: "demo-rates", name: "rate-importer", computer: macStudio, folder: "~/code/rate-importer", section: .sp),
+            Project(id: "demo-rms", name: "rms-backend", computer: macStudio, folder: "~/code/rms-backend"),
+            Project(id: "demo-rates", name: "rate-importer", computer: macStudio, folder: "~/code/rate-importer"),
         ]
     }
 
@@ -144,48 +146,39 @@ enum DemoFixtures {
 
     private static let now = "2026-10-17T09:00:00Z"
 
-    private static func cwd(for section: TodoSection) -> String {
-        switch section {
-        case .sp: "~/code/rms-backend"
-        case .i: "~/notes"
-        case .si: "~/scraper"
-        case .p: "~/code/website"
-        }
-    }
-
-    private static func todo(_ id: String, _ section: TodoSection, _ title: String,
+    private static func todo(_ id: String, _ project: DemoProject, _ title: String,
                              status: ConversationStatus? = nil, completed: Bool = false) -> Todo {
-        Todo(id: id, section: section, title: title, completed: completed,
-             createdAt: now, updatedAt: now, conversationStatus: status)
+        Todo(id: id, title: title, completed: completed,
+             createdAt: now, updatedAt: now, conversationStatus: status, projectId: project.rawValue)
     }
 
-    private static func conversation(_ id: String, _ section: TodoSection, _ computer: Computer,
+    private static func conversation(_ id: String, _ project: DemoProject, _ computer: Computer,
                                      tool: String, _ status: ConversationStatus, message: String? = nil) -> Conversation {
-        Conversation(id: "c-\(id)", todoId: id, computer: computer, cwd: cwd(for: section), tool: tool,
+        Conversation(id: "c-\(id)", todoId: id, computer: computer, cwd: project.folder, tool: tool,
                      tmuxName: "todo-\(id)", sessionId: "demo-\(id)", status: status, statusMessage: message,
                      createdAt: now, workers: id == "t1" ? demoHubWorkers : nil)
     }
 
     static let todos: [Todo] = [
-        todo("t1", .sp, "Fix the rate import", status: .waiting),
-        todo("t2", .sp, "Import Booking.com reviews", status: .busy),
-        todo("t3", .i, "Draft the HTIF follow-up", status: .waiting),
-        todo("t4", .si, "Clean up scraper retries", status: .busy),
-        todo("t5", .sp, "Santé party-size rates", status: .idle),
-        todo("t6", .sp, "Renew the SSL certificate", completed: true),
-        todo("t7", .i, "Call the Bansko hotel"),
-        todo("t8", .p, "Rate shopper comparison page"),
-        todo("t9", .p, "Book the HTIF booth crew"),
+        todo("t1", .rates, "Fix the rate import", status: .waiting),
+        todo("t2", .rates, "Import Booking.com reviews", status: .busy),
+        todo("t3", .notes, "Draft the HTIF follow-up", status: .waiting),
+        todo("t4", .scraper, "Clean up scraper retries", status: .busy),
+        todo("t5", .rates, "Santé party-size rates", status: .idle),
+        todo("t6", .rates, "Renew the SSL certificate", completed: true),
+        todo("t7", .notes, "Call the Bansko hotel"),
+        todo("t8", .website, "Rate shopper comparison page"),
+        todo("t9", .website, "Book the HTIF booth crew"),
     ]
 
     static let conversations: [Conversation] = [
-        conversation("t1", .sp, macStudio, tool: "claude", .waiting,
+        conversation("t1", .rates, macStudio, tool: "claude", .waiting,
                      message: "Claude needs your permission to use Bash"),
-        conversation("t2", .sp, macStudio, tool: "claude", .busy),
-        conversation("t3", .i, linuxBox, tool: "claude", .waiting,
+        conversation("t2", .rates, macStudio, tool: "claude", .busy),
+        conversation("t3", .notes, linuxBox, tool: "claude", .waiting,
                      message: "Claude needs your permission to use Edit"),
-        conversation("t4", .si, linuxBox, tool: "codex", .busy),
-        conversation("t5", .sp, macStudio, tool: "claude", .idle),
+        conversation("t4", .scraper, linuxBox, tool: "codex", .busy),
+        conversation("t5", .rates, macStudio, tool: "claude", .idle),
     ]
 
     /// Never dialed: `DemoTransport` replaces SSH.

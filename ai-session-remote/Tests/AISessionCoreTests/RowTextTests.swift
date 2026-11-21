@@ -97,24 +97,21 @@ final class RowTextTests: XCTestCase {
     }
 
     func testMetaKeepsSectionAndComputerAndLeavesTheToolOff() {
-        XCTAssertEqual(RowText.conversationMeta(conv(), section: .sp), "Sp · mac-studio")
-        XCTAssertEqual(RowText.conversationMeta(conv(tool: "codex"), section: .si), "Si · mac-studio")
-        XCTAssertEqual(RowText.conversationMeta(conv(), section: nil), "mac-studio")
+        XCTAssertEqual(RowText.conversationSearchText(conv()), "mac-studio Claude")
     }
 
     func testFrameSubtitleKeepsTheFolderAndLeavesTheToolOff() {
-        XCTAssertEqual(RowText.frameSubtitle(section: .sp, computer: "mac-studio", folder: "~/ai-session"),
-                       "Sp · mac-studio · ~/ai-session")
-        XCTAssertEqual(RowText.frameSubtitle(section: .i, computer: "pi", folder: nil), "I · pi")
+        XCTAssertEqual(RowText.frameSubtitle(computer: "mac-studio", folder: "~/ai-session"), "mac-studio · ~/ai-session")
+        XCTAssertEqual(RowText.frameSubtitle(computer: "pi", folder: nil), "pi")
     }
 
     func testSearchTextStillNamesTheTool() {
-        XCTAssertTrue(RowText.conversationSearchText(conv(tool: "codex"), section: .si)
+        XCTAssertTrue(RowText.conversationSearchText(conv(tool: "codex"))
             .localizedStandardContains("Codex"))
-        XCTAssertTrue(RowText.conversationSearchText(conv(), section: nil)
+        XCTAssertTrue(RowText.conversationSearchText(conv())
             .localizedStandardContains("Claude"))
         XCTAssertEqual(RowText.toolName("shell"), "Shell")
-        XCTAssertTrue(RowText.conversationSearchText(conv(tool: "shell"), section: .p)
+        XCTAssertTrue(RowText.conversationSearchText(conv(tool: "shell"))
             .localizedStandardContains("Shell"))
     }
 

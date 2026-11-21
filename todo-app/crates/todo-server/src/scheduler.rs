@@ -119,15 +119,14 @@ fn latest_slot(cron: &cron::Cron, after: DateTime<Utc>, now: DateTime<Utc>) -> O
     latest
 }
 
-fn project_name_and_section(conn: &Connection, project_id: &str) -> rusqlite::Result<Option<(String, String)>> {
-    conn.query_row("SELECT name, section FROM projects WHERE id = ?1", params![project_id], |r| Ok((r.get(0)?, r.get(1)?)))
+fn project_name(conn: &Connection, project_id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT name FROM projects WHERE id = ?1", params![project_id], |r| r.get(0))
         .optional()
 }
 
 /// A todo carrying the scheduled marker. Returns its id.
 pub(crate) fn insert_scheduled_todo(
     conn: &Connection,
-    section: &str,
     title: &str,
     project_id: Option<&str>,
     job_id: &str,
@@ -135,8 +134,8 @@ pub(crate) fn insert_scheduled_todo(
 ) -> rusqlite::Result<String> {
     let id = Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO todos (id, section, title, project_id, scheduled_job_id, scheduled_run_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, section, title, project_id, job_id, run_id],
+        "INSERT INTO todos (id, title, project_id, scheduled_job_id, scheduled_run_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, title, project_id, job_id, run_id],
     )?;
     Ok(id)
 }
@@ -257,10 +256,10 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
             }
             JobAction::Todo { title, project_id } => {
                 let project = match project_id.as_deref() {
-                    Some(pid) => project_name_and_section(&tx, pid)?,
+                    Some(pid) => project_name(&tx, pid)?,
                     None => None,
                 };
-                let Some((pname, section)) = project else {
+                let Some(pname) = project else {
                     tx.execute(
                         "UPDATE job_runs SET state = 'failed', result = 'Todo job needs an existing project', updated_at = ?2 WHERE id = ?1",
                         params![run_id, stamp],
@@ -268,7 +267,7 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
                     continue;
                 };
                 let vars = [("date", today.as_str()), ("job", name.as_str()), ("project", pname.as_str())];
-                let todo = insert_scheduled_todo(&tx, &section, &render(&title, &vars), project_id.as_deref(), &id, &run_id)?;
+                let todo = insert_scheduled_todo(&tx, &render(&title, &vars), project_id.as_deref(), &id, &run_id)?;
                 tx.execute(
                     "UPDATE job_runs SET state = 'done', todo_id = ?2, started_at = ?3, result = 'todo created', updated_at = ?3 WHERE id = ?1",
                     params![run_id, todo, stamp],
@@ -293,7 +292,7 @@ mod tests {
 
     fn seed(conn: &Connection) {
         seed_computers(conn);
-        conn.execute_batch("INSERT INTO projects (id, name, section, folder) VALUES ('pa', 'app', 'Si', '~/a');").unwrap();
+        conn.execute_batch("INSERT INTO projects (id, name, computer_id, folder) VALUES ('pa', 'app', (SELECT id FROM computers WHERE id = 'mac'), '~/a');").unwrap();
     }
 
     fn job(conn: &Connection, id: &str, cron: &str, action: &str, last_slot: &str) {
@@ -408,12 +407,12 @@ mod tests {
         job(&conn, "j", "0 9 * * *", r#"{"kind":"todo","title":"Review {project} PRs","project_id":"pa","section":null}"#, "2026-11-01 08:00:00");
         let out = tick_db(&conn, at(2026, 11, 2, 7, 0)).unwrap();
         assert_eq!(out.todos.len(), 1);
-        let (title, section, project, marker): (String, String, Option<String>, Option<String>) = conn
-            .query_row("SELECT title, section, project_id, scheduled_job_id FROM todos WHERE id = ?1", params![out.todos[0]], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        let (title, project, marker): (String, Option<String>, Option<String>) = conn
+            .query_row("SELECT title, project_id, scheduled_job_id FROM todos WHERE id = ?1", params![out.todos[0]], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
             .unwrap();
-        assert_eq!((title.as_str(), section.as_str(), project.as_deref(), marker.as_deref()), ("Review app PRs", "Si", Some("pa"), Some("j")));
+        assert_eq!((title.as_str(), project.as_deref(), marker.as_deref()), ("Review app PRs", Some("pa"), Some("j")));
         assert_eq!(runs(&conn, "j")[0].1, "done");
     }
 
@@ -470,7 +469,7 @@ mod tests {
             "INSERT INTO job_runs (id, job_id, due_at, state, updated_at) VALUES
                  ('stuck', 'j', '2026-11-02 06:00:00', 'running', '2026-11-02 06:40:00'),
                  ('fresh', 'j', '2026-11-02 06:50:00', 'running', '2026-11-02 06:55:00');
-             INSERT INTO todos (id, section, title) VALUES ('t', 'Si', 'x');
+             INSERT INTO todos (id, title) VALUES ('t', 'x');
              INSERT INTO job_runs (id, job_id, due_at, state, todo_id, updated_at) VALUES
                  ('started', 'j', '2026-11-02 06:00:00', 'running', 't', '2026-11-02 06:00:00');",
         )

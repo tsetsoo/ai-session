@@ -108,11 +108,11 @@ extension DemoFixtures {
         return ConversationLoader.Dependencies(
             openConversation: { todo in
                 if let existing = conversations.first(where: { $0.todoId == todo.id }) { return existing }
-                guard let mapping = sectionComputers.first(where: { $0.section == todo.section }) else {
-                    throw TodoHubError.conflict("Section \(todo.section.rawValue) has no computer assigned")
+                guard let project = demoProjects.first(where: { $0.id == todo.projectId }) else {
+                    throw TodoHubError.conflict("The project has no computer assigned")
                 }
                 return Conversation(
-                    todoId: todo.id, computer: mapping.computer, cwd: "~", tool: "claude",
+                    todoId: todo.id, computer: project.computer, cwd: project.folder, tool: "claude",
                     tmuxName: "todo-\(todo.id)", sessionId: "demo-\(todo.id)", status: .busy,
                     statusMessage: nil, createdAt: "2026-10-17T09:00:00Z"
                 )

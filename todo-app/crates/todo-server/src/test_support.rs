@@ -22,7 +22,7 @@ pub(crate) fn pool(name: &str) -> (TestDb, DbPool) {
     (db, pool)
 }
 
-/// Three computers: `mac` (sections Si + P), `spread` (Sp) and `codbex` (I). The Macs'
+/// Three computers: `mac`, `spread` and `codbex`. The Macs'
 /// user is `me`, codbex's is `tsetso`.
 pub(crate) fn seed_computers(conn: &Connection) {
     conn.execute_batch(
@@ -30,9 +30,7 @@ pub(crate) fn seed_computers(conn: &Connection) {
              ('mac', 'tsvetelins-macbook-pro', 'mac.tailnet', 'me'),
              ('spread', 'spreads-macbook-pro', 'spread.tailnet', 'me'),
              ('codbex', 'codbexs-macbook-pro', 'codbex.tailnet', 'tsetso');
-         INSERT INTO section_computers (section, computer_id) VALUES
-             ('Si', 'mac'), ('P', 'mac'),
-             ('Sp', 'spread'), ('I', 'codbex');",
+",
     )
     .unwrap();
 }

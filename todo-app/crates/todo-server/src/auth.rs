@@ -275,13 +275,13 @@ mod tests {
             let conn = pool.get().unwrap();
             crate::test_support::seed_computers(&conn);
             conn.execute_batch(
-                "INSERT INTO projects (id, name, section, folder) VALUES
-                     ('allowed', 'Allowed', 'Sp', '~/allowed'),
-                     ('private', 'Private', 'I', '~/private');
-                 INSERT INTO todos (id, section, title, project_id) VALUES
-                     ('in-project', 'Sp', 'Project todo', 'allowed'),
-                     ('explicit', 'I', 'Shared todo', 'private'),
-                     ('hidden', 'I', 'Private todo', 'private');
+                "INSERT INTO projects (id, name, computer_id, folder) VALUES
+                     ('allowed', 'Allowed', (SELECT id FROM computers WHERE id = 'spread'), '~/allowed'),
+                     ('private', 'Private', (SELECT id FROM computers WHERE id = 'codbex'), '~/private');
+                 INSERT INTO todos (id, title, project_id) VALUES
+                     ('in-project', 'Project todo', 'allowed'),
+                     ('explicit', 'Shared todo', 'private'),
+                     ('hidden', 'Private todo', 'private');
                  INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id) VALUES
                      ('visible-chat', 'in-project', 'spread', '/tmp', 'claude', 'visible', 'visible'),
                      ('other-computer', 'in-project', 'codbex', '/tmp', 'claude', 'elsewhere', 'elsewhere'),
@@ -361,8 +361,8 @@ mod tests {
         {
             let conn = pool.get().unwrap();
             conn.execute_batch(
-                "INSERT INTO todos (id, section, title, project_id) VALUES
-                    ('start-spread', 'Sp', 'Spread start', 'allowed');
+                "INSERT INTO todos (id, title, project_id) VALUES
+                    ('start-spread', 'Spread start', 'allowed');
                 UPDATE conversations SET status = 'waiting' WHERE id = 'other-computer';"
             ).unwrap();
         }
@@ -428,8 +428,8 @@ mod tests {
 
         {
             let conn = pool.get().unwrap();
-            conn.execute("UPDATE section_computers SET computer_id = 'codbex' WHERE section = 'Sp'", []).unwrap();
-            conn.execute("INSERT INTO projects (id, name, section, folder) VALUES ('new', 'New', 'P', '~/new')", []).unwrap();
+            conn.execute("UPDATE projects SET computer_id = 'codbex' WHERE computer_id = 'spread'", []).unwrap();
+            conn.execute("INSERT INTO projects (id, name, computer_id, folder) VALUES ('new', 'New', (SELECT id FROM computers WHERE id = 'mac'), '~/new')", []).unwrap();
         }
         assert_eq!(test::call_service(&app, get("/api/todos/in-project")).await.status(), 404);
         assert_eq!(test::call_service(&app, get("/api/projects/allowed")).await.status(), 404);
@@ -451,12 +451,12 @@ mod tests {
             let conn = pool.get().unwrap();
             crate::test_support::seed_computers(&conn);
             conn.execute_batch(
-                "INSERT INTO projects (id, name, section, folder) VALUES
-                     ('spread-project', 'Spread', 'Sp', '~/spread'),
-                     ('mac-project', 'Mac', 'P', '~/mac');
-                 INSERT INTO todos (id, section, title, project_id) VALUES
-                     ('own', 'Sp', 'Own', 'spread-project'),
-                     ('other', 'P', 'Other', 'mac-project');
+                "INSERT INTO projects (id, name, computer_id, folder) VALUES
+                     ('spread-project', 'Spread', (SELECT id FROM computers WHERE id = 'spread'), '~/spread'),
+                     ('mac-project', 'Mac', (SELECT id FROM computers WHERE id = 'mac'), '~/mac');
+                 INSERT INTO todos (id, title, project_id) VALUES
+                     ('own', 'Own', 'spread-project'),
+                     ('other', 'Other', 'mac-project');
                  INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id) VALUES
                      ('own-chat', 'own', 'spread', '/tmp', 'claude', 'own', 'own-session'),
                      ('other-chat', 'other', 'mac', '/tmp', 'claude', 'other', 'other-session');"

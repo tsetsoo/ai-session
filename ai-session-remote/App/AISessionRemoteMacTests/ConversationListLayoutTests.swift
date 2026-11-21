@@ -13,8 +13,7 @@ final class ConversationListLayoutTests: XCTestCase {
         let store = model.store
         func show(_ conversations: [Conversation]) {
             store.seedForDemo(todos: DemoFixtures.todos, conversations: conversations,
-                              sectionComputers: DemoFixtures.sectionComputers,
-                              computers: DemoFixtures.computers)
+            computers: DemoFixtures.computers)
         }
         show([])
         let container = try ModelContainer(for: HostEntity.self,

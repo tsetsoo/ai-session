@@ -268,7 +268,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed_computers(&conn);
         conn.execute_batch(
-            "INSERT INTO todos (id, section, title) VALUES ('t1', 'Si', 'Fix invoice export');
+            "INSERT INTO todos (id, title) VALUES ('t1', 'Fix invoice export');
              INSERT INTO conversations (todo_id, computer_id, cwd, tool, tmux_name, session_id, status)
                  VALUES ('t1', 'mac', '~/programming', 'claude', 'ai/claude/todo-t1', 'sess-1', 'idle');",
         )

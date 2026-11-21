@@ -316,8 +316,8 @@ pub(crate) fn research_now_db(conn: &Connection, id: &str, req: &ResearchRequest
     if idea.status != "new" || idea.pending {
         return Err(IdeaError::Conflict("Only a new, approved idea can be researched now"));
     }
-    let (name, section): (String, String) =
-        tx.query_row("SELECT name, section FROM projects WHERE id = ?1", params![idea.project_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let name: String =
+        tx.query_row("SELECT name FROM projects WHERE id = ?1", params![idea.project_id], |r| r.get(0))?;
     let job_id = ensure_project_job(
         &tx,
         &idea.project_id,
@@ -343,7 +343,6 @@ pub(crate) fn research_now_db(conn: &Connection, id: &str, req: &ResearchRequest
     }
     let todo_id = crate::scheduler::insert_scheduled_todo(
         &tx,
-        &section,
         &format!("Research: {}", idea.title),
         Some(&idea.project_id),
         &job_id,
@@ -376,14 +375,10 @@ pub struct IdeaTodo {
 /// A todo in the idea's project, titled after the idea; the idea links to it.
 pub(crate) fn idea_to_todo_db(conn: &Connection, id: &str) -> Result<IdeaTodo, IdeaError> {
     let idea = load_idea(conn, id)?.ok_or(IdeaError::NotFound("Idea not found"))?;
-    let section: String = conn
-        .query_row("SELECT section FROM projects WHERE id = ?1", params![idea.project_id], |r| r.get(0))
-        .optional()?
-        .ok_or(IdeaError::NotFound("Project not found"))?;
     let todo_id = Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO todos (id, section, title, project_id) VALUES (?1, ?2, ?3, ?4)",
-        params![todo_id, section, idea.title, idea.project_id],
+        "INSERT INTO todos (id, title, project_id) VALUES (?1, ?2, ?3)",
+        params![todo_id, idea.title, idea.project_id],
     )?;
     conn.execute("UPDATE ideas SET todo_id = ?2, updated_at = datetime('now') WHERE id = ?1", params![id, todo_id])?;
     let idea = load_idea(conn, id)?.ok_or(IdeaError::NotFound("Idea not found"))?;
@@ -510,7 +505,7 @@ mod tests {
 
     fn seed(conn: &Connection) {
         seed_computers(conn);
-        conn.execute_batch("INSERT INTO projects (id, name, section, folder) VALUES ('pa', 'app', 'Si', '~/a');").unwrap();
+        conn.execute_batch("INSERT INTO projects (id, name, computer_id, folder) VALUES ('pa', 'app', (SELECT id FROM computers WHERE id = 'mac'), '~/a');").unwrap();
     }
 
     fn titles(v: &Value) -> Vec<String> {
@@ -606,10 +601,10 @@ mod tests {
         let todo_id = v["todo_id"].as_str().unwrap();
         assert_eq!(v["idea"]["todo_id"], json!(todo_id));
         assert_eq!(v["idea"]["status"], "new");
-        let (title, section, project): (String, String, String) = conn
-            .query_row("SELECT title, section, project_id FROM todos WHERE id = ?1", [todo_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        let (title, project): (String, String) = conn
+            .query_row("SELECT title, project_id FROM todos WHERE id = ?1", [todo_id], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
-        assert_eq!((title.as_str(), section.as_str(), project.as_str()), ("Build the importer", "Si", "pa"));
+        assert_eq!((title.as_str(), project.as_str()), ("Build the importer", "pa"));
     }
 
     #[actix_web::test]

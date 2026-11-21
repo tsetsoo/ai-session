@@ -13,7 +13,7 @@ use chrono::DateTime;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use todo_shared::{
     ConversationUsage, HeavyConversation, HeavyJob, HeavyTodo, HeavyUsage, JobUsage, ModelTokens, ModelUsage, RunUsage,
-    Section, StatsCounters, TodoUsage, UsageReading, UsageSummary, WorkerTypeUsage,
+    StatsCounters, TodoUsage, UsageReading, UsageSummary, WorkerTypeUsage,
 };
 
 use crate::conversations::{not_found, server_error};
@@ -386,13 +386,13 @@ pub(crate) fn heaviest_db(conn: &Connection, week_start: Option<&str>, limit: us
 
     let mut heavy_todos = Vec::with_capacity(todos.len());
     for (todo_id, (o, w)) in todos {
-        let found: Option<(String, String, Option<String>)> = conn
-            .query_row("SELECT title, section, project_id FROM todos WHERE id = ?1", params![todo_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        let found: Option<(String, Option<String>)> = conn
+            .query_row("SELECT title, project_id FROM todos WHERE id = ?1", params![todo_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
             })
             .optional()?;
-        let Some((title, section, project_id)) = found else { continue };
-        heavy_todos.push(HeavyTodo { todo_id, title, section: Section::parse(&section), project_id, own: o, workers: w });
+        let Some((title, project_id)) = found else { continue };
+        heavy_todos.push(HeavyTodo { todo_id, title, project_id, own: o, workers: w });
     }
     heavy_todos.sort_by_key(|t| -weight_of(&t.own, &t.workers));
     heavy_todos.truncate(limit);
@@ -524,8 +524,8 @@ mod tests {
     fn seed(conn: &Connection) {
         seed_computers(conn);
         conn.execute_batch(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('pa', 'a', 'Si', '~/a');
-             INSERT INTO todos (id, section, title) VALUES ('t1', 'Si', 'one'), ('t2', 'Si', 'two'), ('t3', 'Si', 'empty');
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('pa', 'a', (SELECT id FROM computers WHERE id = 'mac'), '~/a');
+             INSERT INTO todos (id, title) VALUES ('t1', 'one'), ('t2', 'two'), ('t3', 'empty');
              INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, created_at) VALUES
                  ('c1', 't1', 'mac', '~/a', 'claude', 'ai/1', 's1', '2026-11-02 10:00:00'),
                  ('c2', 't1', 'mac', '~/a', 'cursor', 'ai/2', 'cur', '2026-11-02 10:01:00'),

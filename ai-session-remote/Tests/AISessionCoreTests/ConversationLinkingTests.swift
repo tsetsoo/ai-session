@@ -143,7 +143,6 @@ final class ConversationLinkingTests: XCTestCase {
             title: "PR 630 review", projectId: "p-sp", computerId: "m1", tool: "codex",
             sessionId: "019f8b4e-ff53-7201-8585-162b40a93fb3", cwd: "~/Spread/Repository"
         ))
-        XCTAssertEqual(created.todo.section, .sp)
         XCTAssertEqual(created.conversation.todoId, created.todo.id)
 
         let sent = StubURLProtocol.requests.last

@@ -253,8 +253,6 @@ struct LinkConversationSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var actionError: String?
     @State private var isWorking = false
-    /// Choose Computer: Settings, on this section, over this sheet.
-    @State private var choosingComputer: TodoSection?
 
     var body: some View {
         NavigationStack {
@@ -286,10 +284,7 @@ struct LinkConversationSheet: View {
             ContentUnavailableView {
                 Label("No computer is assigned to this todo", systemImage: "desktopcomputer")
             } description: {
-                Text("Choose the computer where this todo runs, then link a conversation from it.")
-            } actions: {
-                Button("Choose Computer") { choosingComputer = todo.section }
-                    .buttonStyle(AccentButtonStyle())
+                Text("Assign this todo to a project on the computer where the conversation runs.")
             }
         }
     }

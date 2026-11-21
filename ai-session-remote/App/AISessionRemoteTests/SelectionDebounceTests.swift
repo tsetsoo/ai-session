@@ -279,7 +279,7 @@ final class SelectionDebounceTests: XCTestCase {
                              now: { clock.now })
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations,
-            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+            computers: DemoFixtures.computers
         )
         return model
     }
@@ -347,7 +347,7 @@ final class SelectionDebounceTests: XCTestCase {
         )
         model.store.seedForDemo(
             todos: DemoFixtures.todos, conversations: DemoFixtures.conversations + [started],
-            sectionComputers: DemoFixtures.sectionComputers, computers: DemoFixtures.computers
+            computers: DemoFixtures.computers
         )
         clock.now += 10
         XCTAssertEqual(model.board.status(forTodo: "t7"), .working)

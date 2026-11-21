@@ -861,9 +861,9 @@ mod tests {
     fn seed(conn: &Connection) {
         seed_computers(conn);
         conn.execute_batch(
-            "INSERT INTO projects (id, name, section, folder, daily_updates, daily_updates_since) VALUES
-                 ('pa', 'a', 'Si', '~/w/a', 1, '2026-01-01'),
-                 ('pb', 'b', 'Si', '~/w/b', 0, NULL);",
+            "INSERT INTO projects (id, name, computer_id, folder, daily_updates, daily_updates_since) VALUES
+                 ('pa', 'a', (SELECT id FROM computers WHERE id = 'mac'), '~/w/a', 1, '2026-01-01'),
+                 ('pb', 'b', (SELECT id FROM computers WHERE id = 'mac'), '~/w/b', 0, NULL);",
         )
         .unwrap();
     }
@@ -937,7 +937,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         conn.execute_batch(
-            "INSERT INTO todos (id, title, section, project_id) VALUES ('t1', 'Todo', 'Si', 'pa');
+            "INSERT INTO todos (id, title, project_id) VALUES ('t1', 'Todo', 'pa');
              INSERT INTO conversations (id, todo_id, computer_id, tool, session_id, tmux_name, cwd)
                  VALUES ('c1', 't1', 'mac', 'claude', 's1', 'tm', '~/w/a');",
         )
@@ -1161,10 +1161,10 @@ mod tests {
         seed(&conn);
         conn.execute("UPDATE projects SET daily_updates_since = '2026-11-03'", []).unwrap();
         conn.execute_batch(
-            "INSERT INTO todos (id, title, section, project_id, completed, completed_at) VALUES
-                 ('t1', 'EIN-5 in window', 'Si', 'pa', 1, '2026-11-03 10:00:00'),
-                 ('t2', 'before window', 'Si', 'pa', 1, '2026-11-03 05:59:59'),
-                 ('t3', 'open EIN-7', 'Si', 'pa', 0, NULL);",
+            "INSERT INTO todos (id, title, project_id, completed, completed_at) VALUES
+                 ('t1', 'EIN-5 in window', 'pa', 1, '2026-11-03 10:00:00'),
+                 ('t2', 'before window', 'pa', 1, '2026-11-03 05:59:59'),
+                 ('t3', 'open EIN-7', 'pa', 0, NULL);",
         )
         .unwrap();
         report(&conn, "mac", "2026-11-03");

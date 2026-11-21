@@ -2,19 +2,7 @@ import XCTest
 @testable import AISessionCore
 
 final class TodoAddFormTests: XCTestCase {
-    func testInsideAProjectAsksOnlyForATitle() {
-        XCTAssertEqual(TodoAddForm.fields(inProject: true, inSection: true, hasComputer: true), .titleOnly)
-    }
-
-    func testInsideASectionAsksForAProjectThenATitle() {
-        XCTAssertEqual(TodoAddForm.fields(inProject: false, inSection: true, hasComputer: true), .projectAndTitle)
-    }
-
-    func testWithNoSectionAsksForASection() {
-        XCTAssertEqual(TodoAddForm.fields(inProject: false, inSection: false, hasComputer: false), .sectionProjectAndTitle)
-    }
-
-    func testASectionWithNoComputerCannotSubmit() {
+    func testCannotSubmitWithoutAComputer() {
         XCTAssertFalse(TodoAddForm.canSubmit(title: "A", newProject: nil, hasComputer: false))
     }
 
@@ -30,11 +18,6 @@ final class TodoAddFormTests: XCTestCase {
         XCTAssertTrue(TodoAddForm.canSubmit(
             title: "A", newProject: TodoAddNewProject(name: "App", folder: "~/code"), hasComputer: true
         ))
-    }
-
-    func testAProjectRowShowsTheSectionCode() {
-        XCTAssertEqual(TodoProjectMenuTitle.row(section: .sp, name: "sigma"), "Sp · sigma")
-        XCTAssertEqual(TodoProjectMenuTitle.row(section: .i, name: "notes"), "I · notes")
     }
 
     func testTheDefaultProjectIsTheFirstOrNewWhenThereAreNone() {

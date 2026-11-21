@@ -178,10 +178,10 @@ public enum PaletteModel {
     private static func fields(of item: PaletteItem) -> [String] {
         switch item {
         case let .conversation(todo, conversation, _, _):
-            return [item.title, todo.section.rawValue, conversation.computer.name,
+            return [item.title, conversation.computer.name,
                     RowText.toolName(conversation.tool)]
         case let .todo(todo, conversation, _):
-            return [todo.title, todo.section.rawValue] + (conversation.map { [$0.computer.name] } ?? [])
+            return [todo.title] + (conversation.map { [$0.computer.name] } ?? [])
         case let .project(project):
             return [project.name, project.folder]
         case .action:

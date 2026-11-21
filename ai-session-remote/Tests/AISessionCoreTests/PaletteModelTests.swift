@@ -8,16 +8,16 @@ final class PaletteModelTests: XCTestCase {
     /// Like the demo board: t1 and t3 need you, t2 and t4 work, t5 idles (running order t1…t5);
     /// t6 is done, t7–t9 have no conversation, t10's conversation is closed.
     private lazy var todos: [Todo] = [
-        Todo(id: "t1", section: .sp, title: "Fix the rate import"),
-        Todo(id: "t2", section: .sp, title: "Import Booking.com reviews"),
-        Todo(id: "t3", section: .i, title: "Draft the HTIF follow-up"),
-        Todo(id: "t4", section: .si, title: "Clean up scraper retries"),
-        Todo(id: "t5", section: .sp, title: "Santé party-size rates"),
-        Todo(id: "t6", section: .sp, title: "Renew the rate certificate", completed: true),
-        Todo(id: "t7", section: .i, title: "Call the Bansko hotel"),
-        Todo(id: "t8", section: .p, title: "Rate shopper comparison page"),
-        Todo(id: "t9", section: .p, title: "Book the HTIF booth crew"),
-        Todo(id: "t10", section: .si, title: "Old rate scraper"),
+        Todo(id: "t1", title: "Fix the rate import"),
+        Todo(id: "t2", title: "Import Booking.com reviews"),
+        Todo(id: "t3", title: "Draft the HTIF follow-up"),
+        Todo(id: "t4", title: "Clean up scraper retries"),
+        Todo(id: "t5", title: "Santé party-size rates"),
+        Todo(id: "t6", title: "Renew the rate certificate", completed: true),
+        Todo(id: "t7", title: "Call the Bansko hotel"),
+        Todo(id: "t8", title: "Rate shopper comparison page"),
+        Todo(id: "t9", title: "Book the HTIF booth crew"),
+        Todo(id: "t10", title: "Old rate scraper"),
     ]
 
     private func conv(_ todo: String, _ status: ConversationStatus, on computer: Computer? = nil) -> Conversation {
@@ -74,7 +74,7 @@ final class PaletteModelTests: XCTestCase {
 
     func testShortcutsStopAtNine() {
         // Zero-padded ids: the open list orders equal start times by id.
-        let many = (1...12).map { Todo(id: String(format: "n%02d", $0), section: .sp, title: "Task \($0)") }
+        let many = (1...12).map { Todo(id: String(format: "n%02d", $0), title: "Task \($0)") }
         let board = ConversationBoard(
             todos: many,
             conversations: Dictionary(uniqueKeysWithValues: many.map { ($0.id, conv($0.id, .busy)) }),
@@ -93,7 +93,7 @@ final class PaletteModelTests: XCTestCase {
     }
 
     func testADuplicatedConversationGetsItsOwnRowTitledWithItsName() {
-        let todo = Todo(id: "t1", section: .sp, title: "Fix the rate import")
+        let todo = Todo(id: "t1", title: "Fix the rate import")
         let original = Conversation(id: "c1", todoId: "t1", computer: studio, cwd: "~/x", tool: "claude",
                                     tmuxName: "todo-c1", sessionId: "s1", status: .busy,
                                     createdAt: "2026-10-17T09:00:00Z")
@@ -139,17 +139,17 @@ final class PaletteModelTests: XCTestCase {
     }
 
     func testWordStartBeatsMidWordWithinContiguous() {
-        let todos = [Todo(id: "a", section: .i, title: "Pirate notes"),
-                     Todo(id: "b", section: .i, title: "Rats in the attic"),
-                     Todo(id: "c", section: .i, title: "Check the rats")]
+        let todos = [Todo(id: "a", title: "Pirate notes"),
+                     Todo(id: "b", title: "Rats in the attic"),
+                     Todo(id: "c", title: "Check the rats")]
         let result = PaletteModel.groups(query: "rat", board: board, todos: todos, projects: [],
                                          selectedTodoID: nil, canEdit: true)
         XCTAssertEqual(ids(result, .todos), ["t:b", "t:c", "t:a"])
     }
 
     func testShortQueriesKeepFuzzyRowsBelowContiguousOnes() {
-        let todos = [Todo(id: "a", section: .i, title: "Fix the rate import"),
-                     Todo(id: "b", section: .i, title: "Free the import")]
+        let todos = [Todo(id: "a", title: "Fix the rate import"),
+                     Todo(id: "b", title: "Free the import")]
         let result = PaletteModel.groups(query: "fr", board: board, todos: todos, projects: [],
                                          selectedTodoID: nil, canEdit: true)
         // "Free" has "fr"; "Fix the rate" only f…r.
@@ -189,12 +189,10 @@ final class PaletteModelTests: XCTestCase {
         }
     }
 
-    func testMatchesSectionCodeAndComputerName() {
+    func testMatchesComputerName() {
         // linux-box hosts t3 and t4 (running) and t10 (closed).
         XCTAssertEqual(Set(ids(groups("linux-box"), .conversations)), ["c:t3", "c:t4"])
         XCTAssertEqual(ids(groups("linux-box"), .todos), ["t:t10"])
-        // "P" is t8 and t9's section (and starts other words too); both are listed.
-        XCTAssertTrue(Set(ids(groups("P"), .todos)).isSuperset(of: ["t:t8", "t:t9"]))
     }
 
     func testProjectsMatchNameAndFolder() {
@@ -204,7 +202,7 @@ final class PaletteModelTests: XCTestCase {
     }
 
     func testAtMostFivePerGroup() {
-        let many = (1...8).map { Todo(id: "x\($0)", section: .i, title: "Rate idea \($0)") }
+        let many = (1...8).map { Todo(id: "x\($0)", title: "Rate idea \($0)") }
         let result = PaletteModel.groups(query: "rate", board: board, todos: todos + many, projects: [],
                                          selectedTodoID: nil, canEdit: true)
         for group in result {

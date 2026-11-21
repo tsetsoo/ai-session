@@ -38,7 +38,6 @@ fn base_description() -> Value {
             "toggle_complete": "curl -X POST /api/todos/{id}/toggle",
             "delete_todo": "curl -X DELETE /api/todos/{id}"
         },
-        "sections": ["Sp", "I", "Si", "P"],
         "importance_levels": ["low", "medium", "high", "critical"],
         "endpoints": [
             {
@@ -71,7 +70,6 @@ fn base_description() -> Value {
                 "example_response": [
                     {
                         "id": "550e8400-e29b-41d4-a716-446655440000",
-                        "section": "P",
                         "title": "Go for a run",
                         "completed": false,
                         "importance": "high",
@@ -105,7 +103,6 @@ fn base_description() -> Value {
                 "example_request": {"title": "Go for a run", "project_id": "<uuid>", "importance": "high", "due_date": "2026-02-21"},
                 "example_response": {
                     "id": "550e8400-e29b-41d4-a716-446655440000",
-                    "section": "P",
                     "title": "Go for a run",
                     "completed": false,
                     "importance": "high",
@@ -131,7 +128,7 @@ fn base_description() -> Value {
                         "on_hold": {"type": "boolean", "required": false, "description": "Pause or resume an unfinished todo. Does not stop its conversations. Completing a todo clears On hold."},
                         "importance": {"type": "string", "required": false, "enum": ["low", "medium", "high", "critical"]},
                         "due_date": {"type": "string or null", "required": false, "format": "YYYY-MM-DD", "description": "Set to null to clear the due date"},
-                        "project_id": {"type": "string", "required": false, "description": "Move the todo to this project and its section. JSON null is rejected. 404 for an unknown project"}
+                        "project_id": {"type": "string", "required": false, "description": "Move the todo to this project. JSON null is rejected. 404 for an unknown project"}
                     }
                 },
                 "example_request": {"title": "Go for a long run", "importance": "critical"}
@@ -174,7 +171,7 @@ fn base_description() -> Value {
             {
                 "method": "POST",
                 "path": "/api/todos/{id}/conversation",
-                "description": "Get or create the todo's conversation. Body is {tool: claude|codex|cursor}. The computer is the section's; the folder is the project's. Claude stores a new session id. Codex and Cursor store none until PUT .../conversation/session. A second open returns the existing row unchanged. Optional mcp_servers (array of MCP server names) is stored only when this call creates the conversation; 400 for an invalid name. 400 for a missing or unknown tool, or a todo with no project. 409 if the section has no computer",
+                "description": "Get or create the todo's conversation. Body is {tool: claude|codex|cursor}. The project supplies the computer and folder. Claude stores a new session id. Codex and Cursor store none until PUT .../conversation/session. A second open returns the existing row unchanged. Optional mcp_servers (array of MCP server names) is stored only when this call creates the conversation; 400 for an invalid name. 400 for a missing or unknown tool, or a todo with no project. 409 if the project has no computer",
             },
             {
                 "method": "POST",
@@ -188,7 +185,7 @@ fn base_description() -> Value {
             {
                 "method": "POST",
                 "path": "/api/todos/from-conversation",
-                "description": "Create a todo linked to an existing conversation, atomically. project_id is required and stored in the same transaction; 400 when it is missing or the section disagrees, 404 when the project does not exist. 201 {todo, conversation}. Same 400/404/409 rules as link. Optional importance and due_date, as for POST /api/todos",
+                "description": "Create a todo linked to an existing conversation, atomically. project_id is required and stored in the same transaction; 400 when it is missing, 404 when the project does not exist. 201 {todo, conversation}. Same 400/404/409 rules as link. Optional importance and due_date, as for POST /api/todos",
                 "example_request": {"title": "Review data-management PR 630", "project_id": "<uuid>", "computer_id": "<uuid>", "tool": "claude", "session_id": "<uuid>", "cwd": "~/Spread/Repository", "importance": "high"},
                 "response_status": 201
             },
@@ -227,7 +224,7 @@ fn base_description() -> Value {
             {"method": "PUT", "path": "/api/push/devices", "description": "Register or refresh this device's APNs token (hex). Returns the PushDevice; the full token is never returned", "example_request": {"token": "<hex>", "platform": "ios", "environment": "sandbox", "bundle_id": "com.aisessionremote.app", "app_version": "1.0 (7)", "device_name": "iPhone"}},
             {"method": "GET", "path": "/api/push/devices", "description": "Registered devices (PushDevice[])"},
             {"method": "POST", "path": "/api/push/devices/unregister", "description": "Unregister a device (the toggle was switched off). The token goes in the body because request paths are logged. 404 if unknown", "example_request": {"token": "<hex>"}},
-            {"method": "GET", "path": "/api/push/settings", "description": "PushSettings: waiting pushes on/off, done-after threshold, grace, quiet hours, muted sections and todos"},
+            {"method": "GET", "path": "/api/push/settings", "description": "PushSettings: waiting pushes on/off, done-after threshold, grace, quiet hours, muted projects and todos"},
             {"method": "PUT", "path": "/api/push/settings", "description": "Replace the settings and project mutes (todo mutes have their own endpoint). 400 for an unknown timezone or bad HH:MM", "example_request": {"notify_waiting": true, "done_after_minutes": 5, "grace_seconds": 20, "quiet_hours": {"start": "22:30", "end": "07:30", "tz": "Europe/Sofia"}, "muted_project_ids": ["p1"]}},
             {"method": "POST", "path": "/api/push/presence", "description": "This client is showing todo_id's conversation (null: none). Kept in memory for 90 s; refresh every 30 s. A push for a conversation someone is viewing is not sent", "example_request": {"client_id": "<uuid>", "todo_id": "<uuid>"}},
             {"method": "GET", "path": "/api/push/status", "description": "Whether APNs is configured, the last error and send time, and the number of devices. Never contains key material"},
@@ -258,7 +255,6 @@ fn base_description() -> Value {
             },
             "Todo": {
                 "id": "string (UUID v4) - unique identifier",
-                "section": "string enum: Sp | I | Si | P",
                 "title": "string - the todo title",
                 "completed": "boolean - whether the todo is done",
                 "waiting": "boolean - returning to this todo shortly, default false",
@@ -288,7 +284,6 @@ fn base_description() -> Value {
         },
         "usage_notes": [
             "All request/response bodies use JSON (Content-Type: application/json)",
-            "Section values are case-sensitive: Sp, I, Si, P",
             "Importance values are lowercase: low, medium, high, critical",
             "If importance is omitted on create, it defaults to 'medium'",
             "due_date format is YYYY-MM-DD",
@@ -583,7 +578,6 @@ mod tests {
 
     use super::description;
 
-    const CODES: [&str; 4] = ["Sp", "I", "Si", "P"];
 
     fn endpoints(doc: &Value) -> Vec<(String, String)> {
         doc["endpoints"]
@@ -595,46 +589,8 @@ mod tests {
     }
 
     /// Every string in the document, keys included.
-    fn strings(value: &Value, out: &mut Vec<String>) {
-        match value {
-            Value::String(s) => out.push(s.clone()),
-            Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
-            Value::Object(map) => {
-                for (k, v) in map {
-                    out.push(k.clone());
-                    strings(v, out);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Values of `section`/`sections` keys, and arrays that list section codes.
-    fn section_values(value: &Value, out: &mut Vec<Value>) {
-        match value {
-            Value::Array(items) => {
-                if items.iter().any(|v| v.as_str().is_some_and(|s| CODES.contains(&s))) {
-                    out.extend(items.iter().cloned());
-                }
-                items.iter().for_each(|v| section_values(v, out));
-            }
-            Value::Object(map) => {
-                for (k, v) in map {
-                    if k == "section" || k == "sections" {
-                        match v {
-                            Value::Array(items) => out.extend(items.iter().cloned()),
-                            other => out.push(other.clone()),
-                        }
-                    }
-                    section_values(v, out);
-                }
-            }
-            _ => {}
-        }
-    }
-
     #[test]
-    fn describe_lists_new_endpoints_without_section_names() {
+    fn describe_lists_project_endpoints_without_legacy_fields() {
         let doc = description();
         let listed = endpoints(&doc);
         for (method, path) in [
@@ -691,42 +647,7 @@ mod tests {
             assert!(doc["data_model"][model].get("project_id").is_some(), "{model}.project_id");
         }
 
-        // Section codes only ever appear as the codes themselves.
-        let mut values = Vec::new();
-        section_values(&doc, &mut values);
-        assert!(!values.is_empty());
-        for value in &values {
-            match value {
-                // A field description ({"type", "enum", …}): its enum array is collected on its own.
-                Value::Null | Value::Object(_) => {}
-                Value::String(s) => {
-                    let words: Vec<&str> = s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
-                    let allowed = |w: &&str| CODES.contains(w) || ["string", "enum", "or", "null"].contains(w);
-                    assert!(words.iter().all(allowed), "section value {s:?} holds more than codes");
-                }
-                other => panic!("unexpected section value {other}"),
-            }
-        }
-        // …and no code is followed by something that reads like an expansion of it.
-        let mut all = Vec::new();
-        strings(&doc, &mut all);
-        for s in &all {
-            for code in CODES {
-                for (i, _) in s.match_indices(code) {
-                    let before = s[..i].chars().next_back();
-                    let after = &s[i + code.len()..];
-                    let whole_word = before.is_none_or(|c| !c.is_alphanumeric())
-                        && after.chars().next().is_none_or(|c| !c.is_alphanumeric());
-                    if !whole_word {
-                        continue;
-                    }
-                    let next = after.trim_start().chars().next();
-                    assert!(
-                        !matches!(next, Some('(' | '=' | ':' | '-' | '–' | '—')),
-                        "section code {code} looks expanded in {s:?}"
-                    );
-                }
-            }
-        }
+        assert!(doc["data_model"]["Todo"].get("section").is_none());
+        assert!(doc["data_model"]["Project"].get("section").is_none());
     }
 }

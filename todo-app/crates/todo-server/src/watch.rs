@@ -986,7 +986,7 @@ pub(crate) mod tests {
 
     pub(crate) fn seed_watch(conn: &Connection, debug_tool: Option<&str>) -> String {
         seed_computers(conn);
-        conn.execute_batch("INSERT INTO projects (id, name, section, folder) VALUES ('ps', 'sigma', 'Si', '~/sigma');").unwrap();
+        conn.execute_batch("INSERT INTO projects (id, name, computer_id, folder) VALUES ('ps', 'sigma', (SELECT id FROM computers WHERE id = 'mac'), '~/sigma');").unwrap();
         let action = JobAction::Watch {
             project_id: "ps".into(),
             computer_id: "mac".into(),
@@ -1286,7 +1286,7 @@ pub(crate) mod tests {
     }
 
     fn debug_run_with_conversation(conn: &Connection, run: &str, status: &str, turned: bool) {
-        conn.execute("INSERT INTO todos (id, section, title) VALUES (?1, 'Si', 'fix')", params![format!("t-{run}")]).unwrap();
+        conn.execute("INSERT INTO todos (id, title) VALUES (?1, 'fix')", params![format!("t-{run}")]).unwrap();
         conn.execute(
             "INSERT INTO job_runs (id, job_id, due_at, state, todo_id, note) VALUES (?1, 'w', datetime('now'), 'done', ?2, 'watch:backend')",
             params![run, format!("t-{run}")],

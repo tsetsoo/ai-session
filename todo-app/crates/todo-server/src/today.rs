@@ -1000,7 +1000,7 @@ pub(crate) fn assistant_db(conn: &Connection, req: &AssistantRequest) -> Result<
             let computer_id = computer_id.ok_or(TodayError::BadRequest("The assistant needs a computer assignment"))?;
             let id = Uuid::new_v4().to_string();
             tx.execute(
-                "INSERT INTO projects (id, name, section, folder, computer_id) VALUES (?1, ?2, 'P', ?3, ?4)",
+                "INSERT INTO projects (id, name, folder, computer_id) VALUES (?1, ?2, ?3, ?4)",
                 params![id, ASSISTANT_PROJECT, ASSISTANT_FOLDER, computer_id],
             )?;
             id
@@ -1379,9 +1379,9 @@ pub(crate) mod tests {
         let req = PersonRequest { name: Some("Ivan".into()), kind: None, month: Some(11), day: Some(8), year: None, notes: None, source: None };
         create_person_db(&conn, &req, now).ok().unwrap();
         conn.execute_batch(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('p', 'app', 'Si', '~/a');
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('p', 'app', (SELECT id FROM computers WHERE id = 'mac'), '~/a');
              INSERT INTO jobs (id, name, trigger, action) VALUES ('j', 'Nightly', '{\"kind\":\"manual\"}', '{\"kind\":\"push\",\"title\":\"t\",\"body\":\"\"}');
-             INSERT INTO todos (id, section, title, project_id, scheduled_job_id) VALUES ('t1', 'Si', 'Nightly · 2026-11-07', 'p', 'j'), ('t2', 'Si', 'Plain', 'p', NULL);
+             INSERT INTO todos (id, title, project_id, scheduled_job_id) VALUES ('t1', 'Nightly · 2026-11-07', 'p', 'j'), ('t2', 'Plain', 'p', NULL);
              INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, status, status_updated_at)
                VALUES ('c1', 't1', 'mac', '~/a', 'claude', 'ai/claude/t1', 's1', 'idle', '2026-11-07 03:00:00'),
                       ('c2', 't2', 'mac', '~/a', 'claude', 'ai/claude/t2', 's2', 'waiting', '2026-11-07 03:00:00');
@@ -1408,9 +1408,9 @@ pub(crate) mod tests {
         let conn = pool.get().unwrap();
         crate::test_support::seed_computers(&conn);
         conn.execute_batch(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('p', 'app', 'Si', '~/a');
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('p', 'app', (SELECT id FROM computers WHERE id = 'mac'), '~/a');
              INSERT INTO jobs (id, name, trigger, action) VALUES ('j', 'Nightly', '{\"kind\":\"manual\"}', '{\"kind\":\"push\",\"title\":\"t\",\"body\":\"\"}');
-             INSERT INTO todos (id, section, title, project_id, scheduled_job_id) VALUES ('old', 'Si', 'Old run', 'p', 'j');
+             INSERT INTO todos (id, title, project_id, scheduled_job_id) VALUES ('old', 'Old run', 'p', 'j');
              INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, status, status_updated_at)
                VALUES ('c1', 'old', 'mac', '~/a', 'claude', 'ai/claude/old', 's1', 'idle', '2026-11-03 03:00:00');
              UPDATE today_settings SET last_briefing_on = '2026-11-01', last_briefing_at = '2026-11-01 06:00:00';",
@@ -1458,9 +1458,9 @@ pub(crate) mod tests {
         crate::test_support::seed_computers(&pool.get().unwrap());
         let run = assistant_run(&pool, "dentist next Tue morning").await;
         let conn = pool.get().unwrap();
-        let (name, section, folder): (String, String, String) =
-            conn.query_row("SELECT name, section, folder FROM projects WHERE name = 'Personal'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
-        assert_eq!((name.as_str(), section.as_str(), folder.as_str()), ("Personal", "P", "~/.ai-remote/assistant"));
+        let (name, folder): (String, String) =
+            conn.query_row("SELECT name, folder FROM projects WHERE name = 'Personal'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((name.as_str(), folder.as_str()), ("Personal", "~/.ai-remote/assistant"));
         let (note, action): (String, String) = conn
             .query_row("SELECT r.note, j.action FROM job_runs r JOIN jobs j ON j.id = r.job_id WHERE r.id = ?1", params![run], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();

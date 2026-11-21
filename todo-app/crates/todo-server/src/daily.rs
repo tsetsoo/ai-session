@@ -329,12 +329,12 @@ mod tests {
         insert_day(&conn, "2026-07-25").unwrap();
         insert_day(&conn, "2026-07-26").unwrap();
         conn.execute(
-            "INSERT INTO todos (id, section, title, completed, daily_date) VALUES ('a','P','open',0,'2026-07-25')",
+            "INSERT INTO todos (id, title, completed, daily_date) VALUES ('a', 'open', 0, '2026-07-25')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO todos (id, section, title, completed, daily_date, completed_at) VALUES ('b','P','done',1,'2026-07-25', datetime('now'))",
+            "INSERT INTO todos (id, title, completed, daily_date, completed_at) VALUES ('b','done',1,'2026-07-25', datetime('now'))",
             [],
         )
         .unwrap();

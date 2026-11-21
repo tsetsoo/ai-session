@@ -16,48 +16,6 @@ where
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Section {
-    Sp,
-    I,
-    Si,
-    P,
-}
-
-impl Section {
-    #[must_use] 
-    pub fn all() -> &'static [Section] {
-        &[Section::Sp, Section::I, Section::Si, Section::P]
-    }
-
-    #[must_use] 
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Section::Sp => "Sp",
-            Section::I => "I",
-            Section::Si => "Si",
-            Section::P => "P",
-        }
-    }
-
-    #[must_use] 
-    pub fn parse(s: &str) -> Option<Section> {
-        match s {
-            "Sp" => Some(Section::Sp),
-            "I" => Some(Section::I),
-            "Si" => Some(Section::Si),
-            "P" => Some(Section::P),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for Section {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Importance {
@@ -115,7 +73,6 @@ impl std::fmt::Display for Importance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Todo {
     pub id: String,
-    pub section: Section,
     pub title: String,
     pub completed: bool,
     /// Deliberately paused; independent of the AI conversation's status.
@@ -619,7 +576,6 @@ pub struct TodoWithConversation {
 pub struct Project {
     pub id: String,
     pub name: String,
-    pub section: Section,
     pub computer: Computer,
     /// Folder on the computer, `~`-relative when under its home, no trailing `/`
     pub folder: String,
@@ -1127,7 +1083,6 @@ pub struct JobUsage {
 pub struct HeavyTodo {
     pub todo_id: String,
     pub title: String,
-    pub section: Option<Section>,
     #[serde(default)]
     pub project_id: Option<String>,
     pub own: StatsCounters,
@@ -2303,7 +2258,6 @@ mod tests {
     fn todo() -> Todo {
         Todo {
             id: "t".into(),
-            section: Section::P,
             title: "x".into(),
             completed: false,
             on_hold: false,

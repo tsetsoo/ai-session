@@ -6,9 +6,9 @@ import XCTest
 final class TodoHoldDropTests: XCTestCase {
     private func store() throws -> TodoHubStore {
         let todos = [
-            Todo(id: "active", section: .sp, title: "Continue later", projectId: "project"),
-            Todo(id: "done", section: .sp, title: "Finished", completed: true),
-            Todo(id: "held", section: .sp, title: "Already paused", onHold: true),
+            Todo(id: "active", title: "Continue later", projectId: "project"),
+            Todo(id: "done", title: "Finished", completed: true),
+            Todo(id: "held", title: "Already paused", onHold: true),
         ]
         HoldDropHub.reset(todos)
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("drop-\(UUID()).json")
@@ -23,11 +23,11 @@ final class TodoHoldDropTests: XCTestCase {
     }
 
     func testUnfinishedTodosAreDraggableWhileOnline() {
-        let active = Todo(id: "active", section: .sp, title: "a")
+        let active = Todo(id: "active", title: "a")
         XCTAssertTrue(TodoHoldDrop.canDrag(active, isOffline: false))
         XCTAssertFalse(TodoHoldDrop.canDrag(active, isOffline: true))
-        XCTAssertFalse(TodoHoldDrop.canDrag(Todo(id: "d", section: .sp, title: "d", completed: true), isOffline: false))
-        XCTAssertTrue(TodoHoldDrop.canDrag(Todo(id: "h", section: .sp, title: "h", onHold: true), isOffline: false))
+        XCTAssertFalse(TodoHoldDrop.canDrag(Todo(id: "d", title: "d", completed: true), isOffline: false))
+        XCTAssertTrue(TodoHoldDrop.canDrag(Todo(id: "h", title: "h", onHold: true), isOffline: false))
         XCTAssertFalse(TodoHoldDrop.canDrag(nil, isOffline: false))
     }
 

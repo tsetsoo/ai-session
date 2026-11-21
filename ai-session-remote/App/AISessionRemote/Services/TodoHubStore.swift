@@ -12,9 +12,6 @@ final class TodoHubStore {
     /// Keyed by conversation id. A conversation decoded without an id (an older hub) is keyed
     /// `todo:<todo id>` so a one-conversation cache does not collapse onto `""`.
     private(set) var conversations: [String: Conversation] = [:]
-    #if DEBUG
-    private var sectionComputers: [TodoSection: SectionComputer] = [:]
-    #endif
     private var hubComputers: [Computer] = []
     private var hubProjects: [Project] = []
     private var computerOrder = UserDefaults.standard.stringArray(forKey: "displayOrder.computers") ?? []
@@ -362,11 +359,10 @@ final class TodoHubStore {
     /// Fills the store without touching the hub or the cache (demo launches and tests), and
     /// makes it a demo store: refreshes and changes then never reach a hub.
     func seedForDemo(todos: [Todo], conversations: [Conversation],
-                     sectionComputers: [SectionComputer], computers: [Computer], projects: [Project] = []) {
+                     computers: [Computer], projects: [Project] = []) {
         demo = TodoHubDemo(computers: computers, projects: projects, suggestions: [], todos: todos,
                            conversations: conversations, sessions: [], memories: [])
         apply(todos: todos, conversations: conversations)
-        self.sectionComputers = Dictionary(sectionComputers.map { ($0.section, $0) }, uniquingKeysWith: { _, new in new })
         hubComputers = computers
         hubProjects = projects
         hasLoadedOnce = true
@@ -1462,14 +1458,7 @@ final class TodoHubStore {
     }
 
     func usualComputer(for todo: Todo) -> Computer? {
-        if let project = project(id: todo.projectId) {
-            return usualComputer(for: project)
-        }
-        #if DEBUG
-        return sectionComputers[todo.section]?.computer
-        #else
-        return nil
-        #endif
+        project(id: todo.projectId).map { usualComputer(for: $0) }
     }
 
     /// The research idea whose todo this is (its attempts are the todo's conversations).

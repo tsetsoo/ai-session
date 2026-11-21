@@ -7,7 +7,7 @@ final class ConversationLoaderTests: XCTestCase {
     private let computer = Computer(id: "c1", name: "Mac Studio", hostname: "studio", username: "me")
     private let hostID = UUID()
 
-    private func todo() -> Todo { Todo(id: "t1", section: .sp, title: "Fix it") }
+    private func todo() -> Todo { Todo(id: "t1", title: "Fix it") }
 
     private func conversation(status: ConversationStatus = .idle) -> Conversation {
         Conversation(todoId: "t1", computer: computer, cwd: "~/proj", tool: "claude",

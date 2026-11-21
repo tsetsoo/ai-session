@@ -386,9 +386,8 @@ mod tests {
     fn seed(conn: &Connection) {
         conn.execute_batch(
             "INSERT INTO computers (id, name, hostname, username) VALUES ('m1', 'Mac', 'mac.tailnet', 'me');
-             INSERT INTO section_computers (section, computer_id) VALUES ('I', 'm1');
-             INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'programming', 'I', '~/programming');
-             INSERT INTO todos (id, section, title, project_id) VALUES ('0f3a9c21-aaaa-4bbb-8ccc-123456789abc', 'I', 'Resume', 'p1');",
+             INSERT INTO projects (id, name, computer_id, folder) VALUES ('p1', 'programming', (SELECT id FROM computers WHERE id = 'm1'), '~/programming');
+             INSERT INTO todos (id, title, project_id) VALUES ('0f3a9c21-aaaa-4bbb-8ccc-123456789abc', 'Resume', 'p1');",
         )
         .unwrap();
     }

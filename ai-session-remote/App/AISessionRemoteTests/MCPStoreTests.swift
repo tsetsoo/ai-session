@@ -35,7 +35,7 @@ final class MCPStoreTests: XCTestCase {
         try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(body)) as? [String: Any])
     }
 
-    private var todo: Todo { Todo(id: "t1", section: .si, title: "x") }
+    private var todo: Todo { Todo(id: "t1", title: "x") }
 
     func testOpenSendsTheSelection() async throws {
         RecordingHub.respond("POST", "/api/todos/t1/conversation", conversationJSON(servers: #"["grafana"]"#))

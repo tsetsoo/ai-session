@@ -1,6 +1,6 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use todo_shared::{CreateTodoRequest, DeleteResponse, Importance, Section, UpdateTodoRequest};
+use todo_shared::{CreateTodoRequest, DeleteResponse, Importance, UpdateTodoRequest};
 use uuid::Uuid;
 
 use crate::auth::{forbidden, resolve_scope, RequestScope, ResourceScope};
@@ -8,7 +8,7 @@ use crate::broadcast::Broadcaster;
 use crate::db::DbPool;
 use crate::models::row_to_todo;
 
-pub(crate) const SELECT_COLS: &str = "id, section, title, completed, on_hold, waiting, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, project_id, scheduled_job_id, scheduled_run_id, \
+pub(crate) const SELECT_COLS: &str = "id, title, completed, on_hold, waiting, importance, due_date, daily_date, carried_from, created_at, updated_at, completed_at, project_id, scheduled_job_id, scheduled_run_id, \
     (SELECT status FROM conversations WHERE conversations.todo_id = todos.id \
         ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'busy' THEN 1 \
             WHEN 'idle' THEN 2 WHEN 'unknown' THEN 2 WHEN 'closed' THEN 3 ELSE 4 END, \
@@ -117,7 +117,6 @@ pub async fn get_todo(pool: web::Data<DbPool>, path: web::Path<String>, scope: R
 /// `POST /api/todos/from-conversation`, so both create todos the same way.
 pub(crate) fn insert_todo(
     conn: &rusqlite::Connection,
-    section: Section,
     title: &str,
     importance: Option<Importance>,
     due_date: Option<&str>,
@@ -125,28 +124,14 @@ pub(crate) fn insert_todo(
 ) -> rusqlite::Result<String> {
     let id = Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO todos (id, section, title, importance, due_date, project_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, section.as_str(), title, importance.unwrap_or_default().as_str(), due_date, project_id],
+        "INSERT INTO todos (id, title, importance, due_date, project_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, title, importance.unwrap_or_default().as_str(), due_date, project_id],
     )?;
     Ok(id)
 }
 
 fn project_not_found() -> HttpResponse {
     HttpResponse::NotFound().json(serde_json::json!({"error": "Project not found"}))
-}
-
-fn named_section(value: &str) -> Option<Section> {
-    match value {
-        "Sp" => Some(Section::Sp),
-        "I" => Some(Section::I),
-        "Si" => Some(Section::Si),
-        "P" => Some(Section::P),
-        _ => None,
-    }
-}
-
-fn project_section(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<String>> {
-    conn.query_row("SELECT section FROM projects WHERE id = ?1", params![id], |row| row.get(0)).optional()
 }
 
 fn authorize_todo(conn: &Connection, scope: &ResourceScope, id: &str) -> Result<(), HttpResponse> {
@@ -214,15 +199,12 @@ pub async fn create_todo(pool: web::Data<DbPool>, body: web::Json<CreateTodoRequ
             return response;
         }
     }
-    let project_section = match project_section(&conn, project_id) {
-        Ok(Some(section)) => section,
-        Ok(None) => return project_not_found(),
-        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
-    };
-    let Some(section) = named_section(&project_section) else {
-        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "project section is invalid"}));
-    };
-    match insert_todo(&conn, section, title, body.importance, body.due_date.as_deref(), Some(project_id)) {
+    match crate::projects::project_exists(&conn, project_id) {
+        Ok(true) => {}
+        Ok(false) => return project_not_found(),
+        Err(error) => return crate::conversations::server_error(error),
+    }
+    match insert_todo(&conn, title, body.importance, body.due_date.as_deref(), Some(project_id)) {
         Ok(id) => {
             let sql = format!("SELECT {SELECT_COLS} FROM todos WHERE id = ?1");
             let mut todo = conn.query_row(&sql, params![id], row_to_todo).unwrap();
@@ -292,9 +274,9 @@ pub async fn update_todo(
                 return response;
             }
         }
-        match project_section(&conn, project_id) {
-            Ok(Some(section)) => Some((project_id.clone(), section)),
-            Ok(None) => return project_not_found(),
+        match crate::projects::project_exists(&conn, project_id) {
+            Ok(true) => Some(project_id),
+            Ok(false) => return project_not_found(),
             Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
         }
     } else {
@@ -333,10 +315,10 @@ pub async fn update_todo(
         conn.execute("UPDATE todos SET due_date = ?1, updated_at = datetime('now') WHERE id = ?2", params![due_date_opt.as_deref(), id]).unwrap();
     }
 
-    if let Some((project_id, section)) = new_project {
+    if let Some(project_id) = new_project {
         conn.execute(
-            "UPDATE todos SET project_id = ?1, section = ?2, updated_at = datetime('now') WHERE id = ?3",
-            params![project_id, section, id],
+            "UPDATE todos SET project_id = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![project_id, id],
         )
         .unwrap();
     }
@@ -535,8 +517,8 @@ mod tests {
     fn project_on(conn: &rusqlite::Connection, section: &str) -> String {
         let id = format!("p-{section}");
         conn.execute(
-            "INSERT INTO projects (id, name, section, folder) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![id, section, section, format!("~/{section}")],
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES (?1, ?2, (SELECT id FROM computers WHERE id = ?3), ?4)",
+            rusqlite::params![id, section, "mac", format!("~/{section}")],
         )
         .unwrap();
         id
@@ -638,14 +620,13 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn create_todo_stores_the_projects_section() {
+    async fn create_todo_stores_the_project() {
         let (_db, pool) = pool("todo");
         let conn = pool.get().unwrap();
         seed_computers(&conn);
         let project = project_on(&conn, "Si");
         let (status, body) = post(&pool, "/api/todos", json!({"title": "x", "project_id": project})).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
-        assert_eq!(body["section"], "Si");
         assert_eq!(body["project_id"], project);
         let (status, cleared) = crate::test_support::patch(&pool, &format!("/api/todos/{}", body["id"].as_str().unwrap()), json!({"project_id": null})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{cleared}");

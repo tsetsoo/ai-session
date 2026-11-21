@@ -189,7 +189,6 @@ struct PhoneShell: View {
         }
         .todoStoreErrorAlert(store)
         .onAppear {
-            if todoGrouping == .section { todoGrouping = .project }
             applyDefaultFilter()
             reopenSelection()
             #if DEBUG

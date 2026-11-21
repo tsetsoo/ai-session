@@ -44,13 +44,13 @@ struct TodoHubDemo {
                                  digestEnabled: false, openTodos: 0, sessions: 31, memories: 18,
                                  lastActivity: ago(60 * 26))
         let todos = [
-            Todo(id: "demo-t1", section: .si, title: "Weekly rollup per project", createdAt: ago(300),
+            Todo(id: "demo-t1", title: "Weekly rollup per project", createdAt: ago(300),
                  conversationStatus: .waiting, projectId: todoApp.id),
-            Todo(id: "demo-t2", section: .si, title: "Memories migration backup check", createdAt: ago(200),
+            Todo(id: "demo-t2", title: "Memories migration backup check", createdAt: ago(200),
                  projectId: todoApp.id),
-            Todo(id: "demo-t3", section: .p, title: "Projects tab on the Mac", createdAt: ago(100),
+            Todo(id: "demo-t3", title: "Projects tab on the Mac", createdAt: ago(100),
                  conversationStatus: .busy, projectId: remote.id),
-            Todo(id: "demo-t4", section: .sp, title: "Review data-management PR", createdAt: ago(50)),
+            Todo(id: "demo-t4", title: "Review data-management PR", createdAt: ago(50)),
         ]
         let sessions = [
             HubSession(tool: "claude", sessionId: "demo-s1", computerId: mac.id, cwd: "~/programming/todo-app",

@@ -12,7 +12,7 @@ final class StatusFreshnessTests: XCTestCase {
         let conversation = Conversation(todoId: "test", computer: computer, cwd: "~", tool: "codex",
                                         tmuxName: "test", sessionId: "session", status: .busy)
         XCTAssertEqual(model.statusFreshness(for: conversation, at: now).state, .checking)
-        model.store.seedForDemo(todos: [], conversations: [conversation], sectionComputers: [], computers: [computer])
+        model.store.seedForDemo(todos: [], conversations: [conversation], computers: [computer])
         let data = Data(#"{"host_time_s":100,"codex":{"checked_ns":99000000000,"runtime_connected":true},"codex_runtime":{"observed_ns":99000000000,"threads":{"session":["busy",null]}}}"#.utf8)
         let snapshot = try StatusMonitorSnapshot(data: data, receivedAt: now)
         model.applyStatusMonitorSnapshot(snapshot, computerID: computer.id)

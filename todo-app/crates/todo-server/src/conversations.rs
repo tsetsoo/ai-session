@@ -1,4 +1,4 @@
-//! Computers, section → computer mapping, and per-todo AI conversations.
+//! Computers and per-todo AI conversations.
 //!
 //! The server only stores which conversation belongs to which todo. Clients
 //! SSH to the computer themselves and run `ai-todo-open` with the stored
@@ -13,7 +13,7 @@ use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior};
 use todo_shared::{
     Computer, Conversation, ConversationStatus, ConversationStatusRequest, WorkerStatus, CreateComputerRequest, DeleteResponse, PullRequest,
-    DuplicateConversationRequest, Importance, LimitPause, LinkConversationRequest, OpenConversationRequest, Section,
+    DuplicateConversationRequest, Importance, LimitPause, LinkConversationRequest, OpenConversationRequest,
     ReportConversationMcpRequest, SetConversationMcpRequest, SetConversationSessionRequest,
     TodoFromConversationRequest, TodoWithConversation, UpdateComputerRequest,
 };
@@ -47,7 +47,6 @@ const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux
      LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id
      LEFT JOIN todos tm ON tm.id = c.todo_id";
 
-/// Section mapping columns (0) followed by its computer (1..=8).
 pub(crate) fn error(status: actix_web::http::StatusCode, msg: impl ToString) -> HttpResponse {
     HttpResponse::build(status).json(serde_json::json!({"error": msg.to_string()}))
 }
@@ -300,7 +299,7 @@ pub(crate) fn is_constraint_violation(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == ErrorCode::ConstraintViolation)
 }
 
-/// Get the todo's conversation, creating it from its section's computer if missing.
+/// Get the todo's conversation, creating it from its project's computer if missing.
 /// Reopening a closed conversation resets its status to `unknown`.
 ///
 /// Runs in one IMMEDIATE transaction so it can't interleave with a concurrent
@@ -830,7 +829,6 @@ pub(crate) enum LinkError {
     Ambiguous,
     ProjectRequired,
     ProjectNotFound,
-    SectionMismatch,
     Db(rusqlite::Error),
 }
 
@@ -950,7 +948,6 @@ pub(crate) fn link_conversation_db(
 
 /// The new todo's fields for `todo_from_conversation_db`.
 pub(crate) struct NewTodo<'a> {
-    pub section: Section,
     pub title: &'a str,
     pub project_id: &'a str,
     pub importance: Option<Importance>,
@@ -974,16 +971,10 @@ pub(crate) fn todo_from_conversation_db(
     if project_id.is_empty() {
         return Err(LinkError::ProjectRequired);
     }
-    let project_section: Option<String> = tx
-        .query_row("SELECT section FROM projects WHERE id = ?1", params![project_id], |r| r.get(0))
-        .optional()?;
-    let Some(project_section) = project_section else {
+    if !crate::projects::project_exists(&tx, project_id)? {
         return Err(LinkError::ProjectNotFound);
-    };
-    if project_section != new.section.as_str() {
-        return Err(LinkError::SectionMismatch);
     }
-    let todo_id = insert_todo(&tx, new.section, new.title, new.importance, new.due_date, Some(project_id))?;
+    let todo_id = insert_todo(&tx, new.title, new.importance, new.due_date, Some(project_id))?;
     match insert_conversation(&tx, &todo_id, target.computer_id, target.cwd, target.tool, Some(target.session_id), false, None, None) {
         Ok(Some(_)) => {}
         Ok(None) => return Err(LinkError::NoTmuxName),
@@ -1007,7 +998,6 @@ fn link_error_response(e: LinkError) -> HttpResponse {
         LinkError::Ambiguous => conflict("conversation_id required"),
         LinkError::ProjectRequired => bad_request("project_id is required"),
         LinkError::ProjectNotFound => not_found("Project not found"),
-        LinkError::SectionMismatch => bad_request("section does not match project"),
         LinkError::Db(e) => server_error(e),
     }
 }
@@ -1258,7 +1248,6 @@ pub async fn delete_computer(
         if tx.prepare("SELECT 1 FROM project_computers WHERE computer_id = ?1")?.exists([&id])? {
             return Ok(None);
         }
-        tx.execute("DELETE FROM section_computers WHERE computer_id = ?1", [&id])?;
         let changes = tx.execute("DELETE FROM computers WHERE id = ?1", [&id])?;
         tx.commit()?;
         Ok(Some(changes))
@@ -1563,16 +1552,7 @@ pub async fn todo_from_conversation(
     if project_id.is_empty() {
         return bad_request("project_id is required");
     }
-    let section = match conn.query_row("SELECT section FROM projects WHERE id = ?1", [project_id], |row| row.get::<_, String>(0)).optional() {
-        Ok(Some(section)) => match Section::parse(&section) {
-            Some(section) => section,
-            None => return server_error("Invalid project section"),
-        },
-        Ok(None) => return not_found("Project not found"),
-        Err(error) => return server_error(error),
-    };
     let new = NewTodo {
-        section,
         title,
         project_id,
         importance: body.importance,
@@ -2014,8 +1994,8 @@ mod tests {
         (db, pool)
     }
 
-    fn new_todo<'a>(section: Section, title: &'a str, project_id: &'a str) -> NewTodo<'a> {
-        NewTodo { section, title, project_id, importance: None, due_date: None }
+    fn new_todo<'a>(title: &'a str, project_id: &'a str) -> NewTodo<'a> {
+        NewTodo { title, project_id, importance: None, due_date: None }
     }
 
     fn seed(conn: &Connection) {
@@ -2025,21 +2005,16 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO section_computers (section, computer_id) VALUES ('I', 'm1')",
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('p1', 'programming', (SELECT id FROM computers WHERE id = 'm1'), '~/programming')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'programming', 'I', '~/programming')",
+            "INSERT INTO todos (id, title, project_id) VALUES ('0f3a9c21-aaaa-4bbb-8ccc-123456789abc', 'with mapping', 'p1')",
             [],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO todos (id, section, title, project_id) VALUES ('0f3a9c21-aaaa-4bbb-8ccc-123456789abc', 'I', 'with mapping', 'p1')",
-            [],
-        )
-        .unwrap();
-        conn.execute("INSERT INTO todos (id, section, title) VALUES ('t-p', 'P', 'no mapping')", []).unwrap();
+        conn.execute("INSERT INTO todos (id, title) VALUES ('t-p', 'no mapping')", []).unwrap();
     }
 
     const TODO: &str = "0f3a9c21-aaaa-4bbb-8ccc-123456789abc";
@@ -2134,9 +2109,9 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         conn.execute_batch(
-            "INSERT INTO todos (id, section, title, completed, completed_at) VALUES
-                 ('t-old', 'I', 'archived', 1, datetime('now', '-2 days')),
-                 ('t-new', 'I', 'done today', 1, datetime('now', '-1 hour'));
+            "INSERT INTO todos (id, title, completed, completed_at) VALUES
+                 ('t-old', 'archived', 1, datetime('now', '-2 days')),
+                 ('t-new', 'done today', 1, datetime('now', '-1 hour'));
              INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id, status) VALUES
                  ('c-open', '0f3a9c21-aaaa-4bbb-8ccc-123456789abc', 'm1', '~', 'claude', 'ai/claude/a', 's-open', 'idle'),
                  ('c-old', 't-old', 'm1', '~', 'claude', 'ai/claude/b', 's-old', 'idle'),
@@ -2163,12 +2138,12 @@ mod tests {
         let conn = pool.get().unwrap();
         crate::test_support::seed_computers(&conn);
         conn.execute(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'programming', 'P', '~/programming')",
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('p1', 'programming', (SELECT id FROM computers WHERE id = 'mac'), '~/programming')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'P', 'keep going', 'p1')",
+            "INSERT INTO todos (id, title, project_id) VALUES ('t1', 'keep going', 'p1')",
             [],
         )
         .unwrap();
@@ -2218,11 +2193,11 @@ mod tests {
             let conn = pool.get().unwrap();
             crate::test_support::seed_computers(&conn);
             conn.execute(
-                "INSERT INTO projects (id, name, section, folder, repo_url) VALUES ('p1', 'app', 'P', '~/app', 'git@x:a.git')",
+                "INSERT INTO projects (id, name, computer_id, folder, repo_url) VALUES ('p1', 'app', (SELECT id FROM computers WHERE id = 'mac'), '~/app', 'git@x:a.git')",
                 [],
             )
             .unwrap();
-            conn.execute("INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'P', 'Do it', 'p1')", []).unwrap();
+            conn.execute("INSERT INTO todos (id, title, project_id) VALUES ('t1', 'Do it', 'p1')", []).unwrap();
         }
         let (status, source) = crate::test_support::post(
             &pool,
@@ -2250,11 +2225,11 @@ mod tests {
             let conn = pool.get().unwrap();
             crate::test_support::seed_computers(&conn);
             conn.execute(
-                "INSERT INTO projects (id, name, section, folder, repo_url) VALUES ('p1', 'app', 'P', '~/app', 'git@x:a.git')",
+                "INSERT INTO projects (id, name, computer_id, folder, repo_url) VALUES ('p1', 'app', (SELECT id FROM computers WHERE id = 'mac'), '~/app', 'git@x:a.git')",
                 [],
             )
             .unwrap();
-            conn.execute("INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'P', 'Do it', 'p1')", []).unwrap();
+            conn.execute("INSERT INTO todos (id, title, project_id) VALUES ('t1', 'Do it', 'p1')", []).unwrap();
         }
         let (status, source) =
             crate::test_support::post(pool, "/api/todos/t1/conversation", serde_json::json!({"tool": "claude", "worktrees": true})).await;
@@ -2297,11 +2272,11 @@ mod tests {
             let conn = pool.get().unwrap();
             crate::test_support::seed_computers(&conn);
             conn.execute(
-                "INSERT INTO projects (id, name, section, folder, repo_url) VALUES ('p1', 'app', 'P', '~/app', 'git@x:a.git')",
+                "INSERT INTO projects (id, name, computer_id, folder, repo_url) VALUES ('p1', 'app', (SELECT id FROM computers WHERE id = 'mac'), '~/app', 'git@x:a.git')",
                 [],
             )
             .unwrap();
-            conn.execute("INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'P', 'Do it', 'p1')", []).unwrap();
+            conn.execute("INSERT INTO todos (id, title, project_id) VALUES ('t1', 'Do it', 'p1')", []).unwrap();
         }
         let (_, source) =
             crate::test_support::post(&pool, "/api/todos/t1/conversation", serde_json::json!({"tool": "claude"})).await;
@@ -2322,8 +2297,8 @@ mod tests {
         {
             let conn = pool.get().unwrap();
             crate::test_support::seed_computers(&conn);
-            conn.execute("INSERT INTO projects (id, name, section, folder) VALUES ('p1', 'notes', 'P', '~/notes')", []).unwrap();
-            conn.execute("INSERT INTO todos (id, section, title, project_id) VALUES ('t1', 'P', 'Do it', 'p1')", []).unwrap();
+            conn.execute("INSERT INTO projects (id, name, computer_id, folder) VALUES ('p1', 'notes', (SELECT id FROM computers WHERE id = 'mac'), '~/notes')", []).unwrap();
+            conn.execute("INSERT INTO todos (id, title, project_id) VALUES ('t1', 'Do it', 'p1')", []).unwrap();
         }
         let (_, source) =
             crate::test_support::post(&pool, "/api/todos/t1/conversation", serde_json::json!({"tool": "claude"})).await;
@@ -2415,7 +2390,7 @@ mod tests {
         claude_on_mac(&pool).await;
         // `claude_on_mac` already created t1's row without a selection; use a second todo.
         let conn = pool.get().unwrap();
-        conn.execute("INSERT INTO todos (id, section, title, project_id) VALUES ('t2', 'P', 'two', 'p1')", [])
+        conn.execute("INSERT INTO todos (id, title, project_id) VALUES ('t2', 'two', 'p1')", [])
             .unwrap();
         drop(conn);
         let first = post_json(
@@ -2769,7 +2744,7 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         conn.execute(
-            "INSERT INTO todos (id, section, title, project_id) VALUES ('0f3a9c21-ffff-4bbb-8ccc-000000000000', 'I', 'same prefix', 'p1')",
+            "INSERT INTO todos (id, title, project_id) VALUES ('0f3a9c21-ffff-4bbb-8ccc-000000000000', 'same prefix', 'p1')",
             [],
         )
         .unwrap();
@@ -3110,7 +3085,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        conn.execute("INSERT INTO todos (id, section, title) VALUES ('t-2', 'I', 'second')", []).unwrap();
+        conn.execute("INSERT INTO todos (id, title) VALUES ('t-2', 'second')", []).unwrap();
         link_conversation_db(&conn, TODO, &target("claude", "shared"), false).unwrap();
         link_conversation_db(&conn, "t-2", &target("codex", "shared"), false).unwrap();
 
@@ -3134,7 +3109,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        conn.execute("INSERT INTO todos (id, section, title) VALUES ('t-2', 'I', 'second')", []).unwrap();
+        conn.execute("INSERT INTO todos (id, title) VALUES ('t-2', 'second')", []).unwrap();
         link_conversation_db(&conn, TODO, &target("claude", "taken"), false).unwrap();
 
         // Insert the same (tool, session) for another todo, bypassing the pre-checks.
@@ -3153,7 +3128,7 @@ mod tests {
         let (_db, pool) = pool();
         let conn = pool.get().unwrap();
         seed(&conn);
-        conn.execute("INSERT INTO todos (id, section, title) VALUES ('t-2', 'I', 'second')", []).unwrap();
+        conn.execute("INSERT INTO todos (id, title) VALUES ('t-2', 'second')", []).unwrap();
         link_conversation_db(&conn, TODO, &target("claude", "shared"), false).unwrap();
         assert!(matches!(
             link_conversation_db(&conn, "t-2", &target("claude", "shared"), true),
@@ -3162,7 +3137,7 @@ mod tests {
         // Same id under another tool is a different conversation.
         assert!(link_conversation_db(&conn, "t-2", &target("codex", "shared"), false).is_ok());
         assert!(matches!(
-            todo_from_conversation_db(&conn, &new_todo(Section::I, "dup", "p1"), &target("claude", "shared")),
+            todo_from_conversation_db(&conn, &new_todo("dup", "p1"), &target("claude", "shared")),
             Err(LinkError::SessionTaken(_))
         ));
     }
@@ -3179,7 +3154,7 @@ mod tests {
         let nowhere = link_target("nope", "claude", "x", "~").unwrap();
         assert!(matches!(link_conversation_db(&conn, TODO, &nowhere, false), Err(LinkError::ComputerNotFound)));
         assert!(matches!(
-            todo_from_conversation_db(&conn, &new_todo(Section::P, "t", "p1"), &nowhere),
+            todo_from_conversation_db(&conn, &new_todo("t", "p1"), &nowhere),
             Err(LinkError::ComputerNotFound)
         ));
         let todos: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
@@ -3192,12 +3167,11 @@ mod tests {
         let conn = pool.get().unwrap();
         seed(&conn);
         conn.execute(
-            "INSERT INTO projects (id, name, section, folder) VALUES ('p-sp', 'site', 'Sp', '~/site')",
+            "INSERT INTO projects (id, name, computer_id, folder) VALUES ('p-sp', 'site', (SELECT id FROM computers WHERE id = 'spread'), '~/site')",
             [],
         )
         .unwrap();
         let new = NewTodo {
-            section: Section::Sp,
             title: "Review PR 630",
             project_id: "p-sp",
             importance: Some(Importance::High),
@@ -3207,7 +3181,6 @@ mod tests {
         assert_eq!(created.todo.project_id.as_deref(), Some("p-sp"));
         assert_eq!(created.todo.importance, Importance::High);
         assert_eq!(created.todo.due_date.as_deref(), Some("2026-10-20"));
-        assert_eq!(created.todo.section, Section::Sp);
         assert_eq!(created.todo.title, "Review PR 630");
         assert_eq!(created.todo.conversation_status, Some(ConversationStatus::Unknown));
         assert_eq!(created.conversation.todo_id, created.todo.id);
@@ -3222,11 +3195,11 @@ mod tests {
         seed(&conn);
         let before: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
         assert!(matches!(
-            todo_from_conversation_db(&conn, &new_todo(Section::I, "from a chat", ""), &target("claude", "from-none")),
+            todo_from_conversation_db(&conn, &new_todo("from a chat", ""), &target("claude", "from-none")),
             Err(LinkError::ProjectRequired)
         ));
         assert!(matches!(
-            todo_from_conversation_db(&conn, &new_todo(Section::I, "from a chat", "missing"), &target("claude", "from-missing")),
+            todo_from_conversation_db(&conn, &new_todo("from a chat", "missing"), &target("claude", "from-missing")),
             Err(LinkError::ProjectNotFound)
         ));
         let after: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();

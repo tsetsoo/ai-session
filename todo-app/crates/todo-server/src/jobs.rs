@@ -487,7 +487,7 @@ mod tests {
 
     fn seed(conn: &Connection) {
         seed_computers(conn);
-        conn.execute_batch("INSERT INTO projects (id, name, section, folder) VALUES ('pa', 'a', 'Si', '~/a');").unwrap();
+        conn.execute_batch("INSERT INTO projects (id, name, computer_id, folder) VALUES ('pa', 'a', (SELECT id FROM computers WHERE id = 'mac'), '~/a');").unwrap();
     }
 
     fn conversation_job(name: &str, trigger: Value) -> Value {

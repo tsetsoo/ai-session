@@ -42,23 +42,14 @@ public enum RowText {
         return "\(todoTitle) · \(label)"
     }
 
-    /// "Sp · mac-studio". The tool is the row's icon, not this line.
-    public static func conversationMeta(_ conversation: Conversation, section: TodoSection?) -> String {
-        [section?.rawValue, conversation.computer.name].compactMap { $0 }.joined(separator: " · ")
-    }
-
     /// The computer and optional folder for the conversation header.
     public static func frameSubtitle(computer: String, folder: String?) -> String {
         [computer, folder].compactMap { $0 }.joined(separator: " · ")
     }
 
-    public static func frameSubtitle(section: TodoSection, computer: String, folder: String?) -> String {
-        [section.rawValue, frameSubtitle(computer: computer, folder: folder)].joined(separator: " · ")
-    }
-
     /// The gray line plus the tool name, so a search for "Claude" still hits the row.
-    public static func conversationSearchText(_ conversation: Conversation, section: TodoSection?) -> String {
-        [conversationMeta(conversation, section: section), toolName(conversation.tool)].joined(separator: " ")
+    public static func conversationSearchText(_ conversation: Conversation) -> String {
+        [conversation.computer.name, toolName(conversation.tool)].joined(separator: " ")
     }
 
     /// Time since the conversation last changed status (or started): "now", "4m", "1h", "3d".
