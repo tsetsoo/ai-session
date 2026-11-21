@@ -331,7 +331,7 @@ pub(crate) fn create_project_db(conn: &Connection, req: &CreateProjectRequest) -
         "INSERT INTO projects (id, name, section, folder, repo_url, digest_enabled, computer_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![id, name, section, folder, clean_url(req.repo_url.as_deref()), req.digest_enabled.unwrap_or(true), computer_id],
     )?;
-    rematch_sessions(&tx, &computer_id)?;
+    rematch_sessions(&tx, computer_id)?;
     let project = load_project(&tx, &id)?.ok_or(ProjectError::NotFound("Project not found"))?;
     tx.commit()?;
     Ok(project)
