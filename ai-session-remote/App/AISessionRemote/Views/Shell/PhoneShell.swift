@@ -3,8 +3,7 @@ import AISessionCore
 import SwiftData
 import SwiftUI
 
-/// The iPhone app: Todos, Conversations (badged with the Needs-you count), Projects and
-/// Computers tabs.
+/// The iPhone app opens on Conversations, badged with the Needs-you count.
 /// Each tab is its own navigation stack with a large title and ⚙ for Settings; opening a todo
 /// pushes its conversation full screen, without the tab bar. Opening never starts the agent: a
 /// running conversation attaches, anything else shows Start / Resume.
@@ -40,7 +39,7 @@ struct PhoneShell: View {
 
     @Environment(AppModel.self) private var model
     @Query(sort: \HostEntity.displayName) private var hosts: [HostEntity]
-    @State private var tab: Tab = .todos
+    @State private var tab: Tab = .conversations
     @State private var todosPath: [Route] = []
     @State private var conversationsPath: [Route] = []
     @State private var projectsPath: [Route] = []
@@ -69,13 +68,13 @@ struct PhoneShell: View {
         // Screenshots: `-uiDemoTab todos|conversations|projects|computers`, `-uiDemoSettings
         // [page]` and `-uiDemoOpen <todo id>` (pushes that todo's conversation on the selected tab).
         guard DemoFixtures.isEnabled else { return }
-        let tab = DemoFixtures.value(after: "-uiDemoTab").flatMap(Tab.init(rawValue:)) ?? .todos
+        let tab = DemoFixtures.value(after: "-uiDemoTab").flatMap(Tab.init(rawValue:)) ?? .conversations
         _tab = State(initialValue: tab)
         if ProcessInfo.processInfo.arguments.contains("-uiDemoSettings") {
-            // An optional destination: server, sections (Sp), access, terminal, notifications.
+            // An optional destination: server, computers, access, terminal, notifications.
             let initial: SettingsDestination? = switch DemoFixtures.value(after: "-uiDemoSettings") {
             case "server": .server
-            case "sections": .sections(.sp)
+            case "computers": .sections(nil)
             case "access": .access
             case "terminal": .terminal
             case "notifications": .notifications
@@ -99,15 +98,6 @@ struct PhoneShell: View {
 
     var body: some View {
         TabView(selection: $tab) {
-            NavigationStack(path: $todosPath) {
-                todosRoot
-                    .phoneTab("Todos", openSettings: openSettings)
-                    .toolbar { addMenu }
-                    .navigationDestination(for: Route.self) { destination($0, path: $todosPath, in: .todos) }
-            }
-            .tabItem { Label("Todos", systemImage: "checklist") }
-            .tag(Tab.todos)
-
             NavigationStack(path: $conversationsPath) {
                 conversationsRoot
                     .phoneTab("Conversations", openSettings: openSettings)
@@ -116,6 +106,15 @@ struct PhoneShell: View {
             .tabItem { Label("Conversations", systemImage: "bubble.left.and.bubble.right") }
             .badge(model.board.needsYou.count)
             .tag(Tab.conversations)
+
+            NavigationStack(path: $todosPath) {
+                todosRoot
+                    .phoneTab("Todos", openSettings: openSettings)
+                    .toolbar { addMenu }
+                    .navigationDestination(for: Route.self) { destination($0, path: $todosPath, in: .todos) }
+            }
+            .tabItem { Label("Todos", systemImage: "checklist") }
+            .tag(Tab.todos)
 
             NavigationStack(path: $projectsPath) {
                 projectsRoot
@@ -204,6 +203,7 @@ struct PhoneShell: View {
             #endif
         }
         .onChange(of: tab) { _, _ in applyDefaultFilter() }
+        .onChange(of: model.board.needsYou.count) { _, _ in applyDefaultFilter() }
         .onChange(of: openTodoID) { _, id in model.selectedTodoID = id }
         // A tapped "needs you" notification (routed by AppModel).
         .onChange(of: model.pendingOpenTodoID, initial: true) { _, todoID in
