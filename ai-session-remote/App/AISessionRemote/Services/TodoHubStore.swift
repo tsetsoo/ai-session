@@ -33,7 +33,10 @@ final class TodoHubStore {
         guard let index = ids.firstIndex(of: id), ids.indices.contains(index + offset) else { return }
         ids.swapAt(index, index + offset)
         computerOrder = ids
-        if demo == nil { UserDefaults.standard.set(ids, forKey: "displayOrder.computers") }
+        #if DEBUG
+        guard demo == nil else { return }
+        #endif
+        UserDefaults.standard.set(ids, forKey: "displayOrder.computers")
     }
 
     func moveProject(_ project: Project, by offset: Int) {
@@ -45,7 +48,10 @@ final class TodoHubStore {
         guard let from = ids.firstIndex(of: project.id), let to = ids.firstIndex(of: neighbor) else { return }
         ids.swapAt(from, to)
         projectOrder = ids
-        if demo == nil { UserDefaults.standard.set(ids, forKey: "displayOrder.projects") }
+        #if DEBUG
+        guard demo == nil else { return }
+        #endif
+        UserDefaults.standard.set(ids, forKey: "displayOrder.projects")
     }
     /// Folders with conversations that could become projects.
     private(set) var suggestions: [ProjectSuggestion] = []
