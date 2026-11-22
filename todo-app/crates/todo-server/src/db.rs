@@ -172,6 +172,24 @@ fn init_pool_through(db_path: &str, target_version: i64) -> DbPool {
             migrate_remove_sections(&conn, db_path, version).expect("Failed to remove sections");
         }
     }
+    if target_version >= 42 {
+        if !column_exists(&conn, "job_runs", "handoff_nudged_at").expect("Failed to inspect job runs") {
+            conn.execute_batch("ALTER TABLE job_runs ADD COLUMN handoff_nudged_at TEXT;")
+                .expect("Failed to add the watch handoff nudge timestamp");
+        }
+        for (table, column, definition) in [
+            ("watch_issues", "investigation_eligible", "INTEGER NOT NULL DEFAULT 1"),
+            ("watch_issues", "investigation_group", "TEXT NOT NULL DEFAULT ''"),
+            ("job_runs", "watch_investigation_group", "TEXT NOT NULL DEFAULT ''"),
+            ("watch_issues", "incident_generation", "TEXT"),
+            ("watch_issues", "investigation_expires_at", "INTEGER"),
+        ] {
+            if !column_exists(&conn, table, column).expect("Failed to inspect watch investigation metadata") {
+                conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition};"))
+                    .expect("Failed to add watch investigation metadata");
+            }
+        }
+    }
     if version <= target_version {
         conn.pragma_update(None, "user_version", target_version)
             .expect("Failed to record the schema version");
@@ -1146,7 +1164,8 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v36: `todos.waiting` (additive)
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
-pub const SCHEMA_VERSION: i64 = 41;
+/// - v42: scrape-health investigation and handoff metadata (additive).
+pub const SCHEMA_VERSION: i64 = 42;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -1156,7 +1175,8 @@ fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
         return Ok(stored);
     }
     if table_sql(conn, "projects")?.is_some() && !column_exists(conn, "projects", "section")? {
-        return Ok(41);
+        return Ok(if table_sql(conn, "watch_issues")?.is_some()
+            && column_exists(conn, "watch_issues", "investigation_expires_at")? { 42 } else { 41 });
     }
     let sections = table_sql(conn, "section_computers")?;
     let conversations = table_sql(conn, "conversations")?;
@@ -3268,7 +3288,8 @@ mod tests {
         for _ in 0..2 {
             let pool = db.pool();
             let conn = pool.get().unwrap();
-            assert_eq!(user_version(&conn), 41);
+            assert_eq!(user_version(&conn), SCHEMA_VERSION);
+            assert!(column_exists(&conn, "watch_issues", "investigation_expires_at").unwrap());
             assert!(!column_exists(&conn, "projects", "section").unwrap());
             assert!(!column_exists(&conn, "todos", "section").unwrap());
             assert!(table_sql(&conn, "section_computers").unwrap().is_none());

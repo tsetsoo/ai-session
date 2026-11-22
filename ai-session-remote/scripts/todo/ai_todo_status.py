@@ -1323,6 +1323,7 @@ def terminal(name, cwd, args):
     backend, client_args = terminal_arguments(args, endpoint)
     env_file = Path.home() / ".ai-remote/mcp/env"
     stamp = env_file.stat().st_mtime_ns if env_file.exists() else 0
+    read_only_worker = os.environ.get("AI_TODO_READ_ONLY_WORKER") == "1"
     digest = hashlib.sha256(json.dumps([backend, cwd, stamp]).encode()).hexdigest()
     # The binary behind backend[0]: `…/current/bin/codex` and ~/.local/bin links keep their
     # path when Codex updates, so the resolved file tells an older backend apart.
@@ -1338,6 +1339,8 @@ def terminal(name, cwd, args):
             pass
         if existing:
             try:
+                if read_only_worker and not record.get("read_only_worker"):
+                    raise OSError("read-only worker cannot reuse an unrestricted Codex backend")
                 settings_changed = record.get("digest") != digest
                 upgraded = record.get("binary") != binary
                 if settings_changed or upgraded:
@@ -1384,7 +1387,7 @@ def terminal(name, cwd, args):
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGTERM)
                 raise OSError("terminal runtime did not become ready")
-            atomic_json(record_path, {"pid": process.pid, "digest": digest, "binary": binary})
+            atomic_json(record_path, {"pid": process.pid, "digest": digest, "binary": binary, "read_only_worker": read_only_worker})
     try:
         client = RuntimeSocket(path)
         try:

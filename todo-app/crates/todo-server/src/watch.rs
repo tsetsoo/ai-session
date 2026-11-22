@@ -158,45 +158,64 @@ pub(crate) fn at_work_count(conn: &Connection, debug_job_id: &str, now: DateTime
 }
 
 /// Queue debug runs while untaken open issues exist and fewer than 2 are at work: one per
-/// folder (most untaken issues first, then the oldest), never two queued for one folder.
+/// folder and investigation group, prioritizing more issues and then the oldest.
 pub(crate) fn queue_debug_runs(conn: &Connection, job: &Job, now: DateTime<Utc>) -> Result<Vec<String>, WatchError> {
     let Some(watch) = watch_parts(job) else { return Ok(Vec::new()) };
     let Some(tool) = watch.debug_tool else { return Ok(Vec::new()) };
-    let folders: Vec<String> = {
+    let folders: Vec<(String, String)> = {
         let mut stmt = conn.prepare(
-            "SELECT COALESCE(folder, '') AS f FROM watch_issues WHERE watcher = ?1 AND state = 'open' AND taken_run_id IS NULL
-             GROUP BY f ORDER BY COUNT(*) DESC, MIN(first_seen) ASC",
+            "SELECT COALESCE(folder, '') AS f, investigation_group FROM watch_issues
+             WHERE watcher = ?1 AND state = 'open' AND taken_run_id IS NULL AND investigation_eligible
+               AND (watcher != 'scrape-health' OR investigation_expires_at > ?2)
+             GROUP BY f, investigation_group ORDER BY COUNT(*) DESC, MIN(first_seen) ASC",
         )?;
-        let rows = stmt.query_map(params![watch.watcher], |r| r.get(0))?;
+        let rows = stmt.query_map(params![watch.watcher, now.timestamp()], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
     if folders.is_empty() {
         return Ok(Vec::new());
     }
     let debug_id = ensure_debug_job(conn, &watch, tool)?;
-    let mut free = MAX_AT_WORK.saturating_sub(at_work_count(conn, &debug_id, now, None)?);
-    let queued: HashSet<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT note FROM job_runs WHERE job_id = ?1 AND note IS NOT NULL
-               AND (state IN ('due','waiting') OR (state = 'running' AND todo_id IS NULL))",
+    if watch.watcher == "scrape-health" {
+        conn.execute(
+            "UPDATE job_runs AS r SET state = 'skipped', result = 'no fresh issues to investigate', updated_at = ?2
+             WHERE r.job_id = ?1 AND r.state IN ('due','waiting') AND NOT EXISTS (
+                 SELECT 1 FROM watch_issues i WHERE i.watcher = 'scrape-health' AND i.state = 'open'
+                   AND i.taken_run_id IS NULL AND i.investigation_eligible AND i.investigation_expires_at > ?3
+                   AND r.note = 'watch:' || COALESCE(i.folder, '')
+                   AND i.investigation_group = r.watch_investigation_group
+             )",
+            params![debug_id, sql_time(now), now.timestamp()],
         )?;
-        let rows = stmt.query_map(params![debug_id], |r| r.get::<_, String>(0))?;
+    }
+    let mut free = MAX_AT_WORK.saturating_sub(at_work_count(conn, &debug_id, now, None)?);
+    let queued: HashSet<(String, String)> = {
+        let mut stmt = conn.prepare(
+            &format!(
+                "SELECT r.note, r.watch_investigation_group FROM job_runs r WHERE r.job_id = ?1 AND r.note IS NOT NULL
+                 AND (r.state IN ('due','waiting') OR (r.state = 'running' AND r.todo_id IS NULL)
+                      OR (r.watch_investigation_group != '' AND ({} OR {})))",
+                AT_WORK.replace("?G", "?2"),
+                HANDOFF_GRACE.replace("?N", "?3"),
+            ),
+        )?;
+        let rows = stmt.query_map(params![debug_id, sql_time(now - Duration::minutes(UNKNOWN_GRACE_MINUTES)), sql_time(now)], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
     let mut created = Vec::new();
-    for folder in folders {
+    for (folder, group) in folders {
         if free == 0 {
             break;
         }
         let note = format!("watch:{folder}");
-        if queued.contains(&note) {
+        if queued.contains(&(note.clone(), group.clone())) {
             continue;
         }
         // A folder whose last debug run failed (not a git repo, the runner couldn't start it)
         // waits an hour instead of failing every check.
         let failed_recently: bool = conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM job_runs WHERE job_id = ?1 AND note = ?2 AND state = 'failed' AND updated_at >= ?3)",
-            params![debug_id, note, sql_time(now - Duration::minutes(FAILED_FOLDER_WAIT_MINUTES))],
+            "SELECT EXISTS (SELECT 1 FROM job_runs WHERE job_id = ?1 AND note = ?2 AND state = 'failed' AND updated_at >= ?3 AND watch_investigation_group = ?4)",
+            params![debug_id, note, sql_time(now - Duration::minutes(FAILED_FOLDER_WAIT_MINUTES)), group],
             |r| r.get(0),
         )?;
         if failed_recently {
@@ -204,8 +223,8 @@ pub(crate) fn queue_debug_runs(conn: &Connection, job: &Job, now: DateTime<Utc>)
         }
         let id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO job_runs (id, job_id, due_at, state, note) VALUES (?1, ?2, ?3, 'due', ?4)",
-            params![id, debug_id, sql_time(now), note],
+            "INSERT INTO job_runs (id, job_id, due_at, state, note, watch_investigation_group) VALUES (?1, ?2, ?3, 'due', ?4, ?5)",
+            params![id, debug_id, sql_time(now), note, group],
         )?;
         created.push(id);
         free -= 1;
@@ -251,9 +270,29 @@ fn report_for_computer(conn: &Connection, run_id: &str, report: &WatchReport, no
     )?;
     let grace = sql_time(now - Duration::minutes(RESOLVE_GRACE_MINUTES));
     let mut out = ReportOutcome { watcher: watch.watcher.to_string(), job_name: job.name.clone(), ..Default::default() };
+    let scrape = watch.watcher == "scrape-health";
+    let scrape_expiry = report.scrape_report_expires_at
+        .filter(|expiry| !report.partial && *expiry > now.timestamp() && *expiry <= (now + Duration::hours(48)).timestamp());
+    let authoritative_failures = scrape && scrape_expiry.is_some() && report.scrape_failure_snapshot;
+    if scrape && scrape_expiry.is_none() {
+        out.changed |= suspend_scrape_investigations(&tx, &job.id)? > 0;
+    } else if scrape && !authoritative_failures {
+        // A legacy generator can refresh its own alerts but cannot validate failure episodes.
+        out.changed |= tx.execute(
+            "UPDATE watch_issues SET investigation_eligible = 0, investigation_expires_at = NULL
+             WHERE job_id = ?1 AND state = 'open' AND investigation_eligible
+               AND (incident_generation IS NOT NULL OR investigation_group != '')",
+            [&job.id],
+        )? > 0;
+    }
     let mut seen = HashSet::new();
     for p in &report.problems {
         let key = p.key.trim();
+        let generation = p.incident_generation.as_deref();
+        let structured = scrape && (p.investigation_eligible.is_some() || generation.is_some());
+        if structured && (!authoritative_failures || generation.is_none()) {
+            continue;
+        }
         if key.is_empty() || !seen.insert(key.to_string()) {
             continue;
         }
@@ -284,7 +323,7 @@ fn report_for_computer(conn: &Connection, run_id: &str, report: &WatchReport, no
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10)",
                     params![Uuid::new_v4().to_string(), watch.watcher, key, job.id, watch.project_id, title, details, url, folder, stamp],
                 )?;
-                if !first {
+                if !first || p.investigation_eligible.is_some() {
                     out.new_titles.push(title);
                 }
             }
@@ -300,22 +339,35 @@ fn report_for_computer(conn: &Connection, run_id: &str, report: &WatchReport, no
                     params![id, sql_time(now - Duration::minutes(UNKNOWN_GRACE_MINUTES))],
                     |r| r.get(0),
                 )?;
-                let keep = outcome.as_deref() == Some("cant_fix") || busy;
+                let keep = p.investigation_eligible.is_none() && (outcome.as_deref() == Some("cant_fix") || busy);
                 out.changed = true;
                 tx.execute(
                     "UPDATE watch_issues SET state = 'open', title = ?2, details = ?3, url = ?4, folder = ?5, job_id = ?6, last_seen = ?7,
                          first_seen = ?7, cleared_at = NULL, resolve_error = NULL, updated_at = ?7,
                          takes = CASE WHEN ?8 THEN takes ELSE 0 END,
+                         commits = CASE WHEN ?8 THEN commits END,
                          taken_run_id = CASE WHEN ?8 THEN taken_run_id END, outcome = CASE WHEN ?8 THEN outcome END,
                          outcome_note = CASE WHEN ?8 THEN outcome_note END
                      WHERE id = ?1",
                     params![id, title, details, url, folder, job.id, stamp, keep],
                 )?;
-                if !first {
+                if !first || p.investigation_eligible.is_some() {
                     out.new_titles.push(title);
                 }
             }
             Some((id, ..)) => {
+                if let Some(generation) = generation {
+                    let replaced = tx.execute(
+                        "UPDATE watch_issues SET first_seen = ?3, taken_run_id = NULL, takes = 0,
+                             outcome = NULL, outcome_note = NULL, commits = NULL, updated_at = ?3
+                         WHERE id = ?1 AND incident_generation IS NOT ?2",
+                        params![id, generation, stamp],
+                    )?;
+                    if replaced > 0 {
+                        out.changed = true;
+                        out.new_titles.push(title.clone());
+                    }
+                }
                 let retitled: bool = tx.query_row(
                     "SELECT title != ?2 OR details != ?3 OR url != ?4 OR COALESCE(folder, '') != COALESCE(?5, '') FROM watch_issues WHERE id = ?1",
                     params![id, title, details, url, folder],
@@ -329,11 +381,24 @@ fn report_for_computer(conn: &Connection, run_id: &str, report: &WatchReport, no
                 )?;
             }
         }
+        let group: String = p.investigation_group.as_deref().unwrap_or("").chars().take(128).collect();
+        let changed = tx.execute(
+            "UPDATE watch_issues SET investigation_eligible = ?3, investigation_group = ?4,
+                 incident_generation = ?5, investigation_expires_at = ?6
+             WHERE watcher = ?1 AND key = ?2 AND (investigation_eligible != ?3 OR investigation_group != ?4
+                 OR incident_generation IS NOT ?5 OR investigation_expires_at IS NOT ?6)",
+            params![watch.watcher, key, (!scrape || scrape_expiry.is_some()) && p.investigation_eligible.unwrap_or(true),
+                    group, generation, scrape_expiry],
+        )?;
+        out.changed |= changed > 0;
     }
-    if !report.partial {
+    if !report.partial && (!scrape || scrape_expiry.is_some() || report.scrape_report_expires_at.is_none()) {
         let open: Vec<(String, String)> = {
-            let mut stmt = tx.prepare("SELECT id, key FROM watch_issues WHERE watcher = ?1 AND state IN ('open','resolving')")?;
-            let rows = stmt.query_map(params![watch.watcher], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let mut stmt = tx.prepare(
+                "SELECT id, key FROM watch_issues WHERE watcher = ?1 AND state IN ('open','resolving')
+                 AND (?2 OR (incident_generation IS NULL AND investigation_group = ''))",
+            )?;
+            let rows = stmt.query_map(params![watch.watcher, !scrape || authoritative_failures], |r| Ok((r.get(0)?, r.get(1)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         for (id, key) in open {
@@ -351,7 +416,9 @@ fn report_for_computer(conn: &Connection, run_id: &str, report: &WatchReport, no
         "UPDATE job_runs SET state = 'done', result = ?2, started_at = COALESCE(started_at, ?3), updated_at = ?3 WHERE id = ?1",
         params![run.id, result, stamp],
     )?;
-    out.queued_runs = queue_debug_runs(&tx, &job, now)?;
+    if !scrape || scrape_expiry.is_some() {
+        out.queued_runs = queue_debug_runs(&tx, &job, now)?;
+    }
     out.changed |= !out.queued_runs.is_empty();
     if watch.debug_tool.is_some() && !first {
         out.overwhelmed = overwhelmed(&tx, &job, watch.watcher, now)?;
@@ -360,11 +427,19 @@ fn report_for_computer(conn: &Connection, run_id: &str, report: &WatchReport, no
     Ok(out)
 }
 
+pub(crate) fn suspend_scrape_investigations(conn: &Connection, job_id: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE watch_issues SET investigation_eligible = 0, investigation_expires_at = NULL
+         WHERE job_id = ?1 AND watcher = 'scrape-health' AND state = 'open' AND investigation_eligible",
+        [job_id],
+    )
+}
+
 /// The once-a-day "overwhelmed" body when too many issues wait, or one waits too long.
 fn overwhelmed(conn: &Connection, job: &Job, watcher: &str, now: DateTime<Utc>) -> rusqlite::Result<Option<String>> {
     // Issues nobody is coming for: untaken, and no queued conversation will take their folder.
     let (waiting, oldest): (i64, Option<String>) = conn.query_row(
-        "SELECT COUNT(*), MIN(first_seen) FROM watch_issues WHERE watcher = ?1 AND state = 'open' AND taken_run_id IS NULL
+        "SELECT COUNT(*), MIN(first_seen) FROM watch_issues WHERE watcher = ?1 AND state = 'open' AND taken_run_id IS NULL AND investigation_eligible
            AND 'watch:' || COALESCE(folder, '') NOT IN (SELECT r.note FROM job_runs r JOIN jobs j ON j.id = r.job_id
                  WHERE j.watch_debug_for = ?1 AND r.note IS NOT NULL
                    AND (r.state IN ('due','waiting') OR (r.state = 'running' AND r.todo_id IS NULL)))",
@@ -447,6 +522,70 @@ fn new_issues_push(out: &ReportOutcome) -> Option<(String, String)> {
     }
 }
 
+// Reserve the issue during the runner's pickup window and while the submitted nudge
+// is waiting for the agent's next status update.
+const HANDOFF_GRACE: &str = "EXISTS (
+    SELECT 1 FROM conversations c WHERE c.id = r.conversation_id AND c.status = 'idle'
+    AND c.status_turn_ns IS NOT NULL AND (
+        (r.handoff_nudged_at IS NULL AND c.status_updated_at >= datetime(?N, '-3 minutes'))
+        OR (r.handoff_nudged_at >= datetime(?N, '-3 minutes') AND c.status_updated_at <= r.handoff_nudged_at)
+    )
+)";
+
+const HANDOFF_CANDIDATE: &str = "r.state = 'done' AND r.handoff_nudged_at IS NULL
+    AND c.computer_id = ?1 AND c.status = 'idle' AND c.status_turn_ns IS NOT NULL
+    AND c.status_updated_at >= datetime('now', '-3 minutes')
+    AND EXISTS (SELECT 1 FROM watch_issues i WHERE i.taken_run_id = r.id
+                AND i.watcher = 'scrape-health' AND i.state = 'open' AND i.outcome IS NULL
+                AND i.investigation_eligible AND i.investigation_expires_at > unixepoch())";
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct HandoffNudge {
+    run_id: String,
+    tmux_name: String,
+}
+
+pub(crate) fn handoff_nudges(conn: &Connection, computer: &str) -> rusqlite::Result<Vec<HandoffNudge>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.id, c.tmux_name FROM job_runs r JOIN conversations c ON c.id = r.conversation_id
+         WHERE {HANDOFF_CANDIDATE} ORDER BY c.status_updated_at LIMIT 2"
+    ))?;
+    let rows = stmt.query_map([computer], |row| Ok(HandoffNudge { run_id: row.get(0)?, tmux_name: row.get(1)? }))?;
+    rows.collect()
+}
+
+fn claim_handoff_nudge(conn: &Connection, computer: &str, run: &str) -> rusqlite::Result<bool> {
+    Ok(conn.execute(&format!(
+        "UPDATE job_runs AS r SET handoff_nudged_at = datetime('now') WHERE r.id = ?2
+         AND EXISTS (SELECT 1 FROM conversations c WHERE c.id = r.conversation_id AND {HANDOFF_CANDIDATE})"
+    ), params![computer, run])? == 1)
+}
+
+#[derive(serde::Deserialize)]
+pub struct HandoffNudgeClaim {
+    computer_id: String,
+}
+
+pub async fn run_handoff_nudge(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<HandoffNudgeClaim>,
+    helper: RequestHelper,
+) -> HttpResponse {
+    if helper.as_ref().is_some_and(|helper| helper.0 != body.computer_id) {
+        return HttpResponse::Forbidden().finish();
+    }
+    let conn = match pool.get() {
+        Ok(conn) => conn,
+        Err(err) => return server_error(err),
+    };
+    match claim_handoff_nudge(&conn, &body.computer_id, &path) {
+        Ok(true) => HttpResponse::NoContent().finish(),
+        Ok(false) => conflict("No missing handoff to nudge"),
+        Err(e) => server_error(e),
+    }
+}
+
 /// Clock upkeep: issues held by a run that's no longer at work and gave no outcome go back
 /// to the queue; resolves this Mac never answered reopen after 30 minutes; quiet checks older
 /// than 2 days are deleted. True when anything changed.
@@ -454,14 +593,18 @@ pub(crate) fn watch_upkeep(conn: &Connection, now: DateTime<Utc>) -> rusqlite::R
     let stamp = sql_time(now);
     let finished = format!(
         "taken_run_id IS NOT NULL AND outcome IS NULL
-           AND NOT EXISTS (SELECT 1 FROM job_runs r WHERE r.id = watch_issues.taken_run_id AND {})",
-        AT_WORK.replace("?G", "?2")
+           AND NOT EXISTS (SELECT 1 FROM job_runs r WHERE r.id = watch_issues.taken_run_id AND
+               ({} OR (watch_issues.watcher = 'scrape-health' AND {})))",
+        AT_WORK.replace("?G", "?2"),
+        HANDOFF_GRACE.replace("?N", "?1"),
     );
     let grace = sql_time(now - Duration::minutes(UNKNOWN_GRACE_MINUTES));
     // Conversations keep ending without a word on it: the user decides, not a third one.
     let given_up = conn.execute(
         &format!(
-            "UPDATE watch_issues SET outcome = 'needs_you', outcome_note = 'Two conversations ended without reporting on it', updated_at = ?1
+            "UPDATE watch_issues SET outcome = 'needs_you', outcome_note = CASE WHEN watcher = 'scrape-health' AND outcome_note IS NOT NULL
+                 THEN 'Two conversations ended without a handoff. Last evidence: ' || outcome_note
+                 ELSE 'Two conversations ended without reporting on it' END, updated_at = ?1
              WHERE {finished} AND takes >= ?3"
         ),
         params![stamp, grace, MAX_TAKES],
@@ -612,7 +755,7 @@ pub(crate) fn outcome_db(conn: &Connection, run_id: &str, req: &OutcomeRequest, 
     let changed = conn.execute(
         "UPDATE watch_issues SET outcome = ?3, outcome_note = ?4, updated_at = ?5,
              commits = CASE WHEN ?3 != 'fixed' THEN NULL WHEN ?6 = '[]' THEN commits ELSE ?6 END
-         WHERE taken_run_id = ?1 AND key = ?2",
+         WHERE taken_run_id = ?1 AND key = ?2 AND ((incident_generation IS NULL AND investigation_group = '') OR state = 'open')",
         params![run_id, req.key.trim(), req.outcome, note, sql_time(now), serde_json::to_string(&commits).unwrap_or_default()],
     )?;
     if changed == 0 {
@@ -628,7 +771,7 @@ pub(crate) fn release_db(conn: &Connection, run_id: &str, req: &ReleaseRequest, 
     let mut watcher: Option<String> = None;
     for key in &req.keys {
         let held: Option<String> = tx
-            .query_row("SELECT watcher FROM watch_issues WHERE taken_run_id = ?1 AND key = ?2", params![run_id, key.trim()], |r| r.get(0))
+            .query_row("SELECT watcher FROM watch_issues WHERE taken_run_id = ?1 AND key = ?2 AND ((incident_generation IS NULL AND investigation_group = '') OR state = 'open')", params![run_id, key.trim()], |r| r.get(0))
             .optional()?;
         let Some(held) = held else { continue };
         // Given back on purpose: it doesn't count as a conversation that ended without a word.
@@ -849,6 +992,38 @@ pub async fn run_outcome(
     done(outcome_db(&conn, &path, &body, Utc::now()).map(|_| serde_json::json!({"ok": true})), &broadcaster)
 }
 
+#[derive(serde::Deserialize)]
+pub struct CheckpointRequest {
+    key: String,
+    note: String,
+}
+
+fn checkpoint_db(conn: &Connection, run_id: &str, request: &CheckpointRequest) -> Result<(), WatchError> {
+    let note: String = request.note.trim().chars().take(500).collect();
+    if note.is_empty() {
+        return Err(WatchError::BadRequest("checkpoint needs an evidence note"));
+    }
+    let changed = conn.execute(
+        "UPDATE watch_issues SET outcome_note = ?3, updated_at = datetime('now')
+         WHERE taken_run_id = ?1 AND key = ?2 AND watcher = 'scrape-health' AND state = 'open' AND outcome IS NULL",
+        params![run_id, request.key.trim(), note],
+    )?;
+    if changed == 0 {
+        return Err(WatchError::NotFound("Open scrape-health issue not taken by this run"));
+    }
+    Ok(())
+}
+
+pub async fn run_checkpoint(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<CheckpointRequest>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = conn!(pool);
+    done(checkpoint_db(&conn, &path, &body).map(|_| serde_json::json!({"ok": true})), &broadcaster)
+}
+
 pub async fn run_release(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
@@ -1012,11 +1187,11 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn problem(key: &str, title: &str, folder: Option<&str>) -> WatchProblem {
-        WatchProblem { key: key.into(), title: title.into(), details: format!("details of {key}"), url: format!("https://s/{key}"), folder: folder.map(str::to_string) }
+        WatchProblem { key: key.into(), title: title.into(), details: format!("details of {key}"), url: format!("https://s/{key}"), folder: folder.map(str::to_string), investigation_eligible: None, investigation_group: None, incident_generation: None }
     }
 
     pub(crate) fn report_of(problems: Vec<WatchProblem>) -> WatchReport {
-        WatchReport { problems, partial: false }
+        WatchReport { problems, partial: false, scrape_report_expires_at: None, scrape_failure_snapshot: false }
     }
 
     pub(crate) fn now() -> DateTime<Utc> {
@@ -1063,7 +1238,7 @@ pub(crate) mod tests {
         let conn = pool.get().unwrap();
         seed_watch(&conn, None);
         report_db(&conn, &running_check(&conn, "c1"), &report_of(vec![problem("a", "A", None), problem("b", "B", None)]), now()).ok().unwrap();
-        let partial = WatchReport { problems: vec![problem("a", "A", None)], partial: true };
+        let partial = WatchReport { partial: true, ..report_of(vec![problem("a", "A", None)]) };
         report_db(&conn, &running_check(&conn, "c2"), &partial, now()).ok().unwrap();
         assert_eq!(issue(&conn, "b").0, "open");
         report_db(&conn, &running_check(&conn, "c3"), &report_of(vec![problem("a", "A", None)]), now()).ok().unwrap();
@@ -1422,6 +1597,43 @@ pub(crate) mod tests {
         assert_eq!(issue(&conn, "theirs").1.as_deref(), Some("r2"));
         assert_eq!(post(&pool, "/api/watch/runs/r1/overwhelmed", json!({"why": "too many"})).await.0, StatusCode::OK);
         assert_eq!(post(&pool, "/api/watch/runs/nope/overwhelmed", json!({"why": "x"})).await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn scrape_handoff_is_claimed_once_and_preserves_evidence_for_the_retry() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        debug_run_with_conversation(&conn, "r1", "idle", true);
+        taken(&conn, "scrape", "r1", None);
+        conn.execute_batch(
+            "UPDATE job_runs SET conversation_id = 'c-r1' WHERE id = 'r1';
+             UPDATE conversations SET status_updated_at = datetime('now') WHERE id = 'c-r1';
+             UPDATE watch_issues SET watcher = 'scrape-health', takes = 1, investigation_expires_at = unixepoch() + 3600 WHERE key = 'scrape';",
+        ).unwrap();
+
+        let evidence = CheckpointRequest { key: "scrape".into(), note: "Empty room response at 11:00 UTC".into() };
+        assert!(checkpoint_db(&conn, "r1", &evidence).is_ok());
+        assert!(checkpoint_db(&conn, "stale-run", &evidence).is_err());
+        let now = Utc::now();
+        watch_upkeep(&conn, now).unwrap();
+        assert_eq!(handoff_nudges(&conn, "mac").unwrap().len(), 1);
+        assert!(!claim_handoff_nudge(&conn, "other-mac", "r1").unwrap());
+        assert!(claim_handoff_nudge(&conn, "mac", "r1").unwrap());
+        assert!(!claim_handoff_nudge(&conn, "mac", "r1").unwrap());
+        watch_upkeep(&conn, now).unwrap();
+        assert_eq!(issue(&conn, "scrape").1.as_deref(), Some("r1"));
+
+        watch_upkeep(&conn, now + Duration::minutes(4)).unwrap();
+        assert_eq!(issue(&conn, "scrape").1, None);
+        assert!(checkpoint_db(&conn, "r1", &evidence).is_err());
+        let note: String = conn.query_row("SELECT outcome_note FROM watch_issues WHERE key = 'scrape'", [], |r| r.get(0)).unwrap();
+        assert_eq!(note, evidence.note);
+
+        debug_run_with_conversation(&conn, "r2", "idle", true);
+        conn.execute("UPDATE watch_issues SET taken_run_id = 'r2', takes = 2 WHERE key = 'scrape'", []).unwrap();
+        watch_upkeep(&conn, now + Duration::minutes(5)).unwrap();
+        assert_eq!(issue(&conn, "scrape"), ("open".into(), Some("r2".into()), Some("needs_you".into())));
     }
 
     #[test]

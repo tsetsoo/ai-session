@@ -259,7 +259,7 @@ def kept_keys():
     return keys
 
 
-def launch_args(tool, csv):
+def launch_args(tool, csv, keep_configured=True):
     if tool not in ("claude", "codex"):
         die(USAGE)
     names = []
@@ -286,7 +286,7 @@ def launch_args(tool, csv):
     else:
         # A selected server stays as the user chose it even when codex can't take its file.
         selected = {key for _, key, _ in loaded}
-        kept = kept_keys()
+        kept = kept_keys() if keep_configured else set()
         words = []
         for key in codex_config_keys():
             if key not in selected and key not in kept:
@@ -304,6 +304,8 @@ def main(argv):
         list_servers(argv[1:] == ["--json"])
     elif argv[:1] == ["launch-args"] and len(argv) == 3:
         launch_args(argv[1], argv[2])
+    elif argv[:1] == ["disable-all"] and len(argv) == 2:
+        launch_args(argv[1], "", keep_configured=False)
     elif argv[:1] in (["-h"], ["--help"]):
         print(USAGE)
     else:

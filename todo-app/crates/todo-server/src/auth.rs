@@ -192,6 +192,7 @@ fn helper_route(method: &actix_web::http::Method, path: &str) -> bool {
         (&Method::PUT, ["", "api", "projects", id, "updates" | "weekly", day]) => !id.is_empty() && !day.is_empty(),
         (&Method::PUT, ["", "api", "conversations", id, "session"])
         | (&Method::POST, ["", "api", "runs", id, "claim" | "wait" | "start" | "finish" | "report"])
+        | (&Method::POST, ["", "api", "watch", "runs", id, "handoff-nudge"])
         | (&Method::POST, ["", "api", "watch", "issues", id, "resolve-result"])
         | (&Method::PUT, ["", "api", "computers", id, "watchers" | "job-templates" | "tools" | "health"]) => !id.is_empty(),
         _ => false,

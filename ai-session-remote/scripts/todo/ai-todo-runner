@@ -36,6 +36,8 @@
 # /api/runs/<id>/report with its JSON, or finish failed. No usage guard, no worktree. The due
 # answer's "resolves" run `<watcher> resolve <key>` and POST /api/watch/issues/<id>/resolve-result.
 # Watcher output is never logged; error messages have the env file's values redacted.
+# A scrape-health worker with an idle, empty prompt gets one follow-up if the hub is
+# still waiting for a handoff. The hub reserves the attempt before the runner types.
 #
 # Daily updates: after a tick that reached the hub, `ai-todo-updates run` is started in the
 # background (at most every 5 minutes; it takes its own lock).
@@ -410,9 +412,11 @@ def run_watcher(name, args, env):
     return p.returncode, p.stdout, p.stderr
 
 
-def check_watch(hub, run, job):
+def check_watch(hub, run, job, scrape_health_protocol):
     """Runs the check and reports it; raises RuntimeError for a failed check."""
     env = watcher_env()
+    if job["action"].get("watcher") == "scrape-health":
+        env["AI_TODO_SCRAPE_HEALTH_PROTOCOL"] = "2" if scrape_health_protocol == 2 else "0"
     code, out, err = run_watcher(job["action"].get("watcher"), ["check"], env)
     if code != 0:
         raise RuntimeError(scrub("watcher exit %d: %s" % (code, err.strip()), env))
@@ -422,6 +426,10 @@ def check_watch(hub, run, job):
         report = None
     if not isinstance(report, dict) or not isinstance(report.get("problems"), list):
         raise RuntimeError("watcher output is not JSON")
+    if job["action"].get("watcher") == "scrape-health" and scrape_health_protocol != 2:
+        legacy = [p for p in report["problems"] if not isinstance(p, dict) or "investigation_eligible" not in p]
+        report["partial"] = bool(report.get("partial")) or len(legacy) != len(report["problems"])
+        report["problems"] = legacy
     hub.request("POST", "/api/runs/%s/report" % run["id"], body=report, timeout=60)
     return len(report["problems"])
 
@@ -656,6 +664,39 @@ def do_resolves(hub, resolves):
             log("resolve_report_failed", issue=item["issue_id"], error=e)
 
 
+HANDOFF_PROMPT = (
+    "The hub is still missing a handoff for at least one scrape-health issue. "
+    "Check the accepted reports in this conversation, then use ai-todo-watch outcome "
+    "with needs_you for each remaining issue. Include the evidence and exact question "
+    "or decision. Keep the investigation read-only."
+)
+
+
+def nudge_handoffs(hub, computer_id, candidates):
+    if not candidates:
+        return
+    import ai_todo_resume as terminal
+
+    for candidate in candidates:
+        run_id, name = candidate["run_id"], candidate["tmux_name"]
+        try:
+            pane = terminal.agent_pane(name)
+            if pane is None or terminal.screen_ready(name) is not None:
+                continue
+            current = terminal.tmux("display-message", "-p", "-t", pane, "#{pane_current_command}")
+            if current.returncode or current.stdout.strip() not in {"claude", "codex", "node"}:
+                continue
+            hub.request("POST", "/api/watch/runs/%s/handoff-nudge" % urllib.parse.quote(run_id, safe=""),
+                        body={"computer_id": computer_id})
+            if terminal.agent_pane(name) != pane or terminal.screen_ready(name) is not None:
+                continue
+            sent = terminal.tmux("send-keys", "-t", pane, "-l", HANDOFF_PROMPT,
+                                 ";", "send-keys", "-t", pane, "Enter")
+            log("handoff_nudge_failed" if sent.returncode else "handoff_nudged", run=run_id)
+        except (HubError, OSError, subprocess.TimeoutExpired) as e:
+            log("handoff_nudge_failed", run=run_id, error=e)
+
+
 # --- Tick ---------------------------------------------------------------------------
 
 def run_folder(action, folders):
@@ -686,6 +727,8 @@ def start_run(hub, computer_id, due, folders):
         raise RuntimeError("a debugging run needs a git repo; %s is not one (map the issue to a repo folder)" % tilde(folder))
     try:
         body = {"cwd": tilde(path), "is_git": is_git}
+        if (run.get("note") or "").startswith("watch:"):
+            body["read_only_worker"] = True
         if branch:
             body["branch"] = branch
         if action.get("tool") == "auto":
@@ -700,7 +743,8 @@ def start_run(hub, computer_id, due, folders):
         sid = started.get("session_id") or "-"
         # Auto-approve only inside a scheduled git worktree, never in a folder used in place.
         model = started.get("model") if isinstance(started.get("model"), str) else None
-        argv = [OPEN_BIN, "--detached"] + (["--auto-approve"] if is_git else []) + (
+        permissions = ["--read-only-worker"] if started.get("read_only_worker") else []
+        argv = [OPEN_BIN, "--detached"] + permissions + (["--auto-approve"] if is_git else []) + (
             ["--model", model] if model and re.fullmatch(r"[A-Za-z0-9._\[\]-]+", model) else []) + [
             "--prompt-file", prompt_file, started["tmux_name"], tilde(path), sid,
             started.get("tool") or body.get("tool") or action.get("tool") or "claude"]
@@ -756,6 +800,7 @@ def cmd_tick(args):
     due = None
     try:
         due = hub.request("GET", "/api/runner/due", query={"computer_id": computer_id}) or {}
+        nudge_handoffs(hub, computer_id, due.get("handoff_nudges"))
         settings = due.get("settings") or {}
         runs = due.get("runs") or []
         folders = project_folders(hub) if any(r["job"]["action"].get("kind") != "watch" for r in runs) else {}
@@ -772,7 +817,7 @@ def cmd_tick(args):
                         continue
                     raise
                 try:
-                    count = check_watch(hub, item["run"], item["job"])
+                    count = check_watch(hub, item["run"], item["job"], due.get("scrape_health_protocol"))
                     log("checked", run=rid, problems=count)
                 except Exception as e:  # every claimed check gets a report or a finish
                     message = str(e) or type(e).__name__

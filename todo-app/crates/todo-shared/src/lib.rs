@@ -1670,6 +1670,13 @@ pub struct WatchProblem {
     /// The repo, relative to the project folder, a debugging conversation works in.
     #[serde(default)]
     pub folder: Option<String>,
+    /// Absent for traditional alerts, which are eligible immediately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub investigation_eligible: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub investigation_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incident_generation: Option<String>,
 }
 
 /// A watcher's check output: every problem open right now.
@@ -1679,6 +1686,12 @@ pub struct WatchReport {
     /// The list may be incomplete: nothing is cleared.
     #[serde(default)]
     pub partial: bool,
+    /// Timestamp by which the scrape report stops being fresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scrape_report_expires_at: Option<i64>,
+    /// A complete latest-failure section, including when it contains zero failures.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scrape_failure_snapshot: bool,
 }
 
 /// A watcher problem on the hub, per watcher and key. `state`: `open`, `resolving`, `cleared`;

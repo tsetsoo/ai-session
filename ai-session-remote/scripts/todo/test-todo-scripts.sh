@@ -6446,7 +6446,7 @@ SCRAPE_HEALTH_LOCAL_REPORT="${SH_DIR}/report.md" SCRAPE_HEALTH_FOLDER=scrapers "
 python3 - "${SH_DIR}/out.json" <<'PY' || fail "scrape-health problems wrong: $(cat "${SH_DIR}/out.json")"
 import json, sys
 d = json.load(open(sys.argv[1]))
-assert d["partial"] is False, d
+assert d["partial"] is True, d
 keys = [p["key"] for p in d["problems"]]
 assert keys == ["scrape-health:silent-hotel:clockpms|13476", "scrape-health:provider-fully-silent:clockpms",
                 "scrape-health:burning-dispatch-capacity:webhotelier|https://x.reserve-online.net",

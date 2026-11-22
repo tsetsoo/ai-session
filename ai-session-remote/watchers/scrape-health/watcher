@@ -35,6 +35,8 @@ export PATH="$ai_path"
 unset ai_path ai_ifs ai_dir
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
 exec python3 - "$@" <<'PY'
+from datetime import datetime
+import hashlib
 import json
 import os
 import re
@@ -102,6 +104,56 @@ def slug(text):
 def problem_of(alert, section, report_title):
     """One alert line -> a problem. Kind is the text before the first colon (without its
     parenthesised thresholds); identity is the provider and hotel the line starts with."""
+    prefix = "latest scrape failed: "
+    if alert.startswith(prefix):
+        try:
+            row = json.loads(alert[len(prefix):])
+            provider, hotel, error = row["provider"], row["hotel"], row["error"]
+            failed_at = row["failed_at"]
+            stamp = datetime.fromisoformat(failed_at.replace("Z", "+00:00"))
+            if stamp.utcoffset() is None:
+                return None
+            streak = row["consecutive_failures"]
+            if not all(isinstance(value, str) and value for value in (provider, hotel, error, row["job_id"])):
+                return None
+            if type(streak) is not int or streak < 0:
+                return None
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return None
+        if "last_successful_job_id" not in row:
+            return None
+        last_successful_job = row["last_successful_job_id"]
+        if last_successful_job is not None and not isinstance(last_successful_job, str):
+            return None
+        dates = row.get("failed_stay_dates") or []
+        if not isinstance(dates, list) or not all(isinstance(date, str) for date in dates):
+            return None
+        date_count = row.get("failed_stay_date_count", len(dates))
+        if type(date_count) is not int or date_count < len(dates):
+            return None
+        date_summary = ", ".join(dates) or "unknown"
+        if date_count > len(dates):
+            date_summary += " (+%d more)" % (date_count - len(dates))
+        identity = json.dumps([provider, hotel])
+        http = re.search(
+            r"\b(?:HTTP(?: status)?[ :]+|(?:client|server) error ['\"]?)([45]\d{2})\b",
+            error,
+            re.IGNORECASE,
+        )
+        # Correlate HTTP errors within six-hour UTC windows. Other errors have
+        # no reliable signature and are investigated per hotel.
+        incident = [provider, http.group(1), int(stamp.timestamp()) // 21600] if http else [provider, hotel]
+        return {
+            "key": "scrape-health:latest-failed:" + hashlib.sha256(identity.encode()).hexdigest(),
+            "title": "Scrape failed: %s · %s" % (provider, row.get("name") or hotel),
+            "details": ("Hotel: %s\nFailed at: %s\nJob ID: %s\nConsecutive failures: %s"
+                        "\nLast price write: %s\nAffected stay dates: %s\nError: %s" %
+                        (hotel, failed_at, row["job_id"], streak, row.get("last_price_write_at") or "unknown", date_summary, error))[:MAX_DETAILS],
+            "url": "",
+            "incident_generation": last_successful_job or "no-success",
+            "investigation_eligible": streak >= 2,
+            "investigation_group": hashlib.sha256(json.dumps(incident).encode()).hexdigest(),
+        }
     kind, sep, rest = alert.partition(":")
     if not sep:
         kind, rest = "alert", alert
@@ -139,6 +191,11 @@ def cmd_check(args):
         if m:
             section = m.group(1).strip()
             continue
+        if line.startswith(("- **SCRAPE FAILURE** ", "- **ALERT** latest scrape failed: ")):
+            if os.environ.get("AI_TODO_SCRAPE_HEALTH_PROTOCOL") != "2":
+                continue
+            if line.startswith("- **SCRAPE FAILURE** "):
+                line = "- **ALERT** latest scrape failed: " + line[len("- **SCRAPE FAILURE** "):]
         m = ALERT.match(line.strip())
         if m:
             p = problem_of(m.group(1).strip(), section, title)
@@ -169,7 +226,14 @@ def cmd_check(args):
         if folder:
             p["folder"] = folder
         unique.append(p)
-    json.dump({"problems": unique, "partial": False}, sys.stdout)
+    partial = bool(not title or noise or "**Latest scrape failure check incomplete.**" in text
+                   or (age is not None and age > max_age))
+    report = {"problems": unique, "partial": partial}
+    if os.environ.get("AI_TODO_SCRAPE_HEALTH_PROTOCOL") == "2":
+        if not partial and age is not None:
+            report["scrape_report_expires_at"] = int(time.time() + max_age - max(0, age))
+        report["scrape_failure_snapshot"] = not partial and "**Scrape failure snapshot: complete.**" in text.splitlines()
+    json.dump(report, sys.stdout)
     print()
 
 

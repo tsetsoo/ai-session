@@ -29,6 +29,7 @@
 #                   codex and cursor take it as an argument); ignored on a resume. F is deleted.
 # --model ID        On a new conversation, the tool's model (claude --model ID, codex -m ID,
 #                   cursor --model ID).
+# --read-only-worker applies the persistent macOS worker sandbox.
 # --auto-approve    Codex gets network access in its sandbox (scheduled runs call the hub).
 #                   Claude starts in auto mode (--permission-mode auto: a safety check
 #                   approves routine actions and blocks risky ones), for scheduled
@@ -107,6 +108,7 @@ wt_branch=
 wt_base=
 prompt_file=
 auto_approve=0
+read_only_worker=0
 model=
 # Leading options, in any order. Older versions of this script only take --mcp, first.
 while [ "$#" -gt 0 ]; do
@@ -134,6 +136,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --detached) AI_TODO_OPEN_DETACH=1; shift ;;
     --auto-approve) auto_approve=1; shift ;;
+    --read-only-worker) read_only_worker=1; shift ;;
     --model)
       [ "$#" -ge 2 ] || usage
       case "$2" in
@@ -231,6 +234,25 @@ case "$cwd" in
   "~") cwd=$HOME ;;
   "~/"*) cwd="$HOME/${cwd#\~/}" ;;
 esac
+
+# Persist the restriction for normal attach/reopen and upgrade paths. Worker
+# processes may write their runtime data, but cannot write these launch markers.
+worker_policy_dir="$HOME/.ai-remote/read-only-workers"
+worker_policy="$worker_policy_dir/${name##*/}-$tool"
+if [ "$read_only_worker" = 1 ] || [ -f "$worker_policy" ]; then
+  read_only_worker=1
+  if [ ! -x /usr/bin/sandbox-exec ] || [ "$tool" = cursor ]; then
+    echo "Read-only scrape-health workers require the macOS sandbox and Claude or Codex" >&2
+    exit 90
+  fi
+  if [ ! -f "$worker_policy" ] && tmux_cmd has-session -t "=$name" 2>/dev/null; then
+    echo "Close the existing unrestricted worker session before starting a read-only worker" >&2
+    exit 90
+  fi
+  (umask 077; mkdir -p "$worker_policy_dir"; : > "$worker_policy")
+  mcp_given=1
+  mcp_names=
+fi
 
 command -v tmux >/dev/null 2>&1 || { echo "tmux not found" >&2; exit 90; }
 
@@ -490,7 +512,8 @@ if [ "$tool" = codex ]; then
   [ -n "$codex_bin" ] || { echo "codex not found" >&2; exit 90; }
   if [ "$fresh" = 1 ]; then
     mode=created
-    set -- "$codex_bin" --approve-for-me
+    set -- "$codex_bin"
+    [ "$read_only_worker" = 1 ] || set -- "$@" --approve-for-me
     # Unattended runs call the hub (ai-todo-remind, ai-todo-watch, ai-todo-idea), which the
     # workspace sandbox blocks by default; Claude's auto mode already allows it.
     [ "$auto_approve" = 1 ] && set -- "$@" -c sandbox_workspace_write.network_access=true
@@ -512,7 +535,8 @@ if [ "$tool" = codex ]; then
     mode=resumed
     check_codex_writer
     resume_settings
-    set -- "$codex_bin" resume "$sid" --approve-for-me
+    set -- "$codex_bin" resume "$sid"
+    [ "$read_only_worker" = 1 ] || set -- "$@" --approve-for-me
   fi
   if [ "$managed_runtime" = 1 ]; then
     tool_bin=$1
@@ -605,11 +629,16 @@ mcp_warnings=
 if [ "$mcp_given" = 1 ] && [ "$tool" != cursor ]; then
   mcp_bin=$(dirname "$0")/ai-todo-mcp
   if [ ! -x "$mcp_bin" ]; then
+    [ "$read_only_worker" = 0 ] || { echo "Cannot disable MCP tools for read-only worker" >&2; exit 90; }
     echo "ai-todo-mcp not found next to $0; starting without the MCP server selection" >&2
   else
     mcp_err=$(mktemp "${TMPDIR:-/tmp}/ai-todo-open.XXXXXX")
     mcp_status=0
-    mcp_args=$("$mcp_bin" launch-args "$tool" "$mcp_names" 2>"$mcp_err") || mcp_status=$?
+    if [ "$read_only_worker" = 1 ]; then
+      mcp_args=$("$mcp_bin" disable-all "$tool" 2>"$mcp_err") || mcp_status=$?
+    else
+      mcp_args=$("$mcp_bin" launch-args "$tool" "$mcp_names" 2>"$mcp_err") || mcp_status=$?
+    fi
     mcp_skipped=$(sed -n 's/^ai-todo-mcp: skipped \([^:]*\): .*$/\1/p' "$mcp_err")
     mcp_skip_lines=$(awk '/^ai-todo-mcp: skipped /{printf "%s%s", sep, $0; sep="; "}' "$mcp_err")
     cat "$mcp_err" >&2
@@ -617,6 +646,7 @@ if [ "$mcp_given" = 1 ] && [ "$tool" != cursor ]; then
     # 64: bad arguments, which the app answers by retrying without --mcp.
     [ "$mcp_status" -ne 64 ] || exit 64
     if [ "$mcp_status" -ne 0 ]; then
+      [ "$read_only_worker" = 0 ] || exit 90
       # Anything else (a crash, an unreadable file): start the tool unmanaged, as without the helper.
       echo "ai-todo-open: MCP servers not applied (ai-todo-mcp failed)" >&2
     else
@@ -636,11 +666,22 @@ if [ "$mcp_given" = 1 ] && [ "$tool" != cursor ]; then
   fi
 fi
 
+if [ "$read_only_worker" = 1 ]; then
+  # Seatbelt cannot nest. Use the outer policy for both the CLI and its child tools.
+  if [ "$tool" = codex ]; then
+    set -- "$@" -c 'sandbox_mode="danger-full-access"' -c 'approval_policy="never"'
+  else
+    set -- "$@" --disallowedTools Edit,Write,NotebookEdit \
+      --allowedTools 'Bash(~/.ai-remote/bin/ai-todo-watch checkpoint *)' \
+                     'Bash(~/.ai-remote/bin/ai-todo-watch outcome *)' --settings '{"sandbox":{"enabled":false}}'
+  fi
+fi
+
 if [ "$tool" = codex ] && [ "${managed_runtime:-0}" = 1 ]; then
   set -- "$status_bin" terminal "$name" "$cwd" "$@"
 fi
 # Both the runtime and terminal need the selected servers' environment.
-if [ "$mcp_report" = 1 ] && [ -e "$HOME/.ai-remote/mcp/env" ]; then
+if [ "$read_only_worker" = 0 ] && [ "$mcp_report" = 1 ] && [ -e "$HOME/.ai-remote/mcp/env" ]; then
   set -- /bin/sh -c 'set -a; [ -r "$HOME/.ai-remote/mcp/env" ] && . "$HOME/.ai-remote/mcp/env"; set +a; exec "$@"' sh "$@"
 fi
 
@@ -727,6 +768,34 @@ fi
 if [ "$tool" = cursor ]; then
   set -- env "AGENT_CLI_CREDENTIAL_STORE=file" "$@"
 fi
+if [ "$read_only_worker" = 1 ]; then
+  # Keep the CLI, status monitor and hub reporting helper functional while
+  # denying disk writes outside the agent's runtime state.
+  worker_runtime="$HOME/.ai-remote/status-state"
+  worker_temp="$worker_runtime/scrape-worker-tmp"
+  (umask 077; mkdir -p "$worker_temp")
+  worker_profile='(version 1)
+    (allow default)
+    (deny file-write*)
+    (allow file-write*
+      (subpath (param "AGENT"))
+      (subpath (param "RUNTIME"))
+      (literal "/dev/null")
+      (regex #"^/dev/(tty|ttys[0-9]+)$"))
+    (deny file-write* (subpath (param "WORKTREE")))
+    (deny network-outbound (remote unix-socket))
+    (allow network-outbound (remote unix-socket (path (param "BACKEND"))))'
+  if [ "$tool" = codex ]; then
+    worker_agent_home=${CODEX_HOME:-"$HOME/.codex"}
+  else
+    worker_agent_home=${CLAUDE_CONFIG_DIR:-"$HOME/.claude"}
+  fi
+  worker_cwd=$(cd "$cwd" && pwd -P)
+  worker_socket="$worker_runtime/r/$(printf '%s' "$name" | shasum -a 256 | cut -c1-12).sock"
+  set -- env "AI_TODO_READ_ONLY_WORKER=1" "AI_TODO_TMUX_SESSION=$name" "TMPDIR=$worker_temp" /usr/bin/sandbox-exec \
+    -D "AGENT=$worker_agent_home" -D "RUNTIME=$worker_runtime" \
+    -D "WORKTREE=$worker_cwd" -D "BACKEND=$worker_socket" -p "$worker_profile" "$@"
+fi
 # The first message: read from its file inside the session, removed there, and appended as
 # the tool's last argument.
 if [ "${with_first_prompt:-}" = 1 ]; then
@@ -761,6 +830,36 @@ else
   fi
   report_mcp "$sid"
   if [ "$mode" = created ]; then save_launch "$sid"; fi
+fi
+if [ "$read_only_worker" = 1 ]; then
+  # tmux accepts the spawn before the sandbox and CLI finish starting.
+  # A new Claude worker with an initial prompt must record it before we acknowledge launch.
+  startup_deadline=$(( $(date +%s) + 25 ))
+  startup_checks=0
+  while :; do
+    sleep 0.4
+    if ! tmux_cmd has-session -t "=$name" 2>/dev/null ||
+       [ "$(tmux_cmd display-message -p -t "$name" '#{pane_dead}' 2>/dev/null)" != 0 ]; then
+      tmux_cmd kill-session -t "=$name" 2>/dev/null || true
+      echo "Read-only worker exited during startup" >&2
+      exit 94
+    fi
+    startup_checks=$((startup_checks + 1))
+    if [ "$startup_checks" -ge 5 ]; then
+      if [ "$tool" != claude ] || [ "${with_first_prompt:-}" != 1 ]; then
+        break
+      fi
+      transcript=$(find "${CLAUDE_CONFIG_DIR:-"$HOME/.claude"}/projects" -maxdepth 2 -name "$sid.jsonl" -print 2>/dev/null | head -n 1)
+      if [ -n "$transcript" ] && grep -Eq '"type"[[:space:]]*:[[:space:]]*"user"' "$transcript"; then
+        break
+      fi
+    fi
+    if [ "$(date +%s)" -ge "$startup_deadline" ]; then
+      tmux_cmd kill-session -t "=$name" 2>/dev/null || true
+      echo "Read-only worker did not record its initial prompt" >&2
+      exit 94
+    fi
+  done
 fi
 show_mcp_warnings
 attach "$mode"

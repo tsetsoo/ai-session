@@ -164,6 +164,9 @@ pub(crate) fn tick_db(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result
     // Research attempts among them: a group with none left gives its idea back.
     for id in out.missed.iter().chain(&stuck) {
         crate::runner_api::fail_attempt(&tx, id)?;
+        if let Some(run) = crate::jobs::load_run(&tx, id)? {
+            crate::watch::suspend_scrape_investigations(&tx, &run.job_id)?;
+        }
     }
     // An idea reserved by a run that will never start (missed, skipped, failed before its
     // conversation existed, or deleted with its job) goes back to the queue.
