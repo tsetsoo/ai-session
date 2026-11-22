@@ -758,50 +758,6 @@ private struct ShellDetail: View {
         }
     }
 
-    private var shellSwitcher: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: DS.spacing.s) {
-                if model.shells.selectedID != nil {
-                    Button("Back", systemImage: "arrow.uturn.left") {
-                        model.shells.selectedID = nil
-                    }
-                }
-                ForEach(model.shells.shells) { shell in
-                    Button {
-                        model.shells.selectedID = shell.id
-                    } label: {
-                        Label(shell.label, systemImage: "terminal")
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(model.shells.selectedID == shell.id ? DS.accent.opacity(0.2) : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.borderless)
-                    .contextMenu {
-                        Button("New Shell on \(shell.computerName)", systemImage: "plus") {
-                            model.shells.create(hostID: shell.hostID, computerName: shell.computerName)
-                        }
-                        Button("Remove Shortcut", systemImage: "xmark") { model.shells.forget(shell) }
-                    }
-                }
-                Menu {
-                    ForEach(hosts) { host in
-                        Button(host.displayName) {
-                            model.shells.create(hostID: host.id, computerName: host.displayName)
-                        }
-                    }
-                } label: {
-                    Label("New Shell", systemImage: "plus")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-            }
-            .padding(8)
-        }
-        .background(.bar)
-    }
-
-
 }
 
 /// The conversations whose terminals stay alive. Selecting one that is already mounted shows

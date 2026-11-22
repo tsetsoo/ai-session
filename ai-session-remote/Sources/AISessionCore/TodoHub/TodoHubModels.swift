@@ -177,10 +177,6 @@ public struct Conversation: Codable, Equatable, Sendable {
     /// Row identity. A conversation from a hub that omits `id` is still the only one on its todo.
     public var listKey: String { id.isEmpty ? todoId : id }
 
-    /// Older servers only send `claude_session_id`.
-    @available(*, deprecated, renamed: "sessionId")
-    public var claudeSessionId: String { sessionId }
-
     public init(
         id: String = "",
         todoId: String,

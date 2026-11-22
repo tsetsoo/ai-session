@@ -23,5 +23,4 @@ public struct HostBinaryHealth: Sendable, Equatable, Codable {
     public var claudeOK: Bool { claude != nil }
     public var codexOK: Bool { codex != nil }
     public var agentOK: Bool { agent != nil }
-    public var shellOK: Bool { shell != nil }
 }

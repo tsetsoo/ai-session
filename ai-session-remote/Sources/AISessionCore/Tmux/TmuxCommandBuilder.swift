@@ -335,10 +335,6 @@ public enum TmuxCommandBuilder {
     /// Read-only; it takes a few seconds.
     public static let doctor = wrap("\"$HOME/.ai-remote/bin/ai-todo-status\" doctor")
 
-    /// Exit status of `ai-todo-status restart` when the conversation is working, waiting for
-    /// the user, has background tasks or an unreadable state. stdout still has the JSON.
-    public static let restartRefusedExitCode: Int32 = 75
-
     /// Restarts one conversation (`RestartResult` JSON): refuses while it works or waits
     /// unless `force`, ends its CLI cleanly, and with `reopenCwd` starts it again detached
     /// (with `mcpServers` as `--mcp`, and `worktree` so a deleted worktree is made again).

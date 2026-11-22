@@ -164,7 +164,6 @@ fn scoped_route(method: &actix_web::http::Method, path: &str) -> bool {
     use actix_web::http::Method;
     match (method, path.split('/').collect::<Vec<_>>().as_slice()) {
         (&Method::GET, ["", "api", "todos" | "projects" | "computers" | "conversations"])
-        | (&Method::GET, ["", "api", "sections", "computers"])
         | (&Method::POST, ["", "api", "todos"]) => true,
         (&Method::GET | &Method::PATCH | &Method::DELETE, ["", "api", "todos", id]) =>
             !id.is_empty() && *id != "from-conversation",

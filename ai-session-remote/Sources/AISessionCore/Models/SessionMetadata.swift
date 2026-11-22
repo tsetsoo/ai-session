@@ -103,7 +103,4 @@ public enum SessionMetadataStore {
         tmuxName.replacingOccurrences(of: "/", with: "__") + ".json"
     }
 
-    public static func remotePath(for tmuxName: String) -> String {
-        "~/.ai-remote/sessions/\(filename(for: tmuxName))"
-    }
 }

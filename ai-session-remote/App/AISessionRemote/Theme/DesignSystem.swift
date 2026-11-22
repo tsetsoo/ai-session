@@ -21,7 +21,7 @@ enum DS {
     /// Worth a look but nothing failed: a partial load, read-only offline.
     static let warning = PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x9A5B00), dark: PlatformNativeColor(hex: 0xFFB648))
 
-    /// An unchosen `Chip`.
+    /// Subtle fill for grouped content.
     static let chipFill = Color.secondary.opacity(0.12)
 
     static let spacing: (xs: CGFloat, s: CGFloat, m: CGFloat, l: CGFloat, xl: CGFloat) = (4, 8, 12, 16, 24)

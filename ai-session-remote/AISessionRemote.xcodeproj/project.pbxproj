@@ -30,7 +30,6 @@
 		10BE5487C7B5DE001354E7ED /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B5CF5ADABEA184DD911533 /* SessionsListView.swift */; };
 		10C6C7A99A15CF1D8CDD7162 /* ResearchAgentsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5438FFCF88CA25018D7CAED /* ResearchAgentsSheet.swift */; };
 		1257CFF715CF5669E68422AC /* ComputerDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0593DCB097C923A73341EB68 /* ComputerDetailView.swift */; };
-		1345E446A76E1ED2880000F2 /* Chip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F72C8DE6C182CAB33EB9D17 /* Chip.swift */; };
 		144009C4000AC3F95367C3EF /* JobsPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EE350274D8FBBAD33BC7718 /* JobsPanes.swift */; };
 		1527D54D14641C9C8FFBDD6D /* SpeechAnalyzerSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFD416B363C6DF870E5B627B /* SpeechAnalyzerSession.swift */; };
 		1552F84CE79E928B6E96CF67 /* OpenSSHPrivateKeyParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B4BB6F6415533A30C0256D1 /* OpenSSHPrivateKeyParserTests.swift */; };
@@ -325,7 +324,6 @@
 		EC0EC66AF6A143704EC053CD /* FrameStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6DF7A48AF9E2D3EED9528A2 /* FrameStateView.swift */; };
 		EC8DE2B3AD15449D17F823F3 /* ConversationRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E36AD351C0A22DEC339CAE5 /* ConversationRow.swift */; };
 		EC9066E393BC9E84F9510AB0 /* WeeklyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB74C80442E0D6535736F811 /* WeeklyView.swift */; };
-		EDD94D170FCDD210BC4E16A8 /* Chip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F72C8DE6C182CAB33EB9D17 /* Chip.swift */; };
 		EE04800E43A3B5A9887D4281 /* TOFUHostKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */; };
 		EEE34ECE95236577DE543771 /* LocalConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0E92D9DEB7C4816EBDB4B77 /* LocalConnection.swift */; };
 		EF09596E78D56E59634CB61F /* TodoHubStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ABB2CBA22446496FCC5434A /* TodoHubStore.swift */; };
@@ -382,7 +380,6 @@
 		0982C5D996899CF8FC38133B /* ChatTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTextTests.swift; sourceTree = "<group>"; };
 		0C976B2DC40D400F315259C2 /* TerminalAppearanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalAppearanceTests.swift; sourceTree = "<group>"; };
 		0DC8DE451518230695F83B05 /* ChatTextViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTextViews.swift; sourceTree = "<group>"; };
-		0F72C8DE6C182CAB33EB9D17 /* Chip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Chip.swift; sourceTree = "<group>"; };
 		12419581E8EABDDBD2C33D6A /* TodoHubSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHubSettings.swift; sourceTree = "<group>"; };
 		12D5F34B1CF5313030CABD54 /* TodoRename.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoRename.swift; sourceTree = "<group>"; };
 		1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTerminalSession.swift; sourceTree = "<group>"; };
@@ -764,7 +761,6 @@
 			children = (
 				953A88DC4DA95609F6AA1F02 /* AccentButtonStyle.swift */,
 				04A825EEDF501585EB69A62A /* AgentRowsEditor.swift */,
-				0F72C8DE6C182CAB33EB9D17 /* Chip.swift */,
 				A5C9EFB333C1A480C8E4E77A /* PullRequestChip.swift */,
 				E866E5BC5F0042AF39A45482 /* ServerNotConfiguredView.swift */,
 				EDE7FB9B8AA8D5C5877AE90E /* StatusBadge.swift */,
@@ -1219,7 +1215,6 @@
 				9C7B44037AC306AFF0894848 /* ChatStyledText.swift in Sources */,
 				A38FDDF29B0787819F678AAD /* ChatTextViews.swift in Sources */,
 				5F9A88BE1E64572B469D5D00 /* ChatWorkerCard.swift in Sources */,
-				1345E446A76E1ED2880000F2 /* Chip.swift in Sources */,
 				FAC15A82B72F481E60A70E81 /* CommandPalette.swift in Sources */,
 				1257CFF715CF5669E68422AC /* ComputerDetailView.swift in Sources */,
 				1A3E64E52EA5549DB38D1521 /* ComputerHealthView.swift in Sources */,
@@ -1368,7 +1363,6 @@
 				A0A7C2DC31C7BDFF2A0AEB43 /* ChatStyledText.swift in Sources */,
 				5C8C1861A0B4A53B1F4E04A9 /* ChatTextViews.swift in Sources */,
 				00E9514ECE8B4CB5AEEFCD62 /* ChatWorkerCard.swift in Sources */,
-				EDD94D170FCDD210BC4E16A8 /* Chip.swift in Sources */,
 				9FCEB6BCA32D59DAEC5BF7A7 /* CommandPalette.swift in Sources */,
 				168F160DFF449AD93446985A /* ComputerDetailView.swift in Sources */,
 				08C6FA1D88EAB0A0F2A370B8 /* ComputerHealthView.swift in Sources */,
