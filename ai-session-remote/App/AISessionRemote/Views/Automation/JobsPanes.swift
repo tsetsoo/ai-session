@@ -360,6 +360,7 @@ struct JobFormPane: View {
                     Picker("Tool", selection: $draft.tool) {
                         Text("Claude").tag("claude")
                         Text("Codex").tag("codex")
+                        Text("Antigravity").tag("antigravity")
                         // The Today assistant's job: the runner picks by weekly headroom.
                         if draft.tool == "auto" { Text("Auto (more weekly headroom)").tag("auto") }
                     }
@@ -428,6 +429,7 @@ struct JobFormPane: View {
                     Picker("Fix with", selection: $draft.debugTool) {
                         Text("Claude").tag("claude")
                         Text("Codex").tag("codex")
+                        Text("Antigravity").tag("antigravity")
                         Text("Nobody (push only)").tag("")
                     }
                     if !draft.debugTool.isEmpty {

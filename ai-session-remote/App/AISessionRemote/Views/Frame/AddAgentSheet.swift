@@ -40,6 +40,7 @@ struct AddAgentSheet: View {
                         Text("Claude").tag("claude")
                         Text("Codex").tag("codex")
                         Text("Cursor").tag("cursor")
+                        Text("Antigravity").tag("antigravity")
                     }
                     TextField("Model", text: $model, prompt: Text("Default"))
                         .autocorrectionDisabled()

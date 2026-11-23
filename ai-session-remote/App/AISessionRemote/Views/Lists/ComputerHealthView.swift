@@ -207,7 +207,7 @@ struct ComputerHealthView: View {
             } header: {
                 Text("Agent CLIs").textCase(nil)
             } footer: {
-                Text("The version a new conversation starts with, and what installed it. Update installs the latest the same way; nothing updates on its own.")
+                Text("The version a new conversation starts with, and what installed it. Update uses the updater for that installation.")
             }
         }
     }
@@ -278,7 +278,10 @@ struct ComputerHealthView: View {
             let outdated = report.outdatedRunning
             Section {
                 if outdated.isEmpty {
-                    Text(running.isEmpty ? "No conversations running" : "All \(running.count) running conversations use the installed version")
+                    let unknown = running.filter { $0.outdated == nil }.count
+                    Text(running.isEmpty ? "No conversations running" :
+                         unknown > 0 ? "\(unknown) running sessions have an unverified version" :
+                         "All \(running.count) running conversations use the installed version")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(outdated) { entry in
@@ -588,7 +591,11 @@ private struct HealthUpgrade {
         if info.method == "managed", tool == "codex" {
             parts.append("Codex's shared server restarts on the new version, which can interrupt a plain codex window using it; todo conversations have their own.")
         }
-        parts.append("Conversations already running keep \(info.version ?? "their version") until they're restarted; Restart Idle… moves them over.")
+        if tool == "antigravity" {
+            parts.append("New Antigravity sessions start on the updated version.")
+        } else {
+            parts.append("Conversations already running keep \(info.version ?? "their version") until they're restarted; Restart Idle… moves them over.")
+        }
         if info.auth?.loggedIn == false {
             parts.append("It isn't logged in there; updating doesn't need it, but conversations do.")
         }

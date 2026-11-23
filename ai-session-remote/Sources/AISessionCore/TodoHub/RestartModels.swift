@@ -42,7 +42,7 @@ public struct RestartResult: Decodable, Equatable, Sendable {
 
     public var isRefused: Bool { result == "refused" }
     /// Working or waiting can be restarted anyway once the user says so; background tasks can't.
-    public var canForce: Bool { isRefused && reason != "background" }
+    public var canForce: Bool { isRefused && reason != "background" && reason != "mismatch" }
 
     public static func decode(_ data: Data) throws -> RestartResult {
         try TodoHubClient.makeDecoder().decode(RestartResult.self, from: data)

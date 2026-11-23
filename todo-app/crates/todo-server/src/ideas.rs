@@ -289,8 +289,8 @@ pub(crate) fn research_now_db(conn: &Connection, id: &str, req: &ResearchRequest
     let mut specs: Vec<(String, Option<String>)> = Vec::new();
     for a in attempts {
         let tool = a.tool.trim();
-        if !matches!(tool, "claude" | "codex" | "cursor") {
-            return Err(IdeaError::BadRequest("tool must be claude, codex or cursor".into()));
+        if !matches!(tool, "claude" | "codex" | "cursor" | "antigravity") {
+            return Err(IdeaError::BadRequest("tool must be claude, codex, cursor or antigravity".into()));
         }
         let model = a.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
         if model.is_some_and(|m| !crate::conversations::valid_model(m)) {
@@ -313,6 +313,14 @@ pub(crate) fn research_now_db(conn: &Connection, id: &str, req: &ResearchRequest
         }
     }
     let idea = load_idea(&tx, id)?.ok_or(IdeaError::NotFound("Idea not found"))?;
+    let current_group: Option<String> = tx.query_row(
+        "SELECT group_id FROM ideas WHERE id = ?1", [id], |row| row.get(0),
+    )?;
+    if let Some(group) = current_group {
+        if crate::runner_api::group_needs_antigravity_reconciliation(&tx, &group)? {
+            return Err(IdeaError::Conflict("Check the original Antigravity conversation before starting another attempt"));
+        }
+    }
     if idea.status != "new" || idea.pending {
         return Err(IdeaError::Conflict("Only a new, approved idea can be researched now"));
     }

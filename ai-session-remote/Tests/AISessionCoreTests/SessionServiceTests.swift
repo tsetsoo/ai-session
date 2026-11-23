@@ -154,7 +154,7 @@ final class SessionServiceTests: XCTestCase {
         let executor = FakeSSHExecutor(responsesByPrefix: [
             "printf 'tmux:%s": SSHExecResult(
                 exitCode: 0,
-                stdout: "tmux:/usr/bin/tmux\nclaude:MISSING\ncodex:/usr/bin/codex\nagent:MISSING\nbash:/bin/bash\n",
+                stdout: "tmux:/usr/bin/tmux\nclaude:MISSING\ncodex:/usr/bin/codex\nagent:MISSING\nbash:/bin/bash\nagy:/usr/local/bin/agy\n",
                 stderr: ""
             )
         ])
@@ -164,6 +164,7 @@ final class SessionServiceTests: XCTestCase {
         XCTAssertEqual(health.codex, "/usr/bin/codex")
         XCTAssertNil(health.agent)
         XCTAssertEqual(health.shell, "/bin/bash")
+        XCTAssertEqual(health.agy, "/usr/local/bin/agy")
     }
 
     func testPromoteRenamesAndWritesMetadata() async throws {

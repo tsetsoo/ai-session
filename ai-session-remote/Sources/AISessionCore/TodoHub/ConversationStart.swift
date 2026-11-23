@@ -7,7 +7,7 @@ public enum ConversationStart {
 
     /// `remembered` when it is a tool this app can start, otherwise Claude.
     public static func selectedTool(remembered: String?) -> String {
-        guard let remembered, remembered == "claude" || remembered == "codex" || remembered == "cursor" else {
+        guard let remembered, ["claude", "codex", "cursor", "antigravity"].contains(remembered) else {
             return "claude"
         }
         return remembered
@@ -26,9 +26,13 @@ public enum ConversationStart {
         !hasConversation
     }
 
-    /// Codex and Cursor mint their own id. Claude's id is already on the hub.
+    /// Codex, Cursor and Antigravity allocate their own IDs. Claude's ID comes from the hub.
     public static func startsFresh(_ tool: String) -> Bool {
-        tool == "codex" || tool == "cursor"
+        ["codex", "cursor", "antigravity"].contains(tool)
+    }
+
+    public static func managesMCP(_ tool: String) -> Bool {
+        tool == "claude" || tool == "codex"
     }
 
     /// The id printed by a detached `ai-todo-open` (`created <id>`). Missing or blank is nil.

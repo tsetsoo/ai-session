@@ -138,6 +138,7 @@ struct IdeaDetailPane: View {
     @State private var title = ""
     @State private var notes = ""
     @State private var confirmingDelete = false
+    @State private var confirmingUnsentAttempt: IdeaAttempt?
     @State private var errorMessage: String?
     @State private var choosingAgents = false
     @State private var note: String?
@@ -248,6 +249,21 @@ struct IdeaDetailPane: View {
                 choosingAgents = false
             }, onCancel: { choosingAgents = false })
         }
+        .confirmationDialog(
+            "Confirm the original prompt was never accepted",
+            isPresented: Binding(
+                get: { confirmingUnsentAttempt != nil },
+                set: { if !$0 { confirmingUnsentAttempt = nil } }
+            ),
+            presenting: confirmingUnsentAttempt
+        ) { attempt in
+            Button("Confirm Unsent and Retry") {
+                act { try await store.retryAttempt(attempt, confirmedUnsent: true) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Check that the original Antigravity pane has stopped and its conversation never received the first message. Retrying sends the prompt to a new conversation.")
+        }
         .confirmationDialog("Delete this idea?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {
                 act {
@@ -268,6 +284,9 @@ struct IdeaDetailPane: View {
                     Spacer()
                     if ResearchAgents.canRetry(attempt) {
                         Button("Retry", systemImage: "arrow.clockwise") { act { try await store.retryAttempt(attempt) } }
+                            .disabled(store.isOffline)
+                    } else if ResearchAgents.needsReconciliation(attempt) {
+                        Button("Resolve…") { confirmingUnsentAttempt = attempt }
                             .disabled(store.isOffline)
                     }
                 }

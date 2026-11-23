@@ -208,6 +208,7 @@ struct HostsListView: View {
                         binaryStatus("claude", ok: health.claudeOK)
                         binaryStatus("codex", ok: health.codexOK)
                         binaryStatus("agent", ok: health.agentOK)
+                        binaryStatus("agy", ok: health.agyOK)
                     }
                     .font(.caption2)
                     .foregroundStyle(.secondary)

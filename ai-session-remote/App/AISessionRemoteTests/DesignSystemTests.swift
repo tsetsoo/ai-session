@@ -22,9 +22,13 @@ final class DesignSystemTests: XCTestCase {
         }
     }
 
-    func testEachToolShipsItsOwnIcon() {
+    func testEachToolHasAnIcon() {
         for tool in AITool.allCases {
-            let image = UIImage(named: AppTheme.imageName(for: tool), in: Bundle(for: AppModel.self), compatibleWith: nil)
+            let image = if let asset = AppTheme.imageName(for: tool) {
+                UIImage(named: asset, in: Bundle(for: AppModel.self), compatibleWith: nil)
+            } else {
+                UIImage(systemName: AppTheme.iconName(for: tool))
+            }
             XCTAssertNotNil(image, tool.rawValue)
         }
     }

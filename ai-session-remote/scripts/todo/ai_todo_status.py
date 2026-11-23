@@ -82,7 +82,7 @@ def session_lock(sid, blocking=True, tool="codex"):
         raise ValueError("invalid session id")
     directory = root()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    key = ("claude." if tool == "claude" else "") + sid
+    key = (tool + "." if tool in ("claude", "antigravity") else "") + sid
     with open(directory / (key + ".lock"), "a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         yield directory / (key + ".json")
@@ -117,6 +117,8 @@ def fresh_runtime_state(sid, tool="codex"):
 
 
 def sync_legacy_state(sid, status, delivered=False, tool="codex"):
+    if tool == "antigravity":
+        return
     directory = Path.home() / ".ai-remote" / "hook-state"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / (("codex-" if tool == "codex" else "") + sid + (".sent" if delivered else ""))
@@ -671,7 +673,7 @@ def publish(body, observed_ns=None, source="hook", try_send=True):
 def _publish(body, observed_ns=None, source="hook", try_send=True):
     sid = body.get("session_id") or body.get("claude_session_id")
     tool = body.get("tool", "claude" if body.get("claude_session_id") else "codex")
-    if tool not in ("claude", "codex"):
+    if tool not in ("claude", "codex", "antigravity"):
         raise ValueError("invalid tool")
     if not isinstance(sid, str):
         raise ValueError("invalid session id")
@@ -838,7 +840,7 @@ def retry_pending(budget=None, respect_backoff=False):
             # Codex's existing filenames stay compatible; Claude gets its own namespace.
             preview = read_json(path, {}).get("body", {})
             tool = preview.get("tool", "codex") if isinstance(preview, dict) else "codex"
-            sid = path.stem[7:] if tool == "claude" and path.stem.startswith("claude.") else path.stem
+            sid = path.stem.removeprefix(tool + ".") if tool in ("claude", "antigravity") else path.stem
             with session_lock(sid, blocking=False, tool=tool) as locked:
                 record = read_json(path, {})
                 now = time.time_ns()

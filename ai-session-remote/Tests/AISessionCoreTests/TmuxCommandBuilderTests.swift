@@ -134,6 +134,7 @@ final class TmuxCommandBuilderTests: XCTestCase {
         XCTAssertTrue(cmd.contains("command -v tmux"))
         XCTAssertTrue(cmd.contains("command -v bash"))
         XCTAssertTrue(cmd.contains("claude:%s"))
+        XCTAssertTrue(cmd.contains("command -v agy"))
     }
 
     func testShellQuoteEscapesApostrophe() {
@@ -183,6 +184,33 @@ final class TmuxCommandBuilderTests: XCTestCase {
         )
         // shellQuote's '"'"' escape must appear so the quote cannot terminate the literal early.
         XCTAssertTrue(command.contains("'\"'\"'"))
+    }
+
+    func testAntigravityLaunchesInteractivelyInManagedTmux() throws {
+        let name = try XCTUnwrap(SessionName(tool: .antigravity, slug: "demo"))
+        let command = TmuxCommandBuilder.createSession(
+            name: name, cwd: "/tmp/demo", binary: name.tool.defaultBinary, metadataTemplate: "%s"
+        )
+        XCTAssertEqual(SessionName.parse(name.tmuxName), name)
+        XCTAssertTrue(command.contains("command -v 'agy'"))
+        XCTAssertTrue(command.contains("new-session -d -s 'ai/antigravity/demo' -c '/tmp/demo'"))
+        XCTAssertTrue(command.hasSuffix(#"-- env SSH_CONNECTION="${SSH_CONNECTION:-}" "$p""#))
+    }
+
+    func testAntigravityResumesAnExactConversationAndRecordsTheArguments() throws {
+        let name = try XCTUnwrap(SessionName(tool: .antigravity, slug: "demo"))
+        let id = "055a398f-db14-4c5f-abbb-1bf03f8120a7"
+        let metadata = try SessionMetadata.printfTemplate(
+            tool: .antigravity, cwd: "/tmp/demo", title: "Demo",
+            startedAt: Date(timeIntervalSince1970: 0), antigravityConversationID: id
+        )
+        let command = TmuxCommandBuilder.createSession(
+            name: name, cwd: "/tmp/demo", binary: name.tool.defaultBinary,
+            metadataTemplate: metadata, antigravityConversationID: id
+        )
+        XCTAssertTrue(command.hasSuffix("'--conversation' '\(id)'"))
+        XCTAssertTrue(metadata.contains(#""cli":["%s","--conversation","#))
+        XCTAssertTrue(metadata.contains(id))
     }
 
     func testCodexSessionsUseAutomaticReviewWithTheWorkspaceSandbox() throws {

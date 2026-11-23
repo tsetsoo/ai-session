@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor | report | launch save|resume-args|show … | restart NAME ID TOOL [--force] [--chrome on|off|default] [--search on|off] [--reopen CWD [--mcp NAMES] [--worktree FOLDER BRANCH]] | close-unused [--dry-run] | upgrade claude|codex|cursor | writer NAME ID | reap | loaded NAME | resume TOOL ID.
+"""Maintain Claude/Codex status: watch | publish [--time NS] | retry | codex-path | claude-path | ensure-runtime | doctor | report | launch save|resume-args|show … | restart NAME ID TOOL [--force] [--chrome on|off|default] [--search on|off] [--reopen CWD [--mcp NAMES] [--worktree FOLDER BRANCH]] | close-unused [--dry-run] | upgrade claude|codex|cursor|antigravity | writer NAME ID | reap | loaded NAME | resume TOOL ID.
 
 resume TOOL ID  the app's one-tap Resume for a conversation paused by a usage limit: check it
                 (no question card, nothing typed, the limit has reset), take the hub's lease
@@ -64,6 +64,10 @@ def main(args):
     elif args[:1] == ["publish"]:
         observed = int(args[2]) if len(args) == 3 and args[1] == "--time" else time.time_ns()
         return 0 if publish(json.load(sys.stdin), observed) else 1
+    elif args[:1] == ["antigravity"]:
+        from ai_todo_antigravity import main as antigravity
+        from ai_todo_doctor import find_antigravity
+        return antigravity(args[1:], find_antigravity)
     elif args == ["doctor"]:
         from ai_todo_doctor import doctor
         print(json.dumps(doctor(), indent=2))

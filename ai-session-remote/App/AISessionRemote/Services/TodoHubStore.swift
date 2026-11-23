@@ -538,7 +538,7 @@ final class TodoHubStore {
             }
             throw TodoHubError.conflict("Update the hub to start several agents.")
         }
-        let message = createdHere ? firstMessage : nil
+        let message = createdHere || (conversation.tool == "antigravity" && conversation.sessionId.isEmpty) ? firstMessage : nil
         let computerName = conversation.computer.name
         let makePromptFile: PromptFileMaker? = message.map { text in
             promptFile ?? {
@@ -566,7 +566,7 @@ final class TodoHubStore {
                         model: started.model, worktreeBase: started.worktreeBase
                     )
                 }
-                guard result.exitCode != 94,
+                guard result.exitCode == 0,
                       let sessionId = ConversationStart.createdSessionId(from: result.stdout) else {
                     let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                     throw TodoHubError.conflict(
@@ -575,6 +575,9 @@ final class TodoHubStore {
                 }
                 created = sessionId
             } catch {
+                // Antigravity reconciles an existing pane with its allocation on retry.
+                // The pane could still be active even if the SSH command failed.
+                if conversation.tool == "antigravity" { throw error }
                 // The script may already have created the tmux session. Leaving it makes the
                 // next fresh open attach to a session that never printed an id.
                 _ = try? await NIOSSHClient().exec(
@@ -647,7 +650,7 @@ final class TodoHubStore {
             rows: rows,
             openFirst: { row in
                 try await self.openConversation(
-                    for: todo, tool: row.tool, config: config, mcpServers: row.tool == "cursor" ? nil : mcpServers,
+                    for: todo, tool: row.tool, config: config, mcpServers: ConversationStart.managesMCP(row.tool) ? mcpServers : nil,
                     model: row.trimmedModel, baseSha: base.sha, agents: count, firstMessage: firstMessage, promptFile: copy
                 )
             },
@@ -770,7 +773,7 @@ final class TodoHubStore {
     /// Scripts installed before MCP support reject `--mcp` with exit 64. The start is then run
     /// once more without it, as the conversation would have started before this feature.
     static func shouldRetryWithoutServers(_ result: SSHExecResult, servers: [String]?, tool: String) -> Bool {
-        result.exitCode == 64 && servers != nil && tool != "cursor"
+        result.exitCode == 64 && servers != nil && ConversationStart.managesMCP(tool)
     }
 
     /// Runs a start, and once more without `--mcp` when old scripts reject it (exit 64). Each
@@ -850,7 +853,7 @@ final class TodoHubStore {
         let createdId: String
         do {
             let result = try await start()
-            guard result.exitCode != 94,
+            guard result.exitCode == 0,
                   let sessionId = ConversationStart.createdSessionId(from: result.stdout) else {
                 let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                 throw TodoHubError.conflict(
@@ -859,6 +862,7 @@ final class TodoHubStore {
             }
             createdId = sessionId
         } catch {
+            if conversation.tool == "antigravity" { throw error }
             _ = try? await NIOSSHClient().exec(
                 config, command: TmuxCommandBuilder.killSessionExact(tmuxName: conversation.tmuxName)
             )
@@ -987,7 +991,7 @@ final class TodoHubStore {
     /// one would start with (applied only if the tool actually starts). Cursor has none, and
     /// neither does a computer whose scripts don't know `--mcp`.
     func launchServers(for conversation: Conversation) -> [String]? {
-        guard conversation.tool != "cursor", !mcpFlagUnsupported.contains(conversation.computer.id) else { return nil }
+        guard ConversationStart.managesMCP(conversation.tool), !mcpFlagUnsupported.contains(conversation.computer.id) else { return nil }
         if let servers = conversation.mcpServers { return servers }
         let todo = todos.first { $0.id == conversation.todoId }
         let computer = computers.first { $0.id == conversation.computer.id } ?? conversation.computer
@@ -1244,6 +1248,18 @@ final class TodoHubStore {
         refreshSoon()
     }
 
+    /// Removes the Todo link while keeping the conversation on its host.
+    func unlinkConversation(_ conversation: Conversation) async throws {
+        #if DEBUG
+        if demo != nil { return }
+        #endif
+        guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
+        guard !isOffline else { throw OfflineChangeError() }
+        try await forgetOnHub(client, conversation)
+        forget(conversation)
+        refreshSoon()
+    }
+
     /// Session ids already linked to a todo, as `tool/id` (matches `RemoteConversation.id`).
     var linkedConversationIDs: Set<String> {
         Set(conversations.values.map { "\($0.tool)/\($0.sessionId)" })
@@ -1445,8 +1461,10 @@ final class TodoHubStore {
     }
 
     /// Retry a research attempt that failed to start.
-    func retryAttempt(_ attempt: IdeaAttempt) async throws {
-        try await perform { client in _ = try await client.retryRun(id: attempt.runId) }
+    func retryAttempt(_ attempt: IdeaAttempt, confirmedUnsent: Bool = false) async throws {
+        try await perform { client in
+            _ = try await client.retryRun(id: attempt.runId, confirmedUnsent: confirmedUnsent)
+        }
         await loadAllIdeas()
     }
 

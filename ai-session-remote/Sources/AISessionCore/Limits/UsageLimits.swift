@@ -62,7 +62,7 @@ public struct UsageLimitWindow: Equatable, Sendable, Identifiable {
     /// Short label in the chat strip: `5h`, `week`, `opus week`, `month`, `on-demand`.
     public var title: String {
         switch kind {
-        case "5h": "5h"
+        case "5h": scope.map { "\($0) 5h" } ?? "5h"
         case "weekly": scope.map { "\($0) week" } ?? "week"
         case "monthly": scope == "on-demand" ? "on-demand" : "month"
         default: kind
@@ -87,7 +87,7 @@ public struct UsageLimitWindow: Equatable, Sendable, Identifiable {
 
     private var spoken: String {
         switch kind {
-        case "5h": "5 hour"
+        case "5h": scope.map { "5 hour \($0)" } ?? "5 hour"
         case "weekly": scope.map { "weekly \($0)" } ?? "weekly"
         case "monthly": scope.map { "monthly \($0)" } ?? "monthly"
         default: kind

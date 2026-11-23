@@ -525,8 +525,9 @@ public struct TodoHubClient: Sendable {
     }
 
     /// Retry a failed research attempt: a new run in its group.
-    public func retryRun(id: String) async throws -> JobRun {
-        try await decode(JobRun.self, send("POST", "/api/runs/\(escape(id))/retry"))
+    public func retryRun(id: String, confirmedUnsent: Bool = false) async throws -> JobRun {
+        let query = confirmedUnsent ? [URLQueryItem(name: "confirmed_unsent", value: "true")] : []
+        return try await decode(JobRun.self, send("POST", "/api/runs/\(escape(id))/retry", query: query))
     }
 
     /// Watcher issues: `open` (open or resolving) or `recent` (cleared in the last 7 days).

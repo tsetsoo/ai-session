@@ -116,9 +116,9 @@ public struct HostHealth: Decodable, Equatable, Sendable {
 
     public var outdatedRunning: [Running] { (running ?? []).filter { $0.outdated == true } }
 
-    /// Tools in display order: Claude, Codex, Cursor, then any newer one.
+    /// Tools in display order: Claude, Codex, Cursor, Antigravity, then any newer one.
     public var orderedTools: [(name: String, tool: Tool)] {
-        let order = ["claude", "codex", "cursor"]
+        let order = ["claude", "codex", "cursor", "antigravity"]
         return (tools ?? [:]).sorted { a, b in
             (order.firstIndex(of: a.key) ?? order.count, a.key) < (order.firstIndex(of: b.key) ?? order.count, b.key)
         }.map { ($0.key, $0.value) }
@@ -159,6 +159,7 @@ public struct HostHealth: Decodable, Equatable, Sendable {
         case "claude": "Claude"
         case "codex": "Codex"
         case "cursor": "Cursor"
+        case "antigravity": "Antigravity"
         default: key
         }
     }

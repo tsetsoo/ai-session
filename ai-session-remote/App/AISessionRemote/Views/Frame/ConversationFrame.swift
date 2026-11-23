@@ -251,14 +251,14 @@ struct ConversationFrame: View {
         }
         .todoRename($renameTarget, store: store, hosts: hosts)
         .confirmationDialog(
-            "Delete this conversation?",
+            conversation?.removalConfirmationTitle ?? "Delete this conversation?",
             isPresented: Binding(
                 get: { isFrontmost && showingDeleteConfirmation },
                 set: { if !$0 { showingDeleteConfirmation = false } }
             ),
             titleVisibility: .visible
         ) {
-            Button("Delete Conversation", role: .destructive) { deleteConversation() }
+            Button(conversation?.removalActionTitle ?? "Delete Conversation", role: .destructive) { deleteConversation() }
             Button("Cancel", role: .cancel) {}
         } message: {
             if let conversation {
@@ -589,8 +589,9 @@ struct ConversationFrame: View {
                     Text("Claude").tag("claude")
                     Text("Codex").tag("codex")
                     Text("Cursor").tag("cursor")
+                    Text("Antigravity").tag("antigravity")
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 .frame(maxWidth: 360)
                 .labelsHidden()
             }
@@ -648,7 +649,7 @@ struct ConversationFrame: View {
             return
         }
         let tool = ConversationStart.selectedTool(remembered: toolChoice)
-        let servers = tool == "cursor" ? nil : serverSelection.wrappedValue
+        let servers = ConversationStart.managesMCP(tool) ? serverSelection.wrappedValue : nil
         let firstMessage = StartAgents.firstMessage(firstMessageText)
         lastStartedTool = tool
         isStarting = true
@@ -673,7 +674,7 @@ struct ConversationFrame: View {
 
     /// Claude and Codex take an MCP selection; Cursor has none.
     private var usesServers: Bool {
-        agentRows.isEmpty ? toolChoice != "cursor" : agentRows.contains { $0.tool != "cursor" }
+        agentRows.isEmpty ? ConversationStart.managesMCP(toolChoice) : agentRows.contains { ConversationStart.managesMCP($0.tool) }
     }
 
     private var canStartAgents: Bool {
@@ -884,6 +885,7 @@ struct ConversationFrame: View {
             onWorkers: workersAction,
             onClose: closeConversation,
             onDelete: { showingDeleteConfirmation = true },
+            removalActionTitle: conversation?.removalActionTitle ?? "Delete Conversation",
             onReconnect: { terminal.reconnect() },
             onCopyScreen: { copyScreen() },
             onPaste: { terminal.paste() },
@@ -1237,7 +1239,7 @@ struct ConversationFrame: View {
     /// Servers…: a linked Claude or Codex conversation, with the hub online.
     private var canChangeServers: Bool {
         guard let conversation else { return false }
-        return !store.isOffline && conversation.tool != "cursor"
+        return !store.isOffline && ConversationStart.managesMCP(conversation.tool)
     }
 
     private func changeServers() {
@@ -1276,7 +1278,7 @@ struct ConversationFrame: View {
     private func restartWithChanges(_ conversation: Conversation, servers: [String]?, chrome: ChromeChoice, search: Bool?) {
         Task {
             var target = conversation
-            if conversation.tool != "cursor", servers != conversation.mcpServers {
+            if ConversationStart.managesMCP(conversation.tool), servers != conversation.mcpServers {
                 do {
                     try await store.setServers(servers, for: conversation)
                 } catch {
@@ -1322,7 +1324,7 @@ struct ConversationFrame: View {
                     failure = ActionFailure(title: "Couldn't Restart \(tool)", message: result.message ?? "The restart failed.")
                     return
                 }
-            } catch let error as RemoteRestart.OldScripts where chrome == .keep && search == nil {
+            } catch let error as RemoteRestart.OldScripts where conversation.tool != "antigravity" && chrome == .keep && search == nil {
                 // Scripts from before restart: end tmux as before, asking first while it works.
                 _ = error
                 if conversation.status == .busy, !force {
@@ -1356,6 +1358,18 @@ struct ConversationFrame: View {
     }
 
     private func deleteConversation() {
+        if let conversation, conversation.unlinksWithoutDeleting {
+            Task {
+                do {
+                    try await store.unlinkConversation(conversation)
+                    onDeleted()
+                } catch {
+                    failure = ActionFailure(title: "Couldn't Unlink Conversation",
+                                            message: TodoHubStore.message(for: error))
+                }
+            }
+            return
+        }
         perform("Couldn't Delete Conversation") { conversation, config in
             try await store.deleteConversation(conversation, config: config)
             onDeleted()
@@ -1364,6 +1378,10 @@ struct ConversationFrame: View {
 
     /// The conversation is gone from the computer: drop the link so the todo can start afresh.
     private func unlinkConversation() {
+        if conversation?.unlinksWithoutDeleting == true {
+            deleteConversation()
+            return
+        }
         perform("Couldn't Unlink Conversation") { conversation, config in
             try await store.deleteConversation(conversation, config: config)
             loader.reset()

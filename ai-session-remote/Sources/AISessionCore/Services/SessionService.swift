@@ -2,12 +2,15 @@ import Foundation
 
 public enum SessionServiceError: Error, Equatable, Sendable, LocalizedError {
     case invalidSlug(String)
+    case invalidAntigravityConversationID
     case metadataEncodingFailed
 
     public var errorDescription: String? {
         switch self {
         case let .invalidSlug(slug):
             return "\"\(slug)\" is not a valid session name. Use lowercase letters, numbers, and hyphens only."
+        case .invalidAntigravityConversationID:
+            return "Enter a valid Antigravity conversation UUID."
         case .metadataEncodingFailed:
             return "Could not prepare session metadata for this session. Please try again."
         }
@@ -64,7 +67,8 @@ public struct SessionService: Sendable {
             claude: paths["claude"] ?? nil,
             codex: paths["codex"] ?? nil,
             agent: paths["agent"] ?? nil,
-            shell: paths["bash"] ?? nil
+            shell: paths["bash"] ?? nil,
+            agy: paths["agy"] ?? nil
         )
     }
 
@@ -103,8 +107,13 @@ public struct SessionService: Sendable {
         tool: AITool,
         slug: String,
         cwd: String,
-        title: String?
+        title: String?,
+        antigravityConversationID: String? = nil
     ) async throws -> SessionName {
+        if let antigravityConversationID,
+           tool != .antigravity || UUID(uuidString: antigravityConversationID) == nil {
+            throw SessionServiceError.invalidAntigravityConversationID
+        }
         let binary = binaryOverrides[tool] ?? tool.defaultBinary
         var lastDuplicateError: SSHRemoteError?
 
@@ -121,7 +130,8 @@ public struct SessionService: Sendable {
                     tool: tool,
                     cwd: cwd,
                     title: title ?? slug,
-                    startedAt: Date()
+                    startedAt: Date(),
+                    antigravityConversationID: antigravityConversationID
                 )
             } catch {
                 throw SessionServiceError.metadataEncodingFailed
@@ -131,7 +141,8 @@ public struct SessionService: Sendable {
                 let result = try await ssh.exec(
                     config,
                     command: TmuxCommandBuilder.createSession(
-                        name: name, cwd: cwd, binary: binary, metadataTemplate: template
+                        name: name, cwd: cwd, binary: binary, metadataTemplate: template,
+                        antigravityConversationID: antigravityConversationID
                     )
                 )
                 switch result.exitCode {

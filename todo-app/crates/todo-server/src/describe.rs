@@ -171,7 +171,7 @@ fn base_description() -> Value {
             {
                 "method": "POST",
                 "path": "/api/todos/{id}/conversation",
-                "description": "Get or create the todo's conversation. Body is {tool: claude|codex|cursor}. The project supplies the computer and folder. Claude stores a new session id. Codex and Cursor store none until PUT .../conversation/session. A second open returns the existing row unchanged. Optional mcp_servers (array of MCP server names) is stored only when this call creates the conversation; 400 for an invalid name. 400 for a missing or unknown tool, or a todo with no project. 409 if the project has no computer",
+                "description": "Get or create the todo's conversation. Body is {tool: claude|codex|cursor|antigravity}. The project supplies the computer and folder. Claude stores a new session id. Codex, Cursor and Antigravity store none until PUT .../conversation/session. A second open returns the existing row unchanged. Optional mcp_servers (array of MCP server names) is stored only when this call creates the conversation; 400 for an invalid name. 400 for a missing or unknown tool, or a todo with no project. 409 if the project has no computer",
             },
             {
                 "method": "POST",
@@ -269,7 +269,7 @@ fn base_description() -> Value {
                 "todo_id": "string (UUID)",
                 "computer": "Computer {id, name, hostname, port, username, created_at, updated_at, mcp_default, tools}",
                 "cwd": "string - working directory snapshot (may start with ~)",
-                "tool": "string enum: claude | codex | cursor",
+                "tool": "string enum: claude | codex | cursor | antigravity",
                 "tmux_name": "string - ai/<tool>/todo-<first 8 chars of todo id>",
                 "session_id": "string - the tool's conversation id: claude --session-id / --resume <id>, codex resume <id>",
                 "claude_session_id": "string or null - same value as session_id for claude conversations, null for other tools; kept for older clients",
@@ -519,7 +519,7 @@ fn project_models() -> Value {
             "example_cwds": "array of string"
         },
         "Session": {
-            "tool": "string enum: claude | codex | cursor",
+            "tool": "string enum: claude | codex | cursor | antigravity",
             "session_id": "string",
             "computer_id": "string (UUID)",
             "cwd": "string (with ~)",

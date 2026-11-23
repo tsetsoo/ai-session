@@ -20,7 +20,7 @@ public enum ResearchAgents {
     /// Cursor's `agent` takes the research prompt as its first message (checked by hand
     /// 2026-11-08; ai-todo-open passes it).
     public static let cursorTakesPrompt = true
-    static let allTools = ["claude", "codex", "cursor"]
+    static let allTools = ["claude", "codex", "cursor", "antigravity"]
 
     /// The tools the sheet offers for a computer: those its runner reported, in a fixed order;
     /// all of them when it reported none.
@@ -73,7 +73,12 @@ public enum ResearchAgents {
 
     /// A failed attempt, or one its computer never picked up, can be tried again.
     public static func canRetry(_ attempt: IdeaAttempt) -> Bool {
-        ["failed", "missed"].contains(attempt.state)
+        !needsReconciliation(attempt) && ["failed", "missed"].contains(attempt.state)
+    }
+
+    public static func needsReconciliation(_ attempt: IdeaAttempt) -> Bool {
+        attempt.state == "failed" && attempt.tool == "antigravity" &&
+            (attempt.result?.hasPrefix("Antigravity launch needs reconciliation.") ?? false)
     }
 
     /// Findings saved on the idea that no attempt shows (an older `ai-todo-idea` names no

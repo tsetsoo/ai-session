@@ -2,7 +2,7 @@
 # Print the usage limits that apply on this computer for one tool's login.
 # The app runs this over SSH while a chat on that computer is open.
 #
-#   ai-todo-limits --tool claude|codex|cursor [--session ID]
+#   ai-todo-limits --tool claude|codex|cursor|antigravity [--session ID]
 #
 # Stdout is one JSON object. A window this login does not have is left out:
 # Claude is a 5-hour window, a weekly window (and a separate opus or sonnet
@@ -58,6 +58,8 @@ IFS=$ai_ifs
 export PATH="$ai_path"
 unset ai_path ai_ifs ai_dir
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 90; }
+AI_TODO_LIMITS_BIN_DIR=$(cd "$(dirname "$0")" && pwd -P)
+export AI_TODO_LIMITS_BIN_DIR
 exec python3 - "$@" <<'PY'
 import base64
 import datetime
@@ -74,7 +76,7 @@ import urllib.request
 
 HOME = os.path.expanduser("~")
 SESSION_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
-USAGE = "usage: ai-todo-limits --tool claude|codex|cursor [--session ID]"
+USAGE = "usage: ai-todo-limits --tool claude|codex|cursor|antigravity [--session ID]"
 
 
 class RequestFailed(Exception):
@@ -711,6 +713,29 @@ def fetch_with_cache(tool, fetch_windows):
     return windows
 
 
+def antigravity_windows():
+    tool = "antigravity"
+    now = time.time()
+    cache = read_cache(tool)
+    fresh = cached_windows(cache, CACHE_FRESH_SECONDS, now)
+    if fresh is not None:
+        return fresh
+    helper = os.path.join(os.environ["AI_TODO_LIMITS_BIN_DIR"], "ai-todo-status")
+    try:
+        process = subprocess.run([helper, "antigravity", "quota"], capture_output=True,
+                                 stdin=subprocess.DEVNULL, text=True, timeout=14)
+        windows = json.loads(process.stdout) if process.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        windows = None
+    if isinstance(windows, list):
+        write_cache(tool, {"at": now, "windows": windows})
+        return windows
+    stale = cached_windows(cache, CACHE_STALE_SECONDS, now)
+    if stale is not None:
+        return stale
+    raise RequestFailed()
+
+
 def emit(tool, windows):
     json.dump({"tool": tool, "windows": windows}, sys.stdout, separators=(",", ":"))
     sys.stdout.write("\n")
@@ -735,7 +760,7 @@ def main(argv):
         else:
             die(USAGE, 64)
         index += 1
-    if tool not in ("claude", "codex", "cursor"):
+    if tool not in ("claude", "codex", "cursor", "antigravity"):
         die(USAGE, 64)
     if session is not None and not SESSION_RE.fullmatch(session):
         die("session id must be a single id, not a path", 64)
@@ -744,8 +769,10 @@ def main(argv):
             windows = fetch_with_cache(tool, claude_windows)
         elif tool == "codex":
             windows = codex_limits(session)
-        else:
+        elif tool == "cursor":
             windows = fetch_with_cache(tool, cursor_windows)
+        else:
+            windows = antigravity_windows()
     except RequestFailed:
         die("usage request failed", 75)
     emit(tool, windows)

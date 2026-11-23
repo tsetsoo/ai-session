@@ -981,7 +981,7 @@ private struct ConversationColumn: View {
             canChange: hasConversation && !model.store.isOffline,
             canRename: !model.store.isOffline,
             canChangeServers: hasConversation && !model.store.isOffline
-                && model.store.displayed(forTodo: todo.id, selectedKey: model.selectedConversationID)?.tool != "cursor",
+                && ConversationStart.managesMCP(model.store.displayed(forTodo: todo.id, selectedKey: model.selectedConversationID)?.tool ?? ""),
             canRestart: hasConversation,
             isReady: state?.isReady ?? false,
             isConnected: state?.isConnected ?? false,
@@ -995,6 +995,7 @@ private struct ConversationColumn: View {
             onWorkers: Self.offersWorkers ? { send(.workers, for: todo.id) } : nil,
             onClose: { send(.close, for: todo.id) },
             onDelete: { send(.delete, for: todo.id) },
+            removalActionTitle: model.store.displayed(forTodo: todo.id, selectedKey: model.selectedConversationID)?.removalActionTitle ?? "Delete Conversation",
             onReconnect: { send(.reconnect, for: todo.id) },
             onCopyScreen: { send(.copyScreen, for: todo.id) },
             onPaste: { send(.paste, for: todo.id) },

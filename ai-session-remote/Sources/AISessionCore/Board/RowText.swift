@@ -31,6 +31,7 @@ public enum RowText {
         case "claude": return "Claude"
         case "codex": return "Codex"
         case "cursor": return "Cursor"
+        case "antigravity": return "Antigravity"
         case "shell": return "Shell"
         default: return tool
         }

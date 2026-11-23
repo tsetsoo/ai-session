@@ -505,7 +505,7 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest, helper: Option<
     // `auto`: what the runner chose by weekly headroom; an older runner says nothing → claude.
     let tool: &str = if parts.tool == "auto" {
         match req.tool.as_deref() {
-            Some(t @ ("claude" | "codex")) => t,
+            Some(t @ ("claude" | "codex" | "antigravity")) => t,
             _ => "claude",
         }
     } else {
@@ -725,33 +725,66 @@ fn start_db(conn: &Connection, run_id: &str, req: &StartRequest, helper: Option<
     })
 }
 
+const ANTIGRAVITY_RECONCILIATION: &str = "Antigravity launch needs reconciliation.";
+
+pub(crate) fn group_needs_antigravity_reconciliation(conn: &Connection, group: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM job_runs WHERE group_id = ?1 AND state = 'failed'
+          AND attempt_tool = 'antigravity' AND substr(result, 1, length(?2)) = ?2)",
+        params![group, ANTIGRAVITY_RECONCILIATION],
+        |r| r.get(0),
+    )
+}
+
+pub(crate) fn reconcile_antigravity_link(conn: &Connection, conversation: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE job_runs SET state = 'done', result = 'Antigravity session linked after recovery.',
+             updated_at = datetime('now')
+         WHERE conversation_id = ?1 AND state = 'failed'
+           AND COALESCE(attempt_tool, tool) = 'antigravity'
+           AND substr(result, 1, length(?2)) = ?2",
+        params![conversation, ANTIGRAVITY_RECONCILIATION],
+    )?;
+    Ok(())
+}
+
 fn finish_db(conn: &Connection, run_id: &str, req: &FinishRequest, helper: Option<&str>) -> Result<(), RunError> {
     if !matches!(req.state.as_str(), "done" | "failed") {
         return Err(RunError::BadRequest("state must be done or failed"));
     }
-    let tx = if helper.is_some() || req.state == "failed" {
-        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-        let run = load_run(&tx, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
-        require_claimed_computer(&run, helper)?;
-        Some(tx)
-    } else {
-        None
-    };
-    let changed = conn.execute(
-        "UPDATE job_runs SET state = ?2, result = ?3, updated_at = datetime('now') WHERE id = ?1 AND state = 'running'",
-        params![run_id, req.state, req.result.chars().take(500).collect::<String>()],
-    )?;
-    if changed == 0 {
-        return match load_run(conn, run_id)? {
-            Some(_) => Err(RunError::Conflict("Run is not running")),
-            None => Err(RunError::NotFound("Run not found")),
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let run = load_run(&tx, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
+    require_claimed_computer(&run, helper)?;
+    let result: String = req.result.chars().take(500).collect();
+    if run.state != "running" {
+        return if run.state == req.state && run.result.as_deref() == Some(result.as_str()) {
+            Ok(())
+        } else {
+            Err(RunError::Conflict("Run is not running"))
         };
     }
-    // A research run that failed to start gives its idea back, so the next run can take it.
-    if req.state == "failed" {
-        if let Some(run) = load_run(conn, run_id)? {
-            crate::watch::suspend_scrape_investigations(conn, &run.job_id)?;
-        }
+    let needs_reconciliation = req.state == "failed"
+        && result.starts_with(ANTIGRAVITY_RECONCILIATION)
+        && tx.query_row(
+            "SELECT COALESCE(attempt_tool, tool, '') = 'antigravity' FROM job_runs WHERE id = ?1",
+            [run_id], |row| row.get::<_, bool>(0),
+        )?;
+    let linked = needs_reconciliation && tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM job_runs r JOIN conversations c ON c.id = r.conversation_id
+          WHERE r.id = ?1 AND c.tool = 'antigravity' AND COALESCE(c.session_id, '') != '')",
+        [run_id], |row| row.get::<_, bool>(0),
+    )?;
+    let (state, result) = if linked {
+        ("done", "Antigravity session linked after recovery.")
+    } else {
+        (req.state.as_str(), result.as_str())
+    };
+    tx.execute(
+        "UPDATE job_runs SET state = ?2, result = ?3, updated_at = datetime('now') WHERE id = ?1",
+        params![run_id, state, result],
+    )?;
+    if req.state == "failed" && !needs_reconciliation {
+        crate::watch::suspend_scrape_investigations(&tx, &run.job_id)?;
         conn.execute(
             "UPDATE ideas SET status = 'new', run_id = NULL, todo_id = NULL, updated_at = datetime('now')
              WHERE run_id = ?1 AND status = 'researching' AND group_id IS NULL",
@@ -759,9 +792,7 @@ fn finish_db(conn: &Connection, run_id: &str, req: &FinishRequest, helper: Optio
         )?;
         fail_attempt(conn, run_id)?;
     }
-    if let Some(tx) = tx {
-        tx.commit()?;
-    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -785,7 +816,7 @@ pub(crate) fn fail_attempt(conn: &Connection, run_id: &str) -> rusqlite::Result<
         params![group_id],
         |r| r.get(0),
     )?;
-    if alive {
+    if alive || group_needs_antigravity_reconciliation(conn, &group_id)? {
         return Ok(());
     }
     let todo: Option<String> = conn.query_row("SELECT todo_id FROM run_groups WHERE id = ?1", params![group_id], |r| r.get(0)).optional()?.flatten();
@@ -808,12 +839,17 @@ pub(crate) fn fail_attempt(conn: &Connection, run_id: &str) -> rusqlite::Result<
 
 /// Retry a failed research attempt: a new run in its group, with the same tool and model.
 /// The failed one stays in the run history; the idea lists the new one in its place.
-fn retry_run_db(conn: &Connection, run_id: &str) -> Result<JobRun, RunError> {
+fn retry_run_db(conn: &Connection, run_id: &str, confirmed_unsent: bool) -> Result<JobRun, RunError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let run = load_run(&tx, run_id)?.ok_or(RunError::NotFound("Run not found"))?;
     let Some(group_id) = run.group_id.as_deref().filter(|_| matches!(run.state.as_str(), "failed" | "missed")) else {
         return Err(RunError::Conflict("Only a failed attempt can be retried"));
     };
+    let needs_reconciliation = run.attempt_tool.as_deref() == Some("antigravity")
+        && run.result.as_deref().is_some_and(|text| text.starts_with(ANTIGRAVITY_RECONCILIATION));
+    if needs_reconciliation && !confirmed_unsent {
+        return Err(RunError::Conflict("Check the original Antigravity conversation before starting another attempt"));
+    }
     let retried: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM job_runs WHERE retry_of = ?1)", params![run_id], |r| r.get(0))?;
     if retried {
         return Err(RunError::Conflict("This attempt was already retried"));
@@ -828,6 +864,10 @@ fn retry_run_db(conn: &Connection, run_id: &str) -> Result<JobRun, RunError> {
          VALUES (?1, ?2, datetime('now'), 'due', ?3, ?4, ?5, ?6, ?7)",
         params![id, run.job_id, run.note, group_id, run.attempt_tool, run.attempt_model, run_id],
     )?;
+    if needs_reconciliation {
+        tx.execute("UPDATE job_runs SET result = 'Original Antigravity prompt confirmed unsent.' WHERE id = ?1", [run_id])?;
+        fail_attempt(&tx, run_id)?;
+    }
     let new = load_run(&tx, &id)?.ok_or(RunError::NotFound("Run not found"))?;
     tx.commit()?;
     Ok(new)
@@ -968,8 +1008,14 @@ pub async fn start(
     with_conn!(pool, broadcaster, |c: &Connection| start_db(c, &path, &body, helper.as_ref().map(|helper| helper.0.as_str())), |v| HttpResponse::Ok().json(v))
 }
 
-pub async fn retry(pool: web::Data<DbPool>, path: web::Path<String>, broadcaster: web::Data<Broadcaster>) -> HttpResponse {
-    with_conn!(pool, broadcaster, |c: &Connection| retry_run_db(c, &path), |v| HttpResponse::Created().json(v))
+pub async fn retry(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let confirmed_unsent = query.get("confirmed_unsent").is_some_and(|value| value == "true");
+    with_conn!(pool, broadcaster, |c: &Connection| retry_run_db(c, &path, confirmed_unsent), |v| HttpResponse::Created().json(v))
 }
 
 pub async fn finish(
@@ -1252,6 +1298,30 @@ mod tests {
         assert!(started.is_some());
         let (status, _) = post(&pool, "/api/runs/r/start", json!({"cwd": "~/x", "is_git": true})).await;
         assert_eq!(status, StatusCode::CONFLICT, "a run starts once");
+    }
+
+    #[actix_web::test]
+    async fn antigravity_run_links_the_session_allocated_by_the_host() {
+        let (_db, pool) = pool("runner-antigravity");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        job(&conn, "j", "pa", Some("mac"), "background", WAIT);
+        conn.execute("UPDATE jobs SET action=json_set(action, '$.tool', 'antigravity') WHERE id='j'", [])
+            .unwrap();
+        run(&conn, "r", "j", "due");
+        assert_eq!(post(&pool, "/api/runs/r/claim", json!({"computer_id": "mac"})).await.0, StatusCode::OK);
+        let (code, started) = post(&pool, "/api/runs/r/start", json!({"cwd": "~/a", "is_git": true})).await;
+        assert_eq!(code, StatusCode::OK, "{started}");
+        assert_eq!(started["tool"], "antigravity");
+        assert!(started["tmux_name"].as_str().unwrap().starts_with("ai/antigravity/todo-"));
+        assert_eq!(started["session_id"], "");
+        let id = started["conversation_id"].as_str().unwrap();
+        let sid = "055a398f-db14-4c5f-abbb-1bf03f8120a7";
+        let (code, linked) = crate::test_support::put(
+            &pool, &format!("/api/conversations/{id}/session"), json!({"session_id": sid}),
+        ).await;
+        assert_eq!(code, StatusCode::OK, "{linked}");
+        assert_eq!(linked["session_id"], sid);
     }
 
     #[actix_web::test]
@@ -2016,6 +2086,65 @@ mod group_runner_tests {
         let todos: i64 = conn.query_row("SELECT COUNT(*) FROM todos WHERE id = ?1", [&todo], |r| r.get(0)).unwrap();
         assert_eq!(todos, 0);
         assert_eq!(post(&pool, "/api/ideas/idea/research", json!({"attempts": [{"tool": "claude"}]})).await.0, StatusCode::CREATED);
+    }
+
+    #[actix_web::test]
+    async fn retry_refuses_an_unconfirmed_antigravity_launch() {
+        let (_db, pool) = pool("runner-antigravity-retry");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (runs, todo) = research(&pool, "mac", json!([{"tool": "antigravity"}, {"tool": "codex"}])).await;
+        let run = &runs[0];
+        claim(&pool, run, "mac", Some("abcdef1")).await;
+        start(&pool, run).await;
+        let (code, body) = post(&pool, &format!("/api/runs/{run}/finish"), json!({
+            "state": "failed",
+            "result": "Antigravity launch needs reconciliation. Check the pane."
+        })).await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        let (code, body) = post(&pool, &format!("/api/runs/{run}/retry"), json!({})).await;
+        assert_eq!(code, StatusCode::CONFLICT, "{body}");
+        assert!(body.to_string().contains("Check the original Antigravity conversation"), "{body}");
+        claim(&pool, &runs[1], "mac", None).await;
+        finish(&pool, &runs[1], "failed").await;
+        let (status, linked_todo): (String, String) = conn.query_row(
+            "SELECT status, todo_id FROM ideas WHERE id = 'idea'", [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!((status.as_str(), linked_todo.as_str()), ("researching", todo.as_str()));
+        let conversation_status: String = conn.query_row(
+            "SELECT c.status FROM conversations c JOIN job_runs r ON r.conversation_id = c.id WHERE r.id = ?1",
+            [run], |row| row.get(0),
+        ).unwrap();
+        assert_ne!(conversation_status, "closed");
+        let (code, body) = post(&pool, "/api/ideas/idea/research", json!({"attempts": [{"tool": "antigravity"}]})).await;
+        assert_eq!(code, StatusCode::CONFLICT, "{body}");
+        let (code, body) = post(&pool, &format!("/api/runs/{run}/retry?confirmed_unsent=true"), json!({})).await;
+        assert_eq!(code, StatusCode::CREATED, "{body}");
+        assert_eq!(body["attempt_tool"], "antigravity");
+    }
+
+    #[actix_web::test]
+    async fn recovered_antigravity_link_resolves_the_pending_run() {
+        let (_db, pool) = pool("runner-antigravity-recovered");
+        let conn = pool.get().unwrap();
+        seed(&conn);
+        let (runs, _) = research(&pool, "mac", json!([{"tool": "antigravity"}])).await;
+        let run = &runs[0];
+        claim(&pool, run, "mac", Some("abcdef1")).await;
+        let (code, started) = start(&pool, run).await;
+        assert_eq!(code, StatusCode::OK, "{started}");
+        let finish_url = format!("/api/runs/{run}/finish");
+        let outcome = json!({"state": "failed", "result": "Antigravity launch needs reconciliation. Test"});
+        assert_eq!(post(&pool, &finish_url, outcome.clone()).await.0, StatusCode::OK);
+        assert_eq!(post(&pool, &finish_url, outcome).await.0, StatusCode::OK);
+        let conversation = started["conversation_id"].as_str().unwrap();
+        let (code, body) = crate::test_support::put(&pool, &format!("/api/conversations/{conversation}/session"),
+            json!({"session_id": "055a398f-db14-4c5f-abbb-1bf03f8120a7", "expected_session_id": ""})).await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        let recovered = super::load_run(&conn, run).unwrap().unwrap();
+        assert_eq!(recovered.state, "done");
+        assert_eq!(recovered.result.as_deref(), Some("Antigravity session linked after recovery."));
+        assert_eq!(post(&pool, &format!("/api/runs/{run}/retry?confirmed_unsent=true"), json!({})).await.0, StatusCode::CONFLICT);
     }
 
     #[actix_web::test]

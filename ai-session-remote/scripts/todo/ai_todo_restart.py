@@ -186,10 +186,22 @@ def takeover(name, sid):
     return 0, dict(result, result="taken_over", stopped_pids=stopped)
 
 
-def conversation_state(tool, sid):
+def conversation_state(tool, sid, name=None):
     """{"state": busy | waiting | idle | unknown, "tasks": n}: the cautious one of the last
     published state and the live runtime's, waiting before busy before idle."""
-    record = status.read_json(status.root() / (("claude." if tool == "claude" else "") + sid + ".json"), {}) or {}
+    if tool == "antigravity":
+        from ai_todo_antigravity import pane_identity, pane_state
+        try:
+            snapshot = pane_state(sid, pane_identity("=" + name + ":", tmux_args())) if name else None
+        except (OSError, subprocess.TimeoutExpired):
+            snapshot = None
+        if not snapshot:
+            return {"state": "unknown", "tasks": 0}
+        fresh = 0 <= time.time_ns() - snapshot.get("observed_ns", 0) <= 30_000_000_000
+        state = snapshot["state"]
+        return {"state": state if fresh or state == "mismatch" else "unknown", "tasks": snapshot["tasks"]}
+    prefix = "claude." if tool == "claude" else ""
+    record = status.read_json(status.root() / (prefix + sid + ".json"), {}) or {}
     body = record.get("body") if isinstance(record.get("body"), dict) else {}
     seen = [body.get("status")]
     if tool in ("claude", "codex"):
@@ -267,17 +279,19 @@ def wait_for_writer(name, sid, wait_s=None):
 
 
 def installed_version(tool):
-    finder = {"claude": status.find_claude, "codex": status.find_codex, "cursor": doctor.find_cursor}[tool]
+    finder = {"claude": status.find_claude, "codex": status.find_codex, "cursor": doctor.find_cursor,
+              "antigravity": doctor.find_antigravity}[tool]
     try:
         binary = finder()
     except FileNotFoundError:
         return None
-    return doctor.path_version(os.path.realpath(binary))
+    resolved = os.path.realpath(binary)
+    return doctor.binary_version(binary, resolved) if tool == "antigravity" else doctor.path_version(resolved)
 
 
 def reopen(name, cwd, sid, tool, mcp, worktree=None):
     open_bin = os.environ.get("AI_TODO_OPEN_BIN") or str(Path(__file__).with_name("ai-todo-open"))
-    argv = [open_bin, "--detached"] + (["--mcp", mcp] if mcp is not None and tool != "cursor" else []) \
+    argv = [open_bin, "--detached"] + (["--mcp", mcp] if mcp is not None and tool in ("claude", "codex") else []) \
         + (["--worktree", worktree[0], worktree[1]] if worktree else []) + [name, cwd, sid, tool]
     result = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL,
                             timeout=WORKTREE_OPEN_TIMEOUT_S if worktree else OPEN_TIMEOUT_S)
@@ -290,7 +304,7 @@ def reopen(name, cwd, sid, tool, mcp, worktree=None):
 
 def restart(name, sid, tool, force=False, chrome="keep", cwd=None, mcp=None, worktree=None, search="keep"):
     """The steps in the module's docstring; returns (exit code, result)."""
-    if tool not in ("claude", "codex", "cursor") or not name.startswith("ai/%s/todo-" % tool):
+    if tool not in ("claude", "codex", "cursor", "antigravity") or not name.startswith("ai/%s/todo-" % tool):
         raise ValueError("invalid tmux name or tool")
     launch.record_path(tool, sid)  # validates the id
     result = {"tmux": name, "session_id": sid, "tool": tool}
@@ -301,11 +315,20 @@ def restart(name, sid, tool, force=False, chrome="keep", cwd=None, mcp=None, wor
         # A session whose CLI the doctor can't find (starting, or behind a wrapper) can't be
         # read either: it may be in a turn.
         return REFUSED, dict(result, result="refused", reason="unknown", message=MESSAGES["unknown"])
+    if running and tool == "antigravity" and (not entry or entry.get("tool") != tool or entry.get("session_id") != sid):
+        return REFUSED, dict(result, result="refused", reason="unknown", message=MESSAGES["unknown"])
     if running and entry:
-        state = conversation_state(tool, sid)
+        state = conversation_state(tool, sid, name) if tool == "antigravity" else conversation_state(tool, sid)
         result["state"] = state["state"]
         if state["tasks"]:
             return REFUSED, dict(result, result="refused", reason="background", message=MESSAGES["background"])
+        if tool == "antigravity":
+            if state["state"] == "mismatch":
+                return REFUSED, dict(result, result="refused", reason="mismatch",
+                                     message="The pane switched to another Antigravity conversation.")
+            if not force:
+                return REFUSED, dict(result, result="refused", reason="unknown",
+                                     message="Current Antigravity activity cannot be verified. Check the pane before confirming a restart.")
         if state["state"] != "idle" and not force:
             return REFUSED, dict(result, result="refused", reason=state["state"], message=MESSAGES[state["state"]])
     if chrome != "keep" and tool == "claude":

@@ -164,7 +164,7 @@ public enum StartAgents {
     /// The rows in the order they open: the first Claude or Codex row moves to the front,
     /// because added agents copy the first one's MCP selection and Cursor has none.
     public static func openingOrder(_ rows: [ResearchAgentRow]) -> [ResearchAgentRow] {
-        guard let index = rows.firstIndex(where: { $0.tool != "cursor" }), index > 0 else { return rows }
+        guard let index = rows.firstIndex(where: { ConversationStart.managesMCP($0.tool) }), index > 0 else { return rows }
         var ordered = rows
         ordered.insert(ordered.remove(at: index), at: 0)
         return ordered

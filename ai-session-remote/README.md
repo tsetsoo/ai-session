@@ -26,10 +26,34 @@ Mac or Linux machine), with:
 - Tailscale installed, signed in, and able to resolve or reach the hostname
 - `sshd` enabled and accepting the configured user
 - `tmux` installed (`brew install tmux` on macOS or `apt install tmux` on Debian/Ubuntu)
-- The selected CLI on the SSH user's `PATH`: `claude`, `codex`, or `agent`
+- The selected CLI on the SSH user's `PATH`: `claude`, `codex`, `agent`, or `agy`
 
 The app starts and attaches sessions through SSH; it does not install or configure these
 host dependencies.
+
+To use Antigravity, install [Antigravity CLI](https://antigravity.google/docs/cli/tutorial) on
+the host as the SSH user, then choose **Antigravity** in **New Session**. If prompted,
+complete Google’s sign-in in the terminal using the URL and code it shows. Reopen a live
+session from the app. To reopen a saved conversation after its tmux session ends, start
+Antigravity again in the project directory and use `/resume`, or enter the conversation’s
+UUID in **New Session**. Use `/usage` to check your quota.
+
+With current host helpers, **Computer Health** shows the installed Antigravity CLI version
+and sign-in state. For Google’s standard install, **Update** runs `agy update` on the host.
+Sign in as the SSH user and complete Antigravity’s first-run screens before scheduling
+unattended work. If a Todo launch is waiting for first-run setup or workspace trust, open its
+pane from the computer’s **Other Sessions** and review the prompt there. A Todo reconnect
+waits for a new status report from that pane. If initial message delivery is uncertain,
+check the history before sending it again.
+An unconfirmed research launch stays with its original attempt. Reopening and linking a
+confirmed session resolves it. If the original pane has stopped and you verified it never
+received the prompt, use **Resolve…** on the idea’s attempt to confirm and retry.
+Restarting a running Antigravity conversation requires explicit confirmation.
+
+With the updated Todo Hub server, choose **Antigravity** when starting a Todo conversation,
+adding an agent, or configuring a research attempt or scheduled conversation. The Todo
+uses Antigravity’s conversation ID across launches and shows quota usage by model group.
+Antigravity uses its own configured MCP servers for these sessions.
 
 ## Import an SSH key
 

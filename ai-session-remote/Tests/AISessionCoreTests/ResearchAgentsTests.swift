@@ -15,8 +15,8 @@ final class ResearchAgentsTests: XCTestCase {
     }
 
     func testOfferedTools() {
-        XCTAssertEqual(ResearchAgents.offeredTools(installed: nil, cursorSupported: true), ["claude", "codex", "cursor"])
-        XCTAssertEqual(ResearchAgents.offeredTools(installed: nil, cursorSupported: false), ["claude", "codex"])
+        XCTAssertEqual(ResearchAgents.offeredTools(installed: nil, cursorSupported: true), ["claude", "codex", "cursor", "antigravity"])
+        XCTAssertEqual(ResearchAgents.offeredTools(installed: nil, cursorSupported: false), ["claude", "codex", "antigravity"])
         XCTAssertEqual(ResearchAgents.offeredTools(installed: ["codex"], cursorSupported: true), ["codex"])
         XCTAssertEqual(ResearchAgents.offeredTools(installed: ["cursor", "claude"], cursorSupported: true), ["claude", "cursor"])
     }
@@ -68,6 +68,14 @@ final class ResearchAgentsTests: XCTestCase {
         XCTAssertEqual(ResearchAgents.stateText(IdeaAttempt(runId: "r", tool: "claude", state: "done")), "Working…")
         XCTAssertEqual(ResearchAgents.stateText(IdeaAttempt(runId: "r", tool: "claude", state: "failed", result: "no folder")), "Failed: no folder")
         XCTAssertNil(ResearchAgents.stateText(IdeaAttempt(runId: "r", tool: "claude", state: "done", findings: "x")))
+    }
+
+    func testUnconfirmedAntigravityAttemptDoesNotOfferRetry() {
+        let uncertain = IdeaAttempt(runId: "r", tool: "antigravity", state: "failed",
+                                    result: "Antigravity launch needs reconciliation. Check the pane.")
+        XCTAssertFalse(ResearchAgents.canRetry(uncertain))
+        let failed = IdeaAttempt(runId: "r", tool: "antigravity", state: "failed", result: "No CLI installed")
+        XCTAssertTrue(ResearchAgents.canRetry(failed))
     }
 
     func testMissedAttemptCanBeRetried() {

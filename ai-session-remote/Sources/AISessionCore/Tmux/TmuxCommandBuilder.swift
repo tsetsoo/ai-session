@@ -2,7 +2,7 @@ import Foundation
 public enum TmuxCommandBuilder {
     /// Non-interactive SSH sessions often omit Homebrew paths that login shells have
     /// (e.g. `/opt/homebrew/bin` on Apple Silicon). Prefix every remote command so
-    /// `tmux` / `claude` / `codex` / `agent` resolve the same way as in a normal terminal.
+    /// `tmux` / `claude` / `codex` / `agent` / `agy` resolve the same way as in a normal terminal.
     /// Linuxbrew only off macOS (no `/System`): there `/home` is an automount, and every
     /// command lookup that reached it cost a directory-service round trip.
     private static let pathExport =
@@ -81,7 +81,7 @@ public enum TmuxCommandBuilder {
         model: String? = nil, worktreeBase: String? = nil
     ) -> String {
         var command = (detached ? "AI_TODO_OPEN_DETACH=1 " : "") + "exec \"$HOME/.ai-remote/bin/ai-todo-open\""
-        if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
+        if let mcpServers, ConversationStart.managesMCP(tool) { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
         command += worktreeArguments(worktree) + startArguments(worktreeBase: worktreeBase, model: model)
             + promptFileArgument(promptFile)
         command += " \(shellQuote(tmuxName)) \(shellQuote(cwd)) \(shellQuote(sessionId))"
@@ -223,7 +223,7 @@ public enum TmuxCommandBuilder {
         model: String? = nil, worktreeBase: String? = nil
     ) -> String {
         var command = "AI_TODO_OPEN_DETACH=1 exec \"$HOME/.ai-remote/bin/ai-todo-open\""
-        if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
+        if let mcpServers, ConversationStart.managesMCP(tool) { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
         command += worktreeArguments(worktree) + startArguments(worktreeBase: worktreeBase, model: model)
             + promptFileArgument(promptFile) + " "
         command += "\(shellQuote(tmuxName)) \(shellQuote(cwd)) - \(shellQuote(tool))"
@@ -248,7 +248,7 @@ public enum TmuxCommandBuilder {
     /// Whether `ai-todo-open` gives this tool a first message (`--prompt-file`). Cursor takes it
     /// too (`ResearchAgents.cursorTakesPrompt`), so agents started in the background get theirs.
     public static func takesFirstPrompt(tool: String) -> Bool {
-        tool == "claude" || tool == "codex" || (tool == "cursor" && ResearchAgents.cursorTakesPrompt)
+        tool == "claude" || tool == "codex" || tool == "antigravity" || (tool == "cursor" && ResearchAgents.cursorTakesPrompt)
     }
 
     /// The commit new worktrees of `folder`'s repo start from (`<sha> <ref>`, after a fetch).
@@ -351,7 +351,7 @@ public enum TmuxCommandBuilder {
         if let search, tool == "codex" { command += " --search \(search ? "on" : "off")" }
         if let reopenCwd {
             command += " --reopen \(shellQuote(reopenCwd))"
-            if let mcpServers, tool != "cursor" { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
+            if let mcpServers, ConversationStart.managesMCP(tool) { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
             command += worktreeArguments(worktree)
         }
         return wrap(command)
@@ -362,7 +362,7 @@ public enum TmuxCommandBuilder {
         wrap("\"$HOME/.ai-remote/bin/ai-todo-status\" takeover \(shellQuote(tmuxName)) \(shellQuote(sessionId))")
     }
 
-    /// Installs the latest version of one agent CLI (claude, codex or cursor) the way it was
+    /// Installs the latest version of an agent CLI the way it was
     /// installed (`UpgradeResult` JSON). Only on the user's request; it can take minutes.
     public static func upgradeTool(_ tool: String) -> String {
         wrap("\"$HOME/.ai-remote/bin/ai-todo-status\" upgrade \(shellQuote(tool))")
@@ -417,7 +417,7 @@ public enum TmuxCommandBuilder {
     public static func probeBinaries() -> String {
         wrap(
             """
-            printf 'tmux:%s\\n' "$(command -v tmux || echo MISSING)"; printf 'claude:%s\\n' "$(command -v claude || echo MISSING)"; printf 'codex:%s\\n' "$(command -v codex || echo MISSING)"; printf 'agent:%s\\n' "$(command -v agent || echo MISSING)"; printf 'bash:%s\\n' "$(command -v bash || echo MISSING)"
+            printf 'tmux:%s\\n' "$(command -v tmux || echo MISSING)"; printf 'claude:%s\\n' "$(command -v claude || echo MISSING)"; printf 'codex:%s\\n' "$(command -v codex || echo MISSING)"; printf 'agent:%s\\n' "$(command -v agent || echo MISSING)"; printf 'bash:%s\\n' "$(command -v bash || echo MISSING)"; printf 'agy:%s\\n' "$(command -v agy || echo MISSING)"
             """
         )
     }
@@ -454,16 +454,20 @@ public enum TmuxCommandBuilder {
         name: SessionName,
         cwd: String,
         binary: String,
-        metadataTemplate: String
+        metadataTemplate: String,
+        antigravityConversationID: String? = nil
     ) -> String {
         let file = SessionMetadataStore.filename(for: name.tmuxName)
-        let arguments = name.tool.defaultArguments.map(shellQuote).joined(separator: " ")
+        let arguments = name.tool.launchArguments(antigravityConversationID: antigravityConversationID)
+            .map(shellQuote).joined(separator: " ")
+        // Antigravity uses the SSH connection to choose its manual sign-in flow.
+        let environment = name.tool == .antigravity ? #"env SSH_CONNECTION="${SSH_CONNECTION:-}" "# : ""
         return wrap(
             """
             p=$(command -v \(shellQuote(binary))) || exit 90
             mkdir -p ~/.ai-remote/sessions || exit 91
             printf \(shellQuote(metadataTemplate)) "$p" > ~/.ai-remote/sessions/\(shellQuote(file)) || exit 92
-            exec tmux new-session -d -s \(shellQuote(name.tmuxName)) -c \(shellQuotePath(cwd)) -- "$p"\(arguments.isEmpty ? "" : " " + arguments)
+            exec tmux new-session -d -s \(shellQuote(name.tmuxName)) -c \(shellQuotePath(cwd)) -- \(environment)"$p"\(arguments.isEmpty ? "" : " " + arguments)
             """
         )
     }

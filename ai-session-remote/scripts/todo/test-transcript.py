@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+from pathlib import Path
 import tempfile
 import unittest
 import unittest.mock
@@ -53,6 +54,29 @@ class TranscriptTests(unittest.TestCase):
             {"message": {"role": "assistant", "content": [{"type": "text", "text": self.text}]}},
         ])
         self.assertEqual(result, [{"role": "user", "text": self.text}, {"role": "assistant", "text": self.text}])
+
+    def test_antigravity_reads_saved_text_and_preserves_incremental_ids(self):
+        sid = "055a398f-db14-4c5f-abbb-1bf03f8120a7"
+        records = [
+            {"type": "USER_INPUT", "source": "USER_EXPLICIT", "status": "DONE",
+             "content": f"<USER_REQUEST>\n{self.text}\n</USER_REQUEST>\n"
+                        "<ADDITIONAL_METADATA>\ncontext\n</ADDITIONAL_METADATA>"},
+            {"type": "PLANNER_RESPONSE", "source": "MODEL", "status": "DONE", "content": None},
+            {"type": "RUN_COMMAND", "source": "MODEL", "status": "DONE", "content": "secret output"},
+            {"type": "PLANNER_RESPONSE", "source": "MODEL", "status": "DONE", "content": self.text},
+        ]
+        with tempfile.TemporaryDirectory() as root, unittest.mock.patch.object(transcript, "ANTIGRAVITY_BRAIN", root):
+            path = Path(root) / sid / ".system_generated" / "logs" / "transcript.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_text("".join(json.dumps(record) + "\n" for record in records))
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = transcript.main(["antigravity", sid, "--json", "--activity", "--after", "0"])
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(output.getvalue()),
+                             [{"role": "assistant", "text": self.text, "id": "3.0"}])
+            self.assertEqual(list(transcript.antigravity_lines(path))[0], {"role": "user", "text": self.text})
+            self.assertEqual(transcript.find_paths("antigravity", "*"), [])
 
     def read_activity(self, reader, entries):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl") as handle:

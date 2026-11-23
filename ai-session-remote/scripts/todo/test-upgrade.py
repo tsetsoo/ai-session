@@ -80,6 +80,21 @@ class UpgradeTests(unittest.TestCase):
         # Its own folder is on PATH (the native installer warns, and may stop, without it).
         self.assertIn("PATH=" + str(link.parent) + os.pathsep, self.log.read_text())
 
+    def test_antigravity_native_updates_via_status_command(self):
+        link = self.home / ".local/bin/agy"
+        old = fake(self.home / "old" / "agy", "1.5.0")
+        new = fake(self.home / "new" / "agy", "1.5.1")
+        link.parent.mkdir(parents=True)
+        link.symlink_to(old)
+        os.environ.update(FAKE_LINK=str(link), FAKE_NEXT=str(new))
+        os.environ.pop("AI_TODO_AGY_BIN", None)
+        os.environ["PATH"] = str(link.parent) + os.pathsep + os.environ["PATH"]
+        code, result = upgrade.main(["antigravity"])
+        self.assertEqual((code, result["result"], result["before"], result["after"]),
+                         (0, "updated", "1.5.0", "1.5.1"))
+        self.assertEqual(result["command"], "~/.local/bin/agy update")
+        self.assertEqual(self.updater_calls(), ["update"])
+
     def test_already_current(self):
         self.claude_native()
         os.environ["FAKE_MODE"] = "current"

@@ -133,7 +133,7 @@ struct SessionsListView: View {
         ContentUnavailableView {
             Label("No Sessions", systemImage: "terminal")
         } description: {
-            Text("Start Claude, Codex, Cursor, or a shell on \(hostTitle). It keeps running after you leave.")
+            Text("Start an AI agent or a shell on \(hostTitle). It keeps running after you leave.")
         } actions: {
             Button {
                 showingNewSession = true

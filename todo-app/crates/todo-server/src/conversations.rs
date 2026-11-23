@@ -27,7 +27,7 @@ use crate::projects::project_for;
 use crate::push::{PushNotifier, Transition};
 
 /// Tools a conversation may use (matches `db::TOOLS_SQL`).
-pub(crate) const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor"];
+pub(crate) const SUPPORTED_TOOLS: &[&str] = &["claude", "codex", "cursor", "antigravity"];
 
 pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, created_at, updated_at, mcp_default";
 
@@ -638,7 +638,7 @@ fn duplicate_in(
         true,
         Some(label),
         // Cursor has no MCP selection.
-        if tool == "cursor" { None } else { source.mcp_servers.as_deref() },
+        if matches!(tool, "cursor" | "antigravity") { None } else { source.mcp_servers.as_deref() },
     )?
     else {
         return Err(OpenError::NoTmuxName);
@@ -727,6 +727,9 @@ fn set_session_on(
     }
     if let Some(scope) = &scope {
         authorize_scoped_conversation(&tx, scope, &conversation)?;
+    }
+    if conversation.tool == "antigravity" {
+        crate::runner_api::reconcile_antigravity_link(&tx, conversation_id)?;
     }
     tx.commit()?;
     Ok(conversation)
@@ -1819,14 +1822,23 @@ pub async fn set_conversation_session_by_id(
         if session.is_empty() {
             return bad_request("session_id is required");
         }
-        return match conn.execute(
+        let updated = (|| -> rusqlite::Result<usize> {
+            let tx = conn.unchecked_transaction()?;
+            let changed = tx.execute(
             "UPDATE conversations AS c SET session_id = ?1
              WHERE c.id = ?2 AND c.computer_id = ?3 AND c.status != 'closed'
                AND (?4 IS NULL OR COALESCE(c.session_id, '') = ?4 OR c.session_id = ?1)
                AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.tool = c.tool
                    AND s.session_id = ?1 AND s.computer_id != ?3)",
             params![session, id, helper.0, body.expected_session_id.as_deref()],
-        ) {
+            )?;
+            if changed != 0 {
+                crate::runner_api::reconcile_antigravity_link(&tx, &id)?;
+            }
+            tx.commit()?;
+            Ok(changed)
+        })();
+        return match updated {
             Ok(0) => not_found("Conversation not found"),
             Ok(_) => {
                 broadcaster.send();

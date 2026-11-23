@@ -52,6 +52,16 @@ final class ConversationRowActions {
     }
 
     func delete(_ conversation: Conversation, store: TodoHubStore, hosts: [HostEntity]) {
+        if conversation.unlinksWithoutDeleting {
+            Task {
+                do {
+                    try await store.unlinkConversation(conversation)
+                } catch {
+                    failure = Failure(title: "Couldn't Unlink Conversation", message: TodoHubStore.message(for: error))
+                }
+            }
+            return
+        }
         run("Couldn't Delete Conversation", conversation, hosts: hosts) { config in
             try await store.deleteConversation(conversation, config: config)
         }
@@ -147,6 +157,7 @@ final class ConversationRowActions {
         case "claude": "Claude"
         case "codex": "Codex"
         case "agent", "cursor-agent": "Cursor"
+        case "agy": "Antigravity"
         default: nil
         }
     }
@@ -222,12 +233,12 @@ private struct ConversationActionsPresenter: ViewModifier {
     func body(content: Content) -> some View {
         content
             .confirmationDialog(
-                "Delete this conversation?",
+                actions.deleteTarget?.removalConfirmationTitle ?? "Delete this conversation?",
                 isPresented: Binding(get: { actions.deleteTarget != nil }, set: { if !$0 { actions.deleteTarget = nil } }),
                 titleVisibility: .visible,
                 presenting: actions.deleteTarget
             ) { conversation in
-                Button("Delete Conversation", role: .destructive) {
+                Button(conversation.removalActionTitle, role: .destructive) {
                     actions.delete(conversation, store: store, hosts: hosts)
                 }
                 Button("Cancel", role: .cancel) {}
@@ -375,7 +386,7 @@ private struct ConversationRowMenu: ViewModifier {
                     Button(role: .destructive) {
                         actions.deleteTarget = conversation
                     } label: {
-                        Label("Delete Conversation…", systemImage: "trash")
+                        Label(conversation.removalActionTitle + "…", systemImage: "trash")
                     }
                 }
             }

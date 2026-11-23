@@ -42,6 +42,7 @@ final class HandoffPromptTests: XCTestCase {
         XCTAssertTrue(TmuxCommandBuilder.takesFirstPrompt(tool: "claude"))
         XCTAssertTrue(TmuxCommandBuilder.takesFirstPrompt(tool: "codex"))
         XCTAssertTrue(TmuxCommandBuilder.takesFirstPrompt(tool: "cursor"))
+        XCTAssertTrue(TmuxCommandBuilder.takesFirstPrompt(tool: "antigravity"))
     }
 
     func testStartPlansGoInAsTheFirstPromptForClaudeAndCodex() {

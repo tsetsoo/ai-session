@@ -4,6 +4,7 @@ public enum ResumeCommand {
         let resume: String
         switch c.tool {
         case "codex": resume = "codex resume \(c.sessionId)"
+        case "antigravity": resume = "agy --conversation \(quote(c.sessionId))"
         case "cursor": resume = "agent --resume \(c.sessionId)"
         default: resume = "\(c.tool) --resume \(c.sessionId)"
         }

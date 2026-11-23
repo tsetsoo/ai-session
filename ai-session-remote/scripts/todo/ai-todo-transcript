@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print one conversation's user and assistant text. Does not call a model.
 
-Usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json [--activity [--after <line>]]]
+Usage: ai-todo-transcript <claude|codex|cursor|antigravity> <session_id> [--json [--activity [--after <line>]]]
 --activity adds tool steps (role "activity", with kind and target), timestamps, and ids that
 stay the same as the transcript grows. Without it, --json prints only messages, as before.
 --after <line> prints only entries from later jsonl lines (an id's first number), so a client
@@ -24,11 +24,13 @@ import json
 import os
 import re
 import sys
+import uuid
 
 HOME = os.path.expanduser("~")
 CLAUDE_PROJECTS = os.path.join(HOME, ".claude", "projects")
 CODEX_SESSIONS = os.path.join(os.environ.get("CODEX_HOME", os.path.join(HOME, ".codex")), "sessions")
 CURSOR_PROJECTS = os.path.join(HOME, ".cursor", "projects")
+ANTIGRAVITY_BRAIN = os.path.join(HOME, ".gemini", "antigravity-cli", "brain")
 
 
 def read_jsonl(path):
@@ -184,6 +186,21 @@ def codex_lines(path, activity=False):
         text = text_of(payload.get("content"))
         if text:
             item = {"role": payload["role"], "text": text}
+            yield with_meta(item, "%d.0" % number, entry) if activity else item
+
+
+def antigravity_lines(path, activity=False):
+    from ai_todo_antigravity import user_request_text
+    roles = {("USER_INPUT", "USER_EXPLICIT"): "user", ("PLANNER_RESPONSE", "MODEL"): "assistant"}
+    for number, entry in read_jsonl(path):
+        if not isinstance(entry, dict) or entry.get("status") != "DONE":
+            continue
+        kind, source, content = entry.get("type"), entry.get("source"), entry.get("content")
+        if not all(isinstance(field, str) for field in (kind, source, content)) or not content.strip():
+            continue
+        role = roles.get((kind, source))
+        if role:
+            item = {"role": role, "text": user_request_text(content) if role == "user" else content}
             yield with_meta(item, "%d.0" % number, entry) if activity else item
 
 
@@ -678,6 +695,13 @@ def worker_path(tool, parent_id, worker_id):
 
 
 def find_paths(tool, session_id):
+    if tool == "antigravity":
+        try:
+            sid = str(uuid.UUID(session_id))
+        except ValueError:
+            return []
+        path = os.path.join(ANTIGRAVITY_BRAIN, sid, ".system_generated", "logs", "transcript.jsonl")
+        return [path] if os.path.isfile(path) else []
     escaped = glob.escape(session_id)
     if tool == "claude":
         return glob.glob(os.path.join(CLAUDE_PROJECTS, "*", escaped + ".jsonl"))
@@ -733,8 +757,8 @@ def print_transcript(argv, path, skip_through):
     structured = activity or argv[2:] == ["--json"]
     if structured:
         argv = argv[:2]
-    if len(argv) != 2 or argv[0] not in ("claude", "codex", "cursor"):
-        print("usage: ai-todo-transcript <claude|codex|cursor> <session_id> [--json [--activity [--after <line>]]]", file=sys.stderr)
+    if len(argv) != 2 or argv[0] not in ("claude", "codex", "cursor", "antigravity"):
+        print("usage: ai-todo-transcript <claude|codex|cursor|antigravity> <session_id> [--json [--activity [--after <line>]]]", file=sys.stderr)
         return 64
     tool, session_id = argv
     if path is None:
@@ -743,7 +767,8 @@ def print_transcript(argv, path, skip_through):
             print("no transcript for %s %s" % (tool, session_id), file=sys.stderr)
             return 94
         path = max(paths, key=os.path.getmtime)
-    reader = {"claude": claude_lines, "codex": codex_lines, "cursor": cursor_lines}[tool]
+    reader = {"claude": claude_lines, "codex": codex_lines, "cursor": cursor_lines,
+              "antigravity": antigravity_lines}[tool]
     if activity:
         entries = list(reader(path, activity=True))
         if tool != "cursor" and (after is not None or skip_through >= 0):

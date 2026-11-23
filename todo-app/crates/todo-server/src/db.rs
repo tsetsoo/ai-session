@@ -190,6 +190,9 @@ fn init_pool_through(db_path: &str, target_version: i64) -> DbPool {
             }
         }
     }
+    if version < 43 && target_version >= 43 {
+        migrate_antigravity_tools(&conn, db_path, version).expect("Failed to add Antigravity conversations");
+    }
     if version <= target_version {
         conn.pragma_update(None, "user_version", target_version)
             .expect("Failed to record the schema version");
@@ -198,6 +201,48 @@ fn init_pool_through(db_path: &str, target_version: i64) -> DbPool {
     }
 
     pool
+}
+
+/// Extend the provider checks while preserving existing rows, indexes, and foreign keys.
+fn migrate_antigravity_tools(conn: &Connection, db_path: &str, version: i64) -> rusqlite::Result<()> {
+    let old = "('claude','codex','cursor')";
+    let mut tables = Vec::new();
+    for name in ["conversations", "sessions"] {
+        let ddl = table_sql(conn, name)?.ok_or(rusqlite::Error::InvalidQuery)?;
+        if ddl.contains(old) {
+            tables.push((name, ddl.replace(old, TOOLS_SQL)));
+        }
+    }
+    if tables.is_empty() {
+        return Ok(());
+    }
+    if version >= 41 {
+        backup_before_migration(conn, db_path, 43)?;
+    }
+    conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;")?;
+    let result = (|| -> rusqlite::Result<()> {
+        let tx = conn.unchecked_transaction()?;
+        for (name, ddl) in tables {
+            let objects = {
+                let mut stmt = tx.prepare(
+                    "SELECT sql FROM sqlite_master WHERE tbl_name = ?1
+                     AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type",
+                )?;
+                let rows = stmt.query_map([name], |row| row.get::<_, String>(0))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            tx.execute_batch(&format!(
+                "ALTER TABLE {name} RENAME TO {name}_v42; {ddl};
+                 INSERT INTO {name} SELECT * FROM {name}_v42; DROP TABLE {name}_v42;"
+            ))?;
+            for sql in objects {
+                tx.execute_batch(&sql)?;
+            }
+        }
+        tx.commit()
+    })();
+    conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;")?;
+    result
 }
 
 /// Keep projects, todos, and all their relationships while dropping the section model.
@@ -332,7 +377,7 @@ fn migrate_project_computers(conn: &Connection, db_path: &str, version: i64) -> 
 
 /// Tools whose conversations can be stored. New conversations started from a todo are
 /// Claude-only; the others can only be linked (see conversations.rs).
-pub const TOOLS_SQL: &str = "('claude','codex','cursor')";
+pub const TOOLS_SQL: &str = "('claude','codex','cursor','antigravity')";
 
 fn section_computers_ddl(table: &str) -> String {
     format!(
@@ -1165,7 +1210,8 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 ///
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
 /// - v42: scrape-health investigation and handoff metadata (additive).
-pub const SCHEMA_VERSION: i64 = 42;
+/// - v43: Antigravity conversation and session provider checks.
+pub const SCHEMA_VERSION: i64 = 43;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -3301,6 +3347,45 @@ mod tests {
             assert!(crate::push::store::is_muted(&conn, "todo").unwrap());
         }
         assert_eq!(db.backups().len(), 1);
+    }
+
+    #[test]
+    fn v43_extends_agent_checks_and_preserves_rows_and_indexes() {
+        let db = TestDb::new("antigravity-tools");
+        drop(init_pool_through(&db.path, 42));
+        {
+            let conn = Connection::open(&db.path).unwrap();
+            crate::test_support::seed_computers(&conn);
+            conn.execute_batch(
+                "INSERT INTO todos (id, title) VALUES ('task', 'Task');
+                 INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id)
+                    VALUES ('prior', 'task', 'mac', '~/app', 'codex', 'ai/codex/todo-prior', 'prior');
+                 INSERT INTO sessions (tool, session_id, computer_id, cwd)
+                    VALUES ('codex', 'prior', 'mac', '~/app');
+                 CREATE INDEX v43_fixture_index ON conversations(cwd);
+                 PRAGMA writable_schema=ON;",
+            ).unwrap();
+            conn.execute(
+                "UPDATE sqlite_master SET sql=replace(sql, ?1, ?2) WHERE name IN ('conversations', 'sessions')",
+                params![TOOLS_SQL, "('claude','codex','cursor')"],
+            ).unwrap();
+            conn.execute_batch("PRAGMA writable_schema=OFF;").unwrap();
+        }
+        let pool = db.pool();
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 43);
+        conn.execute_batch(
+            "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id)
+                VALUES ('new', 'task', 'mac', '~/app', 'antigravity', 'ai/antigravity/todo-new', 'new');
+             INSERT INTO sessions (tool, session_id, computer_id, cwd)
+                VALUES ('antigravity', 'new', 'mac', '~/app');",
+        ).unwrap();
+        for name in ["conversations", "sessions"] {
+            let count: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {name}"), [], |r| r.get(0)).unwrap();
+            assert_eq!(count, 2);
+        }
+        assert!(conn.prepare("SELECT 1 FROM sqlite_master WHERE name='v43_fixture_index'").unwrap().exists([]).unwrap());
+        assert!(!conn.prepare("PRAGMA foreign_key_check").unwrap().exists([]).unwrap());
     }
 
     #[test]

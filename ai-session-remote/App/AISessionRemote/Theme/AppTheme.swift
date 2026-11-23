@@ -8,6 +8,7 @@ enum AppTheme {
         case .claude: "Claude"
         case .codex: "Codex"
         case .cursor: "Cursor"
+        case .antigravity: "Antigravity"
         case .shell: "Shell"
         }
     }
@@ -17,22 +18,24 @@ enum AppTheme {
         case .claude: "sparkles"
         case .codex: "chevron.left.forwardslash.chevron.right"
         case .cursor: "pointer.arrow"
+        case .antigravity: "sparkle.magnifyingglass"
         case .shell: "terminal"
         case nil: "terminal"
         }
     }
 
-    /// Asset catalog image for the tool's own app icon.
-    static func imageName(for tool: AITool) -> String {
+    /// Asset catalog image when the tool has a bundled icon.
+    static func imageName(for tool: AITool) -> String? {
         switch tool {
         case .claude: "ToolClaude"
         case .codex: "ToolCodex"
         case .cursor: "ToolCursor"
+        case .antigravity: nil
         case .shell: "ToolShell"
         }
     }
 
-    /// Claude coral, Codex blue, Cursor silver, Shell gray. Darker in light mode so the name stays readable.
+    /// Tool colors. Darker in light mode so the name stays readable.
     static func color(for tool: AITool?) -> Color {
         switch tool {
         case .claude:
@@ -41,6 +44,8 @@ enum AppTheme {
             PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x3A5FE0), dark: PlatformNativeColor(hex: 0x7AA2FF))
         case .cursor:
             PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x3A3A3C), dark: PlatformNativeColor(hex: 0xD4D4D8))
+        case .antigravity:
+            PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x315DAD), dark: PlatformNativeColor(hex: 0x8CB4FF))
         case .shell:
             PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x636366), dark: PlatformNativeColor(hex: 0xAEAEB2))
         case nil:
@@ -79,8 +84,9 @@ struct ToolIcon: View {
     var side: CGFloat = 28
 
     var body: some View {
-        if let known = AITool(rawValue: tool) {
-            Image(AppTheme.imageName(for: known))
+        let known = AITool(rawValue: tool)
+        if let known, let imageName = AppTheme.imageName(for: known) {
+            Image(imageName)
                 .resizable()
                 .frame(width: side, height: side)
                 .clipShape(RoundedRectangle(cornerRadius: side * 0.25, style: .continuous))
@@ -90,9 +96,9 @@ struct ToolIcon: View {
                 }
                 .accessibilityHidden(true)
         } else {
-            Image(systemName: AppTheme.iconName(for: nil))
+            Image(systemName: AppTheme.iconName(for: known))
                 .font(.system(size: side * 0.45, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(AppTheme.color(for: known))
                 .frame(width: side, height: side)
                 .accessibilityHidden(true)
         }

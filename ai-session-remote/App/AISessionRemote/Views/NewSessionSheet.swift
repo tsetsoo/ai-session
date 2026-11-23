@@ -13,6 +13,7 @@ struct NewSessionSheet: View {
     @State private var tool: AITool
     @State private var path: String
     @State private var slug: String
+    @State private var antigravityConversationID = ""
     @State private var isStarting = false
     @State private var errorMessage: String?
     @State private var showingHostEditor = false
@@ -44,17 +45,25 @@ struct NewSessionSheet: View {
         host.displayName.isEmpty ? host.hostname : host.displayName
     }
 
+    private var resumeID: String? {
+        let value = antigravityConversationID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return tool == .antigravity && !value.isEmpty ? value : nil
+    }
+
     private var canStart: Bool {
         !isStarting
             && !trimmedPath.isEmpty
             && !trimmedSlug.isEmpty
             && !slugIsInvalid
+            && (resumeID.map { UUID(uuidString: $0) != nil } ?? true)
     }
 
     private var toolHint: String {
         switch tool {
         case .shell:
             return "Starts a shell in a new session. It keeps running after you leave."
+        case .antigravity:
+            return "Starts Antigravity CLI. Use /resume in the terminal to reopen a saved conversation."
         case .claude, .codex, .cursor:
             return "Starts \(AppTheme.displayName(for: tool)) in a new session."
         }
@@ -69,7 +78,7 @@ struct NewSessionSheet: View {
                             Text(AppTheme.displayName(for: tool)).tag(tool)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
 
                     HStack(spacing: 10) {
                         ToolIcon(tool: tool.rawValue, side: 22)
@@ -111,6 +120,17 @@ struct NewSessionSheet: View {
                     Text("Folder")
                 } footer: {
                     Text("Starts in this folder on \(computerName).")
+                }
+
+                if tool == .antigravity {
+                    Section {
+                        FormTextField("Conversation ID (optional)", text: $antigravityConversationID)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                    } footer: {
+                        Text("Paste a saved conversation’s UUID to resume it directly.")
+                    }
                 }
 
                 Section {
@@ -209,7 +229,8 @@ struct NewSessionSheet: View {
                     tool: tool,
                     slug: slugToUse,
                     cwd: pathToUse,
-                    title: nil
+                    title: nil,
+                    antigravityConversationID: resumeID
                 )
                 host.preferredTool = tool
                 host.lastUsedPath = pathToUse

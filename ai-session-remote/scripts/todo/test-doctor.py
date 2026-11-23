@@ -38,6 +38,26 @@ class PathTests(unittest.TestCase):
         self.assertIsNone(doctor.install_method(None))
         self.assertIsNone(doctor.path_version(None))
 
+    def test_antigravity_health_reports_version_and_update_without_probing_credentials(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"HOME": temp}):
+            binary = Path(temp) / ".local/bin/agy"
+            binary.parent.mkdir(parents=True)
+            binary.write_text('#!/bin/sh\n[ "$1" = --version ] && echo "agy 1.5.1"\n')
+            binary.chmod(0o755)
+            with patch.dict(os.environ, {"AI_TODO_AGY_BIN": str(binary)}):
+                report = doctor.tool_report("antigravity", doctor.find_antigravity)
+            self.assertEqual(report["path"], str(binary))
+            self.assertEqual(report["version"], "1.5.1")
+            self.assertEqual(report["auth"], {"logged_in": None})
+            self.assertEqual(report["update"], {"runs": True, "command": "~/.local/bin/agy update"})
+
+    def test_antigravity_package_manager_install_keeps_its_updater(self):
+        path = "/opt/homebrew/Cellar/agy/1.5.1/bin/agy"
+        method = doctor.install_method(path, HOME + "/.local/bin/agy")
+        self.assertEqual(method, "homebrew")
+        self.assertEqual(doctor.update_plan("antigravity", "/opt/homebrew/bin/agy", path, method),
+                         {"runs": False, "argv": None, "command": "brew upgrade agy"})
+
     def test_npm_version_comes_from_the_package(self):
         with tempfile.TemporaryDirectory() as temp:
             package = Path(temp) / ".nvm/versions/node/v20.12.0/lib/node_modules/@openai/codex"
@@ -64,6 +84,9 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(doctor.tool_of(npm_claude), "claude")
         cursor = [HOME + "/.local/bin/cursor-agent", "--use-system-ca", HOME + "/.local/share/cursor-agent/versions/2026.10.19-6bbf2c4/index.js", "--resume", "c-1"]
         self.assertEqual((doctor.tool_of(cursor), doctor.session_of("cursor", cursor)), ("cursor", "c-1"))
+        agy = [HOME + "/.local/bin/agy", "--conversation", "a-1"]
+        self.assertEqual((doctor.tool_of(agy), doctor.session_of("antigravity", agy)), ("antigravity", "a-1"))
+        self.assertEqual(doctor.session_of("antigravity", ["agy", "--conversation=a-1"]), "a-1")
         for other in [[], ["/bin/sh", "-c", "claude"], ["python3", "ai-todo-status", "terminal"], ["node", "server.js"]]:
             self.assertIsNone(doctor.tool_of(other), other)
 

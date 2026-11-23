@@ -18,7 +18,7 @@ use crate::projects::project_exists;
 const RUN_COLS: &str = "id, job_id, due_at, state, computer_id, todo_id, waiting_reason, result, started_at, created_at, updated_at, note, group_id, attempt_tool, attempt_model";
 const DEFAULT_RUNS: usize = 20;
 const MAX_RUNS: usize = 200;
-const TOOLS: [&str; 2] = ["claude", "codex"];
+const TOOLS: [&str; 3] = ["claude", "codex", "antigravity"];
 
 pub(crate) enum JobError {
     BadRequest(String),
@@ -162,7 +162,7 @@ fn validate(conn: &Connection, name: &str, trigger: &JobTrigger, action: &JobAct
             // `auto`: the runner picks claude or codex by weekly headroom (the assistant).
             let auto = tool == "auto" && !action.is_research();
             if !TOOLS.contains(&tool) && !auto {
-                return Err(JobError::BadRequest("tool must be claude or codex".into()));
+                return Err(JobError::BadRequest("tool must be claude, codex or antigravity".into()));
             }
             if !action.is_research() && prompt.trim().is_empty() {
                 return Err(JobError::BadRequest("prompt is required".into()));
@@ -200,7 +200,7 @@ fn validate(conn: &Connection, name: &str, trigger: &JobTrigger, action: &JobAct
             }
             if let Some(tool) = debug_tool {
                 if !TOOLS.contains(&tool.as_str()) {
-                    return Err(JobError::BadRequest("debug tool must be claude or codex".into()));
+                    return Err(JobError::BadRequest("debug tool must be claude, codex or antigravity".into()));
                 }
             }
             if !project_exists(conn, project_id)? {

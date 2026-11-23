@@ -39,10 +39,10 @@ PATH_VERSIONS = [
 ]
 SERVICE_FILES = ("runtime.json", "health.json", "delivery.json", "claude-runtime.json", "claude-health.json")
 IN_FLIGHT_NS = 60_000_000_000
-TOOL_NAMES = {"claude": "claude", "codex": "codex", "agent": "cursor", "cursor-agent": "cursor"}
+TOOL_NAMES = {"claude": "claude", "codex": "codex", "agent": "cursor", "cursor-agent": "cursor", "agy": "antigravity"}
 
 
-def install_method(path):
+def install_method(path, binary=None):
     """How the binary at resolved `path` was installed: which updater owns it."""
     if not path:
         return None
@@ -56,6 +56,8 @@ def install_method(path):
         return "npm"
     if ".app/Contents/" in path:
         return "app"
+    if Path(binary or path) == Path.home() / ".local/bin/agy":
+        return "native"
     return "other"
 
 
@@ -66,7 +68,7 @@ def update_plan(tool, binary, resolved, method):
     home = str(Path.home())
     # As typed in a shell there: ~ stays unquoted so it still expands.
     shown = "~/" + shlex.quote(binary[len(home) + 1:]) if binary.startswith(home + "/") else shlex.quote(binary)
-    if method == "native" and tool in ("claude", "cursor"):
+    if method == "native" and tool in ("claude", "cursor", "antigravity"):
         argv = [binary, "update"]
     elif method == "managed" and tool == "codex":
         # The managed package's own updater. It restarts Codex's shared server when that's
@@ -140,9 +142,22 @@ def find_cursor():
     raise FileNotFoundError("No Cursor agent binary")
 
 
+def find_antigravity():
+    candidates = [os.environ.get("AI_TODO_AGY_BIN"), shutil.which("agy"),
+                  "/opt/homebrew/bin/agy", "/usr/local/bin/agy",
+                  str(Path.home() / ".local/bin/agy"), "/home/linuxbrew/.linuxbrew/bin/agy"]
+    for candidate in dict.fromkeys(candidates):
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    raise FileNotFoundError("No Antigravity CLI binary")
+
+
 def auth(tool, binary):
     """{"logged_in": True/False/None, "method": ...}; None means the check gave no answer."""
     env = tool_env(binary)
+    if tool == "antigravity":
+        from ai_todo_antigravity import login_state
+        return {"logged_in": login_state(binary)}
     if tool == "claude":
         code, text = run_text([binary, "auth", "status"], env=env)
         try:
@@ -201,7 +216,7 @@ def tool_report(tool, finder):
         return {"installed": False, "error": str(error)}
     resolved = os.path.realpath(binary)
     version = binary_version(binary, resolved)
-    method = install_method(resolved)
+    method = install_method(resolved, binary)
     plan = update_plan(tool, binary, resolved, method)
     result = {"installed": True, "path": binary, "resolved": resolved, "version": version,
               "method": method, "auth": auth(tool, binary),
@@ -310,7 +325,7 @@ def processes():
 
 
 def tool_of(argv):
-    """The CLI an argv runs (claude, codex or cursor), or None. Covers npm's `node …/cli.js`.
+    """The CLI an argv runs, or None. Covers npm's `node …/cli.js`.
     Only argv[0] and argv[1] are looked at; nothing from argv is reported (it can hold keys)."""
     if not argv:
         return None
@@ -329,6 +344,13 @@ def tool_of(argv):
 
 def session_of(tool, argv):
     """The conversation id in a launch argv, when it names one."""
+    if tool == "antigravity":
+        for index, arg in enumerate(argv[1:], 1):
+            if arg.startswith("--conversation="):
+                return arg.partition("=")[2] or None
+            if arg == "--conversation" and index + 1 < len(argv):
+                return argv[index + 1]
+        return None
     for flag in ("--resume", "--session-id", "-r"):
         if flag in argv[:-1]:
             return argv[argv.index(flag) + 1]
@@ -426,7 +448,8 @@ def doctor():
               "hostname": os.uname().nodename, "codex": None, "runtime_connected": False,
               "status_service": service, "service_running": 0 <= now - service.get("checked_ns", 0) < 8_000_000_000}
     tools = {"claude": tool_report("claude", status.find_claude), "codex": tool_report("codex", status.find_codex),
-             "cursor": tool_report("cursor", find_cursor)}
+             "cursor": tool_report("cursor", find_cursor),
+             "antigravity": tool_report("antigravity", find_antigravity)}
     result["tools"] = tools
     if tools["codex"].get("installed"):
         result["codex"] = tools["codex"]["path"]

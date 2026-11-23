@@ -548,7 +548,7 @@ def report_job_templates(hub, computer_id):
 
 # The agent tools this computer has, and how ai-todo-open finds each one.
 TOOL_BINS = (("claude", "AI_TODO_CLAUDE_BIN", "claude"), ("codex", "AI_TODO_CODEX_BIN", "codex"),
-             ("cursor", "AI_TODO_AGENT_BIN", "agent"))
+             ("cursor", "AI_TODO_AGENT_BIN", "agent"), ("antigravity", "AI_TODO_AGY_BIN", "agy"))
 
 
 def tools_report():
@@ -733,6 +733,25 @@ def run_folder(action, folders):
     return folder
 
 
+ANTIGRAVITY_NEEDS_RECONCILIATION = "Antigravity launch needs reconciliation."
+
+
+def transient_hub_error(error):
+    return error.status is None or error.status in (408, 429) or error.status >= 500
+
+
+def link_antigravity_session(hub, route, session_id):
+    # Retrying the same UUID is safe even if the first response was lost.
+    for attempt in range(3):
+        try:
+            hub.request("PUT", route, body={"session_id": session_id, "expected_session_id": ""}, timeout=5)
+            return
+        except HubError as error:
+            if not transient_hub_error(error) or attempt == 2:
+                raise
+        time.sleep(0.5 * (attempt + 1))
+
+
 def start_run(hub, computer_id, due, folders):
     run, job = due["run"], due["job"]
     action = job["action"]
@@ -746,6 +765,7 @@ def start_run(hub, computer_id, due, folders):
     # A debugging run reports its issues with ai-todo-watch, which only works in a worktree.
     if (run.get("note") or "").startswith("watch:") and not is_git:
         raise RuntimeError("a debugging run needs a git repo; %s is not one (map the issue to a repo folder)" % tilde(folder))
+    keep_worktree = False
     try:
         body = {"cwd": tilde(path), "is_git": is_git}
         if (run.get("note") or "").startswith("watch:"):
@@ -762,26 +782,37 @@ def start_run(hub, computer_id, due, folders):
         if not isinstance(started, dict) or not started.get("tmux_name"):
             raise RuntimeError("the hub's start answer is empty")
         sid = started.get("session_id") or "-"
+        launch_tool = started.get("tool") or body.get("tool") or action.get("tool") or "claude"
         # Auto-approve only inside a scheduled git worktree, never in a folder used in place.
         model = started.get("model") if isinstance(started.get("model"), str) else None
         permissions = ["--read-only-worker"] if started.get("read_only_worker") else []
         argv = [OPEN_BIN, "--detached"] + permissions + (["--auto-approve"] if is_git else []) + (
             ["--model", model] if model and re.fullmatch(r"[A-Za-z0-9._\[\]-]+", model) else []) + [
             "--prompt-file", prompt_file, started["tmux_name"], tilde(path), sid,
-            started.get("tool") or body.get("tool") or action.get("tool") or "claude"]
+            launch_tool]
         try:
             p = subprocess.run(argv, capture_output=True, text=True, timeout=OPEN_TIMEOUT, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
+            if launch_tool == "antigravity":
+                keep_worktree = True
+                raise RuntimeError(ANTIGRAVITY_NEEDS_RECONCILIATION +
+                                   " The launch timed out. Check its pane before trying again.")
             # The conversation may be running in the worktree already: keep it. A research
             # attempt counts as started: failing it would close a conversation that may be
             # working and offer a Retry that starts a second one.
             if due.get("group"):
                 return "started %s in %s (ai-todo-open timed out; it may still be starting)" % (
                     started.get("tool") or action.get("tool"), tilde(path))
+            keep_worktree = True
             raise RuntimeError("ai-todo-open timed out; the worktree is kept")
         finally:
             if os.path.exists(prompt_file):
                 os.remove(prompt_file)
+        if p.returncode == 98:
+            keep_worktree = True
+            detail = (p.stderr or "").strip()
+            raise RuntimeError(ANTIGRAVITY_NEEDS_RECONCILIATION + " " +
+                               (detail or "Check the pane before trying again."))
         if p.returncode != 0:
             raise RuntimeError("ai-todo-open exit %d: %s" % (p.returncode, (p.stderr or "").strip()[:200]))
         # A new Codex (or Cursor) conversation gets its id only once it starts; ai-todo-open
@@ -792,14 +823,105 @@ def start_run(hub, computer_id, due, folders):
             route = ("/api/conversations/%s/session" % urllib.parse.quote(started["conversation_id"], safe="")
                      if started.get("conversation_id") else "/api/todos/%s/conversation/session" % started["todo_id"])
             try:
-                hub.request("PUT", route, body={"session_id": words[1]})
+                if launch_tool == "antigravity":
+                    link_antigravity_session(hub, route, words[1])
+                else:
+                    hub.request("PUT", route, body={"session_id": words[1]})
             except HubError as e:
                 log("session_report_failed", run=run["id"], error=e)
+                if launch_tool == "antigravity":
+                    keep_worktree = True
+                    if transient_hub_error(e):
+                        try:
+                            queue_session_link(hub, computer_id, run["id"], route, words[1])
+                        except OSError as outbox_error:
+                            log("session_link_not_queued", run=run["id"], error=outbox_error)
+                    raise RuntimeError(ANTIGRAVITY_NEEDS_RECONCILIATION +
+                                       " The pane started, but Todo Hub did not confirm its session link.") from e
+        elif launch_tool == "antigravity" and sid == "-":
+            keep_worktree = True
+            raise RuntimeError(ANTIGRAVITY_NEEDS_RECONCILIATION +
+                               " The host did not return a session link.")
     except Exception as e:
-        if is_git and "timed out" not in str(e):
+        if is_git and not keep_worktree and "timed out" not in str(e):
             workspace.remove({"folder": folder, "path": root, "branch": branch})
         raise
     return "started %s in %s" % (started.get("tool") or action.get("tool"), tilde(path))
+
+
+def queue_session_link(hub, computer_id, run_id, route, session_id):
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+        raise ValueError("invalid run ID")
+    path = os.path.join(STATE_DIR, "session-link-" + run_id + ".json")
+    save_json(path, {"hub": hub.url, "computer": computer_id, "route": route, "session_id": session_id})
+
+
+def retry_session_links(hub, computer_id):
+    for path, payload in pending_updates("session-link", hub, computer_id):
+        try:
+            hub.request("PUT", payload["route"],
+                        body={"session_id": payload["session_id"], "expected_session_id": ""}, timeout=5)
+        except HubError as error:
+            log("session_link_pending", error=error)
+            if transient_hub_error(error) or error.status in (401, 403):
+                touch_pending(path)
+                continue
+        remove_pending(path)
+
+
+def remove_pending(path):
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+def touch_pending(path):
+    try:
+        os.utime(path, None)
+    except FileNotFoundError:
+        pass
+
+
+def send_pending_finish(hub, path, payload):
+    try:
+        hub.request("POST", "/api/runs/%s/finish" % urllib.parse.quote(payload["run_id"], safe=""),
+                    body=payload["body"], timeout=5)
+    except HubError as error:
+        if error.status not in (404, 409):
+            log("finish_pending", run=payload["run_id"], error=error)
+            touch_pending(path)
+            return
+    remove_pending(path)
+
+
+def queue_finish(hub, computer_id, run_id, state, result):
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+        raise ValueError("invalid run ID")
+    path = os.path.join(STATE_DIR, "finish-" + run_id + ".json")
+    payload = {"hub": hub.url, "computer": computer_id, "run_id": run_id,
+               "body": {"state": state, "result": result}}
+    save_json(path, payload)
+    send_pending_finish(hub, path, payload)
+
+
+def pending_updates(kind, hub, computer_id):
+    from pathlib import Path
+    pending = []
+    for path in Path(STATE_DIR).glob(kind + "-*.json"):
+        try:
+            modified = path.stat().st_mtime_ns
+        except FileNotFoundError:
+            continue
+        payload = load_json(path)
+        if isinstance(payload, dict) and payload.get("hub") == hub.url and payload.get("computer") == computer_id:
+            pending.append((modified, path, payload))
+    return [(path, payload) for _, path, payload in sorted(pending)[:3]]
+
+
+def retry_finishes(hub, computer_id):
+    for path, payload in pending_updates("finish", hub, computer_id):
+        send_pending_finish(hub, path, payload)
 
 
 def cmd_tick(args):
@@ -812,6 +934,8 @@ def cmd_tick(args):
         print("ai-todo-runner: TODO_HUB_URL and TODO_COMPUTER_ID are needed in %s" % conf.path, file=sys.stderr)
         sys.exit(65)
     hub = Hub(conf)
+    retry_session_links(hub, computer_id)
+    retry_finishes(hub, computer_id)
     status_path = os.path.join(STATE_DIR, "status.json")
     status = load_json(status_path, {}) or {}
     status["last_tick"] = now()
@@ -878,7 +1002,7 @@ def cmd_tick(args):
                     group_bases[group["id"]] = item["group"]["base_sha"]
             try:
                 result = start_run(hub, computer_id, item, folders)
-                hub.request("POST", "/api/runs/%s/finish" % rid, body={"state": "done", "result": result})
+                queue_finish(hub, computer_id, rid, "done", result)
                 started += 1
                 if no_reading:
                     no_reading_started[tool] = no_reading_started.get(tool, 0) + 1
@@ -888,10 +1012,7 @@ def cmd_tick(args):
                 message = str(e) or type(e).__name__
                 status["last_error"], status["last_error_at"] = message, now()
                 log("failed", run=rid, error=message)
-                try:
-                    hub.request("POST", "/api/runs/%s/finish" % rid, body={"state": "failed", "result": message})
-                except HubError:
-                    pass
+                queue_finish(hub, computer_id, rid, "failed", message)
     except HubError as e:
         status["last_error"], status["last_error_at"] = str(e), now()
         log("error", error=e)

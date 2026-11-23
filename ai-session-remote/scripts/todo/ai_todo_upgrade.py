@@ -1,10 +1,10 @@
-"""`ai-todo-status upgrade TOOL`: install the latest Claude, Codex or Cursor CLI on this
+"""`ai-todo-status upgrade TOOL`: install the latest Claude, Codex, Cursor or Antigravity CLI on this
 computer, the way it was installed. Only on the user's request (the app's Health page).
 
-    upgrade claude|codex|cursor
+    upgrade claude|codex|cursor|antigravity
 
 It runs the CLI's own updater for the installs it owns (doctor.update_plan): `claude update`
-and `agent update` for the native installers, `codex app-server daemon update --yes` for
+`agent update` and `agy update` for the native installers, `codex app-server daemon update --yes` for
 Codex's managed package, which also moves Codex's shared server to the new version (todo
 conversations have their own backends). Anything else (npm, Homebrew, an app bundle) is
 not run: the result says so and carries the command to run there.
@@ -28,7 +28,7 @@ import ai_todo_status as status
 
 UPDATE_TIMEOUT_S = 300
 FINDERS = {"claude": lambda: status.find_claude(), "codex": lambda: status.find_codex(),
-           "cursor": lambda: doctor.find_cursor()}
+           "cursor": lambda: doctor.find_cursor(), "antigravity": lambda: doctor.find_antigravity()}
 
 
 def installed(tool):
@@ -38,7 +38,7 @@ def installed(tool):
     except FileNotFoundError:
         return None
     resolved = os.path.realpath(binary)
-    return binary, resolved, doctor.binary_version(binary, resolved), doctor.install_method(resolved)
+    return binary, resolved, doctor.binary_version(binary, resolved), doctor.install_method(resolved, binary)
 
 
 def run_updater(argv, env, timeout):

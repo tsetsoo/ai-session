@@ -250,7 +250,7 @@ struct TodoListView: View {
                     Button(role: .destructive) {
                         actions.deleteTarget = conversation
                     } label: {
-                        Label("Delete Conversation…", systemImage: "trash.slash")
+                        Label(conversation.removalActionTitle + "…", systemImage: "trash.slash")
                     }
                 }
                 Button(role: .destructive) {

@@ -60,6 +60,8 @@ final class RestartModelsTests: XCTestCase {
         XCTAssertTrue(refused.canForce)
         let background = try RestartResult.decode(Data(#"{"result":"refused","reason":"background"}"#.utf8))
         XCTAssertFalse(background.canForce)
+        let mismatch = try RestartResult.decode(Data(#"{"result":"refused","reason":"mismatch"}"#.utf8))
+        XCTAssertFalse(mismatch.canForce)
         let done = try RestartResult.decode(Data(#"{"result":"restarted","before":"2.1.310","after":"2.1.319","installed":"2.1.319","mode":"resumed","stopped":true}"#.utf8))
         XCTAssertEqual(done.after, "2.1.319")
         XCTAssertFalse(done.isRefused)

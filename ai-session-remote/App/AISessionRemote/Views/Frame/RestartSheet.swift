@@ -30,7 +30,7 @@ struct RestartSheet: View {
     }
 
     private var tool: String { RowText.toolName(conversation.tool) }
-    private var managesServers: Bool { conversation.tool != "cursor" }
+    private var managesServers: Bool { ConversationStart.managesMCP(conversation.tool) }
 
     var body: some View {
         NavigationStack {

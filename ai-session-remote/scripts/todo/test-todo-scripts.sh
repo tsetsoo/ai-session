@@ -5822,6 +5822,7 @@ status=0
 [[ $status -eq 94 && ! -s "${SANDBOX}/transcript-empty.out" ]] || fail "textless transcript exit was $status: $(cat "${SANDBOX}/transcript-empty.err")"
 pass "transcript_without_text_is_missing"
 python3 "${SCRIPT_DIR}/test-transcript.py" || fail "structured chat transcript regression tests"
+python3 "${SCRIPT_DIR}/test-antigravity.py" || fail "Antigravity CLI regression tests"
 "$TRANSCRIPT" claude "$SID_A" --json >"${SANDBOX}/chat.json"
 python3 - "${SANDBOX}/chat.json" <<'PY' || fail "structured transcript CLI response"
 import json, sys

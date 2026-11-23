@@ -43,7 +43,7 @@ def directory():
 
 
 def record_path(tool, sid):
-    if tool not in ("claude", "codex", "cursor") or not SESSION.fullmatch(sid or ""):
+    if tool not in ("claude", "codex", "cursor", "antigravity") or not SESSION.fullmatch(sid or ""):
         raise ValueError("invalid tool or session id")
     return directory() / ("%s.%s.json" % (tool, sid))
 
@@ -184,6 +184,11 @@ def resume_args(tool, sid):
         # Live web search, when it was chosen for this conversation (a restart's choice).
         if saved.get("search") is True:
             args += ["--search"]
+    elif tool == "antigravity":
+        if saved_model:
+            args += ["--model", saved_model]
+        if saved.get("auto_approve"):
+            args += ["--mode", "accept-edits", "--sandbox"]
     return args
 
 

@@ -830,10 +830,10 @@ pub(crate) fn set_watchers_db(conn: &Connection, computer_id: &str, watchers: &[
     Ok(())
 }
 
-/// The agent tools a computer's runner found installed (claude, codex, cursor).
+/// The agent tools a computer's runner found installed (Claude, Codex, Cursor, Antigravity).
 pub(crate) fn set_tools_db(conn: &Connection, computer_id: &str, tools: &[String]) -> Result<(), WatchError> {
-    if tools.iter().any(|t| !matches!(t.as_str(), "claude" | "codex" | "cursor")) {
-        return Err(WatchError::BadRequest("tools may only be claude, codex and cursor"));
+    if tools.iter().any(|t| !matches!(t.as_str(), "claude" | "codex" | "cursor" | "antigravity")) {
+        return Err(WatchError::BadRequest("tools may only be claude, codex, cursor and antigravity"));
     }
     let changed = conn.execute(
         "UPDATE computers SET tools = ?2, tools_at = datetime('now') WHERE id = ?1",

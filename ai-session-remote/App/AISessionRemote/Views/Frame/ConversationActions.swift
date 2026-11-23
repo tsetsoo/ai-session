@@ -23,9 +23,16 @@ struct FrameActions {
 }
 
 extension Conversation {
+    var unlinksWithoutDeleting: Bool { tool == "antigravity" }
+    var removalActionTitle: String { unlinksWithoutDeleting ? "Unlink Conversation" : "Delete Conversation" }
+    var removalConfirmationTitle: String { unlinksWithoutDeleting ? "Unlink this conversation?" : "Delete this conversation?" }
+
     /// Body of the "Delete this conversation?" confirmation.
     var deleteConfirmationMessage: String {
-        tool == "codex"
+        if unlinksWithoutDeleting {
+            return "Removes the link from this todo. The conversation stays on \(computer.name)."
+        }
+        return tool == "codex"
             ? "Ends the conversation on \(computer.name), archives it there and unlinks it. The todo stays."
             : "Ends the conversation on \(computer.name), deletes it there and unlinks it. The todo stays."
     }
@@ -166,6 +173,7 @@ struct ConversationMenu: View {
     var onWorkers: (() -> Void)? = nil
     let onClose: () -> Void
     let onDelete: () -> Void
+    var removalActionTitle = "Delete Conversation"
     let onReconnect: () -> Void
     let onCopyScreen: () -> Void
     let onPaste: () -> Void
@@ -236,7 +244,7 @@ struct ConversationMenu: View {
             }
             .disabled(!canChange)
             Button(role: .destructive, action: onDelete) {
-                Label("Delete Conversation…", systemImage: "trash")
+                Label(removalActionTitle + "…", systemImage: "trash")
             }
             .disabled(!canChange)
             Divider()
@@ -339,6 +347,7 @@ struct ConversationToolbarActions: View {
     var onWorkers: (() -> Void)? = nil
     var onClose: () -> Void
     var onDelete: () -> Void
+    var removalActionTitle = "Delete Conversation"
     var onReconnect: () -> Void
     var onCopyScreen: () -> Void
     var onPaste: () -> Void
@@ -416,6 +425,7 @@ struct ConversationToolbarActions: View {
                 onWorkers: onWorkers,
                 onClose: onClose,
                 onDelete: onDelete,
+                removalActionTitle: removalActionTitle,
                 onReconnect: onReconnect,
                 onCopyScreen: onCopyScreen,
                 onPaste: onPaste,

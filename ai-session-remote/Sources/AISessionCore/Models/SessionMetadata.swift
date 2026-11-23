@@ -80,10 +80,12 @@ public extension SessionMetadata {
         tool: AITool,
         cwd: String,
         title: String,
-        startedAt: Date
+        startedAt: Date,
+        antigravityConversationID: String? = nil
     ) throws -> String {
         let templated = SessionMetadata(
-            tool: tool, cwd: cwd, title: title, startedAt: startedAt, cli: [cliPlaceholder] + tool.defaultArguments
+            tool: tool, cwd: cwd, title: title, startedAt: startedAt,
+            cli: [cliPlaceholder] + tool.launchArguments(antigravityConversationID: antigravityConversationID)
         )
         let json = String(decoding: try templated.jsonData(), as: UTF8.self)
 
