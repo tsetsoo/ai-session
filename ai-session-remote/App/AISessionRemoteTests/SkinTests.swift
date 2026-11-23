@@ -123,4 +123,9 @@ final class SkinTests: XCTestCase {
         XCTAssertNil(AttentionSound.skinSound(for: .needsYou, skin: .standard))
         XCTAssertNotNil(AttentionSound.skinSound(for: .needsYou, skin: .phosphor))
     }
+
+    func testSkinSoundFileName() {
+        XCTAssertNil(AttentionSound.skinSoundFileName(for: .needsYou, skin: .standard))
+        XCTAssertEqual(AttentionSound.skinSoundFileName(for: .needsYou, skin: .neonNoir), "attention-needs-you-neon-noir.caf")
+    }
 }

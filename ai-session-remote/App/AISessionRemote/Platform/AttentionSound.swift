@@ -37,6 +37,12 @@ enum AttentionSound {
         return skin.soundSuffix.map { "\(base)-\($0)" } ?? base
     }
 
+    /// The file the hub names in `aps.sound` for this device; nil in Standard (system default).
+    static func skinSoundFileName(for kind: AttentionKind, skin: AppSkin) -> String? {
+        guard skin.soundSuffix != nil else { return nil }
+        return bundledName(for: kind, skin: skin) + ".caf"
+    }
+
     /// The skin's sound for a notification; nil in Standard, where callers keep `.default`.
     static func skinSound(for kind: AttentionKind, skin: AppSkin) -> UNNotificationSound? {
         guard skin.soundSuffix != nil else { return nil }

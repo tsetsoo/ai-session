@@ -138,6 +138,29 @@ final class PushHubClientTests: XCTestCase {
         XCTAssertEqual(body["app_version"] as? String, "1.0 (7)")
     }
 
+    func testPushRegistrationEncodesSound() async throws {
+        StubURLProtocol.handler = { _ in
+            .init(status: 200, body: #"{"token_prefix":"a1b2c3d4","platform":"ios","environment":"sandbox","bundle_id":"b","app_version":"1","device_name":null,"created_at":"x","updated_at":"x","last_sent_at":null,"last_error":null,"sound":"attention-needs-you-phosphor.caf"}"#)
+        }
+        let device = try await client().registerPushDevice(PushDeviceRegistration(
+            token: "a1b2", platform: .ios, environment: .sandbox, bundleId: "b", appVersion: "1",
+            sound: "attention-needs-you-phosphor.caf"
+        ))
+        XCTAssertEqual(try lastBody()["sound"] as? String, "attention-needs-you-phosphor.caf")
+        XCTAssertEqual(device.sound, "attention-needs-you-phosphor.caf")
+    }
+
+    func testPushRegistrationOmitsNilSound() async throws {
+        StubURLProtocol.handler = { _ in
+            .init(status: 200, body: #"{"token_prefix":"a1b2c3d4","platform":"ios","environment":"sandbox","bundle_id":"b","app_version":"1","device_name":null,"created_at":"x","updated_at":"x","last_sent_at":null,"last_error":null}"#)
+        }
+        let device = try await client().registerPushDevice(PushDeviceRegistration(
+            token: "a1b2", platform: .ios, environment: .sandbox, bundleId: "b", appVersion: "1"
+        ))
+        XCTAssertNil(try lastBody()["sound"], "Standard sends no sound; the hub stores NULL")
+        XCTAssertNil(device.sound, "an old hub returns no sound")
+    }
+
     func testRegisterDevice404MapsToUnsupported() async {
         StubURLProtocol.handler = { _ in .init(status: 404, body: "") }
         do {

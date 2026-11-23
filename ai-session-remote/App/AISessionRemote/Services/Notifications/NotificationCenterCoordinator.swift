@@ -269,7 +269,9 @@ final class NotificationCenterCoordinator {
             environment: ApsEnvironment.current,
             bundleId: Bundle.main.bundleIdentifier ?? "com.aisessionremote.app",
             appVersion: version,
-            deviceName: deviceName
+            deviceName: deviceName,
+            // Pushes are mostly "needs you": the hub plays this skin sound for them.
+            sound: AttentionSound.skinSoundFileName(for: .needsYou, skin: SkinStore.shared.skin)
         )
         let upload = self.registration.beginUpload(hub: hub)
         if let previous = upload.previousHub, let oldURL = TodoHubClient.baseURL(from: previous) {

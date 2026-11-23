@@ -732,14 +732,17 @@ public struct PushDeviceRegistration: Encodable, Sendable {
     public var bundleId: String
     public var appVersion: String
     public var deviceName: String?
+    /// The app skin's push sound (a bundled `.caf`); nil asks for the system default.
+    public var sound: String?
 
-    public init(token: String, platform: PushPlatform, environment: ApsEnvironment, bundleId: String, appVersion: String, deviceName: String? = nil) {
+    public init(token: String, platform: PushPlatform, environment: ApsEnvironment, bundleId: String, appVersion: String, deviceName: String? = nil, sound: String? = nil) {
         self.token = token
         self.platform = platform
         self.environment = environment
         self.bundleId = bundleId
         self.appVersion = appVersion
         self.deviceName = deviceName
+        self.sound = sound
     }
 }
 
@@ -753,6 +756,8 @@ public struct PushDevice: Decodable, Equatable, Sendable {
     public var deviceName: String?
     public var lastSentAt: String?
     public var lastError: String?
+    /// Absent from hubs before v43.
+    public var sound: String?
 }
 
 public struct QuietHours: Codable, Equatable, Sendable {
