@@ -19,6 +19,7 @@ struct AppearanceSettingsView: View {
         .onChange(of: store.skin) {
             // The hub picks the push sound per device: tell it about the new skin's sound.
             Task { await NotificationCenterCoordinator.shared.uploadToken() }
+            SkinIcon.apply(store.skin)
         }
         .navigationTitle("Appearance")
         .navigationBarTitleDisplayMode(.inline)

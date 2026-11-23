@@ -43,7 +43,11 @@ struct AISessionRemoteApp: App {
                 .skinned()
                 .environment(model)
                 // Notification permission is asked only from Settings → Notifications.
-                .onAppear { model.installSystemEntryPoints() }
+                .onAppear {
+                    model.installSystemEntryPoints()
+                    // The Mac's Dock icon resets every launch; iOS keeps its alternate icon.
+                    SkinIcon.apply(SkinStore.shared.skin)
+                }
                 .onReceive(NotificationCenter.default.publisher(
                     for: PlatformSupport.didEnterBackgroundNotification
                 )) { _ in

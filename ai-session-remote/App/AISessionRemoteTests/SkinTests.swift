@@ -128,4 +128,26 @@ final class SkinTests: XCTestCase {
         XCTAssertNil(AttentionSound.skinSoundFileName(for: .needsYou, skin: .standard))
         XCTAssertEqual(AttentionSound.skinSoundFileName(for: .needsYou, skin: .neonNoir), "attention-needs-you-neon-noir.caf")
     }
+
+    // MARK: Icons
+
+    func testAlternateIconsAreBundled() throws {
+        let icons = try XCTUnwrap(Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any])
+        let alternates = try XCTUnwrap(icons["CFBundleAlternateIcons"] as? [String: Any])
+        XCTAssertNotNil(alternates["AppIcon-NeonNoir"])
+        XCTAssertNotNil(alternates["AppIcon-Phosphor"])
+    }
+
+    func testDockIconsAreBundled() {
+        for name in ["DockIcon-NeonNoir", "DockIcon-Phosphor"] {
+            XCTAssertNotNil(UIImage(named: name, in: Bundle(for: AppModel.self), compatibleWith: nil), name)
+        }
+    }
+
+    func testSkinIconNamesMatchAssets() {
+        XCTAssertEqual(AppSkin.neonNoir.iconName, "AppIcon-NeonNoir")
+        XCTAssertEqual(AppSkin.phosphor.iconName, "AppIcon-Phosphor")
+        XCTAssertEqual(SkinIcon.dockIconName(for: .phosphor), "DockIcon-Phosphor")
+        XCTAssertNil(SkinIcon.dockIconName(for: .standard))
+    }
 }
