@@ -36,30 +36,52 @@ enum AppTheme {
     }
 
     /// Tool colors. Darker in light mode so the name stays readable.
+    /// The skins swap in their own neon or phosphor hues.
     static func color(for tool: AITool?) -> Color {
+        switch DS.skin {
+        case .standard: break
+        case .neonNoir:
+            switch tool {
+            case .claude: return hexColor(0xFF2E97)
+            case .codex: return hexColor(0x00F0FF)
+            case .antigravity: return hexColor(0xB967FF)
+            case .cursor, .shell: return hexColor(0xB9B6E8)
+            case nil: return .secondary
+            }
+        case .phosphor:
+            switch tool {
+            case .claude: return hexColor(0x33FF77)
+            case .codex: return hexColor(0x7DFFB0)
+            case .antigravity: return hexColor(0x3FD0C9)
+            case .cursor, .shell: return hexColor(0x1FAF55)
+            case nil: return .secondary
+            }
+        }
         switch tool {
         case .claude:
-            PlatformColor.dynamic(light: PlatformNativeColor(hex: 0xB04E38), dark: PlatformNativeColor(hex: 0xE07A5F))
+            return PlatformColor.dynamic(light: PlatformNativeColor(hex: 0xB04E38), dark: PlatformNativeColor(hex: 0xE07A5F))
         case .codex:
-            PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x3A5FE0), dark: PlatformNativeColor(hex: 0x7AA2FF))
+            return PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x3A5FE0), dark: PlatformNativeColor(hex: 0x7AA2FF))
         case .cursor:
-            PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x3A3A3C), dark: PlatformNativeColor(hex: 0xD4D4D8))
+            return PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x3A3A3C), dark: PlatformNativeColor(hex: 0xD4D4D8))
         case .antigravity:
-            PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x315DAD), dark: PlatformNativeColor(hex: 0x8CB4FF))
+            return PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x315DAD), dark: PlatformNativeColor(hex: 0x8CB4FF))
         case .shell:
-            PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x636366), dark: PlatformNativeColor(hex: 0xAEAEB2))
+            return PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x636366), dark: PlatformNativeColor(hex: 0xAEAEB2))
         case nil:
-            .secondary
+            return .secondary
         }
     }
 
     static func reachabilityColor(_ value: Bool?) -> Color {
         switch value {
-        case .some(true): Color(red: 0.20, green: 0.72, blue: 0.40)
-        case .some(false): Color(red: 0.90, green: 0.28, blue: 0.28)
+        case .some(true): DS.skin == .standard ? Color(red: 0.20, green: 0.72, blue: 0.40) : DS.success
+        case .some(false): DS.skin == .standard ? Color(red: 0.90, green: 0.28, blue: 0.28) : DS.error
         case .none: Color.secondary.opacity(0.35)
         }
     }
+
+    private static func hexColor(_ value: UInt32) -> Color { Color(PlatformNativeColor(hex: value)) }
 
     static func reachabilityLabel(_ value: Bool?) -> String {
         switch value {
