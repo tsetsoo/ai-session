@@ -3379,7 +3379,7 @@ mod tests {
         }
         let pool = db.pool();
         let conn = pool.get().unwrap();
-        assert_eq!(user_version(&conn), 43);
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
         conn.execute_batch(
             "INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id)
                 VALUES ('new', 'task', 'mac', '~/app', 'antigravity', 'ai/antigravity/todo-new', 'new');

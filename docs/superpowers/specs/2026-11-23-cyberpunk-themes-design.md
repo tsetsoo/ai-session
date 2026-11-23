@@ -181,7 +181,7 @@ cards.
   it in `aps.sound` for that device's non-passive pushes, falling back to `"default"`. The phone
   re-registers when the theme changes. The skin `.caf` files must be in the iOS bundle under
   those exact names. Old clients and existing rows (no field) keep `"default"`. This needs a
-  hub schema migration and a deploy (push to `main` publishes `pi-latest`). Standard sends no
+  hub schema migration (v44; main took v43 for Antigravity) and a deploy (push to `main` publishes `pi-latest`). Standard sends no
   sound name.
 
 ## Left to the builder
