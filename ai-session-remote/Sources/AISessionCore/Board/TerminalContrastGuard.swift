@@ -248,7 +248,7 @@ public struct TerminalContrastGuard {
         }
     }
 
-    static func contrast(_ a: RGB, _ b: RGB) -> Double {
+    public static func contrast(_ a: RGB, _ b: RGB) -> Double {
         let la = luminance(a), lb = luminance(b)
         return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
     }

@@ -496,7 +496,7 @@ struct TerminalSurface: View {
     }
 
     private var palette: TerminalPalette {
-        TerminalAppearance.palette(theme: TerminalTheme(rawValue: themeRaw) ?? .system, colorScheme: colorScheme)
+        TerminalAppearance.palette(theme: TerminalTheme(rawValue: themeRaw) ?? .system, colorScheme: colorScheme, skin: SkinStore.shared.skin)
     }
 
     var body: some View {
@@ -549,7 +549,7 @@ struct TerminalSurface: View {
             }
         )
         .disabled(connectionState != .connected)
-        .environment(\.colorScheme, palette == .dark ? .dark : .light)
+        .environment(\.colorScheme, palette.isDark ? .dark : .light)
     }
     #endif
 
@@ -706,7 +706,7 @@ struct TerminalSurface: View {
             .padding(DS.spacing.xl)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(palette.background))
-            .environment(\.colorScheme, palette == .dark ? .dark : .light)
+            .environment(\.colorScheme, palette.isDark ? .dark : .light)
     }
 
     private var connectingOverlay: some View {

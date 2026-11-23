@@ -79,11 +79,11 @@ struct OnTerminalBackground: ViewModifier {
 
     func body(content: Content) -> some View {
         let palette = TerminalAppearance.palette(theme: TerminalTheme(rawValue: themeRaw) ?? .system,
-                                                 colorScheme: colorScheme)
+                                                 colorScheme: colorScheme, skin: SkinStore.shared.skin)
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(palette.background))
-            .environment(\.colorScheme, palette == .dark ? .dark : .light)
+            .environment(\.colorScheme, palette.isDark ? .dark : .light)
     }
 }
 

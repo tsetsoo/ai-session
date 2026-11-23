@@ -227,7 +227,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
         }
         // Sent after `TerminalAppearance.apply`, so SwiftTerm already reports the new colours
         // when tmux asks for them again.
-        themeReporter.setTheme(palette == .dark ? .dark : .light)
+        themeReporter.setTheme(palette.isDark ? .dark : .light)
         sendThemeNotice()
     }
 
@@ -683,7 +683,7 @@ struct TerminalScreen: View {
     }
 
     private var palette: TerminalPalette {
-        TerminalAppearance.palette(theme: TerminalTheme(rawValue: themeRaw) ?? .system, colorScheme: colorScheme)
+        TerminalAppearance.palette(theme: TerminalTheme(rawValue: themeRaw) ?? .system, colorScheme: colorScheme, skin: SkinStore.shared.skin)
     }
 
     var body: some View {
@@ -705,7 +705,7 @@ struct TerminalScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbarBackground(Color(palette.background).opacity(0.85), for: .navigationBar)
-        .toolbarColorScheme(palette == .dark ? .dark : .light, for: .navigationBar)
+        .toolbarColorScheme(palette.isDark ? .dark : .light, for: .navigationBar)
         .toolbar {
             // No ⌨ here on iOS: the key bar's ⌨ shows and hides the keyboard.
             ToolbarItem(placement: .primaryAction) {

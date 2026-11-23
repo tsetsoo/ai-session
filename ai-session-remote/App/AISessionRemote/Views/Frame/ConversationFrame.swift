@@ -1592,9 +1592,10 @@ private struct TerminalColorScheme: ViewModifier {
     func body(content: Content) -> some View {
         let palette = TerminalAppearance.palette(
             theme: TerminalTheme(rawValue: themeRaw) ?? .system,
-            colorScheme: colorScheme
+            colorScheme: colorScheme,
+            skin: SkinStore.shared.skin
         )
-        content.environment(\.colorScheme, palette == .dark ? .dark : .light)
+        content.environment(\.colorScheme, palette.isDark ? .dark : .light)
     }
 }
 
@@ -1609,7 +1610,8 @@ private struct ToolBand: View {
     var body: some View {
         let palette = TerminalAppearance.palette(
             theme: TerminalTheme(rawValue: themeRaw) ?? .system,
-            colorScheme: colorScheme
+            colorScheme: colorScheme,
+            skin: SkinStore.shared.skin
         )
         HStack(spacing: DS.spacing.s) {
             ToolIcon(tool: tool, side: 26)

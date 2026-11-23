@@ -45,6 +45,38 @@ struct TerminalPalette: Equatable {
         ])
     )
 
+    /// Neon noir: indigo black, lavender text, magenta cursor, neon ANSI colours.
+    static let neonNoir = TerminalPalette(
+        background: PlatformNativeColor(hex: 0x07061A),
+        foreground: PlatformNativeColor(hex: 0xD9D6FF),
+        cursor: PlatformNativeColor(hex: 0xFF2E97),
+        selection: PlatformNativeColor(hex: 0xFF2E97).withAlphaComponent(0.30),
+        ansi: hexes([
+            0x1A1838, 0xFF5A6E, 0x39FF88, 0xFFE45C, 0x5C8CFF, 0xFF2E97, 0x00F0FF, 0xC8C4F0,
+            0x6B6894, 0xFF8C9A, 0x8CFFB8, 0xFFF08C, 0x8CB0FF, 0xFF7AC0, 0x7AF7FF, 0xF2F0FF,
+        ])
+    )
+
+    /// Phosphor: green CRT. Mostly green, but red-amber, amber, teal and lime stay distinct so
+    /// errors, warnings and diffs still read.
+    static let phosphor = TerminalPalette(
+        background: PlatformNativeColor(hex: 0x010703),
+        foreground: PlatformNativeColor(hex: 0x33FF77),
+        cursor: PlatformNativeColor(hex: 0x33FF77),
+        selection: PlatformNativeColor(hex: 0x33FF77).withAlphaComponent(0.25),
+        ansi: hexes([
+            0x0B3D1C, 0xFF5F4A, 0x33FF77, 0xFFC447, 0x3FD0C9, 0xD4FF33, 0x7DFFE0, 0xB8FFC8,
+            0x1F7A3D, 0xFF8A78, 0x7DFFA8, 0xFFD98A, 0x7FE8E2, 0xE6FF8A, 0xB0FFEE, 0xE8FFEC,
+        ])
+    )
+
+    /// Whether tmux should be told the terminal is dark (background luminance below half).
+    var isDark: Bool {
+        let bg = Self.rgb(background)
+        let luminance = (0.2126 * Double(bg.r) + 0.7152 * Double(bg.g) + 0.0722 * Double(bg.b)) / 255
+        return luminance < 0.5
+    }
+
     var contrastPalette: TerminalContrastGuard.Palette {
         TerminalContrastGuard.Palette(
             foreground: Self.rgb(foreground),
@@ -85,7 +117,17 @@ enum TerminalAppearance {
     }
 
     static func palette(theme: TerminalTheme, colorScheme: ColorScheme) -> TerminalPalette {
-        switch theme {
+        palette(theme: theme, colorScheme: colorScheme, skin: .standard)
+    }
+
+    /// A skin brings its own palette; Standard uses the terminal's own theme setting.
+    static func palette(theme: TerminalTheme, colorScheme: ColorScheme, skin: AppSkin) -> TerminalPalette {
+        switch skin {
+        case .neonNoir: return .neonNoir
+        case .phosphor: return .phosphor
+        case .standard: break
+        }
+        return switch theme {
         case .light: .light
         case .dark: .dark
         case .system: colorScheme == .dark ? .dark : .light
