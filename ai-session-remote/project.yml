@@ -123,11 +123,17 @@ targets:
         excludes:
           - Info.plist
           - Views/Frame/KeyBar.swift
+      - path: App/AISessionRemoteMac/com.aisessionremote.mac-updater.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchAgents
     info:
       path: App/AISessionRemoteMac/Info.plist
       properties:
         CFBundleDisplayName: AI Session Remote
         LSApplicationCategoryType: public.app-category.developer-tools
+        AISessionReleaseRevision: "$(AISESSION_RELEASE_REVISION)"
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.aisessionremote.todo
             UTTypeDescription: AI Session Todo

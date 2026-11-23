@@ -113,3 +113,27 @@ pub(crate) async fn put(pool: &DbPool, uri: &str, body: Value) -> (StatusCode, V
 pub(crate) async fn delete(pool: &DbPool, uri: &str) -> (StatusCode, Value) {
     call(pool, Method::DELETE, uri, None).await
 }
+
+/// Export nonempty responses from the real routes for the released Mac client's decoders.
+#[actix_web::test]
+async fn export_mac_compatibility_responses() {
+    let Some(output) = std::env::var_os("MAC_COMPATIBILITY_RESPONSES") else { return };
+    let (_db, pool) = pool("mac-compatibility");
+    {
+        let conn = pool.get().unwrap();
+        seed_computers(&conn);
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, folder, computer_id) VALUES ('p', 'Example', '~/example', 'spread');
+             INSERT INTO todos (id, title, project_id) VALUES ('t', 'Example todo', 'p');
+             INSERT INTO conversations (id, todo_id, computer_id, cwd, tool, tmux_name, session_id)
+                VALUES ('c', 't', 'spread', '/tmp', 'codex', 'test', 'test-session');",
+        ).unwrap();
+    }
+    let output = std::path::PathBuf::from(output);
+    for endpoint in ["todos", "computers", "conversations", "projects"] {
+        let (status, body) = get(&pool, &format!("/api/{endpoint}")).await;
+        assert_eq!(status, StatusCode::OK, "{endpoint}: {body}");
+        assert!(body.as_array().is_some_and(|rows| !rows.is_empty()), "{endpoint}: {body}");
+        std::fs::write(output.join(format!("{endpoint}.json")), serde_json::to_vec(&body).unwrap()).unwrap();
+    }
+}

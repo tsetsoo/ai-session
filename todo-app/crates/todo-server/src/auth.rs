@@ -320,6 +320,16 @@ mod tests {
             ids.sort_unstable();
             assert_eq!(ids, expected, "{path}");
         }
+        if let Some(output) = std::env::var_os("MAC_COMPATIBILITY_RESPONSES") {
+            let output = std::path::PathBuf::from(output);
+            for endpoint in ["todos", "computers", "conversations", "projects"] {
+                let path = format!("/api/{endpoint}");
+                let response = test::call_service(&app, get(&path)).await;
+                assert_eq!(response.status(), 200, "{path}");
+                let bytes = test::read_body(response).await;
+                std::fs::write(output.join(format!("scoped-{endpoint}.json")), bytes).unwrap();
+            }
+        }
         let codbex_get = |path: &str| test::TestRequest::get().uri(path)
             .insert_header(("Authorization", format!("Bearer {CODBEX_TOKEN}"))).to_request();
         assert_eq!(test::call_service(&app, codbex_get("/api/todos/in-project")).await.status(), 404);

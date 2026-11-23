@@ -2,6 +2,17 @@ import SwiftData
 import SwiftUI
 
 @main
+enum AISessionRemoteEntryPoint {
+    @MainActor
+    static func main() {
+        #if os(macOS)
+        MacAppUpdater.runFromCommandLineIfRequested()
+        MacAppUpdater.observeLaunch()
+        #endif
+        AISessionRemoteApp.main()
+    }
+}
+
 struct AISessionRemoteApp: App {
     #if os(iOS)
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -60,6 +71,11 @@ struct AISessionRemoteApp: App {
         .commands {
             // Frees ⌘N for New Todo; New Session is ⌥⌘N on the sessions list's add button.
             CommandGroup(replacing: .newItem) {}
+            #if os(macOS)
+            CommandGroup(after: .appInfo) {
+                MacAppUpdateCommand()
+            }
+            #endif
             CommandMenu("Conversation") {
                 // ⌘K, ⌘N and ⌘1–⌘9, for the key window's shell (disabled elsewhere).
                 ShellCommandItems()

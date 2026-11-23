@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the Release macOS app and print the path to the .app.
 #
+# Extra arguments after the derived-data path are xcodebuild settings.
 # Usage:
 #   scripts/build-mac-release.sh [derived-data-dir]
 #
@@ -11,6 +12,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DERIVED="${1:-${ROOT}/.build/mac-release}"
+if [[ $# -gt 0 ]]; then shift; fi
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 
 cd "$ROOT"
@@ -20,7 +22,7 @@ xcodegen generate >/dev/null
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 if ! xcodebuild -scheme AISessionRemoteMac -configuration Release -destination 'platform=macOS' \
-  -derivedDataPath "$DERIVED" build >"$log" 2>&1; then
+  -derivedDataPath "$DERIVED" "AISESSION_RELEASE_REVISION=${AISESSION_RELEASE_REVISION:-}" "$@" build >"$log" 2>&1; then
   grep -E "error:" "$log" >&2 || tail -40 "$log" >&2
   echo "Release build failed (full log above)" >&2
   exit 1

@@ -81,6 +81,68 @@ but it cannot create TestFlight builds and provisioning typically expires after 
 TestFlight distribution requires the paid Apple Developer Program, an App Store Connect app,
 and an archive signed with a distribution profile.
 
+## Mac release and automatic updates
+
+The **Release Mac app** workflow builds a universal Mac app for relevant pushes to
+`main` and publishes it to the repository’s `mac-latest` release. Its manifest
+advances only after the archive for that build is available. To activate it,
+configure the repository Actions secrets `MAC_SIGNING_P12` (base64-encoded PKCS#12
+containing an Apple Development certificate and its private key for team
+`233QTK6KCL`) and `MAC_SIGNING_PASSWORD` (the export password). Run the workflow on
+`main` to publish the first release.
+
+Choose **AI Session Remote → Check for Updates…** to download and verify the
+latest release. **Install and Restart** replaces the app after it quits and
+opens it again. The updater keeps the previous build until the new app confirms
+that it finished launching. If the new app crashes during startup or fails to
+confirm, the updater restores the previous build. Manual and background updates
+both use the installation in `~/Applications`.
+
+Choose **AI Session Remote → Automatic Updates… → Turn On** once per Mac to
+enable background checks. If macOS asks for approval, allow AI Session Remote
+under Login Items in System Settings. The built-in updater checks at login
+and every 15 minutes in a logged-in session. It updates when the app is closed,
+verifies startup in a hidden launch, and then closes the app. It retries failed downloads on the
+next check and skips a build that already failed startup until a new release
+appears or you retry manually.
+
+The updater checks the archive’s SHA-256 checksum before unpacking it. It then
+verifies the Apple Development signature, team, app identifier, and commit
+embedded in the signed bundle before swapping the app. It skips
+downgrades and divergent builds. Updater errors are logged to macOS unified
+logging under subsystem `com.aisessionremote.mac` and category `AppUpdater`. Use
+`scripts/rebuild-mac-app.sh` for local development installs.
+
+### Deploy a local build to the Macs
+
+From a clean, committed checkout on the signing Mac, run:
+
+```sh
+ai-session-remote/scripts/deploy-mac-app.sh
+```
+
+This builds once and updates this Mac, Spread, and codbex over SSH. To update
+this Mac and a subset of the others, pass their `user@host` destinations.
+Deployments use the existing `~/.ssh/id_ed25519_aisession` key by default and
+require known SSH host keys. Set `AISESSION_DEPLOY_KEY` to select a different key.
+A running app is asked to quit before the verified bundle replaces it, then
+reopens. Each result reports the installed commit, the running commit when
+known, and whether startup was confirmed. Unreachable Macs are listed
+separately. The script continues the rollout when one Mac fails. Quit the app
+on that Mac if needed and rerun the script. Deploy the same commit through GitHub, or a descendant, to
+return a locally deployed build to the public update channel.
+
+The Pi release workflow checks real full-access and scoped responses for the
+todo, computer, conversation, and project lists with the Swift decoders from
+the supported Mac baseline and the latest published Mac revision. Run
+`scripts/check-hub-compatibility.sh` locally to check the supported baseline.
+
+For hub response changes, deploy additive changes first and release clients
+that can decode both formats. Keep serving old required fields until every
+supported Mac has moved to the new client, including machines that are offline
+or still have the app open. This allows the hub and Mac releases to run on
+independent schedules.
+
 ## Sessions and metadata
 
 Session names are slugs (`[a-z0-9-]+`) and are namespaced by tool as
