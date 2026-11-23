@@ -73,6 +73,7 @@ struct SidebarView: View {
                 }
             }
         }
+        .skinnedList()
         .listStyle(.sidebar)
         .sheet(item: $editingProject) { ProjectEditorSheet(mode: $0, store: store) }
         .onChange(of: selection) { _, item in

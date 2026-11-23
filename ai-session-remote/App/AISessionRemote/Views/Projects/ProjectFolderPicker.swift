@@ -63,6 +63,7 @@ struct ProjectFolderPicker: View {
                     ProgressView("Reading folders…")
                 }
             }
+            .skinnedList()
             .navigationTitle("Choose Folder on \(computer.name)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

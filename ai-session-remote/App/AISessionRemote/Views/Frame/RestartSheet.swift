@@ -51,6 +51,7 @@ struct RestartSheet: View {
                     serversSection
                 }
             }
+            .skinnedList()
             #if os(macOS)
             .formStyle(.grouped)
             #endif

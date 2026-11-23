@@ -24,6 +24,7 @@ struct PhoneAutomationRoot: View {
                 Label(AutomationItem.activity.title, systemImage: AutomationItem.activity.systemImage)
             }
         }
+        .skinnedList()
         .task(id: store.revision) { await store.loadAllIdeas() }
     }
 }
@@ -57,6 +58,7 @@ private struct PhoneJobsList: View {
                 }
             }
         }
+        .skinnedList()
         .navigationTitle("Jobs")
         .navigationDestination(isPresented: $creatingJob) { PhoneJobForm(store: store, job: nil) }
         .navigationDestination(item: $creatingFrom) { PhoneJobForm(store: store, job: nil, template: $0) }
@@ -169,6 +171,7 @@ private struct PhoneIdeasList: View {
                 }
             }
         }
+        .skinnedList()
         .navigationTitle("Ideas")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -230,6 +233,7 @@ private struct PhoneActivityList: View {
                 Text("Activity needs a newer hub.").foregroundStyle(.secondary)
             }
         }
+        .skinnedList()
         .navigationTitle("Activity")
         .task(id: store.revision) { await store.loadRecentRuns() }
     }

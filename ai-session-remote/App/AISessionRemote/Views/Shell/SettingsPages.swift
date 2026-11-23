@@ -15,6 +15,7 @@ struct AppearanceSettingsView: View {
                 Text("Changes the whole app, its icon and its sounds.")
             }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .onChange(of: store.skin) {
             // The hub picks the push sound per device: tell it about the new skin's sound.
@@ -53,6 +54,7 @@ struct TerminalSettingsView: View {
                 }
             }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .navigationTitle("Terminal")
         .navigationBarTitleDisplayMode(.inline)
@@ -94,6 +96,7 @@ struct NeedsYouSettingsView: View {
                 NotificationSettingsView(todoTitles: todoTitles)
             }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)

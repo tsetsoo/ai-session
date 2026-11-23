@@ -56,6 +56,7 @@ struct WatchersListContent<Row: View>: View {
                 }
             }
         }
+        .skinnedList()
         .task(id: store.revision) { await store.loadRecentWatchIssues() }
     }
 }

@@ -55,6 +55,12 @@ enum DS {
         }
     }
 
+    /// Text on `accentSolid` (your own chat bubbles). Standard keeps `onAccent`; the skins'
+    /// darker solid accents take white, which keeps 4.5:1.
+    static var onAccentSolid: Color {
+        skin == .standard ? onAccent : .white
+    }
+
     /// Something failed: inline error lines in forms and lists.
     static var error: Color {
         switch skin {

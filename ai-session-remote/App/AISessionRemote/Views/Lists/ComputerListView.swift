@@ -61,6 +61,7 @@ struct ComputerListView: View {
                 }
             }
         }
+        .skinnedList()
         .listStyle(.insetGrouped)
         .refreshable {
             // Background: a failure shows in the banner, not in the shell's Todos alert.

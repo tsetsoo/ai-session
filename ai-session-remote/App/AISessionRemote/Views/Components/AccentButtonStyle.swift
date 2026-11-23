@@ -6,17 +6,25 @@ import SwiftUI
 struct AccentButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
+    enum Corners: Equatable { case capsule, square }
+
+    /// Standard keeps its capsule exactly; only Phosphor is square.
+    static func corners(for skin: AppSkin) -> Corners {
+        skin == .phosphor ? .square : .capsule
+    }
+
     func makeBody(configuration: Configuration) -> some View {
-        let neon = SkinStore.shared.skin == .neonNoir
-        let shape = RoundedRectangle(cornerRadius: DS.radius(100), style: .continuous)
+        let skin = SkinStore.shared.skin
+        let neon = skin == .neonNoir
+        let shape = Self.corners(for: skin) == .capsule ? AnyShape(Capsule()) : AnyShape(Rectangle())
         configuration.label
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(neon ? DS.info : DS.onAccent)
             .padding(.horizontal, DS.spacing.l - 2)
             .padding(.vertical, DS.spacing.xs + 2)
             .background(neon ? Color.clear : DS.accent, in: shape)
-            .overlay(shape.strokeBorder(neon ? DS.info : .clear, lineWidth: 1))
-            .shadow(color: neon ? DS.info.opacity(0.6) : .clear, radius: 6)
+            .overlay(shape.stroke(neon ? DS.info : .clear, lineWidth: 1))
+            .shadow(color: neon ? DS.info.opacity(0.6) : .clear, radius: neon ? 6 : 0)
             .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
     }
 }

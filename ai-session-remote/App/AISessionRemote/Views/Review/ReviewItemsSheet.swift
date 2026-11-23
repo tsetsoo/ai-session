@@ -158,6 +158,7 @@ struct ReviewItemsSheet: View {
                     }
                 }
             }
+            .skinnedList()
             .overlay {
                 if open.isEmpty {
                     ContentUnavailableView("Nothing Open", systemImage: "checklist",

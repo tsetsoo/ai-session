@@ -150,4 +150,73 @@ final class SkinTests: XCTestCase {
         XCTAssertEqual(SkinIcon.dockIconName(for: .phosphor), "DockIcon-Phosphor")
         XCTAssertNil(SkinIcon.dockIconName(for: .standard))
     }
+
+    /// Every list and form takes the skin's background (Standard: unchanged), so skinned
+    /// screens aren't stock black and grey.
+    func testEveryListIsSkinned() throws {
+        let views = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("AISessionRemote/Views")
+        let list = try NSRegularExpression(pattern: #"(^|[^A-Za-z.])(List|Form)\s*(\(|\{)"#, options: [.anchorsMatchLines])
+        var missing: [String] = []
+        let files = FileManager.default.enumerator(at: views, includingPropertiesForKeys: nil)!
+        for case let file as URL in files where file.pathExtension == "swift" {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            let lists = list.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text))
+            let skinned = text.components(separatedBy: ".skinnedList()").count - 1
+            if skinned < lists { missing.append("\(file.lastPathComponent): \(lists) lists, \(skinned) skinned") }
+        }
+        XCTAssertTrue(missing.isEmpty, missing.joined(separator: "\n"))
+    }
+
+    func testSkinnedListPaintsTheSkinBackground() throws {
+        SkinStore.shared.skin = .phosphor
+        let host = UIHostingController(rootView: List { Text("row") }.skinnedList().frame(width: 200, height: 300))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 200, height: 300))
+        window.overrideUserInterfaceStyle = .dark
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let format = UIGraphicsImageRendererFormat()
+        format.preferredRange = .standard
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: host.view.bounds, format: format).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+        let pixel = try XCTUnwrap(image.cgImage?.dataProvider?.data as Data?)
+        let bytesPerRow = try XCTUnwrap(image.cgImage?.bytesPerRow)
+        let scale = Int(image.scale)
+        let offset = (290 * scale) * bytesPerRow + (100 * scale) * 4
+        // Near the bottom, below the one row: the Phosphor window background 0x020A04.
+        // 8-bit BGRA (little-endian premultiplied): the Phosphor background is 0x020A04.
+        let px = (0..<4).map { Int(pixel[offset + $0]) }
+        XCTAssertEqual(px[3], 255, "opaque: \(px)")
+        XCTAssertLessThan(abs(px[1] - 0x0A), 6, "green: \(px)")
+        XCTAssertLessThan(max(px[0], px[2]), 10, "blue/red: \(px)")
+    }
+
+    func testSkinnedRowPaintsTheSkinSurface() throws {
+        SkinStore.shared.skin = .phosphor
+        let host = UIHostingController(rootView: List { Text("row").frame(height: 200).skinnedRow() }.skinnedList())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 200, height: 300))
+        window.overrideUserInterfaceStyle = .dark
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let format = UIGraphicsImageRendererFormat()
+        format.preferredRange = .standard
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: host.view.bounds, format: format).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+        let cg = try XCTUnwrap(image.cgImage)
+        let data = try XCTUnwrap(cg.dataProvider?.data) as Data
+        let offset = 150 * cg.bytesPerRow + 28 * 4
+        // Inside the row, left of the text: the Phosphor surface 0x031207 (BGRA).
+        let px = (0..<4).map { Int(data[offset + $0]) }
+        XCTAssertLessThan(abs(px[1] - 0x12), 6, "green: \(px)")
+        XCTAssertLessThan(abs(px[0] - 0x07), 6, "blue: \(px)")
+    }
 }

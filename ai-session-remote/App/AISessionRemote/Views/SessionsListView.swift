@@ -174,6 +174,7 @@ struct SessionsListView: View {
                 }
             }
         }
+        .skinnedList()
     }
 
     @ViewBuilder

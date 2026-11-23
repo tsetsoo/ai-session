@@ -202,6 +202,7 @@ struct HostEditorView: View {
                     }
                 }
             }
+            .skinnedList()
             .navigationTitle(host == nil ? "Add Host" : "Edit Host")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

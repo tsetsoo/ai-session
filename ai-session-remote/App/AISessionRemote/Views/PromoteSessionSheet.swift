@@ -40,6 +40,7 @@ struct PromoteSessionSheet: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            .skinnedList()
             .navigationTitle("Add to Managed")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

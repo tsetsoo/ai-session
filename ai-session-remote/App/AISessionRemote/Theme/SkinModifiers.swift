@@ -124,3 +124,27 @@ extension View {
         modifier(SkinnedTerminalFrame())
     }
 }
+
+private struct SkinnedList: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .scrollContentBackground(DS.windowBackground == nil ? .automatic : .hidden)
+            // On iPhone the navigation and tab containers paint an opaque system background
+            // over the root's, so each list paints the skin's own. Standard: clear, unchanged.
+            .background(DS.windowBackground ?? .clear)
+    }
+}
+
+extension View {
+    /// Every `List` and `Form`: the skin's window background behind it. No change in Standard.
+    func skinnedList() -> some View {
+        modifier(SkinnedList())
+    }
+}
+
+extension View {
+    /// A list row's card in the skin's surface colour. nil (Standard) keeps the system's.
+    func skinnedRow() -> some View {
+        listRowBackground(DS.surface)
+    }
+}

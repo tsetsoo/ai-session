@@ -149,6 +149,7 @@ struct NewSessionSheet: View {
                     Text("Shown in the list. Each name can be used once per tool on \(computerName).")
                 }
             }
+            .skinnedList()
             .navigationTitle("New Session")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

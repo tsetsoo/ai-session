@@ -313,6 +313,7 @@ struct ReviewView: View {
                 }
             }
         }
+        .skinnedList()
     }
 
     /// The PR on screen, with a menu to switch to another of the user's PRs/MRs. The whole
@@ -845,6 +846,7 @@ private struct PullRequestPicker: View {
                     }
                 }
             }
+            .skinnedList()
             .listStyle(.inset)
         }
     }
@@ -1452,6 +1454,7 @@ private struct FindingsPane: View {
                         }
                     }
                 }
+                .skinnedList()
                 .listStyle(.sidebar)
             }
         }
@@ -1712,6 +1715,7 @@ private struct PublishSheet: View {
                 }
                 .disabled(candidate.line == nil && candidate.comment.startLine != nil)
             }
+            .skinnedList()
             .frame(minHeight: 160)
             if let error = session.failure?.errorDescription {
                 Label(error, systemImage: "exclamationmark.triangle")

@@ -64,9 +64,11 @@ struct ProjectsList<Route: Hashable>: View {
         } else {
             if let selection {
                 List(selection: selection) { rows }
+                .skinnedList()
                     .listStyle(.insetGrouped)
             } else {
                 List { rows }
+                .skinnedList()
                     .listStyle(.insetGrouped)
             }
         }

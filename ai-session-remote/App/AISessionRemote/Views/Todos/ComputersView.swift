@@ -68,6 +68,7 @@ struct ComputersView: View {
                     }
                 }
             }
+            .skinnedList()
             .navigationTitle("Computers")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -150,6 +151,7 @@ private struct AddComputerSheet: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             }
+            .skinnedList()
             .navigationTitle("New Computer")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

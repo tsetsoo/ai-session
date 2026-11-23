@@ -71,6 +71,7 @@ struct ComputerHealthView: View {
                 helpersSection(report)
             }
         }
+        .skinnedList()
         .listStyle(.insetGrouped)
         .navigationTitle("Health")
         .toolbar {

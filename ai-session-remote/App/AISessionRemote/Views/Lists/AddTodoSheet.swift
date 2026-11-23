@@ -80,6 +80,7 @@ struct AddTodoSheet: View {
                     }
                 }
             }
+            .skinnedList()
             .formStyle(.grouped)
             .navigationTitle("New Todo")
             .navigationBarTitleDisplayMode(.inline)

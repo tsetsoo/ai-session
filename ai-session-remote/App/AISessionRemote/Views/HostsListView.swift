@@ -159,6 +159,7 @@ struct HostsListView: View {
                 }
             }
         }
+        .skinnedList()
         .overlay(alignment: .top) {
             if isProbing {
                 ProgressView()

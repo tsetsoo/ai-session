@@ -47,6 +47,7 @@ struct ResearchAgentsSheet: View {
                     Label(errorMessage, systemImage: "exclamationmark.triangle").foregroundStyle(DS.warning)
                 }
             }
+            .skinnedList()
             .formStyle(.grouped)
             .navigationTitle("Research Now")
             #if os(iOS)

@@ -195,6 +195,7 @@ struct MCPServersSheet: View {
                     unmanagedTitle: unmanagedTitle, unmanagedDetail: unmanagedDetail
                 )
             }
+            .skinnedList()
             #if os(macOS)
             .formStyle(.grouped)
             #endif
@@ -209,6 +210,7 @@ struct MCPServersSheet: View {
                     Text(MCPServerListState.failureMessage(computer))
                 }
             }
+            .skinnedList()
             #if os(macOS)
             .formStyle(.grouped)
             #endif

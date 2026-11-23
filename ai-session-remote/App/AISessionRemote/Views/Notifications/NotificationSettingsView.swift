@@ -229,4 +229,5 @@ struct NotificationSettingsView: View {
     Form {
         NotificationSettingsView()
     }
+    .skinnedList()
 }

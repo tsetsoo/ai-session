@@ -46,6 +46,7 @@ struct TodoHubSettingsView: View {
                     }
                 }
             }
+            .skinnedList()
             .navigationTitle("Server")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

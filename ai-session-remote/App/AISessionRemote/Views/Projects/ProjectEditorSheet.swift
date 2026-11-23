@@ -140,6 +140,7 @@ struct ProjectEditorSheet: View {
                         .font(.subheadline)
                 }
             }
+            .skinnedList()
             .formStyle(.grouped)
             .navigationTitle(isCreate ? "New Project" : "Edit Project")
             .navigationBarTitleDisplayMode(.inline)

@@ -125,6 +125,7 @@ struct ProjectDetailView: View {
             }
             memoriesSections(project)
         }
+        .skinnedList()
         .listStyle(.insetGrouped)
         .refreshable { await store.refresh() }
     }

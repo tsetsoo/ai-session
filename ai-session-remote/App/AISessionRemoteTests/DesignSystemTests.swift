@@ -74,4 +74,31 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertEqual(hex(DS.accent, .dark), 0xFF2E97)
         XCTAssertNotNil(DS.glow)
     }
+
+    private func contrast(_ a: Color, _ b: Color) -> Double {
+        func rgb(_ c: Color) -> TerminalContrastGuard.RGB {
+            let v = rgba(UIColor(c), .dark).map { UInt8(($0 * 255).rounded()) }
+            return (v[0], v[1], v[2])
+        }
+        return TerminalContrastGuard.contrast(rgb(a), rgb(b))
+    }
+
+    func testOwnChatBubbleIsLegibleInSkins() {
+        for skin in [AppSkin.neonNoir, .phosphor] {
+            SkinStore.shared.skin = skin
+            XCTAssertGreaterThanOrEqual(contrast(DS.onAccentSolid, DS.accentSolid), 4.5, skin.rawValue)
+        }
+    }
+
+    func testStandardOnAccentSolidIsUnchanged() {
+        SkinStore.shared.skin = .standard
+        XCTAssertEqual(hex(DS.onAccentSolid, .light), hex(DS.onAccent, .light))
+        XCTAssertEqual(hex(DS.onAccentSolid, .dark), hex(DS.onAccent, .dark))
+    }
+
+    func testAccentButtonKeepsCapsuleOutsidePhosphor() {
+        XCTAssertEqual(AccentButtonStyle.corners(for: .standard), .capsule)
+        XCTAssertEqual(AccentButtonStyle.corners(for: .neonNoir), .capsule)
+        XCTAssertEqual(AccentButtonStyle.corners(for: .phosphor), .square)
+    }
 }

@@ -95,6 +95,7 @@ private struct LinkToTodoList: View {
                 }
             }
         }
+        .skinnedList()
         .overlay {
             if isWorking { ProgressView() }
         }

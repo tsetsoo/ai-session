@@ -33,6 +33,7 @@ struct JobsList: View {
                 Text("Jobs")
             }
         }
+        .skinnedList()
         .navigationTitle("Jobs")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -215,6 +216,7 @@ struct JobDetailPane: View {
                 }
             }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .navigationTitle(job.name)
         .task(id: "\(job.id)|\(store.revision)|\(job.lastRun?.id ?? "")|\(job.lastRun?.state ?? "")") {
@@ -464,6 +466,7 @@ struct JobFormPane: View {
                 }
             }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .navigationTitle(job == nil ? "New Job" : "Edit \(job?.name ?? "")")
 
@@ -527,6 +530,7 @@ struct UsageLimitsPane: View {
             }
             HeavyUsageSections(store: store, onOpenTodo: onOpenTodo, onOpenJob: onOpenJob)
         }
+        .skinnedList()
         .formStyle(.grouped)
         .navigationTitle("Usage limits")
         .disabled(store.isOffline)

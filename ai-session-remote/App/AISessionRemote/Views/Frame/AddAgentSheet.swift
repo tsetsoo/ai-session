@@ -59,6 +59,7 @@ struct AddAgentSheet: View {
                     Text(footer)
                 }
             }
+            .skinnedList()
             .formStyle(.grouped)
             .navigationTitle("Add Agent")
             #if os(iOS)

@@ -61,6 +61,7 @@ struct RemoteConversationPicker: View {
                 }
             }
         }
+        .skinnedList()
         .pageSearch(text: $search, prompt: "Search title or folder")
         .refreshable { await reload() }
         .task { if conversations == nil { await reload() } }
@@ -368,6 +369,7 @@ struct NewTodoFromConversationSheet: View {
                 }
             }
         }
+        .skinnedList()
     }
 
     private func conversations(on computer: Computer) -> some View {
@@ -449,6 +451,7 @@ struct NewTodoDetailsForm: View {
                     .font(.subheadline)
             }
         }
+        .skinnedList()
         .navigationTitle("New Todo")
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {

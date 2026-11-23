@@ -62,7 +62,7 @@ struct ChatMessageView: View {
             Spacer(minLength: 60)
             VStack(alignment: .trailing, spacing: 6) {
                 Text(shownText)
-                    .foregroundStyle(DS.onAccent)
+                    .foregroundStyle(DS.onAccentSolid)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(DS.accentSolid, in: RoundedRectangle(cornerRadius: DS.radius(18)))

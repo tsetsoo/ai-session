@@ -17,6 +17,7 @@ struct TodaySidebar: View {
                     .tag(item)
             }
         }
+        .skinnedList()
         .navigationTitle("Today")
     }
 }
@@ -138,6 +139,7 @@ struct TodaySummaryList: View {
             }
             openConversations(board, todos: todos)
         }
+        .skinnedList()
         .navigationTitle("Today")
     }
 
@@ -318,6 +320,7 @@ struct TodaySettingsPane: View {
             }
             if let error { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(DS.warning) }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .navigationTitle("Today settings")
     }
@@ -349,6 +352,7 @@ struct RemindersList: View {
         List(selection: $selection) {
             RemindersListContent(store: store) { r in ReminderRow(reminder: r).tag(r.id) }
         }
+        .skinnedList()
         .navigationTitle("Reminders")
         .toolbar {
             ToolbarItemGroup {
@@ -438,6 +442,7 @@ struct ReminderFormPane: View {
                 }
             }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .onAppear {
             guard !loaded else { return }
@@ -466,6 +471,7 @@ struct PeopleList: View {
         List(selection: $selection) {
             PeopleListContent(store: store) { p in PersonRow(person: p).tag(p.id) }
         }
+        .skinnedList()
         .navigationTitle("People & Dates")
         .toolbar {
             ToolbarItemGroup {
@@ -549,6 +555,7 @@ struct PersonFormPane: View {
                 }
             }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .onAppear {
             guard !loaded else { return }
@@ -594,6 +601,7 @@ struct AssistantSheet: View {
                 }
                 if let error { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(DS.warning) }
             }
+            .skinnedList()
             .formStyle(.grouped)
             .navigationTitle("Add with an agent")
             .toolbar {
@@ -653,6 +661,7 @@ private struct PhoneReminders: View {
                 NavigationLink { PhoneReminderForm(store: store, reminder: r) } label: { ReminderRow(reminder: r) }
             }
         }
+        .skinnedList()
         .navigationTitle("Reminders")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -684,6 +693,7 @@ private struct PhonePeople: View {
                 NavigationLink { PhonePersonForm(store: store, person: p) } label: { PersonRow(person: p) }
             }
         }
+        .skinnedList()
         .navigationTitle("People & Dates")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {

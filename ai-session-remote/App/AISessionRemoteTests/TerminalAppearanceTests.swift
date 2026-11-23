@@ -70,6 +70,8 @@ final class TerminalAppearanceTests: XCTestCase {
             for i in 1..<16 {
                 XCTAssertGreaterThanOrEqual(TerminalContrastGuard.contrast(p.ansi[i], p.background), 3, "\(name) ansi \(i)")
             }
+            // Bright black carries Claude's dimmed hints: body-text contrast.
+            XCTAssertGreaterThanOrEqual(TerminalContrastGuard.contrast(p.ansi[8], p.background), 4.5, "\(name) dimmed")
         }
     }
 

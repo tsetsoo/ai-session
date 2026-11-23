@@ -99,6 +99,7 @@ struct SettingsView: View {
                     #endif
                 }
             }
+            .skinnedList()
             .formStyle(.grouped)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

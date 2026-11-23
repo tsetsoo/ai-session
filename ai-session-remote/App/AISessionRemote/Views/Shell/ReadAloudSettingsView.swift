@@ -32,6 +32,7 @@ struct ReadAloudSettingsView: View {
                 }
             }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .navigationTitle("Read Aloud")
         .navigationBarTitleDisplayMode(.inline)

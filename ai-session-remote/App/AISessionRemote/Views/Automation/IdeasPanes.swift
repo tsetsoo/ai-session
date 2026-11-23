@@ -46,6 +46,7 @@ struct IdeasList: View {
                 }
             }
         }
+        .skinnedList()
         .navigationTitle("Ideas")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -236,6 +237,7 @@ struct IdeaDetailPane: View {
                 }
             }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .navigationTitle(idea.title)
         .onAppear {
@@ -368,6 +370,7 @@ struct NewIdeaPane: View {
                 }
             }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .navigationTitle("New Idea")
         .onAppear { projectId = model.automationIdeasProject ?? store.projects.first?.id ?? "" }
@@ -429,6 +432,7 @@ struct ShapeIdeaPane: View {
                 Label(errorMessage, systemImage: "exclamationmark.triangle").foregroundStyle(DS.warning)
             }
         }
+        .skinnedList()
         .formStyle(.grouped)
         .navigationTitle("Shape an Idea")
         .onAppear { projectId = model.automationIdeasProject ?? store.projects.first?.id ?? "" }
@@ -452,6 +456,7 @@ struct ActivityList: View {
                 Text("Activity needs a newer hub.").font(.callout).foregroundStyle(.secondary)
             }
         }
+        .skinnedList()
         .navigationTitle("Activity")
         .task(id: store.revision) { await store.loadRecentRuns() }
     }
@@ -500,6 +505,7 @@ struct ActivityDetail: View {
                     }
                 }
             }
+            .skinnedList()
             .formStyle(.grouped)
             .navigationTitle(recent.jobName)
             .task(id: "\(run.id)|\(run.state)") {

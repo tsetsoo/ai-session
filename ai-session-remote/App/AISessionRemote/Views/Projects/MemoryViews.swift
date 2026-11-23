@@ -261,6 +261,7 @@ struct MemoryEditorSheet: View {
                         .font(.subheadline)
                 }
             }
+            .skinnedList()
             .formStyle(.grouped)
             .navigationTitle(isNew ? "New Memory" : "Edit Memory")
             .navigationBarTitleDisplayMode(.inline)
