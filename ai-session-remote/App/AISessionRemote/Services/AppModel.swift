@@ -19,25 +19,42 @@ enum AttachReadiness: Equatable {
     case unknown
 }
 
-/// A "needs you" alert: the todo title and "Needs you", never a status message or any
-/// conversation text, so it matches what a push can carry.
+/// Which sidebar section a conversation just arrived in.
+enum AttentionKind: Hashable {
+    case needsYou, review
+
+    /// Banner body: never conversation text.
+    var body: String {
+        switch self {
+        case .needsYou: return "Needs you"
+        case .review: return "Ready for review"
+        }
+    }
+}
+
+/// An arrival alert: the todo title and "Needs you" or "Ready for review", never a status
+/// message or any conversation text, so it matches what a push can carry.
 struct WaitingAlert: Equatable {
     let todoId: String
     let sessionId: String
     let title: String
-    let body: String
+    let kind: AttentionKind
+    var body: String { kind.body }
 }
 
-/// Where a conversation that turned `waiting` goes. Tests inject it.
+/// Where a conversation arriving in Needs you or To review goes. Tests inject it.
 @MainActor
 struct WaitingAlerts {
-    /// Settings → Notifications ("notify.needsYou"): off, neither alerts nor buzzes.
+    /// Settings → Notifications ("notify.needsYou"): off, no banners and no buzz. Sounds and
+    /// pulses don't depend on it.
     var isEnabled: () -> Bool
     /// The conversation on screen while the app is active (`nil`: none).
     var frontmostTodoID: () -> String?
     var post: (WaitingAlert) -> Void
     /// The buzz instead of an alert for the conversation on screen.
     var feedback: () -> Void
+    /// One sound per refresh with arrivals (Mac; a no-op on iOS).
+    var sound: (AttentionKind) -> Void
 
     /// The coordinator owns permission, push-vs-local dedup and the Mac rule; its presence is
     /// what `VisiblePresence` reported, cleared while the app is inactive.
@@ -45,12 +62,9 @@ struct WaitingAlerts {
         WaitingAlerts(
             isEnabled: { NotificationCenterCoordinator.shared.isEnabled },
             frontmostTodoID: { NotificationCenterCoordinator.shared.visibleTodoId },
-            post: { alert in
-                NotificationCenterCoordinator.shared.postWaiting(
-                    todoId: alert.todoId, sessionId: alert.sessionId, title: alert.title, body: alert.body
-                )
-            },
-            feedback: { PlatformSupport.needsYouFeedback() }
+            post: { NotificationCenterCoordinator.shared.postAttention($0) },
+            feedback: { PlatformSupport.needsYouFeedback() },
+            sound: { AttentionSound.play($0) }
         )
     }
 }
@@ -233,6 +247,10 @@ final class AppModel {
     /// Conversation statuses at the last refresh (`nil` until the first one after launch or a
     /// reconnect): the baseline for "turned waiting" alerts.
     private var lastStatuses: [String: ConversationStatus]?
+    /// todoId → how many times it arrived in Needs you / To review; rows pulse when it changes.
+    private(set) var rowPulses: [String: Int] = [:]
+    /// Section → arrivals into it; the sidebar row pulses when it changes.
+    private(set) var sectionPulses: [AttentionKind: Int] = [:]
     /// The time of a liveness listing; tests fix it.
     private let now: () -> Date
     /// Incremented per refresh; only the latest, uncancelled one may publish its result.
@@ -322,33 +340,47 @@ final class AppModel {
     }
     #endif
 
-    // MARK: "Needs you" alerts
+    // MARK: Arrivals in Needs you / To review
 
     private func observeRefreshes() {
-        store.onRefresh = { [weak self] fetched in self?.alertNewlyWaiting(fetched) }
+        store.onRefresh = { [weak self] fetched in self?.announceArrivals(fetched) }
     }
 
-    /// The one place a conversation turning `waiting` is announced: an alert through the
-    /// coordinator, or only a buzz when that conversation is on screen in the active app.
-    private func alertNewlyWaiting(_ fetched: TodoHubStore.Fetched) {
+    /// The one place a conversation arriving in Needs you (turned `waiting`) or To review
+    /// (finished a turn and shows in `board.review`) is announced: a pulse, one sound per
+    /// refresh, and an alert through the coordinator; only a buzz for the conversation on
+    /// screen in the active app. Baseline refreshes record statuses and announce nothing.
+    private func announceArrivals(_ fetched: TodoHubStore.Fetched) {
         let previous = fetched.isBaseline ? nil : lastStatuses
         lastStatuses = Dictionary(fetched.conversations.map { ($0.todoId, $0.status) },
                                   uniquingKeysWith: { _, new in new })
-        let flipped = StatusTransitions.newlyWaiting(previous: previous, current: fetched.conversations)
-        guard !flipped.isEmpty, alerts.isEnabled() else { return }
+        let waiting = StatusTransitions.newlyWaiting(previous: previous, current: fetched.conversations)
+        let finished = StatusTransitions.newlyFinished(previous: previous, current: fetched.conversations)
+        guard !waiting.isEmpty || !finished.isEmpty else { return }
+        let inReview = Set(board.review.map(\.todoId))
+        let arrivals = waiting.map { ($0, AttentionKind.needsYou) }
+            + finished.filter { inReview.contains($0.todoId) }.map { ($0, AttentionKind.review) }
         let frontmost = alerts.frontmostTodoID()
-        for conversation in flipped {
+        let enabled = alerts.isEnabled()
+        var loudest: AttentionKind?
+        for (conversation, kind) in arrivals {
             if conversation.todoId == frontmost {
-                alerts.feedback()
+                if enabled, kind == .needsYou { alerts.feedback() }
                 continue
             }
-            alerts.post(WaitingAlert(
-                todoId: conversation.todoId,
-                sessionId: conversation.sessionId,
-                title: fetched.todos.first { $0.id == conversation.todoId }?.title ?? "Conversation",
-                body: "Needs you"
-            ))
+            rowPulses[conversation.todoId, default: 0] += 1
+            sectionPulses[kind, default: 0] += 1
+            if loudest != .needsYou { loudest = kind }
+            if enabled {
+                alerts.post(WaitingAlert(
+                    todoId: conversation.todoId,
+                    sessionId: conversation.sessionId,
+                    title: fetched.todos.first { $0.id == conversation.todoId }?.title ?? "Conversation",
+                    kind: kind
+                ))
+            }
         }
+        if let loudest { alerts.sound(loudest) }
     }
 
     /// Whether the todo server is set up. Demo launches always are.

@@ -598,6 +598,7 @@ final class AppModelTests: XCTestCase {
     private final class AlertRecorder {
         var posted: [WaitingAlert] = []
         var feedbacks = 0
+        var sounds: [AttentionKind] = []
         var enabled = true
         var frontmost: String?
 
@@ -606,7 +607,8 @@ final class AppModelTests: XCTestCase {
                 isEnabled: { [unowned self] in enabled },
                 frontmostTodoID: { [unowned self] in frontmost },
                 post: { [unowned self] in posted.append($0) },
-                feedback: { [unowned self] in feedbacks += 1 }
+                feedback: { [unowned self] in feedbacks += 1 },
+                sound: { [unowned self] in sounds.append($0) }
             )
         }
     }
@@ -634,7 +636,7 @@ final class AppModelTests: XCTestCase {
         let messages = DemoFixtures.conversations.compactMap(\.statusMessage)
         XCTAssertFalse(messages.isEmpty, "the fixtures must carry status messages", file: file, line: line)
         for alert in alerts {
-            XCTAssertEqual(alert.body, "Needs you", file: file, line: line)
+            XCTAssertEqual(alert.body, alert.kind == .needsYou ? "Needs you" : "Ready for review", file: file, line: line)
             for message in messages {
                 XCTAssertFalse(alert.title.contains(message), file: file, line: line)
                 XCTAssertFalse(alert.body.contains(message), file: file, line: line)
@@ -705,6 +707,81 @@ final class AppModelTests: XCTestCase {
         recorder.enabled = true
         fetched(["t1": .waiting, "t3": .waiting], into: model)
         XCTAssertTrue(recorder.posted.isEmpty)
+    }
+
+    // MARK: Attention arrivals (sound, pulse, review)
+
+    func testReviewArrivalWhenATurnFinishes() {
+        let recorder = AlertRecorder()
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .idle, "t3": .busy], into: model)
+        XCTAssertEqual(recorder.posted.map(\.kind), [.review])
+        XCTAssertEqual(recorder.posted.first?.todoId, "t1")
+        XCTAssertEqual(recorder.posted.first?.body, "Ready for review")
+        XCTAssertEqual(recorder.sounds, [.review])
+        XCTAssertEqual(model.rowPulses["t1"], 1)
+        XCTAssertEqual(model.sectionPulses[.review], 1)
+        assertNoConversationText(recorder.posted)
+    }
+
+    func testBaselineNeverSignals() {
+        let recorder = AlertRecorder()
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .waiting, "t3": .idle], into: model)
+        XCTAssertTrue(recorder.posted.isEmpty)
+        XCTAssertTrue(recorder.sounds.isEmpty)
+        XCTAssertTrue(model.rowPulses.isEmpty)
+        XCTAssertTrue(model.sectionPulses.isEmpty)
+    }
+
+    func testOneSoundPerRefreshNeedsYouWins() {
+        let recorder = AlertRecorder()
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .waiting, "t3": .idle], into: model)
+        XCTAssertEqual(Set(recorder.posted.map(\.todoId)), ["t1", "t3"])
+        XCTAssertEqual(recorder.sounds, [.needsYou])
+        XCTAssertEqual(model.sectionPulses[.needsYou], 1)
+        XCTAssertEqual(model.sectionPulses[.review], 1)
+    }
+
+    func testFrontmostArrivalOnlyBuzzes() {
+        let recorder = AlertRecorder()
+        recorder.frontmost = "t1"
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .waiting, "t3": .busy], into: model)
+        XCTAssertEqual(recorder.feedbacks, 1)
+        XCTAssertTrue(recorder.posted.isEmpty)
+        XCTAssertTrue(recorder.sounds.isEmpty)
+        XCTAssertNil(model.rowPulses["t1"])
+    }
+
+    func testDisabledStillSoundsAndPulses() {
+        let recorder = AlertRecorder()
+        recorder.enabled = false
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .waiting, "t3": .busy], into: model)
+        XCTAssertTrue(recorder.posted.isEmpty)
+        XCTAssertEqual(recorder.sounds, [.needsYou])
+        XCTAssertEqual(model.rowPulses["t1"], 1)
+    }
+
+    func testCompletedTodoFinishingIsNotReview() {
+        let recorder = AlertRecorder()
+        let model = makeAlertingModel(recorder)
+        let done = DemoFixtures.todos.map { todo -> Todo in
+            var todo = todo
+            if todo.id == "t1" { todo.completed = true }
+            return todo
+        }
+        model.store.applyFetched(todos: done, conversations: conversations(["t1": .busy, "t3": .busy]))
+        model.store.applyFetched(todos: done, conversations: conversations(["t1": .idle, "t3": .busy]))
+        XCTAssertTrue(recorder.posted.isEmpty)
+        XCTAssertTrue(recorder.sounds.isEmpty)
     }
 }
 
