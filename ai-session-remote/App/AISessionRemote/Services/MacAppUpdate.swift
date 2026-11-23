@@ -160,11 +160,14 @@ enum MacAppUpdater {
                 exit(EXIT_FAILURE)
             }
             let service = automaticUpdatesService
-            if args.first == "--enable-automatic-app-updates", service.status == .notRegistered {
+            if args.first == "--enable-automatic-app-updates",
+               service.status != .enabled, service.status != .requiresApproval {
                 do { try service.register() }
                 catch where service.status == .requiresApproval { }
                 catch {
-                    FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
+                    let registrationError = error as NSError
+                    let message = "\(registrationError.localizedDescription) (\(registrationError.domain) \(registrationError.code))\n"
+                    FileHandle.standardError.write(Data(message.utf8))
                     exit(EXIT_FAILURE)
                 }
             }
@@ -176,7 +179,7 @@ enum MacAppUpdater {
                 print("Automatic updates require approval in System Settings → Login Items")
                 exit(2)
             default:
-                print("Automatic updates are off")
+                print("Automatic updates are off (Service Management status \(service.status.rawValue))")
                 exit(3)
             }
         case "--install-app-update":
