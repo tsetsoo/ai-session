@@ -22,7 +22,7 @@ struct SettingsView: View {
     @State private var sheet: Sheet?
 
     enum Page: Hashable {
-        case terminal, notifications, readAloud
+        case appearance, terminal, notifications, readAloud
     }
 
     private enum Sheet: String, Identifiable {
@@ -53,7 +53,7 @@ struct SettingsView: View {
             }
         }
         // A sheet doesn't pick up the shell's tint.
-        .tint(DS.accent)
+        .skinned()
         #if os(macOS)
         .frame(minWidth: 480, minHeight: 460)
         #endif
@@ -83,6 +83,9 @@ struct SettingsView: View {
                     Text("How this device signs in to your computers.")
                 }
                 Section {
+                    NavigationLink(value: Page.appearance) {
+                        Label("Appearance", systemImage: "paintpalette")
+                    }
                     NavigationLink(value: Page.terminal) {
                         Label("Terminal", systemImage: "terminal")
                     }
@@ -106,6 +109,7 @@ struct SettingsView: View {
             }
             .navigationDestination(for: Page.self) { page in
                 switch page {
+                case .appearance: AppearanceSettingsView()
                 case .terminal: TerminalSettingsView()
                 case .notifications: NeedsYouSettingsView()
                 case .readAloud:

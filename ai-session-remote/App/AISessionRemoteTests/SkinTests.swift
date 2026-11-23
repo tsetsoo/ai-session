@@ -40,4 +40,18 @@ final class SkinTests: XCTestCase {
         XCTAssertFalse(AppSkin.standard.isDark)
         XCTAssertEqual(AppSkin.neonNoir.displayName, "Neon noir")
     }
+    func testSkinnedModifierRendersForAllSkins() {
+        for skin in AppSkin.allCases {
+            SkinStore.shared.skin = skin
+            let host = UIHostingController(rootView: Text("x").skinned())
+            host.loadViewIfNeeded()
+            XCTAssertNotNil(host.view, skin.rawValue)
+        }
+    }
+
+    func testAppearanceSettingsViewBuilds() {
+        let host = UIHostingController(rootView: NavigationStack { AppearanceSettingsView() })
+        host.loadViewIfNeeded()
+        XCTAssertNotNil(host.view)
+    }
 }

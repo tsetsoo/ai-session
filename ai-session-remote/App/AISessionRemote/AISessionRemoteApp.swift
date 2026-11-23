@@ -40,6 +40,7 @@ struct AISessionRemoteApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .skinned()
                 .environment(model)
                 // Notification permission is asked only from Settings → Notifications.
                 .onAppear { model.installSystemEntryPoints() }
@@ -101,6 +102,7 @@ struct AISessionRemoteApp: App {
         // ⧉ / ⇧⌘O: a conversation in its own window, keyed by todo id.
         WindowGroup(id: ConversationWindow.id, for: String.self) { $todoID in
             ConversationWindow(todoID: todoID)
+                .skinned()
                 .environment(model)
         }
         .modelContainer(HostStore.shared)
@@ -109,6 +111,7 @@ struct AISessionRemoteApp: App {
         // ⋯ ▸ Review Changes…: a conversation's worktree changes, keyed by todo and conversation.
         WindowGroup(id: ReviewWindow.id, for: ReviewTarget.self) { $target in
             ReviewWindow(target: target)
+                .skinned()
                 .environment(model)
         }
         .modelContainer(HostStore.shared)
@@ -117,6 +120,7 @@ struct AISessionRemoteApp: App {
         // ⌘, and the sidebar's Settings row.
         Settings {
             SettingsView()
+                .skinned()
                 .environment(model)
                 .modelContainer(HostStore.shared)
         }

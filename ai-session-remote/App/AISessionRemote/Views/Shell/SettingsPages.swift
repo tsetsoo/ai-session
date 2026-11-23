@@ -1,5 +1,26 @@
 import SwiftUI
 
+/// Settings → Appearance: the app-wide theme (Standard, or a cyberpunk skin).
+struct AppearanceSettingsView: View {
+    var body: some View {
+        @Bindable var store = SkinStore.shared
+        Form {
+            Section {
+                Picker("App theme", selection: $store.skin) {
+                    ForEach(AppSkin.allCases) { skin in
+                        Text(skin.displayName).tag(skin)
+                    }
+                }
+            } footer: {
+                Text("Changes the whole app, its icon and its sounds.")
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Appearance")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 /// Settings → Terminal: text size and the terminal's own light/dark theme.
 struct TerminalSettingsView: View {
     @AppStorage(TextSizeShortcuts.fontSizeKey) private var fontSize = TerminalAppearance.defaultFontSize
@@ -11,13 +32,20 @@ struct TerminalSettingsView: View {
                 Stepper(value: $fontSize, in: TerminalAppearance.fontSizeRange, step: 1) {
                     LabeledContent("Text size", value: "\(Int(fontSize)) pt")
                 }
-                Picker("Theme", selection: $themeRaw) {
-                    ForEach(TerminalTheme.allCases, id: \.self) { theme in
-                        Text(Self.name(theme)).tag(theme.rawValue)
+                // A skin brings its own terminal colours.
+                if SkinStore.shared.skin == .standard {
+                    Picker("Theme", selection: $themeRaw) {
+                        ForEach(TerminalTheme.allCases, id: \.self) { theme in
+                            Text(Self.name(theme)).tag(theme.rawValue)
+                        }
                     }
                 }
             } footer: {
-                Text("Set Claude's theme with /theme to match.")
+                if SkinStore.shared.skin == .standard {
+                    Text("Set Claude's theme with /theme to match.")
+                } else {
+                    Text("The \(SkinStore.shared.skin.displayName) theme sets the terminal colours. Set Claude's theme to dark with /theme.")
+                }
             }
         }
         .formStyle(.grouped)
