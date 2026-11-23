@@ -1741,12 +1741,25 @@ pub async fn close_conversation_by_id(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
     broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match close_conversation_id(&conn, &path.into_inner()) {
+    let id = path.into_inner();
+    let closed = (|| -> Result<Conversation, OpenError> {
+        if let Some(scope) = scope {
+            let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+            authorize_conversation_id(&tx, &scope.resolve_projects(&tx)?, &id)?;
+            let conversation = close_conversation_id(&tx, &id)?;
+            tx.commit()?;
+            Ok(conversation)
+        } else {
+            close_conversation_id(&conn, &id)
+        }
+    })();
+    match closed {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)

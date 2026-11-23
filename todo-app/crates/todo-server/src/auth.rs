@@ -171,7 +171,7 @@ fn scoped_route(method: &actix_web::http::Method, path: &str) -> bool {
             !id.is_empty() && *id != "suggestions",
         (&Method::PATCH, ["", "api", "computers", id])
         | (&Method::POST, ["", "api", "todos", id, "toggle" | "conversation"])
-        | (&Method::POST, ["", "api", "conversations", id, "continue" | "reopen"])
+        | (&Method::POST, ["", "api", "conversations", id, "continue" | "reopen" | "close"])
         | (&Method::PUT, ["", "api", "conversations", id, "session"])
         | (&Method::DELETE, ["", "api", "conversations", id]) => !id.is_empty(),
         _ => false,
@@ -390,6 +390,10 @@ mod tests {
         }
         for (id, action, status) in [
             ("other-todo", "reopen", 404),
+            ("other-todo", "close", 404),
+            ("other-computer", "close", 404),
+            ("spread-sibling", "close", 200),
+            ("spread-sibling", "reopen", 200),
             ("other-computer", "continue", 404),
             ("visible-chat", "continue", 403),
             (chat_id, "reopen", 200),
