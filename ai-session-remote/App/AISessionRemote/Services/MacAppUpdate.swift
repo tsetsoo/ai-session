@@ -25,7 +25,7 @@ struct MacAppUpdateCommand: View {
             show("Automatic Updates", detail: "Open the copy in your home Applications folder to enable automatic updates.")
             return
         }
-        let service = SMAppService.agent(plistName: "com.aisessionremote.mac-updater.plist")
+        let service = MacAppUpdater.automaticUpdatesService
         let alert = NSAlert()
         alert.messageText = "Automatic Updates"
         switch service.status {
@@ -143,6 +143,10 @@ enum MacAppUpdater {
         }
     }
 
+    static var automaticUpdatesService: SMAppService {
+        SMAppService.agent(plistName: "com.aisessionremote.mac-updater.plist")
+    }
+
     static var isInstalledCopy: Bool {
         Bundle.main.bundleURL.resolvingSymlinksInPath() == destination.resolvingSymlinksInPath()
     }
@@ -150,6 +154,31 @@ enum MacAppUpdater {
     static func runFromCommandLineIfRequested() {
         let args = Array(CommandLine.arguments.dropFirst())
         switch args.first {
+        case "--enable-automatic-app-updates", "--automatic-app-updates-status":
+            guard isInstalledCopy else {
+                FileHandle.standardError.write(Data("Run this command from the installed Mac app.\n".utf8))
+                exit(EXIT_FAILURE)
+            }
+            let service = automaticUpdatesService
+            if args.first == "--enable-automatic-app-updates", service.status == .notRegistered {
+                do { try service.register() }
+                catch where service.status == .requiresApproval { }
+                catch {
+                    FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
+                    exit(EXIT_FAILURE)
+                }
+            }
+            switch service.status {
+            case .enabled:
+                print("Automatic updates enabled")
+                exit(EXIT_SUCCESS)
+            case .requiresApproval:
+                print("Automatic updates require approval in System Settings → Login Items")
+                exit(2)
+            default:
+                print("Automatic updates are off")
+                exit(3)
+            }
         case "--install-app-update":
             do {
                 try installAfterExit(args)
