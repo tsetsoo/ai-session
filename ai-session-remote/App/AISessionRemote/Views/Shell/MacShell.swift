@@ -108,6 +108,8 @@ struct MacShell: View {
         model.selectedProjectID = projectId
     }
 
+    @AppStorage(DockBadge.enabledKey) private var dockBadgeEnabled = true
+
     var body: some View {
         @Bindable var model = model
         NavigationSplitView {
@@ -233,6 +235,9 @@ struct MacShell: View {
             guard !empty else { return }
             model.sidebarSelection = .needsYou
             defaultSidebar = nil
+        }
+        .onChange(of: DockBadge.Input(count: model.board.needsYou.count, enabled: dockBadgeEnabled), initial: true) { _, input in
+            DockBadge.apply(input)
         }
         .onChange(of: model.sidebarSelection) { _, item in
             query = ""

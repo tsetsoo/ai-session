@@ -54,6 +54,9 @@ struct NeedsYouSettingsView: View {
                     Text("Notifications are turned off for this app. Turn them on in Settings.")
                 }
             }
+            #if os(macOS)
+            MacAttentionSettingsSection()
+            #endif
             if needsYou {
                 NotificationSettingsView(todoTitles: todoTitles)
             }

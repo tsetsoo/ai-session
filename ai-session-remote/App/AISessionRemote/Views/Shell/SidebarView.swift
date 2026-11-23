@@ -32,8 +32,10 @@ struct SidebarView: View {
             Section {
                 SidebarRow(title: "Needs you", systemImage: "exclamationmark.circle", iconTint: DS.accent,
                            count: counts.needsYou, countTint: DS.accent)
+                    .attentionPulse(serial: model.sectionPulses[.needsYou], at: nil, tint: AttentionKind.needsYou.pulseTint)
                     .tag(AppModel.SidebarItem.needsYou)
                 SidebarRow(title: "To review", systemImage: "checkmark.circle", count: counts.review)
+                    .attentionPulse(serial: model.sectionPulses[.review], at: nil, tint: AttentionKind.review.pulseTint)
                     .tag(AppModel.SidebarItem.review)
                 SidebarRow(title: "Working", systemImage: "bolt", count: counts.working)
                     .tag(AppModel.SidebarItem.working)

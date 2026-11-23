@@ -251,6 +251,8 @@ final class AppModel {
     private(set) var rowPulses: [String: Int] = [:]
     /// Section → arrivals into it; the sidebar row pulses when it changes.
     private(set) var sectionPulses: [AttentionKind: Int] = [:]
+    /// todoId → when it last arrived, so a row that appears right after (it moved lists) pulses.
+    private(set) var rowPulseDates: [String: Date] = [:]
     /// The time of a liveness listing; tests fix it.
     private let now: () -> Date
     /// Incremented per refresh; only the latest, uncancelled one may publish its result.
@@ -369,6 +371,7 @@ final class AppModel {
                 continue
             }
             rowPulses[conversation.todoId, default: 0] += 1
+            rowPulseDates[conversation.todoId] = now()
             sectionPulses[kind, default: 0] += 1
             if loudest != .needsYou { loudest = kind }
             if enabled {

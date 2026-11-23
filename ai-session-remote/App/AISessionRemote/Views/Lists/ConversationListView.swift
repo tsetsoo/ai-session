@@ -187,6 +187,8 @@ struct ConversationListView: View {
             onResume: resumeAction(conversation),
             review: store.reviewSummaries[conversation.listKey]
         )
+        .attentionPulse(serial: model.rowPulses[conversation.todoId], at: model.rowPulseDates[conversation.todoId],
+                        tint: (status == .needsYou ? AttentionKind.needsYou : .review).pulseTint)
         .tag(conversation.listKey)
         .rowTap(selection == nil ? open : nil)
         .conversationRowMenu(conversation, todo: todo, isRunning: status != .closed, actions: actions,
