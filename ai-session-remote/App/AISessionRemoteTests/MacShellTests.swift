@@ -242,12 +242,15 @@ final class MacShellTests: XCTestCase {
     }
 
     func testGoingToATodoElsewhereSwitchesList() {
-        // Each goes to the list for its status; t7 has no conversation; Projects and computers
-        // never list todos.
+        // Each goes to the list for its status. t7 has no conversation, so it goes to its project,
+        // whose page lists its todos; a todo with no project goes to Todos. Computers never list todos.
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t2"), from: .needsYou, board: board), .working)
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t5"), from: .working, board: board), .review)
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t3"), from: .project("another"), board: board), .needsYou)
-        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t7"), from: .review, board: board), .todos)
+        XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t7"), from: .review, board: board), .project("notes"))
+        var unfiled = todo("t7")
+        unfiled.projectId = nil
+        XCTAssertEqual(MacShell.sidebarTarget(showing: unfiled, from: .review, board: board), .todos)
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t8"), from: .todos, board: board), .todos)
         XCTAssertEqual(MacShell.sidebarTarget(showing: todo("t1"), from: .computer("mac-studio"), board: board),
                        .needsYou)
