@@ -65,7 +65,7 @@ struct ChatMessageView: View {
                     .foregroundStyle(DS.onAccent)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    .background(DS.accentSolid, in: RoundedRectangle(cornerRadius: 18))
+                    .background(DS.accentSolid, in: RoundedRectangle(cornerRadius: DS.radius(18)))
                 if isLong { foldButton }
             }
         }

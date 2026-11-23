@@ -85,8 +85,8 @@ struct ChatComposer: View {
                         .accessibilityLabel(isSending ? "Sending" : "Send")
                         .padding(4)
                     }
-                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
-                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.secondary.opacity(0.25)))
+                    .background((DS.surface ?? Color(uiColor: .secondarySystemGroupedBackground)), in: RoundedRectangle(cornerRadius: DS.radius(20)))
+                    .overlay(RoundedRectangle(cornerRadius: DS.radius(20)).stroke(Color.secondary.opacity(0.25)))
             }
             if let photoStatus {
                 Text(photoStatus).font(.footnote).foregroundStyle(.secondary)

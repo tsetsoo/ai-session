@@ -157,11 +157,11 @@ private struct PhoneIdeasList: View {
                             PhoneIdeaDetail(store: store, ideaID: idea.id, onOpenTodo: onOpenTodo)
                         } label: {
                             HStack {
-                                Image(systemName: idea.starred ? "star.fill" : "lightbulb").foregroundStyle(idea.starred ? .yellow : .secondary)
+                                Image(systemName: idea.starred ? "star.fill" : "lightbulb").foregroundStyle(idea.starred ? DS.star : .secondary)
                                 VStack(alignment: .leading) {
                                     Text(idea.title).lineLimit(2)
                                     Text(idea.pending ? "Waiting for OK" : idea.status.label + (idea.findings != nil ? " · findings" : ""))
-                                        .font(.caption).foregroundStyle(idea.pending ? .orange : .secondary)
+                                        .font(.caption).foregroundStyle(idea.pending ? DS.attention : .secondary)
                                 }
                             }
                         }

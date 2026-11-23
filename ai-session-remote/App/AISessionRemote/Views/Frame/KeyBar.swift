@@ -155,7 +155,7 @@ struct KeyBar: View {
 }
 
 /// The key bar's colours for the terminal's light or dark palette.
-private struct KeyBarColors {
+struct KeyBarColors {
     let bar: Color
     let separator: Color
     let key: Color
@@ -167,8 +167,31 @@ private struct KeyBarColors {
     let accent: Color
     let accentLabel: Color
 
-    init(_ scheme: ColorScheme) {
+    init(_ scheme: ColorScheme, skin: AppSkin = SkinStore.shared.skin) {
         func hex(_ value: UInt32) -> Color { Color(PlatformNativeColor(hex: value)) }
+        switch skin {
+        case .standard: break
+        case .neonNoir:
+            bar = hex(0x110F26)
+            separator = hex(0x2B2550)
+            key = hex(0x1A1640)
+            keyPressed = hex(0x2A2260)
+            keyLabel = hex(0xD9D6FF)
+            keyShadow = hex(0x05040F)
+            accent = DS.accent
+            accentLabel = DS.onAccent
+            return
+        case .phosphor:
+            bar = hex(0x031207)
+            separator = hex(0x1F7A3D)
+            key = hex(0x062812)
+            keyPressed = hex(0x0B3D1C)
+            keyLabel = hex(0x33FF77)
+            keyShadow = hex(0x000000)
+            accent = DS.accent
+            accentLabel = DS.onAccent
+            return
+        }
         if scheme == .dark {
             bar = hex(0x232325)
             separator = hex(0x38383B)

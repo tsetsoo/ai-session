@@ -172,7 +172,7 @@ struct MemoryActionRow: View {
                 Button { actions.toggleArchive(memory, store: store) } label: {
                     Label(memory.archived ? "Unarchive" : "Archive", systemImage: "archivebox")
                 }
-                .tint(.indigo)
+                .tint(DS.memory)
             }
             .disabled(store.isOffline)
     }

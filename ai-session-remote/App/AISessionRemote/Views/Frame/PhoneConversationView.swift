@@ -183,7 +183,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
                 )
             }
             if let sendError {
-                Text(sendError).font(.footnote).foregroundStyle(.red).padding(.horizontal)
+                Text(sendError).font(.footnote).foregroundStyle(DS.destructive).padding(.horizontal)
             }
             if ReadAloud.shared.isSpeaking {
                 Button { ReadAloud.shared.stop() } label: {

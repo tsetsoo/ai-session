@@ -131,7 +131,7 @@ struct HostsListView: View {
                     } label: {
                         Label("Delete…", systemImage: "trash")
                     }
-                    .tint(.red)
+                    .tint(DS.destructive)
                     Button {
                         plainShellHost = host
                     } label: {
@@ -223,7 +223,7 @@ struct HostsListView: View {
     private func binaryStatus(_ name: String, ok: Bool) -> some View {
         HStack(spacing: 2) {
             Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundStyle(ok ? .green : .red)
+                .foregroundStyle(ok ? DS.success : DS.destructive)
             Text(name)
         }
         .accessibilityLabel("\(name) \(ok ? "available" : "missing")")

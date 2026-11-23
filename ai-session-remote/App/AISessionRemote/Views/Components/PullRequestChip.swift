@@ -43,9 +43,9 @@ struct PullRequestChip: View {
 
     private var tint: Color {
         switch pullRequest.state {
-        case "merged": return .purple
+        case "merged": return DS.merged
         case "closed": return .secondary
-        default: return .green
+        default: return DS.success
         }
     }
 

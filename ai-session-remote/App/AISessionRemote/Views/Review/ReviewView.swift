@@ -934,7 +934,7 @@ private struct FileRow: View {
 
     private var color: Color {
         switch file.change {
-        case .added: .green
+        case .added: DS.diffAdded
         case .deleted: DS.error
         default: .secondary
         }
@@ -1136,7 +1136,7 @@ private struct DiffLineRow: View {
     private var background: Color {
         if isSelected { return DS.accent.opacity(0.25) }
         switch line.kind {
-        case .added: return Color.green.opacity(0.12)
+        case .added: return DS.diffAdded.opacity(0.12)
         case .removed: return DS.error.opacity(0.12)
         case .context, .noNewline: return .clear
         }
@@ -1877,9 +1877,9 @@ private struct PullRequestRow: View {
 
     private var color: Color {
         switch item.state {
-        case "merged": .purple
+        case "merged": DS.merged
         case "closed": .secondary
-        default: .green
+        default: DS.success
         }
     }
 }

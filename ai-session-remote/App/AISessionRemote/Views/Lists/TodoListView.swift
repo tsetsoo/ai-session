@@ -206,7 +206,7 @@ struct TodoListView: View {
                 } label: {
                     Label("Delete…", systemImage: "trash")
                 }
-                .tint(.red)
+                .tint(DS.destructive)
                 if let conversation, isRunning {
                     Button {
                         actions.requestClose(conversation, store: store, hosts: hosts)

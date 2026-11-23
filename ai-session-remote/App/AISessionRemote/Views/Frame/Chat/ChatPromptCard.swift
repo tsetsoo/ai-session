@@ -26,7 +26,7 @@ struct ChatPromptCard: View {
                         .padding(8)
                 }
                 .fixedSize(horizontal: false, vertical: true)
-                .background(DS.chipFill, in: RoundedRectangle(cornerRadius: 8))
+                .background(DS.chipFill, in: RoundedRectangle(cornerRadius: DS.radius(8)))
             }
             ForEach(prompt.options.indices, id: \.self) { index in
                 let option = prompt.options[index]
@@ -49,15 +49,15 @@ struct ChatPromptCard: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
-                    .background(index == prompt.selected ? DS.accentTint : Color(uiColor: .tertiarySystemFill),
-                                in: RoundedRectangle(cornerRadius: 10))
+                    .background(index == prompt.selected ? DS.accentTint : (DS.surface ?? Color(uiColor: .tertiarySystemFill)),
+                                in: RoundedRectangle(cornerRadius: DS.radius(10)))
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(12)
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.warning.opacity(0.5)))
+        .background((DS.surface ?? Color(uiColor: .secondarySystemGroupedBackground)), in: RoundedRectangle(cornerRadius: DS.radius(14)))
+        .overlay(RoundedRectangle(cornerRadius: DS.radius(14)).stroke(DS.warning.opacity(0.5)))
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
     }
@@ -80,8 +80,8 @@ struct ChatPromptBanner: View {
             .font(.footnote)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(DS.warning.opacity(0.5)))
+            .background((DS.surface ?? Color(uiColor: .secondarySystemGroupedBackground)), in: RoundedRectangle(cornerRadius: DS.radius(10)))
+            .overlay(RoundedRectangle(cornerRadius: DS.radius(10)).stroke(DS.warning.opacity(0.5)))
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 12)
@@ -131,7 +131,7 @@ struct ChatScreenFallbackCard: View {
                 }
             }
             .frame(maxHeight: maxContentHeight)
-            .background(DS.chipFill, in: RoundedRectangle(cornerRadius: 8))
+            .background(DS.chipFill, in: RoundedRectangle(cornerRadius: DS.radius(8)))
             HStack(spacing: 8) {
                 key("↑", .up, "Up")
                 key("↓", .down, "Down")
@@ -140,8 +140,8 @@ struct ChatScreenFallbackCard: View {
             }
         }
         .padding(12)
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(DS.warning.opacity(0.5)))
+        .background((DS.surface ?? Color(uiColor: .secondarySystemGroupedBackground)), in: RoundedRectangle(cornerRadius: DS.radius(14)))
+        .overlay(RoundedRectangle(cornerRadius: DS.radius(14)).stroke(DS.warning.opacity(0.5)))
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
     }
@@ -151,7 +151,7 @@ struct ChatScreenFallbackCard: View {
             .font(.callout.weight(.medium))
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
-            .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8))
+            .background((DS.surface ?? Color(uiColor: .tertiarySystemFill)), in: RoundedRectangle(cornerRadius: DS.radius(8)))
             .buttonStyle(.plain)
             .accessibilityLabel(label)
     }

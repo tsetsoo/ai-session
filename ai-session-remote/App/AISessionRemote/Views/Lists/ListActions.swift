@@ -321,7 +321,7 @@ private struct ConversationRowMenu: ViewModifier {
                         Label(todo.completed ? "Undo" : "Done",
                               systemImage: todo.completed ? "arrow.uturn.backward" : "checkmark")
                     }
-                    .tint(.green)
+                    .tint(DS.success)
                 }
             }
             // Offline, the changing swipes are left out rather than disabled.
@@ -332,7 +332,7 @@ private struct ConversationRowMenu: ViewModifier {
                     } label: {
                         Label("Delete…", systemImage: "trash")
                     }
-                    .tint(.red)
+                    .tint(DS.destructive)
                     if isRunning {
                         Button {
                             actions.requestClose(conversation, store: store, hosts: hosts)

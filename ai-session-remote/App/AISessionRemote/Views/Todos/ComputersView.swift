@@ -39,13 +39,13 @@ struct ComputersView: View {
                             } label: {
                                 Label("Delete…", systemImage: "trash")
                             }
-                            .tint(.red)
+                            .tint(DS.destructive)
                             Button {
                                 serversComputer = computer
                             } label: {
                                 Label("Default Servers…", systemImage: "server.rack")
                             }
-                            .tint(.indigo)
+                            .tint(DS.memory)
                         }
                         .contextMenu {
                             ComputerOrderActions(computerID: computer.id, store: store)

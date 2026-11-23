@@ -82,12 +82,12 @@ private struct IdeaListRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: idea.starred ? "star.fill" : "lightbulb")
-                    .foregroundStyle(idea.starred ? .yellow : .secondary)
+                    .foregroundStyle(idea.starred ? DS.star : .secondary)
                 Text(idea.title).lineLimit(2)
             }
             HStack(spacing: 6) {
                 if idea.pending {
-                    Text("Waiting for OK").font(.caption2).foregroundStyle(.orange)
+                    Text("Waiting for OK").font(.caption2).foregroundStyle(DS.attention)
                     Spacer()
                     Button("Approve") { act { try await store.updateIdea(idea, UpdateIdeaRequest(pending: false)) } }
                         .buttonStyle(.borderedProminent).controlSize(.small)

@@ -625,7 +625,7 @@ struct ConversationFrame: View {
             if let toolError {
                 Text(toolError)
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(DS.destructive)
                     .multilineTextAlignment(.center)
             }
             HStack(spacing: DS.spacing.m) {

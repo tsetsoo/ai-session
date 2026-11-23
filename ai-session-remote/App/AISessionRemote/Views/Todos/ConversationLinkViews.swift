@@ -26,13 +26,13 @@ struct RemoteConversationPicker: View {
         List {
             if let actionError {
                 Label(actionError, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(DS.destructive)
                     .font(.subheadline)
             }
             if let loadError {
                 VStack(alignment: .leading, spacing: 8) {
                     Label(loadError, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
+                        .foregroundStyle(DS.destructive)
                         .font(.subheadline)
                     Button("Try Again") { Task { await reload() } }
                 }
@@ -445,7 +445,7 @@ struct NewTodoDetailsForm: View {
             }
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(DS.destructive)
                     .font(.subheadline)
             }
         }

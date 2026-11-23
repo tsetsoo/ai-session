@@ -73,4 +73,32 @@ final class SkinTests: XCTestCase {
             XCTAssertNotNil(host.view, skin.rawValue)
         }
     }
+    /// Views take status colours from `DS`, so the skins can recolour them. Standard's tokens
+    /// return the same system colours, so this changes nothing there.
+    func testNoHardcodedSystemColorsInViews() throws {
+        let views = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("AISessionRemote/Views")
+        let pattern = try NSRegularExpression(pattern:
+            #"(\.(tint|foregroundStyle)\(\.(red|green|orange|purple|yellow|indigo|blue)\b)|(\bColor\.(red|green|orange|purple|blue|yellow|indigo)\b)|(^\s*case [^:]+:\s*(return )?\.(red|green|orange|purple|blue)\s*$)|(\? \.(red|green|orange|purple|yellow|blue) :)|(: \.(red|green|orange|purple|yellow|blue)\))"#,
+            options: [.anchorsMatchLines])
+        var hits: [String] = []
+        let files = FileManager.default.enumerator(at: views, includingPropertiesForKeys: nil)!
+        for case let file as URL in files where file.pathExtension == "swift" {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            for (number, line) in text.components(separatedBy: "\n").enumerated() {
+                let range = NSRange(line.startIndex..., in: line)
+                if pattern.firstMatch(in: line, range: range) != nil {
+                    hits.append("\(file.lastPathComponent):\(number + 1): \(line.trimmingCharacters(in: .whitespaces))")
+                }
+            }
+        }
+        XCTAssertTrue(hits.isEmpty, "Hardcoded colours:\n" + hits.joined(separator: "\n"))
+    }
+
+    func testKeyBarPaletteFollowsSkin() {
+        XCTAssertEqual(KeyBarColors(.dark, skin: .standard).bar, KeyBarColors(.dark).bar)
+        XCTAssertNotEqual(KeyBarColors(.dark, skin: .phosphor).bar, KeyBarColors(.dark).bar)
+        XCTAssertNotEqual(KeyBarColors(.dark, skin: .neonNoir).keyLabel, KeyBarColors(.dark, skin: .phosphor).keyLabel)
+    }
 }

@@ -41,7 +41,8 @@ struct ChatCodeBlock: View {
                     .padding(12)
             }
         }
-        .background(Color(white: 0.11), in: RoundedRectangle(cornerRadius: 10))
+        .background(DS.surface ?? Color(white: 0.11), in: RoundedRectangle(cornerRadius: DS.radius(10)))
+        .skinnedCard()
     }
 }
 

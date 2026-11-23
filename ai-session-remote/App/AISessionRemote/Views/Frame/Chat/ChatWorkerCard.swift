@@ -35,9 +35,9 @@ struct ChatWorkerCard: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(DS.chipFill, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(WorkerStateLabel.color(worker.state, needsYou: worker.needsYou).opacity(worker.needsYou ? 0.7 : 0.35)))
-            .contentShape(RoundedRectangle(cornerRadius: 10))
+            .background(DS.chipFill, in: RoundedRectangle(cornerRadius: DS.radius(10)))
+            .overlay(RoundedRectangle(cornerRadius: DS.radius(10)).strokeBorder(WorkerStateLabel.color(worker.state, needsYou: worker.needsYou).opacity(worker.needsYou ? 0.7 : 0.35)))
+            .contentShape(RoundedRectangle(cornerRadius: DS.radius(10)))
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
@@ -51,7 +51,7 @@ struct WorkerStateLabel: View {
     /// The worker waits on an approval or answer (from the hub's status): amber, over its state.
     var needsYou = false
 
-    static let needsYouColor = Color.orange
+    static var needsYouColor: Color { DS.attention }
 
     static func look(_ state: DelegatedWorker.State, needsYou: Bool) -> (String, String) {
         if needsYou { return ("hand.raised.fill", "Needs you") }
@@ -66,9 +66,9 @@ struct WorkerStateLabel: View {
     static func color(_ state: DelegatedWorker.State, needsYou: Bool = false) -> Color {
         if needsYou { return needsYouColor }
         return switch state {
-        case .working: .blue
-        case .done: .green
-        case .failed: .red
+        case .working: DS.info
+        case .done: DS.success
+        case .failed: DS.destructive
         case .stale: .secondary
         }
     }

@@ -59,7 +59,7 @@ struct ChatActivityRow: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(DS.chipFill, in: RoundedRectangle(cornerRadius: 10))
+        .background(DS.chipFill, in: RoundedRectangle(cornerRadius: DS.radius(10)))
     }
 }
 

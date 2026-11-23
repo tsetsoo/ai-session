@@ -92,7 +92,7 @@ struct AddAgentSheet: View {
                 .accessibilityLabel("Summary")
         case let .failed(message):
             VStack(alignment: .leading, spacing: 6) {
-                Text(message).foregroundStyle(.red)
+                Text(message).foregroundStyle(DS.destructive)
                 Button("Try Again") { Task { await loadSummaryIfNeeded(force: true) } }
             }
         }

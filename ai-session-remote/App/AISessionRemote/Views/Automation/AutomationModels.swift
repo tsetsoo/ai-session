@@ -103,9 +103,9 @@ struct RunStateChip: View {
 
     private var color: Color {
         switch state {
-        case "done": .green
-        case "failed", "missed": .red
-        case "waiting", "running", "due": .orange
+        case "done": DS.success
+        case "failed", "missed": DS.destructive
+        case "waiting", "running", "due": DS.attention
         default: .secondary
         }
     }
