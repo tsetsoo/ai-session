@@ -416,6 +416,21 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(StatusTransitions.newlyWaiting(previous: nil, current: [conv("a", .waiting)]), [])
     }
 
+    func testNewlyFinishedNeedsABaseline() {
+        XCTAssertEqual(StatusTransitions.newlyFinished(previous: nil, current: [conv("a", .idle)]), [])
+    }
+
+    func testNewlyFinishedFromBusyOrWaiting() {
+        let a = conv("a", .idle), b = conv("b", .idle), c = conv("c", .idle), d = conv("d", .idle)
+        let result = StatusTransitions.newlyFinished(previous: ["a": .busy, "b": .waiting, "c": .idle],
+                                                     current: [a, b, c, d])
+        XCTAssertEqual(result, [a, b])
+    }
+
+    func testNewlyFinishedIgnoresOtherStatuses() {
+        XCTAssertEqual(StatusTransitions.newlyFinished(previous: ["a": .busy], current: [conv("a", .waiting)]), [])
+    }
+
     func testNewlyWaiting() {
         let a = conv("a", .waiting), b = conv("b", .waiting), c = conv("c", .busy)
         let result = StatusTransitions.newlyWaiting(previous: ["a": .idle, "b": .waiting], current: [a, b, c])
