@@ -784,6 +784,7 @@ if [ "$read_only_worker" = 1 ]; then
       (regex #"^/dev/(tty|ttys[0-9]+)$"))
     (deny file-write* (subpath (param "WORKTREE")))
     (deny network-outbound (remote unix-socket))
+    (allow network-outbound (remote unix-socket (path "/private/var/run/mDNSResponder")))
     (allow network-outbound (remote unix-socket (path (param "BACKEND"))))'
   if [ "$tool" = codex ]; then
     worker_agent_home=${CODEX_HOME:-"$HOME/.codex"}
