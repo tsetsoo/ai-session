@@ -1,0 +1,198 @@
+# Cyberpunk app themes: Neon noir and Phosphor
+
+Date: 2026-11-23 · Status: draft for approval · App: `ai-session-remote/` (Mac + iPhone)
+
+## Intent
+
+For fun. The user wants the app to have a cyberpunk look they can switch on. Two full skins, not
+just a terminal palette: **Neon noir** and **Phosphor**. Each restyles the whole app on both Mac and
+iPhone, and comes with a matching app icon and matching sounds. Today's look stays as **Standard**
+and is unchanged.
+
+Mockups the user approved (in `.superpowers/brainstorm/`, not committed): `direction.html`
+(options A and C chosen) and `icons-sounds.html` (both icon drafts and both sound sets: "looks
+good").
+
+## Goals
+
+- A Settings picker, **App theme: Standard / Neon noir / Phosphor**, on Mac and iPhone.
+- Each skin covers app surfaces, accent, status colors, selection, cards, buttons, sidebar and
+  lists, the chat screen, the key bar, prompt cards, the terminal palette and frame, the app icon,
+  and the arrival and notification sounds.
+- Switching skins happens live and doesn't reconnect terminals, close windows or reset navigation.
+- Standard looks and sounds exactly like today, down to the pixel.
+
+## Non-goals
+
+- More than two skins, and a user-editable or custom theme.
+- Light-mode versions of the skins. Both are dark only.
+- Changing the Finder, Launchpad or quit-state Dock icon on the Mac (see Constraints).
+- Theming host scripts or the tmux status bar. The hub's only change is the push sound name (see Sounds).
+
+## Anti-goals (a failure even if it works)
+
+- Text that's hard to read. Neon and phosphor-green palettes can easily fail on Claude's dimmed
+  text, diffs and code blocks. Legibility beats atmosphere.
+- Effects that cost frame rate or battery: animated glows, flicker, or a full-window scanline
+  overlay on top of scrolling lists.
+- Anything that changes the app's code signature at runtime. That brings back the keychain
+  prompts for the SSH keys and hub token (see AGENTS.md, team `233QTK6KCL`).
+- Switching that loses state (SSH sessions reconnecting, scroll positions reset).
+
+## Approaches (user picked C, then "two themes")
+
+- **A. Terminal only:** a Cyberpunk entry in the existing terminal picker. Cheap, but it clashes
+  with the terracotta app.
+- **B. Terminal plus app accent:** forced dark mode and a neon accent. Medium effort, most of the
+  effect.
+- **C. Full skin (chosen):** B plus glow, scanlines, monospace UI, restyled cards and sidebar, and
+  matching icons and sounds (added later in the conversation).
+
+**Mechanism (one sensible way, agreed):** a `Skin` value that holds tokens (colors, font design,
+corner radius, glow) and is read by `DS` and a few shared modifiers. The root applies tint, color
+scheme, font design and backgrounds. Ruled out:
+
+- Rebuilding the root with `.id(skin)` on switch: it tears down the terminal views, which
+  reconnects SSH.
+- Asset-catalog variants: they only switch between light and dark, not on a custom setting.
+
+## Constraints and current state
+
+- **Tokens today.** `Theme/DesignSystem.swift` (`DS`) is `static let` colors: accent,
+  accentSolid, accentTint, accentOnTint, onAccent, error, warning, chipFill. About 59 files use
+  `DS.`. `Theme/AppTheme.swift` holds the tool colors (Claude, Codex, Cursor, Shell) and the
+  reachability colors. The asset catalog's `AccentColor` mirrors `DS.accent`, and
+  `DesignSystemTests` enforces that. The system uses AccentColor for list selection, so a skin
+  needs `.tint` at each scene root. The test should keep checking Standard only.
+- **Hardcoded system colors** to route through tokens: about 30 places, for example `.red`,
+  `.green`, `.orange` and `.purple` in HostsListView, ListActions, TodoListView, MemoryViews,
+  PhoneConversationView, AddAgentSheet, ConversationFrame, ChatWorkerCard (needsYou orange, and
+  working, done and failed), PullRequestChip, IdeasPanes, PhoneAutomation, AutomationModels,
+  ReviewView (diff added/removed, PR state) and ConversationLinkViews. In Standard these must
+  resolve to exactly the colors they use today.
+- **Terminal.** `Theme/TerminalAppearance.swift` defines `TerminalTheme` (system, light, dark) and
+  `TerminalPalette` (bg, fg, cursor, selection, 16 ANSI colors), stored under
+  `@AppStorage("terminal.theme")` and read in five places. The existing `TerminalContrastGuard`
+  runs on the palette. `TerminalThemeReporter` tells tmux whether the palette is light or dark,
+  and the skins must report dark. `KeyBar.swift` has its own hex palette per color scheme.
+- **Scenes.** `AISessionRemoteApp.swift` has the main `WindowGroup`, the conversation and review
+  `WindowGroup`s and `Settings`. Every scene root needs the skin modifiers. `MacShell.swift`
+  also creates a bare `NSWindow` (around line 861) that needs them too.
+- **Sounds.** `Platform/AttentionSound.swift`: the Mac arrival chimes are bundled
+  `attention-needs-you.caf` and `attention-review.caf`, generated by
+  `scripts/make-attention-sounds.py`. The user's choice is "default", "none" or a macOS system
+  sound. Mac banners use the bundled `.caf` when the choice is "default". iPhone local
+  notifications (`NotificationCenterCoordinator.swift`) use `.default`, but most iPhone alerts
+  are hub pushes: the phone posts locally only when `NotificationPolicy.shouldPostLocal` says
+  the push doesn't cover it. The hub hardcodes `"sound": "default"` for non-passive pushes
+  (`todo-app/crates/todo-server/src/push/apns.rs:213`). The device registers via
+  `PushDeviceRegistration` (`Sources/AISessionCore/TodoHub/TodoHubModels.swift`), which maps to
+  `PushDeviceRequest` and `PushDevice` (`todo-app/crates/todo-shared/src/lib.rs`), with
+  storage in `push/store.rs`.
+- **Icons.** One `AppIcon` set (iOS 1024 + Mac sizes). There's no generator script, and the
+  original icon source isn't in the repo.
+- **Platform limits on icons.** iOS: `setAlternateIconName` always shows the system's "You have
+  changed the icon" alert. Mac: only `NSApp.applicationIconImage` (the Dock icon while running)
+  can change. Writing the icon into the bundle breaks the signature, so it's off limits.
+- Deployment targets are iOS 17 and macOS 14, so `@Observable` and `.fontDesign` are available.
+- Reduce Motion is already respected by `AttentionPulse`. Skins add no motion of their own.
+
+## Design (decided with the user)
+
+### Setting
+
+- In Settings › Appearance, **App theme: Standard / Neon noir / Phosphor**. It's stored per
+  device in UserDefaults. The hub only learns the device's push sound name, not the theme.
+- With Standard, the existing Terminal picker (System, Light, Dark) shows and works as it does
+  today. With a skin, the Terminal picker is hidden, the app is forced dark, and the skin's
+  terminal palette applies.
+
+### Neon noir (from mockup A)
+
+- Surfaces are indigo-black: window around `#0B0A1A`, sidebar around `#110F26`, terminal around
+  `#07061A`.
+- Text is pale lavender (`#D9D6FF`), with dimmed text that still meets 4.5:1.
+- The accent is hot magenta (`#FF2E97`), and status is electric cyan (`#00F0FF`). Purple
+  (`#B967FF`) is available as a third color.
+- Selected rows get a magenta tint, a 1 pt magenta border and a soft magenta glow. Primary
+  buttons are outlined cyan with a cyan glow.
+- Rounded corners stay as they are, and the font stays the system font.
+- Terminal ANSI colors are neon (pink, cyan, green `#39FF88`, yellow `#FFE45C`, purple) with a
+  magenta cursor.
+- Status colors: error and warning must still read as distinct from the magenta accent (for
+  example, warning amber-yellow and error red-orange, plus the existing icons).
+
+### Phosphor (from mockup C)
+
+- Background is green-black (`#020A04` to `#031207`), and text and accent are phosphor green
+  (`#33FF77`).
+- The selected row is inverted (a green fill with black text).
+- Monospace font everywhere (`.fontDesign(.monospaced)` at the roots), with square corners on
+  cards, chips and buttons.
+- Scanlines and a text glow appear **on the terminal only**. Lists, chat and settings stay sharp.
+- Mostly one color by design, but it still needs distinct hues for errors, warnings, diff
+  added/removed and tool identity. Use amber or yellow-green and red tints within the CRT feel,
+  not pure green for everything.
+- Terminal ANSI colors are green-dominant, but the 16 colors must stay distinguishable and pass
+  the contrast guard.
+
+### Shared styling pieces
+
+A few modifiers or styles that views adopt with one or two lines each:
+
+- skinned background
+- selected row
+- card or chip
+- primary button (extend `AccentButtonStyle`)
+- terminal frame, with glow and scanlines
+
+These cover the Mac shell, sidebar and lists, the iPhone chat screen (`Views/Frame/Chat/*`,
+`PhoneConversationView`), `KeyBar` (which gets a palette per skin), prompt cards and worker
+cards.
+
+### App icons (from `icons-sounds.html`)
+
+- **Neon noir:** the speech-bubble prompt as a magenta neon-tube outline with a cyan `>_` and a
+  faint cyan grid horizon, on an indigo-black gradient.
+- **Phosphor:** a pixel-drawn bubble and `>_` in glowing green, with scanlines over the whole
+  icon, on a CRT green-black radial gradient.
+- On iOS, these are alternate icons in the asset catalog. The app switches them when the theme
+  changes, and Standard restores the primary icon. The system alert is expected.
+- On the Mac, the Dock icon is set while the app runs (when the skin changes and at launch).
+  Everywhere else the Mac shows the standard icon.
+- The icons are generated by a committed script, like the sounds, so they can be regenerated.
+  The rendered PNGs are committed.
+
+### Sounds (from `icons-sounds.html`)
+
+- **Neon noir:** "Needs you" is a quick rising synth arpeggio (sawtooth, C5 E5 G5 C6, about 70 ms
+  apart, low-pass with a falling cutoff). "Review" is one soft square-wave blip at about 880 Hz
+  with a short echo.
+- **Phosphor:** "Needs you" is two square-wave terminal beeps at about 1046 Hz, each about 90 ms,
+  with a 50 ms gap. "Review" is one short low beep at about 587 Hz, about 120 ms.
+- Generate them with `scripts/make-attention-sounds.py`, extended to build the skin variants as
+  extra bundled `.caf` files. Keep them original synthesis with no samples, and match the
+  existing peak level (−6 dBFS).
+- **Mac:** when the sound choice is "Default", the in-app chime and the banner sound use the
+  active skin's files. A system sound or "None" is left alone.
+- **iPhone (user chose: the hub sends the sound):** with a skin on, local notifications use
+  the skin's sound instead of `.default`. Push registration also carries an optional `sound`
+  (a bundled `.caf` filename, or absent for the default). The hub stores it per device and puts
+  it in `aps.sound` for that device's non-passive pushes, falling back to `"default"`. The phone
+  re-registers when the theme changes. The skin `.caf` files must be in the iOS bundle under
+  those exact names. Old clients and existing rows (no field) keep `"default"`. This needs a
+  hub schema migration and a deploy (push to `main` publishes `pi-latest`). Standard sends no
+  sound name.
+
+## Left to the builder
+
+- How `DS` becomes skin-aware without a root `.id`. One option: an `@Observable` skin store that
+  `DS` and `AppTheme` read, so SwiftUI tracks it, plus dynamic platform colors where AppKit or
+  UIKit need them.
+- Exact hex values beyond the anchors above, tuned so the contrast checks pass.
+- Which views need a shared modifier and which need only token changes.
+- The icon generator's tooling (Swift, CoreGraphics or Python) and the exact geometry, as long as
+  it matches the approved drafts.
+- Tests: Standard is unchanged (the existing tests still pass), both skin terminal palettes pass
+  `TerminalContrastGuard`, every skin token is defined, and the skin sound files exist in the
+  bundle.
