@@ -14,6 +14,21 @@ pub struct DeviceTarget {
     pub bundle_id: String,
     /// `datetime('now')` text (UTC) of the last registration; a 410 older than this is ignored
     pub updated_at: String,
+    /// The app skin's sound file for `aps.sound`; `None` sends `"default"`
+    pub sound: Option<String>,
+}
+
+/// The skin sounds the app bundles. Anything else is refused, so a client can't put an
+/// arbitrary string into the APNs payload.
+pub const PUSH_SOUNDS: [&str; 4] = [
+    "attention-needs-you-neon-noir.caf",
+    "attention-needs-you-phosphor.caf",
+    "attention-review-neon-noir.caf",
+    "attention-review-phosphor.caf",
+];
+
+pub fn valid_push_sound(name: &str) -> bool {
+    PUSH_SOUNDS.contains(&name)
 }
 
 /// What a notification about one todo's conversation needs, read fresh at send time.
@@ -33,7 +48,7 @@ pub fn token_prefix(token: &str) -> String {
 }
 
 const DEVICE_COLS: &str = "token, platform, environment, bundle_id, app_version, device_name,
-    created_at, updated_at, last_sent_at, last_error";
+    created_at, updated_at, last_sent_at, last_error, sound";
 
 fn row_to_device(row: &Row) -> rusqlite::Result<PushDevice> {
     let token: String = row.get(0)?;
@@ -50,25 +65,28 @@ fn row_to_device(row: &Row) -> rusqlite::Result<PushDevice> {
         updated_at: row.get(7)?,
         last_sent_at: row.get(8)?,
         last_error: row.get(9)?,
+        sound: row.get(10)?,
     })
 }
 
 /// Register a token, or refresh an existing registration (which clears its last error).
 pub fn upsert_device(conn: &Connection, req: &PushDeviceRequest) -> rusqlite::Result<PushDevice> {
     conn.execute(
-        "INSERT INTO push_devices (token, platform, environment, bundle_id, app_version, device_name)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO push_devices (token, platform, environment, bundle_id, app_version, device_name, sound)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(token) DO UPDATE SET
              platform = excluded.platform, environment = excluded.environment,
              bundle_id = excluded.bundle_id, app_version = excluded.app_version,
-             device_name = excluded.device_name, updated_at = datetime('now'), last_error = NULL",
+             device_name = excluded.device_name, sound = excluded.sound,
+             updated_at = datetime('now'), last_error = NULL",
         params![
             req.token,
             req.platform.as_str(),
             req.environment.as_str(),
             req.bundle_id,
             req.app_version,
-            req.device_name
+            req.device_name,
+            req.sound
         ],
     )?;
     conn.query_row(&format!("SELECT {DEVICE_COLS} FROM push_devices WHERE token = ?1"), params![req.token], row_to_device)
@@ -85,7 +103,7 @@ pub fn list_devices(conn: &Connection) -> rusqlite::Result<Vec<PushDevice>> {
 }
 
 pub fn devices_for_push(conn: &Connection) -> rusqlite::Result<Vec<DeviceTarget>> {
-    conn.prepare("SELECT token, environment, bundle_id, updated_at FROM push_devices ORDER BY created_at, token")?
+    conn.prepare("SELECT token, environment, bundle_id, updated_at, sound FROM push_devices ORDER BY created_at, token")?
         .query_map([], |row| {
             let environment: String = row.get(1)?;
             Ok(DeviceTarget {
@@ -93,6 +111,7 @@ pub fn devices_for_push(conn: &Connection) -> rusqlite::Result<Vec<DeviceTarget>
                 environment: ApnsEnvironment::parse(&environment).unwrap_or(ApnsEnvironment::Production),
                 bundle_id: row.get(2)?,
                 updated_at: row.get(3)?,
+                sound: row.get(4)?,
             })
         })?
         .collect()
@@ -231,6 +250,36 @@ pub fn push_context(conn: &Connection, todo_id: &str) -> rusqlite::Result<Option
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn upsert_device_stores_and_clears_sound() {
+        let (_db, pool) = pool("push-sound");
+        let conn = pool.get().unwrap();
+        let mut req = device(TOKEN, ApnsEnvironment::Sandbox);
+        req.sound = Some("attention-needs-you-neon-noir.caf".into());
+        let stored = upsert_device(&conn, &req).unwrap();
+        assert_eq!(stored.sound.as_deref(), Some("attention-needs-you-neon-noir.caf"));
+        assert_eq!(devices_for_push(&conn).unwrap()[0].sound.as_deref(), Some("attention-needs-you-neon-noir.caf"));
+        req.sound = None;
+        upsert_device(&conn, &req).unwrap();
+        assert_eq!(devices_for_push(&conn).unwrap()[0].sound, None, "back to Standard clears it");
+    }
+
+    #[test]
+    fn push_sound_rejects_unknown_names() {
+        assert!(!valid_push_sound("default"));
+        assert!(!valid_push_sound("../x.caf"));
+        assert!(!valid_push_sound("attention-needs-you.caf"));
+        assert!(!valid_push_sound(""));
+        for ok in [
+            "attention-needs-you-neon-noir.caf",
+            "attention-needs-you-phosphor.caf",
+            "attention-review-neon-noir.caf",
+            "attention-review-phosphor.caf",
+        ] {
+            assert!(valid_push_sound(ok), "{ok}");
+        }
+    }
     use super::*;
     use crate::test_support::{pool, seed_computers};
     use todo_shared::{ApnsEnvironment, PushDeviceRequest, PushPlatform, PushSettingsUpdate, QuietHours};
@@ -245,6 +294,7 @@ mod tests {
             bundle_id: "com.aisessionremote.app".into(),
             app_version: "1.0".into(),
             device_name: Some("Tsvetelin".into()),
+            sound: None,
         }
     }
 

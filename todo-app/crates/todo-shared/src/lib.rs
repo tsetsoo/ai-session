@@ -1408,6 +1408,9 @@ pub struct PushDeviceRequest {
     pub app_version: String,
     #[serde(default)]
     pub device_name: Option<String>,
+    /// The app skin's push sound, a `.caf` bundled in the app; absent for the system default.
+    #[serde(default)]
+    pub sound: Option<String>,
 }
 
 /// `POST /api/push/devices/unregister`.
@@ -1431,6 +1434,9 @@ pub struct PushDevice {
     pub last_sent_at: Option<String>,
     /// Last APNs failure reason, e.g. `BadDeviceToken`
     pub last_error: Option<String>,
+    /// The push sound this device asked for; `None` is the system default
+    #[serde(default)]
+    pub sound: Option<String>,
 }
 
 /// Quiet hours: pushes inside the window are delivered silently (`passive`).
@@ -2382,6 +2388,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!((d.platform, d.environment, d.device_name), (PushPlatform::Ios, ApnsEnvironment::Sandbox, None));
+        assert_eq!(d.sound, None, "an old client without a sound keeps the default");
         let s: ConversationStatusRequest = serde_json::from_str(r#"{"session_id":"a","status":"waiting","attended":true}"#).unwrap();
         assert_eq!(s.attended, Some(true));
     }

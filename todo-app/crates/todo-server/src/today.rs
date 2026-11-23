@@ -1266,7 +1266,7 @@ pub(crate) mod tests {
         }).ok().unwrap();
         let now = at_sofia("2026-11-06 10:00");
         let first = today_tick_db(&conn, now).unwrap().pop().unwrap();
-        let payload = crate::push::apns::build_payload(&first);
+        let payload = crate::push::apns::build_payload(&first, None);
         assert_eq!(payload["aps"]["category"], "TODO_REMINDER");
         assert_eq!(payload["kind"], "today");
         assert_eq!(payload["reminder_id"], reminder.id);

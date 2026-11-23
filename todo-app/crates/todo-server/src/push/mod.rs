@@ -282,6 +282,7 @@ mod tests {
                 bundle_id: "com.aisessionremote.app".into(),
                 app_version: "1.0".into(),
                 device_name: None,
+                sound: None,
             },
         )
         .unwrap();
@@ -335,7 +336,7 @@ mod tests {
     }
 
     fn build_alert_json() -> serde_json::Value {
-        crate::push::apns::build_payload(&waiting_alert())["aps"]["alert"].clone()
+        crate::push::apns::build_payload(&waiting_alert(), None)["aps"]["alert"].clone()
     }
 
     #[tokio::test(start_paused = true)]

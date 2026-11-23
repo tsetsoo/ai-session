@@ -188,7 +188,8 @@ fn truncate_title(title: &str) -> String {
     short
 }
 
-pub fn build_payload(alert: &Alert) -> serde_json::Value {
+/// `sound` is the device's skin sound (`None`: the system default). Quiet-hours pushes stay silent.
+pub fn build_payload(alert: &Alert, sound: Option<&str>) -> serde_json::Value {
     // A Today push (reminder, date, briefing) is all text: it goes in the body, which shows
     // every line; other pushes keep `<section> · <computer>` as the subtitle.
     let text = if matches!(alert.kind, PushKind::Today | PushKind::Reminder { .. }) {
@@ -210,7 +211,7 @@ pub fn build_payload(alert: &Alert) -> serde_json::Value {
         _ => aps["category"] = CATEGORY.into(),
     }
     if !alert.passive {
-        aps["sound"] = "default".into();
+        aps["sound"] = sound.unwrap_or("default").into();
     }
     if let Some(todo_id) = &alert.todo_id {
         aps["thread-id"] = todo_id.as_str().into();
@@ -408,7 +409,7 @@ impl ApnsSender {
 
     /// Send `alert` to one device, with retries and the environment fallback.
     pub async fn send(&self, pool: &DbPool, target: &DeviceTarget, alert: &Alert) -> PushTestResult {
-        let body = build_payload(alert).to_string().into_bytes();
+        let body = build_payload(alert, target.sound.as_deref()).to_string().into_bytes();
         let prefix = token_prefix(&target.token);
         let mut env = target.environment;
         let mut tried_other_env = false;
@@ -465,6 +466,15 @@ impl ApnsSender {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    #[test]
+    fn push_sound_defaults_and_passive_stays_silent() {
+        assert_eq!(build_payload(&waiting_alert(), None)["aps"]["sound"], "default");
+        let themed = build_payload(&waiting_alert(), Some("attention-needs-you-phosphor.caf"));
+        assert_eq!(themed["aps"]["sound"], "attention-needs-you-phosphor.caf");
+        let quiet = build_payload(&Alert { passive: true, ..waiting_alert() }, Some("attention-needs-you-phosphor.caf"));
+        assert!(quiet["aps"].get("sound").is_none(), "quiet hours stay silent even with a sound stored");
+    }
     use super::*;
     use crate::push::store;
     use crate::test_support::pool;
@@ -552,6 +562,7 @@ pub(crate) mod tests {
                 bundle_id: "com.aisessionremote.app".into(),
                 app_version: "1.0".into(),
                 device_name: None,
+                sound: None,
             },
         )
         .unwrap();
@@ -602,7 +613,7 @@ pub(crate) mod tests {
 
     #[test]
     fn payload_has_ids_thread_category_and_no_message() {
-        let payload = build_payload(&waiting_alert());
+        let payload = build_payload(&waiting_alert(), None);
         assert_eq!(
             payload,
             serde_json::json!({
@@ -618,7 +629,7 @@ pub(crate) mod tests {
                 "kind": "waiting"
             })
         );
-        let done = build_payload(&Alert { kind: PushKind::Done { minutes: 14 }, ..waiting_alert() });
+        let done = build_payload(&Alert { kind: PushKind::Done { minutes: 14 }, ..waiting_alert() }, None);
         assert_eq!(done["aps"]["alert"]["body"], "Done after 14 min");
         assert_eq!(done["kind"], "done");
         let headers = headers(&waiting_alert(), "com.aisessionremote.app", at(1_700_000_000));
@@ -640,19 +651,19 @@ pub(crate) mod tests {
             kind: PushKind::Today,
             passive: false,
         };
-        let p = build_payload(&alert);
+        let p = build_payload(&alert, None);
         assert_eq!(p["aps"]["alert"]["body"], "Reminders: 09:00 Pills\nTomorrow: Maria's birthday");
         assert!(p["aps"]["alert"].get("subtitle").is_none(), "{p}");
         assert!(p["aps"].get("category").is_none(), "{p}");
         assert_eq!(p["kind"], "today");
         let empty = Alert { subtitle: String::new(), ..alert };
-        assert!(build_payload(&empty)["aps"]["alert"].get("body").is_none(), "no stray 'Today' line");
+        assert!(build_payload(&empty, None)["aps"]["alert"].get("body").is_none(), "no stray 'Today' line");
     }
 
     #[test]
     fn passive_payload_has_no_sound_and_priority_5() {
         let alert = Alert { passive: true, ..waiting_alert() };
-        let payload = build_payload(&alert);
+        let payload = build_payload(&alert, None);
         assert_eq!(payload["aps"]["interruption-level"], "passive");
         assert!(payload["aps"].get("sound").is_none());
         let headers = headers(&alert, "b", at(0));
@@ -662,11 +673,11 @@ pub(crate) mod tests {
     #[test]
     fn title_truncated_to_120_chars() {
         let long = "é".repeat(130);
-        let payload = build_payload(&Alert { title: long, ..waiting_alert() });
+        let payload = build_payload(&Alert { title: long, ..waiting_alert() }, None);
         let title = payload["aps"]["alert"]["title"].as_str().unwrap();
         assert_eq!(title.chars().count(), 120);
         assert!(title.ends_with('…'));
-        let short = build_payload(&waiting_alert());
+        let short = build_payload(&waiting_alert(), None);
         assert_eq!(short["aps"]["alert"]["title"], "Fix invoice export");
     }
 

@@ -32,6 +32,11 @@ pub async fn put_device(
     if blank(&req.bundle_id) || blank(&req.app_version) {
         return bad_request("bundle_id and app_version are required");
     }
+    if let Some(sound) = &req.sound {
+        if !store::valid_push_sound(sound) {
+            return bad_request("unknown sound");
+        }
+    }
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),

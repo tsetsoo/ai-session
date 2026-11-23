@@ -193,6 +193,10 @@ fn init_pool_through(db_path: &str, target_version: i64) -> DbPool {
     if version < 43 && target_version >= 43 {
         migrate_antigravity_tools(&conn, db_path, version).expect("Failed to add Antigravity conversations");
     }
+    if target_version >= 44 && !column_exists(&conn, "push_devices", "sound").expect("Failed to inspect push devices") {
+        conn.execute_batch("ALTER TABLE push_devices ADD COLUMN sound TEXT;")
+            .expect("Failed to add the push sound column");
+    }
     if version <= target_version {
         conn.pragma_update(None, "user_version", target_version)
             .expect("Failed to record the schema version");
@@ -1211,7 +1215,8 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// Add a new version by bumping this and adding a numbered step to `migrate`.
 /// - v42: scrape-health investigation and handoff metadata (additive).
 /// - v43: Antigravity conversation and session provider checks.
-pub const SCHEMA_VERSION: i64 = 43;
+/// - v44: `push_devices.sound`, the app skin's push sound (additive).
+pub const SCHEMA_VERSION: i64 = 44;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -1623,7 +1628,8 @@ fn create_v4_objects(conn: &Connection) -> rusqlite::Result<()> {
             created_at   TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
             last_sent_at TEXT,
-            last_error   TEXT
+            last_error   TEXT,
+            sound        TEXT
         );
         CREATE TABLE IF NOT EXISTS push_settings (
             id                 INTEGER PRIMARY KEY CHECK(id = 1),
@@ -3643,6 +3649,22 @@ mod tests {
         let conn = pool.get().unwrap();
         assert_eq!(user_version(&conn), 40);
         assert!(column_exists(&conn, "conversations", "workers").unwrap());
+    }
+
+    #[test]
+    fn migrates_v43_to_v44_adds_push_sound() {
+        let db = TestDb::new("migrate");
+        drop(init_pool_through(&db.path, 43));
+        let conn = Connection::open(&db.path).unwrap();
+        if column_exists(&conn, "push_devices", "sound").unwrap() {
+            conn.execute_batch("ALTER TABLE push_devices DROP COLUMN sound;").unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version = 43;").unwrap();
+        drop(conn);
+        let pool = init_pool_through(&db.path, 44);
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 44);
+        assert!(column_exists(&conn, "push_devices", "sound").unwrap());
     }
 
     #[test]

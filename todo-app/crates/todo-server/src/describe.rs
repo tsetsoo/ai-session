@@ -220,7 +220,7 @@ fn base_description() -> Value {
                 "description": "Status hook endpoint. Identify the conversation with session_id (or claude_session_id, sent by older hooks) and tool (optional, default claude: older hooks are Claude hooks); one post updates at most one conversation. With status idle, an optional paused {kind: session|weekly|limit, resets_at: RFC 3339} marks a turn stopped by a usage limit: no done push, and the pause stays until the status changes or a new turn starts. An optional workers [{id, state: working|done, needs_you, message}] (at most 50) replaces the conversation's delegated workers, returned as conversation.workers; absent or empty clears them. 204 on success, 404 for sessions that are not todo conversations, 400 without an id, for status closed or for an invalid pause",
                 "example_request": {"session_id": "<uuid>", "tool": "claude", "status": "waiting", "message": "Claude needs your permission"}
             },
-            {"method": "PUT", "path": "/api/push/devices", "description": "Register or refresh this device's APNs token (hex). Returns the PushDevice; the full token is never returned", "example_request": {"token": "<hex>", "platform": "ios", "environment": "sandbox", "bundle_id": "com.aisessionremote.app", "app_version": "1.0 (7)", "device_name": "iPhone"}},
+            {"method": "PUT", "path": "/api/push/devices", "description": "Register or refresh this device's APNs token (hex). Returns the PushDevice; the full token is never returned. Optional sound: one of the app skin sounds (attention-needs-you-neon-noir.caf, attention-needs-you-phosphor.caf, attention-review-neon-noir.caf, attention-review-phosphor.caf), anything else is a 400; omit for the system default", "example_request": {"token": "<hex>", "platform": "ios", "environment": "sandbox", "bundle_id": "com.aisessionremote.app", "app_version": "1.0 (7)", "device_name": "iPhone", "sound": "attention-needs-you-phosphor.caf"}},
             {"method": "GET", "path": "/api/push/devices", "description": "Registered devices (PushDevice[])"},
             {"method": "POST", "path": "/api/push/devices/unregister", "description": "Unregister a device (the toggle was switched off). The token goes in the body because request paths are logged. 404 if unknown", "example_request": {"token": "<hex>"}},
             {"method": "GET", "path": "/api/push/settings", "description": "PushSettings: waiting pushes on/off, done-after threshold, grace, quiet hours, muted projects and todos"},
@@ -242,7 +242,8 @@ fn base_description() -> Value {
                 "app_version": "string",
                 "device_name": "string | null",
                 "last_sent_at": "string | null",
-                "last_error": "string | null - last APNs failure reason"
+                "last_error": "string | null - last APNs failure reason",
+                "sound": "string | null - the app skin's push sound (null: system default)"
             },
             "PushSettings": {
                 "notify_waiting": "bool - push when a conversation needs you (default true)",
