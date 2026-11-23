@@ -213,7 +213,6 @@ fn base_description() -> Value {
                 "description": "Host-script report of the MCP servers a conversation was started with, found by tool and session_id. 204 on success, 404 when no conversation has that tool and session_id, 400 for an invalid name",
                 "example_request": {"tool": "claude", "session_id": "<uuid>", "mcp_servers": ["grafana"]}
             },
-            {"method": "POST", "path": "/api/todos/{id}/conversation/close", "description": "Mark closed after the client killed the tmux session; the conversation stays resumable"},
             {"method": "DELETE", "path": "/api/todos/{id}/conversation", "description": "Forget the conversation link (the conversation itself stays on the computer). A later open starts a new one for the tool in the request"},
             {
                 "method": "POST",

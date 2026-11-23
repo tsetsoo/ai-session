@@ -220,10 +220,6 @@ public struct TodoHubClient: Sendable {
     }
 
     /// Marks the conversation closed. Kill the tmux session on the computer first.
-    public func closeConversation(todoId: String) async throws -> Conversation {
-        try await decode(Conversation.self, send("POST", "/api/todos/\(escape(todoId))/conversation/close"))
-    }
-
     public func closeConversation(id: String) async throws -> Conversation {
         try await decode(Conversation.self, send("POST", "/api/conversations/\(escape(id))/close"))
     }

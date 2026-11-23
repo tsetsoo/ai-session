@@ -1119,9 +1119,7 @@ final class TodoHubStore {
             throw SSHRemoteError.commandFailed(exitCode: result.exitCode, stderr: result.stderr)
         }
         guard let client = hubClient() else { throw TodoHubError.invalidBaseURL }
-        let closed = try await conversation.id.isEmpty
-            ? client.closeConversation(todoId: conversation.todoId)
-            : client.closeConversation(id: conversation.id)
+        let closed = try await client.closeConversation(id: conversation.id)
         remember(closed)
         refreshSoon()
     }

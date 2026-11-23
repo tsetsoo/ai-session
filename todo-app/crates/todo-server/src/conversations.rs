@@ -1713,30 +1713,6 @@ pub async fn review_conversation_by_id(
     }
 }
 
-pub async fn close_conversation(
-    pool: web::Data<DbPool>,
-    path: web::Path<String>,
-    broadcaster: web::Data<Broadcaster>,
-) -> HttpResponse {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(e) => return server_error(e),
-    };
-    let id = match require_single(&conn, &path.into_inner()) {
-        Ok(id) => id,
-        Err(OpenError::TodoNotFound) => return not_found("Todo has no conversation"),
-        Err(e) => return open_error(e),
-    };
-    match close_conversation_id(&conn, &id) {
-        Ok(c) => {
-            broadcaster.send();
-            HttpResponse::Ok().json(c)
-        }
-        Err(OpenError::TodoNotFound) => not_found("Todo has no conversation"),
-        Err(e) => open_error(e),
-    }
-}
-
 pub async fn close_conversation_by_id(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
@@ -1948,7 +1924,7 @@ pub async fn post_conversation_status(
         return bad_request("status timestamps must be nonnegative");
     }
     if body.status == ConversationStatus::Closed {
-        return bad_request("Hooks cannot close a conversation; use POST /api/todos/{id}/conversation/close");
+        return bad_request("Hooks cannot close a conversation; use POST /api/conversations/{id}/close");
     }
     let mut body = body.into_inner();
     if let Some(pause) = &body.paused {

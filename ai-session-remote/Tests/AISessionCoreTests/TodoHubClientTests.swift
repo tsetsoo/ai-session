@@ -299,7 +299,7 @@ final class TodoHubClientTests: XCTestCase {
         XCTAssertTrue(opened.tmuxName.hasPrefix("ai/claude/todo-"))
         let listed = try await client.listTodos()
         XCTAssertEqual(listed.first { $0.id == todo.id }?.conversationStatus, .unknown)
-        let closed = try await client.closeConversation(todoId: todo.id)
+        let closed = try await client.closeConversation(id: opened.id)
         XCTAssertEqual(closed.status, .closed)
         let fetched = try await client.conversation(todoId: todo.id)
         XCTAssertEqual(fetched?.sessionId, opened.sessionId)
