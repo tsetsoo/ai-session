@@ -305,7 +305,7 @@ struct ReviewView: View {
                     ForEach(session.record.batches.sorted { $0.sentAt > $1.sentAt }) { batch in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(batch.commentIDs.count == 1 ? "1 comment" : "\(batch.commentIDs.count) comments")
-                            Text("\(batch.sentAt, style: .relative) ago · \(batch.revision.prefix(8))")
+                            Text("\(batch.sentAt, style: .relative) ago · \(String(batch.revision.prefix(8)))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

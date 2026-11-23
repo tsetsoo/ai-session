@@ -191,7 +191,7 @@ struct ConversationFrame: View {
         #endif
     }
 
-    private var frameContent: some View {
+    private var decoratedTerminal: some View {
         frameTerminalContent
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
@@ -211,6 +211,10 @@ struct ConversationFrame: View {
                     .accessibilityHidden(true)
             }
         }
+    }
+
+    private var terminalWithEvents: some View {
+        decoratedTerminal
         .onChange(of: liveStatus, initial: true) { _, status in
             if let status { approveGate.statusChanged(to: status) }
         }
@@ -250,6 +254,10 @@ struct ConversationFrame: View {
             }
         }
         .todoRename($renameTarget, store: store, hosts: hosts)
+    }
+
+    private var terminalWithDialogs: some View {
+        terminalWithEvents
         .confirmationDialog(
             conversation?.removalConfirmationTitle ?? "Delete this conversation?",
             isPresented: Binding(
@@ -287,6 +295,10 @@ struct ConversationFrame: View {
         } message: { failure in
             Text(failure.message)
         }
+    }
+
+    private var frameContent: some View {
+        terminalWithDialogs
         .sheet(
             item: Binding(get: { isFrontmost ? sheet : nil }, set: { sheet = $0 }),
             onDismiss: retryAfterSettings
