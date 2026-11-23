@@ -2,7 +2,7 @@ import AISessionCore
 import SwiftUI
 
 /// Push notification settings stored on the todo server (shared by every device), plus the
-/// Mac-only "alert here too" switch. `Form` sections, meant to sit under the "Notify me when
+/// Mac's own attention settings (sounds, banners, Dock badge). `Form` sections, meant to sit under the "Notify me when
 /// a conversation needs me" toggle in Settings → Notifications.
 struct NotificationSettingsView: View {
     /// Todo id → title, to name muted todos; ids are shown when missing.
@@ -16,7 +16,6 @@ struct NotificationSettingsView: View {
     /// Per-device results (token prefix and reason) behind a Details disclosure, for debugging.
     @State private var testDetails: String?
     @State private var isTesting = false
-    @AppStorage(NotificationCenterCoordinator.macAlertsTooKey) private var macAlertsToo = false
     private let coordinator = NotificationCenterCoordinator.shared
 
     var body: some View {
@@ -48,12 +47,6 @@ struct NotificationSettingsView: View {
                 if let testDetails {
                     details(testDetails)
                 }
-                #else
-                Toggle("Alert on this Mac too", isOn: $macAlertsToo)
-                #endif
-            } footer: {
-                #if os(macOS)
-                Text("While an iPhone gets push notifications, this Mac stays quiet unless this is on.")
                 #endif
             }
 

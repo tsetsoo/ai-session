@@ -29,8 +29,8 @@ final class NotificationCenterCoordinator {
 
     /// Settings toggle "Notify me when a conversation needs me" (`@AppStorage` in Settings).
     static let enabledKey = "notify.needsYou"
-    /// Mac only: also alert on this Mac when an iPhone receives pushes.
-    static let macAlertsTooKey = "notify.macAlertsToo"
+    /// Mac only: banners for arrivals while the app is in the background (default on).
+    static let macBannersKey = "attention.banners"
     private static let clientIdKey = "notify.clientId"
     /// Hub URL this device's push token is registered with (see `PushRegistrationState`).
     private static let registeredHubKey = "notify.registeredHub"
@@ -317,7 +317,7 @@ final class NotificationCenterCoordinator {
                   todoId: todoId,
                   isMac: isMac,
                   iPhoneRegisteredOnServer: iPhoneRegisteredOnServer,
-                  macAlertsToo: UserDefaults.standard.bool(forKey: Self.macAlertsTooKey)
+                  macAlertsToo: false
               )
         else { return }
         let content = UNMutableNotificationContent()
@@ -332,6 +332,38 @@ final class NotificationCenterCoordinator {
             content: content,
             trigger: nil
         ))
+    }
+
+    /// A conversation arrived in Needs you or To review (`AppModel` already skipped the one on
+    /// screen and checked the Settings toggle). iOS: Needs you goes through `postWaiting`, which
+    /// defers to the server's push; review arrivals stay off the phone. Mac: a silent banner only
+    /// while the app isn't active (the app plays its own sound), whether or not an iPhone gets
+    /// pushes too.
+    func postAttention(_ alert: WaitingAlert) {
+        #if os(iOS)
+        guard alert.kind == .needsYou else { return }
+        postWaiting(todoId: alert.todoId, sessionId: alert.sessionId, title: alert.title, body: alert.body)
+        #else
+        guard isEnabled,
+              UserDefaults.standard.object(forKey: Self.macBannersKey) as? Bool ?? true,
+              !NSApplication.shared.isActive
+        else { return }
+        let content = UNMutableNotificationContent()
+        content.title = alert.title
+        content.body = alert.body
+        content.sound = nil
+        content.threadIdentifier = alert.todoId
+        content.categoryIdentifier = Self.category
+        content.userInfo = [
+            "todo_id": alert.todoId, "session_id": alert.sessionId,
+            "kind": alert.kind == .needsYou ? "waiting" : "review",
+        ]
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: NotificationPolicy.notificationIdentifier(todoId: alert.todoId),
+            content: content,
+            trigger: nil
+        ))
+        #endif
     }
 
     /// Host session list (plain SSH sessions, not todos): alert when a refresh finds sessions
