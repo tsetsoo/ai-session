@@ -94,8 +94,6 @@ final class NotificationCenterCoordinator {
     )
     @ObservationIgnored private var presenceTask: Task<Void, Never>?
     @ObservationIgnored private var deviceToken: String?
-    /// Mac: whether the server has a registered iPhone (refreshed when the app activates).
-    @ObservationIgnored private var iPhoneRegisteredOnServer = false
     @ObservationIgnored private var installed = false
     @ObservationIgnored private let delegateProxy = DelegateProxy()
 
@@ -232,7 +230,6 @@ final class NotificationCenterCoordinator {
         UIApplication.shared.registerForRemoteNotifications()
         #else
         pushState = .localOnly("Alerts on this Mac while the app runs")
-        await refreshServerDevices()
         #endif
     }
 
@@ -300,25 +297,13 @@ final class NotificationCenterCoordinator {
         saveRegistration()
     }
 
-    private func refreshServerDevices() async {
-        guard let client = TodoHubSettings.makeClient(), let status = try? await client.pushStatus() else { return }
-        iPhoneRegisteredOnServer = status.configured && status.devices > 0
-    }
-
     // MARK: Local alerts
 
     /// A conversation just turned `waiting`. Posts a local alert unless the server's push
     /// covers it or the conversation is on screen. `body` is "Needs you": never conversation text.
     func postWaiting(todoId: String, sessionId: String, title: String, body: String) {
         guard isEnabled,
-              NotificationPolicy.shouldPostLocal(
-                  pushState: pushState,
-                  visibleTodoId: visibleTodoId,
-                  todoId: todoId,
-                  isMac: isMac,
-                  iPhoneRegisteredOnServer: iPhoneRegisteredOnServer,
-                  macAlertsToo: false
-              )
+              NotificationPolicy.shouldPostLocal(pushState: pushState, visibleTodoId: visibleTodoId, todoId: todoId)
         else { return }
         let content = UNMutableNotificationContent()
         content.title = title
@@ -335,34 +320,67 @@ final class NotificationCenterCoordinator {
     }
 
     /// A conversation arrived in Needs you or To review (`AppModel` already skipped the one on
-    /// screen and checked the Settings toggle). iOS: Needs you goes through `postWaiting`, which
-    /// defers to the server's push; review arrivals stay off the phone. Mac: a silent banner only
-    /// while the app isn't active (the app plays its own sound), whether or not an iPhone gets
-    /// pushes too.
-    func postAttention(_ alert: WaitingAlert) {
+    /// screen and checked the Settings toggle). Returns whether the banner carried the sound.
+    /// - iOS: Needs you goes through `postWaiting`, which defers to the server's push; review
+    ///   arrivals stay off the phone. Never carries the Mac's sound.
+    /// - Mac: a banner per conversation only while the app isn't active, whether or not an
+    ///   iPhone gets pushes too. With `withSound` it plays the bundled chime itself, so Focus /
+    ///   Do Not Disturb silences it like any banner; a macOS system sound can't ride on a banner,
+    ///   so the app plays that one.
+    @discardableResult
+    func postAttention(_ alert: WaitingAlert, withSound: Bool) -> Bool {
         #if os(iOS)
-        guard alert.kind == .needsYou else { return }
-        postWaiting(todoId: alert.todoId, sessionId: alert.sessionId, title: alert.title, body: alert.body)
+        if alert.kind == .needsYou {
+            postWaiting(todoId: alert.todoId, sessionId: alert.sessionId, title: alert.title, body: alert.body)
+        }
+        return false
         #else
         guard isEnabled,
               UserDefaults.standard.object(forKey: Self.macBannersKey) as? Bool ?? true,
               !NSApplication.shared.isActive
-        else { return }
+        else { return false }
         let content = UNMutableNotificationContent()
         content.title = alert.title
         content.body = alert.body
-        content.sound = nil
+        var carried = false
+        if withSound {
+            switch AttentionSound.bannerSound(for: alert.kind) {
+            case let .sound(sound):
+                content.sound = sound
+                carried = true
+            case .silent:
+                carried = true
+            case .appPlays:
+                break
+            }
+        }
         content.threadIdentifier = alert.todoId
         content.categoryIdentifier = Self.category
         content.userInfo = [
-            "todo_id": alert.todoId, "session_id": alert.sessionId,
+            "todo_id": alert.todoId, "session_id": alert.sessionId, "conversation_key": alert.conversationKey,
             "kind": alert.kind == .needsYou ? "waiting" : "review",
         ]
         UNUserNotificationCenter.current().add(UNNotificationRequest(
-            identifier: NotificationPolicy.notificationIdentifier(todoId: alert.todoId),
+            identifier: NotificationPolicy.attentionIdentifier(conversationKey: alert.conversationKey),
             content: content,
             trigger: nil
         ))
+        return carried
+        #endif
+    }
+
+    /// Mac: removes delivered arrival banners whose conversation left the section they announced
+    /// (answered, reviewed, working again, closed). Called after every refresh.
+    func clearStaleAttention(needsYou: Set<String>, review: Set<String>) {
+        #if os(macOS)
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let delivered = await center.deliveredNotifications().compactMap {
+                AttentionBanner(identifier: $0.request.identifier, userInfo: $0.request.content.userInfo)
+            }
+            let stale = NotificationPolicy.staleAttentionIdentifiers(delivered: delivered, needsYou: needsYou, review: review)
+            if !stale.isEmpty { center.removeDeliveredNotifications(withIdentifiers: stale) }
+        }
         #endif
     }
 
@@ -454,15 +472,13 @@ final class NotificationCenterCoordinator {
     // MARK: App lifecycle
 
     /// Report the conversation still on screen again, retry a registration that failed for a
-    /// temporary reason, remove alerts for conversations that no longer need the user, and
-    /// (Mac) refresh whether an iPhone receives pushes.
+    /// temporary reason, and remove alerts for conversations that no longer need the user.
     private func didBecomeActive() async {
         applyPresence(presence.becomeActive())
         guard isEnabled, let client = TodoHubSettings.makeClient() else { return }
         if registration.needsRetry {
             await uploadToken()
         }
-        if isMac { await refreshServerDevices() }
         guard let conversations = try? await client.listConversations() else { return }
         let waiting = Set(conversations.filter { $0.status == .waiting }.map(\.todoId))
         let center = UNUserNotificationCenter.current()

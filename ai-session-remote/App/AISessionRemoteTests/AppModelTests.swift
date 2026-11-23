@@ -597,26 +597,57 @@ final class AppModelTests: XCTestCase {
     /// Records what the model would post or buzz instead of reaching the coordinator.
     private final class AlertRecorder {
         var posted: [WaitingAlert] = []
+        /// Per post: whether the model asked the banner to carry the sound.
+        var postedWithSound: [Bool] = []
         var feedbacks = 0
         var sounds: [AttentionKind] = []
         var enabled = true
         var frontmost: String?
+        var perConversation = false
+        /// What the coordinator answers: a banner played the sound (Mac, app in background).
+        var bannerCarriesSound = false
+        var staleCalls: [(needsYou: Set<String>, review: Set<String>)] = []
+        var badges: [Int] = []
 
         var alerts: WaitingAlerts {
             WaitingAlerts(
                 isEnabled: { [unowned self] in enabled },
                 frontmostTodoID: { [unowned self] in frontmost },
-                post: { [unowned self] in posted.append($0) },
+                onScreenPerConversation: perConversation,
+                post: { [unowned self] alert, withSound in
+                    posted.append(alert)
+                    postedWithSound.append(withSound)
+                    return withSound && bannerCarriesSound
+                },
                 feedback: { [unowned self] in feedbacks += 1 },
-                sound: { [unowned self] in sounds.append($0) }
+                sound: { [unowned self] in sounds.append($0) },
+                clearStale: { [unowned self] in staleCalls.append((needsYou: $0, review: $1)) },
+                badge: { [unowned self] in badges.append($0) }
             )
         }
     }
 
-    private func makeAlertingModel(_ recorder: AlertRecorder) -> AppModel {
+    private func makeAlertingModel(_ recorder: AlertRecorder,
+                                   listTmux: (@Sendable (Computer) async throws -> Set<String>)? = nil) -> AppModel {
         let cache = TodoHubCache(fileURL: FileManager.default.temporaryDirectory
             .appendingPathComponent("appmodel-\(UUID().uuidString).json"))
-        return AppModel(store: TodoHubStore(cache: cache), demo: false, alerts: recorder.alerts)
+        return AppModel(store: TodoHubStore(cache: cache), demo: false, listTmux: listTmux, alerts: recorder.alerts,
+                        now: { Self.listedAt })
+    }
+
+    /// t1 with two conversations (`c-t1`, `c-t1-second`) in the given statuses; t3 busy.
+    private func fetchedSiblings(_ first: ConversationStatus, _ second: ConversationStatus, into model: AppModel) {
+        var list = conversations(["t3": .busy])
+        var a = list.first { $0.todoId == "t1" }!
+        a.status = first
+        var b = a
+        b.id = "c-t1-second"
+        b.tmuxName = "todo-t1-second"
+        b.sessionId = "demo-t1-second"
+        b.status = second
+        list.removeAll { $0.todoId == "t1" }
+        list.insert(contentsOf: [a, b], at: 0)
+        model.store.applyFetched(todos: DemoFixtures.todos, conversations: list)
     }
 
     /// The demo conversations with some statuses changed (t1 and t3 carry status messages).
@@ -775,27 +806,81 @@ final class AppModelTests: XCTestCase {
     func testSiblingConversationsDoNotReannounce() {
         let recorder = AlertRecorder()
         let model = makeAlertingModel(recorder)
-        func refresh(_ first: ConversationStatus, _ second: ConversationStatus) {
-            var list = conversations(["t3": .busy])
-            var a = list.first { $0.todoId == "t1" }!
-            a.status = first
-            var b = a
-            b.id = "c-t1-second"
-            b.tmuxName = "todo-t1-second"
-            b.sessionId = "demo-t1-second"
-            b.status = second
-            list.removeAll { $0.todoId == "t1" }
-            list.insert(contentsOf: [a, b], at: 0)
-            model.store.applyFetched(todos: DemoFixtures.todos, conversations: list)
-        }
-        refresh(.busy, .busy)
-        refresh(.idle, .busy)
+        fetchedSiblings(.busy, .busy, into: model)
+        fetchedSiblings(.idle, .busy, into: model)
         XCTAssertEqual(recorder.sounds, [.review], "the first one finished")
-        refresh(.idle, .busy)
-        refresh(.idle, .busy)
+        fetchedSiblings(.idle, .busy, into: model)
+        fetchedSiblings(.idle, .busy, into: model)
         XCTAssertEqual(recorder.sounds, [.review], "still idle is not a new arrival")
         XCTAssertEqual(model.rowPulses["c-t1"], 1)
         XCTAssertNil(model.rowPulses["c-t1-second"], "only the arriving conversation's row pulses")
+    }
+
+    /// Mac: looking at one of a todo's conversations doesn't silence its sibling.
+    func testSiblingOfTheConversationOnScreenStillSignals() {
+        let recorder = AlertRecorder()
+        recorder.perConversation = true
+        recorder.frontmost = "t1"
+        let model = makeAlertingModel(recorder)
+        model.selectedConversationID = "c-t1"
+        fetchedSiblings(.busy, .busy, into: model)
+        fetchedSiblings(.busy, .idle, into: model)
+        XCTAssertEqual(recorder.sounds, [.review])
+        XCTAssertEqual(recorder.posted.map(\.conversationKey), ["c-t1-second"])
+        XCTAssertEqual(recorder.feedbacks, 0)
+        fetchedSiblings(.waiting, .idle, into: model)
+        XCTAssertEqual(recorder.feedbacks, 1, "the one on screen only buzzes")
+        XCTAssertEqual(recorder.sounds, [.review])
+    }
+
+    func testWaitingOnAClosedSessionIsNotAnnounced() async {
+        let recorder = AlertRecorder()
+        let model = makeAlertingModel(recorder, listTmux: { _ in [] })
+        model.store.seedForDemo(todos: DemoFixtures.todos, conversations: conversations(["t1": .busy, "t3": .busy]),
+                                computers: DemoFixtures.computers)
+        await model.refreshLiveness(hosts: [])
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .waiting, "t3": .busy], into: model)
+        XCTAssertTrue(model.board.needsYou.isEmpty, "its tmux session is gone: Closed")
+        XCTAssertTrue(recorder.sounds.isEmpty)
+        XCTAssertTrue(recorder.posted.isEmpty)
+        XCTAssertTrue(model.rowPulses.isEmpty)
+    }
+
+    func testBannerCarriesTheSoundWhenItCan() {
+        let recorder = AlertRecorder()
+        recorder.bannerCarriesSound = true
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .waiting, "t3": .idle], into: model)
+        XCTAssertEqual(zip(recorder.posted.map(\.kind), recorder.postedWithSound).filter(\.1).map(\.0), [.needsYou],
+                       "only the loudest banner carries a sound")
+        XCTAssertTrue(recorder.sounds.isEmpty, "the banner played it")
+    }
+
+    func testStaleBannersAndBadgeFollowEveryRefresh() {
+        let recorder = AlertRecorder()
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        XCTAssertEqual(recorder.badges, [0])
+        XCTAssertEqual(recorder.staleCalls.last?.needsYou, [])
+        fetched(["t1": .waiting, "t3": .idle], into: model)
+        XCTAssertEqual(recorder.badges.last, 1)
+        XCTAssertEqual(recorder.staleCalls.last?.needsYou, ["c-t1"])
+        XCTAssertEqual(recorder.staleCalls.last?.review, Set(model.board.review.map(\.listKey)))
+        XCTAssertTrue(recorder.staleCalls.last?.review.contains("c-t3") == true)
+    }
+
+    func testPulsesForGoneConversationsArePruned() {
+        let recorder = AlertRecorder()
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .waiting, "t3": .busy], into: model)
+        XCTAssertEqual(model.rowPulses["c-t1"], 1)
+        model.store.applyFetched(todos: DemoFixtures.todos,
+                                 conversations: conversations(["t3": .busy]).filter { $0.todoId != "t1" })
+        XCTAssertNil(model.rowPulses["c-t1"])
+        XCTAssertNil(model.rowPulseDates["c-t1"])
     }
 
     func testWaitingToIdleIsAReviewArrival() {

@@ -26,21 +26,49 @@ public enum NotificationPolicy {
             .map { notificationIdentifier(todoId: $0.todoId) }
     }
 
-    /// Whether to post a local alert for a conversation that just turned `waiting`.
-    /// - Never while that conversation is on screen.
-    /// - iPhone: only when the server's push isn't covering it.
-    /// - Mac: only when no iPhone receives pushes (the iPhone's alert also shows on the Mac with
-    ///   iPhone Mirroring), unless "Alert on this Mac too" is on.
-    public static func shouldPostLocal(
-        pushState: PushState,
-        visibleTodoId: String?,
-        todoId: String,
-        isMac: Bool,
-        iPhoneRegisteredOnServer: Bool,
-        macAlertsToo: Bool
-    ) -> Bool {
+    /// Whether the iPhone posts a local alert for a conversation that just turned `waiting`:
+    /// never while that todo is on screen, and only when the server's push isn't covering it.
+    /// (The Mac has its own rule: `NotificationCenterCoordinator.postAttention`.)
+    public static func shouldPostLocal(pushState: PushState, visibleTodoId: String?, todoId: String) -> Bool {
         if visibleTodoId == todoId { return false }
-        if isMac { return !iPhoneRegisteredOnServer || macAlertsToo }
         return pushState != .registered
+    }
+
+    /// The Mac's arrival banner for one conversation: siblings on the same todo, and a review
+    /// banner versus a still-unseen Needs you banner of another conversation, never replace
+    /// each other.
+    public static func attentionIdentifier(conversationKey: String) -> String {
+        "attention-\(conversationKey)"
+    }
+
+    /// Delivered Mac arrival banners whose conversation is no longer in the section the banner
+    /// announced (answered, reviewed, working again, closed).
+    public static func staleAttentionIdentifiers(delivered: [AttentionBanner], needsYou: Set<String>,
+                                                 review: Set<String>) -> [String] {
+        delivered.filter { banner in
+            let section = banner.kind == "review" ? review : needsYou
+            return !section.contains(banner.conversationKey)
+        }
+        .map(\.identifier)
+    }
+}
+
+/// A delivered Mac arrival banner, read back from its request (`conversation_key` in userInfo).
+public struct AttentionBanner: Equatable, Sendable {
+    public var identifier: String
+    /// `"waiting"` (Needs you) or `"review"`.
+    public var kind: String
+    public var conversationKey: String
+
+    public init(identifier: String, kind: String, conversationKey: String) {
+        self.identifier = identifier
+        self.kind = kind
+        self.conversationKey = conversationKey
+    }
+
+    public init?(identifier: String, userInfo: [AnyHashable: Any]) {
+        guard let key = userInfo["conversation_key"] as? String, !key.isEmpty,
+              let kind = userInfo["kind"] as? String else { return nil }
+        self.init(identifier: identifier, kind: kind, conversationKey: key)
     }
 }

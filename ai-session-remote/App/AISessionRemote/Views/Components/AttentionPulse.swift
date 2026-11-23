@@ -58,17 +58,19 @@ private struct AttentionPulseModifier: ViewModifier {
                 opacity = 0.3
                 // Let the highlight render before fading it, or SwiftUI animates 0 → 0.
                 try? await Task.sleep(for: .milliseconds(50))
+                if Task.isCancelled { return }
                 withAnimation(.easeOut(duration: 1.6)) { opacity = 0 }
                 return
             }
+            // A newer pulse cancels this one: stop without touching `opacity`, which is its now.
             for _ in 0..<3 {
                 withAnimation(.easeInOut(duration: 0.33)) { opacity = 0.35 }
                 try? await Task.sleep(for: .milliseconds(330))
+                if Task.isCancelled { return }
                 withAnimation(.easeInOut(duration: 0.33)) { opacity = 0 }
                 try? await Task.sleep(for: .milliseconds(330))
-                if Task.isCancelled { break }
+                if Task.isCancelled { return }
             }
-            opacity = 0
         }
     }
 }
@@ -80,6 +82,11 @@ enum DockBadge {
     struct Input: Equatable {
         var count: Int
         var enabled: Bool
+    }
+
+    /// From `AppModel` after every refresh, so the badge stays right with no window open.
+    @MainActor static func apply(count: Int) {
+        apply(Input(count: count, enabled: UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true))
     }
 
     @MainActor static func apply(_ input: Input) {

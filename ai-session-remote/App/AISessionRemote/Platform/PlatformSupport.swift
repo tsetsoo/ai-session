@@ -75,6 +75,14 @@ enum PlatformSupport {
         #endif
     }
 
+    static var isMac: Bool {
+        #if os(macOS)
+        true
+        #else
+        false
+        #endif
+    }
+
     /// Warning buzz when a conversation starts needing you while the app is open. No-op on macOS.
     static func needsYouFeedback() {
         #if os(iOS)

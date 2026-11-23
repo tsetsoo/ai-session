@@ -36,6 +36,8 @@ enum AttentionKind: Hashable {
 /// message or any conversation text, so it matches what a push can carry.
 struct WaitingAlert: Equatable {
     let todoId: String
+    /// The conversation's `listKey`: Mac banners are per conversation.
+    let conversationKey: String
     let sessionId: String
     let title: String
     let kind: AttentionKind
@@ -48,13 +50,23 @@ struct WaitingAlerts {
     /// Settings → Notifications ("notify.needsYou"): off, no banners and no buzz. Sounds and
     /// pulses don't depend on it.
     var isEnabled: () -> Bool
-    /// The conversation on screen while the app is active (`nil`: none).
+    /// The todo on screen while the app is active (`nil`: none).
     var frontmostTodoID: () -> String?
-    var post: (WaitingAlert) -> Void
+    /// Mac: only the conversation shown for that todo counts as on screen, so its siblings still
+    /// signal. iPhone: the whole todo, as before.
+    var onScreenPerConversation: Bool
+    /// Posts a banner; `withSound` asks it to carry the arrival sound (so Focus silences it).
+    /// Returns whether a banner did carry it.
+    var post: (WaitingAlert, _ withSound: Bool) -> Bool
     /// The buzz instead of an alert for the conversation on screen.
     var feedback: () -> Void
-    /// One sound per refresh with arrivals (Mac; a no-op on iOS).
+    /// One sound per refresh with arrivals when no banner carried it (Mac; a no-op on iOS).
     var sound: (AttentionKind) -> Void
+    /// After every refresh: remove delivered banners whose conversation left the section they
+    /// announced (`listKey`s now in Needs you, in To review).
+    var clearStale: (_ needsYou: Set<String>, _ review: Set<String>) -> Void
+    /// After every refresh: the Needs you count for the Dock badge.
+    var badge: (Int) -> Void
 
     /// The coordinator owns permission, push-vs-local dedup and the Mac rule; its presence is
     /// what `VisiblePresence` reported, cleared while the app is inactive.
@@ -62,9 +74,12 @@ struct WaitingAlerts {
         WaitingAlerts(
             isEnabled: { NotificationCenterCoordinator.shared.isEnabled },
             frontmostTodoID: { NotificationCenterCoordinator.shared.visibleTodoId },
-            post: { NotificationCenterCoordinator.shared.postAttention($0) },
+            onScreenPerConversation: PlatformSupport.isMac,
+            post: { NotificationCenterCoordinator.shared.postAttention($0, withSound: $1) },
             feedback: { PlatformSupport.needsYouFeedback() },
-            sound: { AttentionSound.play($0) }
+            sound: { AttentionSound.play($0) },
+            clearStale: { NotificationCenterCoordinator.shared.clearStaleAttention(needsYou: $0, review: $1) },
+            badge: { DockBadge.apply(count: $0) }
         )
     }
 }
@@ -354,35 +369,65 @@ final class AppModel {
     /// screen in the active app. Baseline refreshes record statuses and announce nothing.
     private func announceArrivals(_ fetched: TodoHubStore.Fetched) {
         let previous = fetched.isBaseline ? nil : lastStatuses
-        lastStatuses = StatusTransitions.snapshot(fetched.conversations)
-        let waiting = StatusTransitions.newlyWaiting(previous: previous, current: fetched.conversations)
-        let finished = StatusTransitions.newlyFinished(previous: previous, current: fetched.conversations)
-        guard !waiting.isEmpty || !finished.isEmpty else { return }
+        let snapshot = StatusTransitions.snapshot(fetched.conversations)
+        lastStatuses = snapshot
+        let board = board
+        let needsYou = Set(board.needsYou.map(\.listKey))
         let inReview = Set(board.review.map(\.listKey))
-        let arrivals = waiting.map { ($0, AttentionKind.needsYou) }
-            + finished.filter { inReview.contains($0.listKey) }.map { ($0, AttentionKind.review) }
+        alerts.badge(board.needsYou.count)
+        alerts.clearStale(needsYou, inReview)
+        prunePulses(keeping: Set(snapshot.keys))
+
+        // Only what the board shows in the section: a waiting conversation whose tmux session
+        // is gone is Closed, a done todo or a paused run isn't To review.
+        let waiting = StatusTransitions.newlyWaiting(previous: previous, current: fetched.conversations)
+            .filter { needsYou.contains($0.listKey) }
+        let finished = StatusTransitions.newlyFinished(previous: previous, current: fetched.conversations)
+            .filter { inReview.contains($0.listKey) }
+        let arrivals = waiting.map { ($0, AttentionKind.needsYou) } + finished.map { ($0, AttentionKind.review) }
+        guard !arrivals.isEmpty else { return }
+
         let frontmost = alerts.frontmostTodoID()
+        let shownKey = frontmost.flatMap { store.displayed(forTodo: $0, selectedKey: selectedConversationID)?.listKey }
+        func isOnScreen(_ conversation: Conversation) -> Bool {
+            guard conversation.todoId == frontmost else { return false }
+            guard alerts.onScreenPerConversation, let shownKey else { return true }
+            return conversation.listKey == shownKey
+        }
         let enabled = alerts.isEnabled()
-        var loudest: AttentionKind?
-        for (conversation, kind) in arrivals {
-            if conversation.todoId == frontmost {
-                if enabled, kind == .needsYou { alerts.feedback() }
-                continue
-            }
+        let signalled = arrivals.filter { conversation, kind in
+            guard isOnScreen(conversation) else { return true }
+            if enabled, kind == .needsYou { alerts.feedback() }
+            return false
+        }
+        guard !signalled.isEmpty else { return }
+        let loudest: AttentionKind = signalled.contains { $0.1 == .needsYou } ? .needsYou : .review
+        var soundCarried = false
+        for (conversation, kind) in signalled {
             rowPulses[conversation.listKey, default: 0] += 1
             rowPulseDates[conversation.listKey] = now()
             sectionPulses[kind, default: 0] += 1
-            if loudest != .needsYou { loudest = kind }
-            if enabled {
-                alerts.post(WaitingAlert(
-                    todoId: conversation.todoId,
-                    sessionId: conversation.sessionId,
-                    title: fetched.todos.first { $0.id == conversation.todoId }?.title ?? "Conversation",
-                    kind: kind
-                ))
-            }
+            guard enabled else { continue }
+            let alert = WaitingAlert(
+                todoId: conversation.todoId,
+                conversationKey: conversation.listKey,
+                sessionId: conversation.sessionId,
+                title: fetched.todos.first { $0.id == conversation.todoId }?.title ?? "Conversation",
+                kind: kind
+            )
+            if alerts.post(alert, !soundCarried && kind == loudest) { soundCarried = true }
         }
-        if let loudest { alerts.sound(loudest) }
+        if !soundCarried { alerts.sound(loudest) }
+    }
+
+    /// Drops pulse bookkeeping for conversations the hub no longer lists.
+    private func prunePulses(keeping keys: Set<String>) {
+        if rowPulses.keys.contains(where: { !keys.contains($0) }) {
+            rowPulses = rowPulses.filter { keys.contains($0.key) }
+        }
+        if rowPulseDates.keys.contains(where: { !keys.contains($0) }) {
+            rowPulseDates = rowPulseDates.filter { keys.contains($0.key) }
+        }
     }
 
     /// Whether the todo server is set up. Demo launches always are.

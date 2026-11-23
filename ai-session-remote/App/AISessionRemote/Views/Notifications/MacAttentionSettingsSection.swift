@@ -19,7 +19,7 @@ struct MacAttentionSettingsSection: View {
         } header: {
             Text("On this Mac")
         } footer: {
-            Text("Sounds follow the Mac's volume, so a muted Mac stays silent.")
+            Text("Sounds follow the Mac's volume, so a muted Mac stays silent. While the app is in the background, the Chime rides on the banner, so Focus silences it; a macOS sound always plays.")
         }
     }
 

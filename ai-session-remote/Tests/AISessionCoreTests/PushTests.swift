@@ -54,21 +54,8 @@ final class PushTests: XCTestCase {
         XCTAssertEqual(NotificationPolicy.notificationIdentifier(todoId: "t1"), "todo-t1")
     }
 
-    private func shouldPost(
-        _ state: PushState,
-        visible: String? = nil,
-        mac: Bool = false,
-        iPhoneRegistered: Bool = false,
-        macAlertsToo: Bool = false
-    ) -> Bool {
-        NotificationPolicy.shouldPostLocal(
-            pushState: state,
-            visibleTodoId: visible,
-            todoId: "t1",
-            isMac: mac,
-            iPhoneRegisteredOnServer: iPhoneRegistered,
-            macAlertsToo: macAlertsToo
-        )
+    private func shouldPost(_ state: PushState, visible: String? = nil) -> Bool {
+        NotificationPolicy.shouldPostLocal(pushState: state, visibleTodoId: visible, todoId: "t1")
     }
 
     func testPolicyNoLocalWhenRegistered() {
@@ -79,26 +66,38 @@ final class PushTests: XCTestCase {
     func testPolicyNoLocalWhenVisible() {
         XCTAssertFalse(shouldPost(.localOnly("x"), visible: "t1"))
         XCTAssertTrue(shouldPost(.localOnly("x"), visible: "t2"))
-        XCTAssertFalse(shouldPost(.localOnly("x"), visible: "t1", mac: true))
     }
 
-    func testSecondConversationDoesNotAlertWhileTodoIsVisible() {
-        XCTAssertFalse(
-            NotificationPolicy.shouldPostLocal(
-                pushState: .localOnly("x"), visibleTodoId: "t1", todoId: "t1",
-                isMac: false, iPhoneRegisteredOnServer: false, macAlertsToo: false
-            ),
-            "a second conversation of the todo on screen stays quiet"
+    // MARK: Mac attention banners
+
+    func testAttentionIdentifierIsPerConversation() {
+        XCTAssertEqual(NotificationPolicy.attentionIdentifier(conversationKey: "c-a"), "attention-c-a")
+        XCTAssertNotEqual(NotificationPolicy.attentionIdentifier(conversationKey: "c-a"),
+                          NotificationPolicy.attentionIdentifier(conversationKey: "c-b"))
+    }
+
+    func testAttentionBannerParsesUserInfo() {
+        XCTAssertEqual(
+            AttentionBanner(identifier: "attention-c-a",
+                            userInfo: ["todo_id": "t1", "kind": "review", "conversation_key": "c-a"]),
+            AttentionBanner(identifier: "attention-c-a", kind: "review", conversationKey: "c-a")
         )
+        XCTAssertNil(AttentionBanner(identifier: "todo-t1", userInfo: ["todo_id": "t1", "kind": "waiting"]),
+                     "server pushes and older alerts have no conversation key")
     }
 
-    func testPolicyMacDefersToRegisteredIPhone() {
-        XCTAssertTrue(shouldPost(.off, mac: true, iPhoneRegistered: false))
-        XCTAssertFalse(shouldPost(.off, mac: true, iPhoneRegistered: true))
-    }
-
-    func testPolicyMacAlertsTooOverrides() {
-        XCTAssertTrue(shouldPost(.off, mac: true, iPhoneRegistered: true, macAlertsToo: true))
+    func testStaleAttentionBannersLeftTheirSection() {
+        let delivered = [
+            AttentionBanner(identifier: "attention-a", kind: "waiting", conversationKey: "a"),
+            AttentionBanner(identifier: "attention-b", kind: "review", conversationKey: "b"),
+            AttentionBanner(identifier: "attention-c", kind: "review", conversationKey: "c"),
+            AttentionBanner(identifier: "attention-d", kind: "waiting", conversationKey: "d"),
+        ]
+        XCTAssertEqual(
+            NotificationPolicy.staleAttentionIdentifiers(delivered: delivered, needsYou: ["a", "b"], review: ["c", "d"]),
+            ["attention-b", "attention-d"],
+            "a banner stays only while its conversation is still in the section it announced"
+        )
     }
 }
 

@@ -1,4 +1,5 @@
 import Foundation
+import UserNotifications
 #if os(macOS)
 import AppKit
 #endif
@@ -42,6 +43,24 @@ enum AttentionSound {
         lastKind = kind
         sound.play()
         #endif
+    }
+
+    /// What a Mac banner should do with the arrival sound.
+    enum BannerSound {
+        /// The bundled chime, played by the notification (Focus silences it).
+        case sound(UNNotificationSound)
+        /// The choice is None: nothing to play.
+        case silent
+        /// A macOS system sound: a banner can't play it, the app does.
+        case appPlays
+    }
+
+    static func bannerSound(for kind: AttentionKind) -> BannerSound {
+        switch UserDefaults.standard.string(forKey: key(for: kind)) ?? defaultChoice {
+        case noneChoice: return .silent
+        case defaultChoice: return .sound(UNNotificationSound(named: UNNotificationSoundName(bundledName(for: kind) + ".caf")))
+        default: return .appPlays
+        }
     }
 
     /// Settings' play button: the choice as it would sound, without the throttle.
