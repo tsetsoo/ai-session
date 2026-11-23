@@ -793,7 +793,9 @@ if [ "$read_only_worker" = 1 ]; then
   fi
   worker_cwd=$(cd "$cwd" && pwd -P)
   worker_socket="$worker_runtime/r/$(printf '%s' "$name" | shasum -a 256 | cut -c1-12).sock"
-  set -- env "AI_TODO_READ_ONLY_WORKER=1" "AI_TODO_TMUX_SESSION=$name" "TMPDIR=$worker_temp" /usr/bin/sandbox-exec \
+  # Claude uses its own override for Bash scratch files on macOS.
+  set -- env "AI_TODO_READ_ONLY_WORKER=1" "AI_TODO_TMUX_SESSION=$name" \
+    "TMPDIR=$worker_temp" "CLAUDE_CODE_TMPDIR=$worker_temp" /usr/bin/sandbox-exec \
     -D "AGENT=$worker_agent_home" -D "RUNTIME=$worker_runtime" \
     -D "WORKTREE=$worker_cwd" -D "BACKEND=$worker_socket" -p "$worker_profile" "$@"
 fi
