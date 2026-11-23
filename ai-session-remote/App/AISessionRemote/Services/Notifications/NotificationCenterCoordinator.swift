@@ -299,6 +299,16 @@ final class NotificationCenterCoordinator {
 
     // MARK: Local alerts
 
+    /// The iPhone uses the app skin's sound (Standard: the system sound). The Mac keeps
+    /// `.default` here; its banners follow the sound chosen in Settings (`AttentionSound`).
+    private static func phoneSound(_ kind: AttentionKind) -> UNNotificationSound {
+        #if os(iOS)
+        AttentionSound.skinSound(for: kind, skin: SkinStore.shared.skin) ?? .default
+        #else
+        .default
+        #endif
+    }
+
     /// A conversation just turned `waiting`. Posts a local alert unless the server's push
     /// covers it or the conversation is on screen. `body` is "Needs you": never conversation text.
     func postWaiting(todoId: String, sessionId: String, title: String, body: String) {
@@ -308,7 +318,7 @@ final class NotificationCenterCoordinator {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        content.sound = .default
+        content.sound = Self.phoneSound(.needsYou)
         content.threadIdentifier = todoId
         content.categoryIdentifier = Self.category
         content.userInfo = ["todo_id": todoId, "session_id": sessionId, "kind": "waiting"]
@@ -397,7 +407,7 @@ final class NotificationCenterCoordinator {
         } else {
             content.body = "\(waiting.count) sessions on \(hostName) are waiting"
         }
-        content.sound = .default
+        content.sound = Self.phoneSound(.needsYou)
         let request = UNNotificationRequest(
             identifier: "waiting-\(hostName)-\(waiting.map(\.tmuxName).sorted().joined(separator: ","))",
             content: content,

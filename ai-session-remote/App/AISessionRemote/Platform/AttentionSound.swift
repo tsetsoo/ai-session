@@ -5,7 +5,8 @@ import AppKit
 #endif
 
 /// The Mac's arrival sounds. Played by the app with `NSSound`, so they follow the Mac's volume
-/// and mute (silent in the office, audible at home). No-ops on iOS.
+/// and mute (silent in the office, audible at home). Playback no-ops on iOS; the names and
+/// notification sounds (which follow the app skin) are used on both.
 @MainActor
 enum AttentionSound {
     /// UserDefaults keys; values are `defaultChoice`, `noneChoice` or a name in `systemNames`.
@@ -25,9 +26,21 @@ enum AttentionSound {
         kind == .needsYou ? needsYouKey : reviewKey
     }
 
-    /// The bundled sound for `kind` (`Resources/Sounds`).
+    /// The bundled sound for `kind` (`Resources/Sounds`), in the current app skin.
     static func bundledName(for kind: AttentionKind) -> String {
-        kind == .needsYou ? "attention-needs-you" : "attention-review"
+        bundledName(for: kind, skin: SkinStore.shared.skin)
+    }
+
+    /// Each skin has its own pair: `attention-review-phosphor`. Standard keeps the originals.
+    static func bundledName(for kind: AttentionKind, skin: AppSkin) -> String {
+        let base = kind == .needsYou ? "attention-needs-you" : "attention-review"
+        return skin.soundSuffix.map { "\(base)-\($0)" } ?? base
+    }
+
+    /// The skin's sound for a notification; nil in Standard, where callers keep `.default`.
+    static func skinSound(for kind: AttentionKind, skin: AppSkin) -> UNNotificationSound? {
+        guard skin.soundSuffix != nil else { return nil }
+        return UNNotificationSound(named: UNNotificationSoundName(bundledName(for: kind, skin: skin) + ".caf"))
     }
 
     /// Plays the chosen sound for an arrival, at most once per `minimumGap`.

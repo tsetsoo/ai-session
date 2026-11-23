@@ -101,4 +101,26 @@ final class SkinTests: XCTestCase {
         XCTAssertNotEqual(KeyBarColors(.dark, skin: .phosphor).bar, KeyBarColors(.dark).bar)
         XCTAssertNotEqual(KeyBarColors(.dark, skin: .neonNoir).keyLabel, KeyBarColors(.dark, skin: .phosphor).keyLabel)
     }
+    // MARK: Sounds
+
+    func testBundledNameFollowsSkin() {
+        XCTAssertEqual(AttentionSound.bundledName(for: .needsYou, skin: .standard), "attention-needs-you")
+        XCTAssertEqual(AttentionSound.bundledName(for: .review, skin: .standard), "attention-review")
+        XCTAssertEqual(AttentionSound.bundledName(for: .review, skin: .phosphor), "attention-review-phosphor")
+        XCTAssertEqual(AttentionSound.bundledName(for: .needsYou, skin: .neonNoir), "attention-needs-you-neon-noir")
+    }
+
+    func testSkinSoundFilesAreBundled() {
+        for skin in AppSkin.allCases {
+            for kind in [AttentionKind.needsYou, .review] {
+                let name = AttentionSound.bundledName(for: kind, skin: skin)
+                XCTAssertNotNil(Bundle(for: AppModel.self).url(forResource: name, withExtension: "caf"), name)
+            }
+        }
+    }
+
+    func testStandardKeepsDefaultNotificationSound() {
+        XCTAssertNil(AttentionSound.skinSound(for: .needsYou, skin: .standard))
+        XCTAssertNotNil(AttentionSound.skinSound(for: .needsYou, skin: .phosphor))
+    }
 }
