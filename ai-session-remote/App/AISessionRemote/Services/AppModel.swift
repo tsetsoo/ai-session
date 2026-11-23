@@ -244,14 +244,14 @@ final class AppModel {
     /// Replaces the SSH listing; tests inject it. Production builds it from the hosts.
     private let listTmuxOverride: TmuxListing?
     private let alerts: WaitingAlerts
-    /// Conversation statuses at the last refresh (`nil` until the first one after launch or a
+    /// Conversation statuses (by `listKey`) at the last refresh (`nil` until the first one after launch or a
     /// reconnect): the baseline for "turned waiting" alerts.
     private var lastStatuses: [String: ConversationStatus]?
-    /// todoId → how many times it arrived in Needs you / To review; rows pulse when it changes.
+    /// Conversation `listKey` → how many times it arrived in Needs you / To review; rows pulse when it changes.
     private(set) var rowPulses: [String: Int] = [:]
     /// Section → arrivals into it; the sidebar row pulses when it changes.
     private(set) var sectionPulses: [AttentionKind: Int] = [:]
-    /// todoId → when it last arrived, so a row that appears right after (it moved lists) pulses.
+    /// Conversation `listKey` → when it last arrived, so a row that appears right after (it moved lists) pulses.
     private(set) var rowPulseDates: [String: Date] = [:]
     /// The time of a liveness listing; tests fix it.
     private let now: () -> Date
@@ -354,14 +354,13 @@ final class AppModel {
     /// screen in the active app. Baseline refreshes record statuses and announce nothing.
     private func announceArrivals(_ fetched: TodoHubStore.Fetched) {
         let previous = fetched.isBaseline ? nil : lastStatuses
-        lastStatuses = Dictionary(fetched.conversations.map { ($0.todoId, $0.status) },
-                                  uniquingKeysWith: { _, new in new })
+        lastStatuses = StatusTransitions.snapshot(fetched.conversations)
         let waiting = StatusTransitions.newlyWaiting(previous: previous, current: fetched.conversations)
         let finished = StatusTransitions.newlyFinished(previous: previous, current: fetched.conversations)
         guard !waiting.isEmpty || !finished.isEmpty else { return }
-        let inReview = Set(board.review.map(\.todoId))
+        let inReview = Set(board.review.map(\.listKey))
         let arrivals = waiting.map { ($0, AttentionKind.needsYou) }
-            + finished.filter { inReview.contains($0.todoId) }.map { ($0, AttentionKind.review) }
+            + finished.filter { inReview.contains($0.listKey) }.map { ($0, AttentionKind.review) }
         let frontmost = alerts.frontmostTodoID()
         let enabled = alerts.isEnabled()
         var loudest: AttentionKind?
@@ -370,8 +369,8 @@ final class AppModel {
                 if enabled, kind == .needsYou { alerts.feedback() }
                 continue
             }
-            rowPulses[conversation.todoId, default: 0] += 1
-            rowPulseDates[conversation.todoId] = now()
+            rowPulses[conversation.listKey, default: 0] += 1
+            rowPulseDates[conversation.listKey] = now()
             sectionPulses[kind, default: 0] += 1
             if loudest != .needsYou { loudest = kind }
             if enabled {

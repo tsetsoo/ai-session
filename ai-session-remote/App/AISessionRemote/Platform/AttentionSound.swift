@@ -18,6 +18,7 @@ enum AttentionSound {
     /// Several refreshes in a burst make one sound.
     private static let minimumGap: TimeInterval = 1.5
     private static var lastPlayed: Date?
+    private static var lastKind: AttentionKind?
 
     static func key(for kind: AttentionKind) -> String {
         kind == .needsYou ? needsYouKey : reviewKey
@@ -32,10 +33,13 @@ enum AttentionSound {
     static func play(_ kind: AttentionKind) {
         #if os(macOS)
         let now = Date()
-        if let lastPlayed, now.timeIntervalSince(lastPlayed) < minimumGap { return }
+        // Needs you is never swallowed by a review sound that just played.
+        if let lastPlayed, now.timeIntervalSince(lastPlayed) < minimumGap,
+           !(kind == .needsYou && lastKind == .review) { return }
         let choice = UserDefaults.standard.string(forKey: key(for: kind)) ?? defaultChoice
         guard let sound = sound(choice, kind: kind) else { return }
         lastPlayed = now
+        lastKind = kind
         sound.play()
         #endif
     }

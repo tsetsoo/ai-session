@@ -29,7 +29,11 @@ private struct AttentionPulseModifier: ViewModifier {
     @State private var opacity: Double = 0
     @State private var run: Task<Void, Never>?
 
-    func body(content: Content) -> some View {
+    @ViewBuilder func body(content: Content) -> some View {
+        #if os(iOS)
+        // Mac only: the phone's lists stay as they were.
+        content
+        #else
         content
             .background {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -44,6 +48,7 @@ private struct AttentionPulseModifier: ViewModifier {
                 if let at, Date().timeIntervalSince(at) < Self.freshFor { pulse() }
             }
             .onDisappear { run?.cancel() }
+        #endif
     }
 
     private func pulse() {
@@ -51,6 +56,8 @@ private struct AttentionPulseModifier: ViewModifier {
         run = Task { @MainActor in
             if reduceMotion {
                 opacity = 0.3
+                // Let the highlight render before fading it, or SwiftUI animates 0 → 0.
+                try? await Task.sleep(for: .milliseconds(50))
                 withAnimation(.easeOut(duration: 1.6)) { opacity = 0 }
                 return
             }

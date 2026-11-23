@@ -721,7 +721,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(recorder.posted.first?.todoId, "t1")
         XCTAssertEqual(recorder.posted.first?.body, "Ready for review")
         XCTAssertEqual(recorder.sounds, [.review])
-        XCTAssertEqual(model.rowPulses["t1"], 1)
+        XCTAssertEqual(model.rowPulses["c-t1"], 1)
         XCTAssertEqual(model.sectionPulses[.review], 1)
         assertNoConversationText(recorder.posted)
     }
@@ -756,7 +756,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(recorder.feedbacks, 1)
         XCTAssertTrue(recorder.posted.isEmpty)
         XCTAssertTrue(recorder.sounds.isEmpty)
-        XCTAssertNil(model.rowPulses["t1"])
+        XCTAssertNil(model.rowPulses["c-t1"])
     }
 
     func testDisabledStillSoundsAndPulses() {
@@ -767,7 +767,44 @@ final class AppModelTests: XCTestCase {
         fetched(["t1": .waiting, "t3": .busy], into: model)
         XCTAssertTrue(recorder.posted.isEmpty)
         XCTAssertEqual(recorder.sounds, [.needsYou])
-        XCTAssertEqual(model.rowPulses["t1"], 1)
+        XCTAssertEqual(model.rowPulses["c-t1"], 1)
+    }
+
+    /// A todo with two conversations: one finished and in To review, one still working. Later
+    /// refreshes must not announce the finished one again.
+    func testSiblingConversationsDoNotReannounce() {
+        let recorder = AlertRecorder()
+        let model = makeAlertingModel(recorder)
+        func refresh(_ first: ConversationStatus, _ second: ConversationStatus) {
+            var list = conversations(["t3": .busy])
+            var a = list.first { $0.todoId == "t1" }!
+            a.status = first
+            var b = a
+            b.id = "c-t1-second"
+            b.tmuxName = "todo-t1-second"
+            b.sessionId = "demo-t1-second"
+            b.status = second
+            list.removeAll { $0.todoId == "t1" }
+            list.insert(contentsOf: [a, b], at: 0)
+            model.store.applyFetched(todos: DemoFixtures.todos, conversations: list)
+        }
+        refresh(.busy, .busy)
+        refresh(.idle, .busy)
+        XCTAssertEqual(recorder.sounds, [.review], "the first one finished")
+        refresh(.idle, .busy)
+        refresh(.idle, .busy)
+        XCTAssertEqual(recorder.sounds, [.review], "still idle is not a new arrival")
+        XCTAssertEqual(model.rowPulses["c-t1"], 1)
+        XCTAssertNil(model.rowPulses["c-t1-second"], "only the arriving conversation's row pulses")
+    }
+
+    func testWaitingToIdleIsAReviewArrival() {
+        let recorder = AlertRecorder()
+        let model = makeAlertingModel(recorder)
+        fetched(["t1": .busy, "t3": .busy], into: model)
+        fetched(["t1": .waiting, "t3": .busy], into: model)
+        fetched(["t1": .idle, "t3": .busy], into: model)
+        XCTAssertEqual(recorder.sounds, [.needsYou, .review])
     }
 
     func testCompletedTodoFinishingIsNotReview() {

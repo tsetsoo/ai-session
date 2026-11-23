@@ -422,18 +422,27 @@ final class BoardTests: XCTestCase {
 
     func testNewlyFinishedFromBusyOrWaiting() {
         let a = conv("a", .idle), b = conv("b", .idle), c = conv("c", .idle), d = conv("d", .idle)
-        let result = StatusTransitions.newlyFinished(previous: ["a": .busy, "b": .waiting, "c": .idle],
+        let result = StatusTransitions.newlyFinished(previous: ["c-a": .busy, "c-b": .waiting, "c-c": .idle],
                                                      current: [a, b, c, d])
         XCTAssertEqual(result, [a, b])
     }
 
     func testNewlyFinishedIgnoresOtherStatuses() {
-        XCTAssertEqual(StatusTransitions.newlyFinished(previous: ["a": .busy], current: [conv("a", .waiting)]), [])
+        XCTAssertEqual(StatusTransitions.newlyFinished(previous: ["c-a": .busy], current: [conv("a", .waiting)]), [])
+    }
+
+    /// Two conversations on one todo (competing agents, worktrees) each keep their own status.
+    func testTransitionsAreKeyedByConversationNotTodo() {
+        let a = conv("t", .idle, id: "c-a"), b = conv("t", .busy, id: "c-b")
+        XCTAssertEqual(StatusTransitions.snapshot([a, b]), ["c-a": .idle, "c-b": .busy])
+        XCTAssertEqual(StatusTransitions.newlyFinished(previous: StatusTransitions.snapshot([a, b]), current: [a, b]), [])
+        let w = conv("t", .waiting, id: "c-a")
+        XCTAssertEqual(StatusTransitions.newlyWaiting(previous: StatusTransitions.snapshot([w, b]), current: [w, b]), [])
     }
 
     func testNewlyWaiting() {
         let a = conv("a", .waiting), b = conv("b", .waiting), c = conv("c", .busy)
-        let result = StatusTransitions.newlyWaiting(previous: ["a": .idle, "b": .waiting], current: [a, b, c])
+        let result = StatusTransitions.newlyWaiting(previous: ["c-a": .idle, "c-b": .waiting], current: [a, b, c])
         XCTAssertEqual(result, [a])
         // A conversation new since the last snapshot that is already waiting.
         XCTAssertEqual(StatusTransitions.newlyWaiting(previous: [:], current: [a]), [a])
@@ -444,9 +453,9 @@ final class BoardTests: XCTestCase {
     func testNewlyWaitingOnlyOnTransitionIntoWaiting() {
         let a = conv("a", .waiting), b = conv("b", .waiting), c = conv("c", .busy), d = conv("d", .waiting)
         XCTAssertEqual(
-            StatusTransitions.newlyWaiting(previous: ["a": .busy, "b": .waiting, "c": .idle], current: [a, b, c, d]),
+            StatusTransitions.newlyWaiting(previous: ["c-a": .busy, "c-b": .waiting, "c-c": .idle], current: [a, b, c, d]),
             [a, d]
         )
-        XCTAssertEqual(StatusTransitions.newlyWaiting(previous: ["a": .waiting], current: [conv("a", .idle)]), [])
+        XCTAssertEqual(StatusTransitions.newlyWaiting(previous: ["c-a": .waiting], current: [conv("a", .idle)]), [])
     }
 }
