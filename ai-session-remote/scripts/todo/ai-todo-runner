@@ -672,6 +672,30 @@ HANDOFF_PROMPT = (
 )
 
 
+def handoff_worker_pane(terminal, name):
+    pane = terminal.agent_pane(name)
+    if pane is None or terminal.screen_ready(name) is not None:
+        return None
+    current = terminal.tmux("display-message", "-p", "-t", pane, "#{pane_current_command} #{pane_pid}")
+    fields = current.stdout.split()
+    if current.returncode or len(fields) != 2:
+        return None
+    command, pid = fields
+    if command in {"claude", "codex", "node"}:
+        return pane
+    # The native Claude installer launches a version-named executable on macOS.
+    if not name.startswith("ai/claude/") or not re.fullmatch(r"\d+\.\d+\.\d+", command) or not pid.isdigit():
+        return None
+    process = subprocess.run(["ps", "-p", pid, "-o", "comm="], capture_output=True, text=True, timeout=5)
+    executable = process.stdout.strip()
+    if executable == "claude":
+        executable = shutil.which(executable) or ""
+    expected = os.path.join(HOME, ".local", "share", "claude", "versions", command)
+    if not process.returncode and executable and os.path.realpath(executable) == os.path.realpath(expected):
+        return pane
+    return None
+
+
 def nudge_handoffs(hub, computer_id, candidates):
     if not candidates:
         return
@@ -680,15 +704,12 @@ def nudge_handoffs(hub, computer_id, candidates):
     for candidate in candidates:
         run_id, name = candidate["run_id"], candidate["tmux_name"]
         try:
-            pane = terminal.agent_pane(name)
-            if pane is None or terminal.screen_ready(name) is not None:
-                continue
-            current = terminal.tmux("display-message", "-p", "-t", pane, "#{pane_current_command}")
-            if current.returncode or current.stdout.strip() not in {"claude", "codex", "node"}:
+            pane = handoff_worker_pane(terminal, name)
+            if pane is None:
                 continue
             hub.request("POST", "/api/watch/runs/%s/handoff-nudge" % urllib.parse.quote(run_id, safe=""),
                         body={"computer_id": computer_id})
-            if terminal.agent_pane(name) != pane or terminal.screen_ready(name) is not None:
+            if handoff_worker_pane(terminal, name) != pane:
                 continue
             sent = terminal.tmux("send-keys", "-t", pane, "-l", HANDOFF_PROMPT,
                                  ";", "send-keys", "-t", pane, "Enter")
