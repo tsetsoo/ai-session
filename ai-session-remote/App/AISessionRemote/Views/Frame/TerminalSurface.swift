@@ -560,6 +560,7 @@ struct TerminalSurface: View {
     private var surface: some View {
         ZStack {
             terminalGrid
+                .skinnedTerminalFrame()
             #if os(iOS)
             // "Uploading photo…" over the top of the terminal while a pasted photo is on its way.
             if let photoStatus = coordinator.photoUploads.status {

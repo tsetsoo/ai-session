@@ -54,4 +54,23 @@ final class SkinTests: XCTestCase {
         host.loadViewIfNeeded()
         XCTAssertNotNil(host.view)
     }
+    func testScanlinesAreFaintAndStatic() {
+        XCTAssertEqual(ScanlineOverlay.lineSpacing, 3)
+        XCTAssertEqual(ScanlineOverlay.lineOpacity, 0.25)
+    }
+
+    func testSkinStylesRenderForAllSkins() {
+        for skin in AppSkin.allCases {
+            SkinStore.shared.skin = skin
+            let view = VStack {
+                Text("row").skinnedSelection(true)
+                Text("card").skinnedCard()
+                Color.black.skinnedTerminalFrame()
+                Button("Go") {}.buttonStyle(AccentButtonStyle())
+            }
+            let host = UIHostingController(rootView: view)
+            host.loadViewIfNeeded()
+            XCTAssertNotNil(host.view, skin.rawValue)
+        }
+    }
 }
