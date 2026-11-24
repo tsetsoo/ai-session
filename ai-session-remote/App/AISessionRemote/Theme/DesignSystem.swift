@@ -188,9 +188,16 @@ enum DS {
     /// A list row's background in a skin: the surface, or the accent tint when the row is the
     /// selected one (a painted row background hides the system's selection highlight).
     /// nil in Standard: the system draws both.
+    /// On the Mac, lists have no cards (rows run edge to edge), so rows stay clear on the
+    /// window background and only the selected one is tinted.
     static func rowBackground(selected: Bool) -> Color? {
         guard let surface else { return nil }
-        return selected ? accent.opacity(0.24) : surface
+        if selected { return accent.opacity(0.24) }
+        #if os(macOS)
+        return .clear
+        #else
+        return surface
+        #endif
     }
 
     /// The tool-colour bar down a conversation's left edge. Phosphor's bright green read as a

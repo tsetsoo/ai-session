@@ -67,4 +67,18 @@ final class MacSkinTests: XCTestCase {
         XCTAssertEqual(try table(for: .neonNoir).selectionHighlightStyle, .none)
         XCTAssertNotEqual(try table(for: .standard).selectionHighlightStyle, .none)
     }
+
+    /// The Mac's lists have no cards (rows run edge to edge), so a surface fill turned the whole
+    /// column into a grey-green slab. In a skin, Mac rows are clear on the window background;
+    /// only the selected row is tinted. Standard leaves both to the system.
+    func testMacRowsAreClearInSkins() {
+        for skin in [AppSkin.neonNoir, .phosphor] {
+            SkinStore.shared.skin = skin
+            XCTAssertEqual(DS.rowBackground(selected: false), .clear, skin.rawValue)
+            XCTAssertNotNil(DS.rowBackground(selected: true), skin.rawValue)
+            XCTAssertNotEqual(DS.rowBackground(selected: true), .clear, skin.rawValue)
+        }
+        SkinStore.shared.skin = .standard
+        XCTAssertNil(DS.rowBackground(selected: false))
+    }
 }

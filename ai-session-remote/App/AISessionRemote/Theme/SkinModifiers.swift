@@ -154,7 +154,7 @@ extension View {
     /// Every row of a section (or other list content) in the skin's surface colour, whatever
     /// kind of row it is, so a card never mixes system grey with the skin's surface.
     func skinnedRows() -> some View {
-        listRowBackground(DS.surface)
+        listRowBackground(DS.rowBackground(selected: false))
     }
 }
 
