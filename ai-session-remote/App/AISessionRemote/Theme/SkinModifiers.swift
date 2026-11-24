@@ -73,9 +73,6 @@ private struct SkinnedTerminalFrame: ViewModifier {
         case .phosphor: Color(PlatformNativeColor(hex: 0x1F7A3D))
         }
         content
-            .overlay {
-                ScanlineOverlay().opacity(skin == .phosphor ? 1 : 0)
-            }
             // The glow is on the border line only: a shadow on the terminal itself would make
             // every frame render offscreen.
             .overlay(
@@ -83,27 +80,6 @@ private struct SkinnedTerminalFrame: ViewModifier {
                     .shadow(color: skin == .neonNoir ? (DS.glow ?? .clear) : .clear, radius: 8)
                     .allowsHitTesting(false)
             )
-    }
-}
-
-/// Phosphor's CRT scanlines over the terminal: thin dark lines, static, never in the way of a
-/// touch or a click, invisible to VoiceOver.
-struct ScanlineOverlay: View {
-    static let lineSpacing: CGFloat = 3
-    static let lineOpacity: Double = 0.25
-
-    var body: some View {
-        Canvas { context, size in
-            var path = Path()
-            var y: CGFloat = 0
-            while y < size.height {
-                path.addRect(CGRect(x: 0, y: y, width: size.width, height: 1))
-                y += Self.lineSpacing
-            }
-            context.fill(path, with: .color(.black.opacity(Self.lineOpacity)))
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 
@@ -119,7 +95,8 @@ extension View {
         modifier(SkinnedCard())
     }
 
-    /// The terminal's edge: a glowing magenta line, or Phosphor's green line and scanlines.
+    /// The terminal's edge: a glowing magenta line, or Phosphor's green line. Nothing is drawn
+    /// over the text itself.
     func skinnedTerminalFrame() -> some View {
         modifier(SkinnedTerminalFrame())
     }

@@ -54,9 +54,29 @@ final class SkinTests: XCTestCase {
         host.loadViewIfNeeded()
         XCTAssertNotNil(host.view)
     }
-    func testScanlinesAreFaintAndStatic() {
-        XCTAssertEqual(ScanlineOverlay.lineSpacing, 3)
-        XCTAssertEqual(ScanlineOverlay.lineOpacity, 0.25)
+    /// Nothing is drawn over the terminal's text in Phosphor: scanlines cut through the letters
+    /// and made it hard to read. Every row inside the frame stays the terminal's own colour.
+    func testPhosphorTerminalHasNoLinesThroughText() throws {
+        SkinStore.shared.skin = .phosphor
+        let host = UIHostingController(rootView: Color(PlatformNativeColor(hex: 0x33FF77))
+            .skinnedTerminalFrame().frame(width: 200, height: 200))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let format = UIGraphicsImageRendererFormat()
+        format.preferredRange = .standard
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: host.view.bounds, format: format).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+        let cg = try XCTUnwrap(image.cgImage)
+        let data = try XCTUnwrap(cg.dataProvider?.data) as Data
+        // Ten consecutive rows in the middle: the green channel never dips (BGRA).
+        let greens = (95..<105).map { Int(data[$0 * cg.bytesPerRow + 100 * 4 + 1]) }
+        XCTAssertEqual(Set(greens).count, 1, "rows differ: \(greens)")
+        XCTAssertGreaterThan(greens[0], 0xF0)
     }
 
     func testSkinStylesRenderForAllSkins() {

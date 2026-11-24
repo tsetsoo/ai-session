@@ -130,7 +130,8 @@ scheme, font design and backgrounds. Ruled out:
 - The system font for the interface (monospace everywhere proved too hard to read, changed
   2026-11-24); the terminal and code blocks stay monospaced. Square corners on
   cards, chips and buttons.
-- Scanlines and a text glow appear **on the terminal only**. Lists, chat and settings stay sharp.
+- No scanlines over the terminal (removed 2026-11-24: they cut through the letters). The CRT
+  feel comes from the palette, the green border and square corners; only the icon has scanlines.
 - Mostly one color by design, but it still needs distinct hues for errors, warnings, diff
   added/removed and tool identity. Use amber or yellow-green and red tints within the CRT feel,
   not pure green for everything.
@@ -145,7 +146,7 @@ A few modifiers or styles that views adopt with one or two lines each:
 - selected row
 - card or chip
 - primary button (extend `AccentButtonStyle`)
-- terminal frame, with glow and scanlines
+- terminal frame, with glow (Neon noir) or a green border (Phosphor)
 
 These cover the Mac shell, sidebar and lists, the iPhone chat screen (`Views/Frame/Chat/*`,
 `PhoneConversationView`), `KeyBar` (which gets a palette per skin), prompt cards and worker
