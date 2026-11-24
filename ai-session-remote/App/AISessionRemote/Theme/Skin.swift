@@ -50,7 +50,19 @@ enum AppSkin: String, CaseIterable, Identifiable {
 /// re-renders when it changes, with no root `.id` (which would tear down the terminals).
 @Observable
 final class SkinStore: @unchecked Sendable {
-    static let shared = SkinStore()
+    static let shared = SkinStore(defaults: storeDefaults)
+
+    /// The app's own preferences, except under tests: the test bundles run inside the app with
+    /// the same preferences, and their skin changes once reset the person's saved theme (on
+    /// the Mac, every deploy then launched in Standard). Tests get a throwaway suite instead.
+    private static var storeDefaults: UserDefaults {
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil else { return .standard }
+        let suite = "com.aisessionremote.tests.skin"
+        let defaults = UserDefaults(suiteName: suite) ?? .standard
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }
     static let defaultsKey = "app.skin"
 
     @ObservationIgnored private let defaults: UserDefaults

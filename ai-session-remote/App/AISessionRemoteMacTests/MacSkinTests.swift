@@ -26,4 +26,13 @@ final class MacSkinTests: XCTestCase {
         SkinStore.shared.skin = .neonNoir
         XCTAssertNotNil(DS.glow)
     }
+
+    /// The tests run inside the real app (same preferences): changing the theme here must never
+    /// change the person's saved theme. A test run once reset it to Standard on every Mac deploy.
+    func testTestsNeverTouchTheSavedTheme() {
+        let saved = UserDefaults.standard.string(forKey: SkinStore.defaultsKey)
+        SkinStore.shared.skin = .neonNoir
+        SkinStore.shared.skin = .standard
+        XCTAssertEqual(UserDefaults.standard.string(forKey: SkinStore.defaultsKey), saved)
+    }
 }
