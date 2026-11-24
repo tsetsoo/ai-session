@@ -127,7 +127,8 @@ scheme, font design and backgrounds. Ruled out:
 - Background is green-black (`#020A04` to `#031207`), and text and accent are phosphor green
   (`#33FF77`).
 - The selected row is inverted (a green fill with black text).
-- Monospace font everywhere (`.fontDesign(.monospaced)` at the roots), with square corners on
+- The system font for the interface (monospace everywhere proved too hard to read, changed
+  2026-11-24); the terminal and code blocks stay monospaced. Square corners on
   cards, chips and buttons.
 - Scanlines and a text glow appear **on the terminal only**. Lists, chat and settings stay sharp.
 - Mostly one color by design, but it still needs distinct hues for errors, warnings, diff

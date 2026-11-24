@@ -219,4 +219,12 @@ final class SkinTests: XCTestCase {
         XCTAssertLessThan(abs(px[1] - 0x12), 6, "green: \(px)")
         XCTAssertLessThan(abs(px[0] - 0x07), 6, "blue: \(px)")
     }
+
+    /// Phosphor keeps the system font for the interface (monospace everywhere was hard to read
+    /// and cut titles short); the terminal and code blocks stay monospaced.
+    func testInterfaceFontStaysSystemInEverySkin() {
+        for skin in AppSkin.allCases {
+            XCTAssertNil(skin.interfaceFontDesign, skin.rawValue)
+        }
+    }
 }

@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Applies the app skin at a scene root: accent, forced dark for the skins, Phosphor's
-/// monospace, and the skin's window background behind lists.
+/// Applies the app skin at a scene root: accent, forced dark for the skins, the interface
+/// font, and the skin's window background behind lists.
 ///
 /// Every modifier is always applied, with a neutral value for Standard. An `if` here would
 /// change the root's identity on a switch and tear down the terminals underneath.
@@ -10,7 +10,7 @@ private struct SkinnedRoot: ViewModifier {
         let skin = SkinStore.shared.skin
         content
             .tint(DS.accent)
-            .fontDesign(skin == .phosphor ? .monospaced : nil)
+            .fontDesign(skin.interfaceFontDesign)
             .scrollContentBackground(DS.windowBackground == nil ? .automatic : .hidden)
             .background(DS.windowBackground ?? .clear)
             .preferredColorScheme(skin.isDark ? .dark : nil)

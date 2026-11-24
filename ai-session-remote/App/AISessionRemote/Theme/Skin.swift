@@ -1,5 +1,5 @@
-import Foundation
 import Observation
+import SwiftUI
 
 /// The app-wide look: today's Standard, or one of the two dark cyberpunk skins. Chosen per
 /// device in Settings → Appearance.
@@ -15,6 +15,10 @@ enum AppSkin: String, CaseIterable, Identifiable {
         case .phosphor: "Phosphor"
         }
     }
+
+    /// The interface font. Every skin keeps the system font for legibility (Phosphor's CRT
+    /// feel comes from its colours, square corners and the monospaced terminal).
+    var interfaceFontDesign: Font.Design? { nil }
 
     /// Both skins are dark only; Standard follows the system (and the terminal's own theme).
     var isDark: Bool { self != .standard }
