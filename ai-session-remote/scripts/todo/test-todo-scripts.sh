@@ -2429,10 +2429,13 @@ r = json.load(open(sys.argv[1]))
 r["structured_output"]["used"] = ["mem-known", "bogus", "mem-known"]
 json.dump(r, open(sys.argv[2], "w"))
 PY
+# mem-known reaches ALREADY KNOWN only through fetch_known's "newest of the last 30 days" query
+# (it is not shown, pinned or an open thread), so it must be recent relative to the real clock.
+U_RECENT="$(date -u -v-1d +%Y-%m-%dT09:00:00Z 2>/dev/null || date -u -d '1 day ago' +%Y-%m-%dT09:00:00Z)"
 hub_edit "s['memories'] += [
   dict(id='mem-known', project_id='proj-app', todo_id=None, computer_id='comp-1', tool='claude', session_id='x', kind='gotcha',
        text='Run the hub tests with cargo test from todo-app.', files=[], confidence=0.9, source='extracted', pinned=False,
-       archived=False, pending=False, created_at='2026-10-16T09:00:00Z', updated_at='2026-10-16T09:00:00Z'),
+       archived=False, pending=False, created_at='$U_RECENT', updated_at='$U_RECENT'),
   dict(id='mem-shown', project_id='proj-app', todo_id=None, computer_id='comp-1', tool='claude', session_id='y', kind='decision',
        text='Old decision shown in this session index only.', files=[], confidence=0.9, source='extracted', pinned=False,
        archived=False, pending=False, created_at='2020-01-01T09:00:00Z', updated_at='2020-01-01T09:00:00Z')]"
