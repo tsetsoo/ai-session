@@ -232,12 +232,16 @@ struct ConversationFrame: View {
         #endif
         .onChange(of: terminal.connectionState) { _, state in
             if state == .connected { deliverDuplicateText() }
+            #if os(iOS)
             if state == .connected, isFrontmost { reviewOpenedConversation() }
+            #endif
             guard state == .connected, waitingFocus.connected() else { return }
             focusTerminalWhenWaiting()
         }
         .onChange(of: isFrontmost) { _, front in
+            #if os(iOS)
             if front, terminal.isConnected { reviewOpenedConversation() }
+            #endif
             // Coming back to a terminal that is already connected: focus it when it is waiting.
             // One that is still connecting focuses itself when it connects.
             guard front, terminal.connectionState == .connected else { return }
@@ -463,7 +467,12 @@ struct ConversationFrame: View {
             }
             .id(open.surfaceID)
             #else
+            let result = terminalReviewResult(for: open)
             liveTerminal(open)
+                .task(id: result?.statusRevision) {
+                    guard let result else { return }
+                    await reviewTerminalResult(result)
+                }
                 .id(open.surfaceID)
                 .task(id: clipboardSourceID) {
                     guard clipboardSourceID != nil, let conversation else { return }
@@ -1162,13 +1171,35 @@ struct ConversationFrame: View {
 
     // MARK: Actions
 
+    #if os(iOS)
     private func reviewOpenedConversation() {
-        #if os(iOS)
         guard !showsChat else { return } // Chat acknowledges after its text has loaded.
-        #endif
         guard let conversation else { return }
         Task { await store.review(conversation) }
     }
+    #else
+    /// The hub can report the finished turn after the terminal has already connected.
+    /// Use the current hub record and check that it belongs to the terminal on screen.
+    private func terminalReviewResult(for open: OpenTodoConversation) -> Conversation? {
+        guard isFrontmost, terminal.isConnected, !store.isOffline,
+              conversation?.listKey == open.id,
+              let current = store.conversation(withKey: open.id),
+              !current.id.isEmpty, current.status == .idle, !current.reviewed,
+              current.paused == nil else { return nil }
+        return current
+    }
+
+    private func reviewTerminalResult(_ result: Conversation) async {
+        // Retry transient failures while this exact result is still open.
+        for delay in [Duration.zero, .seconds(1), .seconds(3)] {
+            if delay != .zero { try? await Task.sleep(for: delay) }
+            guard !Task.isCancelled, let open = readyConversation,
+                  let current = terminalReviewResult(for: open),
+                  current.id == result.id, current.statusRevision == result.statusRevision else { return }
+            if await store.review(current) { return }
+        }
+    }
+    #endif
 
     private var actions: FrameActions {
         FrameActions(
