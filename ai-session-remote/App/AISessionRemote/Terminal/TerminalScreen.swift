@@ -744,7 +744,9 @@ struct TerminalScreen: View {
                         Label("Detach", systemImage: "arrow.uturn.left")
                     }
                 } label: {
+                    // Coloured here, not by the bar's cached tint, so it follows a skin switch.
                     Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(DS.accent)
                 }
             }
         }

@@ -57,16 +57,17 @@ struct TerminalPalette: Equatable {
         ])
     )
 
-    /// Phosphor: green CRT. Mostly green, but red-amber, amber, teal and lime stay distinct so
-    /// errors, warnings and diffs still read.
+    /// Phosphor: a green CRT that's easy on the eyes. Soft mint text on a lifted green-grey
+    /// background (pure black under bright neon makes text glow and shimmer); muted coral,
+    /// amber, teal and lime stay distinct so errors, warnings and diffs still read.
     static let phosphor = TerminalPalette(
-        background: PlatformNativeColor(hex: 0x010703),
-        foreground: PlatformNativeColor(hex: 0x33FF77),
-        cursor: PlatformNativeColor(hex: 0x33FF77),
-        selection: PlatformNativeColor(hex: 0x33FF77).withAlphaComponent(0.25),
+        background: PlatformNativeColor(hex: 0x0C1A12),
+        foreground: PlatformNativeColor(hex: 0xA8E6BC),
+        cursor: PlatformNativeColor(hex: 0x8FE3AA),
+        selection: PlatformNativeColor(hex: 0x6FD394).withAlphaComponent(0.25),
         ansi: hexes([
-            0x0B3D1C, 0xFF5F4A, 0x33FF77, 0xFFC447, 0x3FD0C9, 0xD4FF33, 0x7DFFE0, 0xB8FFC8,
-            0x2AA454, 0xFF8A78, 0x7DFFA8, 0xFFD98A, 0x7FE8E2, 0xE6FF8A, 0xB0FFEE, 0xE8FFEC,
+            0x1E3326, 0xE8806E, 0x7FD99A, 0xE6C07A, 0x6CC4C0, 0xC6E08A, 0x8ADCD0, 0xC4E8CF,
+            0x6E9A7E, 0xF29B8A, 0x9FE8B4, 0xF0D49A, 0x8AD6D2, 0xD8EC9E, 0xA8EADF, 0xE6F5EA,
         ])
     )
 

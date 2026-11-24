@@ -52,7 +52,11 @@ final class SkinStore: @unchecked Sendable {
     @ObservationIgnored private let defaults: UserDefaults
 
     var skin: AppSkin {
-        didSet { defaults.set(skin.rawValue, forKey: Self.defaultsKey) }
+        didSet {
+            // Views read the skin while drawing; it changes only from the Settings picker.
+            assert(Thread.isMainThread, "set the app skin on the main thread")
+            defaults.set(skin.rawValue, forKey: Self.defaultsKey)
+        }
     }
 
     init(defaults: UserDefaults = .standard) {

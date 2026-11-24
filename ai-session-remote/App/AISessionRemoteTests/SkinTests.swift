@@ -208,12 +208,12 @@ final class SkinTests: XCTestCase {
         let bytesPerRow = try XCTUnwrap(image.cgImage?.bytesPerRow)
         let scale = Int(image.scale)
         let offset = (290 * scale) * bytesPerRow + (100 * scale) * 4
-        // Near the bottom, below the one row: the Phosphor window background 0x020A04.
-        // 8-bit BGRA (little-endian premultiplied): the Phosphor background is 0x020A04.
+        // Near the bottom, below the one row, in 8-bit BGRA: the Phosphor background 0x0C1A12.
         let px = (0..<4).map { Int(pixel[offset + $0]) }
         XCTAssertEqual(px[3], 255, "opaque: \(px)")
-        XCTAssertLessThan(abs(px[1] - 0x0A), 6, "green: \(px)")
-        XCTAssertLessThan(max(px[0], px[2]), 10, "blue/red: \(px)")
+        XCTAssertLessThan(abs(px[1] - 0x1A), 6, "green: \(px)")
+        XCTAssertLessThan(abs(px[0] - 0x12), 6, "blue: \(px)")
+        XCTAssertLessThan(abs(px[2] - 0x0C), 6, "red: \(px)")
     }
 
     func testSkinnedRowPaintsTheSkinSurface() throws {
@@ -234,10 +234,10 @@ final class SkinTests: XCTestCase {
         let cg = try XCTUnwrap(image.cgImage)
         let data = try XCTUnwrap(cg.dataProvider?.data) as Data
         let offset = 150 * cg.bytesPerRow + 28 * 4
-        // Inside the row, left of the text: the Phosphor surface 0x031207 (BGRA).
+        // Inside the row, left of the text: the Phosphor surface 0x13261B (BGRA).
         let px = (0..<4).map { Int(data[offset + $0]) }
-        XCTAssertLessThan(abs(px[1] - 0x12), 6, "green: \(px)")
-        XCTAssertLessThan(abs(px[0] - 0x07), 6, "blue: \(px)")
+        XCTAssertLessThan(abs(px[1] - 0x26), 6, "green: \(px)")
+        XCTAssertLessThan(abs(px[0] - 0x1B), 6, "blue: \(px)")
     }
 
     /// Phosphor keeps the system font for the interface (monospace everywhere was hard to read
@@ -246,5 +246,24 @@ final class SkinTests: XCTestCase {
         for skin in AppSkin.allCases {
             XCTAssertNil(skin.interfaceFontDesign, skin.rawValue)
         }
+    }
+
+    /// Screen backgrounds take the skin's (Standard: the same system colour), so no skinned
+    /// screen sits on stock black: Phosphor is meant to be off pure black.
+    func testScreenBackgroundsFollowTheSkin() throws {
+        let views = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("AISessionRemote/Views")
+        let bare = try NSRegularExpression(pattern: #"\.background\(Color\(uiColor: \.system(Grouped)?Background\)\)"#)
+        var hits: [String] = []
+        let files = FileManager.default.enumerator(at: views, includingPropertiesForKeys: nil)!
+        for case let file as URL in files where file.pathExtension == "swift" {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            for (n, line) in text.components(separatedBy: "\n").enumerated()
+            where bare.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil {
+                hits.append("\(file.lastPathComponent):\(n + 1)")
+            }
+        }
+        XCTAssertTrue(hits.isEmpty, hits.joined(separator: "\n"))
     }
 }

@@ -213,7 +213,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
                 photoStatus: photoUploads.status
             )
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(DS.windowBackground ?? Color(uiColor: .systemGroupedBackground))
         .dropDestination(for: URL.self) { urls, _ in
             guard terminal.isConnected, isFrontmost, !urls.isEmpty else { return false }
             fileAttachments.upload(urls, config: config) { path in

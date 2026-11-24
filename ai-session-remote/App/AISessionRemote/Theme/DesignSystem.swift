@@ -14,7 +14,7 @@ enum DS {
         switch skin {
         case .standard: PlatformColor.dynamic(light: PlatformNativeColor(hex: 0xB4532E), dark: PlatformNativeColor(hex: 0xE8916F))
         case .neonNoir: hex(0xFF2E97)
-        case .phosphor: hex(0x33FF77)
+        case .phosphor: hex(0x6FD394)
         }
     }
 
@@ -24,7 +24,7 @@ enum DS {
         switch skin {
         case .standard: Color(PlatformNativeColor(hex: 0xB4532E))
         case .neonNoir: hex(0xC2186F)
-        case .phosphor: hex(0x1F7A3D)
+        case .phosphor: hex(0x2E7A4D)
         }
     }
 
@@ -33,7 +33,7 @@ enum DS {
         switch skin {
         case .standard: PlatformColor.dynamic(light: PlatformNativeColor(hex: 0xF6E6DF), dark: PlatformNativeColor(hex: 0x4A2E23))
         case .neonNoir: hex(0x3A1030)
-        case .phosphor: hex(0x0B3D1C)
+        case .phosphor: hex(0x173826)
         }
     }
 
@@ -41,7 +41,7 @@ enum DS {
         switch skin {
         case .standard: PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x8E3F22), dark: PlatformNativeColor(hex: 0xF2B49B))
         case .neonNoir: hex(0xFF8CC6)
-        case .phosphor: hex(0x7DFFB0)
+        case .phosphor: hex(0xA8E6BC)
         }
     }
 
@@ -51,7 +51,7 @@ enum DS {
         switch skin {
         case .standard: PlatformColor.dynamic(light: .white, dark: PlatformNativeColor(hex: 0x1C1C1E))
         case .neonNoir: hex(0x0B0A1A)
-        case .phosphor: hex(0x020A04)
+        case .phosphor: hex(0x0B1710)
         }
     }
 
@@ -66,7 +66,7 @@ enum DS {
         switch skin {
         case .standard: PlatformColor.dynamic(light: PlatformNativeColor(hex: 0xC4302B), dark: PlatformNativeColor(hex: 0xFF6B60))
         case .neonNoir: hex(0xFF5A4E)
-        case .phosphor: hex(0xFF5F4A)
+        case .phosphor: hex(0xE8806E)
         }
     }
 
@@ -75,23 +75,23 @@ enum DS {
         switch skin {
         case .standard: PlatformColor.dynamic(light: PlatformNativeColor(hex: 0x9A5B00), dark: PlatformNativeColor(hex: 0xFFB648))
         case .neonNoir: hex(0xFFB648)
-        case .phosphor: hex(0xFFC447)
+        case .phosphor: hex(0xE6C07A)
         }
     }
 
     // MARK: Status colours that were plain system colours
 
-    static var success: Color { pick(.green, neon: 0x39FF88, phosphor: 0x33FF77) }
-    static var info: Color { pick(.blue, neon: 0x00F0FF, phosphor: 0x7DFFB0) }
+    static var success: Color { pick(.green, neon: 0x39FF88, phosphor: 0x7FD99A) }
+    static var info: Color { pick(.blue, neon: 0x00F0FF, phosphor: 0x8ADCD0) }
     /// Needs you, waiting, due.
-    static var attention: Color { pick(.orange, neon: 0xFFB648, phosphor: 0xFFC447) }
-    static var merged: Color { pick(.purple, neon: 0xB967FF, phosphor: 0x7DFFB0) }
-    static var star: Color { pick(.yellow, neon: 0xFFE45C, phosphor: 0xD4FF33) }
+    static var attention: Color { pick(.orange, neon: 0xFFB648, phosphor: 0xE6C07A) }
+    static var merged: Color { pick(.purple, neon: 0xB967FF, phosphor: 0x8ADCD0) }
+    static var star: Color { pick(.yellow, neon: 0xFFE45C, phosphor: 0xD8EC9E) }
     /// Delete, remove, failed actions.
-    static var destructive: Color { pick(.red, neon: 0xFF5A4E, phosphor: 0xFF5F4A) }
-    static var diffAdded: Color { pick(.green, neon: 0x39FF88, phosphor: 0x33FF77) }
-    static var diffRemoved: Color { pick(.red, neon: 0xFF5A4E, phosphor: 0xFF5F4A) }
-    static var memory: Color { pick(.indigo, neon: 0xB967FF, phosphor: 0x7DFFB0) }
+    static var destructive: Color { pick(.red, neon: 0xFF5A4E, phosphor: 0xE8806E) }
+    static var diffAdded: Color { pick(.green, neon: 0x39FF88, phosphor: 0x7FD99A) }
+    static var diffRemoved: Color { pick(.red, neon: 0xFF5A4E, phosphor: 0xE8806E) }
+    static var memory: Color { pick(.indigo, neon: 0xB967FF, phosphor: 0x8ADCD0) }
 
     private static func pick(_ standard: Color, neon: UInt32, phosphor: UInt32) -> Color {
         switch skin {
@@ -108,7 +108,7 @@ enum DS {
         switch skin {
         case .standard: nil
         case .neonNoir: hex(0x0B0A1A)
-        case .phosphor: hex(0x020A04)
+        case .phosphor: hex(0x0C1A12)
         }
     }
 
@@ -117,7 +117,7 @@ enum DS {
         switch skin {
         case .standard: nil
         case .neonNoir: hex(0x110F26)
-        case .phosphor: hex(0x031207)
+        case .phosphor: hex(0x13261B)
         }
     }
 
@@ -125,7 +125,7 @@ enum DS {
         switch skin {
         case .standard: Color.accentColor.opacity(0.15)
         case .neonNoir: hex(0xFF2E97).opacity(0.15)
-        case .phosphor: hex(0x33FF77)
+        case .phosphor: hex(0x6FD394)
         }
     }
 
@@ -133,7 +133,7 @@ enum DS {
         switch skin {
         case .standard: .clear
         case .neonNoir: hex(0xFF2E97)
-        case .phosphor: hex(0x33FF77)
+        case .phosphor: hex(0x6FD394)
         }
     }
 
@@ -152,7 +152,7 @@ enum DS {
         switch skin {
         case .standard: Color.secondary.opacity(0.12)
         case .neonNoir: hex(0x00F0FF).opacity(0.12)
-        case .phosphor: hex(0x33FF77).opacity(0.14)
+        case .phosphor: hex(0x6FD394).opacity(0.14)
         }
     }
 

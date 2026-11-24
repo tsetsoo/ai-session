@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// Applies the app skin at a scene root: accent, forced dark for the skins, the interface
 /// font, and the skin's window background behind lists.
@@ -14,6 +17,16 @@ private struct SkinnedRoot: ViewModifier {
             .scrollContentBackground(DS.windowBackground == nil ? .automatic : .hidden)
             .background(DS.windowBackground ?? .clear)
             .preferredColorScheme(skin.isDark ? .dark : nil)
+            #if os(iOS)
+            // UIKit's navigation and tab bars keep the tint they had: push the new one to the
+            // windows so toolbar buttons don't stay in the old skin's colour after a switch.
+            .onChange(of: skin) {
+                let tint = UIColor(DS.accent)
+                for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+                    for window in scene.windows { window.tintColor = tint }
+                }
+            }
+            #endif
     }
 }
 
@@ -70,7 +83,7 @@ private struct SkinnedTerminalFrame: ViewModifier {
         let border: Color = switch skin {
         case .standard: .clear
         case .neonNoir: DS.accent
-        case .phosphor: Color(PlatformNativeColor(hex: 0x1F7A3D))
+        case .phosphor: Color(PlatformNativeColor(hex: 0x2A4A36))
         }
         content
             // The glow is on the border line only: a shadow on the terminal itself would make

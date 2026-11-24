@@ -61,7 +61,7 @@ final class DesignSystemTests: XCTestCase {
     func testPhosphorTokens() {
         SkinStore.shared.skin = .phosphor
         XCTAssertEqual(DS.radius(10), 0)
-        XCTAssertEqual(hex(DS.accent, .dark), 0x33FF77)
+        XCTAssertEqual(hex(DS.accent, .dark), 0x6FD394, "a soft green, not neon")
         XCTAssertNotNil(DS.windowBackground)
         XCTAssertNil(DS.glow)
     }
@@ -100,5 +100,19 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertEqual(AccentButtonStyle.corners(for: .standard), .capsule)
         XCTAssertEqual(AccentButtonStyle.corners(for: .neonNoir), .capsule)
         XCTAssertEqual(AccentButtonStyle.corners(for: .phosphor), .square)
+    }
+
+    /// Phosphor's interface greens are soft: no token is neon-saturated, and the background
+    /// is lifted off pure black.
+    func testPhosphorInterfaceIsEasyOnTheEyes() {
+        SkinStore.shared.skin = .phosphor
+        func saturation(_ c: Color) -> Double {
+            let v = rgba(UIColor(c), .dark).prefix(3).map(Double.init)
+            return (v.max()! - v.min()!) / max(v.max()!, 0.001)
+        }
+        for (name, token) in [("accent", DS.accent), ("success", DS.success), ("info", DS.info)] {
+            XCTAssertLessThanOrEqual(saturation(token), 0.5, name)
+        }
+        XCTAssertGreaterThanOrEqual(hex(DS.windowBackground!, .dark) >> 8 & 0xFF, 0x16, "background green")
     }
 }

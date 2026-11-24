@@ -16,7 +16,7 @@ instrument rather than a bare tone:
 
 Every sound goes through a stereo room (early reflections plus a tail whose highs die first)
 and gentle saturation, is matched to the same perceived loudness, and peaks are softly
-limited to -3 dBFS. Output: 48 kHz, 24-bit stereo CAF.
+limited to -3 dBFS. Output: 48 kHz, 16-bit stereo CAF (dithered).
 All oscillators stay band-limited (no partials above Nyquist, so no aliasing buzz). The same
 files serve the Mac chimes and banners, iPhone notifications and pushes.
 
@@ -34,6 +34,7 @@ RATE = 48000
 NYQUIST = RATE / 2
 OUT = os.path.join(os.path.dirname(__file__), "..", "App", "AISessionRemote", "Resources", "Sounds")
 rng = np.random.default_rng(11)  # fixed seed: the files are reproducible
+dither_rng = np.random.default_rng(99)  # separate, so dither never changes the sounds
 
 
 # ---------------------------------------------------------------------------------------------
@@ -259,17 +260,20 @@ def master(x):
 
 
 def write(name, stereo):
-    pcm = np.ascontiguousarray(np.clip(np.round(stereo * (2 ** 23 - 1)), -(2 ** 23), 2 ** 23 - 1).astype("<i4"))
-    frames = pcm.view(np.uint8).reshape(-1, 4)[:, :3].tobytes()  # 24-bit LE, interleaved
+    """16-bit stereo CAF. 16 bits are plenty for a two-second alert at these levels (24-bit
+    sounded the same at twice the size); TPDF dither keeps the quietest reverb tails smooth
+    instead of grainy."""
+    dither = (dither_rng.random(stereo.shape) - dither_rng.random(stereo.shape)) / (2 ** 15)
+    pcm = np.clip(np.round((stereo + dither) * (2 ** 15 - 1)), -(2 ** 15), 2 ** 15 - 1).astype("<i2")
     with tempfile.TemporaryDirectory() as tmp:
         wav = os.path.join(tmp, name + ".wav")
         with wave.open(wav, "wb") as w:
             w.setnchannels(2)
-            w.setsampwidth(3)
+            w.setsampwidth(2)
             w.setframerate(RATE)
-            w.writeframes(frames)
+            w.writeframes(np.ascontiguousarray(pcm).tobytes())
         out = os.path.join(OUT, name + ".caf")
-        subprocess.run(["afconvert", "-f", "caff", "-d", "LEI24", wav, out], check=True)
+        subprocess.run(["afconvert", "-f", "caff", "-d", "LEI16", wav, out], check=True)
         print("wrote", os.path.normpath(out))
 
 

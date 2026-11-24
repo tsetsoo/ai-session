@@ -94,4 +94,19 @@ final class TerminalAppearanceTests: XCTestCase {
             }
         }
     }
+
+    /// Phosphor is easy on the eyes: no near-black background (halation), text that isn't
+    /// glaring neon (contrast capped, saturation low), while staying well above the legibility
+    /// floors checked in `testSkinPalettesAreLegible`.
+    func testPhosphorIsEasyOnTheEyes() {
+        let p = TerminalPalette.phosphor.contrastPalette
+        let contrast = TerminalContrastGuard.contrast(p.foreground, p.background)
+        XCTAssertLessThanOrEqual(contrast, 13.5, "glare")
+        XCTAssertGreaterThanOrEqual(contrast, 7)
+        let fg = [p.foreground.r, p.foreground.g, p.foreground.b].map(Double.init)
+        let saturation = (fg.max()! - fg.min()!) / fg.max()!
+        XCTAssertLessThanOrEqual(saturation, 0.35, "neon")
+        let bg = [p.background.r, p.background.g, p.background.b]
+        XCTAssertGreaterThanOrEqual(bg.max()!, 0x16, "pure black background")
+    }
 }

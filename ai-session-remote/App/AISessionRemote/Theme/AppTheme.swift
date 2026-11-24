@@ -50,10 +50,10 @@ enum AppTheme {
             }
         case .phosphor:
             switch tool {
-            case .claude: return hexColor(0x33FF77)
-            case .codex: return hexColor(0x7DFFB0)
-            case .antigravity: return hexColor(0x3FD0C9)
-            case .cursor, .shell: return hexColor(0x1FAF55)
+            case .claude: return hexColor(0x7FD99A)
+            case .codex: return hexColor(0x8ADCD0)
+            case .antigravity: return hexColor(0x6CC4C0)
+            case .cursor, .shell: return hexColor(0x8FB89C)
             case nil: return .secondary
             }
         }
