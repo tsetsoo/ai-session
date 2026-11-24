@@ -228,7 +228,7 @@ fn base_description() -> Value {
             {
                 "method": "POST",
                 "path": "/api/conversations/approve",
-                "description": "Host daemon endpoint to poll or claim pending approvals by tool and session_id. action: claim (default) or poll. For a guarded decision, claim with supports_prompt_decisions: true, prompt_id, and a unique claim_id UUID. Report sent, release, or unknown with the same identities. Returns {approved, key, text, tmux_name, status_revision, prompt_id, claim_id}",
+                "description": "Host daemon endpoint to poll or claim pending approvals by tool and session_id. action: claim (default) or poll. For a guarded decision, claim with supports_prompt_decisions: true, pane_bound: true, prompt_id, and a unique claim_id UUID. Report sent, release, or unknown with the same identities. Returns {approved, key, text, tmux_name, status_revision, prompt_id, claim_id, delivery_window_seconds}",
                 "example_request": {"tool": "claude", "session_id": "<uuid>", "action": "claim"}
             },
             {

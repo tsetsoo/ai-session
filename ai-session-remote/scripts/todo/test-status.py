@@ -84,31 +84,29 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(status.runtime_status({"type": "idle"}), ("idle", None))
         self.assertIsNone(status.runtime_status({"type": "notLoaded"}))
 
-    def test_check_approvals_dispatches_keys_to_tmux(self):
-        self.approval_response = {
-            "approved": True,
-            "tmux_name": "ai/claude/todo-test",
-            "key": "1",
-            "tool": "claude",
-            "session_id": "thread-wait"
-        }
-        # Record a waiting session
-        status.publish({"session_id": "thread-wait", "status": "waiting", "tool": "claude"}, 100, try_send=False)
-        dispatched = []
-        with patch.object(status, "send_approval_keys", side_effect=lambda tmux, key, tool: dispatched.append((tmux, key, tool))):
+    def permission_report(self):
+        return {"session_id": "thread-wait", "status": "waiting", "tool": "claude",
+                "message": "Claude needs approval: Bash", "prompt_id": "new-tool",
+                "_hook_event": "PermissionRequest"}
+
+    def test_check_approvals_dispatches_keys_to_bound_pane(self):
+        pane = ["ai/claude/task", "%7", "100", "90", "0"]
+        with patch.object(status, "pane_identity", return_value=pane):
+            status.publish(self.permission_report(), 100, try_send=False)
+        self.approval_response = {"approved": True, "tmux_name": pane[0], "key": "1", "prompt_id": "new-tool"}
+        with patch.object(status, "send_approval_keys") as dispatched:
             status.check_approvals()
+        dispatched.assert_called_once_with(pane[0], "1", "claude", pane)
         self.assertEqual(len(self.approval_requests), 1)
-        self.assertEqual(self.approval_requests[0], {
-            "tool": "claude", "session_id": "thread-wait", "action": "claim", "supports_prompt_decisions": True,
-        })
-        self.assertEqual(dispatched, [("ai/claude/todo-test", "1", "claude")])
+        self.assertTrue(self.approval_requests[0]["pane_bound"])
+        self.assertEqual(self.approval_requests[0]["prompt_id"], "new-tool")
 
     def test_relay_releases_when_prompt_changes_or_send_fails(self):
-        for changed in (False, True):
-            with self.subTest(changed=changed):
-                body = {"session_id": "thread-wait", "status": "waiting",
-                        "message": "Claude needs approval: Bash", "tool": "claude", "prompt_id": "new-tool"}
-                status.publish(body, 100, try_send=False)
+        pane = ["ai/claude/task", "%7", "100", "90", "0"]
+        for changed, window in ((False, 10), (True, 10), (False, 0)):
+            with self.subTest(changed=changed, window=window), patch.object(status, "pane_identity", return_value=pane):
+                body = self.permission_report()
+                status.publish(body, try_send=False)
                 actions = []
 
                 def claim(tool, sid, *, claim_id, prompt_id, action="claim"):
@@ -116,35 +114,45 @@ class StatusTests(unittest.TestCase):
                     if action != "claim":
                         return {}
                     if changed:
-                        status.publish(dict(body, prompt_id="replacement"), 200, try_send=False)
-                    return {"approved": True, "tmux_name": "ai/claude/task", "key": "Escape",
-                            "status_revision": 1, "prompt_id": prompt_id, "claim_id": claim_id}
+                        status.publish(dict(body, prompt_id="replacement"), try_send=False)
+                    return {"approved": True, "tmux_name": pane[0], "key": "Escape",
+                            "status_revision": 1, "prompt_id": prompt_id, "claim_id": claim_id,
+                            "delivery_window_seconds": window}
 
                 with patch.object(status, "claim_approval", side_effect=claim), \
                         patch.object(status, "send_approval_keys", return_value="release") as dispatch:
                     status.check_approvals()
-                    self.assertEqual(dispatch.call_count, 0 if changed else 1)
+                    self.assertEqual(dispatch.call_count, 1 if not changed and window else 0)
                 self.assertEqual(actions, ["claim", "release"])
 
+    def test_permission_identity_survives_only_an_unchanged_heartbeat(self):
+        pane = ["ai/claude/task", "%7", "100", "90", "0"]
+        with patch.object(status, "pane_identity", return_value=pane):
+            status.publish(self.permission_report(), 100, try_send=False)
+        report = {"session_id": "thread-wait", "status": "waiting",
+                  "tool": "claude", "message": "Claude needs approval"}
+        path = status.root() / "claude.thread-wait.json"
+        status.publish(dict(report, _runtime_heartbeat=True), 200, source="runtime", try_send=False)
+        saved = status.read_json(path)
+        self.assertEqual(saved["body"]["prompt_id"], "new-tool")
+        self.assertEqual(saved["prompt_pane"], pane)
+        status.publish(report, 300, source="runtime", try_send=False)
+        self.assertNotIn("prompt_id", status.read_json(path)["body"])
+
     def test_approval_keys_follow_each_tools_prompt(self):
-        with patch.object(status.subprocess, "run") as run:
-            status.send_approval_keys("ai/claude/task", "1", "claude")
-            run.assert_called_once_with(
-                ["tmux", "send-keys", "-t", "=ai/claude/task:", "--", "1", "Enter"],
-                timeout=2, check=False,
-            )
-            run.reset_mock()
-            status.send_approval_keys("ai/codex/task", "y", "codex")
-            run.assert_called_once_with(
-                ["tmux", "send-keys", "-t", "=ai/codex/task:", "--", "y"],
-                timeout=2, check=False,
-            )
-            run.reset_mock()
-            status.send_approval_keys("ai/claude/task", "Escape", "claude")
-            run.assert_called_once_with(
-                ["tmux", "send-keys", "-t", "=ai/claude/task:", "--", "Escape"],
-                timeout=2, check=False,
-            )
+        for tool, key, keys in (("claude", "1", ["1", "Enter"]), ("codex", "y", ["y"]),
+                                ("claude", "Escape", ["Escape"])):
+            pane = ["ai/task", "%7", "100", "90", "0"]
+            with self.subTest(tool=tool, key=key), patch.object(status, "pane_identity", return_value=pane), \
+                    patch.object(status.subprocess, "run") as run:
+                status.send_approval_keys(pane[0], key, tool, pane)
+                run.assert_called_once_with(
+                    ["tmux", "send-keys", "-t", "%7", "--", *keys], timeout=2, check=False,
+                )
+        with patch.object(status, "pane_identity", return_value=["ai/task", "%7", "101", "90", "0"]), \
+                patch.object(status.subprocess, "run") as run:
+            self.assertEqual(status.send_approval_keys(pane[0], "1", "claude", pane), "release")
+            run.assert_not_called()
 
     def test_stale_hook_cannot_replace_newer_completion(self):
         status.publish(self.body("busy"), 100, try_send=False)

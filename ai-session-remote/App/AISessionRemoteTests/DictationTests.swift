@@ -7,9 +7,13 @@ final class DictationTests: XCTestCase {
         XCTAssertEqual(ChatComposer.VoiceCommand(" Send message. "), .send(nil))
         XCTAssertEqual(ChatComposer.VoiceCommand("Discard message!"), .discard)
         XCTAssertEqual(ChatComposer.VoiceCommand("Stop voice mode."), .stop)
-        XCTAssertEqual(ChatComposer.VoiceCommand("Run the tests, send to agent."), .send("Run the tests"))
-        XCTAssertEqual(ChatComposer.VoiceCommand("Summarize the diff. Send to agent!"), .send("Summarize the diff"))
+        XCTAssertEqual(ChatComposer.VoiceCommand("Run the tests, voice send now."), .send("Run the tests"))
+        XCTAssertEqual(ChatComposer.VoiceCommand("Summarize the diff. Voice send now!"), .send("Summarize the diff."))
         XCTAssertEqual(ChatComposer.VoiceCommand("Send to agent."), .send(nil))
+        XCTAssertEqual(ChatComposer.VoiceCommand("Use `git status`, voice send now."), .send("Use `git status`"))
+        XCTAssertEqual(ChatComposer.VoiceCommand("# Heading, voice send now."), .send("# Heading"))
+        let ending = "This is the text to send to agent."
+        XCTAssertEqual(ChatComposer.VoiceCommand(ending), .dictate(ending))
         let ordinary = "Show how to send to agent instances."
         XCTAssertEqual(ChatComposer.VoiceCommand(ordinary), .dictate(ordinary))
         let prose = "Explain when I should send message events."

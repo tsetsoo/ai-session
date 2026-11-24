@@ -107,12 +107,12 @@ With Apple's **ActivityKit (Live Activities & Dynamic Island)**, an active agent
 
 ### 2. Hub Approval Endpoint
 
-- The app sends `POST /api/conversations/{id}/permission-decision` with the displayed status revision and the Allow or Reject decision. The Hub accepts decisions for identifiable permission prompts. Undelivered reservations expire after 45 seconds.
+- The app sends `POST /api/conversations/{id}/permission-decision` with the displayed status revision and the Allow or Reject decision. The Hub accepts decisions for identifiable permission prompts. A decision can be claimed for 45 seconds. The claim gets its own 10-second delivery window.
 - The host calls `POST /api/conversations/approve` to claim a decision for the current tool and session. A computer-scoped helper token can claim decisions only for its computer.
 
 ### 3. Host Dispatcher
 
-- The daemon requires the same tool prompt ID in its latest local state before delivering a decision to the exact tmux session. It acknowledges delivery or releases the reservation when delivery fails. Ambiguous delivery opens a path to check the conversation without automatically resending the key.
+- The daemon requires the same tool prompt ID in its latest local state before delivering a decision to the recorded tmux pane. It acknowledges delivery or releases the reservation when delivery fails. Ambiguous delivery opens a path to check the conversation without automatically resending the key.
 - Allow sends `1` followed by Enter for Claude or `y` for Codex. Reject sends Escape.
 
 ### 4. Lifecycle and Background Updates
@@ -123,5 +123,5 @@ With Apple's **ActivityKit (Live Activities & Dynamic Island)**, an active agent
 
 ### 5. Hands-Free Chat
 
-- The waveform control in iOS Chat turns on Voice Mode. End the dictated message with “Send to agent.” To send a draft already on screen, say “Send message.” Say “Discard message” to clear the draft or “Stop voice mode” to leave the mode.
+- The waveform control in iOS Chat turns on Voice Mode. End the dictated message with “Voice send now.” To send a draft already on screen, say “Send message.” Say “Discard message” to clear the draft or “Stop voice mode” to leave the mode.
 - Voice Mode reads new agent replies aloud and resumes listening after playback. It pauses while the agent is working or a permission prompt is open, and stops when the chat loses the foreground.

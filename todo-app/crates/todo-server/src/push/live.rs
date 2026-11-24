@@ -187,7 +187,8 @@ fn targets(pool: &DbPool) -> Result<Vec<Target>, String> {
                 CASE WHEN json_valid(c.pending_approval) THEN
                     json_extract(c.pending_approval, '$.status_revision') IS NOT NULL
                     AND (json_extract(c.pending_approval, '$.key') IS NULL
-                         OR COALESCE(unixepoch(json_extract(c.pending_approval, '$.approved_at')) > unixepoch() - 45, 0))
+                         OR COALESCE(unixepoch(json_extract(c.pending_approval, '$.approved_at')) > unixepoch() - 45, 0)
+                         OR COALESCE(json_extract(c.pending_approval, '$.claim_until'), 0) > unixepoch())
                     ELSE 0 END, c.status_prompt_id IS NOT NULL,
                 CASE WHEN json_valid(c.pending_approval) THEN
                     coalesce(json_extract(c.pending_approval, '$.delivery') = 'unknown', 0)

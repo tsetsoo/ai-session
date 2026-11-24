@@ -43,18 +43,20 @@ struct ChatComposer: View {
         case send(String?), discard, stop, dictate(String)
 
         init(_ phrase: String) {
-            let separators = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
-            let text = phrase.trimmingCharacters(in: separators)
-            switch text.lowercased() {
-            case "send message", "send to agent": self = .send(nil)
+            let text = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+            let command = text.trimmingCharacters(in: CharacterSet(charactersIn: ".!?")).lowercased()
+            switch command {
+            case "send message", "send to agent", "voice send now": self = .send(nil)
             case "discard message": self = .discard
             case "stop voice mode": self = .stop
             default:
-                if let cue = text.range(of: "send to agent", options: [.caseInsensitive, .backwards, .anchored]),
-                   cue.lowerBound != text.startIndex,
-                   text[text.index(before: cue.lowerBound)].unicodeScalars.allSatisfy(separators.contains) {
-                    let message = text[..<cue.lowerBound].trimmingCharacters(in: separators)
-                    self = .send(message)
+                if let cue = text.range(of: #"(?i)(?<=\s)voice send now[.!?]*$"#, options: .regularExpression) {
+                    var message = text[..<cue.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if message.last == "," {
+                        message.removeLast()
+                        message = message.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    self = message.isEmpty ? .dictate(phrase) : .send(message)
                 } else {
                     self = .dictate(phrase)
                 }
@@ -203,7 +205,7 @@ struct ChatComposer: View {
         if promptShowing { return "Answer the prompt to resume Voice Mode." }
         if ReadAloud.shared.isSpeaking { return "Reading reply…" }
         if !voiceReady || isSending { return "Waiting for the agent…" }
-        return "End your message with “Send to agent.”"
+        return "End your message with “Voice send now.”"
     }
 
     private func toggleVoice() {

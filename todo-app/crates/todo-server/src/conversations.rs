@@ -1855,6 +1855,7 @@ pub struct ClaimApprovalRequest {
     #[serde(default)]
     pub action: Option<String>,
     pub supports_prompt_decisions: Option<bool>,
+    pub pane_bound: Option<bool>,
     pub claim_id: Option<String>,
     pub prompt_id: Option<String>,
 }
@@ -1907,7 +1908,8 @@ fn approve_conversation_id(
            AND (pending_approval IS NULL OR CASE WHEN json_valid(pending_approval) THEN
                (?5 IS NULL AND json_extract(pending_approval, '$.status_revision') IS NULL)
                OR (json_extract(pending_approval, '$.key') IS NOT NULL
-                   AND unixepoch(json_extract(pending_approval, '$.approved_at')) <= unixepoch() - 45)
+                   AND unixepoch(json_extract(pending_approval, '$.approved_at')) <= unixepoch() - 45
+                   AND COALESCE(json_extract(pending_approval, '$.claim_until'), 0) <= unixepoch())
                ELSE 0 END)",
         params![id, payload, revision, message, request.status_revision, prompt_id],
     )?;
@@ -2083,16 +2085,17 @@ pub async fn claim_conversation_approval(
         .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
         .is_none_or(|time| chrono::Utc::now().signed_duration_since(time).num_seconds() >= 45);
 
+    const DELIVERY_SECONDS: i64 = 10;
+    if body.pane_bound == Some(true) && (prompt_id.is_none() || body.prompt_id != prompt_id) {
+        return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
+    }
     let mut claim_id = None;
     let action = body.action.as_deref().unwrap_or("claim");
     let next = if let Some(revision) = revision {
         let Some(token) = body.claim_id.as_deref().and_then(|id| uuid::Uuid::parse_str(id).ok())
-            .filter(|_| body.supports_prompt_decisions == Some(true)) else {
+            .filter(|_| body.supports_prompt_decisions == Some(true) && body.pane_bound == Some(true)) else {
             return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
         };
-        if prompt_id.is_none() || body.prompt_id != prompt_id {
-            return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
-        }
         let token = token.to_string();
         let owner = parsed.get("claim_id").and_then(|value| value.as_str());
         match action {
@@ -2114,6 +2117,7 @@ pub async fn claim_conversation_approval(
             "claim" if !expired && owner.is_none() => {
                 let mut reserved = parsed.clone();
                 reserved["claim_id"] = serde_json::json!(token);
+                reserved["claim_until"] = serde_json::json!(chrono::Utc::now().timestamp() + DELIVERY_SECONDS);
                 claim_id = Some(token);
                 Some(reserved.to_string())
             }
@@ -2151,6 +2155,7 @@ pub async fn claim_conversation_approval(
         "status_revision": revision,
         "prompt_id": prompt_id,
         "claim_id": claim_id,
+        "delivery_window_seconds": claim_id.as_ref().map(|_| DELIVERY_SECONDS),
         "key": key,
         "text": text
     }))
@@ -3651,7 +3656,7 @@ mod tests {
         let claim_id = uuid::Uuid::new_v4().to_string();
         let claim = |action: &str| serde_json::json!({
             "tool": "claude", "session_id": session_id, "supports_prompt_decisions": true,
-            "claim_id": claim_id, "prompt_id": "tool-use-1", "action": action
+            "claim_id": claim_id, "prompt_id": "tool-use-1", "pane_bound": true, "action": action
         });
         let permission = |message: &str, prompt_id: &str| serde_json::json!({
             "tool": "claude", "session_id": session_id, "status": "waiting", "message": message,
@@ -3689,6 +3694,14 @@ mod tests {
         assert_eq!(claimed["key"], "Escape");
         assert_eq!(claimed["status_revision"], current);
         assert_eq!(claimed["prompt_id"], "tool-use-1");
+        assert_eq!(claimed["delivery_window_seconds"], 10);
+        pool.get().unwrap().execute(
+            "UPDATE conversations SET pending_approval = json_set(pending_approval, '$.approved_at', datetime('now', '-46 seconds')) WHERE id = ?1",
+            [id],
+        ).unwrap();
+        let (status, _) = post_json(&pool, &route, decision.clone()).await;
+        assert_eq!(status, 409, "an in-flight delivery keeps its lease after the queue expiry");
+
         post_json(&pool, "/api/conversations/approve", claim("release")).await;
         let (status, _) = post_json(&pool, &route, decision.clone()).await;
         assert_eq!(status, 200);

@@ -683,6 +683,10 @@ def _publish(body, observed_ns=None, source="hook", try_send=True):
     body = dict(body, session_id=sid, tool=tool)
     body.pop("claude_session_id", None)
     hook_event = body.pop("_hook_event", None)
+    runtime_heartbeat = body.pop("_runtime_heartbeat", False)
+    prompt_pane = (pane_identity(os.environ.get("TMUX_PANE"))
+                   if source == "hook" and hook_event == "PermissionRequest" and body.get("prompt_id")
+                   else None)
     claude_metadata = body.pop("_claude", {})
     limit = body.pop("_limit", None)
     auto_resumed = body.pop("_auto_resumed", None)
@@ -811,7 +815,20 @@ def _publish(body, observed_ns=None, source="hook", try_send=True):
             record["codex_workers"] = codex_workers
         if tool == "codex" and "codex_parent" not in record:
             record["codex_parent"] = codex_parent(sid) or ""
-        if body["status"] != "waiting":
+        if body["status"] == "waiting" and is_permission_message(tool, body.get("message")):
+            if (source == "runtime" and (runtime_heartbeat or previous.get("source") == "hook") and not new_turn
+                    and previous_body.get("status") == "waiting"
+                    and previous_body.get("prompt_id")
+                    and is_permission_message(tool, previous_body.get("message"))):
+                # An unchanged runtime sample carries no new prompt evidence.
+                body["prompt_id"] = previous_body["prompt_id"]
+                body["message"] = previous_body["message"]
+                prompt_pane = previous.get("prompt_pane")
+            if body.get("prompt_id") and prompt_pane:
+                record["prompt_pane"] = prompt_pane
+            else:
+                body.pop("prompt_id", None)
+        else:
             body.pop("prompt_id", None)
         if body["status"] == "busy" and not body.get("message") and not new_turn:
             previous_step = previous_body.get("message") if previous_body.get("status") == "busy" else None
@@ -1642,11 +1659,13 @@ def poll_runtime(client, previous, try_send=True, tool="codex"):
         # isn't evidence of work, and must not undo a real completion.
         codex_prompt_answered = (tool == "codex" and states[sid][0] == "busy"
                                  and record.get("body", {}).get("status") == "waiting")
-        if (tuple(prior.get("state", ())) != tuple(state)
-                or tool == "claude" and tuple(prior.get("raw_state", ())) != tuple(raw_state)
-                or codex_prompt_answered
-                or observed - prior.get("reported_ns", 0) >= 30_000_000_000):
-            publish({"session_id": sid, "tool": tool, "status": raw_state[0], "message": raw_state[1], "attended": False, "_claude_instance": instances.get(sid)}, observed, source="runtime", try_send=try_send)
+        changed = (tuple(prior.get("state", ())) != tuple(state)
+                   or tool == "claude" and tuple(prior.get("raw_state", ())) != tuple(raw_state)
+                   or codex_prompt_answered)
+        if changed or observed - prior.get("reported_ns", 0) >= 30_000_000_000:
+            publish({"session_id": sid, "tool": tool, "status": raw_state[0], "message": raw_state[1],
+                     "attended": False, "_claude_instance": instances.get(sid), "_runtime_heartbeat": not changed},
+                    observed, source="runtime", try_send=try_send)
             prior.update(state=state, raw_state=raw_state, reported_ns=observed)
     listed = getattr(client, "listed", None) or set(states)
     for sid in set(previous) - set(states):
@@ -1692,7 +1711,7 @@ def claim_approval(tool, sid, timeout=1.0, *, action="claim", claim_id=None, pro
         headers["Authorization"] = "Bearer " + token
     payload = {"tool": tool, "session_id": sid, "action": action, "supports_prompt_decisions": True}
     if claim_id and prompt_id:
-        payload.update(claim_id=claim_id, prompt_id=prompt_id)
+        payload.update(claim_id=claim_id, prompt_id=prompt_id, pane_bound=True)
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url + "/api/conversations/approve", data=data, headers=headers)
     try:
@@ -1704,13 +1723,30 @@ def claim_approval(tool, sid, timeout=1.0, *, action="claim", claim_id=None, pro
     return None
 
 
-def send_approval_keys(tmux_name, key, tool="claude"):
-    """Returns the outcome of delivering a key to the exact tmux session."""
-    if not tmux_name:
+def pane_identity(pane):
+    if not isinstance(pane, str) or not re.fullmatch(r"%[0-9]+", pane):
+        return None
+    try:
+        line = subprocess.check_output(
+            ["tmux", "display-message", "-p", "-t", pane,
+             "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{pid}\t#{pane_dead}"],
+            text=True, timeout=1, stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    fields = line.split("\t")
+    if len(fields) == 5 and fields[1] == pane and fields[4] == "0":
+        return fields
+    return None
+
+
+def send_approval_keys(tmux_name, key, tool, pane):
+    """Delivers to the recorded agent pane, even if another pane is active."""
+    if not isinstance(pane, list) or len(pane) != 5 or pane[0] != tmux_name or pane_identity(pane[1]) != pane:
         return "release"
     try:
         keys = [key] if tool == "codex" or key == "Escape" else [key, "Enter"]
-        result = subprocess.run(["tmux", "send-keys", "-t", "=" + tmux_name + ":", "--", *keys], timeout=2, check=False)
+        result = subprocess.run(["tmux", "send-keys", "-t", pane[1], "--", *keys], timeout=2, check=False)
         return "sent" if result.returncode == 0 else "release"
     except OSError:
         return "release"
@@ -1743,27 +1779,34 @@ def check_approvals():
             if isinstance(body, dict) and body.get("status") == "waiting":
                 sid = body.get("session_id")
                 tool = body.get("tool", "claude")
-                if sid:
-                    prompt_id = body.get("prompt_id")
-                    claim_id = str(uuid.uuid4()) if prompt_id else None
+                if sid and body.get("prompt_id") and record.get("prompt_pane"):
+                    prompt_id = body["prompt_id"]
+                    claim_id = str(uuid.uuid4())
+                    requested_at = time.monotonic()
                     approval = claim_approval(tool, sid, claim_id=claim_id, prompt_id=prompt_id)
                     if not approval or not approval.get("approved"):
                         continue
                     guarded = approval.get("status_revision") is not None
-                    if guarded and (not claim_id or approval.get("claim_id") != claim_id
-                                    or approval.get("prompt_id") != prompt_id):
+                    if approval.get("prompt_id") != prompt_id or (guarded and approval.get("claim_id") != claim_id):
                         continue
                     outcome = "release"
                     try:
                         with session_lock(sid, blocking=False, tool=tool):
-                            latest = read_json(path, {}).get("body") or {}
+                            latest_record = read_json(path, {})
+                            latest = latest_record.get("body") or {}
                             current = (isinstance(latest, dict) and latest.get("status") == "waiting"
                                        and latest.get("session_id") == sid and latest.get("tool", "claude") == tool)
                             same_prompt = (current and latest.get("prompt_id") == prompt_id
                                            and is_permission_message(tool, latest.get("message")))
-                            if current and (not guarded or same_prompt):
+                            window = approval.get("delivery_window_seconds", 0)
+                            # Leave time for the tmux lookup and send, plus clock rounding.
+                            within_window = not guarded or (
+                                isinstance(window, int) and time.monotonic() - requested_at < window - 4
+                            )
+                            if same_prompt and within_window:
                                 key = approval.get("key") or ("y" if tool == "codex" else "1")
-                                outcome = send_approval_keys(approval.get("tmux_name"), key, tool)
+                                outcome = send_approval_keys(approval.get("tmux_name"), key, tool,
+                                                             latest_record.get("prompt_pane"))
                     except (OSError, ValueError):
                         pass
                     if guarded:
