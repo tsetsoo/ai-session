@@ -135,6 +135,7 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var statusMessage: String?
     public var statusUpdatedAt: String?
     public var statusRevision: Int
+    public var hasPromptIdentity: Bool
     public var reviewed: Bool
     public var createdAt: String
     /// The project of the conversation's session (absent when none, and from older servers).
@@ -193,6 +194,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         label: String? = nil,
         mcpServers: [String]? = nil,
         statusRevision: Int = 0,
+        hasPromptIdentity: Bool = false,
         reviewed: Bool = false,
         paused: LimitPause? = nil,
         worktreeSource: String? = nil,
@@ -220,6 +222,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         self.label = label
         self.mcpServers = mcpServers
         self.statusRevision = statusRevision
+        self.hasPromptIdentity = hasPromptIdentity
         self.reviewed = reviewed
         self.paused = paused
         self.worktreeSource = worktreeSource
@@ -236,7 +239,7 @@ public struct Conversation: Codable, Equatable, Sendable {
     // Keys are written in camelCase; the hub client's decoder converts snake_case to these.
     private enum CodingKeys: String, CodingKey {
         case id, todoId, computer, cwd, tool, tmuxName, sessionId, claudeSessionId
-        case status, statusMessage, statusUpdatedAt, createdAt, projectId, label, mcpServers
+        case status, statusMessage, statusUpdatedAt, createdAt, projectId, label, mcpServers, hasPromptIdentity
         case statusRevision, reviewed, paused, worktreeSource, branch, resumeOnReset, resumeOffReason
         case pullRequest, model, worktreeBase, main, workers
     }
@@ -260,6 +263,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         statusMessage = try c.decodeIfPresent(String.self, forKey: .statusMessage)
         statusUpdatedAt = try c.decodeIfPresent(String.self, forKey: .statusUpdatedAt)
         statusRevision = try c.decodeIfPresent(Int.self, forKey: .statusRevision) ?? 0
+        hasPromptIdentity = try c.decodeIfPresent(Bool.self, forKey: .hasPromptIdentity) ?? false
         reviewed = try c.decodeIfPresent(Bool.self, forKey: .reviewed) ?? false
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
         projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
@@ -292,6 +296,7 @@ public struct Conversation: Codable, Equatable, Sendable {
         try c.encodeIfPresent(statusMessage, forKey: .statusMessage)
         try c.encodeIfPresent(statusUpdatedAt, forKey: .statusUpdatedAt)
         try c.encode(statusRevision, forKey: .statusRevision)
+        try c.encode(hasPromptIdentity, forKey: .hasPromptIdentity)
         try c.encode(reviewed, forKey: .reviewed)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encodeIfPresent(projectId, forKey: .projectId)

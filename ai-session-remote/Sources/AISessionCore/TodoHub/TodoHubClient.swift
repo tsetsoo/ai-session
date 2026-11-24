@@ -219,6 +219,55 @@ public struct TodoHubClient: Sendable {
         )
     }
 
+    public struct ApproveConversationResponse: Decodable, Sendable {
+        public let id: String?
+        public let todoId: String?
+        public let status: String
+        public let key: String
+    }
+
+    public struct ApproveRequest: Encodable, Sendable {
+        public let key: String?
+        public let text: String?
+        public init(key: String? = nil, text: String? = nil) {
+            self.key = key
+            self.text = text
+        }
+    }
+
+    /// Enqueue an approval for a conversation by conversation ID.
+    public func approveConversation(id: String, key: String? = nil, text: String? = nil) async throws -> ApproveConversationResponse {
+        try await decode(ApproveConversationResponse.self, send("POST", "/api/conversations/\(escape(id))/approve", body: ApproveRequest(key: key, text: text)))
+    }
+
+    public func decidePermission(id: String, statusRevision: Int, reject: Bool) async throws {
+        struct Decision: Encodable {
+            let statusRevision: Int
+            let reject: Bool
+        }
+        _ = try await send("POST", "/api/conversations/\(escape(id))/permission-decision",
+                           body: Decision(statusRevision: statusRevision, reject: reject))
+    }
+
+    public func registerLiveActivity(id: String, conversationId: String, token: String, environment: ApsEnvironment) async throws {
+        struct Registration: Encodable {
+            let conversationId: String
+            let token: String
+            let environment: ApsEnvironment
+        }
+        _ = try await send("PUT", "/api/push/live-activities/\(escape(id))",
+                           body: Registration(conversationId: conversationId, token: token, environment: environment))
+    }
+
+    public func unregisterLiveActivity(id: String) async throws {
+        _ = try await send("DELETE", "/api/push/live-activities/\(escape(id))")
+    }
+
+    /// Enqueue an approval for the waiting conversation of a todo.
+    public func approveTodo(id: String, key: String? = nil, text: String? = nil) async throws -> ApproveConversationResponse {
+        try await decode(ApproveConversationResponse.self, send("POST", "/api/todos/\(escape(id))/approve", body: ApproveRequest(key: key, text: text)))
+    }
+
     /// Marks the conversation closed. Kill the tmux session on the computer first.
     public func closeConversation(id: String) async throws -> Conversation {
         try await decode(Conversation.self, send("POST", "/api/conversations/\(escape(id))/close"))

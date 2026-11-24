@@ -11,6 +11,7 @@
 use crate::auth::{forbidden, resolve_scope, RequestHelper, RequestScope, ResourceScope};
 use actix_web::{web, HttpResponse};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 use todo_shared::{
     Computer, Conversation, ConversationStatus, ConversationStatusRequest, WorkerStatus, CreateComputerRequest, DeleteResponse, PullRequest,
     DuplicateConversationRequest, Importance, LimitPause, LinkConversationRequest, OpenConversationRequest,
@@ -35,14 +36,14 @@ pub(crate) const COMPUTER_COLS: &str = "id, name, hostname, port, username, crea
 /// and that session's project (20, 21), its review state (22, 23), limit pause (24, 25),
 /// worktree source and branch (26, 27), resume after the pause (28..=31), pull request
 /// url and state (32, 33), model (34), worktree base (35), whether it's its todo's main
-/// conversation (36) and its delegated workers (37).
+/// conversation (36), delegated workers (37), and whether its prompt is identifiable (38).
 const CONVERSATION_SELECT: &str = "SELECT c.id, c.todo_id, c.cwd, c.tool, c.tmux_name, c.session_id, c.status,
         c.status_message, c.status_updated_at, c.created_at, c.label, c.mcp_servers,
         m.id, m.name, m.hostname, m.port, m.username, m.created_at, m.updated_at, m.mcp_default,
         s.session_id IS NOT NULL, s.project_id, c.status_revision, c.reviewed,
         c.paused_kind, c.paused_until, c.worktree_source, c.branch,
         c.resume_on_reset, c.resume_off_reason, c.resume_at, c.resume_offer, c.pr_url, c.pr_state,
-        c.model, c.worktree_base, COALESCE(tm.main_conversation_id = c.id, 0), c.workers
+        c.model, c.worktree_base, COALESCE(tm.main_conversation_id = c.id, 0), c.workers, c.status_prompt_id IS NOT NULL
      FROM conversations c JOIN computers m ON m.id = c.computer_id
      LEFT JOIN sessions s ON s.tool = c.tool AND s.session_id = c.session_id
      LEFT JOIN todos tm ON tm.id = c.todo_id";
@@ -150,6 +151,7 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<(Conversation, bool)> {
         status_message: row.get(7)?,
         status_updated_at: row.get(8)?,
         status_revision: row.get(22)?,
+        has_prompt_identity: row.get(38)?,
         reviewed: row.get(23)?,
         created_at: row.get(9)?,
         label: row.get(10)?,
@@ -404,7 +406,7 @@ fn authorize_scoped_conversation(
     }
 }
 
-fn authorize_conversation_id(
+pub(crate) fn authorize_conversation_id(
     conn: &Connection, scope: &ResourceScope, id: &str,
 ) -> Result<(), OpenError> {
     let conversation = load_conversation_by_id(conn, id)?.ok_or(OpenError::TodoNotFound)?;
@@ -1083,11 +1085,13 @@ fn set_status_for_computer(
             && stored_until.as_deref() == p.resets_at.as_deref()
     });
     let fresh = pause.filter(|_| !repeat);
+    let prompt_id = req.prompt_id.as_deref().filter(|id| !id.is_empty() && id.len() <= 128);
     tx.execute(
         "UPDATE conversations SET
-         status_revision = status_revision + CASE WHEN status != ?1 OR ?7 THEN 1 ELSE 0 END,
+         status_revision = status_revision + CASE WHEN status != ?1 OR (?1 = 'waiting' AND (status_message IS NOT ?2 OR status_prompt_id IS NOT ?12)) OR ?7 THEN 1 ELSE 0 END,
          reviewed = CASE WHEN status != ?1 OR ?7 THEN 0 ELSE reviewed END,
          status_updated_at = CASE WHEN status != ?1 OR status_message IS NOT ?2 OR ?7 THEN datetime('now') ELSE status_updated_at END,
+         status_prompt_id = CASE WHEN ?1 = 'waiting' THEN ?12 ELSE NULL END,
          status = ?1, status_message = ?2, status_event_ns = COALESCE(?5, status_event_ns),
          status_turn_ns = CASE WHEN ?7 THEN ?6 ELSE status_turn_ns END,
          paused_kind = CASE WHEN ?8 IS NOT NULL THEN ?8 WHEN status != ?1 OR ?7 THEN NULL ELSE paused_kind END,
@@ -1096,6 +1100,7 @@ fn set_status_for_computer(
          resume_offer = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN 0 ELSE resume_offer END,
          resume_token = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN NULL ELSE resume_token END,
          resume_lease_until = CASE WHEN ?8 IS NOT NULL OR status != ?1 OR ?7 THEN NULL ELSE resume_lease_until END,
+         pending_approval = CASE WHEN ?1 != 'waiting' OR status != 'waiting' OR status_message IS NOT ?2 OR status_prompt_id IS NOT ?12 OR ?7 THEN NULL ELSE pending_approval END,
          workers = ?10
          WHERE tool = ?3 AND session_id = ?4 AND status != 'closed' AND (?11 IS NULL OR computer_id = ?11)",
         params![
@@ -1110,6 +1115,7 @@ fn set_status_for_computer(
             fresh.and_then(|p| p.resets_at.as_deref()),
             req.workers.as_ref().filter(|w| !w.is_empty()).map(|w| serde_json::to_string(w).expect("workers serialize")),
             computer,
+            prompt_id,
         ],
     )?;
     if fresh.is_some() {
@@ -1600,7 +1606,7 @@ pub async fn todo_from_conversation(
 
 fn close_conversation_id(conn: &Connection, id: &str) -> Result<Conversation, OpenError> {
     let updated = conn.execute(
-        "UPDATE conversations SET status = 'closed', status_message = NULL, status_updated_at = datetime('now')
+        "UPDATE conversations SET status = 'closed', pending_approval = NULL, status_message = NULL, status_updated_at = datetime('now')
          WHERE id = ?1",
         params![id],
     )?;
@@ -1830,6 +1836,324 @@ pub async fn delete_conversation_by_id(
         }
         Err(e) => open_error(e),
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct ApproveConversationRequest {
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    pub status_revision: Option<i64>,
+    pub reject: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ClaimApprovalRequest {
+    pub tool: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub action: Option<String>,
+    pub supports_prompt_decisions: Option<bool>,
+    pub claim_id: Option<String>,
+    pub prompt_id: Option<String>,
+}
+
+fn approve_conversation_id(
+    conn: &Connection,
+    id: &str,
+    request: &ApproveConversationRequest,
+) -> Result<(String, String), OpenError> {
+    type ApprovalPrompt = (String, String, i64, Option<String>, Option<String>);
+    let row: Option<ApprovalPrompt> = conn
+        .query_row(
+            "SELECT tool, status, status_revision, status_message, status_prompt_id FROM conversations WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .map_err(OpenError::Db)?;
+    let Some((tool, status, revision, message, prompt_id)) = row else {
+        return Err(OpenError::TodoNotFound);
+    };
+    if status != "waiting" {
+        return Err(OpenError::Conflict("Conversation is no longer waiting"));
+    }
+    if request.reject.is_some() && request.status_revision.is_none() {
+        return Err(OpenError::Conflict("A decision requires the current permission prompt"));
+    }
+    if let Some(expected) = request.status_revision {
+        if prompt_id.is_none() || expected != revision || request.key.is_some() || request.text.is_some()
+            || !crate::push::live::is_permission_prompt(&tool, message.as_deref()) {
+            return Err(OpenError::Conflict("Permission prompt changed"));
+        }
+    }
+    let key = if request.reject == Some(true) {
+        "Escape"
+    } else {
+        request.key.as_deref().unwrap_or(if tool == "codex" { "y" } else { "1" })
+    };
+    let payload = serde_json::json!({
+        "key": key,
+        "text": request.text,
+        "approved_at": chrono::Utc::now().to_rfc3339(),
+        "status_revision": request.status_revision
+    })
+    .to_string();
+
+    let updated = conn.execute(
+        "UPDATE conversations SET pending_approval = ?2
+         WHERE id = ?1 AND status = 'waiting' AND status_revision = ?3 AND status_message IS ?4 AND status_prompt_id IS ?6
+           AND (pending_approval IS NULL OR CASE WHEN json_valid(pending_approval) THEN
+               (?5 IS NULL AND json_extract(pending_approval, '$.status_revision') IS NULL)
+               OR (json_extract(pending_approval, '$.key') IS NOT NULL
+                   AND unixepoch(json_extract(pending_approval, '$.approved_at')) <= unixepoch() - 45)
+               ELSE 0 END)",
+        params![id, payload, revision, message, request.status_revision, prompt_id],
+    )?;
+    if updated == 0 {
+        return Err(OpenError::Conflict("Permission prompt changed or already has a decision"));
+    }
+
+    Ok((id.to_string(), key.to_string()))
+}
+
+pub async fn approve_conversation_by_id(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<ApproveConversationRequest>,
+    broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    let id = path.into_inner();
+    let body = body.into_inner();
+    let approved = (|| -> Result<(String, String), OpenError> {
+        if let Some(scope) = scope {
+            let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+            authorize_conversation_id(&tx, &scope.resolve_projects(&tx)?, &id)?;
+            let res = approve_conversation_id(&tx, &id, &body)?;
+            tx.commit()?;
+            Ok(res)
+        } else {
+            approve_conversation_id(&conn, &id, &body)
+        }
+    })();
+    match approved {
+        Ok((conv_id, key)) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(serde_json::json!({
+                "id": conv_id,
+                "status": "approved",
+                "key": key
+            }))
+        }
+        Err(OpenError::TodoNotFound) => not_found("Conversation not found"),
+        Err(e) => open_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PermissionDecisionRequest {
+    status_revision: i64,
+    reject: bool,
+}
+
+pub async fn decide_permission_by_id(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<PermissionDecisionRequest>,
+    broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
+) -> HttpResponse {
+    let decision = ApproveConversationRequest {
+        status_revision: Some(body.status_revision),
+        reject: Some(body.reject),
+        ..Default::default()
+    };
+    approve_conversation_by_id(pool, path, web::Json(decision), broadcaster, scope).await
+}
+
+pub async fn approve_todo_conversation(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    body: web::Json<ApproveConversationRequest>,
+    broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    let todo_id = path.into_inner();
+    let body = body.into_inner();
+    let conv_id: Option<String> = match conn
+        .query_row(
+            "SELECT id FROM conversations WHERE todo_id = ?1 ORDER BY CASE WHEN status = 'waiting' THEN 0 WHEN status = 'busy' THEN 1 ELSE 2 END, created_at DESC LIMIT 1",
+            params![todo_id],
+            |r| r.get(0),
+        )
+        .optional()
+    {
+        Ok(res) => res,
+        Err(e) => return server_error(e),
+    };
+    let Some(id) = conv_id else {
+        return not_found("Todo has no conversation");
+    };
+    let approved = (|| -> Result<(String, String), OpenError> {
+        if let Some(scope) = scope {
+            let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+            authorize_conversation_id(&tx, &scope.resolve_projects(&tx)?, &id)?;
+            let res = approve_conversation_id(&tx, &id, &body)?;
+            tx.commit()?;
+            Ok(res)
+        } else {
+            approve_conversation_id(&conn, &id, &body)
+        }
+    })();
+    match approved {
+        Ok((conv_id, key)) => {
+            broadcaster.send();
+            HttpResponse::Ok().json(serde_json::json!({
+                "todo_id": todo_id,
+                "conversation_id": conv_id,
+                "status": "approved",
+                "key": key
+            }))
+        }
+        Err(OpenError::TodoNotFound) => not_found("Conversation not found"),
+        Err(e) => open_error(e),
+    }
+}
+
+pub async fn claim_conversation_approval(
+    pool: web::Data<DbPool>,
+    body: web::Json<ClaimApprovalRequest>,
+    broadcaster: web::Data<Broadcaster>,
+    helper: RequestHelper,
+    scope: RequestScope,
+) -> HttpResponse {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => return server_error(e),
+    };
+    let body = body.into_inner();
+    let row: Option<(String, String, Option<String>, Option<String>)> = match conn
+        .query_row(
+            "SELECT id, tmux_name, pending_approval, status_prompt_id FROM conversations
+             WHERE tool = ?1 AND session_id = ?2 AND status = 'waiting'
+               AND (?3 IS NULL OR computer_id = ?3)",
+            params![body.tool, body.session_id, helper.as_ref().map(|helper| helper.0.as_str())],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+    {
+        Ok(res) => res,
+        Err(e) => return server_error(e),
+    };
+
+    let Some((id, tmux_name, pending, prompt_id)) = row else {
+        return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
+    };
+
+    if let Some(scope) = scope {
+        let authorized = scope.resolve_projects(&conn).map_err(OpenError::from)
+            .and_then(|projects| authorize_conversation_id(&conn, &projects, &id));
+        if let Err(error) = authorized {
+            return open_error(error);
+        }
+    }
+    let Some(pending_str) = pending else {
+        return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
+    };
+
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&pending_str) else {
+        return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
+    };
+    let Some(key) = parsed.get("key").and_then(|value| value.as_str()) else {
+        return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
+    };
+    let text = parsed.get("text").and_then(|value| value.as_str());
+    let revision = parsed.get("status_revision").and_then(|value| value.as_i64());
+    let expired = revision.is_some() && parsed.get("approved_at").and_then(|value| value.as_str())
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .is_none_or(|time| chrono::Utc::now().signed_duration_since(time).num_seconds() >= 45);
+
+    let mut claim_id = None;
+    let action = body.action.as_deref().unwrap_or("claim");
+    let next = if let Some(revision) = revision {
+        let Some(token) = body.claim_id.as_deref().and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .filter(|_| body.supports_prompt_decisions == Some(true)) else {
+            return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
+        };
+        if prompt_id.is_none() || body.prompt_id != prompt_id {
+            return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
+        }
+        let token = token.to_string();
+        let owner = parsed.get("claim_id").and_then(|value| value.as_str());
+        match action {
+            "sent" | "unknown" | "release" if owner == Some(token.as_str()) => {
+                let replacement = (action != "release").then(|| serde_json::json!({
+                    "status_revision": revision, "delivery": action
+                }).to_string());
+                match conn.execute(
+                    "UPDATE conversations SET pending_approval = ?2 WHERE id = ?1 AND pending_approval = ?3",
+                    params![id, replacement, pending_str],
+                ) {
+                    Ok(changed) => {
+                        if changed > 0 { broadcaster.send(); }
+                        return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
+                    }
+                    Err(error) => return server_error(error),
+                }
+            }
+            "claim" if !expired && owner.is_none() => {
+                let mut reserved = parsed.clone();
+                reserved["claim_id"] = serde_json::json!(token);
+                claim_id = Some(token);
+                Some(reserved.to_string())
+            }
+            _ => return HttpResponse::Ok().json(serde_json::json!({"approved": false})),
+        }
+    } else if action == "poll" {
+        Some(pending_str.clone())
+    } else if action == "claim" {
+        None
+    } else {
+        return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
+    };
+    if action != "poll" {
+        match conn.execute(
+            "UPDATE conversations SET pending_approval = ?5
+             WHERE id = ?1 AND tool = ?2 AND session_id = ?3 AND status = 'waiting'
+               AND pending_approval = ?4",
+            params![id, body.tool, body.session_id, pending_str, next],
+        ) {
+            Ok(0) => return HttpResponse::Ok().json(serde_json::json!({"approved": false})),
+            Ok(_) => broadcaster.send(),
+            Err(error) => return server_error(error),
+        }
+    }
+
+    if expired {
+        return HttpResponse::Ok().json(serde_json::json!({"approved": false}));
+    }
+    HttpResponse::Ok().json(serde_json::json!({
+        "approved": true,
+        "id": id,
+        "tool": body.tool,
+        "session_id": body.session_id,
+        "tmux_name": tmux_name,
+        "status_revision": revision,
+        "prompt_id": prompt_id,
+        "claim_id": claim_id,
+        "key": key,
+        "text": text
+    }))
 }
 
 pub async fn set_conversation_session_by_id(
@@ -2072,6 +2396,7 @@ mod tests {
             status_message: None,
             status_updated_at: updated.map(str::to_string),
             status_revision: 0,
+            has_prompt_identity: false,
             reviewed: false,
             created_at: created.into(),
             project_id: None,
@@ -3314,5 +3639,176 @@ mod tests {
         assert_eq!(both.session_id(), Some("a"));
         let none: ConversationStatusRequest = serde_json::from_str(r#"{"session_id":" ","status":"idle"}"#).unwrap();
         assert_eq!(none.session_id(), None);
+    }
+
+    #[actix_web::test]
+    async fn live_activity_decision_matches_current_permission_and_is_consumed_once() {
+        let (_db, pool) = crate::test_support::pool("activity-decision");
+        let source = source_in_worktree(&pool).await;
+        let id = source["id"].as_str().unwrap();
+        let session_id = source["session_id"].as_str().unwrap();
+        let route = format!("/api/conversations/{id}/permission-decision");
+        let claim_id = uuid::Uuid::new_v4().to_string();
+        let claim = |action: &str| serde_json::json!({
+            "tool": "claude", "session_id": session_id, "supports_prompt_decisions": true,
+            "claim_id": claim_id, "prompt_id": "tool-use-1", "action": action
+        });
+        let permission = |message: &str, prompt_id: &str| serde_json::json!({
+            "tool": "claude", "session_id": session_id, "status": "waiting", "message": message,
+            "prompt_id": prompt_id
+        });
+        let revision = || pool.get().unwrap().query_row(
+            "SELECT status_revision FROM conversations WHERE id = ?1", [id], |row| row.get::<_, i64>(0),
+        ).unwrap();
+
+        post_json(&pool, "/api/conversations/status", permission("Claude needs your answer", "question")).await;
+        let question_revision = revision();
+        let (status, _) = post_json(&pool, &route, serde_json::json!({"status_revision": question_revision, "reject": false})).await;
+        assert_eq!(status, 409);
+
+        post_json(&pool, "/api/conversations/status", permission("Claude needs approval", "tool-use-1")).await;
+        let mut unidentified = permission("Claude needs approval", "tool-use-1");
+        unidentified.as_object_mut().unwrap().remove("prompt_id");
+        post_json(&pool, "/api/conversations/status", unidentified).await;
+        let (status, _) = post_json(&pool, &route, serde_json::json!({
+            "status_revision": revision(), "reject": false
+        })).await;
+        assert_eq!(status, 409);
+        post_json(&pool, "/api/conversations/status", permission("Claude needs approval", "tool-use-1")).await;
+        let current = revision();
+        assert_ne!(question_revision, current);
+        let (status, _) = post_json(&pool, &route, serde_json::json!({"status_revision": question_revision, "reject": false})).await;
+        assert_eq!(status, 409);
+        let decision = serde_json::json!({"status_revision": current, "reject": true});
+        let (status, _) = post_json(&pool, &route, decision.clone()).await;
+        assert_eq!(status, 200);
+        let (_, legacy_claim) = post_json(&pool, "/api/conversations/approve",
+            serde_json::json!({"tool": "claude", "session_id": session_id})).await;
+        assert_eq!(legacy_claim["approved"], false);
+        let (_, claimed) = post_json(&pool, "/api/conversations/approve", claim("claim")).await;
+        assert_eq!(claimed["key"], "Escape");
+        assert_eq!(claimed["status_revision"], current);
+        assert_eq!(claimed["prompt_id"], "tool-use-1");
+        post_json(&pool, "/api/conversations/approve", claim("release")).await;
+        let (status, _) = post_json(&pool, &route, decision.clone()).await;
+        assert_eq!(status, 200);
+        let (_, claimed) = post_json(&pool, "/api/conversations/approve", claim("claim")).await;
+        assert_eq!(claimed["approved"], true);
+        post_json(&pool, "/api/conversations/approve", claim("sent")).await;
+        let (_, claimed) = post_json(&pool, "/api/conversations/approve", claim("claim")).await;
+        assert_eq!(claimed["approved"], false);
+        let (status, _) = post_json(&pool, &route, decision).await;
+        assert_eq!(status, 409);
+
+        post_json(&pool, "/api/conversations/status", permission("Claude needs approval", "tool-use-2")).await;
+        assert_ne!(revision(), current);
+        let (status, _) = post_json(&pool, &route, serde_json::json!({"status_revision": current, "reject": false})).await;
+        assert_eq!(status, 409);
+    }
+
+    #[actix_web::test]
+    async fn conversation_approval_queue_and_claim() {
+        let (_db, pool) = crate::test_support::pool("approve");
+        let source = source_in_worktree(&pool).await;
+        let id = source["id"].as_str().unwrap();
+        let session_id = source["session_id"].as_str().unwrap();
+
+        let (status, _) = post_json(
+            &pool,
+            &format!("/api/conversations/{id}/approve"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::CONFLICT);
+
+        // Put into waiting
+        let (status, _) = post_json(
+            &pool,
+            "/api/conversations/status",
+            serde_json::json!({
+                "session_id": session_id,
+                "tool": "claude",
+                "status": "waiting"
+            }),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::NO_CONTENT);
+
+        // Queue approval by conversation id
+        let (status, resp) = post_json(
+            &pool,
+            &format!("/api/conversations/{id}/approve"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{resp}");
+        assert_eq!(resp["status"], "approved");
+        assert_eq!(resp["key"], "1");
+
+        // Poll without claiming
+        let (status, resp) = post_json(
+            &pool,
+            "/api/conversations/approve",
+            serde_json::json!({
+                "tool": "claude",
+                "session_id": session_id,
+                "action": "poll"
+            }),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{resp}");
+        assert_eq!(resp["approved"], true);
+        assert_eq!(resp["key"], "1");
+
+        // Claim clears pending approval
+        let (status, resp) = post_json(
+            &pool,
+            "/api/conversations/approve",
+            serde_json::json!({
+                "tool": "claude",
+                "session_id": session_id
+            }),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{resp}");
+        assert_eq!(resp["approved"], true);
+        assert_eq!(resp["key"], "1");
+
+        // Subsequent claim sees false
+        let (status, resp) = post_json(
+            &pool,
+            "/api/conversations/approve",
+            serde_json::json!({
+                "tool": "claude",
+                "session_id": session_id
+            }),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{resp}");
+        assert_eq!(resp["approved"], false);
+
+        // Approve via todo id
+        let (status, resp) = post_json(
+            &pool,
+            "/api/todos/t1/approve",
+            serde_json::json!({"key": "custom-key"}),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{resp}");
+        assert_eq!(resp["key"], "custom-key");
+
+        // Claim again
+        let (status, resp) = post_json(
+            &pool,
+            "/api/conversations/approve",
+            serde_json::json!({
+                "tool": "claude",
+                "session_id": session_id
+            }),
+        )
+        .await;
+        assert_eq!(status, actix_web::http::StatusCode::OK, "{resp}");
+        assert_eq!(resp["approved"], true);
+        assert_eq!(resp["key"], "custom-key");
     }
 }

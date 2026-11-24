@@ -49,6 +49,7 @@
 		1AF24721F851D000BC658951 /* ReviewStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F538A47A9E801D82DC090741 /* ReviewStoreTests.swift */; };
 		1BEBDBAF5A6063D7775D4F86 /* StartAgentsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD705B0AB36EC1272E162F4 /* StartAgentsSection.swift */; };
 		1CFA35213BF03931DD880EED /* Skin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 578C316A8F1EFF7CD6BF7B3E /* Skin.swift */; };
+		1E3708C17D3EE063744114BD /* AISessionWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = BBC9E9EF0AF8B544648CE063 /* AISessionWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		2010BBF69DDB52210D4DAB2F /* ConversationRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E36AD351C0A22DEC339CAE5 /* ConversationRow.swift */; };
 		211FB7AE45A3D3197F1AA0BF /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0002157EA5ADE38E9ADEDD3E /* SidebarView.swift */; };
 		21AA7F7C909E4283BEFDDDFD /* TerminalSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B1150B78937B45875C56973 /* TerminalSelectionTests.swift */; };
@@ -136,6 +137,7 @@
 		5BA3E1B8237FDA5412EAC38D /* WeeklyStatsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5C23D18F2D719EE248BDB9A /* WeeklyStatsCard.swift */; };
 		5BEBD32F0776AB10C74CF0E5 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 069864B039E21288F0AD21AA /* ReviewView.swift */; };
 		5C0603C103E593CEA48804C5 /* WorkerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 015A3B796283D7CA833B172A /* WorkerSheet.swift */; };
+		5C5827DD5BA9A67A637AFBFA /* ApprovePromptIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDF9E40DFD36392D97DCB82A /* ApprovePromptIntent.swift */; };
 		5C8C1861A0B4A53B1F4E04A9 /* ChatTextViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DC8DE451518230695F83B05 /* ChatTextViews.swift */; };
 		5E1BA3A92F17441A72CB47CD /* ReviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F359B9E7301AF9D445728DC0 /* ReviewSession.swift */; };
 		5F9A88BE1E64572B469D5D00 /* ChatWorkerCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50CDB15844E89FFEB1810D0B /* ChatWorkerCard.swift */; };
@@ -163,11 +165,13 @@
 		7240ED6D831B6CDC06C67F09 /* TodoHubSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12419581E8EABDDBD2C33D6A /* TodoHubSettings.swift */; };
 		736847250D159EE7F09E1F69 /* attention-needs-you-neon-noir.caf in Resources */ = {isa = PBXBuildFile; fileRef = 18E5A85839230F850EDEE197 /* attention-needs-you-neon-noir.caf */; };
 		737E82EA63D17DED7D7A1E5E /* VisiblePresence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CF2935CB55EEDD18EC96992 /* VisiblePresence.swift */; };
+		7397271177C8A9C548EE83D0 /* AgentLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAE5BA1AC59B33AF36031206 /* AgentLiveActivityWidget.swift */; };
 		73EF06844CDAD5BC25B13416 /* HostsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1B02295F04DE55821A1C7F /* HostsListView.swift */; };
 		748A1A2AC01B92433F2CBAFC /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = D2F4F750AAE4488C18680D69 /* NIOPosix */; };
 		76095E19F1F5CEAF163A181B /* StatusMonitoring.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65729FC1D2C53A94E3FDC02D /* StatusMonitoring.swift */; };
 		7676E04E635A23C1677E618F /* WeeklyStatsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5C23D18F2D719EE248BDB9A /* WeeklyStatsCard.swift */; };
 		7826C355E11CB6E56D7DDA77 /* ShellWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 723A156714397550BA2826C4 /* ShellWorkspace.swift */; };
+		78F889F52D32C132C9A4DE31 /* AISessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = CE9485EF05564CFB670F710C /* AISessionCore */; };
 		7B110F70F7E357C75AEA17A3 /* ChatMessageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EEA147830218031EA1DDBEF /* ChatMessageView.swift */; };
 		7BAD97547D47B5D2812C9A76 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B30BC89B3A1D2CE46EB6921 /* AppModel.swift */; };
 		7C3A539C3130EFED602DDF5E /* VisiblePresenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDECEE903A5E03F5371FB37C /* VisiblePresenceTests.swift */; };
@@ -187,6 +191,7 @@
 		821A631D07F6379E246FD7DF /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BB9F3F1B36EAC5FB8B07504 /* SettingsView.swift */; };
 		827A5C090B3EF443328900E4 /* StatusBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDE7FB9B8AA8D5C5877AE90E /* StatusBadge.swift */; };
 		82B52C7E9AD31D5C7F5F4E70 /* ReviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F359B9E7301AF9D445728DC0 /* ReviewSession.swift */; };
+		830E6FD662D7AF947D4F289A /* LiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 426017281F798D29944CA156 /* LiveActivityManager.swift */; };
 		849E32495E15868F94AE8834 /* AttentionSound.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E54A882CAEEFF869230893D /* AttentionSound.swift */; };
 		84B405941959E1F56EED1188 /* AccentButtonStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 953A88DC4DA95609F6AA1F02 /* AccentButtonStyle.swift */; };
 		85429224CC9A085D58552A73 /* ConversationSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 624E206917FBF40B8104F71E /* ConversationSwitcher.swift */; };
@@ -282,13 +287,16 @@
 		BA0F94F03F0AED02394B2BD0 /* TodoHoldButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F4C0147F2A90F4EB7326E86 /* TodoHoldButton.swift */; };
 		BA395060BF5B29480DAF51F6 /* Dictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E67B76EDE9FE683169680363 /* Dictation.swift */; };
 		BAD1AA4C48CFFEC5E3D2B641 /* TerminalAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F1EA970D847587BCE04E555 /* TerminalAppearance.swift */; };
+		BB9828CDB0D0767C1B773EC2 /* LiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 426017281F798D29944CA156 /* LiveActivityManager.swift */; };
 		BC64832FF85ABCAF0A96EABD /* ProjectMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */; };
 		BDB5778417C362323812D238 /* HostEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4DD29F996099D82C6D7514 /* HostEntity.swift */; };
+		BDC2CBA8463EE4FBC6FB6B3B /* ApprovePromptIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDF9E40DFD36392D97DCB82A /* ApprovePromptIntent.swift */; };
 		BDF878195029383137C383AD /* ResearchAgentsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5438FFCF88CA25018D7CAED /* ResearchAgentsSheet.swift */; };
 		BE942C01C1F0F332E6A6F86C /* TodoRename.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12D5F34B1CF5313030CABD54 /* TodoRename.swift */; };
 		BF9A18AF476748AE63B0CF5E /* OnThisComputerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24947A77BA8C57130367110F /* OnThisComputerView.swift */; };
 		C0151AA649300EAE1F217F82 /* TerminalTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97D417529F6E6B990D79BF81 /* TerminalTransport.swift */; };
 		C02C522D95113D7D02F16C02 /* MemoriesPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2036F3717F8C775B947A95B7 /* MemoriesPresenter.swift */; };
+		C0BA4196964F3E24773EEE8E /* AISessionWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA7E1F467E0BF4EAC1496E1B /* AISessionWidgetBundle.swift */; };
 		C2817944F540E70FE9ED31DC /* TerminalTouchScroll.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8109AAC4A1B7917319AEF41 /* TerminalTouchScroll.swift */; };
 		C2F34F98774513DDBFAAA379 /* SkinIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 389FBA57A1CCA992B1FD5CBC /* SkinIcon.swift */; };
 		C309A65A9D1C5AEB7DBB5E3C /* ServerNotConfiguredView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E866E5BC5F0042AF39A45482 /* ServerNotConfiguredView.swift */; };
@@ -381,6 +389,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		5298AD5526B1D2E98EC55F18 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F97737019F37F3A78FD0BB20 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F1582562DD2AAF8F3DACC926;
+			remoteInfo = AISessionWidget;
+		};
 		A73E138C94C3CC87D9A3A2FA /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = F97737019F37F3A78FD0BB20 /* Project object */;
@@ -406,6 +421,17 @@
 			files = (
 				B2C5740BA5020DA03A7D9F65 /* com.aisessionremote.mac-updater.plist in CopyFiles */,
 			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BA06D5515D186C60E1A6EE57 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				1E3708C17D3EE063744114BD /* AISessionWidget.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -463,6 +489,7 @@
 		3F1EA970D847587BCE04E555 /* TerminalAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalAppearance.swift; sourceTree = "<group>"; };
 		3FAAD07AAEDF8D67ADBBFBF4 /* AddTodoSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddTodoSheet.swift; sourceTree = "<group>"; };
 		4231B33E7260245EAB424FD9 /* SettingsPages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPages.swift; sourceTree = "<group>"; };
+		426017281F798D29944CA156 /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
 		45650CE5B948BA331E385B8B /* TerminalResizeDebouncerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalResizeDebouncerTests.swift; sourceTree = "<group>"; };
 		45685B58CE2C40C0BCC9C856 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4667A4523A1AEC2B12BD5C2E /* ReadAloudTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadAloudTests.swift; sourceTree = "<group>"; };
@@ -554,6 +581,7 @@
 		BB5BF1164C3EBA322BBC1428 /* StatusFreshnessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusFreshnessTests.swift; sourceTree = "<group>"; };
 		BB775BB4D3645609923CB4D6 /* PlatformSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformSupport.swift; sourceTree = "<group>"; };
 		BB8A7C64530E46D436A3D3A8 /* ReviewItemsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewItemsSheet.swift; sourceTree = "<group>"; };
+		BBC9E9EF0AF8B544648CE063 /* AISessionWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = AISessionWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BD3F0B593F7A653D98C5AAB9 /* attention-review.caf */ = {isa = PBXFileReference; path = "attention-review.caf"; sourceTree = "<group>"; };
 		BDC0C15755494AAA0C43292F /* RemoteRestart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteRestart.swift; sourceTree = "<group>"; };
 		BDECEE903A5E03F5371FB37C /* VisiblePresenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisiblePresenceTests.swift; sourceTree = "<group>"; };
@@ -582,8 +610,10 @@
 		D85EAC354443F3D03E6BAD90 /* ChatCodeBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatCodeBlock.swift; sourceTree = "<group>"; };
 		D950090C7A69096F9F3FF813 /* TodoConversationScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoConversationScreen.swift; sourceTree = "<group>"; };
 		DAE4E9E73605A7687C9AB156 /* AISessionRemoteMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AISessionRemoteMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DAE5BA1AC59B33AF36031206 /* AgentLiveActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentLiveActivityWidget.swift; sourceTree = "<group>"; };
 		DBCC68C5E2FFB1AFFEC5514E /* TodoRenameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoRenameTests.swift; sourceTree = "<group>"; };
 		DD8D8139CC242C8EF215944D /* ListSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListSelection.swift; sourceTree = "<group>"; };
+		DDF9E40DFD36392D97DCB82A /* ApprovePromptIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovePromptIntent.swift; sourceTree = "<group>"; };
 		DFFA46BBF4C8FFC2CCE6EE1B /* PooledSSHConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PooledSSHConnection.swift; sourceTree = "<group>"; };
 		E0376DF73A5814B23C3C80EE /* ShellWorkspaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellWorkspaceTests.swift; sourceTree = "<group>"; };
 		E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TOFUHostKeyStoreTests.swift; sourceTree = "<group>"; };
@@ -592,6 +622,7 @@
 		E67B76EDE9FE683169680363 /* Dictation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Dictation.swift; sourceTree = "<group>"; };
 		E73B14EDD641FC1EDBABAAF8 /* SelectTextSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectTextSheet.swift; sourceTree = "<group>"; };
 		E866E5BC5F0042AF39A45482 /* ServerNotConfiguredView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerNotConfiguredView.swift; sourceTree = "<group>"; };
+		EA7E1F467E0BF4EAC1496E1B /* AISessionWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionWidgetBundle.swift; sourceTree = "<group>"; };
 		EB3E3B07720B67742A9A99D8 /* TextSizeShortcutsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextSizeShortcutsTests.swift; sourceTree = "<group>"; };
 		EB74C80442E0D6535736F811 /* WeeklyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeeklyView.swift; sourceTree = "<group>"; };
 		EDE7FB9B8AA8D5C5877AE90E /* StatusBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBadge.swift; sourceTree = "<group>"; };
@@ -641,6 +672,14 @@
 				748A1A2AC01B92433F2CBAFC /* NIOPosix in Frameworks */,
 				179CFAD30F54E92A25FE71AA /* Crypto in Frameworks */,
 				2DF7D033594787FFDA1BB4F0 /* SwiftTerm in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		942180FBB4A808FDA5C98C42 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				78F889F52D32C132C9A4DE31 /* AISessionCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -739,6 +778,7 @@
 				C42DA3B83B3817679DCCC8E4 /* AISessionRemoteMac.app */,
 				DAE4E9E73605A7687C9AB156 /* AISessionRemoteMacTests.xctest */,
 				212307B0DF157E07D51ED051 /* AISessionRemoteTests.xctest */,
+				BBC9E9EF0AF8B544648CE063 /* AISessionWidget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -814,6 +854,17 @@
 			path = Projects;
 			sourceTree = "<group>";
 		};
+		2E34AADD9B57A3D05DF3B392 /* AISessionWidget */ = {
+			isa = PBXGroup;
+			children = (
+				DAE5BA1AC59B33AF36031206 /* AgentLiveActivityWidget.swift */,
+				EA7E1F467E0BF4EAC1496E1B /* AISessionWidgetBundle.swift */,
+				DDF9E40DFD36392D97DCB82A /* ApprovePromptIntent.swift */,
+			);
+			name = AISessionWidget;
+			path = App/AISessionWidget;
+			sourceTree = "<group>";
+		};
 		2EA6D13807451B0E6A09920C /* Resources */ = {
 			isa = PBXGroup;
 			children = (
@@ -869,6 +920,7 @@
 				E67B76EDE9FE683169680363 /* Dictation.swift */,
 				B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */,
 				EE3B756FF0192985AADAFF36 /* HostRepository.swift */,
+				426017281F798D29944CA156 /* LiveActivityManager.swift */,
 				BFE9199BDAAD44EBF28EFAB1 /* MacAppUpdate.swift */,
 				D21AE60CA2D6F1C94CD70CB5 /* NIOSSHClient.swift */,
 				985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */,
@@ -1069,6 +1121,7 @@
 				8C301227A84BE94EB0C93B1A /* AISessionRemoteMac */,
 				29FA3CED6F174ED60AA1B5B0 /* AISessionRemoteMacTests */,
 				9F108EE5FB21AF7930C881CE /* AISessionRemoteTests */,
+				2E34AADD9B57A3D05DF3B392 /* AISessionWidget */,
 				113CDF79D99CF7521E9DC3DF /* Packages */,
 				173F91072904799131F2B8F2 /* Products */,
 			);
@@ -1139,10 +1192,12 @@
 				481954076883DAB45640C4B4 /* Sources */,
 				5A2154B73C2A13F7D6890E60 /* Resources */,
 				7215F0CA08F93DE98AE33AE0 /* Frameworks */,
+				BA06D5515D186C60E1A6EE57 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				E2B4AC3AC5741ABE5A608632 /* PBXTargetDependency */,
 			);
 			name = AISessionRemote;
 			packageProductDependencies = (
@@ -1226,6 +1281,25 @@
 			productReference = C42DA3B83B3817679DCCC8E4 /* AISessionRemoteMac.app */;
 			productType = "com.apple.product-type.application";
 		};
+		F1582562DD2AAF8F3DACC926 /* AISessionWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 027C681C9BA0581A2CC5AB41 /* Build configuration list for PBXNativeTarget "AISessionWidget" */;
+			buildPhases = (
+				BFEE7A68E101C5B60964601D /* Sources */,
+				942180FBB4A808FDA5C98C42 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AISessionWidget;
+			packageProductDependencies = (
+				CE9485EF05564CFB670F710C /* AISessionCore */,
+			);
+			productName = AISessionWidget;
+			productReference = BBC9E9EF0AF8B544648CE063 /* AISessionWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -1263,6 +1337,7 @@
 			projectRoot = "";
 			targets = (
 				776636EEAE58EB76B296D03F /* AISessionRemote */,
+				F1582562DD2AAF8F3DACC926 /* AISessionWidget */,
 				A4E17937B0FE1705738B3B9D /* AISessionRemoteTests */,
 				D85B5087D228519FF776D258 /* AISessionRemoteMac */,
 				9B1143A440491FCAD4D9E5C1 /* AISessionRemoteMacTests */,
@@ -1358,6 +1433,7 @@
 				55516A558BDCE8E9C7584AAD /* JobsPanes.swift in Sources */,
 				EB6822F143F473431F7E86B7 /* ListActions.swift in Sources */,
 				3C20726A071B705FCC2F9714 /* ListSelection.swift in Sources */,
+				BB9828CDB0D0767C1B773EC2 /* LiveActivityManager.swift in Sources */,
 				9A9A1C513848F018C43DDFBA /* LocalConnection.swift in Sources */,
 				7D5552CE69AF23803F6EC8C0 /* MCPServerChecklist.swift in Sources */,
 				3F7483ED72BC9EB96B545B78 /* MacAppUpdate.swift in Sources */,
@@ -1469,6 +1545,7 @@
 				7EBF102046D1B8F7306B7A21 /* AppDelegate.swift in Sources */,
 				7BAD97547D47B5D2812C9A76 /* AppModel.swift in Sources */,
 				2C713B734C872820F76100DD /* AppTheme.swift in Sources */,
+				BDC2CBA8463EE4FBC6FB6B3B /* ApprovePromptIntent.swift in Sources */,
 				80036620A54F809A71FAE904 /* AttentionPulse.swift in Sources */,
 				849E32495E15868F94AE8834 /* AttentionSound.swift in Sources */,
 				F41DB4ABAF1D7E3FBDC176A7 /* AutomationColumns.swift in Sources */,
@@ -1514,6 +1591,7 @@
 				E2A339E52CAD6A60C4906591 /* KeyBar.swift in Sources */,
 				4E3846485AA10B3B7344F5E0 /* ListActions.swift in Sources */,
 				B06BE65B10FD125FE3054794 /* ListSelection.swift in Sources */,
+				830E6FD662D7AF947D4F289A /* LiveActivityManager.swift in Sources */,
 				EEE34ECE95236577DE543771 /* LocalConnection.swift in Sources */,
 				43108C2BB86CA543782EB498 /* MCPServerChecklist.swift in Sources */,
 				1981F240976A275BAF91E63E /* MacAppUpdate.swift in Sources */,
@@ -1651,6 +1729,16 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BFEE7A68E101C5B60964601D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C0BA4196964F3E24773EEE8E /* AISessionWidgetBundle.swift in Sources */,
+				7397271177C8A9C548EE83D0 /* AgentLiveActivityWidget.swift in Sources */,
+				5C5827DD5BA9A67A637AFBFA /* ApprovePromptIntent.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CA6CCA1CDA43A50FD7310727 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1676,6 +1764,11 @@
 			isa = PBXTargetDependency;
 			target = D85B5087D228519FF776D258 /* AISessionRemoteMac */;
 			targetProxy = E8F33A70DCE6CEFB4A231DD8 /* PBXContainerItemProxy */;
+		};
+		E2B4AC3AC5741ABE5A608632 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F1582562DD2AAF8F3DACC926 /* AISessionWidget */;
+			targetProxy = 5298AD5526B1D2E98EC55F18 /* PBXContainerItemProxy */;
 		};
 		EED6887C6EAA6881166FDC46 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1822,6 +1915,24 @@
 			};
 			name = Debug;
 		};
+		A5F667CC6FC38401CCC96CF4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/AISessionWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aisessionremote.app.widget;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) LIVE_ACTIVITY_WIDGET";
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 		B0FB35E1402B2087E9B9DAAD /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1924,6 +2035,24 @@
 			};
 			name = Release;
 		};
+		C18380C0A2C80BAF12D7C329 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/AISessionWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aisessionremote.app.widget;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) LIVE_ACTIVITY_WIDGET";
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		E1ABCCD96675293A1A84A814 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1969,6 +2098,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		027C681C9BA0581A2CC5AB41 /* Build configuration list for PBXNativeTarget "AISessionWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A5F667CC6FC38401CCC96CF4 /* Debug */,
+				C18380C0A2C80BAF12D7C329 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		1518182E42AC89147C3BF965 /* Build configuration list for PBXNativeTarget "AISessionRemoteMac" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -2126,6 +2264,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = FE11F576EC2B106E67BFC20D /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
 			productName = NIOSSH;
+		};
+		CE9485EF05564CFB670F710C /* AISessionCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AISessionCore;
 		};
 		D2F4F750AAE4488C18680D69 /* NIOPosix */ = {
 			isa = XCSwiftPackageProductDependency;

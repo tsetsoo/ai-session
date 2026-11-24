@@ -3,6 +3,7 @@
 
 pub mod apns;
 pub mod handlers;
+pub mod live;
 pub mod policy;
 pub mod store;
 
@@ -71,6 +72,9 @@ impl PushNotifier {
     pub fn start(pool: DbPool, sender: Option<ApnsSender>, presence: Presence) -> Self {
         let (tx, rx) = mpsc::channel(QUEUE);
         let sender = sender.map(Arc::new);
+        if let Some(sender) = sender.clone() {
+            tokio::spawn(live::run(pool.clone(), sender));
+        }
         tokio::spawn(run(rx, tx.clone(), pool, sender.clone(), presence));
         Self { tx: Some(tx), sender }
     }

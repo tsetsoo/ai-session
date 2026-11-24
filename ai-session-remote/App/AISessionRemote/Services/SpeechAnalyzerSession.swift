@@ -64,6 +64,7 @@ struct TranscriptAccumulator {
     private var volatile = ""
 
     var text: String { Self.join(finalized, volatile) }
+    var finalText: String? { volatile.isEmpty && !finalized.isEmpty ? finalized : nil }
 
     mutating func receive(_ segment: String, isFinal: Bool) {
         if isFinal {
@@ -165,17 +166,19 @@ final class AnalyzerSpeechSession: SpeechSession {
 
         resultsTask = Task { [weak self] in
             var transcript = TranscriptAccumulator()
+            var completed = false
             do {
                 for try await result in transcriber.results {
                     if Task.isCancelled { return }
                     transcript.receive(String(result.text.characters), isFinal: result.isFinal)
                     onResult(transcript.text, false)
                 }
+                completed = true
             } catch {}
             // Cancelled (including a failed start that fell back to the old engine): report nothing.
             guard !Task.isCancelled, let self else { return }
             if self.started {
-                onResult(nil, true)
+                onResult(completed ? transcript.finalText : nil, true)
             } else {
                 // Reported by `begin` as a failed start, so the caller can fall back.
                 self.resultsEndedEarly = true

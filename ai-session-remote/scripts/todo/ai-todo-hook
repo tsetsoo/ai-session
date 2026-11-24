@@ -263,8 +263,13 @@ if tool == "claude":
         status, msg = "idle", ""
     elif event == "StopFailure":
         status, msg = "waiting", "Claude encountered an error; open the conversation"
+    elif status == "waiting" and event == "PermissionRequest":
+        name = data.get("tool_name")
+        msg = "Claude needs approval"
+        if isinstance(name, str) and len(name) <= 64 and all(c.isalnum() or c in "_-" for c in name):
+            msg += ": " + name
     elif status == "waiting" and not msg:
-        msg = "Claude needs approval" if event == "PermissionRequest" else "Claude needs your answer"
+        msg = "Claude needs your answer"
 if tool == "codex":
     # PermissionRequest carries the tool, not a message.
     name = data.get("tool_name")
@@ -297,6 +302,13 @@ if tool == "claude":
     out["_claude"] = evidence
 if status == "waiting" and msg:
     out["message"] = msg[:500]
+    prompt_id = data.get("tool_use_id") or data.get("elicitation_id")
+    if isinstance(prompt_id, str) and 0 < len(prompt_id) <= 128 and all(c.isalnum() or c in "_-" for c in prompt_id):
+        out["prompt_id"] = prompt_id
+if status == "busy" and event in ("PostToolUse", "PostToolUseFailure"):
+    name = data.get("tool_name")
+    if isinstance(name, str) and 0 < len(name) <= 64 and all(c.isalnum() or c in "_-" for c in name):
+        out["message"] = "Latest tool: " + name
 print(sid)
 print(status)
 print(json.dumps(out))

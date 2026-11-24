@@ -1,5 +1,8 @@
 import SwiftData
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 @main
 enum AISessionRemoteEntryPoint {
@@ -51,6 +54,11 @@ struct AISessionRemoteApp: App {
                     DemoFixtures.runSkinSequence()
                     #endif
                 }
+                #if os(iOS)
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+                    LiveActivityManager.shared.prepareToLeaveForeground()
+                }
+                #endif
                 .onReceive(NotificationCenter.default.publisher(
                     for: PlatformSupport.didEnterBackgroundNotification
                 )) { _ in

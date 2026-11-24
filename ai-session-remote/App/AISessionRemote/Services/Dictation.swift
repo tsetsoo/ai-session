@@ -49,6 +49,8 @@ final class Dictation {
     }
 
     var transcript = ""
+    private(set) var finalTranscript: String?
+    private(set) var didFinish = false
     private(set) var phase = Phase.idle
     /// Starting counts as running, so the mic button stops rather than starting twice.
     var isRunning: Bool { phase != .idle }
@@ -71,6 +73,8 @@ final class Dictation {
         generation += 1
         let run = generation
         transcript = ""
+        finalTranscript = nil
+        didFinish = false
         let session = makeSession()
         let allowed = await session.authorize()
         // Stopped or cancelled while permission was pending: never touch the microphone.
@@ -125,6 +129,8 @@ final class Dictation {
         guard run == generation else { return }
         if let text { transcript = text }
         guard isFinal else { return }
+        finalTranscript = text
+        didFinish = true
         phase = .idle
         session?.cancel()
         session = nil
@@ -227,7 +233,7 @@ final class LiveSpeechSession: SpeechSession {
         { result, error in
             let text = result?.bestTranscription.formattedString
             let isFinal = (result?.isFinal ?? false) || error != nil
-            Task { @MainActor in onResult(text, isFinal) }
+            Task { @MainActor in onResult(error == nil ? text : nil, isFinal) }
         }
     }
 

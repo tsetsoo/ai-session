@@ -209,6 +209,30 @@ fn base_description() -> Value {
             },
             {
                 "method": "POST",
+                "path": "/api/conversations/{id}/approve",
+                "description": "Queue an approval for a waiting conversation. Send a JSON object with optional {key, text}. Returns {id, status, key}",
+                "example_request": {"key": "1"}
+            },
+            {
+                "method": "POST",
+                "path": "/api/conversations/{id}/permission-decision",
+                "description": "Queue an Allow or Reject decision for a specific permission prompt. A changed or answered prompt returns 409.",
+                "example_request": {"status_revision": 8, "reject": false}
+            },
+            {
+                "method": "POST",
+                "path": "/api/todos/{id}/approve",
+                "description": "Enqueue an approval for the waiting conversation of this todo. Send a JSON object with optional {key, text}. Returns {todo_id, conversation_id, status, key}",
+                "example_request": {"key": "1"}
+            },
+            {
+                "method": "POST",
+                "path": "/api/conversations/approve",
+                "description": "Host daemon endpoint to poll or claim pending approvals by tool and session_id. action: claim (default) or poll. For a guarded decision, claim with supports_prompt_decisions: true, prompt_id, and a unique claim_id UUID. Report sent, release, or unknown with the same identities. Returns {approved, key, text, tmux_name, status_revision, prompt_id, claim_id}",
+                "example_request": {"tool": "claude", "session_id": "<uuid>", "action": "claim"}
+            },
+            {
+                "method": "POST",
                 "path": "/api/conversations/mcp",
                 "description": "Host-script report of the MCP servers a conversation was started with, found by tool and session_id. 204 on success, 404 when no conversation has that tool and session_id, 400 for an invalid name",
                 "example_request": {"tool": "claude", "session_id": "<uuid>", "mcp_servers": ["grafana"]}
@@ -220,6 +244,8 @@ fn base_description() -> Value {
                 "description": "Status hook endpoint. Identify the conversation with session_id (or claude_session_id, sent by older hooks) and tool (optional, default claude: older hooks are Claude hooks); one post updates at most one conversation. With status idle, an optional paused {kind: session|weekly|limit, resets_at: RFC 3339} marks a turn stopped by a usage limit: no done push, and the pause stays until the status changes or a new turn starts. An optional workers [{id, state: working|done, needs_you, message}] (at most 50) replaces the conversation's delegated workers, returned as conversation.workers; absent or empty clears them. 204 on success, 404 for sessions that are not todo conversations, 400 without an id, for status closed or for an invalid pause",
                 "example_request": {"session_id": "<uuid>", "tool": "claude", "status": "waiting", "message": "Claude needs your permission"}
             },
+            {"method": "PUT", "path": "/api/push/live-activities/{id}", "description": "Register an ActivityKit update token for a busy or waiting conversation", "example_request": {"conversation_id": "<id>", "token": "<hex>", "environment": "sandbox"}},
+            {"method": "DELETE", "path": "/api/push/live-activities/{id}", "description": "Remove an ended or dismissed ActivityKit registration"},
             {"method": "PUT", "path": "/api/push/devices", "description": "Register or refresh this device's APNs token (hex). Returns the PushDevice; the full token is never returned. Optional sound: one of the app skin sounds (attention-needs-you-neon-noir.caf, attention-needs-you-phosphor.caf, attention-review-neon-noir.caf, attention-review-phosphor.caf), anything else is a 400; omit for the system default", "example_request": {"token": "<hex>", "platform": "ios", "environment": "sandbox", "bundle_id": "com.aisessionremote.app", "app_version": "1.0 (7)", "device_name": "iPhone", "sound": "attention-needs-you-phosphor.caf"}},
             {"method": "GET", "path": "/api/push/devices", "description": "Registered devices (PushDevice[])"},
             {"method": "POST", "path": "/api/push/devices/unregister", "description": "Unregister a device (the toggle was switched off). The token goes in the body because request paths are logged. 404 if unknown", "example_request": {"token": "<hex>"}},

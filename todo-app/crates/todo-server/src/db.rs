@@ -197,6 +197,22 @@ fn init_pool_through(db_path: &str, target_version: i64) -> DbPool {
         conn.execute_batch("ALTER TABLE push_devices ADD COLUMN sound TEXT;")
             .expect("Failed to add the push sound column");
     }
+    if target_version >= 45 && !column_exists(&conn, "conversations", "pending_approval").expect("Failed to inspect conversations") {
+        conn.execute_batch("ALTER TABLE conversations ADD COLUMN pending_approval TEXT;")
+            .expect("Failed to add the pending_approval column");
+    }
+    if target_version >= 46 {
+        if !column_exists(&conn, "conversations", "status_prompt_id").expect("Failed to inspect conversations") {
+            conn.execute_batch("ALTER TABLE conversations ADD COLUMN status_prompt_id TEXT;")
+                .expect("Failed to add the prompt ID column");
+        }
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS live_activities (
+                id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
+                token TEXT NOT NULL, environment TEXT NOT NULL, expires_at INTEGER NOT NULL
+            );",
+        ).expect("Failed to create the Live Activity registry");
+    }
     if version <= target_version {
         conn.pragma_update(None, "user_version", target_version)
             .expect("Failed to record the schema version");
@@ -454,7 +470,8 @@ fn conversations_ddl(table: &str) -> String {
             resume_at         TEXT,
             resume_offer      INTEGER NOT NULL DEFAULT 0,
             resume_token      TEXT,
-            resume_lease_until TEXT
+            resume_lease_until TEXT,
+            pending_approval  TEXT
         )"
     )
 }
@@ -1216,7 +1233,9 @@ fn table_sql(conn: &Connection, table: &str) -> rusqlite::Result<Option<String>>
 /// - v42: scrape-health investigation and handoff metadata (additive).
 /// - v43: Antigravity conversation and session provider checks.
 /// - v44: `push_devices.sound`, the app skin's push sound (additive).
-pub const SCHEMA_VERSION: i64 = 44;
+/// - v45: `conversations.pending_approval` for remote/lock-screen approvals (additive).
+/// - v46: Live Activity token registrations and prompt identity.
+pub const SCHEMA_VERSION: i64 = 46;
 
 /// The database's schema version. Databases written before versioning (user_version 0)
 /// are classified once by their table definitions; after startup the number is stored.
@@ -3665,6 +3684,22 @@ mod tests {
         let conn = pool.get().unwrap();
         assert_eq!(user_version(&conn), 44);
         assert!(column_exists(&conn, "push_devices", "sound").unwrap());
+    }
+
+    #[test]
+    fn migrates_v44_to_v45_adds_pending_approval() {
+        let db = TestDb::new("migrate-45");
+        drop(init_pool_through(&db.path, 44));
+        let conn = Connection::open(&db.path).unwrap();
+        if column_exists(&conn, "conversations", "pending_approval").unwrap() {
+            conn.execute_batch("ALTER TABLE conversations DROP COLUMN pending_approval;").unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version = 44;").unwrap();
+        drop(conn);
+        let pool = init_pool_through(&db.path, 45);
+        let conn = pool.get().unwrap();
+        assert_eq!(user_version(&conn), 45);
+        assert!(column_exists(&conn, "conversations", "pending_approval").unwrap());
     }
 
     #[test]

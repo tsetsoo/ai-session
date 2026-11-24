@@ -378,6 +378,10 @@ final class AppModel {
         alerts.clearStale(needsYou, inReview)
         prunePulses(keeping: Set(snapshot.keys))
 
+        #if os(iOS)
+        LiveActivityManager.shared.sync(conversations: fetched.conversations, todos: fetched.todos, projects: store.projects)
+        #endif
+
         // Only what the board shows in the section: a waiting conversation whose tmux session
         // is gone is Closed, a done todo or a paused run isn't To review.
         let waiting = StatusTransitions.newlyWaiting(previous: previous, current: fetched.conversations)

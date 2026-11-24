@@ -3,6 +3,32 @@ import XCTest
 
 @MainActor
 final class DictationTests: XCTestCase {
+    func testVoiceRecognizesStandaloneAndCombinedSendCues() {
+        XCTAssertEqual(ChatComposer.VoiceCommand(" Send message. "), .send(nil))
+        XCTAssertEqual(ChatComposer.VoiceCommand("Discard message!"), .discard)
+        XCTAssertEqual(ChatComposer.VoiceCommand("Stop voice mode."), .stop)
+        XCTAssertEqual(ChatComposer.VoiceCommand("Run the tests, send to agent."), .send("Run the tests"))
+        XCTAssertEqual(ChatComposer.VoiceCommand("Summarize the diff. Send to agent!"), .send("Summarize the diff"))
+        XCTAssertEqual(ChatComposer.VoiceCommand("Send to agent."), .send(nil))
+        let ordinary = "Show how to send to agent instances."
+        XCTAssertEqual(ChatComposer.VoiceCommand(ordinary), .dictate(ordinary))
+        let prose = "Explain when I should send message events."
+        XCTAssertEqual(ChatComposer.VoiceCommand(prose), .dictate(prose))
+    }
+
+    func testFinalTranscriptIsSeparateFromTheLivePreview() async throws {
+        let fake = FakeSession()
+        let dictation = Dictation(makeSession: { fake })
+        try await dictation.start()
+        fake.emit("Send message")
+        XCTAssertNil(dictation.finalTranscript)
+        dictation.stop()
+        XCTAssertFalse(dictation.didFinish)
+        fake.emit("Send message events", final: true)
+        XCTAssertEqual(dictation.finalTranscript, "Send message events")
+        XCTAssertTrue(dictation.didFinish)
+    }
+
     private struct BeginFailed: Error {}
 
     private final class FakeSession: SpeechSession {

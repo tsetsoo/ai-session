@@ -23,6 +23,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 
 def codex_home():
@@ -706,6 +707,7 @@ def _publish(body, observed_ns=None, source="hook", try_send=True):
         turn_started = max(previous_turn, observed if hook_event == "UserPromptSubmit" else 0)
         new_turn = turn_started > previous_turn
         overridden = False
+        tool_step = body.get("message") if hook_event in ("PostToolUse", "PostToolUseFailure") else None
         evidence = previous.get("claude_turn", {})
         if tool == "claude" and source != "runtime":
             raw_snapshot = read_json(root() / "claude-runtime.json", {})
@@ -809,12 +811,18 @@ def _publish(body, observed_ns=None, source="hook", try_send=True):
             record["codex_workers"] = codex_workers
         if tool == "codex" and "codex_parent" not in record:
             record["codex_parent"] = codex_parent(sid) or ""
+        if body["status"] != "waiting":
+            body.pop("prompt_id", None)
+        if body["status"] == "busy" and not body.get("message") and not new_turn:
+            previous_step = previous_body.get("message") if previous_body.get("status") == "busy" else None
+            if tool_step or (previous_step or "").startswith("Latest tool: "):
+                body["message"] = tool_step or previous_step
         # Persist before networking; a killed hook must leave the final event recoverable.
         atomic_json(path, record)
         if overridden or source == "runtime":
             sync_legacy_state(sid, body["status"], tool=tool)
         if (tool == "claude" and hook_event in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "ElicitationResult") and not previous.get("pending", True)
-                and all(previous_body.get(key) == body.get(key) for key in ("status", "message", "turn_started_ns", "attended", "workers"))):
+                and all(previous_body.get(key) == body.get(key) for key in ("status", "message", "prompt_id", "turn_started_ns", "attended", "workers"))):
             record.update(pending=False, delivered_ns=previous.get("delivered_ns"))
             atomic_json(path, record)
             return True
@@ -1674,6 +1682,99 @@ def poll_runtime(client, previous, try_send=True, tool="codex"):
     return len(effective)
 
 
+def claim_approval(tool, sid, timeout=1.0, *, action="claim", claim_id=None, prompt_id=None):
+    try:
+        url, token = configuration()
+    except (ValueError, OSError):
+        return None
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    payload = {"tool": tool, "session_id": sid, "action": action, "supports_prompt_decisions": True}
+    if claim_id and prompt_id:
+        payload.update(claim_id=claim_id, prompt_id=prompt_id)
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url + "/api/conversations/approve", data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if 200 <= resp.status < 300:
+                return json.load(resp)
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+    return None
+
+
+def send_approval_keys(tmux_name, key, tool="claude"):
+    """Returns the outcome of delivering a key to the exact tmux session."""
+    if not tmux_name:
+        return "release"
+    try:
+        keys = [key] if tool == "codex" or key == "Escape" else [key, "Enter"]
+        result = subprocess.run(["tmux", "send-keys", "-t", "=" + tmux_name + ":", "--", *keys], timeout=2, check=False)
+        return "sent" if result.returncode == 0 else "release"
+    except OSError:
+        return "release"
+    except subprocess.TimeoutExpired:
+        # The daemon may have already accepted the keys. Avoid sending them twice.
+        return "unknown"
+
+
+def is_permission_message(tool, message):
+    if not isinstance(message, str):
+        return False
+    if tool == "claude":
+        return message == "Claude needs approval" or message.startswith("Claude needs approval: ")
+    if tool == "codex":
+        return message == "Codex needs approval" or message.startswith("Codex needs your permission to use ")
+    return False
+
+
+def check_approvals():
+    """Polls and claims pending approvals for any active session in waiting state."""
+    directory = root()
+    if not directory.exists():
+        return
+    for path in directory.glob("*.json"):
+        if path.name.endswith(".sent") or path.name in ("delivery.json", "health.json", "claude-health.json"):
+            continue
+        try:
+            record = read_json(path, {})
+            body = record.get("body")
+            if isinstance(body, dict) and body.get("status") == "waiting":
+                sid = body.get("session_id")
+                tool = body.get("tool", "claude")
+                if sid:
+                    prompt_id = body.get("prompt_id")
+                    claim_id = str(uuid.uuid4()) if prompt_id else None
+                    approval = claim_approval(tool, sid, claim_id=claim_id, prompt_id=prompt_id)
+                    if not approval or not approval.get("approved"):
+                        continue
+                    guarded = approval.get("status_revision") is not None
+                    if guarded and (not claim_id or approval.get("claim_id") != claim_id
+                                    or approval.get("prompt_id") != prompt_id):
+                        continue
+                    outcome = "release"
+                    try:
+                        with session_lock(sid, blocking=False, tool=tool):
+                            latest = read_json(path, {}).get("body") or {}
+                            current = (isinstance(latest, dict) and latest.get("status") == "waiting"
+                                       and latest.get("session_id") == sid and latest.get("tool", "claude") == tool)
+                            same_prompt = (current and latest.get("prompt_id") == prompt_id
+                                           and is_permission_message(tool, latest.get("message")))
+                            if current and (not guarded or same_prompt):
+                                key = approval.get("key") or ("y" if tool == "codex" else "1")
+                                outcome = send_approval_keys(approval.get("tmux_name"), key, tool)
+                    except (OSError, ValueError):
+                        pass
+                    if guarded:
+                        for _ in range(2):
+                            if claim_approval(tool, sid, action=outcome,
+                                              claim_id=claim_id, prompt_id=prompt_id) is not None:
+                                break
+        except OSError:
+            pass
+
+
 def watch():
     previous = {}
     client = None
@@ -1683,6 +1784,7 @@ def watch():
             try:
                 summary = retry_pending(budget=2, respect_backoff=True)
                 atomic_json(root() / "delivery.json", dict(summary, checked_ns=time.time_ns()))
+                check_approvals()
             except OSError:
                 pass
             time.sleep(1)

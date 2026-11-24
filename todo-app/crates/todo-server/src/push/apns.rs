@@ -416,6 +416,38 @@ impl ApnsSender {
     }
 
     /// Send `alert` to one device, with retries and the environment fallback.
+    pub async fn send_live(&self, mut env: ApnsEnvironment, token: &str, payload: serde_json::Value) -> Outcome {
+        let urgent = payload["aps"]["event"] == "end" || payload["aps"]["content-state"]["status"] == "waiting";
+        let priority = if urgent { "10" } else { "5" };
+        let body = payload.to_string().into_bytes();
+        let mut tried_other_env = false;
+        let mut refreshed = false;
+        loop {
+            let jwt = self.signer.lock().unwrap().token(SystemTime::now());
+            let headers = vec![
+                ("apns-topic", "com.aisessionremote.app.push-type.liveactivity".into()),
+                ("apns-push-type", "liveactivity".into()),
+                ("apns-priority", priority.into()),
+                ("apns-expiration", "0".into()),
+                ("authorization", format!("bearer {jwt}")),
+            ];
+            let outcome = match self.transport.post(env, token, headers, body.clone()).await {
+                Ok(response) => classify(&response),
+                Err(_) => Outcome::Retry,
+            };
+            match outcome {
+                Outcome::WrongEnvironment if !tried_other_env => {
+                    tried_other_env = true;
+                    env = env.other();
+                }
+                Outcome::RefreshToken if !refreshed && self.signer.lock().unwrap().force_refresh(SystemTime::now()) => {
+                    refreshed = true;
+                }
+                _ => return outcome,
+            }
+        }
+    }
+
     pub async fn send(&self, pool: &DbPool, target: &DeviceTarget, alert: &Alert) -> PushTestResult {
         let body = build_payload(alert, target.sound.as_deref()).to_string().into_bytes();
         let prefix = token_prefix(&target.token);

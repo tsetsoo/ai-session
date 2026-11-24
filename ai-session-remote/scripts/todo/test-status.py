@@ -23,6 +23,8 @@ class StatusTests(unittest.TestCase):
         self.environment = patch.dict(os.environ, {"HOME": str(self.home), "AI_TODO_STATUS_DIR": str(self.home / "queue")})
         self.environment.start()
         self.requests = []
+        self.approval_requests = []
+        self.approval_response = {"approved": False}
         self.http_status = 204
         self.conversations = []
         self.links = []
@@ -40,7 +42,15 @@ class StatusTests(unittest.TestCase):
                 self.end_headers()
 
             def do_POST(self):
-                owner.requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path == "/api/conversations/approve":
+                    owner.approval_requests.append(body)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(getattr(owner, "approval_response", {"approved": False})).encode())
+                    return
+                owner.requests.append(body)
                 self.send_response(owner.http_status)
                 self.end_headers()
 
@@ -73,6 +83,68 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(status.runtime_status({"type": "active", "activeFlags": ["waitingOnUserInput"]})[0], "waiting")
         self.assertEqual(status.runtime_status({"type": "idle"}), ("idle", None))
         self.assertIsNone(status.runtime_status({"type": "notLoaded"}))
+
+    def test_check_approvals_dispatches_keys_to_tmux(self):
+        self.approval_response = {
+            "approved": True,
+            "tmux_name": "ai/claude/todo-test",
+            "key": "1",
+            "tool": "claude",
+            "session_id": "thread-wait"
+        }
+        # Record a waiting session
+        status.publish({"session_id": "thread-wait", "status": "waiting", "tool": "claude"}, 100, try_send=False)
+        dispatched = []
+        with patch.object(status, "send_approval_keys", side_effect=lambda tmux, key, tool: dispatched.append((tmux, key, tool))):
+            status.check_approvals()
+        self.assertEqual(len(self.approval_requests), 1)
+        self.assertEqual(self.approval_requests[0], {
+            "tool": "claude", "session_id": "thread-wait", "action": "claim", "supports_prompt_decisions": True,
+        })
+        self.assertEqual(dispatched, [("ai/claude/todo-test", "1", "claude")])
+
+    def test_relay_releases_when_prompt_changes_or_send_fails(self):
+        for changed in (False, True):
+            with self.subTest(changed=changed):
+                body = {"session_id": "thread-wait", "status": "waiting",
+                        "message": "Claude needs approval: Bash", "tool": "claude", "prompt_id": "new-tool"}
+                status.publish(body, 100, try_send=False)
+                actions = []
+
+                def claim(tool, sid, *, claim_id, prompt_id, action="claim"):
+                    actions.append(action)
+                    if action != "claim":
+                        return {}
+                    if changed:
+                        status.publish(dict(body, prompt_id="replacement"), 200, try_send=False)
+                    return {"approved": True, "tmux_name": "ai/claude/task", "key": "Escape",
+                            "status_revision": 1, "prompt_id": prompt_id, "claim_id": claim_id}
+
+                with patch.object(status, "claim_approval", side_effect=claim), \
+                        patch.object(status, "send_approval_keys", return_value="release") as dispatch:
+                    status.check_approvals()
+                    self.assertEqual(dispatch.call_count, 0 if changed else 1)
+                self.assertEqual(actions, ["claim", "release"])
+
+    def test_approval_keys_follow_each_tools_prompt(self):
+        with patch.object(status.subprocess, "run") as run:
+            status.send_approval_keys("ai/claude/task", "1", "claude")
+            run.assert_called_once_with(
+                ["tmux", "send-keys", "-t", "=ai/claude/task:", "--", "1", "Enter"],
+                timeout=2, check=False,
+            )
+            run.reset_mock()
+            status.send_approval_keys("ai/codex/task", "y", "codex")
+            run.assert_called_once_with(
+                ["tmux", "send-keys", "-t", "=ai/codex/task:", "--", "y"],
+                timeout=2, check=False,
+            )
+            run.reset_mock()
+            status.send_approval_keys("ai/claude/task", "Escape", "claude")
+            run.assert_called_once_with(
+                ["tmux", "send-keys", "-t", "=ai/claude/task:", "--", "Escape"],
+                timeout=2, check=False,
+            )
 
     def test_stale_hook_cannot_replace_newer_completion(self):
         status.publish(self.body("busy"), 100, try_send=False)

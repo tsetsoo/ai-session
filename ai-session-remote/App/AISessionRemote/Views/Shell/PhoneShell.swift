@@ -210,6 +210,17 @@ struct PhoneShell: View {
             model.pendingOpenTodoID = nil
             showConversation(for: todoID, key: store.conversationToOpen(forTodo: todoID))
         }
+        .onOpenURL { url in
+            guard url.scheme == "aisessionremote", url.host == "conversation",
+                  let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                      .queryItems?.first(where: { $0.name == "id" })?.value,
+                  !id.isEmpty else { return }
+            Task {
+                if store.conversations[id] == nil { await store.refresh() }
+                guard let conversation = store.conversations[id] else { return }
+                showConversation(for: conversation.todoId, key: id)
+            }
+        }
         // The Home-screen "New Todo" quick action. Open the New Todo sheet.
         .onChange(of: model.quickAddFocusRequested, initial: true) { _, requested in
             guard requested else { return }

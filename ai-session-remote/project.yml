@@ -29,6 +29,7 @@ targets:
       - path: App/AISessionRemote
         excludes:
           - Info.plist
+      - path: App/AISessionWidget/ApprovePromptIntent.swift
     info:
       path: App/AISessionRemote/Info.plist
       properties:
@@ -57,6 +58,12 @@ targets:
         # Don't add NSAllowsLocalNetworking back: its presence makes ATS ignore this key.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+        CFBundleURLTypes:
+          - CFBundleURLName: com.aisessionremote.app.conversation
+            CFBundleURLSchemes:
+              - aisessionremote
+        NSSupportsLiveActivities: true
+        NSSupportsLiveActivitiesFrequentUpdates: true
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.aisessionremote.app
       # aps-environment for push notifications (iOS only; the Mac app has no remote push).
@@ -85,9 +92,34 @@ targets:
         product: Crypto
       - package: SwiftTerm
         product: SwiftTerm
+      - target: AISessionWidget
     scheme:
       testTargets:
         - AISessionRemoteTests
+
+  AISessionWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: App/AISessionWidget
+        excludes:
+          - Info.plist
+    info:
+      path: App/AISessionWidget/Info.plist
+      properties:
+        CFBundleDisplayName: AI Session Widget
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.aisessionremote.app.widget
+      SWIFT_VERSION: "5.9"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) LIVE_ACTIVITY_WIDGET"
+      TARGETED_DEVICE_FAMILY: "1,2"
+      GENERATE_INFOPLIST_FILE: NO
+      INFOPLIST_FILE: App/AISessionWidget/Info.plist
+    dependencies:
+      - package: AISessionRemote
+        product: AISessionCore
 
   AISessionRemoteTests:
     type: bundle.unit-test

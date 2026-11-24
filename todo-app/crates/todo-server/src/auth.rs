@@ -167,6 +167,7 @@ pub(crate) fn forbidden(message: &str) -> HttpResponse {
 fn scoped_route(method: &actix_web::http::Method, path: &str) -> bool {
     use actix_web::http::Method;
     match (method, path.split('/').collect::<Vec<_>>().as_slice()) {
+        (&Method::PUT | &Method::DELETE, ["", "api", "push", "live-activities", id]) => !id.is_empty(),
         (&Method::GET, ["", "api", "todos" | "projects" | "computers" | "conversations"])
         | (&Method::POST, ["", "api", "todos"]) => true,
         (&Method::GET | &Method::PATCH | &Method::DELETE, ["", "api", "todos", id]) =>
@@ -174,8 +175,8 @@ fn scoped_route(method: &actix_web::http::Method, path: &str) -> bool {
         (&Method::GET | &Method::PATCH | &Method::DELETE, ["", "api", "projects", id]) =>
             !id.is_empty() && *id != "suggestions",
         (&Method::PATCH, ["", "api", "computers", id])
-        | (&Method::POST, ["", "api", "todos", id, "toggle" | "conversation" | "conversations"])
-        | (&Method::POST, ["", "api", "conversations", id, "continue" | "reopen" | "close"])
+        | (&Method::POST, ["", "api", "todos", id, "toggle" | "conversation" | "conversations" | "approve"])
+        | (&Method::POST, ["", "api", "conversations", id, "continue" | "reopen" | "close" | "approve" | "permission-decision"])
         | (&Method::PUT, ["", "api", "conversations", id, "session"])
         | (&Method::DELETE, ["", "api", "conversations", id]) => !id.is_empty(),
         _ => false,
@@ -192,7 +193,7 @@ fn helper_route(method: &actix_web::http::Method, path: &str) -> bool {
         | (&Method::POST, ["", "api", "runner", "pull-requests"])
         | (&Method::POST, ["", "api", "sessions", "stats"])
         | (&Method::POST, ["", "api", "memories", "bulk" | "import" | "uses"])
-        | (&Method::POST, ["", "api", "conversations", "status" | "mcp" | "resume"]) => true,
+        | (&Method::POST, ["", "api", "conversations", "status" | "mcp" | "resume" | "approve"]) => true,
         (&Method::PUT, ["", "api", "projects", id, "updates" | "weekly", day]) => !id.is_empty() && !day.is_empty(),
         (&Method::PUT, ["", "api", "conversations", id, "session"])
         | (&Method::POST, ["", "api", "runs", id, "claim" | "wait" | "start" | "finish" | "report"])
@@ -547,6 +548,27 @@ mod tests {
             }))).await;
         assert_eq!(uses["recorded"], 1);
         assert_eq!(uses["unknown"], serde_json::json!(["other-memory"]));
+        for (session_id, conversation_id, approved) in [
+            ("other-session", "other-chat", false),
+            ("own-session", "own-chat", true),
+        ] {
+            let waiting = test::TestRequest::post().uri("/api/conversations/status")
+                .insert_header(("Authorization", "Bearer admin"))
+                .set_json(serde_json::json!({"session_id": session_id, "status": "waiting"}))
+                .to_request();
+            assert_eq!(test::call_service(&app, waiting).await.status(), 204);
+            let approve = test::TestRequest::post()
+                .uri(&format!("/api/conversations/{conversation_id}/approve"))
+                .insert_header(("Authorization", "Bearer admin"))
+                .set_json(serde_json::json!({}))
+                .to_request();
+            assert_eq!(test::call_service(&app, approve).await.status(), 200);
+            let claim: serde_json::Value = test::call_and_read_body_json(&app, request(
+                Method::POST, "/api/conversations/approve",
+                serde_json::json!({"tool": "claude", "session_id": session_id, "action": "claim"}),
+            )).await;
+            assert_eq!(claim["approved"], approved);
+        }
         for (method, path, body, status) in [
             (Method::POST, "/api/sessions/stats", serde_json::json!({"computer_id": "mac", "sessions": []}), 403),
             (Method::POST, "/api/sessions/stats", serde_json::json!({"computer_id": "spread", "sessions": [

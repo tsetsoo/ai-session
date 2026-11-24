@@ -210,7 +210,10 @@ struct PhoneConversationView<TerminalContent: View>: View {
                 connected: terminal.isConnected, promptShowing: prompt != nil || showsFallback,
                 isSending: isSending, onPastePhoto: pastePhoto,
                 onSend: send, onQuickReply: { send($0, clearsDraft: false) },
-                photoStatus: photoUploads.status
+                photoStatus: photoUploads.status,
+                voiceAvailable: shouldPoll,
+                voiceReady: !isBusy && pending.isEmpty,
+                latestReply: messages.last { $0.role == .assistant }
             )
         }
         .background(DS.windowBackground ?? Color(uiColor: .systemGroupedBackground))

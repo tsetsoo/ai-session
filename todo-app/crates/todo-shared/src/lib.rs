@@ -379,6 +379,8 @@ pub struct Conversation {
     #[serde(default)]
     pub status_revision: i64,
     #[serde(default)]
+    pub has_prompt_identity: bool,
+    #[serde(default)]
     pub reviewed: bool,
     pub created_at: String,
     /// The conversation's project: its session's project, or matched from computer + cwd
@@ -500,6 +502,9 @@ pub struct ConversationStatusRequest {
     /// persist this with their outbox so retrying an old event cannot undo a newer one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_timestamp_ns: Option<i64>,
+    /// Opaque tool prompt identifier when the host can observe it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
     /// Latest user turn, retained when offline updates coalesce or a fast turn is missed
     /// by runtime polling. Repeated heartbeats for this turn do not rearm review.
     #[serde(default, skip_serializing_if = "Option::is_none")]
