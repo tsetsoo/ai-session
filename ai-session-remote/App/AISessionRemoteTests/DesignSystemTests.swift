@@ -61,7 +61,7 @@ final class DesignSystemTests: XCTestCase {
     func testPhosphorTokens() {
         SkinStore.shared.skin = .phosphor
         XCTAssertEqual(DS.radius(10), 0)
-        XCTAssertEqual(hex(DS.accent, .dark), 0x6FD394, "a soft green, not neon")
+        XCTAssertEqual(hex(DS.accent, .dark), 0x5CE892, "vivid green, not neon")
         XCTAssertNotNil(DS.windowBackground)
         XCTAssertNil(DS.glow)
     }
@@ -111,8 +111,8 @@ final class DesignSystemTests: XCTestCase {
             return (v.max()! - v.min()!) / max(v.max()!, 0.001)
         }
         for (name, token) in [("accent", DS.accent), ("success", DS.success), ("info", DS.info)] {
-            XCTAssertLessThanOrEqual(saturation(token), 0.5, name)
+            XCTAssertLessThanOrEqual(saturation(token), 0.65, name)
         }
-        XCTAssertGreaterThanOrEqual(hex(DS.windowBackground!, .dark) >> 8 & 0xFF, 0x16, "background green")
+        XCTAssertGreaterThanOrEqual(hex(DS.windowBackground!, .dark) >> 8 & 0xFF, 0x14, "background green")
     }
 }

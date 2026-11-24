@@ -208,12 +208,12 @@ final class SkinTests: XCTestCase {
         let bytesPerRow = try XCTUnwrap(image.cgImage?.bytesPerRow)
         let scale = Int(image.scale)
         let offset = (290 * scale) * bytesPerRow + (100 * scale) * 4
-        // Near the bottom, below the one row, in 8-bit BGRA: the Phosphor background 0x0C1A12.
+        // Near the bottom, below the one row, in 8-bit BGRA: the Phosphor background 0x0A1610.
         let px = (0..<4).map { Int(pixel[offset + $0]) }
         XCTAssertEqual(px[3], 255, "opaque: \(px)")
-        XCTAssertLessThan(abs(px[1] - 0x1A), 6, "green: \(px)")
-        XCTAssertLessThan(abs(px[0] - 0x12), 6, "blue: \(px)")
-        XCTAssertLessThan(abs(px[2] - 0x0C), 6, "red: \(px)")
+        XCTAssertLessThan(abs(px[1] - 0x16), 4, "green: \(px)")
+        XCTAssertLessThan(abs(px[0] - 0x10), 4, "blue: \(px)")
+        XCTAssertLessThan(abs(px[2] - 0x0A), 4, "red: \(px)")
     }
 
     func testSkinnedRowPaintsTheSkinSurface() throws {
@@ -234,10 +234,10 @@ final class SkinTests: XCTestCase {
         let cg = try XCTUnwrap(image.cgImage)
         let data = try XCTUnwrap(cg.dataProvider?.data) as Data
         let offset = 150 * cg.bytesPerRow + 28 * 4
-        // Inside the row, left of the text: the Phosphor surface 0x13261B (BGRA).
+        // Inside the row, left of the text: the Phosphor surface 0x11231A (BGRA).
         let px = (0..<4).map { Int(data[offset + $0]) }
-        XCTAssertLessThan(abs(px[1] - 0x26), 6, "green: \(px)")
-        XCTAssertLessThan(abs(px[0] - 0x1B), 6, "blue: \(px)")
+        XCTAssertLessThan(abs(px[1] - 0x23), 4, "green: \(px)")
+        XCTAssertLessThan(abs(px[0] - 0x1A), 4, "blue: \(px)")
     }
 
     /// Phosphor keeps the system font for the interface (monospace everywhere was hard to read

@@ -83,7 +83,7 @@ private struct SkinnedTerminalFrame: ViewModifier {
         let border: Color = switch skin {
         case .standard: .clear
         case .neonNoir: DS.accent
-        case .phosphor: Color(PlatformNativeColor(hex: 0x2A4A36))
+        case .phosphor: Color(PlatformNativeColor(hex: 0x26503A))
         }
         content
             // The glow is on the border line only: a shadow on the terminal itself would make

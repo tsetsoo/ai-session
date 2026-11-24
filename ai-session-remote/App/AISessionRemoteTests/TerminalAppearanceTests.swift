@@ -101,12 +101,12 @@ final class TerminalAppearanceTests: XCTestCase {
     func testPhosphorIsEasyOnTheEyes() {
         let p = TerminalPalette.phosphor.contrastPalette
         let contrast = TerminalContrastGuard.contrast(p.foreground, p.background)
-        XCTAssertLessThanOrEqual(contrast, 13.5, "glare")
+        XCTAssertLessThanOrEqual(contrast, 14, "glare")
         XCTAssertGreaterThanOrEqual(contrast, 7)
         let fg = [p.foreground.r, p.foreground.g, p.foreground.b].map(Double.init)
         let saturation = (fg.max()! - fg.min()!) / fg.max()!
-        XCTAssertLessThanOrEqual(saturation, 0.35, "neon")
+        XCTAssertLessThanOrEqual(saturation, 0.5, "neon")
         let bg = [p.background.r, p.background.g, p.background.b]
-        XCTAssertGreaterThanOrEqual(bg.max()!, 0x16, "pure black background")
+        XCTAssertGreaterThanOrEqual(bg.max()!, 0x14, "pure black background")
     }
 }

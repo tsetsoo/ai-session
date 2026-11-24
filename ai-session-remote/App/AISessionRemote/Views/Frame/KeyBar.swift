@@ -182,11 +182,11 @@ struct KeyBarColors {
             accentLabel = DS.onAccent
             return
         case .phosphor:
-            bar = hex(0x0F1E15)
-            separator = hex(0x2A4A36)
-            key = hex(0x17301F)
-            keyPressed = hex(0x1F3D2A)
-            keyLabel = hex(0xA8E6BC)
+            bar = hex(0x0D1B13)
+            separator = hex(0x26503A)
+            key = hex(0x15301F)
+            keyPressed = hex(0x1D3E2A)
+            keyLabel = hex(0x7FF0A4)
             keyShadow = hex(0x050A07)
             accent = DS.accent
             accentLabel = DS.onAccent
