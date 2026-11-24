@@ -57,6 +57,26 @@ class AntigravityTests(unittest.TestCase):
         self.binary.unlink()
         self.assertEqual(agy.allocate(self.binary, "ai/antigravity/todo-test", self.temp.name), SID)
 
+    def test_workspace_trust_requires_the_allocated_live_pane(self):
+        name = "ai/antigravity/todo-test"
+        identity = "123:%4:567"
+        agy.allocate(self.binary, name, self.temp.name)
+        trust_screen = "Do you trust the contents of this project?\n> Yes, I trust this folder\n  No, exit\n"
+        launch = Mock(returncode=0, stdout=f"{identity} env agy --conversation {SID}")
+        capture = Mock(returncode=0, stdout=trust_screen)
+        with patch.object(agy, "pane_identity", return_value=identity) as pane, \
+             patch.object(agy.subprocess, "run", side_effect=lambda argv, **_: launch if "display-message" in argv else capture):
+            self.assertTrue(agy.pane_waits_for_workspace_trust(SID, name, identity))
+            self.assertFalse(agy.pane_waits_for_workspace_trust(SID, name + "-other", identity))
+            pane.return_value = "123:%9:777"
+            self.assertFalse(agy.pane_waits_for_workspace_trust(SID, name, identity))
+            pane.return_value = identity
+            capture.stdout = "Ready for a prompt"
+            self.assertFalse(agy.pane_waits_for_workspace_trust(SID, name, identity))
+            capture.stdout = trust_screen
+            launch.stdout = f"{identity} env agy --conversation 00000000-0000-0000-0000-000000000000"
+            self.assertFalse(agy.pane_waits_for_workspace_trust(SID, name, identity))
+
     def test_quota_preserves_model_groups(self):
         self.assertEqual(agy.quota_windows(self.binary), [
             {"kind": "weekly", "used_percent": 25, "scope": "Gemini Models",

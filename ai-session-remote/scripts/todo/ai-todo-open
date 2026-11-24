@@ -68,6 +68,7 @@
 # Test hooks (not for normal use):
 #   AI_TODO_TMUX_SOCKET  use a private tmux server (tmux -L <name>)
 #   AI_TODO_OPEN_DETACH  =1: don't attach; print created|resumed|attach and exit
+#   AI_TODO_SHOW_WORKSPACE_TRUST =1: the app will attach and show Antigravity's trust prompt
 #   AI_TODO_CLAUDE_BIN   claude binary to start instead of `command -v claude`
 #   AI_TODO_CODEX_BIN    codex binary to start instead of looking it up
 #   AI_TODO_AGENT_BIN    cursor agent binary to start instead of `command -v agent`
@@ -486,6 +487,11 @@ agy_wait_ready() {
       [ -n "$pending" ] || return 0
     elif [ "$?" = 2 ]; then
       return 1
+    fi
+    if { [ "${AI_TODO_OPEN_DETACH:-}" != 1 ] || [ "${AI_TODO_SHOW_WORKSPACE_TRUST:-}" = 1 ]; } &&
+       "$launch_bin" antigravity workspace-trust "$sid" "$name" "$actual_pane"; then
+      # This is a live pane the user can answer. Scheduled starts still require readiness.
+      return 0
     fi
     sleep 0.25
   done

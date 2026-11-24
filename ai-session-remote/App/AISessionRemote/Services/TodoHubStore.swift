@@ -563,7 +563,8 @@ final class TodoHubStore {
                     TmuxCommandBuilder.freshTodoConversation(
                         tmuxName: started.tmuxName, cwd: started.cwd, tool: tool, mcpServers: servers,
                         worktree: started.worktree, promptFile: promptFile,
-                        model: started.model, worktreeBase: started.worktreeBase
+                        model: started.model, worktreeBase: started.worktreeBase,
+                        showsWorkspaceTrust: true
                     )
                 }
                 guard result.exitCode == 0,

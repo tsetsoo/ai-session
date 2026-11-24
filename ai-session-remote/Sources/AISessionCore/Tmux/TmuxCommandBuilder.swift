@@ -211,8 +211,8 @@ public enum TmuxCommandBuilder {
         )
     }
 
-    /// Starts a new Codex or Cursor conversation and prints `created <id>`. `-` tells the
-    /// script the id does not exist yet. Detach returns as soon as the id appears.
+    /// Starts a new Codex, Cursor, or Antigravity conversation and prints `created <id>`.
+    /// Interactive callers can opt in to attaching while Antigravity awaits workspace trust.
     ///
     /// `mcpServers` adds `--mcp <comma-joined names>` as the first argument, as in
     /// `openTodoConversation` (none for cursor). This is the call that starts the tool, so it is
@@ -220,9 +220,11 @@ public enum TmuxCommandBuilder {
     public static func freshTodoConversation(
         tmuxName: String, cwd: String, tool: String, mcpServers: [String]? = nil,
         worktree: (folder: String, branch: String)? = nil, promptFile: String? = nil,
-        model: String? = nil, worktreeBase: String? = nil
+        model: String? = nil, worktreeBase: String? = nil, showsWorkspaceTrust: Bool = false
     ) -> String {
-        var command = "AI_TODO_OPEN_DETACH=1 exec \"$HOME/.ai-remote/bin/ai-todo-open\""
+        var command = "AI_TODO_OPEN_DETACH=1 "
+        if tool == "antigravity" && showsWorkspaceTrust { command += "AI_TODO_SHOW_WORKSPACE_TRUST=1 " }
+        command += "exec \"$HOME/.ai-remote/bin/ai-todo-open\""
         if let mcpServers, ConversationStart.managesMCP(tool) { command += " --mcp \(shellQuote(mcpServers.joined(separator: ",")))" }
         command += worktreeArguments(worktree) + startArguments(worktreeBase: worktreeBase, model: model)
             + promptFileArgument(promptFile) + " "

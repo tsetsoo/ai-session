@@ -157,6 +157,36 @@ def pane_state(sid, identity):
     return state if state.get("pane") == identity else None
 
 
+def pane_waits_for_workspace_trust(sid, name, identity):
+    if not re.fullmatch(r"ai/antigravity/todo-[a-z0-9-]+", name):
+        return False
+    allocation = status.root() / "antigravity" / (name.rsplit("/", 1)[-1] + ".json")
+    if (status.read_json(allocation, {}) or {}).get("id") != sid:
+        return False
+    socket = os.environ.get("AI_TODO_TMUX_SOCKET")
+    tmux = ["tmux"] + (["-L", socket] if socket else [])
+    target = "=" + name + ":"
+    launch = subprocess.run(tmux + ["display-message", "-p", "-t", target,
+                                   PANE_FORMAT + " #{pane_start_command}"],
+                            capture_output=True, text=True, timeout=2)
+    pane, _, command = launch.stdout.strip().partition(" ")
+    if launch.returncode or pane != identity:
+        return False
+    arguments = shlex.split(command)
+    if ("--conversation", sid) not in zip(arguments, arguments[1:]):
+        return False
+    snapshot = pane_state(sid, identity)
+    if snapshot and snapshot.get("state") == "mismatch":
+        return False
+    result = subprocess.run(tmux + ["capture-pane", "-p", "-t", target],
+                            capture_output=True, text=True, timeout=2)
+    return (result.returncode == 0
+            and "Do you trust the contents of this project?" in result.stdout
+            and "Yes, I trust this folder" in result.stdout
+            and "No, exit" in result.stdout
+            and pane_identity(target, tmux) == identity)
+
+
 def refresh_pane(sid, name, identity, timeout=3):
     """Request a TUI redraw through its terminal size, leaving tmux sizing untouched."""
     if not re.fullmatch(r"\d+:%\d+:\d+", identity):
@@ -369,6 +399,8 @@ def main(args, finder):
             return 0 if refresh_pane(str(uuid.UUID(args[1])), args[2], args[3]) else 1
         elif args == ["observation-start"]:
             print(time.time_ns())
+        elif len(args) == 4 and args[0] == "workspace-trust":
+            return 0 if pane_waits_for_workspace_trust(str(uuid.UUID(args[1])), args[2], args[3]) else 1
         elif len(args) in (3, 4) and args[0] == "ready":
             snapshot = pane_state(str(uuid.UUID(args[1])), args[2])
             if snapshot and snapshot.get("state") == "mismatch":
