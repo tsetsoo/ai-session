@@ -310,6 +310,15 @@ final class SSHConnectionPoolTests: XCTestCase {
         HostConnectionConfig(host: host, port: 22, username: user, privateKeyPEM: key)
     }
 
+    /// An idle-timer `sleep` that never elapses on its own: it only ends when the pool cancels
+    /// the timer (by taking a new lease). Use it in tests that run two `exec`s back to back and
+    /// need the second to land on the *same* connection. A no-op or 1 ms sleep lets the idle
+    /// timer armed when the first `exec` releases its lease evict that connection before the
+    /// second `exec` arrives, so the second one silently dials a fresh connection instead.
+    private static let idleTimerNeverFires: @Sendable (Duration) async throws -> Void = { _ in
+        try await Task.sleep(for: .seconds(3_600))
+    }
+
     /// Runs `pool.exec` and captures success/failure as a value instead of a thrown error, so
     /// several racing calls can be started with `async let` and their outcomes inspected
     /// afterwards without the first failure aborting the others via `try`.
@@ -397,7 +406,7 @@ final class SSHConnectionPoolTests: XCTestCase {
         let dialCount = Counter()
         let connections = ConnectionBox()
         let pool = SSHConnectionPool(
-            sleep: { _ in try await Task.sleep(nanoseconds: 1_000_000) },
+            sleep: Self.idleTimerNeverFires,
             dial: { _ in
                 await dialCount.increment()
                 let connection = FakeConnection()
@@ -424,7 +433,7 @@ final class SSHConnectionPoolTests: XCTestCase {
     func testExecTimeoutIsThreadedPerCommandNotFixedAtDialTime() async throws {
         let connections = ConnectionBox()
         let pool = SSHConnectionPool(
-            sleep: { _ in try await Task.sleep(nanoseconds: 1_000_000) },
+            sleep: Self.idleTimerNeverFires,
             dial: { _ in
                 let connection = FakeConnection()
                 await connections.add(connection)
@@ -453,7 +462,7 @@ final class SSHConnectionPoolTests: XCTestCase {
         let dialCount = Counter()
         let connections = ConnectionBox()
         let pool = SSHConnectionPool(
-            sleep: { _ in try await Task.sleep(nanoseconds: 1_000_000) },
+            sleep: Self.idleTimerNeverFires,
             dial: { _ in
                 await dialCount.increment()
                 let connection = FakeConnection()
@@ -595,7 +604,7 @@ final class SSHConnectionPoolTests: XCTestCase {
         let dialCount = Counter()
         let connections = ConnectionBox()
         let pool = SSHConnectionPool(
-            sleep: { _ in },
+            sleep: Self.idleTimerNeverFires,
             dial: { _ in
                 await dialCount.increment()
                 let connection = FakeConnection()
