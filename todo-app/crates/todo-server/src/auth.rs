@@ -80,8 +80,12 @@ impl ResourceScope {
     }
 
     pub fn allows_project(&self, project: &todo_shared::Project) -> bool {
-        self.computer_ids.contains(&project.computer.id)
-            && (self.include_computer_projects || self.project_ids.contains(&project.id))
+        self.allows_project_on_computer(&project.id, &project.computer.id)
+    }
+
+    pub fn allows_project_on_computer(&self, id: &str, computer_id: &str) -> bool {
+        self.computer_ids.contains(computer_id)
+            && (self.include_computer_projects || self.project_ids.contains(id))
     }
 }
 
@@ -167,10 +171,10 @@ fn scoped_route(method: &actix_web::http::Method, path: &str) -> bool {
         | (&Method::POST, ["", "api", "todos"]) => true,
         (&Method::GET | &Method::PATCH | &Method::DELETE, ["", "api", "todos", id]) =>
             !id.is_empty() && *id != "from-conversation",
-        (&Method::GET | &Method::PATCH, ["", "api", "projects", id]) =>
+        (&Method::GET | &Method::PATCH | &Method::DELETE, ["", "api", "projects", id]) =>
             !id.is_empty() && *id != "suggestions",
         (&Method::PATCH, ["", "api", "computers", id])
-        | (&Method::POST, ["", "api", "todos", id, "toggle" | "conversation"])
+        | (&Method::POST, ["", "api", "todos", id, "toggle" | "conversation" | "conversations"])
         | (&Method::POST, ["", "api", "conversations", id, "continue" | "reopen" | "close"])
         | (&Method::PUT, ["", "api", "conversations", id, "session"])
         | (&Method::DELETE, ["", "api", "conversations", id]) => !id.is_empty(),
@@ -358,6 +362,8 @@ mod tests {
             (Method::DELETE, "/api/todos/in-project", serde_json::json!(null), 403),
             (Method::DELETE, "/api/todos/explicit", serde_json::json!(null), 200),
             (Method::PATCH, "/api/projects/allowed", serde_json::json!({"name": "Renamed project", "mcp_default": ["filesystem"]}), 200),
+            (Method::DELETE, "/api/projects/private", serde_json::Value::Null, 404),
+            (Method::DELETE, "/api/projects/allowed", serde_json::Value::Null, 409),
             (Method::PATCH, "/api/projects/private", serde_json::json!({"name": "blocked"}), 404),
             (Method::PATCH, "/api/projects/allowed", serde_json::json!({"folder": "~/blocked"}), 403),
             (Method::PATCH, "/api/computers/spread", serde_json::json!({"name": "Renamed computer", "mcp_default": ["filesystem"]}), 200),
@@ -389,6 +395,16 @@ mod tests {
         assert_eq!(chat["computer"]["id"], "spread");
         assert_eq!(chat["created"], true);
         let chat_id = chat["id"].as_str().unwrap();
+        for (todo_id, source_id, status) in [
+            ("hidden", "other-todo", 404),
+            ("in-project", "other-computer", 404),
+            ("in-project", chat_id, 404),
+            ("start-spread", chat_id, 200),
+        ] {
+            let path = format!("/api/todos/{todo_id}/conversations");
+            let body = serde_json::json!({"source_id": source_id, "tool": "codex", "label": "Second agent"});
+            assert_eq!(test::call_service(&app, write(Method::POST, &path, body)).await.status(), status, "{path}");
+        }
         {
             let conn = pool.get().unwrap();
             conn.execute("UPDATE conversations SET status = 'closed' WHERE id = ?1", [chat_id]).unwrap();
@@ -450,7 +466,14 @@ mod tests {
         assert_eq!(test::call_service(&app, get("/api/projects/new")).await.status(), 200);
         assert_eq!(test::call_service(&app, codbex_get("/api/projects/new")).await.status(), 200);
         let new_todo = write(Method::POST, "/api/todos", serde_json::json!({"title": "New todo", "project_id": "new"}));
-        assert_eq!(test::call_service(&app, new_todo).await.status(), 201);
+        let response = test::call_service(&app, new_todo).await;
+        assert_eq!(response.status(), 201);
+        let new_todo: serde_json::Value = test::read_body_json(response).await;
+        let new_todo_id = new_todo["id"].as_str().unwrap();
+        for path in [format!("/api/todos/{new_todo_id}"), "/api/projects/new".to_owned()] {
+            assert_eq!(test::call_service(&app, write(Method::DELETE, &path, serde_json::Value::Null)).await.status(), 200);
+        }
+        assert_eq!(test::call_service(&app, get("/api/projects/new")).await.status(), 404);
         let admin = test::TestRequest::get().uri("/api/todos/hidden")
             .insert_header(("Authorization", "Bearer admin")).to_request();
         assert_eq!(test::call_service(&app, admin).await.status(), 200);

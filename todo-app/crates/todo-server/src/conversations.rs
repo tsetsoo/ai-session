@@ -578,9 +578,14 @@ pub(crate) fn add_agent_db(
     tool: &str,
     label: &str,
     options: &AddAgentOptions,
+    scope: Option<&ResourceScope>,
 ) -> Result<Conversation, OpenError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let created = duplicate_in(&tx, todo_id, source_id, tool, label, options)?;
+    let scope = scope.map(|scope| scope.resolve_projects(&tx)).transpose()?;
+    let created = duplicate_in(&tx, todo_id, source_id, tool, label, options, scope.as_ref())?;
+    if let Some(scope) = &scope {
+        authorize_scoped_conversation(&tx, scope, &created)?;
+    }
     tx.commit()?;
     Ok(created)
 }
@@ -600,6 +605,7 @@ fn duplicate_in(
     tool: &str,
     label: &str,
     options: &AddAgentOptions,
+    scope: Option<&ResourceScope>,
 ) -> Result<Conversation, OpenError> {
     let model = options.model.map(str::trim).filter(|m| !m.is_empty());
     if model.is_some_and(|m| !valid_model(m)) {
@@ -608,6 +614,15 @@ fn duplicate_in(
     let base_sha = options.base_sha.map(str::trim).filter(|b| !b.is_empty());
     if base_sha.is_some_and(|b| !valid_base_sha(b)) {
         return Err(OpenError::BadRequest("base_sha must be a commit sha"));
+    }
+    let Some(source) = load_conversation_by_id(conn, source_id)? else {
+        return Err(OpenError::TodoNotFound);
+    };
+    if source.todo_id != todo_id {
+        return Err(OpenError::TodoNotFound);
+    }
+    if let Some(scope) = scope {
+        authorize_scoped_conversation(conn, scope, &source)?;
     }
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM conversations WHERE todo_id = ?1", params![todo_id], |r| r.get(0))?;
     if count >= MAX_AGENTS {
@@ -620,12 +635,6 @@ fn duplicate_in(
     let tool = tool.trim();
     if !SUPPORTED_TOOLS.contains(&tool) {
         return Err(OpenError::UnsupportedTool);
-    }
-    let Some(source) = load_conversation_by_id(conn, source_id)? else {
-        return Err(OpenError::TodoNotFound);
-    };
-    if source.todo_id != todo_id {
-        return Err(OpenError::TodoNotFound);
     }
     let session_id = (tool == "claude").then(|| Uuid::new_v4().to_string());
     let Some(id) = insert_conversation(
@@ -660,9 +669,19 @@ fn duplicate_in(
     match (&source.worktree_source, own_folder) {
         // Add agent: a worktree of its own, from the given commit (the computer makes it).
         (_, Some(folder)) => {
-            let (project_id, title): (Option<String>, String) =
-                conn.query_row("SELECT project_id, title FROM todos WHERE id = ?1", params![todo_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let (project_id, title, computer_id): (Option<String>, String, Option<String>) =
+                conn.query_row(
+                    "SELECT t.project_id, t.title, pc.computer_id FROM todos t
+                     LEFT JOIN project_computers pc ON pc.project_id = t.project_id WHERE t.id = ?1",
+                    params![todo_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?;
             let project_id = project_id.ok_or(OpenError::NoProject)?;
+            if scope.is_some_and(|scope| {
+                !computer_id.as_deref().is_some_and(|computer| scope.allows_project_on_computer(&project_id, computer))
+            }) {
+                return Err(OpenError::TodoNotFound);
+            }
             plan_worktree(conn, &id, &project_id, &folder, &title)?;
             conn.execute("UPDATE conversations SET worktree_base = ?2 WHERE id = ?1", params![id, base_sha])?;
         }
@@ -1447,6 +1466,7 @@ pub async fn duplicate_conversation(
     path: web::Path<String>,
     body: web::Json<DuplicateConversationRequest>,
     broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
 ) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
@@ -1457,7 +1477,15 @@ pub async fn duplicate_conversation(
         model: body.model.as_deref(),
         base_sha: body.base_sha.as_deref(),
     };
-    match add_agent_db(&conn, &path.into_inner(), &body.source_id, &body.tool, &body.label, &options) {
+    match add_agent_db(
+        &conn,
+        &path.into_inner(),
+        &body.source_id,
+        &body.tool,
+        &body.label,
+        &options,
+        scope.as_ref().map(|scope| scope.as_ref()),
+    ) {
         Ok(c) => {
             broadcaster.send();
             HttpResponse::Ok().json(c)

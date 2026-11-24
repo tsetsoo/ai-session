@@ -377,7 +377,7 @@ fn update_project_db(conn: &Connection, id: &str, req: &UpdateProjectRequest, sc
 
 /// A project that still has todos is refused. Sessions are matched again (overrides pointing
 /// at it are cleared), and memories follow their session or become project-less.
-pub(crate) fn delete_project_db(conn: &Connection, id: &str) -> Result<(), ProjectError> {
+pub(crate) fn delete_project_db(conn: &Connection, id: &str, scope: Option<&ResourceScope>) -> Result<(), ProjectError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let computer_id: Option<String> = tx
         .query_row(
@@ -389,6 +389,11 @@ pub(crate) fn delete_project_db(conn: &Connection, id: &str) -> Result<(), Proje
         )
         .optional()?
         .ok_or(ProjectError::NotFound("Project not found"))?;
+    if scope.is_some_and(|scope| {
+        !computer_id.as_deref().is_some_and(|computer| scope.allows_project_on_computer(id, computer))
+    }) {
+        return Err(ProjectError::NotFound("Project not found"));
+    }
     let todos: i64 = tx.query_row("SELECT COUNT(*) FROM todos WHERE project_id = ?1", params![id], |r| r.get(0))?;
     if todos > 0 {
         return Err(ProjectError::Conflict("Project still has todos".into()));
@@ -591,13 +596,14 @@ pub async fn delete_project(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
     broadcaster: web::Data<Broadcaster>,
+    scope: RequestScope,
 ) -> HttpResponse {
     let id = path.into_inner();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return server_error(e),
     };
-    match delete_project_db(&conn, &id) {
+    match delete_project_db(&conn, &id, scope.as_ref().map(|scope| scope.as_ref())) {
         Ok(()) => {
             broadcaster.send();
             HttpResponse::Ok().json(DeleteResponse { deleted: id })

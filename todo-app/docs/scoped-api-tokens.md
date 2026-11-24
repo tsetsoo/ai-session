@@ -31,11 +31,11 @@ Scoped tokens can also make these writes:
 | Resource | Writes |
 | --- | --- |
 | Todo | Edit or toggle any visible todo. Create in or move to a granted project on a granted computer. Delete when all linked conversations are within the token’s grants and the todo has no linked memories, job runs, ideas, or push mute. |
-| Project | Edit the name, digest and daily update settings, worktree preference, and MCP defaults on a visible project. |
+| Project | Edit the name, digest and daily update settings, worktree preference, and MCP defaults on a visible project. Delete a visible project once it has no todos. |
 | Computer | Rename a granted computer and set its MCP defaults. |
-| Conversation | Start a conversation in a granted project on a granted computer. Save, remove, or reopen a conversation when its todo, project and computer are visible to the token. “Continue with this” also requires access to every open conversation it would close. Selecting a research result requires full access. |
+| Conversation | Start a conversation in a granted project on a granted computer. Add an agent from, save, remove, or reopen a conversation when its todo, project and computer are visible to the token. “Continue with this” also requires access to every open conversation it would close. Selecting a research result requires full access. |
 
-Creating or deleting a project or computer, changing a project's folder or repository, and changing a computer's SSH settings require a full-access token. The same applies to WebSocket updates and endpoints for other resources.
+Creating a project or creating or deleting a computer, changing a project's folder or repository, and changing a computer's SSH settings require a full-access token. The same applies to WebSocket updates and endpoints for other resources.
 
 When switching an existing app installation from a full-access token to a scoped token, clear the app's existing hub cache before giving that installation to a restricted user. Older snapshots may contain data downloaded with the full-access token.
 
