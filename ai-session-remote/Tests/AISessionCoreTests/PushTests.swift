@@ -161,6 +161,37 @@ final class PushHubClientTests: XCTestCase {
         XCTAssertNil(device.sound, "an old hub returns no sound")
     }
 
+    /// A hub that doesn't know this app's sound name answers 400: register again without it,
+    /// so the phone still gets pushes (with the default sound).
+    func testRegisterRetriesWithoutSoundWhenTheHubRejectsIt() async throws {
+        var calls = 0
+        StubURLProtocol.handler = { _ in
+            calls += 1
+            if calls == 1 { return .init(status: 400, body: #"{"error":"unknown sound"}"#) }
+            return .init(status: 200, body: #"{"token_prefix":"a1b2c3d4","platform":"ios","environment":"sandbox","bundle_id":"b","app_version":"1","device_name":null,"created_at":"x","updated_at":"x","last_sent_at":null,"last_error":null}"#)
+        }
+        let device = try await client().registerPushDevice(PushDeviceRegistration(
+            token: "a1b2", platform: .ios, environment: .sandbox, bundleId: "b", appVersion: "1",
+            sound: "attention-needs-you-future.caf"
+        ))
+        XCTAssertEqual(device.tokenPrefix, "a1b2c3d4")
+        XCTAssertEqual(StubURLProtocol.requests.count, 2)
+        XCTAssertNil(try lastBody()["sound"], "the retry drops the sound")
+    }
+
+    func testRegisterWithoutSoundDoesNotRetryA400() async {
+        StubURLProtocol.handler = { _ in .init(status: 400, body: #"{"error":"bundle_id and app_version are required"}"#) }
+        do {
+            _ = try await client().registerPushDevice(PushDeviceRegistration(
+                token: "a1", platform: .ios, environment: .sandbox, bundleId: "", appVersion: "1"
+            ))
+            XCTFail("expected badRequest")
+        } catch {
+            XCTAssertEqual(error as? TodoHubError, .badRequest("bundle_id and app_version are required"))
+        }
+        XCTAssertEqual(StubURLProtocol.requests.count, 1)
+    }
+
     func testRegisterDevice404MapsToUnsupported() async {
         StubURLProtocol.handler = { _ in .init(status: 404, body: "") }
         do {

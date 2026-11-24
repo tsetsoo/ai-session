@@ -211,7 +211,15 @@ pub fn build_payload(alert: &Alert, sound: Option<&str>) -> serde_json::Value {
         _ => aps["category"] = CATEGORY.into(),
     }
     if !alert.passive {
-        aps["sound"] = sound.unwrap_or("default").into();
+        aps["sound"] = match sound {
+            // The device registers its skin's needs-you sound; a run that finished (ready for
+            // review) plays the same skin's review sound.
+            Some(name) if matches!(alert.kind, PushKind::Done { .. }) => {
+                name.replacen("attention-needs-you-", "attention-review-", 1).into()
+            }
+            Some(name) => name.into(),
+            None => "default".into(),
+        };
     }
     if let Some(todo_id) = &alert.todo_id {
         aps["thread-id"] = todo_id.as_str().into();
@@ -466,6 +474,16 @@ impl ApnsSender {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    #[test]
+    fn review_pushes_use_the_skins_review_sound() {
+        let sound = Some("attention-needs-you-phosphor.caf");
+        let done = build_payload(&Alert { kind: PushKind::Done { minutes: 14 }, ..waiting_alert() }, sound);
+        assert_eq!(done["aps"]["sound"], "attention-review-phosphor.caf");
+        assert_eq!(build_payload(&waiting_alert(), sound)["aps"]["sound"], "attention-needs-you-phosphor.caf");
+        let plain = build_payload(&Alert { kind: PushKind::Done { minutes: 14 }, ..waiting_alert() }, None);
+        assert_eq!(plain["aps"]["sound"], "default");
+    }
 
     #[test]
     fn push_sound_defaults_and_passive_stays_silent() {

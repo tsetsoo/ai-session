@@ -268,6 +268,12 @@ public struct TodoHubClient: Sendable {
             return try await decode(PushDevice.self, send("PUT", "/api/push/devices", body: registration))
         } catch TodoHubError.notFound {
             throw TodoHubError.unsupported
+        } catch TodoHubError.badRequest where registration.sound != nil {
+            // A hub that doesn't know this sound (older than the app): register without one, so
+            // the device still gets pushes, with the default sound.
+            var plain = registration
+            plain.sound = nil
+            return try await registerPushDevice(plain)
         }
     }
 
