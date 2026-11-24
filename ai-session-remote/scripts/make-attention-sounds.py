@@ -14,8 +14,9 @@ instrument rather than a bare tone:
   Phosphor   a clean retro terminal beep: rounded square with a pitch blip, a sine body and a
              faint relay click. Needs you: two C6 beeps. Review: one D5 beep.
 
-Every sound goes through a stereo room (early reflections plus a tail whose highs die first),
-gentle saturation and a soft limiter. Output: 48 kHz, 24-bit stereo CAF, peaks at -6 dBFS.
+Every sound goes through a stereo room (early reflections plus a tail whose highs die first)
+and gentle saturation, is matched to the same perceived loudness, and peaks are softly
+limited to -3 dBFS. Output: 48 kHz, 24-bit stereo CAF.
 All oscillators stay band-limited (no partials above Nyquist, so no aliasing buzz). The same
 files serve the Mac chimes and banners, iPhone notifications and pushes.
 
@@ -85,75 +86,90 @@ def pad(sound, length):
 # ---------------------------------------------------------------------------------------------
 # Instruments
 
-def vibraphone(freq, length, brightness=1.0):
-    """A tuned metal bar. Modes at 1, 4 and 10 times the fundamental (how vibraphone and celesta
-    bars are tuned), each with its own decay; two voices 3 cents apart for life; a slight pitch
-    settle; a soft mallet; and a quiet octave-down sine for warmth."""
+def vibraphone(freq, length, velocity=1.0):
+    """A vibraphone bar. Modes as on real tuned aluminium bars: the fundamental, the tuned 4th
+    and 10th, plus a faint untuned torsional mode at 2.76; each decays at its own rate and
+    higher strikes (`velocity`) bring out the upper modes. Under the bar, its resonator tube:
+    a sustained fundamental that blooms in over ~25 ms and rings longest. The motor's tremolo
+    gently pulses the resonator at 5.2 Hz. Two voices 2.5 cents apart, a slight pitch settle,
+    a soft mallet whose click follows the velocity."""
     t = timeline(length)
-    modes = [(1.0, 1.0, 2.6), (4.0, 0.28 * brightness, 7.0), (10.0, 0.08 * brightness, 16.0)]
-    tone = np.zeros_like(t)
-    for cents in (-3.0, 3.0):
+    bright = 0.55 + 0.45 * velocity
+    modes = [(1.0, 1.0, 2.9), (2.76, 0.05 * bright, 9.0), (4.0, 0.30 * bright, 6.5),
+             (10.0, 0.10 * bright ** 2, 15.0)]
+    bar = np.zeros_like(t)
+    for cents in (-2.5, 2.5):
         f = freq * 2 ** (cents / 1200)
         for ratio, amp, decay in modes:
-            if f * ratio >= 10000:  # keep the shimmer below 10 kHz: bright, never piercing
+            if f * ratio >= 10000:  # shimmer stays under 10 kHz: bright, never piercing
                 continue
-            ph = phase_of(settle(t, f * ratio, 0.006, 0.012)) + rng.uniform(0, 2 * np.pi)
-            tone += amp * np.exp(-decay * t) * np.sin(ph)
-    tone *= 0.5
-    body = 0.22 * np.exp(-3.2 * t) * np.sin(2 * np.pi * freq / 2 * t) * ease_in(t, 0.01)
-    strike = pad(mallet(0.01, 2500, 9000, 0.1 * brightness), length)
+            ph = phase_of(settle(t, f * ratio, 0.005, 0.01)) + rng.uniform(0, 2 * np.pi)
+            bar += amp * np.exp(-decay * t) * np.sin(ph)
+    bar *= 0.5
+    tremolo = 1 - 0.22 * (0.5 - 0.5 * np.cos(2 * np.pi * 5.2 * t))
+    resonator = (0.55 * (1 - np.exp(-t / 0.025)) * np.exp(-1.6 * t) * tremolo
+                 * np.sin(2 * np.pi * freq * t + rng.uniform(0, 6.28)))
+    strike = pad(mallet(0.009, 2500, 9000, 0.06 + 0.06 * velocity), length)
     # Ends on a fade, never a cut: a note stopped while it still rings clicks.
-    return (tone + body) * ease_in(t, 0.0015) * ease_out(t, length, 0.25) + strike
+    return velocity * ((bar + resonator) * ease_in(t, 0.0015) * ease_out(t, length, 0.3) + strike)
 
 
-def fm_pluck(freq, length, index=2.4, brightness=1.0):
+def fm_pluck(freq, length, index=2.4, velocity=1.0):
     """An FM electric-piano pluck: carrier and modulator at the same pitch, the modulation
-    index decaying fast (bright attack, mellow body), plus a short tine ping near 7 kHz.
-    Sidebands stay well under Nyquist at these pitches."""
+    index decaying fast (bright attack, mellow body; harder `velocity` is brighter), plus a
+    short tine ping near 7 kHz. Sidebands stay well under Nyquist at these pitches."""
     t = timeline(length)
-    idx = index * brightness * np.exp(-t / 0.09)
+    idx = index * (0.7 + 0.3 * velocity) * np.exp(-t / 0.09)
     mod = idx * np.sin(2 * np.pi * freq * t)
-    tone = np.sin(2 * np.pi * freq * t + mod) * np.exp(-3.8 * t / length * 2)
+    tone = np.sin(2 * np.pi * freq * t + mod) * np.exp(-7.6 * t / length)
     # The tine sits around 7 kHz whatever the note, so it sparkles without piercing.
     tine_ratio = max(2, round(7000 / freq))
-    tine = 0.07 * np.sin(2 * np.pi * freq * tine_ratio * t) * np.exp(-t / 0.01)
-    return (tone + tine) * ease_in(t, 0.002) * ease_out(t, length, 0.15)
+    tine = 0.06 * velocity * np.sin(2 * np.pi * freq * tine_ratio * t) * np.exp(-t / 0.01)
+    # A soft octave below, only where phone speakers can still play it (>= ~380 Hz).
+    sub = (0.18 if freq / 2 >= 380 else 0.0) * np.sin(np.pi * freq * t) * np.exp(-5 * t / length)
+    return velocity * (tone + tine + sub) * ease_in(t, 0.002) * ease_out(t, length, 0.15)
 
 
-def saw_pad(freq, length, cutoff_from, cutoff_to, detune=9.0):
-    """Two detuned band-limited saws under a falling low-pass (applied per harmonic, so exact),
-    with a slow chorus wobble. Swells in, then fades."""
+def saw_voice(freq, length, cutoff_from, cutoff_to, cents, lfo_rate):
+    """One band-limited saw, detuned by `cents`, with a slow chorus wobble, under a falling
+    low-pass applied per harmonic (exact, alias-free). Swells in, then fades."""
     t = timeline(length)
-    out = np.zeros_like(t)
+    f0 = freq * 2 ** (cents / 1200)
+    wobble = 1 + 0.002 * np.sin(2 * np.pi * lfo_rate * t + rng.uniform(0, 6.28))
     cutoff = cutoff_from * (cutoff_to / cutoff_from) ** (t / length)
-    for cents, lfo_rate in ((-detune, 0.7), (detune, 0.9)):
-        f0 = freq * 2 ** (cents / 1200)
-        wobble = 1 + 0.0015 * np.sin(2 * np.pi * lfo_rate * t + rng.uniform(0, 6.28))
-        n_max = int(NYQUIST * 0.9 // f0)
-        base = phase_of(f0 * wobble)
-        for n in range(1, n_max + 1):
-            gain = (1.0 / n) / np.sqrt(1.0 + (f0 * n / cutoff) ** 4)
-            out += gain * np.sin(n * base + rng.uniform(0, 6.28))
+    base = phase_of(f0 * wobble)
+    out = np.zeros_like(t)
+    for n in range(1, int(NYQUIST * 0.9 // f0) + 1):
+        out += (1.0 / n) / np.sqrt(1.0 + (f0 * n / cutoff) ** 4) * np.sin(n * base + rng.uniform(0, 6.28))
     env = ease_in(t, 0.03) * np.exp(-2.5 * t / length) * ease_out(t, length, 0.15)
-    return 0.35 * out * env
+    return 0.3 * out * env
+
+
+def chorus_pad(freq, length, cutoff_from, cutoff_to, spread=9.0):
+    """Three saw voices (flat, centre, sharp) placed left, centre and right: a wide, moving pad.
+    Returns (sound, pan) pairs for `place`."""
+    return [(saw_voice(freq, length, cutoff_from, cutoff_to, c, r), pan)
+            for c, r, pan in ((-spread, 0.61, -0.7), (0.0, 0.83, 0.0), (spread, 1.07, 0.7))]
 
 
 def retro_beep(freq, length):
-    """A rounded square (odd harmonics, rolled off above 3.5 kHz) with a short pitch blip at
-    the start, a sine body an octave down, and a faint relay click. Held flat, 6 ms edges."""
+    """A warm retro beep: two rounded squares (odd harmonics, rolled off above 3 kHz) a few
+    cents apart with a slow analog drift, a short pitch blip at the start, a sine body an
+    octave down (never below 400 Hz, which phone speakers can't play) and a faint relay click.
+    Held flat, soft edges."""
     t = timeline(length)
-    f = freq * (1 + 0.03 * np.exp(-t / 0.004))
-    base = phase_of(f)
-    sq = np.zeros_like(t)
-    n_max = int(NYQUIST * 0.9 // freq)
-    for n in range(1, n_max + 1, 2):
-        sq += (1.0 / n) / (1.0 + (freq * n / 3500.0) ** 2.4) * np.sin(n * base)
-    # An octave-down body, but never below ~400 Hz: phone speakers can't play it and it would
-    # only eat headroom.
-    body = (0.35 if freq / 2 >= 400 else 0.0) * np.sin(base / 2)
-    env = ease_in(t, 0.006) * ease_out(t, length, 0.012)
-    click = pad(mallet(0.004, 1200, 5000, 0.08), length)
-    return 0.6 * (sq + body) * env + click
+    out = np.zeros_like(t)
+    for cents, gain, drift in ((0.0, 1.0, 0.7), (4.0, 0.45, 1.1)):
+        f = freq * 2 ** (cents / 1200) * (1 + 0.03 * np.exp(-t / 0.004))
+        f = f * (1 + 0.0012 * np.sin(2 * np.pi * drift * t + rng.uniform(0, 6.28)))
+        base = phase_of(f)
+        for n in range(1, int(NYQUIST * 0.9 // freq) + 1, 2):
+            out += gain * (1.0 / n) / (1.0 + (freq * n / 3000.0) ** 2.6) * np.sin(n * base)
+        if cents == 0.0 and freq / 2 >= 400:
+            out += 0.35 * np.sin(base / 2)
+    env = ease_in(t, 0.006) * ease_out(t, length, 0.014)
+    click = pad(mallet(0.004, 1200, 5000, 0.06), length)
+    return 0.45 * out * env + click
 
 
 # ---------------------------------------------------------------------------------------------
@@ -211,15 +227,34 @@ def room(stereo, size, mix):
     return dry * (1 - mix) + out * mix
 
 
+def loudness(x):
+    """Roughly how loud it sounds: K-weighted (cut below 100 Hz, +4 dB above 1.5 kHz, as in
+    ITU-R BS.1770) RMS over the loudest 400 ms. In dB."""
+    m = x.mean(axis=1)
+    m = sosfilt(butter(2, 100, "high", fs=RATE, output="sos"), m)
+    m = m + 0.58 * sosfilt(butter(1, 1500, "high", fs=RATE, output="sos"), m)  # ~+4 dB shelf
+    win = int(RATE * 0.4)
+    power = np.convolve(m ** 2, np.ones(win) / win, mode="valid") if len(m) > win else [np.mean(m ** 2)]
+    return 10 * np.log10(np.max(power) + 1e-12)
+
+
+TARGET_LOUDNESS = -15.0  # dB, same for all six: no theme sounds weaker than another
+CEILING = 10 ** (-3 / 20)  # peaks never above -3 dBFS
+
+
 def master(x):
-    """Clean low end, gentle warmth, soft limiting, a fade at the very end, -6 dBFS peak."""
+    """Clean low end, gentle warmth, the same loudness for every sound, a soft limiter for
+    peaks, and a fade at the very end."""
     x = sosfilt(butter(2, 70, "high", fs=RATE, output="sos"), x, axis=0)
-    peak = np.max(np.abs(x)) or 1.0
-    x = np.tanh(1.4 * x / peak) / np.tanh(1.4)  # gentle saturation: rounder, a touch warmer
+    x = np.tanh(1.2 * x / (np.max(np.abs(x)) or 1.0)) / np.tanh(1.2)  # gentle saturation
+    x *= 10 ** ((TARGET_LOUDNESS - loudness(x)) / 20)
+    # Soft limiter: transparent below 70 % of the ceiling, rounds off above it.
+    knee = 0.7 * CEILING
+    over = np.abs(x) > knee
+    x[over] = np.sign(x[over]) * (knee + (CEILING - knee) * np.tanh((np.abs(x[over]) - knee) / (CEILING - knee)))
     tail = int(RATE * 0.1)
     x[-tail:] *= np.linspace(1, 0, tail)[:, None] ** 2
-    x *= 10 ** (-6 / 20) / (np.max(np.abs(x)) or 1.0)
-    assert np.isfinite(x).all()
+    assert np.isfinite(x).all() and np.max(np.abs(x)) <= CEILING + 1e-9
     return x
 
 
@@ -253,24 +288,27 @@ def render(name, notes, total, room_size, room_mix, echo=None):
 
 os.makedirs(OUT, exist_ok=True)
 
-# Standard. Review: a single soft A5 bar. Needs you: B5 then E6, brighter, 110 ms apart.
-render("attention-review", [(0.0, vibraphone(880.0, 1.2, brightness=0.7), 0.0)],
-       1.3, room_size=0.9, room_mix=0.2)
+# Standard. Review: a single soft A5 bar. Needs you: B5 then E6, the second struck harder.
+render("attention-review", [(0.0, vibraphone(880.0, 1.4, velocity=0.75), 0.0)],
+       1.5, room_size=1.0, room_mix=0.2)
 render("attention-needs-you",
-       [(0.0, vibraphone(987.77, 1.1, 1.0), -0.15), (0.11, vibraphone(1318.51, 1.3, 1.0), 0.15)],
-       1.5, room_size=0.9, room_mix=0.2)
+       [(0.0, vibraphone(987.77, 1.3, 0.85), -0.15), (0.11, vibraphone(1318.51, 1.5, 1.0), 0.15)],
+       1.7, room_size=1.0, room_mix=0.2)
 
-# Neon noir. Needs you: an FM-piano + pad arpeggio C5 E5 G5 C6, 70 ms apart, left to right.
+# Neon noir. Needs you: an FM-piano + wide chorus-pad arpeggio C5 E5 G5 C6, ~70 ms apart,
+# sweeping left to right, played by hand: a few ms early or late, a little uneven in strength.
 arp = []
-for i, f in enumerate([523.25, 659.25, 783.99, 1046.5]):
-    pan = -0.5 + i * 0.33
-    arp.append((i * 0.07, fm_pluck(f, 0.5, index=2.2), pan))
-    arp.append((i * 0.07, saw_pad(f, 0.55, 3600, 900) * 0.5, -pan * 0.6))
-render("attention-needs-you-neon-noir", arp, 1.1, room_size=1.2, room_mix=0.28)
+for i, (f, nudge, vel) in enumerate(zip([523.25, 659.25, 783.99, 1046.5],
+                                        [0.0, 0.004, -0.003, 0.002], [0.85, 0.78, 0.9, 1.0])):
+    start, pan = i * 0.07 + nudge, -0.5 + i * 0.33
+    arp.append((start, fm_pluck(f, 0.55, index=2.2, velocity=vel), pan))
+    for voice, vpan in chorus_pad(f, 0.6, 3600, 900):
+        arp.append((start, voice * 0.4 * vel, max(-1, min(1, vpan * 0.6 - pan * 0.3))))
+render("attention-needs-you-neon-noir", arp, 1.2, room_size=1.3, room_mix=0.28)
 # Review: one soft A5 pluck with a darkening ping-pong echo.
-render("attention-review-neon-noir",
-       [(0.0, fm_pluck(880.0, 0.35, index=1.6), 0.0), (0.0, saw_pad(880.0, 0.3, 2400, 800, 5.0) * 0.35, 0.0)],
-       1.1, room_size=1.0, room_mix=0.22, echo=(0.14, 0.38))
+blip = [(0.0, fm_pluck(880.0, 0.4, index=1.6, velocity=0.9), 0.0)]
+blip += [(0.0, voice * 0.25, vpan * 0.5) for voice, vpan in chorus_pad(880.0, 0.35, 2400, 800, spread=5.0)]
+render("attention-review-neon-noir", blip, 1.2, room_size=1.1, room_mix=0.22, echo=(0.14, 0.38))
 
 # Phosphor. Needs you: two C6 beeps, 90 ms each, 140 ms apart. Review: one short D5 beep.
 render("attention-needs-you-phosphor",
