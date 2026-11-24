@@ -100,7 +100,7 @@ private struct SkinnedTerminalFrame: ViewModifier {
             // so line ends in a narrow phone terminal stay full strength).
             .overlay(
                 EllipticalGradient(stops: [.init(color: .clear, location: 0),
-                                           .init(color: .clear, location: 0.8),
+                                           .init(color: .clear, location: DS.vignetteClearUntil),
                                            .init(color: .black.opacity(DS.vignetteStrength), location: 1)])
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)

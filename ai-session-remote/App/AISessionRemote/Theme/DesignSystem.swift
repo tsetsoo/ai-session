@@ -138,36 +138,51 @@ enum DS {
     }
 
     /// A static glow around the terminal's edge and primary buttons: magenta in Neon noir,
-    /// a faint phosphor-green halo in Phosphor on the iPhone. Never on text. The Mac's large
-    /// terminal pane sits beside the sidebar, where Phosphor's glow read as a heavy edge, so
-    /// the Mac draws none.
+    /// a faint phosphor-green halo in Phosphor. Never on text. The Mac's large terminal pane
+    /// sits beside the sidebar, where the iPhone's strength read as a heavy edge, so the Mac's
+    /// is very slight.
     static var glow: Color? {
         switch skin {
         case .standard: nil
         case .neonNoir: hex(0xFF2E97).opacity(0.6)
         case .phosphor:
             #if os(macOS)
-            nil
+            hex(0x5CE892).opacity(0.15)
             #else
             hex(0x5CE892).opacity(0.3)
             #endif
         }
     }
 
-    /// How dark Phosphor's CRT vignette gets at the terminal's corners: 35 % on the iPhone, none
-    /// on the Mac (on its large pane the edges read as too heavy).
+    /// How dark Phosphor's CRT vignette gets at the terminal's corners: 35 % on the iPhone,
+    /// a very slight 15 % on the Mac's large pane.
     static var vignetteStrength: Double {
         guard skin == .phosphor else { return 0 }
         #if os(macOS)
-        return 0
+        return 0.15
         #else
         return 0.35
         #endif
     }
 
+    /// How far from the centre (0…1 of the way to the edge) the vignette stays fully clear: the
+    /// Mac darkens only its very edge.
+    static var vignetteClearUntil: Double {
+        #if os(macOS)
+        0.88
+        #else
+        0.8
+        #endif
+    }
+
     /// How far the glow spreads: Neon noir blooms, Phosphor is a faint halo.
     static var glowRadius: CGFloat {
-        skin == .phosphor ? 4 : 8
+        guard skin == .phosphor else { return 8 }
+        #if os(macOS)
+        return 3
+        #else
+        return 4
+        #endif
     }
 
     /// The tool-colour bar down a conversation's left edge. Phosphor's bright green read as a
