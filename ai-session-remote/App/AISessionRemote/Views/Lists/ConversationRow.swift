@@ -95,7 +95,6 @@ struct ConversationRow: View {
                 Button("Mark Todo Done", action: onDone)
             }
         }
-        .skinnedRow()
     }
 }
 

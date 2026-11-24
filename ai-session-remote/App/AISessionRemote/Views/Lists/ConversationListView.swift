@@ -76,6 +76,7 @@ struct ConversationListView: View {
                 Section {
                     filterPicker(needsYouCount: board.needsYou.count)
                 }
+                .skinnedRows()
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
             }
@@ -119,6 +120,7 @@ struct ConversationListView: View {
                 }
                 #endif
             }
+            .skinnedRows()
             ForEach([TodoWorkStatus.waiting, .onHold], id: \.self) { status in
                 let items = conversations.filter { board.workStatus(of: $0) == status }
                 if showsWorkStatusSection(hasItems: !items.isEmpty) {
@@ -136,6 +138,7 @@ struct ConversationListView: View {
                         Text("\(status.label) (\(items.count))").textCase(nil)
                             .todoStatusDropTarget(store: store, status: status)
                     }
+                    .skinnedRows()
                 }
             }
         }
@@ -190,6 +193,7 @@ struct ConversationListView: View {
         .attentionPulse(serial: model.rowPulses[conversation.listKey], at: model.rowPulseDates[conversation.listKey],
                         tint: (status == .needsYou ? AttentionKind.needsYou : .review).pulseTint)
         .tag(conversation.listKey)
+        .skinnedRow(selected: selection?.wrappedValue == conversation.listKey)
         .rowTap(selection == nil ? open : nil)
         .conversationRowMenu(conversation, todo: todo, isRunning: status != .closed, actions: actions,
                              store: store, hosts: hosts, open: open)

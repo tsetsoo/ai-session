@@ -185,6 +185,14 @@ enum DS {
         #endif
     }
 
+    /// A list row's background in a skin: the surface, or the accent tint when the row is the
+    /// selected one (a painted row background hides the system's selection highlight).
+    /// nil in Standard: the system draws both.
+    static func rowBackground(selected: Bool) -> Color? {
+        guard let surface else { return nil }
+        return selected ? accent.opacity(0.24) : surface
+    }
+
     /// The tool-colour bar down a conversation's left edge. Phosphor's bright green read as a
     /// glowing strip, so there it is thinner and dimmer.
     static var toolEdge: (width: CGFloat, opacity: Double) {

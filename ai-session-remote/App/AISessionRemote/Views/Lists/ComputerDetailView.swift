@@ -90,6 +90,7 @@ struct ComputerDetailView: View {
                 Section {
                     noAccess
                 }
+                .skinnedRows()
             }
             PendingMemoriesSection(memories: pendingGlobal, store: store)
             Section {
@@ -112,6 +113,7 @@ struct ComputerDetailView: View {
                 Text("Open").textCase(nil)
                     .todoStatusDropTarget(store: store, status: .active)
             }
+            .skinnedRows()
             if let host {
                 Section {
                     ForEach(ComputerPage.allCases, id: \.self) { page in
@@ -130,6 +132,7 @@ struct ComputerDetailView: View {
                     Text("Manage other sessions, link conversations to todos, check the computer's health, or open a shell that keeps running when you leave.")
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                .skinnedRows()
             }
             ForEach([TodoWorkStatus.waiting, .onHold], id: \.self) { status in
                 let items = running.filter { board.workStatus(of: $0) == status }
@@ -147,6 +150,7 @@ struct ComputerDetailView: View {
                         Text("\(status.label) (\(items.count))").textCase(nil)
                             .todoStatusDropTarget(store: store, status: status)
                     }
+                    .skinnedRows()
                 }
             }
         }

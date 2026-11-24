@@ -121,6 +121,7 @@ struct TodaySummaryList: View {
                             .buttonStyle(.plain)
                         }
                     }
+                    .skinnedRows()
                 }
                 if !b.dates.isEmpty {
                     Section("Dates") {
@@ -128,11 +129,13 @@ struct TodaySummaryList: View {
                             Button { onShow(.people) } label: { Label(d, systemImage: "gift") }.buttonStyle(.plain)
                         }
                     }
+                    .skinnedRows()
                 }
                 if !b.watch.isEmpty {
                     Section("Also") {
                         Label(watchText(b.watch), systemImage: "exclamationmark.triangle")
                     }
+                    .skinnedRows()
                 }
             } else {
                 Text("Today needs a newer hub.").foregroundStyle(.secondary)
@@ -170,6 +173,7 @@ struct TodaySummaryList: View {
                     .buttonStyle(.plain)
                 }
             }
+            .skinnedRows()
         }
     }
 
@@ -201,6 +205,7 @@ struct TodaySummaryList: View {
                     }
                 }
             }
+            .skinnedRows()
         }
     }
 
@@ -304,6 +309,7 @@ struct TodaySettingsPane: View {
                 } footer: {
                     Text("The 09:00 summary covers today’s and overdue reminders. The general briefing covers dates, results ready for review, conversations that need you, and watcher issues. Both use Sofia time and skip empty summaries.")
                 }
+                .skinnedRows()
                 Section {
                     Picker("Model", selection: Binding(get: { s.assistantModel }, set: { save(TodaySettingsUpdate(assistantModel: $0)) })) {
                         Text("Auto (more weekly headroom)").tag("auto")
@@ -315,6 +321,7 @@ struct TodaySettingsPane: View {
                 } footer: {
                     Text("Auto picks whichever of Claude \(s.claudeModel) and \(s.codexModel) has more weekly usage left on that Mac.")
                 }
+                .skinnedRows()
             } else {
                 Text("Today needs a newer hub.").foregroundStyle(.secondary)
             }
@@ -374,11 +381,14 @@ struct RemindersListContent<Row: View>: View {
             Text("No reminders yet.").foregroundStyle(.secondary)
         }
         let due = store.reminders.filter(\.isDue)
-        if !due.isEmpty { Section("Due") { ForEach(due) { row($0) } } }
+        if !due.isEmpty { Section("Due") { ForEach(due) { row($0) } }
+        .skinnedRows() }
         let upcoming = store.reminders.filter { $0.state == "upcoming" }
-        if !upcoming.isEmpty { Section("Upcoming") { ForEach(upcoming) { row($0) } } }
+        if !upcoming.isEmpty { Section("Upcoming") { ForEach(upcoming) { row($0) } }
+        .skinnedRows() }
         let done = store.reminders.filter(\.isDone)
-        if !done.isEmpty { Section("Done this week") { ForEach(done) { row($0) } } }
+        if !done.isEmpty { Section("Done this week") { ForEach(done) { row($0) } }
+        .skinnedRows() }
     }
 }
 
@@ -421,10 +431,12 @@ struct ReminderFormPane: View {
                 }
                 TextField("Notes", text: $draft.notes, axis: .vertical).lineLimit(2...6)
             }
+            .skinnedRows()
             if let reminder, reminder.isDue {
                 Section {
                     ReminderDueRow(store: store, reminder: reminder)
                 }
+                .skinnedRows()
             }
             if let error { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(DS.warning) }
             Section {
@@ -441,6 +453,7 @@ struct ReminderFormPane: View {
                     }
                 }
             }
+            .skinnedRows()
         }
         .skinnedList()
         .formStyle(.grouped)
@@ -536,6 +549,7 @@ struct PersonFormPane: View {
                 }
                 TextField("Notes", text: $draft.notes, axis: .vertical).lineLimit(2...6)
             }
+            .skinnedRows()
             if !draft.canSave && !draft.name.isEmpty {
                 Label("That's not a real date.", systemImage: "calendar.badge.exclamationmark").foregroundStyle(DS.warning)
             }
@@ -554,6 +568,7 @@ struct PersonFormPane: View {
                     }
                 }
             }
+            .skinnedRows()
         }
         .skinnedList()
         .formStyle(.grouped)
@@ -596,6 +611,7 @@ struct AssistantSheet: View {
                 } footer: {
                     Text("A short conversation on a cheap model reads this, asks if something is unclear, and adds it. It starts within a minute and appears under Conversations.")
                 }
+                .skinnedRows()
                 if started {
                     Label("Started. Answer its questions in the conversation.", systemImage: "checkmark.circle")
                 }

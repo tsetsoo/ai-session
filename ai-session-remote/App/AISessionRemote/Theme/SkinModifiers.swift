@@ -145,8 +145,15 @@ extension View {
 }
 
 extension View {
-    /// A list row's card in the skin's surface colour. nil (Standard) keeps the system's.
-    func skinnedRow() -> some View {
+    /// A list row's card in the skin's surface colour, or the accent tint when it is the
+    /// selected row. nil (Standard) keeps the system's background and selection.
+    func skinnedRow(selected: Bool = false) -> some View {
+        listRowBackground(DS.rowBackground(selected: selected))
+    }
+
+    /// Every row of a section (or other list content) in the skin's surface colour, whatever
+    /// kind of row it is, so a card never mixes system grey with the skin's surface.
+    func skinnedRows() -> some View {
         listRowBackground(DS.surface)
     }
 }

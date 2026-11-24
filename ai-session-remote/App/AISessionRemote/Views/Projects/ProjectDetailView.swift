@@ -106,6 +106,7 @@ struct ProjectDetailView: View {
             Section {
                 WeeklyStatsCard(projectId: project.id, store: store)
             }
+            .skinnedRows()
             if let loadError {
                 Label(loadError, systemImage: "exclamationmark.triangle")
                     .font(.subheadline)
@@ -120,6 +121,7 @@ struct ProjectDetailView: View {
                     Label(ideasLinkText, systemImage: "lightbulb")
                 }
             }
+            .skinnedRows()
             if project.dailyUpdates {
                 ProjectUpdatesSection(project: project, store: store, onOpenTodo: onOpenTodo, onReveal: reveal)
             }
@@ -157,6 +159,7 @@ struct ProjectDetailView: View {
             ))
             .disabled(store.isOffline)
         }
+        .skinnedRows()
     }
 
     private func setDigest(_ enabled: Bool, for project: Project) {
@@ -195,6 +198,7 @@ struct ProjectDetailView: View {
                 }
             }
         }
+        .skinnedRows()
     }
 
     // MARK: Conversations
@@ -215,6 +219,7 @@ struct ProjectDetailView: View {
                 ProgressView().frame(maxWidth: .infinity)
             }
         }
+        .skinnedRows()
     }
 
     @ViewBuilder
@@ -272,6 +277,7 @@ struct ProjectDetailView: View {
         } header: {
             Text("Memories")
         }
+        .skinnedRows()
         PendingMemoriesSection(memories: pendingMemories, store: store)
         if let memoryPage {
             MemoryGroupSections(memories: memoryPage.memories, actions: memoryActions, store: store)
@@ -279,6 +285,7 @@ struct ProjectDetailView: View {
                 Section {
                     Button("Show More Memories") { memoryLimit = MemoryPage.nextLimit(after: memoryLimit) }
                 }
+                .skinnedRows()
             }
         }
         importedSection
@@ -312,6 +319,7 @@ struct ProjectDetailView: View {
         } footer: {
             Text("Claude's own memory files, imported for search. Agents look them up; they aren't in the session index.")
         }
+        .skinnedRows()
     }
 
     // MARK: Loading

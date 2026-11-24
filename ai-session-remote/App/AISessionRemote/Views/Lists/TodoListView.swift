@@ -48,6 +48,7 @@ struct TodoListView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                 }
+                .skinnedRows()
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
             }
@@ -65,6 +66,7 @@ struct TodoListView: View {
                     }
                     ForEach(todos) { todo in row(todo, board: board) }
                 }
+                .skinnedRows()
                 .todoStatusDropTarget(store: store, status: .active)
             } else if grouping?.wrappedValue == .status {
                 let groups = TodoGrouping.byStatus(searched.filter(isInMainList)) { board.status(forTodo: $0) }
@@ -102,6 +104,7 @@ struct TodoListView: View {
                         Text("\(status.label) (\(items.count))").textCase(nil)
                             .todoStatusDropTarget(store: store, status: status)
                     }
+                    .skinnedRows()
                 }
             }
         }
@@ -139,6 +142,7 @@ struct TodoListView: View {
                     .frame(maxWidth: .infinity, minHeight: DS.rowMinHeight, alignment: .leading)
             }
         }
+        .skinnedRows()
     }
 
     /// A project or status group: just its todos, with an add row when it is a project.
@@ -163,6 +167,7 @@ struct TodoListView: View {
             .textCase(nil)
             .todoStatusDropTarget(store: store, status: .active)
         }
+        .skinnedRows()
     }
 
     private func row(_ todo: Todo, board: ConversationBoard) -> some View {
@@ -185,6 +190,7 @@ struct TodoListView: View {
             }
         )
         .tag(todo.id)
+        .skinnedRow(selected: selection?.wrappedValue == todo.id)
         .rowTap(selection == nil ? { onOpen(todo) } : nil)
         // Offline, the swipes are left out: a disabled full swipe can still fire.
         .swipeActions(edge: .leading, allowsFullSwipe: true) {

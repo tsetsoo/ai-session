@@ -327,4 +327,73 @@ final class SkinTests: XCTestCase {
         SkinStore.shared.skin = .neonNoir
         XCTAssertEqual(DS.glowRadius, 8)
     }
+
+    /// Every row of a skinned section takes the surface, whatever the row is ("Add Todo",
+    /// headers, todos): a card mixing system grey and skin surface looks broken.
+    func testSkinnedSectionPaintsEveryRow() throws {
+        SkinStore.shared.skin = .phosphor
+        let list = List {
+            Section {
+                Text("Add Todo").frame(height: 80)
+                Text("a todo").frame(height: 80)
+            }
+            .skinnedRows()
+        }
+        .skinnedList()
+        let host = UIHostingController(rootView: list)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 300, height: 400))
+        window.overrideUserInterfaceStyle = .dark
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let format = UIGraphicsImageRendererFormat()
+        format.preferredRange = .standard
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: host.view.bounds, format: format).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+        let cg = try XCTUnwrap(image.cgImage)
+        let data = try XCTUnwrap(cg.dataProvider?.data) as Data
+        // Sample both rows near their left edge (inside the card, left of the text), BGRA.
+        let rowTops = (0..<cg.height).filter { y in
+            let g = Int(data[y * cg.bytesPerRow + 28 * 4 + 1])
+            return abs(g - 0x23) < 4
+        }
+        XCTAssertGreaterThan(rowTops.count, 120, "both rows painted with the surface (\(rowTops.count) rows of pixels)")
+    }
+
+    /// Lists that show todo or conversation rows theme every section, so a new section can't
+    /// bring back a grey row inside a skinned card.
+    func testListsWithTodoRowsSkinEverySection() throws {
+        let views = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("AISessionRemote/Views")
+        let section = try NSRegularExpression(pattern: #"(?<![A-Za-z.])Section\s*(\(|\{)"#)
+        var missing: [String] = []
+        let files = FileManager.default.enumerator(at: views, includingPropertiesForKeys: nil)!
+        for case let file as URL in files where file.pathExtension == "swift" {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            guard text.contains("TodoRow(") || text.contains("ConversationRow(") else { continue }
+            let sections = section.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text))
+            let skinned = text.components(separatedBy: ".skinnedRows()").count - 1
+            if skinned < sections { missing.append("\(file.lastPathComponent): \(sections) sections, \(skinned) skinned") }
+        }
+        XCTAssertTrue(missing.isEmpty, missing.joined(separator: "\n"))
+    }
+
+    /// Painting a row's background hides the system's selection highlight, so in a skin the
+    /// open todo or conversation is painted with the accent tint instead. Standard paints
+    /// nothing and keeps the system highlight.
+    func testSelectedRowIsVisibleInSkins() {
+        SkinStore.shared.skin = .standard
+        XCTAssertNil(DS.rowBackground(selected: true))
+        XCTAssertNil(DS.rowBackground(selected: false))
+        for skin in [AppSkin.neonNoir, .phosphor] {
+            SkinStore.shared.skin = skin
+            XCTAssertNotNil(DS.rowBackground(selected: true), skin.rawValue)
+            XCTAssertNotEqual(DS.rowBackground(selected: true), DS.rowBackground(selected: false), skin.rawValue)
+            XCTAssertEqual(DS.rowBackground(selected: false), DS.surface, skin.rawValue)
+        }
+    }
 }

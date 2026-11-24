@@ -82,7 +82,6 @@ struct TodoRow: View {
         .accessibilityAction(named: todo.completed ? "Undo" : "Done") {
             if canToggle { onToggle() }
         }
-        .skinnedRow()
     }
 }
 
