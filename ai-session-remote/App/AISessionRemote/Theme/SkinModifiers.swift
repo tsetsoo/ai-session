@@ -101,8 +101,7 @@ private struct SkinnedTerminalFrame: ViewModifier {
             .overlay(
                 EllipticalGradient(stops: [.init(color: .clear, location: 0),
                                            .init(color: .clear, location: 0.8),
-                                           .init(color: .black.opacity(0.35), location: 1)])
-                    .opacity(skin == .phosphor ? 1 : 0)
+                                           .init(color: .black.opacity(DS.vignetteStrength), location: 1)])
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             )

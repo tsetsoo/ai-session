@@ -89,6 +89,7 @@
 		399B06B069F4632E2402C89C /* FileAttachmentButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4C6B7403D6F5243C603C440 /* FileAttachmentButton.swift */; };
 		3B44E4781A8573AE6FDA8795 /* AISessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 08EDCE470559EAA59731684C /* AISessionCore */; };
 		3C20726A071B705FCC2F9714 /* ListSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD8D8139CC242C8EF215944D /* ListSelection.swift */; };
+		3C9CDD09BC6F456AB18BFB4D /* MacSkinTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9757905A12511CD4EFD2E161 /* MacSkinTests.swift */; };
 		3D1684ED234059326AF42DBD /* ChatCodeBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D85EAC354443F3D03E6BAD90 /* ChatCodeBlock.swift */; };
 		3D42B168CBDB20662B902598 /* FileAttachmentButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4C6B7403D6F5243C603C440 /* FileAttachmentButton.swift */; };
 		3D7A44B4B3D6A2068F76FFD3 /* RemoteRestart.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDC0C15755494AAA0C43292F /* RemoteRestart.swift */; };
@@ -542,6 +543,7 @@
 		94695BC778D29A96E4577C1D /* TodoHoldDragAndDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoHoldDragAndDrop.swift; sourceTree = "<group>"; };
 		94877436C6D2727F5D498710 /* MemoryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryViews.swift; sourceTree = "<group>"; };
 		953A88DC4DA95609F6AA1F02 /* AccentButtonStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccentButtonStyle.swift; sourceTree = "<group>"; };
+		9757905A12511CD4EFD2E161 /* MacSkinTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSkinTests.swift; sourceTree = "<group>"; };
 		97B7A594C8A26491ACD55735 /* ProjectEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectEditorSheet.swift; sourceTree = "<group>"; };
 		97D417529F6E6B990D79BF81 /* TerminalTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTransport.swift; sourceTree = "<group>"; };
 		985441C1DAD8AC5163A43EB9 /* OpenSSHPrivateKeyParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSSHPrivateKeyParser.swift; sourceTree = "<group>"; };
@@ -812,6 +814,7 @@
 			isa = PBXGroup;
 			children = (
 				E0DF0833DA5B869A23C5B327 /* ConversationListLayoutTests.swift */,
+				9757905A12511CD4EFD2E161 /* MacSkinTests.swift */,
 				337895D3F488A9A1EDF8095D /* ReviewAcknowledgementTests.swift */,
 				AB63BB7D6D55C6F90946359A /* ReviewSessionTests.swift */,
 				F538A47A9E801D82DC090741 /* ReviewStoreTests.swift */,
@@ -1744,6 +1747,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EB236DE577928368F7DCF3E2 /* ConversationListLayoutTests.swift in Sources */,
+				3C9CDD09BC6F456AB18BFB4D /* MacSkinTests.swift in Sources */,
 				0713A5A621B24DFD7E77273B /* ReviewAcknowledgementTests.swift in Sources */,
 				B2E3FF58288F25ED9645E58C /* ReviewSessionTests.swift in Sources */,
 				1AF24721F851D000BC658951 /* ReviewStoreTests.swift in Sources */,

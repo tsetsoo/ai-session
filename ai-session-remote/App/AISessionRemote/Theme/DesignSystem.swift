@@ -138,13 +138,31 @@ enum DS {
     }
 
     /// A static glow around the terminal's edge and primary buttons: magenta in Neon noir,
-    /// phosphor green in Phosphor. Never on text.
+    /// a faint phosphor-green halo in Phosphor on the iPhone. Never on text. The Mac's large
+    /// terminal pane sits beside the sidebar, where Phosphor's glow read as a heavy edge, so
+    /// the Mac draws none.
     static var glow: Color? {
         switch skin {
         case .standard: nil
         case .neonNoir: hex(0xFF2E97).opacity(0.6)
-        case .phosphor: hex(0x5CE892).opacity(0.3)
+        case .phosphor:
+            #if os(macOS)
+            nil
+            #else
+            hex(0x5CE892).opacity(0.3)
+            #endif
         }
+    }
+
+    /// How dark Phosphor's CRT vignette gets at the terminal's corners: 35 % on the iPhone, none
+    /// on the Mac (on its large pane the edges read as too heavy).
+    static var vignetteStrength: Double {
+        guard skin == .phosphor else { return 0 }
+        #if os(macOS)
+        return 0
+        #else
+        return 0.35
+        #endif
     }
 
     /// How far the glow spreads: Neon noir blooms, Phosphor is a faint halo.
