@@ -183,3 +183,73 @@ enum SkinHeadings {
     }
 }
 #endif
+
+#if os(macOS)
+import AppKit
+
+/// The Mac draws its own selection highlight (grey when the list isn't focused, the built-in
+/// terracotta accent when it is) on top of a painted row background, so in a skin the open row
+/// came out grey-olive. In a skin this switches the list's table to no system highlight (rows
+/// paint the skin's tint via `skinnedRow(selected:)`); Standard gets its original style back.
+private struct TableSelectionHighlight: NSViewRepresentable {
+    let hidden: Bool
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let hidden = hidden
+        // The table exists once the list has laid out; look for it next to this background.
+        DispatchQueue.main.async {
+            guard let table = Self.table(near: view) else { return }
+            Self.apply(hidden: hidden, to: table)
+        }
+    }
+
+    static func apply(hidden: Bool, to table: NSTableView) {
+        if hidden {
+            if objc_getAssociatedObject(table, &originalKey) == nil {
+                objc_setAssociatedObject(table, &originalKey, NSNumber(value: table.selectionHighlightStyle.rawValue),
+                                         .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            }
+            table.selectionHighlightStyle = .none
+        } else if let original = objc_getAssociatedObject(table, &originalKey) as? NSNumber,
+                  let style = NSTableView.SelectionHighlightStyle(rawValue: original.intValue) {
+            table.selectionHighlightStyle = style
+        }
+    }
+
+    /// The nearest table: climb a few levels from the background view and search below.
+    private static func table(near view: NSView) -> NSTableView? {
+        var ancestor: NSView? = view.superview
+        for _ in 0..<6 {
+            guard let current = ancestor else { return nil }
+            if let found = descendantTable(of: current) { return found }
+            ancestor = current.superview
+        }
+        return nil
+    }
+
+    private static func descendantTable(of view: NSView) -> NSTableView? {
+        if let table = view as? NSTableView { return table }
+        for sub in view.subviews {
+            if let found = descendantTable(of: sub) { return found }
+        }
+        return nil
+    }
+
+    private static var originalKey: UInt8 = 0
+}
+#endif
+
+extension View {
+    /// Lists whose rows paint their own selection (`skinnedRow(selected:)`): on the Mac, hide
+    /// the system highlight while a skin is on. No effect on iOS (a painted row background
+    /// already hides it there) or in Standard.
+    func skinnedSelectionHighlight() -> some View {
+        #if os(macOS)
+        background(TableSelectionHighlight(hidden: SkinStore.shared.skin != .standard))
+        #else
+        self
+        #endif
+    }
+}

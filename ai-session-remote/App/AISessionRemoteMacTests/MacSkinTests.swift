@@ -35,4 +35,36 @@ final class MacSkinTests: XCTestCase {
         SkinStore.shared.skin = .standard
         XCTAssertEqual(UserDefaults.standard.string(forKey: SkinStore.defaultsKey), saved)
     }
+
+    /// The Mac draws its own selection highlight (grey, or the built-in terracotta accent)
+    /// over a painted row background. In a skin the list hides it, so only the skin's tint
+    /// shows; Standard keeps the system highlight.
+    @MainActor
+    func testSkinnedListsHideTheSystemSelectionHighlight() throws {
+        func table(for skin: AppSkin) throws -> NSTableView {
+            SkinStore.shared.skin = skin
+            var selection: String? = "a"
+            let binding = Binding(get: { selection }, set: { selection = $0 })
+            let list = List(selection: binding) {
+                Text("a").tag("a")
+                Text("b").tag("b")
+            }
+            .skinnedSelectionHighlight()
+            let host = NSHostingView(rootView: list)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.contentView = host
+            window.layoutIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+            func find(_ view: NSView) -> NSTableView? {
+                if let table = view as? NSTableView { return table }
+                for sub in view.subviews { if let found = find(sub) { return found } }
+                return nil
+            }
+            return try XCTUnwrap(find(host))
+        }
+        XCTAssertEqual(try table(for: .phosphor).selectionHighlightStyle, .none)
+        XCTAssertEqual(try table(for: .neonNoir).selectionHighlightStyle, .none)
+        XCTAssertNotEqual(try table(for: .standard).selectionHighlightStyle, .none)
+    }
 }

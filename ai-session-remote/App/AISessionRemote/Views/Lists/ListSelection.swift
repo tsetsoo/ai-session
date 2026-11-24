@@ -13,6 +13,7 @@ struct SelectableList<Content: View>: View {
             #if os(macOS)
             List(selection: selection) { content }
             .skinnedList()
+            .skinnedSelectionHighlight()
                 // ⏎ or a double-click on a row; rows keep their own context menus.
                 .contextMenu(forSelectionType: String.self, menu: { _ in EmptyView() }, primaryAction: { ids in
                     if let id = ids.first, ids.count == 1 { primaryAction?(id) }
