@@ -205,7 +205,8 @@ struct ConversationFrame: View {
             if let tool = chromeTool {
                 Rectangle()
                     .fill(AppTheme.color(for: AITool(rawValue: tool)))
-                    .frame(width: 4)
+                    .opacity(DS.toolEdge.opacity)
+                    .frame(width: DS.toolEdge.width)
                     .modifier(TerminalColorScheme())
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)

@@ -147,6 +147,12 @@ enum DS {
         }
     }
 
+    /// The tool-colour bar down a conversation's left edge. Phosphor's bright green read as a
+    /// glowing strip, so there it is thinner and dimmer.
+    static var toolEdge: (width: CGFloat, opacity: Double) {
+        skin == .phosphor ? (2, 0.55) : (4, 1)
+    }
+
     /// Corner radius for a base value: Phosphor is square.
     static func radius(_ base: CGFloat) -> CGFloat {
         skin == .phosphor ? 0 : base

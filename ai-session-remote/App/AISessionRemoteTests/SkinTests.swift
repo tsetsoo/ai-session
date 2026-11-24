@@ -304,4 +304,17 @@ final class SkinTests: XCTestCase {
         XCTAssertLessThan(green(8, 8), 0xF0 - 30, "the corners darken")
         XCTAssertGreaterThan(green(8, 8), 0x60, "but stay readable")
     }
+
+    /// The tool-colour bar down a conversation's left edge: Phosphor's bright green made it
+    /// read as a glowing strip, so there it is thinner and dimmer. Others keep 4 pt, full.
+    func testToolEdgeIsQuieterInPhosphor() {
+        SkinStore.shared.skin = .standard
+        XCTAssertEqual(DS.toolEdge.width, 4)
+        XCTAssertEqual(DS.toolEdge.opacity, 1)
+        SkinStore.shared.skin = .neonNoir
+        XCTAssertEqual(DS.toolEdge.width, 4)
+        SkinStore.shared.skin = .phosphor
+        XCTAssertEqual(DS.toolEdge.width, 2)
+        XCTAssertLessThanOrEqual(DS.toolEdge.opacity, 0.6)
+    }
 }
