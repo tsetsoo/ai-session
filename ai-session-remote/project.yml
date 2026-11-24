@@ -218,6 +218,8 @@ targets:
       - path: App/AISessionRemoteTests/SSHConnectionPoolTests.swift
     settings:
       GENERATE_INFOPLIST_FILE: YES
+      # Removes preference keys a test run adds (the test window's saved frames).
+      INFOPLIST_KEY_NSPrincipalClass: TestPreferencesGuard
       SWIFT_VERSION: "5.9"
       TEST_HOST: "$(BUILT_PRODUCTS_DIR)/AI Session Remote.app/Contents/MacOS/AI Session Remote"
     dependencies:

@@ -707,6 +707,17 @@ struct TerminalScreen: View {
         .toolbarBackground(Color(palette.background).opacity(0.85), for: .navigationBar)
         .toolbarColorScheme(palette.isDark ? .dark : .light, for: .navigationBar)
         .toolbar {
+            // Phosphor's headings are monospaced; this screen styles its own bar, which the
+            // global title font doesn't reach, so it draws the title itself (Standard: system).
+            if SkinStore.shared.skin.headingFontDesign != nil {
+                ToolbarItem(placement: .principal) {
+                    Text(title)
+                        .font(.headline)
+                        .fontDesign(SkinStore.shared.skin.headingFontDesign)
+                        .lineLimit(1)
+                        .accessibilityAddTraits(.isHeader)
+                }
+            }
             // No ⌨ here on iOS: the key bar's ⌨ shows and hides the keyboard.
             ToolbarItem(placement: .primaryAction) {
                 Menu {

@@ -22,6 +22,11 @@ struct SidebarView: View {
 
     private var store: TodoHubStore { model.store }
 
+    /// Typed out so the sidebar's long body stays quick to type-check.
+    private func isSelected(_ item: AppModel.SidebarItem) -> Bool {
+        selection == item
+    }
+
     var body: some View {
         let board = model.board
         let counts = SidebarCounts(board: board, computers: store.computers)
@@ -34,14 +39,18 @@ struct SidebarView: View {
                            count: counts.needsYou, countTint: DS.accent)
                     .attentionPulse(serial: model.sectionPulses[.needsYou], at: nil, tint: AttentionKind.needsYou.pulseTint)
                     .tag(AppModel.SidebarItem.needsYou)
+                    .skinnedSidebarRow(selected: isSelected(AppModel.SidebarItem.needsYou))
                 SidebarRow(title: "To review", systemImage: "checkmark.circle", count: counts.review)
                     .attentionPulse(serial: model.sectionPulses[.review], at: nil, tint: AttentionKind.review.pulseTint)
                     .tag(AppModel.SidebarItem.review)
+                    .skinnedSidebarRow(selected: isSelected(AppModel.SidebarItem.review))
                 SidebarRow(title: "Working", systemImage: "bolt", count: counts.working)
                     .tag(AppModel.SidebarItem.working)
+                    .skinnedSidebarRow(selected: isSelected(AppModel.SidebarItem.working))
             }
             SidebarRow(title: "Todos", systemImage: "checkmark.square", count: 0)
                 .tag(AppModel.SidebarItem.todos)
+                .skinnedSidebarRow(selected: isSelected(AppModel.SidebarItem.todos))
             if !counts.computers.isEmpty {
                 Section {
                     ForEach(counts.computers, id: \.id) { row in
@@ -50,6 +59,7 @@ struct SidebarView: View {
                                 SidebarRow(title: project.name, systemImage: "folder", count: project.openTodos,
                                            showsDot: urgentProjects.contains(project.id))
                                     .tag(AppModel.SidebarItem.project(project.id))
+                                    .skinnedSidebarRow(selected: isSelected(AppModel.SidebarItem.project(project.id)))
                                     .contextMenu {
                                         Button("Edit Project…", systemImage: "pencil") { editingProject = .edit(project) }
                                             .disabled(store.isOffline)
@@ -69,6 +79,7 @@ struct SidebarView: View {
                                 }
                         }
                         .tag(AppModel.SidebarItem.computer(row.id))
+                        .skinnedSidebarRow(selected: isSelected(AppModel.SidebarItem.computer(row.id)))
                     }
                 } header: {
                     Text("Computers").skinnedHeading()
@@ -76,6 +87,7 @@ struct SidebarView: View {
             }
         }
         .skinnedList()
+        .skinnedSelectionHighlight()
         .listStyle(.sidebar)
         .sheet(item: $editingProject) { ProjectEditorSheet(mode: $0, store: store) }
         .onChange(of: selection) { _, item in

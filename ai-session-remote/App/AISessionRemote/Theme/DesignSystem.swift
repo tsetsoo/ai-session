@@ -200,6 +200,13 @@ enum DS {
         #endif
     }
 
+    /// A sidebar row's background in a skin: clear (the sidebar has no cards on any device),
+    /// the accent tint when selected. nil in Standard: the system draws its own.
+    static func sidebarRowBackground(selected: Bool) -> Color? {
+        guard surface != nil else { return nil }
+        return selected ? rowBackground(selected: true) : .clear
+    }
+
     /// The tool-colour bar down a conversation's left edge. Phosphor's bright green read as a
     /// glowing strip, so there it is thinner and dimmer.
     static var toolEdge: (width: CGFloat, opacity: Double) {

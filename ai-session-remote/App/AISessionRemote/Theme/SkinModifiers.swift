@@ -153,6 +153,17 @@ extension View {
 
     /// Every row of a section (or other list content) in the skin's surface colour, whatever
     /// kind of row it is, so a card never mixes system grey with the skin's surface.
+    /// Sidebar rows: the selected one gets an inset pill in the skin's tint (rounded, or square
+    /// in Phosphor), like the system's own; nil in Standard keeps the system's.
+    func skinnedSidebarRow(selected: Bool) -> some View {
+        listRowBackground(DS.sidebarRowBackground(selected: selected).map { fill in
+            RoundedRectangle(cornerRadius: DS.radius(10), style: .continuous)
+                .fill(fill)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 1)
+        })
+    }
+
     func skinnedRows() -> some View {
         listRowBackground(DS.rowBackground(selected: false))
     }

@@ -81,4 +81,14 @@ final class MacSkinTests: XCTestCase {
         SkinStore.shared.skin = .standard
         XCTAssertNil(DS.rowBackground(selected: false))
     }
+
+    /// The sidebar's selection follows the skin too: clear rows, the selected one tinted, no
+    /// system highlight (grey or terracotta) on top. Standard keeps the system's.
+    func testSidebarRowsFollowTheSkin() {
+        SkinStore.shared.skin = .phosphor
+        XCTAssertEqual(DS.sidebarRowBackground(selected: false), .clear)
+        XCTAssertEqual(DS.sidebarRowBackground(selected: true), DS.rowBackground(selected: true))
+        SkinStore.shared.skin = .standard
+        XCTAssertNil(DS.sidebarRowBackground(selected: true))
+    }
 }

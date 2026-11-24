@@ -326,6 +326,7 @@
 		D82D4390F574464A6DDD30B3 /* AISessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 77160CCBC36C696C9AE77B08 /* AISessionCore */; };
 		D83BED1012CFC26D4F60CFEE /* TodoHoldDropTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0318083FCE727F91B9342F3 /* TodoHoldDropTests.swift */; };
 		D9729BE332BD4630C48AA9D0 /* ReviewItemsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB8A7C64530E46D436A3D3A8 /* ReviewItemsSheet.swift */; };
+		D9B667508FCEF723E03E0C76 /* TestPreferencesGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 143D6C41FA68D85AF99F4B22 /* TestPreferencesGuard.swift */; };
 		D9D235AA7898276A14473AE8 /* RemoteUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = B04D268F7E1BD8358A6FBD15 /* RemoteUpgrade.swift */; };
 		DA408A318D222D81ABFD2D5E /* ChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C647D4B8CFECA8B98E376D /* ChatComposer.swift */; };
 		DA740BB6F14E7DD968122B72 /* attention-needs-you-phosphor.caf in Resources */ = {isa = PBXBuildFile; fileRef = C764C636BE68A7E2C72FDFFB /* attention-needs-you-phosphor.caf */; };
@@ -453,6 +454,7 @@
 		12D5F34B1CF5313030CABD54 /* TodoRename.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoRename.swift; sourceTree = "<group>"; };
 		1303BF46E5CEE73FFCBDCE5F /* SSHTerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTerminalSession.swift; sourceTree = "<group>"; };
 		137F28FB6F0222F70DE53BCF /* IdeasPanes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdeasPanes.swift; sourceTree = "<group>"; };
+		143D6C41FA68D85AF99F4B22 /* TestPreferencesGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestPreferencesGuard.swift; sourceTree = "<group>"; };
 		1440BCE60F1ED30FE6CD90C8 /* AttentionPulse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttentionPulse.swift; sourceTree = "<group>"; };
 		14970B2EF5E5E12D8AF519CD /* DuplicateInTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateInTests.swift; sourceTree = "<group>"; };
 		1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectMenus.swift; sourceTree = "<group>"; };
@@ -823,6 +825,7 @@
 				E20819AADB57F2C1EB714DC4 /* TerminalConnectionDiagnosticsTests.swift */,
 				69B866F8D5D57939AF5B655E /* TerminalRenderingTests.swift */,
 				8B1150B78937B45875C56973 /* TerminalSelectionTests.swift */,
+				143D6C41FA68D85AF99F4B22 /* TestPreferencesGuard.swift */,
 				B0318083FCE727F91B9342F3 /* TodoHoldDropTests.swift */,
 			);
 			name = AISessionRemoteMacTests;
@@ -1757,6 +1760,7 @@
 				E22EBE050F90F7253F66ACF9 /* TerminalConnectionDiagnosticsTests.swift in Sources */,
 				E122AE9F0DDCD9A4ED4C2688 /* TerminalRenderingTests.swift in Sources */,
 				21AA7F7C909E4283BEFDDDFD /* TerminalSelectionTests.swift in Sources */,
+				D9B667508FCEF723E03E0C76 /* TestPreferencesGuard.swift in Sources */,
 				D83BED1012CFC26D4F60CFEE /* TodoHoldDropTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2006,6 +2010,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSPrincipalClass = TestPreferencesGuard;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -2088,6 +2093,7 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSPrincipalClass = TestPreferencesGuard;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
