@@ -47,6 +47,9 @@ struct AISessionRemoteApp: App {
                     model.installSystemEntryPoints()
                     // The Mac's Dock icon resets every launch; iOS keeps its alternate icon.
                     SkinIcon.apply(SkinStore.shared.skin)
+                    #if DEBUG
+                    DemoFixtures.runSkinSequence()
+                    #endif
                 }
                 .onReceive(NotificationCenter.default.publisher(
                     for: PlatformSupport.didEnterBackgroundNotification

@@ -10,6 +10,20 @@ enum DemoFixtures {
     /// Value following `-uiDemoScreen`, if any.
     static var screen: String? { value(after: "-uiDemoScreen") }
 
+    /// `-uiDemoSkins neonNoir,standard,phosphor`: switch the app skin to each in turn, 4 s
+    /// apart, to check live switching (terminal survives, Standard comes back light).
+    @MainActor
+    static func runSkinSequence() {
+        guard isEnabled, let list = value(after: "-uiDemoSkins") else { return }
+        let skins = list.split(separator: ",").compactMap { AppSkin(rawValue: String($0)) }
+        Task { @MainActor in
+            for skin in skins {
+                try? await Task.sleep(for: .seconds(4))
+                SkinStore.shared.skin = skin
+            }
+        }
+    }
+
     /// The launch argument following `flag`, if any.
     static func value(after flag: String) -> String? {
         let args = ProcessInfo.processInfo.arguments
