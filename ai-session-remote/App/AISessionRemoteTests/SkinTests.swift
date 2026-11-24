@@ -314,7 +314,17 @@ final class SkinTests: XCTestCase {
         SkinStore.shared.skin = .neonNoir
         XCTAssertEqual(DS.toolEdge.width, 4)
         SkinStore.shared.skin = .phosphor
-        XCTAssertEqual(DS.toolEdge.width, 2)
-        XCTAssertLessThanOrEqual(DS.toolEdge.opacity, 0.6)
+        XCTAssertEqual(DS.toolEdge.width, 1)
+        XCTAssertLessThanOrEqual(DS.toolEdge.opacity, 0.35)
+    }
+
+    /// Phosphor's glow is a faint halo, not a bloom: small radius, low strength. Neon noir
+    /// keeps its stronger magenta glow.
+    func testPhosphorGlowIsFaint() {
+        SkinStore.shared.skin = .phosphor
+        XCTAssertLessThanOrEqual(DS.glowRadius, 4)
+        XCTAssertLessThanOrEqual(UIColor(DS.glow!).cgColor.alpha, 0.3)
+        SkinStore.shared.skin = .neonNoir
+        XCTAssertEqual(DS.glowRadius, 8)
     }
 }

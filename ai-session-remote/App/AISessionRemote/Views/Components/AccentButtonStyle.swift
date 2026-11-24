@@ -25,7 +25,7 @@ struct AccentButtonStyle: ButtonStyle {
             .background(neon ? Color.clear : DS.accent, in: shape)
             .overlay(shape.stroke(neon ? DS.info : .clear, lineWidth: 1))
             .shadow(color: neon ? DS.info.opacity(0.6) : (skin == .phosphor ? DS.glow ?? .clear : .clear),
-                    radius: skin == .standard ? 0 : 6)
+                    radius: skin == .standard ? 0 : (skin == .phosphor ? DS.glowRadius : 6))
             .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
     }
 }

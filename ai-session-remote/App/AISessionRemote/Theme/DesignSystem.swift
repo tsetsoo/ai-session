@@ -143,14 +143,19 @@ enum DS {
         switch skin {
         case .standard: nil
         case .neonNoir: hex(0xFF2E97).opacity(0.6)
-        case .phosphor: hex(0x5CE892).opacity(0.55)
+        case .phosphor: hex(0x5CE892).opacity(0.3)
         }
+    }
+
+    /// How far the glow spreads: Neon noir blooms, Phosphor is a faint halo.
+    static var glowRadius: CGFloat {
+        skin == .phosphor ? 4 : 8
     }
 
     /// The tool-colour bar down a conversation's left edge. Phosphor's bright green read as a
     /// glowing strip, so there it is thinner and dimmer.
     static var toolEdge: (width: CGFloat, opacity: Double) {
-        skin == .phosphor ? (2, 0.55) : (4, 1)
+        skin == .phosphor ? (1, 0.35) : (4, 1)
     }
 
     /// Corner radius for a base value: Phosphor is square.

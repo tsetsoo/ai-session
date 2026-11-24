@@ -92,7 +92,7 @@ private struct SkinnedTerminalFrame: ViewModifier {
             // every frame render offscreen.
             .overlay(
                 Rectangle().strokeBorder(border, lineWidth: 1)
-                    .shadow(color: DS.glow ?? .clear, radius: 8)
+                    .shadow(color: DS.glow ?? .clear, radius: DS.glowRadius)
                     .allowsHitTesting(false)
             )
             // Phosphor's CRT vignette: the edges and corners darken like a curved screen; the
