@@ -20,6 +20,10 @@ enum AppSkin: String, CaseIterable, Identifiable {
     /// feel comes from its colours, square corners and the monospaced terminal).
     var interfaceFontDesign: Font.Design? { nil }
 
+    /// Headings only (sidebar labels, section headers, screen titles): Phosphor gives them a
+    /// terminal look in monospace; body text keeps the system font.
+    var headingFontDesign: Font.Design? { self == .phosphor ? .monospaced : nil }
+
     /// Both skins are dark only; Standard follows the system (and the terminal's own theme).
     var isDark: Bool { self != .standard }
 

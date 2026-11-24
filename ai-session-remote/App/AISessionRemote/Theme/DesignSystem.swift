@@ -137,9 +137,14 @@ enum DS {
         }
     }
 
-    /// A static glow around selected and primary things; Neon noir only.
+    /// A static glow around the terminal's edge and primary buttons: magenta in Neon noir,
+    /// phosphor green in Phosphor. Never on text.
     static var glow: Color? {
-        skin == .neonNoir ? hex(0xFF2E97).opacity(0.6) : nil
+        switch skin {
+        case .standard: nil
+        case .neonNoir: hex(0xFF2E97).opacity(0.6)
+        case .phosphor: hex(0x5CE892).opacity(0.55)
+        }
     }
 
     /// Corner radius for a base value: Phosphor is square.

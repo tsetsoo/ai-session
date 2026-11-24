@@ -63,7 +63,7 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertEqual(DS.radius(10), 0)
         XCTAssertEqual(hex(DS.accent, .dark), 0x5CE892, "vivid green, not neon")
         XCTAssertNotNil(DS.windowBackground)
-        XCTAssertNil(DS.glow)
+        XCTAssertNotNil(DS.glow, "Phosphor glows green")
     }
 
     func testNeonNoirAccentIsDistinctFromError() {

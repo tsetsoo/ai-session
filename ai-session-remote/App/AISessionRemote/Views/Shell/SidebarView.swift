@@ -43,7 +43,7 @@ struct SidebarView: View {
             SidebarRow(title: "Todos", systemImage: "checkmark.square", count: 0)
                 .tag(AppModel.SidebarItem.todos)
             if !counts.computers.isEmpty {
-                Section("Computers") {
+                Section {
                     ForEach(counts.computers, id: \.id) { row in
                         DisclosureGroup(isExpanded: expansion(for: row.id)) {
                             ForEach(projects[row.id] ?? []) { project in
@@ -70,6 +70,8 @@ struct SidebarView: View {
                         }
                         .tag(AppModel.SidebarItem.computer(row.id))
                     }
+                } header: {
+                    Text("Computers").skinnedHeading()
                 }
             }
         }
@@ -160,6 +162,7 @@ private struct SidebarRow: View {
         HStack(spacing: DS.spacing.s) {
             Label {
                 Text(title)
+                    .skinnedHeading()
             } icon: {
                 Image(systemName: systemImage)
                     .foregroundStyle(iconTint ?? Color.secondary)

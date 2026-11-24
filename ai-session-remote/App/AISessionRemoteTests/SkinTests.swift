@@ -266,4 +266,42 @@ final class SkinTests: XCTestCase {
         }
         XCTAssertTrue(hits.isEmpty, hits.joined(separator: "\n"))
     }
+
+    // MARK: Phosphor effects (glow, vignette, headings)
+
+    func testPhosphorHasAGlowAndTerminalHeadings() {
+        SkinStore.shared.skin = .phosphor
+        XCTAssertNotNil(DS.glow)
+        XCTAssertEqual(AppSkin.phosphor.headingFontDesign, .monospaced)
+        XCTAssertNil(AppSkin.standard.headingFontDesign)
+        XCTAssertNil(AppSkin.neonNoir.headingFontDesign)
+        XCTAssertNil(AppSkin.phosphor.interfaceFontDesign, "body text stays in the system font")
+    }
+
+    /// The CRT vignette darkens the terminal's edges and corners but leaves the middle, where
+    /// the text is, exactly as it was.
+    func testPhosphorVignetteLeavesTheMiddleClean() throws {
+        SkinStore.shared.skin = .phosphor
+        let fill = Color(PlatformNativeColor(hex: 0x7FF0A4))
+        let host = UIHostingController(rootView: fill.skinnedTerminalFrame().frame(width: 300, height: 300).ignoresSafeArea())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 300, height: 300))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let format = UIGraphicsImageRendererFormat()
+        format.preferredRange = .standard
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: host.view.bounds, format: format).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+        let cg = try XCTUnwrap(image.cgImage)
+        let data = try XCTUnwrap(cg.dataProvider?.data) as Data
+        func green(_ x: Int, _ y: Int) -> Int { Int(data[y * cg.bytesPerRow + x * 4 + 1]) }
+        XCTAssertEqual(green(150, 150), 0xF0, "the middle is untouched")
+        XCTAssertEqual(green(100, 120), 0xF0, "most of the screen is untouched")
+        XCTAssertEqual(green(40, 150), 0xF0, "line ends near the side stay full strength")
+        XCTAssertLessThan(green(8, 8), 0xF0 - 30, "the corners darken")
+        XCTAssertGreaterThan(green(8, 8), 0x60, "but stay readable")
+    }
 }

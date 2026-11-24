@@ -25,7 +25,9 @@ private struct SkinnedRoot: ViewModifier {
                 for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
                     for window in scene.windows { window.tintColor = tint }
                 }
+                SkinHeadings.apply(skin)
             }
+            .onAppear { SkinHeadings.apply(skin) }
             #endif
     }
 }
@@ -90,8 +92,19 @@ private struct SkinnedTerminalFrame: ViewModifier {
             // every frame render offscreen.
             .overlay(
                 Rectangle().strokeBorder(border, lineWidth: 1)
-                    .shadow(color: skin == .neonNoir ? (DS.glow ?? .clear) : .clear, radius: 8)
+                    .shadow(color: DS.glow ?? .clear, radius: 8)
                     .allowsHitTesting(false)
+            )
+            // Phosphor's CRT vignette: the edges and corners darken like a curved screen; the
+            // middle, where the text is, is untouched (clear out to 80 % of the way to the edge,
+            // so line ends in a narrow phone terminal stay full strength).
+            .overlay(
+                EllipticalGradient(stops: [.init(color: .clear, location: 0),
+                                           .init(color: .clear, location: 0.8),
+                                           .init(color: .black.opacity(0.35), location: 1)])
+                    .opacity(skin == .phosphor ? 1 : 0)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             )
     }
 }
@@ -108,8 +121,8 @@ extension View {
         modifier(SkinnedCard())
     }
 
-    /// The terminal's edge: a glowing magenta line, or Phosphor's green line. Nothing is drawn
-    /// over the text itself.
+    /// The terminal's edge: a glowing magenta line, or Phosphor's glowing green line with a CRT
+    /// vignette in the corners. Nothing is drawn over the text in the middle.
     func skinnedTerminalFrame() -> some View {
         modifier(SkinnedTerminalFrame())
     }
@@ -138,3 +151,29 @@ extension View {
         listRowBackground(DS.surface)
     }
 }
+
+extension View {
+    /// Headings (sidebar labels, section headers): monospaced in Phosphor, unchanged elsewhere.
+    func skinnedHeading() -> some View {
+        fontDesign(SkinStore.shared.skin.headingFontDesign)
+    }
+}
+
+#if os(iOS)
+/// Screen titles (the navigation bar's large and inline titles) in monospace for Phosphor.
+/// Only the font is set, and only while Phosphor is on: the other skins clear it, so their
+/// bars stay exactly the system's. Bars already on screen pick it up on their next layout.
+@MainActor
+enum SkinHeadings {
+    static func apply(_ skin: AppSkin) {
+        let bar = UINavigationBar.appearance()
+        guard skin.headingFontDesign == .monospaced else {
+            bar.largeTitleTextAttributes = nil
+            bar.titleTextAttributes = nil
+            return
+        }
+        bar.largeTitleTextAttributes = [.font: UIFont.monospacedSystemFont(ofSize: 30, weight: .bold)]
+        bar.titleTextAttributes = [.font: UIFont.monospacedSystemFont(ofSize: 17, weight: .semibold)]
+    }
+}
+#endif
