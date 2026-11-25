@@ -25,7 +25,8 @@ concurrency:
 jobs:
   release:
     if: github.ref == 'refs/heads/main'
-    runs-on: macos-15
+    # The pinned SwiftTerm fails to type-check its Powerline renderer on Xcode 26.3.
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
 
@@ -53,7 +54,7 @@ jobs:
       - name: Build and package universal app
         env:
           AISESSION_RELEASE_REVISION: ${{ github.sha }}
-          DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
         run: |
           set -euo pipefail
           app="$(ai-session-remote/scripts/build-mac-release.sh "$RUNNER_TEMP/derived" ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO)"

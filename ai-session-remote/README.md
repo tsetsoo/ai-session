@@ -4,7 +4,7 @@ An iOS app for managing remote hosts and AI coding sessions.
 
 ## Requirements
 
-- Xcode 26 or later (SwiftTerm requires Swift 6.2)
+- Xcode 27 or later (the pinned SwiftTerm release builds with Swift 6.4)
 - XcodeGen (`brew install xcodegen`)
 - An iOS 17 or later device or simulator
 
