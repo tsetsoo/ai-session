@@ -3,8 +3,7 @@ import AISessionCore
 import SwiftUI
 
 struct TerminalBrowserPane: View {
-    let host: HostConnectionConfig
-    let hostName: String
+    let destination: TerminalBrowserDestination
     let isOnScreen: Bool
     let onClose: () -> Void
 
@@ -23,17 +22,19 @@ struct TerminalBrowserPane: View {
         host: "localhost", port: 22, username: NSUserName(), privateKeyPEM: Data()
     )
 
-    private var hostIsLocal: Bool { ThisMac.matches(host) }
+    private var hostIsLocal: Bool {
+        ThisMac.matches(hostname: destination.hostname, username: destination.username)
+    }
     private var isLocal: Bool { hostIsLocal || previewOnMac }
     private var sshTarget: String? {
         // Upstream accepts a single user@host[:port] target, or a string of SSH options.
         // Restrict saved host fields to a single target so they cannot add SSH options.
         let name = /^[A-Za-z0-9_.][A-Za-z0-9_.-]*$/
-        guard host.username.wholeMatch(of: name) != nil,
-              host.host.wholeMatch(of: name) != nil,
-              (1...65535).contains(host.port) else { return nil }
-        let target = "\(host.username)@\(host.host)"
-        return host.port == 22 ? target : "\(target):\(host.port)"
+        guard destination.username.wholeMatch(of: name) != nil,
+              destination.hostname.wholeMatch(of: name) != nil,
+              (1...65535).contains(destination.port) else { return nil }
+        let target = "\(destination.username)@\(destination.hostname)"
+        return destination.port == 22 ? target : "\(target):\(destination.port)"
     }
 
     var body: some View {
@@ -41,26 +42,27 @@ struct TerminalBrowserPane: View {
             HStack {
                 Label("Terminal Browser", systemImage: "globe")
                 Spacer()
-                if !hostIsLocal {
-                    Picker("Preview Network", selection: $previewOnMac) {
-                        Text(hostName).tag(false)
-                        Text("This Mac").tag(true)
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                    .onChange(of: previewOnMac) {
-                        preparation?.cancel()
-                        preparation = nil
-                        launch = nil
-                        message = nil
-                    }
-                }
                 Button("Close Browser", systemImage: "xmark", action: onClose)
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
             }
             .font(.caption)
             .padding(8)
+
+            if !hostIsLocal {
+                Picker("Preview Network", selection: $previewOnMac) {
+                    Text(destination.computerName).tag(false)
+                    Text("This Mac").tag(true)
+                }
+                .labelsHidden()
+                .padding([.horizontal, .bottom], 8)
+                .onChange(of: previewOnMac) {
+                    preparation?.cancel()
+                    preparation = nil
+                    launch = nil
+                    message = nil
+                }
+            }
 
             HStack {
                 TextField("http://localhost:3000", text: $address)
@@ -94,7 +96,7 @@ struct TerminalBrowserPane: View {
                         guard let status, status != 0 else { return }
                         message = isLocal
                             ? "Terminal Browser exited with status \(status)."
-                            : "Terminal Browser exited with status \(status). Check your Mac’s OpenSSH credentials and configuration for \(hostName)."
+                            : "Terminal Browser exited with status \(status). Check your Mac’s OpenSSH credentials and configuration for \(destination.computerName)."
                     },
                     selectsTextOnDrag: false,
                     isOnScreen: isOnScreen

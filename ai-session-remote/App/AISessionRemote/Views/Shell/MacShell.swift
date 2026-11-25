@@ -812,6 +812,10 @@ private struct ConversationColumn: View {
                         if model.selectedTodoID == id { model.selectedTodoID = nil }
                     }
                     .environment(\.toggleWorkersPanel, { send(.workers, for: id) })
+                    .environment(\.toggleBrowserPanel, {
+                        guard frontmostID == id else { return }
+                        ConversationSidePanel.toggle(.browser, in: $sidePanel, reduceMotion: reduceMotion)
+                    })
                     .opacity(frontmostID == id ? 1 : 0)
                     .allowsHitTesting(frontmostID == id)
                     .accessibilityHidden(frontmostID != id)
@@ -834,7 +838,8 @@ private struct ConversationColumn: View {
             conversation: frontmostID.flatMap {
                 model.store.displayed(forTodo: $0, selectedKey: model.selectedConversationID)
             },
-            store: model.store
+            store: model.store,
+            browserDestination: terminalState?.todoID == frontmostID ? terminalState?.browserDestination : nil
         ))
         .toolbar {
             if model.appMode == .sessions { columnToolbar }
@@ -1024,9 +1029,7 @@ private struct ConversationColumn: View {
         switch command {
         case .memories: sidePanel = .memories; return
         case .workers:
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) {
-                sidePanel = sidePanel == .workers ? nil : .workers
-            }
+            ConversationSidePanel.toggle(.workers, in: $sidePanel, reduceMotion: reduceMotion)
             return
         default: break
         }

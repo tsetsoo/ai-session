@@ -18,6 +18,7 @@ extension EnvironmentValues {
     /// subtitle name the todo and the frame doesn't repeat them in its toolbar.
     @Entry var frameOwnsWindow = false
     @Entry var toggleWorkersPanel: (() -> Void)? = nil
+    @Entry var toggleBrowserPanel: (() -> Void)? = nil
 }
 
 /// A todo's conversation: a native header (title, computer · folder, live
@@ -50,6 +51,7 @@ struct ConversationFrame: View {
     @Environment(\.frameOwnsWindow) private var ownsWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.toggleWorkersPanel) private var toggleWorkersPanel
+    @Environment(\.toggleBrowserPanel) private var toggleBrowserPanel
     /// Absent in previews.
     @Environment(AppModel.self) private var appModel: AppModel?
     #if os(macOS)
@@ -59,7 +61,6 @@ struct ConversationFrame: View {
     #if os(macOS)
     @State private var shellVisible = false
     @State private var shellOpened = false
-    @State private var browserVisible = false
     #endif
     @State private var clipboardSessionID: String?
     /// This todo's usage (own + sub-agents), shown at the right of the limits strip.
@@ -168,7 +169,8 @@ struct ConversationFrame: View {
             todoID: todo.id,
             isReady: readyConversation != nil,
             isConnected: isConnected,
-            isDuplicating: isDuplicating
+            isDuplicating: isDuplicating,
+            browserDestination: readyConversation.map(TerminalBrowserDestination.init)
         )
     }
 
@@ -215,39 +217,18 @@ struct ConversationFrame: View {
         }
     }
 
-    @ViewBuilder
-    private var terminalWorkspace: some View {
-        #if os(macOS)
-        HSplitView {
-            decoratedTerminal
-                .layoutPriority(1)
-            if browserVisible, let open = readyConversation {
-                TerminalBrowserPane(
-                    host: open.config,
-                    hostName: open.conversation.computer.name,
-                    isOnScreen: isOnScreen ?? isFrontmost,
-                    onClose: { browserVisible = false }
-                )
-                .id(open.id)
-                .frame(minWidth: 300, idealWidth: 480)
-            }
-        }
-        #else
-        decoratedTerminal
-        #endif
-    }
-
     private var browserAction: (() -> Void)? {
         #if os(macOS)
-        if readyConversation != nil {
-            return { browserVisible.toggle() }
-        }
-        #endif
+        guard readyConversation != nil else { return nil }
+        if let toggleBrowserPanel { return isFrontmost ? toggleBrowserPanel : nil }
+        return { ConversationSidePanel.toggle(.browser, in: $sidePanel, reduceMotion: reduceMotion) }
+        #else
         return nil
+        #endif
     }
 
     private var terminalWithEvents: some View {
-        terminalWorkspace
+        decoratedTerminal
         .onChange(of: liveStatus, initial: true) { _, status in
             if let status { approveGate.statusChanged(to: status) }
         }
@@ -357,16 +338,23 @@ struct ConversationFrame: View {
             )
         }
         .modifier(MemoriesPresenter(
-            // A frame in the shared column leaves this to the column's single inspector.
-            isPresented: Binding(get: { !sharesColumn && isFrontmost && sidePanel != nil },
-                                 set: { if !$0 { sidePanel = nil } }),
+            isPresented: Binding(get: { presentsSidePanel }, set: { if !$0 { sidePanel = nil } }),
             kind: sidePanel ?? .memories,
-            todoID: todo.id, conversation: conversation, store: store
+            todoID: todo.id, conversation: conversation, store: store,
+            browserDestination: readyConversation.map(TerminalBrowserDestination.init)
         ))
         // The conversation on screen is never alerted about, on any device.
         // Only the frame showing the terminal: a popped-out placeholder is not on screen,
         // and neither is a conversation kept attached behind the one on screen.
         .reportsVisibleConversation(todo.id, isActive: isFrontmost && !isPoppedOut)
+    }
+
+    private var presentsSidePanel: Bool {
+        // A pop-out grid has no column inspector, so each visible grid pane can host its browser.
+        if sidePanel == .browser {
+            return toggleBrowserPanel == nil && (isOnScreen ?? isFrontmost)
+        }
+        return !sharesColumn && isFrontmost && sidePanel != nil
     }
 
     /// Servers… and Restart…: their sheets, and the question when the tool is working or waiting.
@@ -981,9 +969,7 @@ struct ConversationFrame: View {
     /// Workers (Mac): the phone shows them as cards in its chat.
     private var workersAction: (() -> Void)? {
         #if os(macOS)
-        { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) {
-            sidePanel = sidePanel == .workers ? nil : .workers
-        } }
+        { ConversationSidePanel.toggle(.workers, in: $sidePanel, reduceMotion: reduceMotion) }
         #else
         nil
         #endif

@@ -4,12 +4,18 @@ import SwiftUI
 /// ⋯ ▸ Memories: the memories panel next to the conversation on the Mac and a sheet on iOS. It needs a linked conversation. The Mac's conversation column presents one for
 /// whichever conversation is in front, so switching swaps the panel's contents instead of
 /// closing and reopening the inspector (which also resized the terminal).
-/// What the conversation's side column shows. One inspector serves both, so switching between
-/// them swaps the contents instead of stacking two inspectors.
+/// What the conversation's side column shows. One inspector swaps between panels.
 enum ConversationSidePanel: Equatable {
     case memories
     /// The Mac's delegated-work panel (the phone has the cards in its chat).
     case workers
+    case browser
+
+    static func toggle(_ panel: Self, in current: Binding<Self?>, reduceMotion: Bool) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) {
+            current.wrappedValue = current.wrappedValue == panel ? nil : panel
+        }
+    }
 }
 
 struct MemoriesPresenter: ViewModifier {
@@ -18,6 +24,8 @@ struct MemoriesPresenter: ViewModifier {
     let todoID: String
     let conversation: Conversation?
     let store: TodoHubStore
+    var browserDestination: TerminalBrowserDestination? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         #if os(macOS)
@@ -46,7 +54,21 @@ struct MemoriesPresenter: ViewModifier {
     @ViewBuilder
     private var panel: some View {
         #if os(macOS)
-        if kind == .workers, let conversation {
+        if kind == .browser {
+            if let browserDestination {
+                TerminalBrowserPane(
+                    destination: browserDestination,
+                    isOnScreen: isPresented,
+                    onClose: {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) { isPresented = false }
+                    }
+                )
+                .id(browserDestination.id)
+            } else {
+                ContentUnavailableView("Terminal Browser", systemImage: "globe",
+                                       description: Text("Open a conversation to preview a page."))
+            }
+        } else if kind == .workers, let conversation {
             WorkersPanel(conversation: conversation, store: store)
                 .id("workers|\(conversation.id)|\(conversation.sessionId)")
         } else if let conversation {

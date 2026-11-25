@@ -131,6 +131,23 @@ struct ConversationToolbarRequest: Equatable {
     var id = UUID()
 }
 
+/// The browser invokes OpenSSH separately and only needs the selected computer's address.
+struct TerminalBrowserDestination: Equatable, Identifiable {
+    let id: String
+    let hostname: String
+    let port: Int
+    let username: String
+    let computerName: String
+
+    init(_ open: OpenTodoConversation) {
+        id = open.id
+        hostname = open.config.host
+        port = open.config.port
+        username = open.config.username
+        computerName = open.conversation.computer.name
+    }
+}
+
 /// Ready / connected, published by the frontmost frame so the column toolbar can enable
 /// the terminal actions. Background frames publish nil.
 struct ConversationTerminalState: Equatable {
@@ -139,6 +156,7 @@ struct ConversationTerminalState: Equatable {
     var isConnected: Bool
     /// A duplicate is being made; Duplicate in is off until it is done.
     var isDuplicating = false
+    var browserDestination: TerminalBrowserDestination? = nil
 }
 
 struct ConversationTerminalStateKey: PreferenceKey {
