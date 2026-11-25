@@ -18,7 +18,7 @@ final class TerminalPromptWatchTests: XCTestCase {
         view = TerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
         coordinator.attach(to: view)
         await coordinator.connect()
-        view.getTerminal().resize(cols: 100, rows: 40)
+        view.resize(cols: 100, rows: 40)
     }
 
     override func tearDown() async throws {
@@ -49,9 +49,8 @@ final class TerminalPromptWatchTests: XCTestCase {
         let rows = TerminalPromptFixtures.claudeBash.components(separatedBy: "\n").joined(separator: "\r\n")
         transport.onOutput?(Array(rows.utf8))
         try await Task.sleep(for: .milliseconds(400))
-        let terminal = view.getTerminal()
-        terminal.buffer.yDisp = 0
-        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "line 1", "scrolled to the top")
+        view.scrollTo(row: 0)
+        XCTAssertEqual(view.visibleRowsText(0..<1), ["line 1"], "scrolled to the top")
         XCTAssertEqual(coordinator.currentPrompt()?.question, "Do you want to proceed?")
     }
 

@@ -21,7 +21,10 @@ xcodegen generate >/dev/null
 
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
+# SwiftTerm's pinned build plugin generates its version and terminfo table. Release
+# builds also run unattended, where Xcode cannot show the plugin trust prompt.
 if ! xcodebuild -scheme AISessionRemoteMac -configuration Release -destination 'platform=macOS' \
+  -disableAutomaticPackageResolution -skipPackagePluginValidation \
   -derivedDataPath "$DERIVED" "AISESSION_RELEASE_REVISION=${AISESSION_RELEASE_REVISION:-}" "$@" build >"$log" 2>&1; then
   grep -E "error:" "$log" >&2 || tail -40 "$log" >&2
   echo "Release build failed (full log above)" >&2

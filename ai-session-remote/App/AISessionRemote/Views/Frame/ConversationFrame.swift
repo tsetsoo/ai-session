@@ -59,6 +59,7 @@ struct ConversationFrame: View {
     #if os(macOS)
     @State private var shellVisible = false
     @State private var shellOpened = false
+    @State private var browserVisible = false
     #endif
     @State private var clipboardSessionID: String?
     /// This todo's usage (own + sub-agents), shown at the right of the limits strip.
@@ -196,7 +197,7 @@ struct ConversationFrame: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 if let tool = chromeTool {
-                    ToolBand(tool: tool, onWorkers: toolBandWorkersAction)
+                    ToolBand(tool: tool, onWorkers: toolBandWorkersAction, onBrowser: browserAction)
                 }
                 limitsBar
             }
@@ -214,8 +215,39 @@ struct ConversationFrame: View {
         }
     }
 
-    private var terminalWithEvents: some View {
+    @ViewBuilder
+    private var terminalWorkspace: some View {
+        #if os(macOS)
+        HSplitView {
+            decoratedTerminal
+                .layoutPriority(1)
+            if browserVisible, let open = readyConversation {
+                TerminalBrowserPane(
+                    host: open.config,
+                    hostName: open.conversation.computer.name,
+                    isOnScreen: isOnScreen ?? isFrontmost,
+                    onClose: { browserVisible = false }
+                )
+                .id(open.id)
+                .frame(minWidth: 300, idealWidth: 480)
+            }
+        }
+        #else
         decoratedTerminal
+        #endif
+    }
+
+    private var browserAction: (() -> Void)? {
+        #if os(macOS)
+        if readyConversation != nil {
+            return { browserVisible.toggle() }
+        }
+        #endif
+        return nil
+    }
+
+    private var terminalWithEvents: some View {
+        terminalWorkspace
         .onChange(of: liveStatus, initial: true) { _, status in
             if let status { approveGate.statusChanged(to: status) }
         }
@@ -1635,6 +1667,7 @@ private struct TerminalColorScheme: ViewModifier {
 private struct ToolBand: View {
     let tool: String
     var onWorkers: (() -> Void)? = nil
+    var onBrowser: (() -> Void)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("terminal.theme") private var themeRaw = TerminalTheme.system.rawValue
@@ -1652,6 +1685,12 @@ private struct ToolBand: View {
                 .foregroundStyle(AppTheme.color(for: AITool(rawValue: tool)))
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
+            if let onBrowser {
+                Button(action: onBrowser) { Image(systemName: "globe") }
+                    .buttonStyle(.borderless)
+                    .help("Show or Hide Terminal Browser")
+                    .accessibilityLabel("Show or Hide Terminal Browser")
+            }
             if let onWorkers {
                 Button(action: onWorkers) { Image(systemName: "person.2") }
                     .buttonStyle(.borderless)

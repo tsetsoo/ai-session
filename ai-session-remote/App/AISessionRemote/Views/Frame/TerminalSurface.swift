@@ -251,6 +251,7 @@ private struct TerminalContainerView: NSViewRepresentable {
     let hitTarget: TerminalHitTarget
     let cover: AnyView?
     let tool: String?
+    let selectsTextOnDrag: Bool
     let canDropFiles: Bool
     let onDropFiles: ([URL]) -> Bool
 
@@ -261,13 +262,15 @@ private struct TerminalContainerView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> TerminalClickGate {
-        let view = LocalClipboardTerminalView(frame: .zero)
+        let view = selectsTextOnDrag ? LocalClipboardTerminalView(frame: .zero) : TerminalView(frame: .zero)
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         coordinator.setPalette(palette)
         view.optionAsMetaKey = true
-        view.tool = tool
-        view.canDropFiles = canDropFiles
-        view.onDropFiles = onDropFiles
+        if let view = view as? LocalClipboardTerminalView {
+            view.tool = tool
+            view.canDropFiles = canDropFiles
+            view.onDropFiles = onDropFiles
+        }
         coordinator.attach(to: view)
         let gate = TerminalClickGate(terminalView: view)
         gate.beforeGridResize = { [weak coordinator] in coordinator?.flushHeldOutput() }
@@ -414,6 +417,7 @@ struct TerminalSurface: View {
     private let onEnded: (Int?) -> Void
     private let onUserInput: () -> Void
     private let tool: String?
+    private let selectsTextOnDrag: Bool
     private let approveEnabled: Bool
     /// False while another conversation is the one on screen. The session stays connected.
     private let isFrontmost: Bool
@@ -469,6 +473,7 @@ struct TerminalSurface: View {
         onEnded: @escaping (Int?) -> Void = { _ in },
         onUserInput: @escaping () -> Void = {},
         tool: String? = nil,
+        selectsTextOnDrag: Bool = true,
         approveEnabled: Bool = false,
         isFrontmost: Bool = true,
         isOnScreen: Bool? = nil,
@@ -487,6 +492,7 @@ struct TerminalSurface: View {
         self.onEnded = onEnded
         self.onUserInput = onUserInput
         self.tool = tool
+        self.selectsTextOnDrag = selectsTextOnDrag
         self.approveEnabled = approveEnabled
         self.isFrontmost = isFrontmost
         self.isOnScreen = isOnScreen
@@ -735,6 +741,7 @@ struct TerminalSurface: View {
             hitTarget: hitTarget,
             cover: hitTarget == .cover ? AnyView(disconnectedOverlay) : nil,
             tool: tool,
+            selectsTextOnDrag: selectsTextOnDrag,
             canDropFiles: connectionState == .connected && hitTarget == .grid,
             onDropFiles: { urls in
                 guard connectionState == .connected, hitTarget == .grid else { return false }

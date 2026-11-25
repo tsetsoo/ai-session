@@ -18,7 +18,7 @@ final class TerminalRenderingTests: XCTestCase {
         coordinator.attach(to: view)
         await coordinator.connect()
         defer { coordinator.disconnect() }
-        let columns = view.getTerminal().cols
+        let columns = view.terminalDimensions.cols
         coordinator.setShown(false)
         gate.apply(.passThrough)
         // This enqueues a drain, but it cannot run until this main-actor turn yields.
@@ -26,16 +26,16 @@ final class TerminalRenderingTests: XCTestCase {
         gate.frame.size = NSSize(width: 900, height: 400)
         gate.beforeGridResize = {
             coordinator.flushHeldOutput()
-            XCTAssertEqual(view.getTerminal().buffer.y, 1)
-            XCTAssertEqual(view.getTerminal().buffer.x, 1)
+            XCTAssertEqual(view.terminalStateSnapshot().cursor.row, 1)
+            XCTAssertEqual(view.terminalStateSnapshot().cursor.col, 1)
         }
         gate.apply(.grid)
         coordinator.setShown(true)
-        let cursor = view.getTerminal().buffer.x
+        let cursor = view.terminalStateSnapshot().cursor.col
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }
         }
-        XCTAssertEqual(view.getTerminal().buffer.x, cursor, "scheduled drain must not replay bytes")
+        XCTAssertEqual(view.terminalStateSnapshot().cursor.col, cursor, "scheduled drain must not replay bytes")
     }
 
     func testHiddenGridParsesHeldOutputBeforeResizing() {
@@ -43,27 +43,27 @@ final class TerminalRenderingTests: XCTestCase {
         let gate = TerminalClickGate(terminalView: view)
         gate.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
         gate.apply(.grid)
-        let columns = view.getTerminal().cols
+        let columns = view.terminalDimensions.cols
         gate.apply(.passThrough)
 
         gate.frame.size = NSSize(width: 900, height: 400)
         gate.layoutSubtreeIfNeeded()
-        XCTAssertEqual(view.getTerminal().cols, columns)
+        XCTAssertEqual(view.terminalDimensions.cols, columns)
         XCTAssertEqual(view.frame.size, NSSize(width: 320, height: 200))
 
         var flushed = 0
         gate.beforeGridResize = {
             flushed += 1
-            XCTAssertEqual(view.getTerminal().cols, columns)
+            XCTAssertEqual(view.terminalDimensions.cols, columns)
             // A full row followed by the next character wraps only at the original width.
             view.feed(text: String(repeating: "x", count: columns) + "Y")
-            XCTAssertEqual(view.getTerminal().buffer.y, 1)
-            XCTAssertEqual(view.getTerminal().buffer.x, 1)
+            XCTAssertEqual(view.terminalStateSnapshot().cursor.row, 1)
+            XCTAssertEqual(view.terminalStateSnapshot().cursor.col, 1)
         }
         gate.apply(.grid)
         XCTAssertEqual(flushed, 1)
         XCTAssertEqual(view.frame, gate.bounds)
-        XCTAssertGreaterThan(view.getTerminal().cols, columns)
+        XCTAssertGreaterThan(view.terminalDimensions.cols, columns)
         gate.layoutSubtreeIfNeeded()
         XCTAssertEqual(flushed, 1, "unchanged layout must not replay held output")
     }

@@ -8,11 +8,10 @@ import XCTest
 final class TerminalSelectionTests: XCTestCase {
     private func copied(_ text: String, columns: Int = 12) -> String {
         let view = LocalClipboardTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 320))
-        let terminal = view.getTerminal()
-        terminal.resize(cols: columns, rows: 24)
+        view.resize(cols: columns, rows: 24)
         view.feed(text: text.replacingOccurrences(of: "\n", with: "\r\n"))
-        view.selection.setSelection(start: Position(col: 0, row: 0),
-                                    end: Position(col: terminal.buffer.x, row: terminal.buffer.y))
+        view.setSelectionRange(start: Position(col: 0, row: 0),
+                                    end: view.terminalStateSnapshot().cursor)
         let clipboard = NSPasteboard(name: NSPasteboard.Name("ai-command-copy-\(UUID())"))
         defer { clipboard.releaseGlobally() }
         view.copySelection(to: clipboard)
@@ -47,9 +46,8 @@ final class TerminalSelectionTests: XCTestCase {
         let command = "printf '%s' 'hello  world'"
         view.clipboardCode = CommandClipboard.candidates(in: ["```sh\n\(command)\n```"])
         view.feed(text: "  printf '%s'\r\n    'hello  world'")
-        let terminal = view.getTerminal()
-        view.selection.setSelection(start: Position(col: 2, row: 0),
-                                    end: Position(col: terminal.buffer.x, row: terminal.buffer.y))
+        view.setSelectionRange(start: Position(col: 2, row: 0),
+                                    end: view.terminalStateSnapshot().cursor)
         XCTAssertNotEqual(view.getSelection(), command, "reproduce Claude's layout newlines and padding")
         let clipboard = NSPasteboard(name: NSPasteboard.Name("ai-claude-command-\(UUID())"))
         defer { clipboard.releaseGlobally() }
@@ -71,7 +69,7 @@ final class TerminalSelectionTests: XCTestCase {
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = view
         view.feed(text: "copy this text\r\n\u{1B}[?1000h\u{1B}[?1002h")
-        XCTAssertNotEqual(view.getTerminal().mouseMode, .off)
+        XCTAssertNotEqual(view.currentMouseMode, .off)
         XCTAssertTrue(view.allowMouseReporting)
         func event(_ type: NSEvent.EventType, x: CGFloat) throws -> NSEvent {
             try XCTUnwrap(NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: view.bounds.height - 8),

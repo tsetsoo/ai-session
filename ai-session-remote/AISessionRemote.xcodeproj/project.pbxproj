@@ -101,6 +101,7 @@
 		3F7D62C234999725F0C9833F /* ConversationLinkViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */; };
 		4057411C78160E1D7CD4628D /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90D767C2AC93115AC1E9B3F4 /* HostStore.swift */; };
 		414864BA66DF44F9F28242A1 /* QuickAddBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ECAA7E51EC00759D342A7CF /* QuickAddBar.swift */; };
+		42F95E7E50B901879A15A42B /* BundledTerminalBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0395DBFF4ACB0071F2A62AA1 /* BundledTerminalBrowser.swift */; };
 		43108C2BB86CA543782EB498 /* MCPServerChecklist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EF7DAFF1BD631F66BD246CA /* MCPServerChecklist.swift */; };
 		43742E0FFAA3656D1B6E80B8 /* TodoRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CB81134A32870654F0473B2 /* TodoRow.swift */; };
 		44F3E96E02F25239D27F1CE9 /* ProjectMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1805736E5EA3DBF37BE0BF4B /* ProjectMenus.swift */; };
@@ -115,6 +116,7 @@
 		47C0DBE7DC069BCC5F022E48 /* HostsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1B02295F04DE55821A1C7F /* HostsListView.swift */; };
 		47F0510DF9398E9C5F02009C /* SSHConnectionPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA491F692E9A12A84643AA81 /* SSHConnectionPool.swift */; };
 		488BB9A4589B9291994709C2 /* TodoHubSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B17876012779CEAC4C80A8 /* TodoHubSettingsView.swift */; };
+		498C69A944031F1D9430B161 /* TerminalBrowserPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583B44C06151F562B5549D60 /* TerminalBrowserPane.swift */; };
 		498F772313CA5782F622D929 /* TodoHoldDragAndDrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94695BC778D29A96E4577C1D /* TodoHoldDragAndDrop.swift */; };
 		4D0C1AAFE68D17AC4996BB55 /* DuplicateInMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF89B193750522EEAD51834C /* DuplicateInMenu.swift */; };
 		4E3846485AA10B3B7344F5E0 /* ListActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BFD9EB6DE7519501FD14139 /* ListActions.swift */; };
@@ -164,6 +166,7 @@
 		6EEF0525282EAC6106DB05C4 /* StatusBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDE7FB9B8AA8D5C5877AE90E /* StatusBadge.swift */; };
 		6F62CF41F7514EB4A83CC8CD /* AttentionSound.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E54A882CAEEFF869230893D /* AttentionSound.swift */; };
 		7240ED6D831B6CDC06C67F09 /* TodoHubSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12419581E8EABDDBD2C33D6A /* TodoHubSettings.swift */; };
+		72F9076B2C71E627C3531865 /* BundledTerminalBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0395DBFF4ACB0071F2A62AA1 /* BundledTerminalBrowser.swift */; };
 		736847250D159EE7F09E1F69 /* attention-needs-you-neon-noir.caf in Resources */ = {isa = PBXBuildFile; fileRef = 18E5A85839230F850EDEE197 /* attention-needs-you-neon-noir.caf */; };
 		737E82EA63D17DED7D7A1E5E /* VisiblePresence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CF2935CB55EEDD18EC96992 /* VisiblePresence.swift */; };
 		7397271177C8A9C548EE83D0 /* AgentLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAE5BA1AC59B33AF36031206 /* AgentLiveActivityWidget.swift */; };
@@ -363,6 +366,7 @@
 		EC9066E393BC9E84F9510AB0 /* WeeklyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB74C80442E0D6535736F811 /* WeeklyView.swift */; };
 		EE04800E43A3B5A9887D4281 /* TOFUHostKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04516709CCAB11CABBE3529 /* TOFUHostKeyStoreTests.swift */; };
 		EEE34ECE95236577DE543771 /* LocalConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0E92D9DEB7C4816EBDB4B77 /* LocalConnection.swift */; };
+		EF0335302F5295E01638A57C /* TerminalBrowserPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583B44C06151F562B5549D60 /* TerminalBrowserPane.swift */; };
 		EF09596E78D56E59634CB61F /* TodoHubStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ABB2CBA22446496FCC5434A /* TodoHubStore.swift */; };
 		EF6087053C1B3C66DF8EDFEC /* ProjectEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97B7A594C8A26491ACD55735 /* ProjectEditorSheet.swift */; };
 		EF99E3E1BD354E591326BD49 /* SidebarModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77812A59712865DEA10BA4B1 /* SidebarModel.swift */; };
@@ -442,6 +446,7 @@
 		0002157EA5ADE38E9ADEDD3E /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
 		015A3B796283D7CA833B172A /* WorkerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkerSheet.swift; sourceTree = "<group>"; };
 		02AE6114F65FF42A87E1B35F /* ReachabilityProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReachabilityProbeTests.swift; sourceTree = "<group>"; };
+		0395DBFF4ACB0071F2A62AA1 /* BundledTerminalBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledTerminalBrowser.swift; sourceTree = "<group>"; };
 		04A825EEDF501585EB69A62A /* AgentRowsEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRowsEditor.swift; sourceTree = "<group>"; };
 		0593DCB097C923A73341EB68 /* ComputerDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerDetailView.swift; sourceTree = "<group>"; };
 		069864B039E21288F0AD21AA /* ReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewView.swift; sourceTree = "<group>"; };
@@ -505,6 +510,7 @@
 		555A99A04217936E4F1645AD /* ConversationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListView.swift; sourceTree = "<group>"; };
 		5714682159E77F95240A7211 /* AddAgentSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddAgentSheet.swift; sourceTree = "<group>"; };
 		578C316A8F1EFF7CD6BF7B3E /* Skin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Skin.swift; sourceTree = "<group>"; };
+		583B44C06151F562B5549D60 /* TerminalBrowserPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalBrowserPane.swift; sourceTree = "<group>"; };
 		5A9F6811353C523EB26675EF /* TerminalPromptFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPromptFixtures.swift; sourceTree = "<group>"; };
 		5AEEFD06D4BF1BB591C6A637 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		5CDD3AC1ACD432FB5A7FA2BB /* ConversationLinkViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationLinkViews.swift; sourceTree = "<group>"; };
@@ -748,6 +754,7 @@
 				A19388DFC31D114300D5C298 /* PhoneConversationView.swift */,
 				D4CDA2E8FBBB71F1BB5048A8 /* RestartSheet.swift */,
 				9AD705B0AB36EC1272E162F4 /* StartAgentsSection.swift */,
+				583B44C06151F562B5549D60 /* TerminalBrowserPane.swift */,
 				72E273782071736284D2563C /* TerminalSurface.swift */,
 				CACA4D506127E0997E071460 /* UsageLimitsBar.swift */,
 				9D78EC19210A7AFEC39421E1 /* WorkersPanel.swift */,
@@ -923,6 +930,7 @@
 			isa = PBXGroup;
 			children = (
 				2B30BC89B3A1D2CE46EB6921 /* AppModel.swift */,
+				0395DBFF4ACB0071F2A62AA1 /* BundledTerminalBrowser.swift */,
 				E67B76EDE9FE683169680363 /* Dictation.swift */,
 				B059B8BD666FE2C9F9EF56DB /* HostProvisioning.swift */,
 				EE3B756FF0192985AADAFF36 /* HostRepository.swift */,
@@ -1269,6 +1277,7 @@
 				F7228DA416A9FD2CA0EC08A3 /* Resources */,
 				03D60922D880AA701D53ADED /* CopyFiles */,
 				4BD5A47E019EA591C73FC0BE /* Frameworks */,
+				FE492C4D511699EB0DB99005 /* Bundle Terminal Browser */,
 			);
 			buildRules = (
 			);
@@ -1382,6 +1391,28 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		FE492C4D511699EB0DB99005 /* Bundle Terminal Browser */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle Terminal Browser";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/bash \"$SRCROOT/scripts/bundle-terminal-browser.sh\"";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		3D5138226C0BAEFBB2B1ABA7 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -1399,6 +1430,7 @@
 				6F62CF41F7514EB4A83CC8CD /* AttentionSound.swift in Sources */,
 				88F172345A5545B08E5C2514 /* AutomationColumns.swift in Sources */,
 				CFD18D03B7D1E72E33BA3FA9 /* AutomationModels.swift in Sources */,
+				72F9076B2C71E627C3531865 /* BundledTerminalBrowser.swift in Sources */,
 				69DFE130890EF5A5A3396C42 /* ChatActivityRow.swift in Sources */,
 				E135A9C032C1EEE94521B02D /* ChatCodeBlock.swift in Sources */,
 				DA408A318D222D81ABFD2D5E /* ChatComposer.swift in Sources */,
@@ -1506,6 +1538,7 @@
 				6EEF0525282EAC6106DB05C4 /* StatusBadge.swift in Sources */,
 				76095E19F1F5CEAF163A181B /* StatusMonitoring.swift in Sources */,
 				378FC0687480ED5B28FA9FD9 /* TerminalAppearance.swift in Sources */,
+				EF0335302F5295E01638A57C /* TerminalBrowserPane.swift in Sources */,
 				CBD696328F1D52AC50CF86BF /* TerminalClipboard.swift in Sources */,
 				E51413F4AD580EB8F2245E62 /* TerminalOutputCoalescer.swift in Sources */,
 				E4427251E3B62EF3BC42901D /* TerminalResizeDebouncer.swift in Sources */,
@@ -1556,6 +1589,7 @@
 				849E32495E15868F94AE8834 /* AttentionSound.swift in Sources */,
 				F41DB4ABAF1D7E3FBDC176A7 /* AutomationColumns.swift in Sources */,
 				2FF53D5D56620431E894CDD4 /* AutomationModels.swift in Sources */,
+				42F95E7E50B901879A15A42B /* BundledTerminalBrowser.swift in Sources */,
 				31D055419DFEFA9E026CE3F9 /* ChatActivityRow.swift in Sources */,
 				3D1684ED234059326AF42DBD /* ChatCodeBlock.swift in Sources */,
 				81F3FE9CB99348FDC505FDF3 /* ChatComposer.swift in Sources */,
@@ -1664,6 +1698,7 @@
 				827A5C090B3EF443328900E4 /* StatusBadge.swift in Sources */,
 				4EC9FAFBEED69FA5A34DE6B2 /* StatusMonitoring.swift in Sources */,
 				BAD1AA4C48CFFEC5E3D2B641 /* TerminalAppearance.swift in Sources */,
+				498C69A944031F1D9430B161 /* TerminalBrowserPane.swift in Sources */,
 				2A54A00248A112F2DB3D6425 /* TerminalClipboard.swift in Sources */,
 				DD3DEB7C48880583B9A7AF19 /* TerminalOutputCoalescer.swift in Sources */,
 				3F7506AD3A89B8ED43E6DEBB /* TerminalResizeDebouncer.swift in Sources */,
@@ -1871,6 +1906,7 @@
 				DEVELOPMENT_TEAM = 233QTK6KCL;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/AISessionRemoteMac/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -2074,6 +2110,7 @@
 				DEVELOPMENT_TEAM = 233QTK6KCL;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/AISessionRemoteMac/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -2185,7 +2222,7 @@
 			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.18.0;
+				minimumVersion = 1.99.3;
 			};
 		};
 		F86CE8150CC8E4CB73336807 /* XCRemoteSwiftPackageReference "swift-nio" */ = {

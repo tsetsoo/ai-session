@@ -150,16 +150,16 @@ final class TouchScrollTerminalView: TerminalView {
         displayLink?.invalidate()
     }
 
-    /// SwiftTerm adds a pan here that reports a drag as a held button. A finger scrolls with
-    /// `scrollPan` instead, so that pan is left to the pointer.
-    override func mouseModeChanged(source: Terminal) {
-        let before = Set((gestureRecognizers ?? []).map(ObjectIdentifier.init))
-        super.mouseModeChanged(source: source)
-        if let added = gestureRecognizers?.first(where: {
-            $0 is UIPanGestureRecognizer && !before.contains(ObjectIdentifier($0))
-        }) {
-            added.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+    /// SwiftTerm installs a single-touch pan for mouse drags. Keep it pointer-only so
+    /// finger drags go through our wheel gesture.
+    override func addGestureRecognizer(_ gestureRecognizer: UIGestureRecognizer) {
+        let directTouches = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        if let pan = gestureRecognizer as? UIPanGestureRecognizer,
+           pan.maximumNumberOfTouches == 1,
+           pan.allowedTouchTypes != directTouches {
+            pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
         }
+        super.addGestureRecognizer(gestureRecognizer)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -184,7 +184,7 @@ final class TouchScrollTerminalView: TerminalView {
         guard gestureRecognizer === scrollPan else {
             return super.gestureRecognizerShouldBegin(gestureRecognizer)
         }
-        guard allowMouseReporting, getTerminal().mouseMode != .off else { return false }
+        guard allowMouseReporting, (terminalInputStateSnapshot()?.mouseMode ?? .off) != .off else { return false }
         let velocity = scrollPan.velocity(in: self)
         return abs(velocity.y) > abs(velocity.x)
     }
@@ -193,7 +193,7 @@ final class TouchScrollTerminalView: TerminalView {
         switch pan.state {
         case .began:
             stopScrolling()
-            let terminal = getTerminal()
+            let terminal = terminalDimensions
             // The touch point less the translation is where the finger first came down.
             let translation = pan.translation(in: self)
             let location = pan.location(in: self)
@@ -214,7 +214,7 @@ final class TouchScrollTerminalView: TerminalView {
     }
 
     private var lineHeight: CGFloat {
-        let rows = getTerminal().rows
+        let rows = terminalDimensions.rows
         return rows > 0 ? bounds.height / CGFloat(rows) : 0
     }
 
@@ -260,11 +260,9 @@ final class TouchScrollTerminalView: TerminalView {
     /// Wheel up for positive steps, down for negative, at the drag's anchor cell.
     private func sendWheel(steps: Int) {
         guard steps != 0, let anchor else { return }
-        let terminal = getTerminal()
-        guard terminal.mouseMode != .off else { return }
-        let flags = terminal.encodeButton(button: steps > 0 ? 4 : 5, release: false, shift: false, meta: false, control: false)
+        guard let state = terminalInputStateSnapshot(), state.mouseMode != .off else { return }
         for _ in 0..<abs(steps) {
-            terminal.sendEvent(buttonFlags: flags, x: anchor.col, y: anchor.row)
+            sendMouseEvent(button: steps > 0 ? 4 : 5, release: false, col: anchor.col, row: anchor.row)
         }
     }
 }

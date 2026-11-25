@@ -4,7 +4,7 @@ An iOS app for managing remote hosts and AI coding sessions.
 
 ## Requirements
 
-- Xcode 16 or later
+- Xcode 26 or later (SwiftTerm requires Swift 6.2)
 - XcodeGen (`brew install xcodegen`)
 - An iOS 17 or later device or simulator
 
@@ -17,6 +17,21 @@ open AISessionRemote.xcodeproj
 ```
 
 The project uses the local `AISessionCore` Swift package and targets iOS 17 or later.
+On the first build, Xcode may ask you to enable `SwiftTermBuildInfoPlugin`, which
+generates SwiftTerm's build metadata and terminal capability table.
+
+## Terminal Browser on Mac
+
+The Mac app includes [Terminal Browser](https://github.com/zenbu-labs/terminal-browser).
+Open a conversation, click the globe next to its tool name, and enter an HTTP or HTTPS
+URL. The browser unpacks on first use. The network picker lets you preview from this Mac
+or from the conversation's computer. With the remote computer selected,
+`http://localhost:3000` opens port 3000 on that computer.
+
+Remote previews use the Mac's OpenSSH configuration, including its SSH agent and
+known hosts. The host must accept OpenSSH connections and allow TCP forwarding.
+The Mac build downloads and verifies a pinned Terminal Browser archive for each target
+architecture. Subsequent builds reuse the verified archives in Derived Data.
 
 ## Host prerequisites
 

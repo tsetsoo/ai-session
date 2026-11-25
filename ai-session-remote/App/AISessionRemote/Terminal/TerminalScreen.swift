@@ -244,7 +244,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
         sessionGeneration += 1
         let generation = sessionGeneration
         state = .connecting
-        let terminal = terminalView.getTerminal()
+        let terminal = terminalView.terminalDimensions
         let cols = terminal.cols > 0 ? terminal.cols : 80
         let rows = terminal.rows > 0 ? terminal.rows : 24
 
@@ -270,7 +270,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
         do {
             try await session.connect(cols: cols, rows: rows)
             guard sessionGeneration == generation else { return }
-            let liveTerminal = terminalView.getTerminal()
+            let liveTerminal = terminalView.terminalDimensions
             // The PTY was already requested at cols x rows; only tell the host if the view
             // actually changed size while connecting. An unnecessary window-change makes tmux
             // repaint the whole screen at the worst possible moment.
@@ -340,32 +340,10 @@ final class TerminalCoordinator: TerminalViewDelegate {
         }
     }
 
-    /// The live screen's rows, trailing spaces trimmed, even while the view is scrolled back
-    /// (`getLine` reads the scrolled view, so a prompt was missed then).
+    /// Read the live screen even while the viewport is scrolled into history.
     func screenLines() -> [String] {
-        guard let terminal = terminalView?.getTerminal() else { return [] }
-        let top = Self.liveTop(terminal)
-        return (0..<terminal.rows).map { terminal.getScrollInvariantLine(row: top + $0)?.translateToString(trimRight: true) ?? "" }
-    }
-
-    /// The scroll-invariant row of the live screen's top: the last `rows` lines of the buffer.
-    /// SwiftTerm keeps the line count internal, so the last line is found by searching.
-    static func liveTop(_ terminal: Terminal) -> Int {
-        let exists = { (row: Int) in terminal.getScrollInvariantLine(row: row) != nil }
-        var low = terminal.buffer.totalLinesTrimmed + terminal.buffer.yDisp
-        guard exists(low) else { return low }
-        var step = max(terminal.rows, 1)
-        var high = low + step
-        while exists(high) {
-            low = high
-            step *= 2
-            high = low + step
-        }
-        while high - low > 1 {
-            let middle = (low + high) / 2
-            if exists(middle) { low = middle } else { high = middle }
-        }
-        return max(low - terminal.rows + 1, terminal.buffer.totalLinesTrimmed)
+        terminalView?.terminalContentSnapshot(region: .history(maximumScrollbackRows: 0))?
+            .rows.map(\.text) ?? []
     }
 
     func currentPrompt() -> TerminalPrompt? {
@@ -494,7 +472,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
 
     /// The program in the terminal turned bracketed paste on (`ESC[?2004h`).
     private var isBracketedPasteMode: Bool {
-        terminalView?.getTerminal().bracketedPasteMode ?? false
+        terminalView?.terminalInputStateSnapshot()?.bracketedPasteMode ?? false
     }
 
     /// Runs `disconnect()` on this turn, before the first await, so a close already queued
@@ -586,7 +564,7 @@ final class TerminalCoordinator: TerminalViewDelegate {
     /// The frame came back on screen: tell tmux the size it has now.
     func syncSizeToView() {
         guard let terminalView else { return }
-        let terminal = terminalView.getTerminal()
+        let terminal = terminalView.terminalDimensions
         sizeChanged(source: terminalView, newCols: terminal.cols, newRows: terminal.rows)
     }
 
