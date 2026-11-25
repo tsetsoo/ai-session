@@ -17,6 +17,10 @@ extension TmuxCommandBuilder {
     /// git, tmux, or the reviewer's tool (`claude not found`) isn't installed.
     public static let reviewMissingProgramExitCode: Int32 = 90
 
+    public static func reviewRepositories(cwd: String, tool: String, sessionID: String) -> String {
+        wrap("exec \(reviewHelper) repos \(shellQuotePath(cwd)) --session \(shellQuote("\(tool):\(sessionID)"))")
+    }
+
     /// `ref`: review that branch of the repository instead of its working tree.
     public static func reviewStatus(cwd: String, ref: String? = nil) -> String {
         wrap("exec \(reviewHelper) status \(shellQuotePath(cwd))" + refFlag(ref))

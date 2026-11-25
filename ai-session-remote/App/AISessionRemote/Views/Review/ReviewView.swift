@@ -117,6 +117,7 @@ struct ReviewView: View {
         // The user's PRs and the worktrees: once per folder and on Refresh.
         .task(id: "\(pullRequestReads)|\(session.folder)") {
             await withConfig { config in
+                if await session.loadRepositories(config: config) || Task.isCancelled { return }
                 async let worktrees: Void = session.loadWorktrees(config: config)
                 async let pullRequests: Void = session.loadPullRequests(config: config)
                 _ = await (worktrees, pullRequests)
@@ -451,7 +452,7 @@ struct ReviewView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        if session.scope != .pullRequest {
+        if session.scope != .pullRequest || !session.repositories.isEmpty {
             ToolbarItem(placement: .navigation) {
                 Menu {
                     Button {
@@ -459,6 +460,20 @@ struct ReviewView: View {
                     } label: {
                         Text("This Conversation's Folder")
                         Text(session.conversation.cwd)
+                    }
+                    if !session.repositories.isEmpty {
+                        Section("Repositories Used in This Conversation") {
+                            ForEach(session.repositories) { repository in
+                                Button {
+                                    session.choose(repository: repository)
+                                } label: {
+                                    Text((repository.path as NSString).lastPathComponent)
+                                    Text(repository.files.isEmpty
+                                         ? repository.path
+                                         : "\(repository.path) · \(repository.files.count) files recorded")
+                                }
+                            }
+                        }
                     }
                     if !session.worktrees.isEmpty {
                         Section("Worktrees of This Repository, Latest First") {
@@ -476,7 +491,7 @@ struct ReviewView: View {
                     Label(reviewingTitle, systemImage: "arrow.triangle.branch")
                         .labelStyle(.titleAndIcon)
                 }
-                .help("Which worktree to review. ● changed since this conversation started: an agent may have made a worktree of its own.")
+                .help("Which repository or worktree to review. ● changed since this conversation started: an agent may have made a worktree of its own.")
             }
         }
         ToolbarItem(placement: .navigation) {

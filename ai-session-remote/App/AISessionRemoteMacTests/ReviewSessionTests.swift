@@ -48,6 +48,7 @@ final class ReviewSessionTests: XCTestCase {
     private var sessionUnsupported = false
     private var listFails = false
     private var worktreeRows: [[String: Any]]?
+    private var repositoryRows: [[String: Any]] = []
     private var matchingBranchPR = false
     private var branchPRBase = "release"
     private var branchPRState = "open"
@@ -68,6 +69,9 @@ final class ReviewSessionTests: XCTestCase {
         func json(_ value: Any) -> SSHExecResult {
             let data = try! JSONSerialization.data(withJSONObject: value)
             return SSHExecResult(exitCode: 0, stdout: String(decoding: data, as: UTF8.self), stderr: "")
+        }
+        if command.contains(" repos ") {
+            return json(["root": "/project", "repositories": repositoryRows])
         }
         if command.contains(" log ") {
             let commits: [[String: Any]] = [
@@ -196,6 +200,36 @@ final class ReviewSessionTests: XCTestCase {
             try await self.exec($0, $1)
         })
         return (session, store)
+    }
+
+    func testReviewOpensTheOnlyNestedRepositoryWithRecordedEdits() async {
+        let (session, _) = makeSession()
+        repositoryRows = [
+            ["path": "/project", "files": [], "branch": "main", "prs": []],
+            ["path": "/project/nested", "files": ["f.txt"], "branch": "feature", "prs": []]
+        ]
+
+        let switched = await session.loadRepositories(config: config)
+        XCTAssertTrue(switched)
+        XCTAssertEqual(session.folder, "/project/nested")
+        XCTAssertEqual(session.scope, .conversation)
+        await session.load(config: config)
+        XCTAssertTrue(commands.contains { $0.contains(" diff ") && $0.contains("/project/nested") })
+    }
+
+    func testReviewOffersBothNestedRepositoriesWhenBothHaveEdits() async {
+        let (session, _) = makeSession()
+        repositoryRows = [
+            ["path": "/project/a", "files": ["f.txt"], "branch": "feature", "prs": []],
+            ["path": "/project/b", "files": ["f.txt"], "branch": "feature", "prs": []]
+        ]
+
+        let switched = await session.loadRepositories(config: config)
+        XCTAssertFalse(switched)
+        XCTAssertEqual(session.folder, session.conversation.cwd)
+        XCTAssertEqual(session.repositories.map(\.path), ["/project/a", "/project/b"])
+        session.choose(repository: session.repositories[1])
+        XCTAssertEqual(session.folder, "/project/b")
     }
 
     func testCommentsOnAnOlderRevisionMoveWithTheirLines() async {

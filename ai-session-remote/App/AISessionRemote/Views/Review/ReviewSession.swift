@@ -598,6 +598,56 @@ final class ReviewSession {
         self.scope = scope
     }
 
+    struct Repository: Decodable, Identifiable {
+        struct PullRequest: Decodable {
+            let role: String
+        }
+
+        let path: String
+        let files: [String]
+        let branch: String?
+        let prs: [PullRequest]
+        var id: String { path }
+        var changedPullRequest: Bool { prs.contains { $0.role == "created" || $0.role == "changed" } }
+    }
+
+    private struct RepositoryList: Decodable {
+        let root: String?
+        let repositories: [Repository]
+    }
+
+    private(set) var repositories: [Repository] = []
+    private var repositoryChosenAutomatically = false
+    private var repositoryChoiceNeeded = false
+
+    /// Returns true when a different folder is selected and its own load will start.
+    func loadRepositories(config: HostConnectionConfig) async -> Bool {
+        guard ["claude", "codex"].contains(conversation.tool), !conversation.sessionId.isEmpty else { return false }
+        let command = TmuxCommandBuilder.reviewRepositories(cwd: conversation.cwd,
+                                                            tool: conversation.tool,
+                                                            sessionID: conversation.sessionId)
+        guard let list: RepositoryList = try? await run(command, config: config), !Task.isCancelled else { return false }
+        repositories = list.repositories.filter { $0.path != list.root }
+        guard !userChose, !automaticTargetChosen, !repositoryChosenAutomatically, chosenFolder == nil else { return false }
+        let edited = list.repositories.filter { !$0.files.isEmpty }
+        let withChangedPR = list.repositories.filter(\.changedPullRequest)
+        let candidates = [edited, withChangedPR, repositories].first { !$0.isEmpty } ?? []
+        repositoryChoiceNeeded = candidates.count > 1
+        guard candidates.count == 1, let repository = candidates.first, repository.path != list.root else { return false }
+        repositoryChosenAutomatically = true
+        // Let the branch/PR lookup run again with this repository's refs.
+        pullRequestsLoaded = false
+        worktreesLoaded = false
+        show(folder: repository.path)
+        if !repository.files.isEmpty, Self.gitTime(conversation.createdAt) != nil { scope = .conversation }
+        return true
+    }
+
+    func choose(repository: Repository) {
+        choose(folder: repository.path)
+        if !repository.files.isEmpty, Self.gitTime(conversation.createdAt) != nil { scope = .conversation }
+    }
+
     /// Lists the user's PRs/MRs; opens the likely one (linked by the runner, or the only one
     /// updated since the conversation began) unless the user already chose what to look at.
     func loadPullRequests(config: HostConnectionConfig) async {
@@ -633,10 +683,13 @@ final class ReviewSession {
     /// Resolve only once, from worktree/branch ownership. A PR comment or another
     /// conversation's recent repository activity must never redirect this window.
     private func resolveTarget() {
-        guard !userChose, !automaticTargetChosen, worktreesLoaded, pullRequestsLoaded else { return }
+        guard !userChose, !automaticTargetChosen, !repositoryChoiceNeeded, worktreesLoaded, pullRequestsLoaded else { return }
         let list = pullRequests ?? ReviewPullRequestList(provider: nil, access: false, prs: [])
-        switch list.target(linkedURL: conversation.pullRequest?.url, folder: conversation.cwd,
-                           branch: conversation.branch, dedicated: conversation.worktree != nil,
+        let repository = repositories.first { $0.path == chosenFolder }
+        if let repository, !repository.files.isEmpty, scope == .conversation { return }
+        switch list.target(linkedURL: conversation.pullRequest?.url, folder: repository?.path ?? conversation.cwd,
+                           branch: repository?.branch ?? (repository == nil ? conversation.branch : nil),
+                           dedicated: repository == nil && conversation.worktree != nil,
                            worktrees: worktrees, excluding: otherConversationFolders) {
         case .worktree(let tree)?: open(worktree: tree, byUser: false)
         case .pullRequest(let number)?: open(pullRequest: number, byUser: false)
@@ -724,7 +777,8 @@ final class ReviewSession {
     func loadWorktrees(config: HostConnectionConfig) async {
         let since = Self.gitTime(conversation.createdAt)
         let asked = folder
-        let lookup = chosenFolder != nil ? conversation.worktreeSource ?? conversation.cwd : asked
+        let isDiscoveredRepository = repositories.contains { $0.path == asked }
+        let lookup = chosenFolder != nil && !isDiscoveredRepository ? conversation.worktreeSource ?? conversation.cwd : asked
         let found: ReviewWorktrees? = try? await run(TmuxCommandBuilder.reviewWorktrees(cwd: lookup, since: since), config: config)
         // Another folder was chosen meanwhile: its own load follows.
         guard asked == folder else { return }

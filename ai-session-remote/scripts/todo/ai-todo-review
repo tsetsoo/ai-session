@@ -16,6 +16,7 @@ Usage:
   ai-todo-review threads <cwd> [--ref <branch>] [--number N]
   ai-todo-review publish <cwd> --number N --head <sha>   (the review, base64 JSON, on stdin)
   ai-todo-review worktrees <cwd> [--since <ISO time>]
+  ai-todo-review repos <cwd> --session claude|codex:<id>
   ai-todo-review prs <cwd> [--since <ISO time>]
   ai-todo-review fetch-pr <cwd> --number N
   ai-todo-review merge <cwd> --number N --head <sha> --method merge|squash|rebase [--delete-branch]
@@ -1058,14 +1059,17 @@ def iso_ts(text):
 # conversation is read once and then only its new lines.
 
 WORK_CACHE = os.environ.get("AI_TODO_REVIEW_SCAN_DIR") or os.path.join(HOME, ".ai-remote", "review-scan")
-WORK_VERSION = 1
+WORK_VERSION = 4
 # A line that mentions none of these can't be about a PR or a branch: not parsed.
-WORK_WORDS = (b"git push", b"gh pr", b"glab mr", b"pull_request", b"merge_request", b"gitOperation",
+WORK_WORDS = (b"git push", b"git commit", b"gh pr", b"glab mr", b"pull_request", b"merge_request", b"gitOperation",
               b"switch -c", b"switch -C", b"checkout -b", b"checkout -B", b" -b ", b"get_pr", b"fetch_pr",
-              b"pullRequest")
+              b"pullRequest", b'"FileChange"', b'"patch_apply_end"', b'"CommandExecution"',
+              b'"exec_command"', b'"Bash"', b'"Edit"', b'"MultiEdit"', b'"Write"', b'"NotebookEdit"', b'"session_meta"')
 # The answer to a call parked in `pending` (Claude's tool_result, older Codex's output).
 WORK_ANSWERS = (b'"tool_result"', b'"function_call_output"')
 PR_URL = re.compile(r"https?://[^\s\"'<>)\]\\]+?/(?:pull|-/merge_requests)/(\d+)(?![\d/]|/?new)")
+COMMIT_COMMAND = re.compile(r"""\bgit\s+(?:-C\s+(?:"[^"]+"|'[^']+'|\S+)\s+)?commit\b""")
+COMMIT_RESULT = re.compile(r"^\[[^\]\n]+ ([0-9a-f]{7,64})\] ", re.M)
 PUSH_LINE = re.compile(r"^\s*[*+!= -]?\s*(?:\[new branch\]|[0-9a-f]{4,}\.\.\.?[0-9a-f]{4,})\s+(\S+)\s+->\s+(\S+)", re.M)
 NEW_BRANCH = re.compile(r"\bgit\s+(?:-C\s+\S+\s+)?(?:switch\s+-[cC]|checkout\s+-[bB]|worktree\s+add\s+(?:\S+\s+)*?-[bB])\s+([^\s;&|]+)")
 # gh pr / glab mr flags that take no value: any other flag's next word is its value, not the PR.
@@ -1144,9 +1148,39 @@ class Work:
         self.prs = state.get("prs") or {}
         self.branches = state.get("branches") or {}
         self.pending = state.get("pending") or {}
+        self.cwd = state.get("cwd")
+        self.files = state.get("files") or {}
+        self.command_dirs = state.get("command_dirs") or {}
+        self.commits = state.get("commits") or {}
+
+    def path(self, path, cwd=None):
+        if not isinstance(path, str) or not path:
+            return None
+        path = os.path.expanduser(path)
+        cwd = cwd or self.cwd
+        if not os.path.isabs(path) and cwd:
+            path = os.path.join(cwd, path)
+        return os.path.normpath(path) if os.path.isabs(path) else None
+
+    def edited(self, path, cwd=None):
+        if resolved := self.path(path, cwd):
+            self.files[resolved] = True
+
+    def command_folder(self, cmd, cwd):
+        if isinstance(cmd, str):
+            # An explicit Git directory or an initial shell cd is stronger than the tool's cwd.
+            match = re.match(r"""^\s*(?:git\s+-C\s+|cd\s+(?:--\s+)?)(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))""", cmd)
+            if match:
+                return self.path(next(x for x in match.groups() if x is not None), cwd) or cwd
+        return self.path(cwd) or self.cwd
+
+    def command_directory(self, cwd):
+        if cwd:
+            self.command_dirs[cwd] = True
 
     def state(self):
-        return {"prs": self.prs, "branches": self.branches, "pending": self.pending}
+        return {"prs": self.prs, "branches": self.branches, "pending": self.pending,
+                "cwd": self.cwd, "files": self.files, "command_dirs": self.command_dirs, "commits": self.commits}
 
     def pr(self, role, at, url=None, number=None, cwd=None, head=None):
         if url:
@@ -1162,6 +1196,9 @@ class Work:
         pr = self.prs.setdefault(key, {"url": url, "number": number, "cwd": cwd, "role": role, "at": at, "head": None})
         if self.RANK[role] > self.RANK.get(pr["role"], 0):
             pr["role"] = role
+            pr["cwd"] = cwd
+        elif role == pr["role"] and not pr["cwd"]:
+            pr["cwd"] = cwd
         if at and (not pr["at"] or at > pr["at"]):
             pr["at"] = at
         if head and head != "HEAD":
@@ -1173,7 +1210,7 @@ class Work:
             return
         name = name.split(":")[-1]
         name = name[len("refs/heads/"):] if name.startswith("refs/heads/") else name
-        b = self.branches.setdefault(name, {"pushed": False, "at": at, "cwd": cwd})
+        b = self.branches.setdefault(json.dumps([name, cwd]), {"name": name, "pushed": False, "at": at, "cwd": cwd})
         b["pushed"] = b["pushed"] or pushed
         if at and (not b["at"] or at > b["at"]):
             b["at"] = at
@@ -1185,6 +1222,10 @@ class Work:
         if not isinstance(cmd, str):
             return
         output = output if isinstance(output, str) else ""
+        cwd = self.command_folder(cmd, cwd)
+        if cwd and COMMIT_COMMAND.search(cmd):
+            for match in COMMIT_RESULT.finditer(output):
+                self.commits.setdefault(cwd, {})[match.group(1)] = True
         for forge, verb, args in pr_commands(cmd):
             role = "created" if verb == "create" else "changed" if verb in PR_WRITES else "read" if verb in PR_READS else None
             if role is None:
@@ -1193,11 +1234,11 @@ class Work:
             if role == "created":
                 # Only what it printed: a create that failed made nothing.
                 if urls:
-                    self.pr(role, at, url=urls[-1], head=args["head"])
+                    self.pr(role, at, url=urls[-1], head=args["head"], cwd=cwd)
                 continue
             target = args["target"]
             if target and target.startswith("http"):
-                self.pr(role, at, url=target)
+                self.pr(role, at, url=target, cwd=cwd)
             elif target and args["repo"]:
                 # -R owner/repo: that repository's, whichever folder it ran in.
                 self.pr(role, at, url=(("https://github.com/%s/pull/%s" if forge == "gh"
@@ -1205,7 +1246,7 @@ class Work:
             elif target:
                 self.pr(role, at, number=int(target), cwd=cwd)
             elif urls:
-                self.pr(role, at, url=urls[-1])
+                self.pr(role, at, url=urls[-1], cwd=cwd)
         if "git" in cmd and "push" in cmd:
             for m in PUSH_LINE.finditer(output):
                 self.branch(m.group(2), at, pushed=True, cwd=cwd)
@@ -1236,18 +1277,32 @@ class Work:
         if not url and repo and isinstance(number, int):
             url = "https://github.com/%s/pull/%d" % (repo, number)
         if url:
-            self.pr(role, at, url=url, head=args.get("head"))
+            self.pr(role, at, url=url, head=args.get("head"), cwd=cwd)
 
     def codex(self, d):
         at = d.get("timestamp")
         p = d.get("payload") or {}
         item = p.get("item") or {}
         kind = item.get("type")
-        if p.get("type") == "item_completed" and kind == "CommandExecution":
+        if d.get("type") == "session_meta":
+            self.cwd = self.path(p.get("cwd"))
+        elif (p.get("type") == "item_completed" and kind == "FileChange" and item.get("status") == "completed"
+              or p.get("type") == "patch_apply_end" and p.get("success")):
+            changes = item.get("changes") if kind == "FileChange" else p.get("changes")
+            if not isinstance(changes, dict):
+                return
+            for path, change in changes.items():
+                self.edited(path)
+                if isinstance(change, dict):
+                    self.edited(change.get("move_path"))
+        elif p.get("type") == "item_completed" and kind == "CommandExecution":
             cmd = item.get("command")
             cmd = cmd[-1] if isinstance(cmd, list) and cmd else cmd
             cwd = item.get("cwd") or ""
-            self.command(cmd, item.get("aggregated_output"), cwd[7:] if cwd.startswith("file://") else cwd, at)
+            cwd = cwd[7:] if cwd.startswith("file://") else cwd
+            if item.get("exit_code") == 0:
+                self.command_directory(self.command_folder(cmd, cwd))
+            self.command(cmd, item.get("aggregated_output"), cwd, at)
         elif p.get("type") == "item_completed" and kind == "McpToolCall":
             if item.get("status") == "failed":
                 return
@@ -1265,7 +1320,10 @@ class Work:
         elif p.get("type") == "function_call_output" and p.get("call_id") in self.pending:
             call = self.pending.pop(p["call_id"])
             out = p.get("output")
-            self.command(call["cmd"], out if isinstance(out, str) else json.dumps(out), call["cwd"], call["at"])
+            text = out if isinstance(out, str) else json.dumps(out)
+            if "Process exited with code 0" in text:
+                self.command_directory(self.command_folder(call["cmd"], call["cwd"]))
+            self.command(call["cmd"], text, call["cwd"], call["at"])
 
     def claude(self, d):
         at = d.get("timestamp")
@@ -1277,7 +1335,7 @@ class Work:
                 continue
             if part.get("type") == "tool_use" and part.get("id"):
                 name = part.get("name") or ""
-                if name == "Bash" or name.startswith("mcp__"):
+                if name in ("Bash", "Edit", "MultiEdit", "Write", "NotebookEdit") or name.startswith("mcp__"):
                     self.pending[part["id"]] = {"name": name, "input": part.get("input"), "cwd": d.get("cwd"), "at": at}
             elif part.get("type") == "tool_result" and part.get("tool_use_id") in self.pending:
                 call = self.pending.pop(part["tool_use_id"])
@@ -1292,7 +1350,7 @@ class Work:
                 if op:
                     role = "created" if op.get("action") == "created" else "changed"
                     if op.get("url"):
-                        self.pr(role, call["at"], url=op["url"])
+                        self.pr(role, call["at"], url=op["url"], cwd=call["cwd"])
                     elif isinstance(op.get("number"), int):
                         self.pr(role, call["at"], number=op["number"], cwd=call["cwd"])
                 push = git_op.get("push") if isinstance(git_op.get("push"), dict) else None
@@ -1301,7 +1359,11 @@ class Work:
                 inp = call["input"] if isinstance(call["input"], dict) else {}
                 if call["name"] == "Bash":
                     printed = ((done.get("stdout") or "") + "\n" + (done.get("stderr") or "")) if done else text
+                    if not part.get("is_error") and not done.get("interrupted"):
+                        self.command_directory(self.command_folder(inp.get("command"), call["cwd"]))
                     self.command(inp.get("command"), printed, call["cwd"], call["at"])
+                elif not part.get("is_error") and call["name"] in ("Edit", "MultiEdit", "Write", "NotebookEdit"):
+                    self.edited(inp.get("file_path") or inp.get("notebook_path"), call["cwd"])
                 elif not part.get("is_error"):
                     self.tool_call(call["name"].split("__")[-1], inp, text, None, call["at"], call["cwd"])
 
@@ -1347,14 +1409,93 @@ def conversation_work(tool, session_id):
         work.pending = dict(list(work.pending.items())[-200:])
     try:
         os.makedirs(WORK_CACHE, exist_ok=True)
-        tmp = cache_file + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump({"version": WORK_VERSION, "path": path, "inode": st.st_ino, "offset": offset,
-                       "state": work.state()}, f)
-        os.replace(tmp, cache_file)
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", dir=WORK_CACHE, delete=False) as f:
+                tmp = f.name
+                json.dump({"version": WORK_VERSION, "path": path, "inode": st.st_ino, "offset": offset,
+                           "state": work.state()}, f)
+            os.replace(tmp, cache_file)
+        finally:
+            if tmp and os.path.exists(tmp):
+                os.unlink(tmp)
     except OSError:
         pass
     return work
+
+
+def cmd_repos(args):
+    """Find repositories from this conversation's file edits and command working directories."""
+    args, session = take_option(args, "--session")
+    if len(args) != 1 or not re.fullmatch(r"(claude|codex):[A-Za-z0-9_-]+", session or ""):
+        die("usage: ai-todo-review repos <cwd> --session claude|codex:<id>", 64)
+    folder = os.path.realpath(os.path.expanduser(args[0]))
+    tool, sid = session.split(":", 1)
+    work = conversation_work(tool, sid)
+    roots, lookup = {}, {}
+
+    def root_at(path):
+        path = os.path.realpath(path)
+        while not os.path.isdir(path):
+            path = os.path.dirname(path)
+        if path not in lookup:
+            lookup[path] = line(path, "rev-parse", "--show-toplevel")
+        root = lookup[path]
+        return os.path.realpath(root) if root else None
+
+    def record(path, is_file=False):
+        path = os.path.realpath(path)
+        if os.path.commonpath([parent or folder, path]) != (parent or folder):
+            return
+        root = root_at(os.path.dirname(path) if is_file else path)
+        if not root or not (root == parent or os.path.commonpath([folder, root]) == folder):
+            return
+        row = roots.setdefault(root, {"path": root, "files": set(), "branch": None, "prs": []})
+        if is_file:
+            relative = os.path.relpath(os.path.realpath(path), root)
+            row["files"].add(relative)
+        return row
+
+    parent = root_at(folder) if os.path.isdir(folder) else None
+    if work and os.path.isdir(folder):
+        for path in work.files:
+            record(path, is_file=True)
+        for path in work.command_dirs:
+            if os.path.isdir(path):
+                record(path)
+        for branch in work.branches.values():
+            if branch["cwd"] and os.path.isdir(branch["cwd"]):
+                record(branch["cwd"])
+        for cwd, commits in work.commits.items():
+            if not os.path.isdir(cwd) or (row := record(cwd)) is None:
+                continue
+            for sha in commits:
+                paths, status = git(row["path"], "diff-tree", "--root", "--no-commit-id", "--name-only",
+                                    "--no-renames", "-r", "-z", sha, "--", check=False)
+                if status == 0:
+                    row["files"].update(path for path in paths.split("\0") if path)
+        by_remote = {}
+        for root, row in roots.items():
+            row["files"] = sorted(row["files"])
+            row["branch"] = line(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+            if slug := origin_slug(root):
+                by_remote.setdefault(slug, []).append(row)
+        for pr in sorted(work.prs.values(), key=lambda pr: pr.get("url") or ""):
+            candidates = by_remote.get(url_slug(pr.get("url")), [])
+            if not candidates:
+                continue
+            # Several worktrees can share the same origin. Attribute a PR only when
+            # its head or the recorded command folder identifies a checkout.
+            head = pr.get("head")
+            matching = [row for row in candidates if head and row["branch"] == head]
+            cwd = pr.get("cwd")
+            root = root_at(cwd) if cwd and os.path.isdir(cwd) else None
+            matching = matching or [row for row in candidates if row["path"] == root]
+            eligible = matching or candidates
+            if len(eligible) == 1:
+                eligible[0]["prs"].append({"url": pr["url"], "role": pr["role"]})
+    print(json.dumps({"repositories": sorted(roots.values(), key=lambda row: row["path"]),
+                      "root": parent, "transcript": work is not None}))
 
 
 def origin_slug(root):
@@ -1588,7 +1729,8 @@ def add_work(kind, root, prs, work, out):
     default = default_branch_ref(root)
     shared_name = short_ref(default) if default else ""
     shared_name = shared_name[len("origin/"):] if shared_name.startswith("origin/") else shared_name
-    for name, b in work.branches.items():
+    for key, b in sorted(work.branches.items(), key=lambda item: item[1]["at"] or ""):
+        name = b.get("name", key)
         if name == shared_name:
             continue  # Pushing the shared default branch does not make it this task's branch.
         local, remote = "refs/heads/" + name, "refs/remotes/origin/" + name
@@ -1597,12 +1739,13 @@ def add_work(kind, root, prs, work, out):
         if other_repo(root, b.get("cwd"), repos):
             continue  # Made in another repository that has a branch of the same name.
         tip = local if local in refs else remote
-        work_branches[name] = {"name": name, "ref": name if local in refs else "origin/" + name,
-                               "pushed": bool(b.get("pushed")), "at": b.get("at")}
+        pushed = b["pushed"] or work_branches.get(name, {}).get("pushed", False)
+        evidence = {"name": name, "ref": name if local in refs else "origin/" + name,
+                    "pushed": pushed, "at": b["at"]}
+        work_branches[name] = evidence
         if default and line(root, "rev-list", "--count", tip, "--not", default) == "0":
             continue  # Nothing on it the default branch lacks: made and never committed to, or merged.
-        branches[name] = {"name": name, "ref": name if local in refs else "origin/" + name,
-                          "pushed": bool(b.get("pushed")), "at": b.get("at")}
+        branches[name] = evidence
     out["work_branches"] = sorted(work_branches.values(), key=lambda b: b["at"] or "", reverse=True)
     if out.get("access"):
         names = [b["name"] for b in out["work_branches"][:MAX_FETCHED_PRS]]
@@ -2316,9 +2459,9 @@ def main(argv):
     commands = {"status": cmd_status, "diff": cmd_diff, "keep": cmd_keep, "log": cmd_log, "send": cmd_send,
                 "run": cmd_run, "result": cmd_result, "cancel": cmd_cancel, "pr": cmd_pr, "threads": cmd_threads,
                 "publish": cmd_publish, "merge": cmd_merge, "worktrees": cmd_worktrees,
-                "prs": cmd_prs, "fetch-pr": cmd_fetch_pr}
+                "prs": cmd_prs, "fetch-pr": cmd_fetch_pr, "repos": cmd_repos}
     if not argv or argv[0] not in commands:
-        die("usage: ai-todo-review status|diff|keep|log|send|run|result|cancel|pr|threads|publish|merge|worktrees|prs|fetch-pr ... (see the header of this script)", 64)
+        die("usage: ai-todo-review status|diff|keep|log|send|run|result|cancel|pr|threads|publish|merge|worktrees|prs|fetch-pr|repos ... (see the header of this script)", 64)
     try:
         commands[argv[0]](argv[1:])
     except GitError as error:

@@ -4910,6 +4910,50 @@ with open(path, "w") as f:
     for r in rows:
         f.write(json.dumps(r) + "\n")
 PY
+# Repositories are resolved from successful edits and commits, even when the parent ignores them.
+CW_CHILD="${CW_REPO}/nested repo"
+mkdir "$CW_CHILD"
+printf 'nested repo/\n' >>"$CW_REPO/.git/info/exclude"
+git -C "$CW_CHILD" init -q -b feat/nested
+printf 'committed\n' >"$CW_CHILD/committed.txt"
+git -C "$CW_CHILD" add committed.txt
+cw_commit="$(fp_git "$CW_CHILD" commit -m nested)"
+CW_NESTED_ROLLOUT="${CW_CODEX}/sessions/2026/11/06/rollout-2026-11-06T10-00-00-cw-repos.jsonl"
+python3 - "$CW_NESTED_ROLLOUT" "$CW_REPO" "$CW_CHILD" "$cw_commit" <<'PYTEST'
+import json, sys
+path, parent, child, commit = sys.argv[1:]
+rows = [
+    {"type": "session_meta", "payload": {"cwd": parent}},
+    {"payload": {"type": "item_completed", "item": {
+        "type": "FileChange", "status": "completed", "changes": {"nested repo/edited.txt": {"type": "add"}}}}},
+    {"payload": {"type": "item_completed", "item": {
+        "type": "FileChange", "status": "failed", "changes": {"failed.txt": {"type": "add"}}}}},
+    {"payload": {"type": "item_completed", "item": {
+        "type": "CommandExecution", "command": ["sh", "-c", "git -C 'nested repo' commit -m nested"],
+        "cwd": "file://" + parent, "aggregated_output": commit, "exit_code": 0}}},
+    {"payload": {"type": "item_completed", "item": {
+        "type": "CommandExecution", "command": ["sh", "-c", "git status"],
+        "cwd": "file://" + parent, "aggregated_output": "", "exit_code": 0}}},
+]
+with open(path, "w") as f:
+    for row in rows:
+        f.write(json.dumps(row) + "\n")
+PYTEST
+for attempt in first cached; do
+  cw_repos="$(CODEX_HOME="$CW_CODEX" AI_TODO_REVIEW_SCAN_DIR="${SANDBOX}/review-scan" \
+    "$REVIEW" repos "$CW_REPO" --session codex:cw-repos)" || fail "repos command failed ($attempt)"
+  python3 - "$cw_repos" "$CW_REPO" "$CW_CHILD" <<'PYTEST' || fail "repos result ($attempt): $cw_repos"
+import json, sys
+result = json.loads(sys.argv[1])
+assert result["transcript"] and result["root"] == sys.argv[2], result
+parent, child = result["repositories"]
+assert parent["files"] == [], parent
+assert child["path"] == sys.argv[3] and child["branch"] == "feat/nested", child
+assert child["files"] == ["committed.txt", "edited.txt"], child
+PYTEST
+done
+pass "review_resolves_transcript_edits_and_commits_in_ignored_nested_repo"
+
 CW_GH="${SANDBOX}/bin/fake-cw-gh"
 cat >"$CW_GH" <<'FAKE'
 #!/bin/sh
