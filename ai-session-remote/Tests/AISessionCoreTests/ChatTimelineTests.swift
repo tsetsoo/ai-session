@@ -29,6 +29,22 @@ final class ChatTimelineTests: XCTestCase {
         }
     }
 
+    func testClaudeHarnessRecordsAreHiddenWithoutMovingLocalNotes() {
+        let note = AnsweredNote(text: "Answer recorded", afterCount: 3)
+        let question = user("4", "Can you check that?")
+        let entries = [
+            user("1", "<local-command-caveat>Recorded locally</local-command-caveat>", at: 0),
+            user("2", "<command-name>/config</command-name> <command-message>config</command-message> <command-args></command-args>"),
+            user("3", "<local-command-stdout>Set Auto compact to on</local-command-stdout>"),
+            question,
+            user("5", "<system-reminder>Context</system-reminder>Also check the logs.")
+        ]
+
+        XCTAssertEqual(ChatTimeline.items(entries: entries, pending: [], notes: [note]), [
+            .note(note), .message(question), .message(user("5", "Also check the logs."))
+        ])
+    }
+
     func testConsecutiveActivityCollapsesIntoOneItem() {
         let entries = [
             user("0", "go", at: 0),

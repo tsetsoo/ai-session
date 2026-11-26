@@ -19,6 +19,7 @@ struct ChatComposer: View {
     let connected: Bool
     let promptShowing: Bool
     let isSending: Bool
+    let attachmentsUploading: Bool
     /// A photo pasted into the field; nil where photos can't be sent.
     var onPastePhoto: ((PastedPhoto) -> Void)?
     let onSend: () -> Void
@@ -73,7 +74,7 @@ struct ChatComposer: View {
     }
 
     private var sendEnabled: Bool {
-        !isSending && Self.canSend(mode: mode, draft: draft, connected: connected, promptShowing: promptShowing)
+        !isSending && !attachmentsUploading && Self.canSend(mode: mode, draft: draft, connected: connected, promptShowing: promptShowing)
     }
 
     var body: some View {
@@ -190,20 +191,21 @@ struct ChatComposer: View {
                 }
             }
         }
-        .disabled(isSending || !connected || promptShowing)
-        .opacity(isSending || !connected || promptShowing ? 0.4 : 1)
+        .disabled(isSending || attachmentsUploading || !connected || promptShowing)
+        .opacity(isSending || attachmentsUploading || !connected || promptShowing ? 0.4 : 1)
     }
 
     private var readyReply: ConversationMessage? { voiceReady ? latestReply : nil }
 
     private var canListen: Bool {
         voiceEnabled && voiceAvailable && voiceReady && connected && !promptShowing
-            && !isSending && !ReadAloud.shared.isSpeaking
+            && !isSending && !attachmentsUploading && !ReadAloud.shared.isSpeaking
     }
 
     private var voiceStatus: String {
         if promptShowing { return "Answer the prompt to resume Voice Mode." }
         if ReadAloud.shared.isSpeaking { return "Reading reply…" }
+        if attachmentsUploading { return "Uploading attachments…" }
         if !voiceReady || isSending { return "Waiting for the agent…" }
         return "End your message with “Voice send now.”"
     }

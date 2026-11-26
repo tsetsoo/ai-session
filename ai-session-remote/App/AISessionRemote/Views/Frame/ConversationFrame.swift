@@ -582,7 +582,12 @@ struct ConversationFrame: View {
                 handle: terminal,
                 onConnectionFailed: { error in
                     let noted = SSHSignInRecord.problem(hostID: open.config.hostID)
-                    loader.connectionFailed(.classify(error, signInProblem: noted), error: error)
+                    let failure = TerminalConnectFailure.classify(error, signInProblem: noted)
+                    #if os(iOS)
+                    // Keep the chat and its draft mounted through a temporary network failure.
+                    if showsChat, failure == .unreachable { return }
+                    #endif
+                    loader.connectionFailed(failure, error: error)
                 },
                 onEnded: { exitStatus in loader.ended(exitStatus: exitStatus) },
                 // Only while armed: otherwise every keystroke would write this @State.

@@ -3,7 +3,7 @@ import AISessionCore
 import Observation
 import UIKit
 
-/// A photo on the clipboard, read, scaled and encoded away from the main thread, then copied
+/// A photo from an item provider, read, scaled and encoded away from the main thread, then copied
 /// to a computer with `PhotoUpload`. Used by the chat's message field and the terminal's Paste.
 /// The item provider loads on its own queue, and nothing else touches the image once loaded.
 struct PastedPhoto: @unchecked Sendable {
@@ -76,6 +76,8 @@ final class PhotoUploads {
         }
     }
 
+    var isUploading: Bool { !tasks.isEmpty }
+
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var error: String?
 
@@ -85,21 +87,32 @@ final class PhotoUploads {
         _ photo: PastedPhoto, config: HostConnectionConfig, computerName: String? = nil,
         onUploaded: @escaping @MainActor (String) -> Void
     ) {
+        start([photo], config: config, computerName: computerName, onUploaded: onUploaded)
+    }
+
+    func start(
+        _ photos: [PastedPhoto], config: HostConnectionConfig, computerName: String? = nil,
+        onUploaded: @escaping @MainActor (String) -> Void
+    ) {
+        guard !photos.isEmpty else { return }
         error = nil
         let id = UUID()
         tasks[id] = Task { @MainActor [weak self] in
             defer { self?.tasks[id] = nil }
-            do {
-                let path = try await photo.upload(config: config)
-                guard !Task.isCancelled else { return }
-                onUploaded(path)
-            } catch where Task.isCancelled || error is CancellationError {
-                // Cancelled: the partial file is already being removed.
-            } catch PastedPhoto.Unreadable.photo {
-                self?.fail("Couldn’t read that photo.")
-            } catch {
-                let place = computerName.map { " to \($0)" } ?? ""
-                self?.fail("Couldn’t copy the photo\(place). Try pasting it again.")
+            for photo in photos {
+                do {
+                    try Task.checkCancellation()
+                    let path = try await photo.upload(config: config)
+                    try Task.checkCancellation()
+                    onUploaded(path)
+                } catch where Task.isCancelled || error is CancellationError {
+                    return
+                } catch PastedPhoto.Unreadable.photo {
+                    self?.fail("Couldn’t read that photo.")
+                } catch {
+                    let place = computerName.map { " to \($0)" } ?? ""
+                    self?.fail("Couldn’t copy the photo\(place). Try again.")
+                }
             }
         }
     }

@@ -1,7 +1,9 @@
 #if os(iOS)
 import AISessionCore
+import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// The terminal stays mounted and connected while the transcript is read. Switching modes
 /// neither reattaches tmux nor loses a draft, scroll position, or the terminal's paste mode.
@@ -23,6 +25,8 @@ struct PhoneConversationView<TerminalContent: View>: View {
     @State private var openWorker: DelegatedWorker?
     @State private var draft = ""
     @State private var loadError: String?
+    @State private var refreshAttempt = 0
+    @State private var choosingPhotos = false
     @State private var sendError: String?
     @State private var isLoading = true
     @State private var isSending = false
@@ -44,6 +48,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
     /// Paths of photos on the computer whose message hasn't been sent yet.
     @State private var uploadedPhotos: [String] = []
 
+    private var attachmentsUploading: Bool { photoUploads.isUploading || fileAttachments.isUploading }
     private var needsApproval: Bool { status == .waiting }
     /// The question on screen, read from the live terminal behind the chat.
     private var prompt: TerminalPrompt? { showsChat ? terminal.prompt : nil }
@@ -53,7 +58,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
     private var shouldPoll: Bool { showsChat && isFrontmost && scenePhase == .active }
     private var pollID: String? {
         guard shouldPoll else { return nil }
-        return "\(conversation.id):\(conversation.sessionId):\(conversation.statusRevision):\(status?.rawValue ?? "")"
+        return "\(conversation.id):\(conversation.sessionId):\(conversation.statusRevision):\(status?.rawValue ?? ""):\(terminal.isConnected):\(refreshAttempt)"
     }
     /// Faster while the agent works or waits, so steps and answers show up promptly.
     private var pollInterval: Duration { isBusy || needsApproval ? .seconds(1) : .seconds(3) }
@@ -95,7 +100,20 @@ struct PhoneConversationView<TerminalContent: View>: View {
             composing = false
         }
         .onChange(of: isFrontmost) { _, front in
-            if !front { reviewedOnOpen = false; sendTask?.cancel(); photoUploads.cancelAll(); composing = false; ReadAloud.shared.stop() }
+            if !front {
+                reviewedOnOpen = false
+                sendTask?.cancel()
+                photoUploads.cancelAll()
+                fileAttachments.cancel()
+                composing = false
+                ReadAloud.shared.stop()
+            }
+        }
+        .onChange(of: terminal.isConnected) { _, connected in
+            if !connected {
+                fileAttachments.cancel()
+                photoUploads.cancelAll()
+            }
         }
         .onDisappear { sendTask?.cancel(); photoUploads.cancelAll(); fileAttachments.cancel(); ReadAloud.shared.stop() }
         // No background audio: speech stops when the app leaves the foreground, so does the button.
@@ -167,6 +185,20 @@ struct PhoneConversationView<TerminalContent: View>: View {
             if let loadError {
                 Text(loadError).font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
             }
+            if terminal.connectionState == .failed {
+                Button {
+                    terminal.reconnect()
+                } label: {
+                    Label("Reconnect", systemImage: "arrow.clockwise")
+                }
+                .padding(.vertical, 8)
+            } else if terminal.connectionState == .connecting {
+                ProgressView("Connecting…").font(.footnote).padding(.vertical, 8)
+            } else if loadError != nil, terminal.isConnected {
+                Button("Retry Chat") { refreshAttempt += 1 }
+                    .font(.footnote)
+                    .padding(.vertical, 8)
+            }
             if let prompt, composing {
                 // While typing, the card would leave no room for the messages.
                 ChatPromptBanner(question: prompt.question) { composing = false }
@@ -197,18 +229,23 @@ struct PhoneConversationView<TerminalContent: View>: View {
                 .padding(.bottom, 4)
             }
             HStack {
-                FileAttachmentButton(config: config, connected: terminal.isConnected, attachments: fileAttachments) { path in
-                    uploadedPhotos.append(path)
-                    draftEditor.insert(PhotoUpload.typed(path) + " ")
-                }
+                FileAttachmentButton(
+                    config: config, connected: terminal.isConnected, attachments: fileAttachments,
+                    choosePhotos: { choosingPhotos = true }, onUploaded: attachPath
+                )
                 Spacer()
+                PasteButton(supportedContentTypes: terminal.isConnected ? [.image, .plainText] : [.plainText]) {
+                    paste($0)
+                }
+                .labelStyle(.titleAndIcon)
+                .controlSize(.small)
             }
             .padding(.horizontal)
             FileAttachmentStatus(attachments: fileAttachments)
             ChatComposer(
                 draft: $draft, focused: $composing, mode: $composerMode, editor: draftEditor,
                 connected: terminal.isConnected, promptShowing: prompt != nil || showsFallback,
-                isSending: isSending, onPastePhoto: pastePhoto,
+                isSending: isSending, attachmentsUploading: attachmentsUploading, onPastePhoto: terminal.isConnected ? pastePhoto : nil,
                 onSend: send, onQuickReply: { send($0, clearsDraft: false) },
                 photoStatus: photoUploads.status,
                 voiceAvailable: shouldPoll,
@@ -219,14 +256,14 @@ struct PhoneConversationView<TerminalContent: View>: View {
         .background(DS.windowBackground ?? Color(uiColor: .systemGroupedBackground))
         .dropDestination(for: URL.self) { urls, _ in
             guard terminal.isConnected, isFrontmost, !urls.isEmpty else { return false }
-            fileAttachments.upload(urls, config: config) { path in
-                uploadedPhotos.append(path)
-                draftEditor.insert(PhotoUpload.typed(path) + " ")
-            }
+            fileAttachments.upload(urls, config: config, onUploaded: attachPath)
             return true
         }
-        .onChange(of: terminal.isConnected) { _, connected in
-            if !connected { fileAttachments.cancel() }
+        .sheet(isPresented: $choosingPhotos) {
+            ChatPhotoPicker { photos in
+                choosingPhotos = false
+                uploadPhotos(photos)
+            }
         }
         .sheet(item: $openWorker) { opened in
             // The list refreshes underneath, so show its newest copy of this worker.
@@ -331,13 +368,37 @@ struct PhoneConversationView<TerminalContent: View>: View {
         if fetched != workers { workers = fetched }
     }
 
-    /// Copies the photo to the conversation's computer over SSH and puts its path in the draft
-    /// at the caret, so the agent reads it when the message is sent. Several can be on the way.
-    private func pastePhoto(_ photo: PastedPhoto) {
-        photoUploads.start(photo, config: config, computerName: conversation.computer.name) { path in
-            uploadedPhotos.append(path)
-            draftEditor.insert(path + " ")
+    private func insertInDraft(_ text: String) {
+        if showsChat, let view = draftEditor.view, view.window != nil {
+            draftEditor.insert(text)
+        } else {
+            draft += text
         }
+    }
+
+    private func paste(_ providers: [NSItemProvider]) {
+        if terminal.isConnected,
+           let provider = providers.first(where: { $0.canLoadObject(ofClass: UIImage.self) }) {
+            pastePhoto(PastedPhoto(provider: provider))
+        } else if let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) {
+            _ = provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let text = object as? String else { return }
+                Task { @MainActor in insertInDraft(text) }
+            }
+        }
+    }
+
+    private func attachPath(_ path: String) {
+        uploadedPhotos.append(path)
+        if let last = draft.last, !last.isWhitespace { draft += " " }
+        draft += PhotoUpload.typed(path) + " "
+    }
+
+    private func pastePhoto(_ photo: PastedPhoto) { uploadPhotos([photo]) }
+
+    private func uploadPhotos(_ photos: [PastedPhoto]) {
+        guard terminal.isConnected, isFrontmost else { return }
+        photoUploads.start(photos, config: config, computerName: conversation.computer.name, onUploaded: attachPath)
     }
 
     /// The photos in a sent message are deleted from the computer an hour from now.
@@ -351,6 +412,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
     }
 
     private func send() {
+        guard !attachmentsUploading, !isSending else { return }
         if case let .answering(prompt, option) = composerMode {
             sendAnswer(draft, to: prompt, option: option)
         } else {
@@ -377,6 +439,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
     }
 
     private func send(_ text: String, clearsDraft: Bool) {
+        guard !attachmentsUploading, !isSending else { return }
         let local = PendingSend(text: text, afterCount: messages.count)
         isSending = true
         sendError = nil
@@ -394,6 +457,35 @@ struct PhoneConversationView<TerminalContent: View>: View {
                     ? "\(RowText.toolName(conversation.tool)) is asking something first. Answer it above; your draft is saved here."
                     : "The session isn’t ready for a message. Open Terminal to check it. Your draft is saved here."
             }
+        }
+    }
+}
+
+private struct ChatPhotoPicker: UIViewControllerRepresentable {
+    let onSelection: ([PastedPhoto]) -> Void
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var configuration = PHPickerConfiguration()
+        configuration.filter = .images
+        configuration.selectionLimit = 0
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: PHPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onSelection: onSelection) }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let onSelection: ([PastedPhoto]) -> Void
+
+        init(onSelection: @escaping ([PastedPhoto]) -> Void) {
+            self.onSelection = onSelection
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            onSelection(results.map { PastedPhoto(provider: $0.itemProvider) })
         }
     }
 }

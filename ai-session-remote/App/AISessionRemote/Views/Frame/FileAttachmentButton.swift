@@ -80,12 +80,24 @@ struct FileAttachmentButton: View {
     let config: HostConnectionConfig
     let connected: Bool
     @Bindable var attachments: FileAttachments
+    var choosePhotos: (() -> Void)? = nil
     let onUploaded: (String) -> Void
     @State private var choosing = false
 
     var body: some View {
-        Button { choosing = true } label: {
-            Label("Attach Files…", systemImage: "paperclip")
+        Group {
+            if let choosePhotos {
+                Menu {
+                    Button("Photo Library", systemImage: "photo.on.rectangle", action: choosePhotos)
+                    Button("Files", systemImage: "folder") { choosing = true }
+                } label: {
+                    Label("Attach", systemImage: "paperclip")
+                }
+            } else {
+                Button { choosing = true } label: {
+                    Label("Attach Files…", systemImage: "paperclip")
+                }
+            }
         }
         .disabled(!connected)
         .help("Copy files to this conversation’s computer (up to 100 MB each)")

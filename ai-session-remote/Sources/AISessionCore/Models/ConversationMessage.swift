@@ -50,6 +50,22 @@ public struct ConversationMessage: Decodable, Identifiable, Equatable, Sendable 
         name = try container.decodeIfPresent(String.self, forKey: .name)
     }
 
+    private static let harnessRecordPattern =
+        #"<(local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args|system-reminder)>[\s\S]*?</\1>"#
+
+    /// Claude stores local command records and harness reminders as user turns.
+    var textWithoutHarnessRecords: String {
+        guard role == .user, text.contains("<") else { return text }
+        return text.replacingOccurrences(of: Self.harnessRecordPattern, with: "", options: .regularExpression)
+    }
+
+    var visibleInChat: ConversationMessage? {
+        let visible = textWithoutHarnessRecords
+        guard visible != text else { return self }
+        guard visible.contains(where: { !$0.isWhitespace }) else { return nil }
+        return ConversationMessage(id: id, role: role, text: visible, time: time, kind: kind, target: target, name: name)
+    }
+
     /// The transcript script's `--json` output, with or without `--activity`.
     public static func decodeList(_ data: Data) throws -> [ConversationMessage] {
         try JSONDecoder().decode([ConversationMessage].self, from: data)

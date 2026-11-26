@@ -75,18 +75,7 @@ public enum AddAgent {
     /// Records of commands like `/clear` and system notes are skipped: they are user turns in
     /// the transcript, but not something the user asked.
     public static func firstUserMessage(_ messages: [ConversationMessage]) -> String? {
-        messages.lazy.filter { $0.role == .user }.compactMap { nonEmpty(withoutHarnessRecords($0.text)) }.first
-    }
-
-    private static let harnessTags = [
-        "local-command-caveat", "local-command-stdout", "local-command-stderr",
-        "command-name", "command-message", "command-args", "system-reminder",
-    ]
-
-    private static func withoutHarnessRecords(_ text: String) -> String {
-        harnessTags.reduce(text) { text, tag in
-            text.replacingOccurrences(of: "<\(tag)>[\\s\\S]*?</\(tag)>", with: "", options: .regularExpression)
-        }
+        messages.lazy.filter { $0.role == .user }.compactMap { nonEmpty($0.textWithoutHarnessRecords) }.first
     }
 
     private static func nonEmpty(_ text: String) -> String? {

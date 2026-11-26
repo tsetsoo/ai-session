@@ -111,8 +111,9 @@ public enum ChatTimeline {
             }
         }
 
-        for (index, entry) in entries.enumerated() {
+        for (index, record) in entries.enumerated() {
             flushLocal(upTo: index)
+            guard let entry = record.visibleInChat else { continue }
             if let time = entry.time { flushUnplaced(before: time) }
             if let time = entry.time {
                 if lastTime.map({ time.timeIntervalSince($0) >= timeGap }) ?? true {
