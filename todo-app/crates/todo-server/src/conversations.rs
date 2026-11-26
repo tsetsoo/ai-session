@@ -1312,8 +1312,10 @@ pub async fn list_conversations(pool: web::Data<DbPool>, query: web::Query<Conve
     if let Some(helper) = helper {
         let result = (|| -> rusqlite::Result<Vec<_>> {
             let mut stmt = conn.prepare(
-                "SELECT id, tool, session_id, status, tmux_name FROM conversations
-                 WHERE computer_id = ?1 AND status != 'closed'",
+                "SELECT id, tool, session_id, status, tmux_name FROM conversations c
+                 WHERE computer_id = ?1 AND status != 'closed'
+                 AND NOT EXISTS (SELECT 1 FROM todos t WHERE t.id = c.todo_id
+                     AND t.completed = 1 AND t.completed_at IS NOT NULL AND t.completed_at < datetime('now', '-1 day'))",
             )?;
             let rows = stmt.query_map([&helper.0], |row| Ok(serde_json::json!({
                 "id": row.get::<_, String>(0)?,

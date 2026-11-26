@@ -186,7 +186,7 @@ fn scoped_route(method: &actix_web::http::Method, path: &str) -> bool {
 fn helper_route(method: &actix_web::http::Method, path: &str) -> bool {
     use actix_web::http::Method;
     match (method, path.split('/').collect::<Vec<_>>().as_slice()) {
-        (&Method::GET, ["", "api", "conversations" | "projects" | "computers" | "memories"])
+        (&Method::GET, ["", "api", "conversations" | "projects" | "computers" | "memories" | "todos"])
         | (&Method::GET, ["", "api", "runner", "due"])
         | (&Method::GET, ["", "api", "updates", "runner"])
         | (&Method::POST, ["", "api", "updates", "match" | "summaries" | "reports"])
@@ -523,7 +523,7 @@ mod tests {
             .wrap(from_fn(require_token))
             .app_data(web::Data::new(admin))
             .app_data(web::Data::new(scoped))
-            .app_data(web::Data::new(pool))
+            .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(crate::broadcast::Broadcaster::new()))
             .app_data(web::Data::new(crate::push::PushNotifier::disabled()))
             .configure(crate::api_routes)).await;
@@ -536,6 +536,21 @@ mod tests {
         assert_eq!(list.as_array().unwrap().len(), 1);
         assert_eq!(list[0]["id"], "own-chat");
         assert!(list[0].get("cwd").is_none());
+
+        let todos: Vec<serde_json::Value> = test::call_and_read_body_json(&app,
+            request(Method::GET, "/api/todos", serde_json::Value::Null)).await;
+        assert_eq!(todos.len(), 2);
+        assert!(todos.iter().all(|t| t.as_object().unwrap().len() == 1 && t["id"].is_string()));
+        {
+            let conn = pool.get().unwrap();
+            conn.execute("UPDATE todos SET completed = 1, completed_at = datetime('now', '-2 day') WHERE id = 'own'", []).unwrap();
+        }
+        let todos: Vec<serde_json::Value> = test::call_and_read_body_json(&app,
+            request(Method::GET, "/api/todos", serde_json::Value::Null)).await;
+        assert_eq!(todos.len(), 1);
+        let list: serde_json::Value = test::call_and_read_body_json(&app,
+            request(Method::GET, "/api/conversations", serde_json::Value::Null)).await;
+        assert!(list.as_array().unwrap().is_empty(), "archived todo's conversation is not listed");
 
         let memories: Vec<serde_json::Value> = test::call_and_read_body_json(&app,
             request(Method::GET, "/api/memories?ids=own-memory,other-memory", serde_json::Value::Null)).await;
@@ -591,7 +606,7 @@ mod tests {
             (Method::POST, "/api/memories/import", serde_json::json!({
                 "computer_id": "spread", "items": [{"source_key": "entry", "project_id": "spread-project", "kind": "decision", "text": "Allowed"}]
             }), 200),
-            (Method::GET, "/api/todos", serde_json::Value::Null, 403),
+            (Method::GET, "/api/todos/own", serde_json::Value::Null, 403),
             (Method::GET, "/api/runner/due?computer_id=mac", serde_json::Value::Null, 403),
             (Method::GET, "/api/runner/due?computer_id=spread", serde_json::Value::Null, 200),
             (Method::POST, "/api/conversations/status", serde_json::json!({"session_id": "other-session", "status": "busy"}), 404),

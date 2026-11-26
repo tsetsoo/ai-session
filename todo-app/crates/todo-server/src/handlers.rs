@@ -28,11 +28,22 @@ pub struct TodosQuery {
     pub project_id: Option<String>,
 }
 
-pub async fn list_todos(pool: web::Data<DbPool>, query: web::Query<TodosQuery>, scope: RequestScope) -> HttpResponse {
+pub async fn list_todos(pool: web::Data<DbPool>, query: web::Query<TodosQuery>, scope: RequestScope, helper: crate::auth::RequestHelper) -> HttpResponse {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
     };
+    if helper.is_some() {
+        // A host helper only needs to know which todos are still open (to close the
+        // sessions of archived or deleted ones), so it gets ids and nothing else.
+        let ids = conn
+            .prepare("SELECT id FROM todos WHERE NOT (completed = 1 AND completed_at IS NOT NULL AND completed_at < datetime('now', '-1 day'))")
+            .and_then(|mut stmt| stmt.query_map([], |row| Ok(serde_json::json!({"id": row.get::<_, String>(0)?}))).and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>()));
+        return match ids {
+            Ok(rows) => HttpResponse::Ok().json(rows),
+            Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+        };
+    }
     let _snapshot = match scoped_read_snapshot(&conn, &scope) {
         Ok(snapshot) => snapshot,
         Err(response) => return response,
