@@ -475,13 +475,35 @@ def close_unused(hub, now=None, dry_run=False, idle_s=None):
     return {"closed": closed, "left": left, "dry_run": dry_run}
 
 
+def runner_log(event, **fields):
+    """One line in the runner's log (runner-state/runner.log), so a closer that can't work or
+    that ended sessions is visible: the runner starts this with its output discarded."""
+    try:
+        state_dir = os.environ.get("AI_TODO_RUNNER_STATE_DIR") or os.path.join(Path.home(), ".ai-remote", "runner-state")
+        os.makedirs(state_dir, exist_ok=True)
+        parts = [time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), event]
+        parts += ["%s=%s" % (k, " ".join(str(v).split())) for k, v in fields.items()]
+        with open(os.path.join(state_dir, "runner.log"), "a") as f:
+            f.write(" ".join(parts) + "\n")
+    except OSError:
+        pass
+
+
 def close_unused_main(args):
     if args not in ([], ["--dry-run"]):
         return 64, None
     hub = hub_view()
     if hub is None:
-        return 1, {"closed": [], "left": [], "error": "the hub's conversations couldn't be read for this computer"}
-    return 0, close_unused(hub, dry_run=bool(args))
+        error = "the hub's conversations couldn't be read for this computer"
+        if not args:
+            runner_log("close_unused_failed", reason=error)
+        return 1, {"closed": [], "left": [], "error": error}
+    result = close_unused(hub, dry_run=bool(args))
+    if not args and (result["closed"] or result["left"]):
+        runner_log("close_unused", closed=len(result["closed"]), left=len(result["left"]),
+                   sessions=",".join(result["closed"]),
+                   kept=",".join("%s(%s)" % (e["tmux"], e["reason"]) for e in result["left"]))
+    return 0, result
 
 
 def main(args):

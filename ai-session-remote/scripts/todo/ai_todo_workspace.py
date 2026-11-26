@@ -395,9 +395,23 @@ def tmux_paths():
     return [line for line in p.stdout.splitlines() if line] if p.returncode == 0 else []
 
 
+def _saved_remotely(path, branch):
+    """True when HEAD (detached) and the worktree's own branch, if it still exists, are both
+    contained in a remote-tracking ref, so removing the worktree and its branch loses nothing."""
+    revs = ["HEAD"]
+    if git(path, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch)[0] == 0:
+        revs.append("refs/heads/" + branch)
+    for rev in revs:
+        code, out, _ = git(path, "for-each-ref", "--count=1", "--contains", rev, "refs/remotes")
+        if code != 0 or not out:
+            return False
+    return True
+
+
 def state(entry, panes=None):
     """(kind, commits past base). kind: "missing" | "in use" (a tmux pane works in it) |
-    "dirty" (uncommitted changes, an edited local copy, or switched off its branch) |
+    "dirty" (uncommitted changes, an edited local copy, or switched off its branch; a
+    detached HEAD counts as still on it once its commits are on a remote) |
     "clean" | "ahead"."""
     path = entry.get("path") or ""
     if not os.path.isdir(path):
@@ -410,8 +424,10 @@ def state(entry, panes=None):
     dirty = git(path, "status", "--porcelain")
     if dirty[0] != 0 or dirty[1]:
         return "dirty", 0
-    if entry.get("branch") and git(path, "rev-parse", "--abbrev-ref", "HEAD")[1] != entry["branch"]:
-        return "dirty", 0
+    if entry.get("branch"):
+        head = git(path, "rev-parse", "--abbrev-ref", "HEAD")[1]
+        if head != entry["branch"] and not (head == "HEAD" and _saved_remotely(path, entry["branch"])):
+            return "dirty", 0
     for rel, recorded in (entry.get("copied") or {}).items():
         if sha256(os.path.join(path, rel)) not in (recorded, None):
             return "dirty", 0

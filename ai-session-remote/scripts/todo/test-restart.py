@@ -192,6 +192,25 @@ class RestartTests(unittest.TestCase):
         self.assertTrue(restart.session_exists(linked))
         self.assertTrue(restart.session_exists(attached))
 
+    def test_close_unused_main_writes_to_the_runner_log(self):
+        state = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, state, True)
+        log = state / "runner.log"
+        with patch.dict(os.environ, {"AI_TODO_RUNNER_STATE_DIR": str(state)}):
+            with patch.object(restart, "hub_view", return_value=None):
+                self.assertEqual(restart.close_unused_main([])[0], 1)
+                self.assertEqual(restart.close_unused_main(["--dry-run"])[0], 1)  # a dry run writes nothing
+            self.assertEqual(len(log.read_text().splitlines()), 1)
+            self.assertIn("close_unused_failed", log.read_text())
+            done = {"closed": ["ai/claude/todo-aaaaaaaa"], "left": [{"tmux": "ai/claude/todo-bbbbbbbb", "reason": "working"}], "dry_run": False}
+            with patch.object(restart, "hub_view", return_value=self.hub()), patch.object(restart, "close_unused", return_value=done):
+                self.assertEqual(restart.close_unused_main([])[0], 0)
+                restart.close_unused_main(["--dry-run"])
+            lines = log.read_text().splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertIn("close_unused closed=1 left=1", lines[1])
+            self.assertIn("ai/claude/todo-bbbbbbbb(working)", lines[1])
+
     def test_close_unused_keeps_one_where_a_turn_ran_lately(self):
         """Turns sent from the app don't move tmux's activity; the transcript shows them."""
         self.start()
