@@ -60,8 +60,6 @@ struct PhoneConversationView<TerminalContent: View>: View {
         guard shouldPoll else { return nil }
         return "\(conversation.id):\(conversation.sessionId):\(conversation.statusRevision):\(status?.rawValue ?? ""):\(terminal.isConnected):\(refreshAttempt)"
     }
-    /// Faster while the agent works or waits, so steps and answers show up promptly.
-    private var pollInterval: Duration { isBusy || needsApproval ? .seconds(1) : .seconds(3) }
     private var items: [ChatItem] { ChatTimeline.items(entries: messages, pending: pending, notes: notes, workers: shownWorkers) }
     /// The transcripts' workers with the hub's status on top: "needs you", and still working
     /// through a long silent tool call.
@@ -135,11 +133,17 @@ struct PhoneConversationView<TerminalContent: View>: View {
         .task(id: pollID) {
             guard shouldPoll else { return }
             var full = true
+            var quietPolls = 0
             while !Task.isCancelled {
                 // A full read whenever polling (re)starts; later polls fetch only what is new.
-                await refresh(full: full)
+                let changed = await refresh(full: full)
+                quietPolls = changed ? 0 : min(quietPolls + 1, 4)
                 full = false
-                do { try await Task.sleep(for: pollInterval) } catch { return }
+                // The live terminal supplies approval prompts independently of transcript polling.
+                let base = isBusy ? 1 : 3
+                let ceiling = isBusy ? 8 : 30
+                let delay = min(base * (1 << quietPolls), ceiling)
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
             }
         }
     }
@@ -330,11 +334,14 @@ struct PhoneConversationView<TerminalContent: View>: View {
         }
     }
 
-    private func refresh(full: Bool = false) async {
+    @discardableResult
+    private func refresh(full: Bool = false) async -> Bool {
+        var changed = false
         do {
             let result = try await store.conversationMessages(of: conversation, config: config, previous: full ? [] : messages)
-            guard !Task.isCancelled else { return }
-            if messages != result { messages = result }
+            guard !Task.isCancelled else { return false }
+            changed = messages != result
+            if changed { messages = result }
             await refreshWorkers(entries: result, full: full)
             let stillPending = ChatTimeline.unconfirmed(pending, in: result)
             if stillPending != pending { pending = stillPending }
@@ -343,11 +350,11 @@ struct PhoneConversationView<TerminalContent: View>: View {
                 // A busy result or a failed request is not an acknowledgement. Retry
                 // after loading the current result, including after a busy/idle turn.
                 let acknowledged = await store.review(conversation)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else { return false }
                 reviewedOnOpen = acknowledged
             }
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return false }
             if error is RemoteConversations.NoTranscript {
                 loadError = messages.isEmpty ? "The transcript will appear after the first message." : nil
             } else {
@@ -355,6 +362,7 @@ struct PhoneConversationView<TerminalContent: View>: View {
             }
         }
         isLoading = false
+        return changed
     }
 
     /// Only for a chat that delegated, and while a worker works. A failure keeps the last list:

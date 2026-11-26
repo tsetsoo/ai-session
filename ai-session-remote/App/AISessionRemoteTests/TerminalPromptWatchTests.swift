@@ -89,8 +89,9 @@ final class TerminalPromptWatchTests: XCTestCase {
     }
 
     func testTellCodexChoosesTheOptionThenSubmitsOnceTheMenuCloses() async throws {
+        view.resize(cols: 40, rows: 22)
         transport.onOutput?(Array("\u{1B}[?2004h".utf8))
-        try await show(TerminalPromptFixtures.codexCommand)
+        try await show(TerminalPromptFixtures.codexCommandNarrow)
         let prompt = try XCTUnwrap(coordinator.currentPrompt())
         async let answered = coordinator.answer(prompt, option: 2, text: "use pnpm", tool: "codex")
         try await Task.sleep(for: .milliseconds(200))

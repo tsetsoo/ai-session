@@ -1,7 +1,7 @@
 import Foundation
 
 /// A Claude or Codex question read off the terminal screen: a numbered menu with one option
-/// marked by the cursor (❯ or ›) under a line ending in "?", and an Esc hint as the last line
+/// marked by the cursor (❯ or ›) under a question, and an Esc hint at the bottom
 /// (below the menu, or on its last option in older Claude's boxed prompt).
 /// Fixtures in `TerminalPromptFixtures` are real captures; parse nothing they don't justify.
 public struct TerminalPrompt: Equatable, Sendable {
@@ -24,7 +24,9 @@ public struct TerminalPrompt: Equatable, Sendable {
     public let selected: Int
     /// Tells two prompts apart, so an answer is only sent to the prompt it was meant for. The
     /// detail is in it: Claude asks "Do you want to proceed?" with the same options for every command.
-    public var signature: String { ([question, detail ?? ""] + options.map(\.label)).joined(separator: "\n") }
+    public var signature: String {
+        ([question, detail ?? ""] + options.flatMap { [$0.label, $0.detail ?? ""] }).joined(separator: "\n")
+    }
 
     /// The keys that choose option `index`: its number, which both tools act on at once and
     /// which is only text if the menu has already closed. Past 9 options, and with `enter` false
@@ -37,12 +39,34 @@ public struct TerminalPrompt: Equatable, Sendable {
     }
 
     public static func parse(screen: [String]) -> TerminalPrompt? {
+        // Ordinary terminal output is common. Check only the bottom rows until we see a menu.
+        guard let hint = screen.lastIndex(where: {
+            let line = clean($0)
+            return !line.isEmpty && !isRule(line)
+        }) else { return nil }
+        let last = clean(screen[hint])
+        let footer: Int
+        let approvalLabels: Bool
+        if last.hasSuffix("(esc)"), optionLine(last) != nil {
+            footer = hint + 1
+            approvalLabels = true
+        } else {
+            // At narrow widths, footer text itself can take up several rows.
+            let tailStart = max(0, hint - 2)
+            let tail = screen[tailStart...hint].map {
+                clean($0).trimmingCharacters(in: .whitespaces).lowercased()
+            }
+            guard let start = tail.indices.first(where: { start in
+                let text = tail[start...]
+                    .joined(separator: " ")
+                return text == "esc to cancel" || text == "esc to cancel · tab to amend" ||
+                    (text.hasPrefix("enter to select ·") && text.hasSuffix("esc to cancel")) ||
+                    text == "press enter to confirm or esc to cancel"
+            }) else { return nil }
+            footer = tailStart + start
+            approvalLabels = !tail[start].hasPrefix("enter to select")
+        }
         let lines = screen.map(clean)
-        guard let hint = lines.lastIndex(where: { !$0.isEmpty && !isRule($0) }),
-              lines[hint].range(of: #"(?i)\besc\b"#, options: .regularExpression) != nil
-        else { return nil }
-        // Where the menu ends: below the hint line, unless the hint is on the last option.
-        let footer = optionLine(lines[hint]) == nil ? hint : hint + 1
 
         // Up from the hint to option 1: only options, their indented continuations, blanks and rules.
         var first: Int?
@@ -69,8 +93,8 @@ public struct TerminalPrompt: Equatable, Sendable {
                 parsed.append((option.number, option.cursor, option.text, nil, line))
             } else if var last = parsed.popLast() {
                 let text = line.trimmingCharacters(in: .whitespaces)
-                if last.detail == nil, reachesEdge(last.lastLine, width: width) {
-                    // The label wrapped at the pane's edge.
+                if last.detail == nil, approvalLabels || reachesEdge(last.lastLine, width: width) {
+                    // Approval choices wrap by word, sometimes well before the edge.
                     let joiner = last.label.hasSuffix("-") || last.label.hasSuffix("/") ? "" : " "
                     last.label += joiner + text
                 } else {
@@ -103,7 +127,16 @@ public struct TerminalPrompt: Equatable, Sendable {
             }
             row -= 1
         }
-        guard let questionIndex = block.firstIndex(where: { $0.text.hasSuffix("?") }) else { return nil }
+        guard let questionIndex = block.firstIndex(where: {
+            $0.text.hasPrefix("Would you like to ") || $0.text.hasPrefix("Do you want to ")
+        }) ?? block.firstIndex(where: { $0.text.hasSuffix("?") }) else { return nil }
+        var questionEnd = questionIndex
+        if !block[questionIndex].text.hasSuffix("?") {
+            guard let end = block.indices.dropFirst(questionIndex + 1).prefix(2).first(where: {
+                block[$0].text.hasSuffix("?")
+            }) else { return nil }
+            questionEnd = end
+        }
         // The tip, and the lines it wrapped onto at a narrow width, are not about this question.
         // A tip that merely ends near the edge is followed by a new sentence (the command's
         // description starts with a capital), which stays.
@@ -118,11 +151,11 @@ public struct TerminalPrompt: Equatable, Sendable {
             }
         }
         let detailLines = block.enumerated()
-            .filter { $0.offset != questionIndex && !tip.contains($0.offset) }
+            .filter { !(questionIndex...questionEnd).contains($0.offset) && !tip.contains($0.offset) }
             .map(\.element.text)
 
         return TerminalPrompt(
-            question: block[questionIndex].text,
+            question: block[questionIndex...questionEnd].map(\.text).joined(separator: " "),
             detail: detailLines.isEmpty ? nil : detailLines.joined(separator: "\n"),
             options: parsed.map { Option(label: stripHint($0.label), detail: $0.detail, needsText: needsText(stripHint($0.label))) },
             selected: cursors[0]

@@ -306,6 +306,31 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   Press enter to confirm or esc to cancel
 """#
 
+    // Codex CLI 0.164.0, captured at 40 columns.
+    static let codexCommandNarrow = #"""
+  Would you like to run the following
+  command?
+
+  Environment: local
+
+  Reason: Do you want to allow `touch
+  codex-probe.txt` to create the empty
+  test file?
+
+  $ touch codex-probe.txt
+
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for
+     commands that start with `touch
+     codex-probe.txt` (p)
+  3. No, and tell Codex what to do
+     differently (esc)
+
+  Press enter to confirm or esc to
+  cancel
+"""#
+
     static let codexIdle = #"""
 
   >_ OpenAI Codex (v0.166.0)

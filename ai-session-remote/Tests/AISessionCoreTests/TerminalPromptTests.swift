@@ -41,6 +41,40 @@ final class TerminalPromptTests: XCTestCase {
         XCTAssertFalse(detail.contains("Tip:"), detail)
     }
 
+    func testClaudeApprovalLabelsWrapBeforeRightEdge() throws {
+        // Claude Code 2.1.332, captured at 40 columns. The path is from an isolated test.
+        let prompt = try XCTUnwrap(parse("""
+        ────────────────────────────────────────
+         Bash command
+         Tip: auto mode handles these prompts
+         for you — choose "switch to auto mode"
+         below
+         Create empty probe file
+        ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+         touch /tmp/ai-prompt-check.gklc67/clau
+         de-probe-2.txt
+        ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+         Do you want to proceed?
+         ❯ 1. Yes
+           2. Yes, and always allow access to
+              /tmp/ai-prompt-check.gklc67 from
+              this project
+           3. Yes, and switch to auto mode ·
+              auto mode handles these prompts
+              for you
+           4. No
+
+         Esc to cancel · Tab to amend
+        """))
+        XCTAssertEqual(prompt.options.map(\.label), [
+            "Yes",
+            "Yes, and always allow access to /tmp/ai-prompt-check.gklc67 from this project",
+            "Yes, and switch to auto mode · auto mode handles these prompts for you",
+            "No",
+        ])
+        XCTAssertTrue(prompt.options.allSatisfy { $0.detail == nil })
+    }
+
     func testClaudeEditPrompt() throws {
         let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.claudeEdit))
         XCTAssertEqual(prompt.question, "Do you want to make this edit to a.txt?")
@@ -58,6 +92,35 @@ final class TerminalPromptTests: XCTestCase {
         XCTAssertEqual(prompt.selected, 0)
     }
 
+    func testClaudeQuestionKeepsDescriptionsWhenFooterWraps() throws {
+        // Claude Code 2.1.332, captured at 40 columns.
+        let prompt = try XCTUnwrap(parse("""
+        ────────────────────────────────────────
+         ☐ Colour
+
+        Which colour do you prefer?
+
+        ❯ 1. Red
+             Warm and bold: energy, passion,
+             urgency.
+          2. Green
+             Natural and calm: growth, balance,
+             freshness.
+          3. Blue
+             Cool and steady: trust, calm,
+             clarity.
+          4. Type something.
+        ────────────────────────────────────────
+          5. Chat about this
+
+        Enter to select · ↑/↓ to navigate · Esc
+        to cancel
+        """))
+        XCTAssertEqual(prompt.options.map(\.label), ["Red", "Green", "Blue", "Type something.", "Chat about this"])
+        XCTAssertEqual(prompt.options[1].detail, "Natural and calm: growth, balance, freshness.")
+        XCTAssertTrue(prompt.options[3].typesInPlace)
+    }
+
     func testCodexCommandPrompt() throws {
         let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.codexCommand))
         XCTAssertEqual(prompt.question, "Would you like to run the following command?")
@@ -69,6 +132,18 @@ final class TerminalPromptTests: XCTestCase {
         ])
         XCTAssertEqual(prompt.options.map(\.needsText), [false, false, true])
         XCTAssertEqual(prompt.selected, 0)
+    }
+
+    func testCodexApprovalWrapsHeadingChoicesAndFooter() throws {
+        let prompt = try XCTUnwrap(parse(TerminalPromptFixtures.codexCommandNarrow))
+        XCTAssertEqual(prompt.question, "Would you like to run the following command?")
+        XCTAssertTrue(prompt.detail?.contains("$ touch codex-probe.txt") ?? false)
+        XCTAssertEqual(prompt.options.map(\.label), [
+            "Yes, proceed",
+            "Yes, and don't ask again for commands that start with `touch codex-probe.txt`",
+            "No, and tell Codex what to do differently",
+        ])
+        XCTAssertEqual(prompt.options.map(\.needsText), [false, false, true])
     }
 
     func testCodexPatchPrompt() throws {
