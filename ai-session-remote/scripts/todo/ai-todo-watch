@@ -3,6 +3,8 @@
 #
 # Usage:
 #   ai-todo-watch outcome <key> fixed|needs_you|cant_fix "<note>" [--commit <sha>]...
+#   ai-todo-watch context <sentry:key>     # latest snapshot and resolution status
+#   ai-todo-watch resolve <sentry:key>     # queue a user-approved resolution
 #   ai-todo-watch checkpoint <key> "<note>" # save scrape-health evidence for a retry
 #   ai-todo-watch release <key>...          # give issues back for another conversation
 #   ai-todo-watch overwhelmed "<why>"       # push the user
@@ -43,7 +45,7 @@ AI_DIR = os.path.join(HOME, ".ai-remote")
 TREES = os.environ.get("AI_TODO_RUNNER_WORKTREES") or os.path.join(AI_DIR, "worktrees")
 WATCHERS = os.environ.get("AI_TODO_WATCHERS_DIR") or os.path.join(AI_DIR, "watchers")
 OUTCOMES = ("fixed", "needs_you", "cant_fix")
-USAGE = "usage: ai-todo-watch outcome <key> fixed|needs_you|cant_fix \"<note>\" [--commit <sha>]... | checkpoint <key> \"<note>\" | release <key>... | overwhelmed \"<why>\""
+USAGE = "usage: ai-todo-watch outcome <key> fixed|needs_you|cant_fix \"<note>\" [--commit <sha>]... | context <sentry:key> | resolve <sentry:key> | checkpoint <key> \"<note>\" | release <key>... | overwhelmed \"<why>\""
 
 
 def die(message, code):
@@ -139,6 +141,9 @@ def main(argv):
     elif command == "checkpoint":
         if len(args) != 2 or not all(a.strip() for a in args):
             die(USAGE, 64)
+    elif command in ("context", "resolve"):
+        if len(args) != 1 or not re.fullmatch(r"sentry:[0-9]+", args[0]):
+            die(USAGE, 64)
     elif command == "release":
         if not args or not all(a.strip() for a in args):
             die(USAGE, 64)
@@ -157,6 +162,12 @@ def main(argv):
             body["commits"] = commits
         request(conf, path, body)
         print("Recorded %s: %s." % (args[0].strip(), args[1]))
+    elif command in ("context", "resolve"):
+        result = request(conf, path, {"key": args[0]})
+        if command == "context":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print("Queued %s for resolution in Sentry." % args[0])
     elif command == "checkpoint":
         note = redactor(conf)(" ".join(args[1].split()))[:500]
         request(conf, path, {"key": args[0].strip(), "note": note})

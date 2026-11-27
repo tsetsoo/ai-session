@@ -1,7 +1,7 @@
 {
   "name": "sentry",
   "title": "Sentry",
-  "description": "Unresolved Sentry issues of one organization's projects, with the latest event's stack trace. Resolve marks the issue resolved in Sentry.",
+  "description": "Unresolved Sentry issues of one organization's projects, with impact and diagnostic context from the latest event. Resolve marks the issue resolved in Sentry.",
   "resolve": true,
   "resolve_label": "Resolve in Sentry",
   "settings": [

@@ -39,6 +39,7 @@ const QUIET_RUNS_KEPT_DAYS: i64 = 2;
 /// The Debug job's prompt when the watch job has no extra instructions.
 pub(crate) const DEBUG_DEFAULT_PROMPT: &str = "Fix the open problems this run lists.";
 
+#[derive(Debug)]
 pub(crate) enum WatchError {
     BadRequest(&'static str),
     NotFound(&'static str),
@@ -300,7 +301,7 @@ fn report_for_computer(conn: &Connection, run_id: &str, report: &WatchReport, no
         let title: String = p.title.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>();
         let title: String = title.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(300).collect();
         let details: String =
-            p.details.chars().map(|c| if c.is_control() && !matches!(c, '\n' | '\t') { ' ' } else { c }).take(4000).collect();
+            p.details.chars().map(|c| if c.is_control() && !matches!(c, '\n' | '\t') { ' ' } else { c }).take(if watch.watcher == "sentry" { 12000 } else { 4000 }).collect();
         let url: String = p.url.chars().take(1000).collect();
         // A repo inside the project: never absolute, never climbing out.
         let folder = p
@@ -993,6 +994,56 @@ pub async fn run_outcome(
 }
 
 #[derive(serde::Deserialize)]
+pub struct RunIssueRequest {
+    key: String,
+}
+
+fn sentry_run_issue(
+    conn: &Connection,
+    run_id: &str,
+    key: &str,
+    resolve: bool,
+) -> Result<serde_json::Value, WatchError> {
+    let behavior = if resolve { TransactionBehavior::Immediate } else { TransactionBehavior::Deferred };
+    let tx = Transaction::new_unchecked(conn, behavior)?;
+    let (id, title, url, details, state, error): (String, String, String, String, String, Option<String>) = tx
+        .query_row(
+            "SELECT id, title, url, details, state, resolve_error FROM watch_issues
+             WHERE taken_run_id = ?1 AND key = ?2 AND watcher = 'sentry'",
+            params![run_id, key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .optional()?
+        .ok_or(WatchError::NotFound("Sentry issue not taken by this run"))?;
+    let result = if resolve {
+        request_resolve_db(&tx, &id, Utc::now())?;
+        serde_json::json!({"state": "resolving"})
+    } else {
+        serde_json::json!({"title": title, "url": url, "details": details, "state": state, "resolve_error": error})
+    };
+    tx.commit()?;
+    Ok(result)
+}
+
+pub async fn run_sentry_context(
+    pool: web::Data<DbPool>, path: web::Path<String>, body: web::Json<RunIssueRequest>,
+) -> HttpResponse {
+    let conn = conn!(pool);
+    match sentry_run_issue(&conn, &path, &body.key, false) {
+        Ok(context) => HttpResponse::Ok().json(context),
+        Err(error) => respond(error),
+    }
+}
+
+pub async fn run_sentry_resolve(
+    pool: web::Data<DbPool>, path: web::Path<String>, body: web::Json<RunIssueRequest>,
+    broadcaster: web::Data<Broadcaster>,
+) -> HttpResponse {
+    let conn = conn!(pool);
+    done(sentry_run_issue(&conn, &path, &body.key, true), &broadcaster)
+}
+
+#[derive(serde::Deserialize)]
 pub struct CheckpointRequest {
     key: String,
     note: String,
@@ -1482,6 +1533,31 @@ pub(crate) mod tests {
             params![key, run, outcome],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn sentry_chat_resolution_is_scoped_and_reports_runner_results() {
+        let (_db, pool) = pool("watch");
+        let conn = pool.get().unwrap();
+        seed_watch(&conn, Some("claude"));
+        debug_run_with_conversation(&conn, "r1", "busy", true);
+        taken(&conn, "sentry:1", "r1", Some("fixed"));
+
+        assert!(matches!(sentry_run_issue(&conn, "other", "sentry:1", true), Err(WatchError::NotFound(_))));
+        assert_eq!(sentry_run_issue(&conn, "r1", "sentry:1", false).unwrap()["state"], "open");
+        assert_eq!(sentry_run_issue(&conn, "r1", "sentry:1", true).unwrap()["state"], "resolving");
+        assert!(sentry_run_issue(&conn, "r1", "sentry:1", true).is_err());
+
+        let failure = ResolveResult { ok: false, message: "HTTP 403".into() };
+        resolve_result_for_computer(&conn, "sentry:1", &failure, now(), None).unwrap();
+        let context = sentry_run_issue(&conn, "r1", "sentry:1", false).unwrap();
+        assert_eq!(context["state"], "open");
+        assert_eq!(context["resolve_error"], "HTTP 403");
+
+        sentry_run_issue(&conn, "r1", "sentry:1", true).unwrap();
+        let success = ResolveResult { ok: true, message: String::new() };
+        resolve_result_for_computer(&conn, "sentry:1", &success, now(), None).unwrap();
+        assert_eq!(sentry_run_issue(&conn, "r1", "sentry:1", false).unwrap()["state"], "cleared");
     }
 
     #[test]

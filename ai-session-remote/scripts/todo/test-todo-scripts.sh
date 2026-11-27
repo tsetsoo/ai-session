@@ -4167,12 +4167,16 @@ runs_reset
 (cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" outcome sentry:1 fixed "nil check in Serve") >/dev/null || fail "outcome failed"
 (cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" release sentry:2 sentry:3) >/dev/null || fail "release failed"
 (cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" AI_TODO_WATCHERS_DIR="$W_DIR" "$WATCH" overwhelmed "40 issues, mostly one cause password=hunter2xyz token secret123") >/dev/null || fail "overwhelmed failed"
+(cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" context sentry:1) >/dev/null || fail "Sentry context failed"
+(cd "$W_TREE" && AI_TODO_HUB_CONF="$M_CONF" "$WATCH" resolve sentry:1) | grep -q '^Queued sentry:1' || fail "Sentry resolution request failed"
 watch_posts | python3 -c '
 import json, sys
 rows = [json.loads(l) for l in sys.stdin]
 assert rows[0] == {"path": "/api/watch/runs/run-dbg01/outcome", "body": {"key": "sentry:1", "outcome": "fixed", "note": "nil check in Serve"}}, rows
 assert rows[1] == {"path": "/api/watch/runs/run-dbg01/release", "body": {"keys": ["sentry:2", "sentry:3"]}}, rows
 assert rows[2]["path"] == "/api/watch/runs/run-dbg01/overwhelmed" and "hunter2xyz" not in rows[2]["body"]["why"], rows
+assert rows[3] == {"path": "/api/watch/runs/run-dbg01/context", "body": {"key": "sentry:1"}}, rows
+assert rows[4] == {"path": "/api/watch/runs/run-dbg01/resolve", "body": {"key": "sentry:1"}}, rows
 assert "secret123" not in rows[2]["body"]["why"], rows
 ' || fail "watch helper posts: $(watch_posts)"
 status=0
@@ -6386,7 +6390,7 @@ sentry_issue() { # <id> <short> <project slug>
 printf '[%s,%s,%s]' "$(sentry_issue 11 GO-HTTP-9 go-http)" "$(sentry_issue 12 GO-HTTP-N go-http)" "$(sentry_issue 13 GO-HTTP-P go-http)" >"${SN_DIR}/issues-go-http.json"
 printf '[%s]' "$(sentry_issue 21 WEBAPP-1 sigma-revenue-webapp)" >"${SN_DIR}/issues-sigma-revenue-webapp.json"
 cat >"${SN_DIR}/event-11.json" <<'JSON'
-{"message": "", "entries": [{"type": "exception", "data": {"values": [{"type": "*errors.errorString", "value": "serpapi request failed: 429",
+{"eventID": "sample-event", "contexts": {"trace": {"trace_id": "sample-trace", "op": "http.server"}}, "tags": [{"key": "environment", "value": "production"}], "message": "", "entries": [{"type": "exception", "data": {"values": [{"type": "*errors.errorString", "value": "serpapi request failed: 429",
  "stacktrace": {"frames": [{"filename": "runtime/proc.go", "lineNo": 1, "function": "main", "inApp": false},
                            {"filename": "internal/serp/client.go", "lineNo": 88, "function": "Fetch", "inApp": true}]}}]}}]}
 JSON
@@ -6410,7 +6414,9 @@ assert p["folder"] == "sigma-revenue-backend" and r["problems"][3]["folder"] == 
 assert p["url"] == "https://sigma.sentry.io/issues/11/", p
 assert "handler.go in Serve" in p["details"] and "36 events" in p["details"], p["details"]
 assert "serpapi request failed: 429" in p["details"] and "internal/serp/client.go:88 in Fetch" in p["details"], p["details"]
-assert "runtime/proc.go" not in p["details"], p["details"]
+assert "runtime/proc.go:1 in main [library]" in p["details"], p["details"]
+assert "trace context: trace_id=sample-trace, op=http.server" in p["details"], p["details"]
+assert "environment: production" in p["details"] and "Event: sample-event" in p["details"], p["details"]
 PY
 grep -q '"auth": "Bearer sntrys_secret_token"' "${SN_DIR}/log" || fail "sentry: no token sent"
 grep -q 'is%3Aunresolved' "${SN_DIR}/log" || fail "sentry: not unresolved issues: $(head -1 "${SN_DIR}/log")"
@@ -6421,6 +6427,17 @@ events_before=$(read_events)
 sentry check >/dev/null || fail "second sentry check failed"
 [[ $(read_events) -eq $events_before ]] || fail "events fetched again"
 [[ $(grep -c 'issues/13/events' "${SN_DIR}/log") -eq 2 ]] || fail "an unreadable event was not tried again"
+python3 - "${SN_DIR}/issues-go-http.json" <<'PYTEST'
+import json, sys
+path = sys.argv[1]
+with open(path) as file:
+    issues = json.load(file)
+issues[0]["lastSeen"] = "2026-11-03T09:00:00Z"
+with open(path, "w") as file:
+    json.dump(issues, file)
+PYTEST
+sentry check >/dev/null || fail "Sentry check after new activity failed"
+[[ $(read_events) -eq $((events_before + 1)) ]] || fail "latest event was not refreshed for new activity"
 rm -rf "${SN_DIR}/state"
 sentry check >/dev/null || fail "a missing event failed the check"
 pass "sentry_events_fetched_once (and a missing event doesn't fail the check)"

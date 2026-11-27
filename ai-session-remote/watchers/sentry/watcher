@@ -11,7 +11,7 @@
 # relative to the hub project's folder). Test hooks: AI_TODO_WATCH_STATE_DIR (event cache,
 # default ~/.ai-remote/watchers/state), SENTRY_NO_EVENTS=1 (skip event details).
 #
-# The latest event of each issue (message, exception, in-app frames) is fetched once and cached.
+# The latest event summary is cached until the issue records new activity.
 # The token is never printed. Exit codes: 0 ok, 1 Sentry error, 64 bad arguments, 65 settings
 # missing, 90 python3 missing.
 ai_path=
@@ -42,8 +42,9 @@ import urllib.request
 
 MAX_ISSUES = 500
 PAGE = 100
-MAX_DETAILS = 4000
-MAX_FRAMES = 8
+MAX_DETAILS = 12000
+MAX_FRAMES = 32
+SUMMARY_VERSION = 2
 # Event details fetched per check, and the time spent on them: the runner stops a check at 60 s,
 # so a big backlog fills in over several checks instead of never finishing.
 MAX_EVENTS = int(os.environ.get("SENTRY_MAX_EVENTS") or 20)
@@ -144,12 +145,33 @@ def save_cache(cache):
 
 
 def event_summary(event):
-    """The latest event's message, exceptions and top in-app frames, as text."""
+    """Diagnostic fields from the latest event, excluding raw request and user payloads."""
     lines = []
     if not isinstance(event, dict):
         return ""
+    for label, key in (("Event", "eventID"), ("Recorded", "dateCreated"),
+                       ("Platform", "platform"), ("Transaction", "transaction")):
+        if event.get(key):
+            lines.append("%s: %s" % (label, str(event[key])[:300]))
+    tags = {tag.get("key"): tag.get("value") for tag in event.get("tags") or [] if isinstance(tag, dict)}
+    for key in ("environment", "release", "dist", "runtime", "browser", "os", "handled", "mechanism"):
+        if tags.get(key):
+            lines.append("%s: %s" % (key, str(tags[key])[:200]))
+    contexts = event.get("contexts") or {}
+    for name, keys in (
+        ("runtime", ("name", "version")),
+        ("browser", ("name", "version")),
+        ("os", ("name", "version")),
+        ("device", ("family", "model", "arch")),
+        ("trace", ("trace_id", "span_id", "op", "status")),
+    ):
+        context = contexts.get(name) or {}
+        fields = ["%s=%s" % (key, str(context[key])[:150]) for key in keys if context.get(key)]
+        if fields:
+            lines.append("%s context: %s" % (name, ", ".join(fields)))
+    breadcrumbs = []
     if event.get("message"):
-        lines.append(str(event["message"]))
+        lines.append(str(event["message"])[:1000])
     for entry in event.get("entries") or []:
         if not isinstance(entry, dict):
             continue
@@ -157,11 +179,36 @@ def event_summary(event):
         if entry.get("type") == "exception":
             for value in data.get("values") or []:
                 lines.append("%s: %s" % (value.get("type") or "error", value.get("value") or ""))
-                frames = [f for f in ((value.get("stacktrace") or {}).get("frames") or []) if isinstance(f, dict) and f.get("inApp")]
-                for f in list(reversed(frames))[:MAX_FRAMES]:
-                    lines.append("  %s:%s in %s" % (f.get("filename") or f.get("module") or "?", f.get("lineNo") or "?", f.get("function") or "?"))
+                mechanism = value.get("mechanism") or {}
+                if mechanism:
+                    lines.append("  mechanism=%s handled=%s" % (mechanism.get("type", "?"), mechanism.get("handled", "?")))
+                frames = [f for f in (value.get("stacktrace") or {}).get("frames") or []
+                          if isinstance(f, dict)]
+                # Keep in-app frames first so library frames cannot consume the stack budget.
+                frames.reverse()
+                frames.sort(key=lambda frame: not frame.get("inApp"))
+                for frame in frames[:MAX_FRAMES]:
+                    lines.append("  %s:%s in %s%s" % (
+                        str(frame.get("filename") or frame.get("module") or "?")[:200],
+                        frame.get("lineNo") or "?",
+                        str(frame.get("function") or "?")[:160],
+                        " [library]" if not frame.get("inApp") else "",
+                    ))
+                if len(frames) > MAX_FRAMES:
+                    lines.append("  %d additional frames in Sentry" % (len(frames) - MAX_FRAMES))
+        elif entry.get("type") == "request" and data.get("method"):
+            lines.append("Request method: %s" % str(data["method"])[:20])
         elif entry.get("type") == "message" and data.get("formatted"):
-            lines.append(str(data["formatted"]))
+            lines.append(str(data["formatted"])[:1000])
+        elif entry.get("type") == "breadcrumbs":
+            for crumb in (data.get("values") or [])[-20:]:
+                if isinstance(crumb, dict):
+                    breadcrumbs.append("  " + " ".join(
+                        str(crumb[key])[:200] for key in ("timestamp", "category", "level", "message")
+                        if crumb.get(key)
+                    ))
+    if breadcrumbs:
+        lines.extend(["Recent breadcrumbs:", *breadcrumbs[-20:]])
     return "\n".join(lines)
 
 
@@ -191,29 +238,44 @@ def cmd_check(args):
             if not isinstance(issue, dict) or not issue.get("id"):
                 continue
             iid = str(issue["id"])
-            if (iid not in cache and not os.environ.get("SENTRY_NO_EVENTS") and fetched < MAX_EVENTS
+            last_seen = issue.get("lastSeen")
+            cached = cache.get(iid)
+            if ((not isinstance(cached, dict) or cached.get("version") != SUMMARY_VERSION
+                 or cached.get("last_seen") != last_seen)
+                    and not os.environ.get("SENTRY_NO_EVENTS") and fetched < MAX_EVENTS
                     and time.monotonic() - started < EVENTS_SECONDS):
                 fetched += 1
                 # Details are a bonus: an issue whose event can't be read is still reported,
                 # and tried again on the next check.
                 try:
                     event, _ = try_request("GET", "/organizations/%s/issues/%s/events/latest/" % (org, iid))
-                    cache[iid] = event_summary(event)
+                    cached = {"version": SUMMARY_VERSION, "last_seen": last_seen, "summary": event_summary(event)[:MAX_DETAILS]}
+                    cache[iid] = cached
                     save_cache(cache)
                 except SentryError:
                     pass
             slug = ((issue.get("project") or {}).get("slug")) or project
             details = [
+                "Sentry project: %s" % slug,
+                "Type: %s · status: %s" % (issue.get("type") or "?", issue.get("substatus") or issue.get("status") or "unresolved"),
                 issue.get("culprit") or "",
                 "level %s · %s events · %s users" % (issue.get("level") or "?", issue.get("count") or "?", issue.get("userCount") or 0),
                 "first seen %s · last seen %s" % (issue.get("firstSeen") or "?", issue.get("lastSeen") or "?"),
             ]
-            if cache.get(iid):
-                details += ["", cache[iid]]
+            if isinstance(cached, dict) and cached.get("summary"):
+                if cached.get("last_seen") != last_seen:
+                    details.append("Showing a cached event while newer activity awaits a refresh.")
+                details += ["", cached["summary"]]
+            else:
+                details.append("Latest event details are unavailable in this snapshot.")
+            detail_text = "\n".join(details)
+            if len(detail_text) > MAX_DETAILS:
+                suffix = "\n[More event details are available in Sentry.]"
+                detail_text = detail_text[:MAX_DETAILS - len(suffix)] + suffix
             problem = {
                 "key": "sentry:%s" % iid,
                 "title": "%s: %s" % (issue.get("shortId") or iid, issue.get("title") or ""),
-                "details": "\n".join(d for d in details if d is not None)[:MAX_DETAILS],
+                "details": detail_text,
                 "url": issue.get("permalink") or "",
             }
             if where.get(slug):

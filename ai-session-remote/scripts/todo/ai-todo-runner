@@ -430,6 +430,15 @@ def check_watch(hub, run, job, scrape_health_protocol):
         legacy = [p for p in report["problems"] if not isinstance(p, dict) or "investigation_eligible" not in p]
         report["partial"] = bool(report.get("partial")) or len(legacy) != len(report["problems"])
         report["problems"] = legacy
+    if job["action"].get("watcher") == "sentry":
+        from ai_todo_redact import redact, secret_values_from_env
+
+        secrets = secret_values_from_env(dict(os.environ, **env))
+        for problem in report["problems"]:
+            if isinstance(problem, dict):
+                for field in ("title", "details"):
+                    if isinstance(problem.get(field), str):
+                        problem[field] = redact(problem[field], secrets)
     hub.request("POST", "/api/runs/%s/report" % run["id"], body=report, timeout=60)
     return len(report["problems"])
 
