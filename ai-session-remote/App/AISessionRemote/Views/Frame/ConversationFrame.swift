@@ -578,7 +578,7 @@ struct ConversationFrame: View {
                 config: open.config,
                 mode: .attach(attachCommand(for: open)),
                 hostName: conversation.computer.name,
-                focusOnConnect: shouldFocusTerminal,
+                focusOnConnect: showsTerminalGrid,
                 handle: terminal,
                 onConnectionFailed: { error in
                     let noted = SSHSignInRecord.problem(hostID: open.config.hostID)
@@ -596,11 +596,12 @@ struct ConversationFrame: View {
                 approveEnabled: approveGate.isEnabled(tool: conversation.tool),
                 isFrontmost: isFrontmost,
                 isOnScreen: isOnScreen,
+                showsTerminalGrid: showsTerminalGrid,
                 makeTransport: makeTransport
             )
     }
 
-    private var shouldFocusTerminal: Bool {
+    private var showsTerminalGrid: Bool {
         #if os(iOS)
         !showsChat
         #else
@@ -1086,7 +1087,7 @@ struct ConversationFrame: View {
     /// After the surface's own focus-after-connect and whatever the list did with the click or
     /// key that selected this conversation.
     private func focusTerminalWhenWaiting() {
-        guard shouldFocusTerminal else { return }
+        guard showsTerminalGrid else { return }
         #if DEBUG
         // Screenshots: `-uiDemoKeyboard down` keeps the soft keyboard away.
         if DemoFixtures.isEnabled, DemoFixtures.value(after: "-uiDemoKeyboard") == "down" { return }
@@ -1094,7 +1095,7 @@ struct ConversationFrame: View {
         Task {
             try? await Task.sleep(for: .milliseconds(250))
             // Not from under the ⌘K palette's search field; closing it brings focus back.
-            guard shouldFocusTerminal, appModel?.allowsTerminalAutoFocus ?? true else { return }
+            guard showsTerminalGrid, appModel?.allowsTerminalAutoFocus ?? true else { return }
             terminal.focus()
         }
     }

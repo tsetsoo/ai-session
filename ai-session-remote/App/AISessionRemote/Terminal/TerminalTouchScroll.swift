@@ -116,6 +116,14 @@ final class TouchScrollTerminalView: TerminalView {
     /// The edit menu's Paste with a photo on the clipboard: true when it took the photo.
     var onPastePhoto: (() -> Bool)?
 
+    /// Keep the live buffer and its layout while Chat covers the grid.
+    func setGridVisible(_ visible: Bool) {
+        let hidden = !visible
+        guard isHidden != hidden else { return }
+        isHidden = hidden
+        if visible { setNeedsDisplay() }
+    }
+
     override func paste(_ sender: Any?) {
         if onPastePhoto?() == true { return }
         super.paste(sender)

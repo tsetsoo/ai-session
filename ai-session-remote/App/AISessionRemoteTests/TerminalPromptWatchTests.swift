@@ -9,13 +9,13 @@ import XCTest
 final class TerminalPromptWatchTests: XCTestCase {
     private var transport: PromptRecordingTransport!
     private var coordinator: TerminalCoordinator!
-    private var view: TerminalView!
+    private var view: TouchScrollTerminalView!
 
     override func setUp() async throws {
         transport = PromptRecordingTransport()
         let config = HostConnectionConfig(host: "example.test", port: 22, username: "me", privateKeyPEM: Data())
         coordinator = TerminalCoordinator(hostConfig: config, mode: .attach("unused"), makeTransport: { [transport] _, _ in transport! })
-        view = TerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        view = TouchScrollTerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
         coordinator.attach(to: view)
         await coordinator.connect()
         view.resize(cols: 100, rows: 40)
@@ -41,6 +41,29 @@ final class TerminalPromptWatchTests: XCTestCase {
         try await show(TerminalPromptFixtures.claudeBash)
         XCTAssertEqual(TerminalPrompt.parse(screen: seen)?.options.count, 4)
         XCTAssertEqual(coordinator.currentPrompt()?.question, "Do you want to proceed?")
+    }
+
+    func testHiddenTerminalStillReadsPromptsAndSendsInput() async throws {
+        var seen: [String] = []
+        coordinator.onScreenChange = { seen = $0 }
+        view.setGridVisible(false)
+        XCTAssertTrue(view.isHidden)
+
+        try await show(TerminalPromptFixtures.claudeBash)
+        let prompt = try XCTUnwrap(TerminalPrompt.parse(screen: seen))
+        XCTAssertEqual(coordinator.currentPrompt(), prompt)
+        XCTAssertTrue(coordinator.answer(prompt, option: 3, tool: "claude"))
+        XCTAssertEqual(transport.sent.last, Array("4".utf8))
+
+        transport.onOutput?(Array("\u{1B}[?2004h".utf8))
+        try await show(TerminalPromptFixtures.claudeIdle)
+        let sent = await coordinator.sendMessage("hello")
+        XCTAssertTrue(sent)
+        XCTAssertEqual(transport.sent.last, Array("\u{1B}[200~hello\u{1B}[201~\r".utf8))
+        view.setGridVisible(true)
+        XCTAssertFalse(view.isHidden)
+        XCTAssertNil(coordinator.currentPrompt())
+        XCTAssertEqual(coordinator.screenLines(), seen)
     }
 
     func testPromptIsFoundWhileTheTerminalIsScrolledBack() async throws {

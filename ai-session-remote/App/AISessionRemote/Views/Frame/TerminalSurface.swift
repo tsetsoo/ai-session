@@ -305,24 +305,27 @@ private struct TerminalContainerView: UIViewRepresentable {
     let palette: TerminalPalette
     let fontSize: Double
     let hitTarget: TerminalHitTarget
+    let showsGrid: Bool
 
-    func makeUIView(context: Context) -> TerminalView {
+    func makeUIView(context: Context) -> TouchScrollTerminalView {
         let view = TouchScrollTerminalView(frame: .zero)
         // The surface docks `KeyBar` instead of SwiftTerm's `TerminalAccessory`.
         view.inputAccessoryView = UIView(frame: .zero)
         view.onPastePhoto = { [weak coordinator] in coordinator?.pastePhotoFromClipboard() ?? false }
         TerminalAppearance.apply(to: view, palette: palette, fontSize: fontSize)
         coordinator.setPalette(palette)
-        view.isUserInteractionEnabled = hitTarget == .grid
+        view.setGridVisible(showsGrid)
+        view.isUserInteractionEnabled = showsGrid && hitTarget == .grid
         coordinator.attach(to: view)
         return view
     }
 
-    func updateUIView(_ uiView: TerminalView, context: Context) {
+    func updateUIView(_ uiView: TouchScrollTerminalView, context: Context) {
+        uiView.setGridVisible(showsGrid)
         TerminalAppearance.apply(to: uiView, palette: palette, fontSize: fontSize)
         coordinator.setPalette(palette)
         coordinator.attach(to: uiView)
-        let interactive = hitTarget == .grid
+        let interactive = showsGrid && hitTarget == .grid
         if uiView.isUserInteractionEnabled != interactive {
             uiView.isUserInteractionEnabled = interactive
         }
@@ -424,6 +427,7 @@ struct TerminalSurface: View {
     /// On screen without being frontmost: a side-by-side pane. It draws and takes clicks;
     /// only the frontmost pane gets the toolbar. Nil: on screen exactly when frontmost.
     private let isOnScreen: Bool?
+    private let showsTerminalGrid: Bool
     private var shown: Bool { isOnScreen ?? isFrontmost }
 
     @Environment(\.colorScheme) private var colorScheme
@@ -477,6 +481,7 @@ struct TerminalSurface: View {
         approveEnabled: Bool = false,
         isFrontmost: Bool = true,
         isOnScreen: Bool? = nil,
+        showsTerminalGrid: Bool = true,
         makeTransport: @escaping (HostConnectionConfig, TerminalMode) -> any TerminalTransport = {
             SSHTerminalSession(config: $0, mode: $1)
         }
@@ -496,6 +501,7 @@ struct TerminalSurface: View {
         self.approveEnabled = approveEnabled
         self.isFrontmost = isFrontmost
         self.isOnScreen = isOnScreen
+        self.showsTerminalGrid = showsTerminalGrid
         _coordinator = State(initialValue: TerminalCoordinator(
             hostConfig: config, mode: mode, makeTransport: makeTransport
         ))
@@ -759,7 +765,8 @@ struct TerminalSurface: View {
             coordinator: coordinator,
             palette: palette,
             fontSize: fontSize,
-            hitTarget: hitTarget
+            hitTarget: hitTarget,
+            showsGrid: showsTerminalGrid
         )
         .padding(Self.inset)
         .background(Color(palette.background))
